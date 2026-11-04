@@ -1,0 +1,366 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/drup/platform/internal/accesspolicy"
+	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/phone"
+	"github.com/drup/platform/internal/repository"
+	"golang.org/x/crypto/bcrypt"
+)
+
+type contextKey string
+
+const userClaimsKey contextKey = "userClaims"
+
+// AuthMiddleware requires a valid JWT Bearer token and stores its claims in the request context.
+func AuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := jwtService.ValidateToken(tokenStr)
+		if err != nil {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if err := jwtService.RefreshCapabilities(r.Context(), claims); err != nil {
+			http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+
+		// D57 (live IsUserBlocked/IsUserActive): a blocked or inactive
+		// user must not keep using an old token after admin block/unblock
+		// (handleSetUserActiveStatus toggles users.is_active). The error
+		// string reuses the existing login-time disabled-account message;
+		// no new status value or error string is invented (U53).
+		blocked, err := jwtService.IsUserBlocked(r.Context(), claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if blocked {
+			http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userClaimsKey, claims)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// RequireCapabilities wraps an endpoint with JWT authentication and an
+// explicit active-capability allowlist. Legacy role-only tokens (no
+// capabilities claim at all) remain valid through HasCapability's
+// nil-capabilities fallback in internal/auth. A token whose capabilities
+// were REFRESHED to an empty list (every capability revoked) must NOT
+// fall back to its token role: that was the previous len==0 fallback here,
+// and it let a fully-revoked user keep role access until token expiry.
+func RequireCapabilities(jwtService *auth.JWTService, capabilities ...string) func(http.HandlerFunc) http.HandlerFunc {
+	allowed := make(map[string]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		allowed[capability] = struct{}{}
+	}
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := r.Context().Value(userClaimsKey).(*auth.UserClaims)
+			if !ok || claims == nil {
+				http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			matched := false
+			for capability := range allowed {
+				if claims.HasCapability(capability) {
+					matched = true
+					break
+				}
+			}
+			// No len==0 role fallback: see the function comment. HasCapability
+			// already covers the legacy nil-capabilities token case.
+			if !matched {
+				http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		})
+	}
+}
+
+// RequireRoles preserves the existing route API while evaluating the same
+// values as explicit capabilities.
+func RequireRoles(jwtService *auth.JWTService, roles ...string) func(http.HandlerFunc) http.HandlerFunc {
+	allowed := make([]string, 0, len(roles)+1)
+	for _, role := range roles {
+		allowed = append(allowed, role)
+		if role == "admin" {
+			allowed = append(allowed, accesspolicy.SuperAdminCapability)
+		}
+		if role == "finance" {
+			allowed = append(allowed, "finance_specialist")
+		} else if role == "finance_specialist" {
+			allowed = append(allowed, "finance")
+		}
+	}
+	return RequireCapabilities(jwtService, allowed...)
+}
+
+func handleSendOTP(w http.ResponseWriter, r *http.Request, ctx context.Context, otpService *auth.OTPService) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Mobile string `json:"mobile"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !phone.IsValid(req.Mobile) {
+		http.Error(w, `{"error":"Invalid mobile number"}`, http.StatusBadRequest)
+		return
+	}
+
+	mobile := phone.Normalize(req.Mobile)
+	code, err := otpService.GenerateAndStoreOTP(ctx, mobile)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "cooldown") || strings.Contains(err.Error(), "invalid") {
+			status = http.StatusTooManyRequests
+		} else if strings.Contains(err.Error(), "SMS delivery failed") {
+			status = http.StatusBadGateway
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success":   true,
+		"mobile":    mobile,
+		"expiresIn": 120,
+		"message":   "کد یکبارمصرف ارسال شد",
+	}
+	_ = code
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleVerifyOTP(
+	w http.ResponseWriter,
+	r *http.Request,
+	ctx context.Context,
+	otpService *auth.OTPService,
+	userRepo *repository.UserRepository,
+	jwtService *auth.JWTService,
+	supplierRepo *repository.SupplierRepository,
+	capabilityRepo *repository.CapabilityRepository,
+	storeRepo *repository.StoreRepository,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Mobile    string `json:"mobile"`
+		Code      string `json:"code"`
+		Role      string `json:"role"`
+		StoreSlug string `json:"storeSlug"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	mobile := phone.Normalize(req.Mobile)
+	code := strings.TrimSpace(req.Code)
+
+	if !otpService.VerifyOTP(ctx, mobile, code) {
+		http.Error(w, `{"error":"کد یکبارمصرف نادرست یا منقضی شده است"}`, http.StatusUnauthorized)
+		return
+	}
+
+	existingUser, err := userRepo.FindByMobile(ctx, mobile)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if supplierRepo != nil {
+		supplierUser, supplierErr := supplierRepo.FindUserByMobile(ctx, mobile)
+		if supplierErr != nil {
+			http.Error(w, supplierErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if supplierUser != nil {
+			existingUser = supplierUser
+		}
+	}
+
+	role := "customer"
+	if existingUser != nil {
+		role = existingUser.Role
+	}
+	if existingUser == nil && req.Role != "" {
+		http.Error(w, `{"error":"Requested role must already be provisioned"}`, http.StatusForbidden)
+		return
+	}
+
+	name := "کاربر جدید"
+	if existingUser != nil && !existingUser.IsActive {
+		http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
+		return
+	}
+
+	var user *domain.User
+	if existingUser != nil {
+		user = existingUser
+	} else {
+		user, err = userRepo.UpsertUser(ctx, mobile, name, role)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if capabilityRepo == nil {
+		http.Error(w, `{"error":"Capability authorization is unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	// No requested role is the explicit customer-access flow. A requested role
+	// only selects an existing active capability; it never grants one.
+	if req.Role == "" {
+		if err := capabilityRepo.Grant(ctx, user.ID, "customer", "otp_customer_login", "", nil); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if accesspolicy.IsSuperAdminMobile(mobile) {
+		if err := capabilityRepo.GrantSuperAdminAfterOTP(ctx, user.ID, mobile); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	capabilities, err := capabilityRepo.ListActive(ctx, user.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	selectedRole := user.Role
+	if req.Role != "" {
+		allowed, checkErr := capabilityRepo.HasActive(ctx, user.ID, req.Role)
+		if req.Role == "admin" && containsCapability(capabilities, accesspolicy.SuperAdminCapability) {
+			allowed = true
+		}
+		if checkErr != nil {
+			http.Error(w, checkErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			http.Error(w, `{"error":"Requested role is not an active capability"}`, http.StatusForbidden)
+			return
+		}
+		selectedRole = req.Role
+	}
+	if req.Role == "admin" && containsCapability(capabilities, accesspolicy.SuperAdminCapability) {
+		selectedRole = accesspolicy.SuperAdminCapability
+	}
+
+	// Fix83: record buyer signup attribution (buyer -> store) idempotently.
+	// Only customer accounts are attributed; an unknown slug is ignored
+	// (no default store is ever invented). A recording failure never
+	// breaks login: the next verified login with a store slug retries
+	// the same idempotent insert.
+	if user.Role == "customer" && storeRepo != nil {
+		if slug := strings.TrimSpace(req.StoreSlug); slug != "" {
+			if store, serr := storeRepo.GetStoreBySlug(ctx, slug); serr == nil && store != nil {
+				if lerr := storeRepo.RecordCustomerStoreLink(ctx, user.ID, store.ID); lerr != nil {
+					log.Printf("Fix83: failed to record customer_store_link user=%s store=%s: %v", user.ID, store.ID, lerr)
+				}
+			}
+		}
+	}
+	token, err := jwtService.GenerateTokenWithCapabilities(user.ID, user.Mobile, user.FullName, selectedRole, capabilities, 7*24*time.Hour)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"token":   token,
+		"user": map[string]interface{}{
+			"id":           user.ID,
+			"mobile":       user.Mobile,
+			"fullName":     user.FullName,
+			"role":         selectedRole,
+			"capabilities": capabilities,
+		},
+	})
+}
+
+func containsCapability(capabilities []string, wanted string) bool {
+	for _, capability := range capabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func handlePasswordLogin(
+	w http.ResponseWriter,
+	r *http.Request,
+	ctx context.Context,
+	userRepo *repository.UserRepository,
+	jwtService *auth.JWTService,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Username) == "" || req.Password == "" {
+		http.Error(w, `{"error":"Invalid login payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	user, passwordHash, _, lockedUntil, err := userRepo.FindByUsername(ctx, strings.TrimSpace(req.Username))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if user == nil || !user.IsActive || passwordHash == "" {
+		http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
+		return
+	}
+	if lockedUntil != nil && lockedUntil.After(time.Now()) {
+		http.Error(w, `{"error":"Account temporarily locked"}`, http.StatusTooManyRequests)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		_ = userRepo.RecordLoginFailure(ctx, user.ID, 30*time.Second)
+		http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := userRepo.ResetLoginFailures(ctx, user.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	token, err := jwtService.GenerateToken(user.ID, user.Mobile, user.FullName, user.Role, 7*24*time.Hour)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"token":   token,
+		"user": map[string]interface{}{
+			"id":       user.ID,
+			"mobile":   user.Mobile,
+			"fullName": user.FullName,
+			"role":     user.Role,
+		},
+	})
+}

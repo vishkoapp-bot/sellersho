@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <!-- PWA: manifest is served for every URL of this SPA; its start_url is
+         the central site root and it never redirects storefront visitors. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="سلرشو" />
+    <meta name="theme-color" content="#5d44f8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="خرید آنلاین انواع کالای دیجیتال، مد و لوازم خانگی با مهلت تست و مرجوعی و ارسال به سراسر کشور." />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fa_IR" />
+    <!-- SEO NOTE: the tags below are DELIBERATELY brand-neutral. This SPA is
+         served for every URL — including /store/{slug} storefronts, which are
+         independent businesses — and link scrapers (WhatsApp/Telegram) do not
+         run JavaScript. Static brand-specific tags (og:site_name,
+         brand-specific og:title, central-logo og:image) would mislabel every
+         shared storefront link, so they are intentionally absent/neutral
+         here. Per-view OG tags are injected at runtime by
+         src/seo/SeoManager.tsx via setDocumentHead (src/seo/seo.ts). True
+         per-URL OG for scrapers requires SSR, which is out of scope. -->
+    <meta property="og:title" content="فروشگاه اینترنتی" />
+    <meta property="og:description" content="خرید آنلاین انواع کالای دیجیتال، مد و لوازم خانگی با مهلت تست و مرجوعی و ارسال به سراسر کشور." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="فروشگاه اینترنتی" />
+    <meta name="twitter:description" content="خرید آنلاین انواع کالای دیجیتال، مد و لوازم خانگی با مهلت تست و مرجوعی و ارسال به سراسر کشور." />
+    <title>سلرشو | پلتفرم تأمین و انبارداری متمرکز کالا</title>
+  </head>
+  <body class="bg-[#edf2f7] text-slate-800 antialiased font-sans select-none min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

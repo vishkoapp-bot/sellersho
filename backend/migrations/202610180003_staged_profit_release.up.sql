@@ -1,0 +1,26 @@
+-- 202610180003_staged_profit_release.up.sql: LIVE-PARITY PLACEHOLDER — DO NOT FILL IN A GUESS.
+--
+-- Live schema_migrations contains this version (MASTER-AUDIT D66), and
+-- the live worker log of 2026-10-30 names a "staged profit release"
+-- (20-day auto-confirm + return-window-close releaser). But this
+-- file was not found in the source tree, in migrations.previous, or
+-- in the storecount tree, so its true contents are UNVERIFIED (U71).
+--
+-- This file intentionally performs NO schema change. The staged
+-- behaviour itself is implemented in code, not here: see
+-- backend/internal/worker/scheduler.go (two stages, job_runs
+-- counters), and the tables that staged release touches already
+-- exist via other migrations (job_runs in 202610310008,
+-- return_window_days in 202610310007, profit flags in the orders
+-- migrations). Inventing a view, column or table here would risk
+-- duplicating or contradicting those definitions on a fresh database
+-- and tripping the fail-closed runner.
+--
+-- This placeholder exists only so the fail-closed migration runner
+-- in backend/cmd/server/main.go (which records filepath.Base of
+-- each .up.sql file) can record this version on a fresh database.
+--
+-- TODO(U71): replace this no-op with the recovered file contents
+-- from the 2026-11-02 merged tree, after verifying them against a
+-- disposable database.
+DO $$ BEGIN NULL; END $$;

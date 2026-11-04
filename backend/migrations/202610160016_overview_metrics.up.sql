@@ -1,0 +1,20 @@
+-- 202610160016_overview_metrics.up.sql: LIVE-PARITY PLACEHOLDER — DO NOT FILL IN A GUESS.
+--
+-- Live schema_migrations contains this version (MASTER-AUDIT D66), but
+-- its file was not found in the source tree, in migrations.previous,
+-- or in the storecount tree, and no metrics table exists in the live
+-- database. Its true contents are therefore UNVERIFIED (U71).
+-- Note: 202610160015 exists nowhere (a numbering gap, not a missing
+-- migration) and is deliberately NOT filled in by any file here.
+--
+-- This file intentionally performs NO schema change. It exists only
+-- so the fail-closed migration runner in backend/cmd/server/main.go
+-- (which records filepath.Base of each .up.sql file) can record this
+-- version on a fresh database, instead of failing on — or silently
+-- re-applying — an invented table definition.
+--
+-- TODO(U71): replace this no-op with the recovered file contents
+-- from the 2026-11-02 merged tree, after verifying them against a
+-- disposable database. Until then, no overview-metrics table is created
+-- here, because live has none.
+DO $$ BEGIN NULL; END $$;

@@ -1,0 +1,211 @@
+@import "vazirmatn/Vazirmatn-font-face.css";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-vazir: 'Vazirmatn', sans-serif;
+  /* FIX 13: live brand tokens (from live CSS) so bg-brand / text-brand-deep /
+     border-brand / bg-brand-soft / border-brand-border compile exactly like live. */
+  --color-brand: #5d44f8;
+  --color-brand-deep: #4a33d8;
+  --color-brand-soft: #ede9fe;
+  --color-brand-bg: #f5f3fe;
+  --color-brand-border: #d9d2fb;
+}
+
+@layer base {
+  *, ::before, ::after {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  html, body {
+    font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    direction: rtl;
+    text-align: right;
+    background-color: #f8fafc;
+    color: #1e293b;
+    overflow-x: clip;
+    line-height: 1.6;
+    letter-spacing: normal;
+  }
+
+  button, input, optgroup, select, textarea {
+    font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  /* U1 (behavior parity): live global icon rule, verbatim and in the
+     same position as live (inside @layer base, right after the button
+     font rule): live CSS /opt/drup/dist/assets/index-RNUlWi1E.css @14720
+     'svg.lucide{stroke-width:1.5px}'. It overrides lucide stroke-width
+     presentation attributes (incl. Fix58 per-usage props), so those render
+     1.5 exactly as on live. Kept in the base layer, not unlayered, to
+     mirror live: the utilities-layer .stroke-[2.5] rule still wins for the
+     Plus icons, as on live. */
+  svg.lucide{stroke-width:1.5px}
+  /* FIX 61 (workstream 6): live accent is overwhelmingly accent-brand-deep
+     (19x across live *-MERGED.js vs 5 brand / 4 violet / 2 amber; candidate
+     checkboxes with no accent class render the browser-default blue).
+     Base-layer only, so explicit accent-* utilities still win. */
+  input[type="checkbox"], input[type="radio"] {
+    accent-color: #4a33d8;
+  }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* FIX 13: live carousel card widths (from live CSS) */
+.carousel-card { width: 172px; }
+@media (min-width: 1024px) { .carousel-card { width: calc(25% - 12px); } }
+@media (min-width: 1150px) { .carousel-card { width: calc(20% - 12.8px); } }
+@media (min-width: 1280px) { .carousel-card { width: calc(25% - 21px); } }
+@media (min-width: 1400px) { .carousel-card { width: calc(16.6667% - 16.6667px); } }
+@media (min-width: 1800px) { .carousel-card { width: calc(14.2857% - 17.1429px); } }
+@media (min-width: 2200px) { .carousel-card { width: calc(12.5% - 17.5px); } }
+/* FIX 28: live homepage-carousel pin (Direction-2 desktop patch, >=1280px):
+   the two central homepage carousels stay 4 cards per view with 28px gaps
+   at every desktop width, overriding the generic viewport progression
+   above (which would give 6 @1400, 7 @1800, 8 @2200). Scoped by
+   data-testid so other carousels keep the generic widths. */
+@media (min-width: 1280px) {
+  [data-testid="product-carousel-banner"] .carousel-card,
+  [data-testid="personalized-carousel-banner"] .carousel-card,
+  #products-section .carousel-card { width: calc(25% - 21px); }
+  [data-testid="product-carousel-banner"] div.overflow-x-auto,
+  [data-testid="personalized-carousel-banner"] div.overflow-x-auto,
+  #products-section div.overflow-x-auto { gap: 28px; }
+}
+
+/* Snapp Pay Glass & Gradients */
+.snapp-badge {
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #dbeafe;
+}
+
+.snapp-cashback-badge {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #d1fae5;
+}
+
+.snapp-discount-badge {
+  background: #ea004b;
+  color: #ffffff;
+}
+
+
+/* Official Print Stylesheet for Invoices, Labels & Carrier Manifests */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+  header, nav, .no-print, button, .role-switcher {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .printable-receipt {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
+
+
+/* FIX 16: .page-gutter utility, live values (14 base, 16 @640, 32 @1024,
+   40 @1280, 48 @1536). Used by the deals band inner row; the live
+   patch overrides it to 20px inside #Campaign_Home at >=1280px. */
+.page-gutter { padding-inline: 14px; }
+@media (min-width: 640px) { .page-gutter { padding-inline: 16px; } }
+@media (min-width: 1024px) { .page-gutter { padding-inline: 32px; } }
+@media (min-width: 1280px) { .page-gutter { padding-inline: 40px; } }
+@media (min-width: 1536px) { .page-gutter { padding-inline: 48px; } }
+
+/* FIX 14: live 1240px centred frame at >=1280px (live CSS patch:
+   page-gutter padding calc((100vw - 1240px)/2) on main, header and footer). */
+@media (min-width: 1280px) {
+  .homepage-shell > header > div { padding-left: calc((100vw - 1240px)/2) !important; padding-right: calc((100vw - 1240px)/2) !important; }
+  .homepage-shell > footer { padding-left: calc((100vw - 1240px)/2) !important; padding-right: calc((100vw - 1240px)/2) !important; }
+  .homepage-main { padding-left: calc((100vw - 1240px)/2); padding-right: calc((100vw - 1240px)/2); }
+  /* FIX 16: Fix 15's negative-margin hero bleed is REMOVED. The served
+     bundle contained it, yet the browser still measured a contained
+     hero, so the mechanism was not robust. The hero now lives OUTSIDE
+     the gutter-padded .homepage-main (App.tsx homepage branch), which
+     is live's own banner-reorder model (2026-11-02 patch: full-width
+     child of main, padding-inline:0, no negative margins, no vw
+     hacks) -- full-bleed becomes structural, not calc-dependent.
+     Storefront heroes are a different component and unaffected. */
+  /* FIX 16: live caps the deals band to 1240px centred
+     (#Campaign_Home{max-width:1240px;margin-inline:auto} in the live
+     CSS patch). The candidate band sat inside the gutter-padded main
+     AND kept mx-8/10/12, so it was 96px narrower than live's
+     (388..1532 vs 340..1580 at 1920px) -- exactly the re-check's
+     slightly narrower, more left margin. The ID rule overrides the
+     mx utilities, so the band fills the 1240px main content box. */
+  #Campaign_Home { max-width: 1240px; margin-inline: auto; }
+  /* FIX 16: nested gutters inside the capped band must NOT use the
+     viewport calc (live patch). */
+  #Campaign_Home .page-gutter { padding-inline: 20px; }
+  /* FIX 16: live's menu inner rows get the 1240 gutter at >=1280px
+     (header.z-40 [role=menu]>div in the live CSS patch). The menu
+     outer itself must NOT take the header gutter padding that the
+     Fix 14 rule gives every direct header div child. */
+  .homepage-shell > header > div[role="menu"] { padding-left: 0 !important; padding-right: 0 !important; }
+  .homepage-shell > header > div[role="menu"] > div { padding-left: calc((100vw - 1240px)/2); padding-right: calc((100vw - 1240px)/2); }
+  .homepage-main > section { padding-left: 0 !important; padding-right: 0 !important; }
+}
+
+/* FIX 21: live desktop-tidy CSS patch, rule (c): locked 1:1 product
+   images, object-fit cover on desktop. The dist ships product images
+   as object-contain + padding (Km variable); the image box itself is
+   already aspect-square. Overridden here, desktop only; the JS class
+   string is untouched so mobile/tablet keep contain. Without this
+   rule the candidate catalog card image renders inside its p-2
+   padding (277px in a 295px card at 1919px viewport) while live fills
+   the full card width. Selector + declarations copied exactly from
+   live index CSS (@media min-width:1280px block). Applies to ALL
+   product-item images, exactly like live (same selector) -- no JSX
+   class changed, so the home grid card is untouched in code and only
+   gains the same desktop override live home grid already has. */
+@media (min-width: 1280px) {
+  #root [data-testid="product-item"] img { object-fit: cover; padding: 0; }
+}
+
+/* FIX 61 (workstream 6): live-only global classes, verbatim from live
+   dist CSS (index-RNUlWi1E.css). Candidate ProductCard.tsx already uses
+   .cv-card and Skeleton.tsx used animate-pulse while live skeletons use
+   .skeleton-shimmer (42x in live *-MERGED.js vs 7x animate-pulse). */
+.cv-auto { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+.cv-card { content-visibility: auto; contain-intrinsic-size: auto 360px; }
+@media (min-width: 1536px) { .cv-card { contain-intrinsic-size: auto 400px; } }
+.cv-list { content-visibility: auto; contain-intrinsic-size: auto 120px; }
+@keyframes skeleton-shimmer { 0% { background-position: -400px 0; } to { background-position: 400px 0; } }
+.skeleton-shimmer { background: linear-gradient(90deg, #e2e8f0bf 25%, #f1f5f9f2, #e2e8f0bf 75%) 0 0 / 800px 100%; animation: 1.6s ease-in-out infinite skeleton-shimmer; }
+@media (prefers-reduced-motion: reduce) { .skeleton-shimmer { animation: none; } }

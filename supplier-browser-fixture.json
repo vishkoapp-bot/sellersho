@@ -1,0 +1,9 @@
+{
+  "supplierMobile": "09192418905",
+  "supplierToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJhMGE4NmQ3MC0xMTZlLTQ4ZDEtYWVlNi0xMjk4OTg3YmJkOWMiLCJtb2JpbGUiOiIwOTE5MjQxODkwNSIsImZ1bGxOYW1lIjoiU3VwcGxpZXIgQnJvd3NlciBFMkUiLCJyb2xlIjoic3VwcGxpZXIiLCJpc3MiOiJkcnVwLXBsYXRmb3JtIiwiZXhwIjoxNzkyMjM3MjE5LCJpYXQiOjE3OTE2MzI0MTl9.ybtqySFFVjOFRprpu7GmVO-QvTFS8mVgFg4sFxcWKNc",
+  "orderId": "ord-e35011cc-f979-4109-81e6-db263f465f9d",
+  "orderNumber": "ORD-E35011CC",
+  "shipmentId": "ship-59121296-ed50-4b00-83e0-292ab40498d8-sup-browser_fixture_2418905",
+  "customerToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI0N2FkYzA4YS0wZTk1LTRlZTMtODExMi1mMGRlNTY2YTcwY2YiLCJtb2JpbGUiOiIwOTE3MjQxODkwNSIsImZ1bGxOYW1lIjoi2qnYp9ix2KjYsSDYrNiv24zYryIsInJvbGUiOiJjdXN0b21lciIsImlzcyI6ImRydXAtcGxhdGZvcm0iLCJleHAiOjE3OTIyMzcyMTksImlhdCI6MTc5MTYzMjQxOX0.cMNqBdaNymn94gieqC_mP24hLNamn5KHbAHaKS0mEaM",
+  "customerMobile": "09172418905"
+}

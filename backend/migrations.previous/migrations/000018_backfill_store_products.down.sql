@@ -1,0 +1,1 @@
+-- Backfilled rows are indistinguishable from seller selections; retain them on rollback.

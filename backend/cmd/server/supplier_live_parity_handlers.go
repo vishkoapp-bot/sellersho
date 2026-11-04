@@ -1,0 +1,1524 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/domain"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+	"github.com/google/uuid"
+)
+
+// Live-parity supplier handlers (Team 06, Phase 2; MASTER-AUDIT D11/D12/D15).
+//
+// Existence of these routes in the live build is confirmed by the audit;
+// per-route bodies/responses are largely unverified (U07). Routes whose
+// behaviour cannot be grounded in source migrations, existing repo
+// functions, or DB tables are registered as explicit 501 TODO stubs, never
+// as guessed implementations. Tapin handlers here may accept (PUT settings)
+// and select (connectivity test) a token, but NEVER return one in any API
+// response (U63/Fix61); the token is used only for the server-side call.
+
+func supplierLiveParityStub(w http.ResponseWriter, r *http.Request, todo, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotImplemented)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":  "not_implemented",
+		"todo":   todo,
+		"route":  r.URL.Path,
+		"detail": detail,
+	})
+}
+
+func supplierLiveParitySupplierID(w http.ResponseWriter, r *http.Request, h *SupplierHandlers) (string, bool) {
+	id := getSupplierIDFromContext(r, h.supplierRepo)
+	if id == "" {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return "", false
+	}
+	return id, true
+}
+
+func supplierLiveParityClaimsUserID(r *http.Request) string {
+	if claims, ok := r.Context().Value(userClaimsKey).(*auth.UserClaims); ok && claims != nil {
+		return claims.UserID
+	}
+	return ""
+}
+
+// POST /api/v1/supplier/contract/accept (D11).
+// Records the platform's current supplier contract version as the
+// supplier's signed version, using the existing repo functions whose
+// comments describe exactly this re-confirmation flow.
+func (h *SupplierHandlers) HandleSupplierContractAccept(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	platformVersion, err := h.supplierRepo.GetSupplierContractVersion(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := h.supplierRepo.UpdateSignedContractVersion(r.Context(), supplierID, platformVersion); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":                 true,
+		"supplierId":              supplierID,
+		"signedContractVersion":   platformVersion,
+		"platformContractVersion": platformVersion,
+	})
+}
+
+// POST /api/v1/supplier/contract/reconfirm (D11).
+// Same recording as accept, but a no-op success when the supplier already
+// signed the current platform version (re-confirmation has nothing to do).
+func (h *SupplierHandlers) HandleSupplierContractReconfirm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	platformVersion, err := h.supplierRepo.GetSupplierContractVersion(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup.SignedContractVersion >= platformVersion {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":                 true,
+			"supplierId":              supplierID,
+			"signedContractVersion":   sup.SignedContractVersion,
+			"platformContractVersion": platformVersion,
+			"alreadyCurrent":          true,
+		})
+		return
+	}
+	if err := h.supplierRepo.UpdateSignedContractVersion(r.Context(), supplierID, platformVersion); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":                 true,
+		"supplierId":              supplierID,
+		"signedContractVersion":   platformVersion,
+		"platformContractVersion": platformVersion,
+		"alreadyCurrent":          false,
+	})
+}
+
+// GET /api/v1/supplier/tapin/settings (D11).
+// Returns only the non-secret part: the Tapin shop id and whether a shop
+// is connected. No token field is ever emitted, masked or otherwise (U63).
+func (h *SupplierHandlers) HandleGetTapinSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != ""
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supplierId":     supplierID,
+		"tapinShopId":    sup.TapinShopID,
+		"tapinConnected": connected,
+	})
+}
+
+// Tapin upstream (Fix61): Tipax options endpoint from Tapin's own guide;
+// the read-only call used for the connectivity test. The 10s client
+// timeout bounds the call; only the upstream status class is ever used.
+const tapinTipaxOptionsURL = "https://api.tapin.ir/api/v4/tipax/public/user/order/options/"
+
+var tapinHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// PUT/POST /api/v1/supplier/tapin/settings (D11, Fix61).
+// Stores the trimmed shop id and, when a non-empty token is supplied, the
+// Tapin token. Accepts the live client's {shopId, token?} shape as well as
+// the older {tapinShopId} shape. A token that is absent or empty leaves
+// the stored token untouched (live placeholder: keep current token when
+// empty); a shop id that is absent leaves the stored shop id untouched,
+// while an explicitly empty shop id clears it. The token is never
+// included in the response.
+func (h *SupplierHandlers) HandleUpdateTapinSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req struct {
+		ShopID      *string `json:"shopId"`
+		TapinShopID *string `json:"tapinShopId"`
+		Token       *string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if req.ShopID != nil || req.TapinShopID != nil {
+		shopID := ""
+		if req.ShopID != nil {
+			shopID = strings.TrimSpace(*req.ShopID)
+		} else {
+			shopID = strings.TrimSpace(*req.TapinShopID)
+		}
+		if err := h.supplierRepo.UpdateTapinShopID(r.Context(), supplierID, shopID); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
+	if req.Token != nil && strings.TrimSpace(*req.Token) != "" {
+		if err := h.supplierRepo.UpdateTapinToken(r.Context(), supplierID, strings.TrimSpace(*req.Token)); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
+	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != ""
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supplierId":     supplierID,
+		"tapinShopId":    sup.TapinShopID,
+		"tapinConnected": connected,
+	})
+}
+
+// DELETE /api/v1/supplier/tapin/settings (D11, Fix61).
+// Disconnect: clears BOTH the stored shop id and the stored token, then
+// returns the GET shape with connected=false. The token is never emitted.
+func (h *SupplierHandlers) HandleDeleteTapinSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if err := h.supplierRepo.UpdateTapinShopID(r.Context(), supplierID, ""); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := h.supplierRepo.UpdateTapinToken(r.Context(), supplierID, ""); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supplierId":     supplierID,
+		"tapinShopId":    nil,
+		"tapinConnected": false,
+	})
+}
+
+// GET /api/v1/supplier/tapin/boxes (D11, stub -- Fix61 open question).
+// Boxes upstream is UNIDENTIFIED: the live binary contains no tapin.ir or
+// tipax URL literal; the live frontend accepts flexible box shapes
+// (id/pk/box_id/boxId/code/value + title/name/label); platform_settings
+// has tapin_default_box_id but its platform token/shop are empty. Left as
+// an explicit stub until the upstream boxes endpoint is proven; not guessed.
+func (h *SupplierHandlers) HandleTapinBoxes(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07/U63", "Tapin box list requires the unverified Tapin service and token handling; not guessed.")
+}
+
+// POST /api/v1/supplier/tapin/test (D11, Fix61).
+// Server-side connectivity test: loads the supplier's stored Tapin token
+// and shop id and calls Tapin's read-only Tipax options endpoint. The
+// token, shop id, and upstream body are never included in any response
+// or log line; only the upstream status class is used. HTTP 200 (and
+// 400/422, which still prove authentication passed) mean connected;
+// 401/403 mean invalid credentials; network/timeout means unreachable.
+func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	token := strings.TrimSpace(sup.TapinToken)
+	shopID := ""
+	if sup.TapinShopID != nil {
+		shopID = strings.TrimSpace(*sup.TapinShopID)
+	}
+	if token == "" || shopID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      false,
+			"error":   "اتصال تاپین تنظیم نشده است. ابتدا شناسه فروشگاه و توکن تاپین را ذخیره کنید.",
+			"message": "اتصال تاپین تنظیم نشده است. ابتدا شناسه فروشگاه و توکن تاپین را ذخیره کنید.",
+		})
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, tapinTipaxOptionsURL, strings.NewReader("{}"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := tapinHTTPClient.Do(req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      false,
+			"error":   "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+			"message": "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+		})
+		return
+	}
+	defer resp.Body.Close()
+	// Drain a bounded prefix without keeping or logging the content.
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	switch {
+	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      true,
+			"message": "اتصال به تاپین برقرار است.",
+		})
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      false,
+			"error":   "توکن یا شناسه فروشگاه تاپین معتبر نیست. اتصال را بررسی و دوباره ذخیره کنید.",
+			"message": "توکن یا شناسه فروشگاه تاپین معتبر نیست. اتصال را بررسی و دوباره ذخیره کنید.",
+		})
+	default:
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      false,
+			"error":   "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+			"message": "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+		})
+	}
+}
+
+// GET /api/v1/supplier/shipping-methods (D11).
+func (h *SupplierHandlers) HandleGetSupplierShippingMethods(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	methods, err := h.supplierRepo.ListSupplierShippingMethods(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(methods)
+}
+
+// POST /api/v1/supplier/shipping-methods/request (D11).
+// Suppliers may only REQUEST a method (migration 202610170012); an admin
+// decides. Body: {"method":"direct"|"warehouse"}.
+func (h *SupplierHandlers) HandleRequestSupplierShippingMethod(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req struct {
+		Method string `json:"method"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.supplierRepo.RequestSupplierShippingMethod(r.Context(), supplierID, strings.TrimSpace(req.Method)); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"supplierId": supplierID,
+		"method":     strings.TrimSpace(req.Method),
+		"status":     "requested",
+	})
+}
+
+// GET /api/v1/supplier/pricing-settings (D12, read-only).
+// Returns the supplier's agreement markup as stored (D53/D55 fields) and
+// the tiered-pricing flag. TODO (U07): whether the live route also
+// accepts writes, and its exact response shape, are unverified.
+func (h *SupplierHandlers) HandleGetSupplierPricingSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supplierId":         supplierID,
+		"defaultMarkupType":  sup.DefaultMarkupType,
+		"defaultMarkupValue": sup.DefaultMarkupValue,
+	})
+}
+
+// PUT /api/v1/supplier/pricing-settings (D12, stub).
+// TODO (U07): whether a supplier may self-set the agreement markup is
+// unverified (the markup is the admin pricing tab's data in source), and
+// no discount-campaign price application is implemented here (U04).
+func (h *SupplierHandlers) HandleUpdateSupplierPricingSettings(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07", "Supplier self-setting of agreement markup is unverified; not guessed.")
+}
+
+// GET /api/v1/supplier/warehouses (D12).
+func (h *SupplierHandlers) HandleGetSupplierWarehouses(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierWarehouses(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierWarehouse{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// POST /api/v1/supplier/warehouses (Fix 37, live parity: createMyWarehouse).
+// Live validates client-side with the same two messages; the server mirrors
+// them so a direct API call cannot store an invalid warehouse. Duplicate
+// names map to a readable 400 (live's exact duplicate message is unproven).
+func (h *SupplierHandlers) HandleCreateSupplierWarehouse(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req repository.SupplierWarehouse
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	validateWarehouseInput(&req)
+	if req.Name == "" || req.ProvinceName == "" || req.CityName == "" {
+		http.Error(w, `{"error":"نام، استان و شهر انبار الزامی است."}`, http.StatusBadRequest)
+		return
+	}
+	if req.PostalCode != "" && !isValidPostalCode(req.PostalCode) {
+		http.Error(w, `{"error":"کد پستی باید دقیقاً ۱۰ رقم باشد."}`, http.StatusBadRequest)
+		return
+	}
+	created, err := h.supplierRepo.CreateSupplierWarehouse(r.Context(), supplierID, req)
+	if err != nil {
+		if err == repository.ErrWarehouseNameTaken {
+			http.Error(w, `{"error":"انباری با این نام قبلاً ثبت شده است."}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(created)
+}
+
+// PUT /api/v1/supplier/warehouses/{id} (Fix 37, live parity: updateMyWarehouse).
+func (h *SupplierHandlers) HandleUpdateSupplierWarehouse(w http.ResponseWriter, r *http.Request, id string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req repository.SupplierWarehouse
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	validateWarehouseInput(&req)
+	if req.Name == "" || req.ProvinceName == "" || req.CityName == "" {
+		http.Error(w, `{"error":"نام، استان و شهر انبار الزامی است."}`, http.StatusBadRequest)
+		return
+	}
+	if req.PostalCode != "" && !isValidPostalCode(req.PostalCode) {
+		http.Error(w, `{"error":"کد پستی باید دقیقاً ۱۰ رقم باشد."}`, http.StatusBadRequest)
+		return
+	}
+	updated, err := h.supplierRepo.UpdateSupplierWarehouse(r.Context(), supplierID, id, req)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Supplier warehouse not found"}`, http.StatusNotFound)
+			return
+		}
+		if err == repository.ErrWarehouseNameTaken {
+			http.Error(w, `{"error":"انباری با این نام قبلاً ثبت شده است."}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updated)
+}
+
+// validateWarehouseInput trims the supplier-warehouse form fields in place.
+func validateWarehouseInput(req *repository.SupplierWarehouse) {
+	req.Name = strings.TrimSpace(req.Name)
+	req.ProvinceName = strings.TrimSpace(req.ProvinceName)
+	req.CityName = strings.TrimSpace(req.CityName)
+	req.Address = strings.TrimSpace(req.Address)
+	req.PostalCode = strings.TrimSpace(req.PostalCode)
+	req.Phone = strings.TrimSpace(req.Phone)
+}
+
+// isValidPostalCode mirrors live's client rule: exactly 10 ASCII digits.
+func isValidPostalCode(code string) bool {
+	if len(code) != 10 {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// GET /api/v1/supplier/orders/{orderId}/addons (Fix 38, live parity:
+// getOrderAddons). Response shape is live's: {addons, total}.
+func (h *SupplierHandlers) HandleGetSupplierOrderAddons(w http.ResponseWriter, r *http.Request, orderID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	addons, err := h.supplierRepo.GetSupplierOrderAddons(r.Context(), supplierID, orderID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	var total int64
+	for _, a := range addons {
+		total += a.Total
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"addons": addons,
+		"total":  total,
+	})
+}
+
+// PUT /api/v1/supplier/products/{id}/origin (Fix 39, live parity:
+// updateProductOrigin). Body is live's shape: {supplierWarehouseId} where
+// an empty string means "profile city" (no explicit origin).
+func (h *SupplierHandlers) HandleUpdateProductOrigin(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req struct {
+		SupplierWarehouseID string `json:"supplierWarehouseId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.supplierRepo.UpdateProductOrigin(r.Context(), supplierID, productID, strings.TrimSpace(req.SupplierWarehouseID)); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Supplier product not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
+// GET /api/v1/supplier/warehouses/central (D12).
+// TODO (U07): see ListCentralWarehouses for the "central" reading.
+func (h *SupplierHandlers) HandleGetCentralWarehouses(w http.ResponseWriter, r *http.Request) {
+	list, err := h.supplierRepo.ListCentralWarehouses(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// GET /api/v1/supplier/exclusivity-challenges (D12).
+func (h *SupplierHandlers) HandleGetSupplierExclusivityChallenges(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierExclusivityChallenges(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// GET /api/v1/supplier/price-increases (D12, read-only).
+func (h *SupplierHandlers) HandleGetSupplierPriceIncreases(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierPriceIncreases(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// POST /api/v1/supplier/price-increases/exception-ticket (D12, stub).
+// TODO (U07): no exception-ticket table or body shape exists in source;
+// the is_exception/exception_cap_pct columns alone do not define a ticket.
+func (h *SupplierHandlers) HandleSupplierPriceIncreaseExceptionTicket(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07", "Exception-ticket creation shape is unverified; no ticket table exists in source.")
+}
+
+// GET /api/v1/supplier/stock-share (D12, stub).
+// TODO (U07): no stock-share table, column, or body shape exists in
+// source; a share percentage or quantity is not guessed.
+func (h *SupplierHandlers) HandleGetSupplierStockShare(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07", "No stock-share data source exists in source; not guessed.")
+}
+
+// GET /api/v1/supplier/customer-returns (D12).
+func (h *SupplierHandlers) HandleGetSupplierCustomerReturns(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierCustomerReturns(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// GET /api/v1/supplier/return-shipping-charges (D12).
+func (h *SupplierHandlers) HandleGetSupplierReturnShippingCharges(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierReturnShippingCharges(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierReturnShippingCharge{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"charges": list})
+}
+
+// POST /api/v1/supplier/customer-returns/{returnItemId}/request-back
+// (FIX 44, live's An submit handler S): supplier requests received return
+// units back from the returns warehouse. Idempotency-Key header is
+// honoured; a replay returns the original request.
+func (h *SupplierHandlers) HandleRequestSupplierReturnBack(w http.ResponseWriter, r *http.Request, returnItemID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		Quantity int    `json:"quantity"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	back, err := h.supplierRepo.CreateSupplierReturnBack(r.Context(), supplierID, returnItemID, body.Quantity, body.Reason, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeSupplierReturnBackError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(back)
+}
+
+// POST /api/v1/supplier/customer-returns/back-requests/{id}/cancel
+// (FIX 44, live's An handler R): supplier withdraws a requested
+// back-request before warehouse review.
+func (h *SupplierHandlers) HandleCancelSupplierReturnBack(w http.ResponseWriter, r *http.Request, backID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	back, err := h.supplierRepo.CancelSupplierReturnBack(r.Context(), supplierID, backID, body.Reason, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeSupplierReturnBackError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(back)
+}
+
+// POST /api/v1/supplier/customer-returns/back-requests/{id}/complete
+// (FIX 44, live's An handler $): supplier confirms receipt of units the
+// warehouse shipped back.
+func (h *SupplierHandlers) HandleCompleteSupplierReturnBack(w http.ResponseWriter, r *http.Request, backID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	back, err := h.supplierRepo.CompleteSupplierReturnBack(r.Context(), supplierID, backID, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeSupplierReturnBackError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(back)
+}
+
+func writeSupplierReturnBackError(w http.ResponseWriter, err error) {
+	switch {
+	case err == repository.ErrSupplierReturnBackActive:
+		http.Error(w, `{"error":"an active back request already exists for this item"}`, http.StatusConflict)
+	case err == repository.ErrSupplierReturnBackNotReceived:
+		http.Error(w, `{"error":"item has not been received at the warehouse yet"}`, http.StatusBadRequest)
+	case err == repository.ErrSupplierReturnBackBadQuantity:
+		http.Error(w, `{"error":"quantity is out of range for this item"}`, http.StatusBadRequest)
+	case err == repository.ErrSupplierReturnBackBadState:
+		http.Error(w, `{"error":"back request is not in a state that allows this action"}`, http.StatusConflict)
+	case err == sql.ErrNoRows:
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	default:
+		writeInternalError(w, err)
+	}
+}
+
+// GET /api/v1/supplier/shipments (FIX 46, live's ln getShipments):
+// carton shipments for this supplier, newest first.
+func (h *SupplierHandlers) HandleGetCartonShipments(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListCartonShipments(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.CartonShipment{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"shipments": list})
+}
+
+// POST /api/v1/supplier/shipments (FIX 46, live's ln createShipment):
+// creates a carton shipment with variant lines, returns {shipment}.
+func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		Items []repository.CartonShipmentItem `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found or not yours"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"invalid shipment lines"}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"shipment": out})
+}
+
+// GET /api/v1/supplier/products/{id}/variants (FIX 46, live's ln
+// getVariants; reused later by the products-tab variants modal Fl).
+func (h *SupplierHandlers) HandleGetProductVariants(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListProductVariants(r.Context(), supplierID, productID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierProductVariant{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"variants": list})
+}
+
+// FIX 47 — live gallery modal (Ll) + variants modal (Fl) handlers.
+// Gallery cap is live's ft=8; the first image (sort_order 0) is the cover.
+// Upload validation mirrors HandleProductImageUpload (extension whitelist,
+// 5MB per file, magic bytes) and returns live's client-side strings so
+// toasts match whether the check fires client- or server-side.
+func fix47ImageExt(buf []byte, filename string) (string, bool) {
+	ext := ""
+	if i := strings.LastIndex(filename, "."); i >= 0 {
+		ext = strings.ToLower(filename[i:])
+	}
+	switch ext {
+	case ".jpg", ".jpeg":
+		if len(buf) >= 3 && buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF {
+			return ".jpg", true
+		}
+	case ".png":
+		if len(buf) >= 8 && buf[0] == 0x89 && buf[1] == 0x50 && buf[2] == 0x4E && buf[3] == 0x47 {
+			return ".png", true
+		}
+	case ".webp":
+		if len(buf) >= 12 && string(buf[0:4]) == "RIFF" && string(buf[8:12]) == "WEBP" {
+			return ".webp", true
+		}
+	}
+	return "", false
+}
+
+// GET /api/v1/supplier/products/{id}/images
+func (h *SupplierHandlers) HandleGetProductImages(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListProductImages(r.Context(), supplierID, productID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierProductImage{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+}
+
+// POST /api/v1/supplier/products/{id}/images (multipart field "images")
+func (h *SupplierHandlers) HandleUploadProductImages(w http.ResponseWriter, r *http.Request, productID, uploadDir string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if uploadDir == "" {
+		uploadDir = "./static/uploads/products"
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 48*1024*1024)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, `{"error":"خطا در پردازش فرم یا حجم بیش از حد مجاز"}`, http.StatusBadRequest)
+		return
+	}
+	files := r.MultipartForm.File["images"]
+	if len(files) == 0 {
+		http.Error(w, `{"error":"فایل تصویر یافت نشد"}`, http.StatusBadRequest)
+		return
+	}
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	urls := make([]string, 0, len(files))
+	for _, fh := range files {
+		if fh.Size > 5*1024*1024 {
+			http.Error(w, `{"error":"حجم هر فایل نباید بیشتر از ۵ مگابایت باشد."}`, http.StatusBadRequest)
+			return
+		}
+		f, err := fh.Open()
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		head := make([]byte, 512)
+		n, _ := io.ReadFull(f, head)
+		head = head[:n]
+		safeExt, valid := fix47ImageExt(head, fh.Filename)
+		if !valid {
+			f.Close()
+			http.Error(w, `{"error":"فرمت نامعتبر. فقط JPG، PNG و WEBP مجاز است."}`, http.StatusBadRequest)
+			return
+		}
+		if seeker, ok := f.(io.Seeker); ok {
+			_, _ = seeker.Seek(0, io.SeekStart)
+		}
+		filename := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), safeExt)
+		dst, err := os.Create(filepath.Join(uploadDir, filename))
+		if err != nil {
+			f.Close()
+			writeInternalError(w, err)
+			return
+		}
+		if _, err := io.Copy(dst, f); err != nil {
+			dst.Close()
+			f.Close()
+			writeInternalError(w, err)
+			return
+		}
+		dst.Close()
+		f.Close()
+		urls = append(urls, "/static/uploads/products/"+filename)
+	}
+	list, err := h.supplierRepo.AddProductImages(r.Context(), supplierID, productID, urls)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		if err == repository.ErrGalleryFull {
+			http.Error(w, `{"error":"حداکثر ۸ تصویر برای هر محصول مجاز است."}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+}
+
+// DELETE /api/v1/supplier/products/{id}/images/{imageId}
+func (h *SupplierHandlers) HandleDeleteProductImage(w http.ResponseWriter, r *http.Request, productID, imageID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if err := h.supplierRepo.DeleteProductImage(r.Context(), supplierID, productID, imageID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"image not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// PUT /api/v1/supplier/products/{id}/images/{imageId}/cover
+func (h *SupplierHandlers) HandleSetProductCoverImage(w http.ResponseWriter, r *http.Request, productID, imageID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if err := h.supplierRepo.SetProductCoverImage(r.Context(), supplierID, productID, imageID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"image not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// PUT /api/v1/supplier/products/{id}/images/reorder {orderedIds}
+func (h *SupplierHandlers) HandleReorderProductImages(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		OrderedIDs []string `json:"orderedIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.supplierRepo.ReorderProductImages(r.Context(), supplierID, productID, body.OrderedIDs); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"خطا در ذخیره ترتیب."}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// POST /api/v1/supplier/products/{id}/variants {variant_name, attributes}
+func (h *SupplierHandlers) HandleCreateProductVariant(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		VariantName string            `json:"variant_name"`
+		Attributes  map[string]string `json:"attributes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.VariantName) == "" {
+		http.Error(w, `{"error":"نام تنوع را وارد کنید."}`, http.StatusBadRequest)
+		return
+	}
+	if body.Attributes == nil {
+		body.Attributes = map[string]string{}
+	}
+	out, err := h.supplierRepo.CreateProductVariant(r.Context(), supplierID, productID, strings.TrimSpace(body.VariantName), body.Attributes)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// POST /api/v1/supplier/products/{id}/variants/bulk {variants}
+func (h *SupplierHandlers) HandleCreateProductVariantsBulk(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		Variants []repository.SupplierProductVariant `json:"variants"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	count, err := h.supplierRepo.CreateProductVariantsBulk(r.Context(), supplierID, productID, body.Variants)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"ثبت گروهی تنوع‌ها انجام نشد."}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"count": count})
+}
+
+// PUT /api/v1/supplier/products/{id}/variants/{variantId}/cart-limits
+func (h *SupplierHandlers) HandleUpdateVariantCartLimits(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		MinCartQty *int `json:"min_cart_qty"`
+		MaxCartQty *int `json:"max_cart_qty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if body.MinCartQty == nil || *body.MinCartQty < 1 {
+		http.Error(w, `{"error":"حداقل تعداد خرید باید عددی حداقل ۱ باشد."}`, http.StatusBadRequest)
+		return
+	}
+	if body.MaxCartQty != nil && *body.MaxCartQty < *body.MinCartQty {
+		http.Error(w, `{"error":"حداکثر تعداد خرید نمی‌تواند کمتر از حداقل تعداد خرید باشد."}`, http.StatusBadRequest)
+		return
+	}
+	out, err := h.supplierRepo.UpdateVariantCartLimits(r.Context(), supplierID, productID, variantID, body.MinCartQty, body.MaxCartQty)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// GET /api/v1/supplier/products/{id}/labels
+func (h *SupplierHandlers) HandleGetProductLabels(w http.ResponseWriter, r *http.Request, productID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	spn, labels, err := h.supplierRepo.GetProductLabels(r.Context(), supplierID, productID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	if labels == nil {
+		labels = []repository.SupplierVariantLabel{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"spn": spn, "labels": labels})
+}
+
+// FIX 48 — live manager-feedback modal (zl) handlers.
+// GET /api/v1/supplier/catalog/review/{id}
+func (h *SupplierHandlers) HandleGetCatalogReviewDetail(w http.ResponseWriter, r *http.Request, proposalID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	proposal, fields, history, err := h.supplierRepo.GetCatalogReviewDetail(r.Context(), supplierID, proposalID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"proposal not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	if fields == nil {
+		fields = []map[string]interface{}{}
+	}
+	if history == nil {
+		history = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"proposal": proposal, "fields": fields, "history": history})
+}
+
+// POST /api/v1/supplier/catalog/review/{id}/resubmit {data}
+func (h *SupplierHandlers) HandleResubmitCatalogReview(w http.ResponseWriter, r *http.Request, proposalID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(body.Data) == 0 {
+		http.Error(w, `{"error":"حداقل یک فیلد ردشده را اصلاح کنید تا ارسال مجدد انجام شود."}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.supplierRepo.ResubmitCatalogReview(r.Context(), supplierID, proposalID, body.Data); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"proposal not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"خطا در ارسال مجدد."}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// GET /api/v1/supplier/settlement/storage-fees (D12, read-only).
+// This is a read of assessed storage-fee charges only; it is NOT an
+// automatic settlement run (no auto settlement is implemented here).
+func (h *SupplierHandlers) HandleGetSupplierStorageFees(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierStorageFees(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierStorageFee{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"charges": list})
+}
+
+// GET /api/v1/supplier/analytics (D12).
+// Shape matches the live supplier analytics tab fields
+// (totalBaseAmount, totalQuantity, orderCount, returns, daily,
+// products). Returns aggregation and days-left rounding are
+// reconstructed and provisional; see GetSupplierAnalytics.
+func (h *SupplierHandlers) HandleGetSupplierAnalytics(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	summary, err := h.supplierRepo.GetSupplierAnalytics(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
+}
+
+// GET /api/v1/supplier/addons (D12).
+func (h *SupplierHandlers) HandleGetSupplierAddons(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierAddons(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierAddon{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"addons": list})
+}
+
+// GET /api/v1/supplier/catalog/review (D12, stub).
+// TODO (U07): the live catalog-review dossier shape is unverified, and
+// the supplier's own proposals are already served by the existing
+// GET /supplier/products/proposals route; no duplicate guessed shape.
+func (h *SupplierHandlers) HandleSupplierCatalogReview(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07", "Catalog-review dossier shape is unverified; proposals already have their own route.")
+}
+
+// GET /api/v1/supplier/products/implicit-agreements (D12, read-only).
+func (h *SupplierHandlers) HandleGetSupplierImplicitAgreements(w http.ResponseWriter, r *http.Request) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListSupplierImplicitAgreementProducts(r.Context(), supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// GET /api/v1/supplier/search-insight (D12, stub).
+// TODO (U07): search_queries stores only a normalized term and a store
+// slug (migration 202610220003) with no supplier key, so a supplier-scoped
+// insight cannot be computed from source data without guessing the scope.
+func (h *SupplierHandlers) HandleSupplierSearchInsight(w http.ResponseWriter, r *http.Request) {
+	supplierLiveParityStub(w, r, "U07", "Search log has no supplier key; supplier scoping is unverified.")
+}
+
+// --- Admin supplier routes (D54/D15) ------------------------------------
+// The exact live approve/reject route is unverified (U06): the audit
+// found no /admin/suppliers/approve-style string in the live binary, so
+// these routes are placed under the existing admin/suppliers family by
+// reconstruction choice, documented here and in the final report. They
+// call the existing repo functions, which are the confirmed behaviour.
+// No response below ever includes a Tapin token: the model field is
+// json:"-" and no query here selects the token column.
+
+func supplierAdminSummaryRow(s domain.Supplier) map[string]interface{} {
+	return map[string]interface{}{
+		"id":                     s.ID,
+		"name":                   s.Name,
+		"logoUrl":                s.LogoURL,
+		"rating":                 s.Rating,
+		"totalProducts":          s.TotalProducts,
+		"deliveryScore":          s.DeliveryScore,
+		"warehouseCity":          s.WarehouseCity,
+		"warehouseCityConfirmed": s.WarehouseCityConfirmed,
+		"warehouseCitySource":    s.WarehouseCitySource,
+		"approvalStatus":         s.ApprovalStatus,
+		"signedContractVersion":  s.SignedContractVersion,
+		"defaultMarkupType":      s.DefaultMarkupType,
+		"defaultMarkupValue":     s.DefaultMarkupValue,
+		"supportsDirectShipping": s.SupportsDirectShipping,
+		"createdAt":              s.CreatedAt,
+	}
+}
+
+func supplierAdminRecordRow(s domain.Supplier) map[string]interface{} {
+	row := supplierAdminSummaryRow(s)
+	row["approvedBy"] = s.ApprovedBy
+	row["approvedAt"] = s.ApprovedAt
+	row["rejectionReason"] = s.RejectionReason
+	row["tapinShopId"] = s.TapinShopID
+	row["tapinConnected"] = s.TapinShopID != nil && strings.TrimSpace(*s.TapinShopID) != ""
+	row["description"] = s.Description
+	row["badge"] = s.Badge
+	return row
+}
+
+func (h *SupplierHandlers) handleAdminSuppliersDetail(w http.ResponseWriter, r *http.Request, records bool) {
+	w.Header().Set("Content-Type", "application/json")
+	list, err := h.supplierRepo.ListSuppliersForAdminDetail(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	rows := []map[string]interface{}{}
+	for _, s := range list {
+		if status != "" && s.ApprovalStatus != status {
+			continue
+		}
+		if records {
+			rows = append(rows, supplierAdminRecordRow(s))
+		} else {
+			rows = append(rows, supplierAdminSummaryRow(s))
+		}
+	}
+	json.NewEncoder(w).Encode(rows)
+}
+
+// GET /api/v1/admin/suppliers/list (D15). Optional ?status= filter, e.g.
+// pending_approval, approved, rejected.
+func (h *SupplierHandlers) HandleAdminSuppliersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	h.handleAdminSuppliersDetail(w, r, false)
+}
+
+// GET /api/v1/admin/suppliers/records (D15). Same real data as /list, plus
+// the record fields (approvedBy/approvedAt/rejectionReason/tapinShopId).
+// TODO (U07): the live distinction between /list and /records is
+// unverified; this split (summary vs full record) is a reconstruction
+// choice, not a claimed live shape.
+func (h *SupplierHandlers) HandleAdminSuppliersRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	h.handleAdminSuppliersDetail(w, r, true)
+}
+
+// GET /api/v1/admin/suppliers/pending (D54). The existing repo function,
+// previously unreachable from HTTP.
+func (h *SupplierHandlers) HandleAdminSuppliersPending(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	list, err := h.supplierRepo.ListPendingSuppliers(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	rows := []map[string]interface{}{}
+	for _, s := range list {
+		rows = append(rows, map[string]interface{}{
+			"id":             s.ID,
+			"name":           s.Name,
+			"warehouseCity":  s.WarehouseCity,
+			"approvalStatus": s.ApprovalStatus,
+			"createdAt":      s.CreatedAt,
+		})
+	}
+	json.NewEncoder(w).Encode(rows)
+}
+
+func supplierAdminReviewError(w http.ResponseWriter, err error) {
+	if err != nil && strings.Contains(err.Error(), "already processed") {
+		http.Error(w, `{"error":"Supplier not found or already processed"}`, http.StatusConflict)
+		return
+	}
+	writeInternalError(w, err)
+}
+
+// POST /api/v1/admin/suppliers/:id/approve (D54, route choice per U06).
+// The approver is the admin's own user id from the JWT claims.
+func (h *SupplierHandlers) HandleAdminSupplierApprove(w http.ResponseWriter, r *http.Request, supplierID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	userID, err := h.supplierRepo.ApproveSupplier(r.Context(), supplierID, supplierLiveParityClaimsUserID(r))
+	if err != nil {
+		supplierAdminReviewError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"supplierId": supplierID,
+		"userId":     userID,
+		"status":     "approved",
+	})
+}
+
+// POST /api/v1/admin/suppliers/:id/reject (D54, route choice per U06).
+// Body: {"reason": "..."} (also accepts "rejectionReason").
+func (h *SupplierHandlers) HandleAdminSupplierReject(w http.ResponseWriter, r *http.Request, supplierID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var req struct {
+		Reason          string `json:"reason"`
+		RejectionReason string `json:"rejectionReason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(req.RejectionReason)
+	}
+	if err := h.supplierRepo.RejectSupplier(r.Context(), supplierID, supplierLiveParityClaimsUserID(r), reason); err != nil {
+		supplierAdminReviewError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"supplierId": supplierID,
+		"status":     "rejected",
+		"reason":     reason,
+	})
+}
+
+// GET/POST /api/v1/admin/suppliers/shipping-methods (D15).
+// GET returns all method rows. POST decides a method:
+// {"supplierId": "...", "method": "direct"|"warehouse",
+//
+//	"status": "enabled"|"disabled"} — admin-only per migration 202610170012.
+//
+// TODO (U07): the live decide body/route shape is unverified.
+func (h *SupplierHandlers) HandleAdminSuppliersShippingMethods(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		list, err := h.supplierRepo.ListAllSupplierShippingMethods(r.Context())
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(list)
+	case http.MethodPost:
+		var req struct {
+			SupplierID string `json:"supplierId"`
+			Method     string `json:"method"`
+			Status     string `json:"status"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+			return
+		}
+		if err := h.supplierRepo.DecideSupplierShippingMethod(r.Context(), strings.TrimSpace(req.SupplierID), strings.TrimSpace(req.Method), strings.TrimSpace(req.Status), supplierLiveParityClaimsUserID(r)); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    true,
+			"supplierId": strings.TrimSpace(req.SupplierID),
+			"method":     strings.TrimSpace(req.Method),
+			"status":     strings.TrimSpace(req.Status),
+		})
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+// GET /api/v1/admin/store-intel/suppliers (D15, supplier part only).
+// TODO (U07): the live store-intel shape is unverified; this returns the
+// same real supplier summary rows as /admin/suppliers/list rather than a
+// guessed intel shape.
+func (h *SupplierHandlers) HandleAdminStoreIntelSuppliers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	h.handleAdminSuppliersDetail(w, r, false)
+}

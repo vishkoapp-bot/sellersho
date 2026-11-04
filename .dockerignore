@@ -1,0 +1,8 @@
+node_modules
+dist-ssr
+.git
+.vscode
+.idea
+*.log
+graphify-out
+.playwright-mcp

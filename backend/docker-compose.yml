@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drup_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: drup_admin
+      POSTGRES_PASSWORD: drup_secure_password_2026
+      POSTGRES_DB: drup_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drup_admin -d drup_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: drup_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "drup_redis_pass_2026"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "drup_redis_pass_2026", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: drup_go_api
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "${DATABASE_URL}"
+      REDIS_URL: "${REDIS_URL}"
+      APP_ENV: "${APP_ENV:-development}"
+      JWT_SECRET: "${JWT_SECRET}"
+      TRACKING_WEBHOOK_SECRET: "${TRACKING_WEBHOOK_SECRET}"
+      IPPANEL_ENABLED: "${IPPANEL_ENABLED:-false}"
+      IPPANEL_BASE_URL: "${IPPANEL_BASE_URL:-https://edge.ippanel.com/v1}"
+      IPPANEL_API_KEY: "${IPPANEL_API_KEY}"
+      IPPANEL_SENDER: "${IPPANEL_SENDER}"
+      IPPANEL_PATTERN_CODE: "${IPPANEL_PATTERN_CODE}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./static:/app/static
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,266 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/drup/platform/internal/repository"
+)
+
+func handleGetApprovals(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	status := r.URL.Query().Get("status")
+	list, err := adminRepo.GetPendingApprovals(ctx, status)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if list == nil {
+		list = []repository.PendingApproval{}
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func handleCreateApproval(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req repository.PendingApproval
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("APP-%d", time.Now().UnixMilli()%100000)
+	}
+
+	if err := adminRepo.CreatePendingApproval(ctx, req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(req)
+}
+
+func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Context, id string, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Status          string `json:"status"` // 'approved' | 'rejected'
+		RejectionReason string `json:"rejectionReason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := adminRepo.ReviewPendingApproval(ctx, id, req.Status, req.RejectionReason); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"id":      id,
+		"status":  req.Status,
+	})
+}
+
+func handleGetAuditLogs(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	category := r.URL.Query().Get("category")
+	logs, err := adminRepo.GetAuditLogs(ctx, category)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(logs)
+}
+
+func handleCreateAuditLog(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req repository.AuditLog
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("LOG-%d", time.Now().UnixMilli()%100000)
+	}
+
+	if err := adminRepo.InsertAuditLog(ctx, req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(req)
+}
+
+func handleGetAdminUsers(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	role := r.URL.Query().Get("role")
+	status := r.URL.Query().Get("status")
+	users, err := adminRepo.GetUsers(ctx, role, status)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if users == nil {
+		users = []repository.AdminUser{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"users":   users,
+	})
+}
+
+func handleSetUserActiveStatus(w http.ResponseWriter, r *http.Request, ctx context.Context, userID string, isActive bool, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := adminRepo.SetUserActiveStatus(ctx, userID, isActive); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"userId":   userID,
+		"isActive": isActive,
+	})
+}
+
+func handleGetPendingStores(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	stores, err := adminRepo.GetPendingStores(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if stores == nil {
+		stores = []repository.AdminStore{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"stores":  stores,
+	})
+}
+
+func handleReviewStore(w http.ResponseWriter, r *http.Request, ctx context.Context, storeID, status string, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := adminRepo.ReviewStore(ctx, storeID, status, req.Reason); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"storeId": storeID,
+		"status":  status,
+		"reason":  req.Reason,
+	})
+}
+
+
+
+
+
+func handleLockStoreMargin(w http.ResponseWriter, r *http.Request, ctx context.Context, storeID string, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	var req struct {
+		LockedMargin float64 `json:"lockedMargin"`
+		MaxMargin    float64 `json:"maxMargin"`
+		IsLocked     bool    `json:"isLocked"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+	margin := req.LockedMargin
+	if margin == 0 && req.MaxMargin > 0 {
+		margin = req.MaxMargin
+	}
+	if err := adminRepo.LockStoreMargin(ctx, storeID, margin); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"storeId":      storeID,
+		"lockedMargin": margin,
+		"maxMargin":    margin,
+		"isLocked":     true,
+	})
+}
+
+func handleGetSuspiciousTransactions(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if adminRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	txs, err := adminRepo.GetSuspiciousTransactions(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if txs == nil {
+		txs = []repository.SuspiciousTransaction{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":                true,
+		"suspiciousTransactions": txs,
+	})
+}

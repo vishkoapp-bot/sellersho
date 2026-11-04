@@ -1,0 +1,36 @@
+-- Down migration for 202610170009: restore the previous (over-counting)
+-- view definitions. Only used for local rollback; prod moves forward.
+
+CREATE OR REPLACE VIEW v_fin_daily_cashflow AS
+WITH days AS (
+    SELECT (CURRENT_DATE - s)::date AS day FROM generate_series(0, 90) s
+),
+ins AS (
+    SELECT date_trunc('day', created_at)::date AS day,
+           COALESCE(SUM(payable_amount), 0)::bigint AS money_in
+    FROM orders
+    WHERE payment_status = 'paid'
+    GROUP BY 1
+),
+outs AS (
+    SELECT COALESCE(date_trunc('day', processed_at), date_trunc('day', created_at))::date AS day,
+           COALESCE(SUM(amount), 0)::bigint AS money_out
+    FROM payout_requests
+    WHERE status IN ('approved', 'processing', 'completed')
+    GROUP BY 1
+)
+SELECT d.day,
+       COALESCE(i.money_in, 0)::bigint  AS money_in,
+       COALESCE(o.money_out, 0)::bigint AS money_out
+FROM days d
+LEFT JOIN ins  i ON i.day = d.day
+LEFT JOIN outs o ON o.day = d.day;
+
+CREATE OR REPLACE VIEW v_fin_supplier_paid AS
+SELECT supplier_id,
+       COALESCE(SUM(amount), 0)::bigint AS paid
+FROM payout_requests
+WHERE recipient_type = 'supplier'
+  AND status IN ('approved', 'processing', 'completed')
+  AND supplier_id IS NOT NULL
+GROUP BY 1;

@@ -1,0 +1,1 @@
+ALTER TABLE stores DROP COLUMN IF EXISTS seller_deals_widget_config;

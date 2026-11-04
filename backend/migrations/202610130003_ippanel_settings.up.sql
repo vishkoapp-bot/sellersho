@@ -1,0 +1,6 @@
+ALTER TABLE platform_settings
+  ADD COLUMN IF NOT EXISTS ippanel_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS ippanel_base_url TEXT NOT NULL DEFAULT 'https://edge.ippanel.com/v1',
+  ADD COLUMN IF NOT EXISTS ippanel_api_key TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS ippanel_sender TEXT NOT NULL DEFAULT '+983000505',
+  ADD COLUMN IF NOT EXISTS ippanel_pattern_code TEXT NOT NULL DEFAULT '';

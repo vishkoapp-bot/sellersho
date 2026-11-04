@@ -1,0 +1,8 @@
+{
+  "name": "سلرشو",
+  "short_name": "سلرشو",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#5d44f8",
+  "background_color": "#ffffff"
+}

@@ -1,0 +1,1 @@
+-- Mobile normalization is intentionally irreversible; original formatting is not recoverable.

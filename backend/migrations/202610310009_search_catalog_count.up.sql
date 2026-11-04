@@ -1,0 +1,11 @@
+-- 202610310009: search_queries.catalog_result_count.
+--
+-- Phase 2 (2026-11-01): search_queries (202610220003) stored only
+-- one result count, so the seller panel could not split "zero in
+-- this store" from "zero in the whole catalog". New log rows store
+-- both: result_count = inside the store's assortment,
+-- catalog_result_count = whole catalog. Legacy rows keep NULL
+-- here and are read with the documented fallback (catalog side
+-- falls back to result_count). Handlers also ADD COLUMN IF NOT
+-- EXISTS at runtime, so this migration is not a hard dependency.
+ALTER TABLE search_queries ADD COLUMN IF NOT EXISTS catalog_result_count INTEGER;

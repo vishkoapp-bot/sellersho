@@ -1,0 +1,1263 @@
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { 
+  Store, 
+  StoreBuilderConfig, 
+  StoreSocialLinks, 
+  StoreNameChangeRequest, 
+  StoreSlugChangeRequest, 
+  CustomDomainRequest, 
+  PreMadeWidget,
+  Product,
+  Order,
+  CartItem,
+} from '../types';
+import { 
+  ActiveView, 
+  StaticPageKey, 
+  StoreContextType,
+  DirectBuy,
+  DirectBuyAddress,
+  DirectBuyStore
+} from './storeContextTypes';
+import { formatPrice, toPersianDigits } from '../utils/formatters';
+import { isMockMode } from '../services/apiClient';
+import { storeApi } from '../services/storeApi';
+import { catalogApi } from '../services/catalogApi';
+import { mapBackendProduct } from './ProductContext';
+import { parsePathname, buildProductUrl, pathForView, isSellerDashboardTab } from '../utils/routing';
+import { mockStores } from '../data/mockData';
+
+// Sibling Context Hooks
+import { useAuth } from './AuthContext';
+import { useProducts } from './ProductContext';
+import { useCart } from './CartContext';
+import { useOrders } from './OrderContext';
+import { useFinance } from './FinanceContext';
+import { useWarehouse } from './WarehouseContext';
+
+export { useAuth, useProducts, useCart, useOrders, useFinance, useWarehouse };
+export type { DirectBuy, DirectBuyAddress, DirectBuyStore };
+export { formatPrice, toPersianDigits };
+
+const INITIAL_NAME_CHANGE_REQUESTS: StoreNameChangeRequest[] = [
+  {
+    id: 'REQ-N-101',
+    storeId: 'store-bibi',
+    currentName: 'فروشگاه بی‌بی استایل',
+    requestedName: 'مزون لوکس بی‌بی استایل تهران',
+    sellerMobile: '09121112233',
+    status: 'pending',
+    requestDate: '۱۴۰۵/۰۶/۲۹',
+  },
+];
+
+const INITIAL_SLUG_CHANGE_REQUESTS: StoreSlugChangeRequest[] = [
+  {
+    id: 'REQ-S-201',
+    storeId: 'store-bibi',
+    currentSlug: 'bibi',
+    requestedSlug: 'bibi-style-official',
+    sellerMobile: '09121112233',
+    status: 'pending',
+    requestDate: '۱۴۰۵/۰۶/۲۸',
+  },
+];
+
+const INITIAL_DOMAIN_REQUESTS: CustomDomainRequest[] = [
+  {
+    id: 'REQ-D-301',
+    storeId: 'store-bibi',
+    storeName: 'فروشگاه بی‌بی استایل',
+    requestedDomain: 'bibistyle.ir',
+    status: 'pending',
+    requestDate: '۱۴۰۵/۰۶/۳۰',
+  },
+];
+
+const INITIAL_PREMADE_WIDGETS: PreMadeWidget[] = [
+  {
+    id: 'WGT-01',
+    title: 'اسلایدر تخفیف‌های داغ روز (Hot Deals)',
+    previewImageUrl: 'https://web-cdn.snapp.ir/fintech-marketing/ecommerce/products/bag-1.png',
+    type: 'seller_deals',
+    description: 'نمایش ۶ کالای پرفروش با برچسب درصد تخفیف قرمز و شمارش معکوس',
+    targetNicheIds: ['niche-leather', 'niche-gold', 'niche-beauty'],
+    recommendedProductIds: ['prod-1', 'prod-2', 'prod-3'],
+    bannerSize: 'landscape',
+    bannerWidth: 1200,
+    bannerHeight: 628,
+    createdAt: '۱۴۰۵/۰۱/۱۰',
+  },
+];
+
+export interface StoreState {
+  currentStore: Store | null;
+  setCurrentStore: (store: Store | null) => void;
+  stores: Store[];
+  addStore: (store: Store) => void;
+  storeStatuses: { [storeId: string]: 'active' | 'suspended' };
+  toggleStoreStatus: (storeId: string) => 'active' | 'suspended';
+  updateStoreActiveProducts: (productIds: string[]) => void;
+  toggleCategoryActiveProducts: (categorySlug: string, enable: boolean) => void;
+  updateStoreProductPriceOverride: (productId: string, profitD: number) => void;
+  updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<boolean>;
+  updateStoreCategoryPriceOverride: (categorySlug: string, marginPercent: number) => void;
+  updateStoreNichePriceOverride: (nicheId: string, margin: number) => Promise<boolean>;
+  updateStoreBuilderConfig: (config: StoreBuilderConfig, publishImmediately?: boolean) => void;
+  revertStoreBuilderConfig: () => void;
+  updateStoreCustomDomain: (domain: string) => void;
+  updateStorePlan: (planId: 'trial' | 'standard' | 'pro' | 'vip') => void;
+  storeNameChangeRequests: StoreNameChangeRequest[];
+  requestStoreNameChange: (storeId: string, requestedName: string) => void;
+  approveStoreNameChange: (requestId: string) => void;
+  rejectStoreNameChange: (requestId: string) => void;
+  storeSlugChangeRequests: StoreSlugChangeRequest[];
+  requestStoreSlugChange: (storeId: string, requestedSlug: string) => void;
+  approveStoreSlugChange: (requestId: string) => void;
+  rejectStoreSlugChange: (requestId: string) => void;
+  customDomainRequests: CustomDomainRequest[];
+  requestCustomDomain: (storeId: string, domain: string) => void;
+  approveCustomDomain: (requestId: string) => void;
+  rejectCustomDomain: (requestId: string) => void;
+  updateStoreSelectedNiches: (nicheIds: string[]) => void;
+  preMadeWidgets: PreMadeWidget[];
+  createPreMadeWidget: (widget: Omit<PreMadeWidget, 'id' | 'createdAt'>) => void;
+  updatePreMadeWidget: (id: string, updated: Partial<PreMadeWidget>) => void;
+  updateSellerDealsWidgetConfig: (config: Store['sellerDealsWidgetConfig']) => void;
+  updateCentralDealsFilter: (filter: 'my_niches' | 'manual' | 'all', productIds?: string[]) => void;
+  referredStoreSlug: string | null;
+  setReferredStoreSlug: (slug: string | null) => void;
+  verifyAndConnectDomainAutomatically: (storeId: string, domain: string) => Promise<{ success: boolean; message: string }>;
+  purchaseServiceWithWallet: (storeId: string, serviceType: 'plan_renewal' | 'sms_500' | 'sms_2000' | 'catalog_upgrade', cost: number, details?: string) => boolean;
+  updateStoreSocialLinks: (socialLinks: StoreSocialLinks) => void;
+  updateStoreAdminMarginOverride: (storeId: string, margin: number, isLocked: boolean) => void;
+  isSellerModalOpen: boolean;
+  setIsSellerModalOpen: (open: boolean) => void;
+  // Header bell dot (live parity): unread count fed by
+  // NotificationDrawer from its own notification list; Header
+  // renders the rose dot iff this is > 0. Read via
+  // useStoreManager (StoreState), not the composite useStore().
+  unreadNotificationCount: number;
+  setUnreadNotificationCount: (count: number) => void;
+  activeView: ActiveView;
+  setActiveView: (view: ActiveView, navigation?: { productId?: string; staticPageKey?: StaticPageKey; storeSlug?: string; sellerTab?: string; searchQuery?: string; categorySlug?: string }) => void;
+  staticPageKey: StaticPageKey;
+  openStaticPage: (key: StaticPageKey) => void;
+  // Team 08 (D45/D46) router/storefront states ONLY.
+  storefrontSlug: string | null;
+  storefrontLoading: boolean;
+  storefrontResolved: boolean;
+  storefrontInvalid: boolean;
+  storefrontSuspended: boolean;
+  storefrontUnsubscribeSlug: string | null;
+  // Worker A (buy-now): live direct-buy state.
+  directBuy: DirectBuy | null;
+  startDirectBuy: (directBuy: DirectBuy) => void;
+  clearDirectBuy: () => void;
+  directBuyAddress: DirectBuyAddress | null;
+  setDirectBuyAddress: (address: DirectBuyAddress | null) => void;
+  sellerDashboardTab: string;
+  setSellerDashboardTab: (tab: string) => void;
+  routeProductPending: boolean;
+  routeProductInvalid: boolean;
+  openStorefront: (slug?: string) => void;
+}
+
+const StoreContext = createContext<StoreState | undefined>(undefined);
+
+export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChildren?: boolean }> = ({ children, allowUnselectedChildren = false }) => {
+  const { products, openProductDetail, currentProductDetail } = useProducts();
+  const { sellerSession } = useAuth();
+  const [stores, setStores] = useState<Store[]>([]);
+  const [currentStore, setCurrentStore] = useState<Store | null>(null);
+  const cart = useCart();
+  // Fix72: the visible cart follows the session store. Switching
+  // stores switches the cart; other stores' carts are preserved
+  // inside CartContext (live's map + active-store-id model).
+  useEffect(() => {
+    if (currentStore?.id) cart.setActiveCartStore(currentStore.id);
+  }, [currentStore?.id]);
+  const [storesLoading, setStoresLoading] = useState(true);
+  const [storeStatuses, setStoreStatuses] = useState<{ [storeId: string]: 'active' | 'suspended' }>({
+    'central-store': 'active',
+    'store-bibi': 'active',
+    'store-techhub': 'active',
+  });
+
+  // Team 08 (D45/D46): initial view comes from the live pathname router,
+  // not from state alone. /store/<slug>, /product/<id|spn-n>, static
+  // pages, ?panel=seller&tab=<tab> and unknown URLs (not_found) are all
+  // resolved here; the source only recognised /admin.
+  const initialRoute = () => {
+    if (typeof window === 'undefined') return { view: 'customer' as ActiveView, slug: null as string | null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined as string | undefined, spnNumber: undefined as number | undefined, spnc: undefined as string | undefined };
+    const parsed = parsePathname(window.location.pathname, window.location.search);
+    if (parsed.view === 'seller_storefront') return { view: parsed.view as ActiveView, slug: parsed.slug, unsubscribe: parsed.unsubscribe, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined };
+    if (parsed.view === 'product_detail') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc };
+    if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined };
+    if (parsed.view === 'seller_dashboard') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: parsed.sellerTab, productId: undefined, spnNumber: undefined, spnc: undefined };
+    if (parsed.view === 'catalog') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined };
+    return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined };
+  };
+  const [initialRouteState] = useState(initialRoute);
+
+  const [activeView, setActiveViewState] = useState<ActiveView>(initialRouteState.view);
+  const [storefrontSlug, setStorefrontSlug] = useState<string | null>(initialRouteState.slug);
+  const [storefrontLoading, setStorefrontLoading] = useState<boolean>(initialRouteState.view === 'seller_storefront' && !!initialRouteState.slug);
+  const [storefrontResolved, setStorefrontResolved] = useState<boolean>(false);
+  const [storefrontInvalid, setStorefrontInvalid] = useState<boolean>(false);
+  const [storefrontSuspended, setStorefrontSuspended] = useState<boolean>(false);
+  const [storefrontUnsubscribeSlug, setStorefrontUnsubscribeSlug] = useState<string | null>(
+    initialRouteState.view === 'seller_storefront' && initialRouteState.unsubscribe ? initialRouteState.slug : null,
+  );
+  const [sellerDashboardTab, setSellerDashboardTab] = useState<string>(initialRouteState.sellerTab);
+  const [routeProduct, setRouteProduct] = useState<{ id?: string; spnNumber?: number; spnc?: string } | null>(
+    initialRouteState.view === 'product_detail' ? { id: initialRouteState.productId, spnNumber: initialRouteState.spnNumber, spnc: initialRouteState.spnc } : null,
+  );
+  const [routeProductPending, setRouteProductPending] = useState<boolean>(initialRouteState.view === 'product_detail');
+  const [routeProductInvalid, setRouteProductInvalid] = useState<boolean>(false);
+  const resolvedStorefrontSlugRef = useRef<string | null>(null);
+
+  type NavigationState = {
+    activeView: ActiveView;
+    productId?: string;
+    staticPageKey?: StaticPageKey;
+    storeSlug?: string;
+    sellerTab?: string;
+    searchQuery?: string;
+    categorySlug?: string;
+  };
+
+  const setActiveView = (view: ActiveView, navigation: Partial<NavigationState> = {}) => {
+    setActiveViewState(view);
+    if (view === 'seller_storefront') {
+      const slug = navigation.storeSlug || storefrontSlug || currentStore?.slug || null;
+      setStorefrontSlug(slug);
+      setStorefrontUnsubscribeSlug(null);
+      setStorefrontInvalid(false);
+      setStorefrontResolved(false);
+      setStorefrontSuspended(false);
+      resolvedStorefrontSlugRef.current = null;
+    }
+    if (view === 'static_page' && navigation.staticPageKey) {
+      setStaticPageKey(navigation.staticPageKey);
+    }
+    if (view === 'seller_dashboard' && navigation.sellerTab && isSellerDashboardTab(navigation.sellerTab)) {
+      setSellerDashboardTab(navigation.sellerTab);
+    }
+    if (view === 'product_detail') {
+      setRouteProductInvalid(false);
+      if (navigation.productId) setRouteProduct({ id: navigation.productId });
+    }
+    if (typeof window !== 'undefined') {
+      // FIX 11: views without an explicit branch used to push a bare '/'
+      // here, which in the /preview/ build escaped the preview prefix and
+      // landed on the live root URL. Route every view through pathForView
+      // (which the preview build prefixes) instead.
+      let path = pathForView(view);
+      if (view === 'seller_storefront') {
+        const slug = navigation.storeSlug || storefrontSlug || currentStore?.slug;
+        // Live pushState: opening a storefront writes /store/<slug>.
+        path = slug ? pathForView(view, { storeSlug: slug }) : '/';
+      } else if (view === 'product_detail') {
+        const product = navigation.productId
+          ? products.find((item) => item.id === navigation.productId)
+          : undefined;
+        path = product ? buildProductUrl(product) : (navigation.productId ? `/product/${encodeURIComponent(navigation.productId)}` : '/');
+      } else if (view === 'static_page') {
+        path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey });
+      } else if (view === 'seller_dashboard') {
+        path = pathForView(view, { sellerTab: navigation.sellerTab || sellerDashboardTab });
+      } else if (view === 'admin_panel') {
+        path = '/admin';
+      } else if (view === 'catalog') {
+        path = pathForView('catalog', { searchQuery: navigation.searchQuery, categorySlug: navigation.categorySlug });
+      } else if (view === 'not_found') {
+        path = window.location.pathname + window.location.search;
+      }
+      const nextState: NavigationState = { activeView: view, ...navigation };
+      window.history.pushState(nextState, '', path);
+    }
+  };
+
+  const openStorefront = (slug?: string) => {
+    setActiveView('seller_storefront', slug ? { storeSlug: slug } : {});
+  };
+
+  const navigationInitialized = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    if (!navigationInitialized.current) {
+      const initialState = window.history.state as NavigationState | null;
+      window.history.replaceState(
+        { ...initialState, activeView: activeView },
+        '',
+        window.location.href
+      );
+      navigationInitialized.current = true;
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      // Live router: back/forward re-parses the pathname (plus tab and
+      // static-page params); stored history state is only a fallback.
+      const parsed = parsePathname(window.location.pathname, window.location.search);
+      if (parsed.view === 'seller_storefront') {
+        setStorefrontSlug(parsed.slug);
+        setStorefrontUnsubscribeSlug(parsed.unsubscribe ? parsed.slug : null);
+        setStorefrontInvalid(false);
+        setStorefrontResolved(false);
+        setStorefrontSuspended(false);
+        resolvedStorefrontSlugRef.current = null;
+        setActiveViewState('seller_storefront');
+        return;
+      }
+      if (parsed.view === 'product_detail') {
+        setRouteProduct({ id: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc });
+        setRouteProductPending(true);
+        setRouteProductInvalid(false);
+        setActiveViewState('product_detail');
+        return;
+      }
+      if (parsed.view === 'static_page') {
+        setStaticPageKey(parsed.staticPageKey);
+        setActiveViewState('static_page');
+        return;
+      }
+      if (parsed.view === 'seller_dashboard') {
+        setSellerDashboardTab(parsed.sellerTab);
+        setActiveViewState('seller_dashboard');
+        return;
+      }
+      if (parsed.view === 'catalog') {
+        setActiveViewState('catalog');
+        return;
+      }
+      const navigation = event.state as NavigationState | null;
+      setActiveViewState(parsed.view === 'not_found' ? 'not_found' : (navigation?.activeView || parsed.view));
+      if (navigation?.productId) {
+        const product = products.find((item) => item.id === navigation.productId);
+        if (product) openProductDetail(product);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [products, openProductDetail]);
+
+const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteState.staticKey);
+  const [isSellerModalOpen, setIsSellerModalOpen] = useState(false);
+  // Worker A (buy-now): live direct-buy state; cleared as a pair.
+  const [directBuy, setDirectBuy] = useState<DirectBuy | null>(null);
+  const [directBuyAddress, setDirectBuyAddress] = useState<DirectBuyAddress | null>(null);
+  const startDirectBuy = (next: DirectBuy) => setDirectBuy(next);
+  const clearDirectBuy = () => {
+    setDirectBuy(null);
+    setDirectBuyAddress(null);
+  };
+  // Header bell dot state (see interface note above). Owned here
+  // so Header can read it without the drawer being open; the
+  // drawer syncs it from its notification list on every change.
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [storeNameChangeRequests, setStoreNameChangeRequests] = useState<StoreNameChangeRequest[]>(
+    () => isMockMode() ? INITIAL_NAME_CHANGE_REQUESTS : []
+  );
+  const [storeSlugChangeRequests, setStoreSlugChangeRequests] = useState<StoreSlugChangeRequest[]>(
+    () => isMockMode() ? INITIAL_SLUG_CHANGE_REQUESTS : []
+  );
+  const [customDomainRequests, setCustomDomainRequests] = useState<CustomDomainRequest[]>(
+    () => isMockMode() ? INITIAL_DOMAIN_REQUESTS : []
+  );
+  const [preMadeWidgets, setPreMadeWidgets] = useState<PreMadeWidget[]>(
+    () => isMockMode() ? INITIAL_PREMADE_WIDGETS : []
+  );
+
+  const [referredStoreSlug, setReferredStoreSlugState] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const ref = urlParams.get('ref');
+      if (ref) {
+        localStorage.setItem('sellershow_referral_store', ref);
+        return ref;
+      }
+      return localStorage.getItem('sellershow_referral_store');
+    }
+    return null;
+  });
+
+  // ISO-E: seller-session loss must not leave the previous seller store
+  // as currentStore. loadStores below preserves a previous store whenever
+  // it is still in the fetched list, and for a logged-out / role-switched
+  // session it fetches the PUBLIC list - which contains the previous
+  // seller store - so the old store (with its pricing overrides and
+  // builder config) stayed selected after logout. Clear it the moment the
+  // seller session goes from a store to none; the next loadStores pass
+  // then falls back to the ordinary anonymous/public default instead of
+  // resurrecting the previous seller store. Cart state is NOT touched
+  // here (Fix72 owns the cart). Storefront resolution for an explicitly
+  // opened /store/<slug> URL still sets currentStore from that slug.
+  const prevSellerStoreIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const storeId = sellerSession?.storeId ?? null;
+    if (prevSellerStoreIdRef.current === undefined) {
+      prevSellerStoreIdRef.current = storeId;
+      return;
+    }
+    if (prevSellerStoreIdRef.current !== null && storeId === null) {
+      setCurrentStore(null);
+    }
+    prevSellerStoreIdRef.current = storeId;
+  }, [sellerSession?.storeId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStores = async () => {
+      try {
+        const loadedStores = isMockMode()
+          ? mockStores
+          : sellerSession?.status === 'active'
+            ? await storeApi.getOwnedStores()
+            : await storeApi.getAllStores();
+        if (cancelled) return;
+
+        const availableStores = Array.isArray(loadedStores) ? loadedStores : [];
+        setStores(availableStores);
+        setCurrentStore((previous) => {
+          if (previous) {
+            const fresh = availableStores.find((store) => store.id === previous.id);
+            // FIX 79: a storefront-resolved store carries no signedContractVersion
+            // (the public single-store response omits it); keeping it verbatim
+            // would pin the seller reconfirm gate to undefined -> 1 forever.
+            // Fill the owner-private field from the fresh owned store when present.
+            if (fresh) return { ...previous, signedContractVersion: fresh.signedContractVersion ?? previous.signedContractVersion };
+          }
+          if (sellerSession?.storeId) {
+            const sellerStore = availableStores.find((store) => store.id === sellerSession.storeId);
+            if (sellerStore) return sellerStore;
+          }
+          if (referredStoreSlug) {
+            const referredStore = availableStores.find((store) => store.slug === referredStoreSlug);
+            if (referredStore) return referredStore;
+          }
+          return availableStores[0] || null;
+        });
+      } catch (error) {
+        if (!cancelled) console.warn('Failed to fetch stores:', error);
+      } finally {
+        if (!cancelled) setStoresLoading(false);
+      }
+    };
+
+    loadStores();
+    return () => {
+      cancelled = true;
+    };
+  }, [referredStoreSlug, sellerSession?.storeId, sellerSession?.status]);
+
+  const setReferredStoreSlug = (slug: string | null) => {
+    setReferredStoreSlugState(slug);
+    if (typeof window !== 'undefined') {
+      if (slug) localStorage.setItem('sellershow_referral_store', slug);
+      else localStorage.removeItem('sellershow_referral_store');
+    }
+  };
+
+  // Team 08 (D45): storefront resolve. Live states:
+  // storefrontSlug / storefrontLoading / storefrontResolved /
+  // storefrontInvalid, plus the suspended page. The public store API
+  // returns only 12 keys (D52, no templateId/ownerPhone); the resolved
+  // store is merged over safe defaults so the Store type stays complete.
+  // TODO(U42): ownerPhone origin is unverified; it is used only when
+  // the API provides it (see StoreSuspendedView).
+  useEffect(() => {
+    if (activeView !== 'seller_storefront') return;
+    if (!storefrontSlug) {
+      // Opened from inside the dashboard (no slug in the URL yet):
+      // the current store is the storefront, already resolved.
+      setStorefrontResolved(true);
+      setStorefrontLoading(false);
+      setStorefrontSuspended(storeStatuses[currentStore?.id || ''] === 'suspended');
+      return;
+    }
+    if (storefrontUnsubscribeSlug) {
+      setStorefrontLoading(false);
+      setStorefrontResolved(true);
+      return;
+    }
+    if (resolvedStorefrontSlugRef.current === storefrontSlug) return;
+    let cancelled = false;
+    setStorefrontLoading(true);
+    setStorefrontInvalid(false);
+    setStorefrontResolved(false);
+    storeApi.getStoreBySlug(storefrontSlug)
+      .then((resolved: any) => {
+        if (cancelled) return;
+        resolvedStorefrontSlugRef.current = storefrontSlug;
+        const merged: Store = {
+          id: resolved.id || `store-${storefrontSlug}`,
+          name: resolved.name || storefrontSlug,
+          slug: resolved.slug || storefrontSlug,
+          ownerType: resolved.ownerType || 'dropshipper',
+          ownerName: resolved.ownerName || '',
+          tagline: resolved.tagline || '',
+          shortDescription: resolved.shortDescription,
+          logo: resolved.logo,
+          profitMarginPercent: resolved.profitMarginPercent || 0,
+          description: resolved.description || '',
+          activeCategories: resolved.activeCategories || [],
+          totalSales: resolved.totalSales || 0,
+          monthlyRevenueEstimate: resolved.monthlyRevenueEstimate || 0,
+          activeProductIds: resolved.activeProductIds,
+          selectedNicheIds: resolved.selectedNicheIds,
+          sellerDealsWidgetConfig: resolved.sellerDealsWidgetConfig,
+          status: resolved.status,
+          ownerPhone: resolved.ownerPhone,
+          templateId: resolved.templateId,
+          templateConfig: resolved.templateConfig,
+        };
+        // FIX 79: the public single-store response never carries the
+        // owner-private signedContractVersion, so a plain merge dropped it
+        // from currentStore; the seller reconfirm gate then read
+        // undefined -> 1 < latest and re-prompted on every login even
+        // though the DB already held the current version. Keep the
+        // previous value when the merged store is the same store.
+        setCurrentStore((previous) => ({
+          ...merged,
+          signedContractVersion:
+            resolved.signedContractVersion ??
+            (previous && previous.id === merged.id ? previous.signedContractVersion : undefined),
+        }));
+        setStorefrontSuspended(resolved.status === 'suspended');
+        setStorefrontResolved(true);
+        setStorefrontLoading(false);
+      })
+      .catch((error: any) => {
+        if (cancelled) return;
+        // FIX 14: the single-store endpoint now 404s suspended stores
+        // like live ("Store is suspended"). Show the suspended view
+        // with a minimal store instead of the generic invalid page.
+        if (error?.status === 404 && typeof error?.message === 'string' && error.message.toLowerCase().includes('suspended')) {
+          resolvedStorefrontSlugRef.current = storefrontSlug;
+          setCurrentStore({
+            id: `store-${storefrontSlug}`,
+            name: storefrontSlug,
+            slug: storefrontSlug,
+            ownerType: 'dropshipper',
+            ownerName: '',
+            tagline: '',
+            profitMarginPercent: 0,
+            description: '',
+            activeCategories: [],
+            totalSales: 0,
+            monthlyRevenueEstimate: 0,
+            status: 'suspended',
+          } as Store);
+          setStorefrontSuspended(true);
+          setStorefrontResolved(true);
+          setStorefrontLoading(false);
+          return;
+        }
+        setStorefrontInvalid(true);
+        setStorefrontLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activeView, storefrontSlug, storefrontUnsubscribeSlug]);
+
+  // Team 08 (D46): routed product resolve. Uses Team 04's server spn
+  // lookup (catalogApi.getProductBySpn) for /product/spn-<n>/ URLs and
+  // the normal detail endpoint for /product/<id>. No second lookup.
+  useEffect(() => {
+    if (activeView !== 'product_detail' || !routeProduct) return;
+    // FIX 10: guard against re-resolving a route that is already showing.
+    // Without this, every provider re-render re-ran this effect for spn
+    // routes (the list DTO carries no spnNumber, so `found` never matches)
+    // and the spn fetch looped forever, leaving the page stuck on
+    // "loading product" in the preview browser check.
+    const alreadyResolved =
+      (routeProduct.spnNumber !== undefined && currentProductDetail?.spnNumber === routeProduct.spnNumber) ||
+      (routeProduct.id !== undefined && currentProductDetail?.id === routeProduct.id);
+    if (alreadyResolved) {
+      setRouteProductPending(false);
+      return;
+    }
+    const found = routeProduct.spnNumber !== undefined
+      ? products.find((item) => item.spnNumber === routeProduct.spnNumber)
+      : routeProduct.id
+        ? products.find((item) => item.id === routeProduct.id)
+        : undefined;
+    if (found) {
+      openProductDetail(found);
+      setRouteProductPending(false);
+      return;
+    }
+    let cancelled = false;
+    setRouteProductPending(true);
+    const fetch = routeProduct.spnNumber !== undefined
+      ? catalogApi.getProductBySpn(routeProduct.spnNumber)
+      : routeProduct.id
+        ? catalogApi.getProductById(routeProduct.id)
+        : Promise.reject(new Error('no product route'));
+    fetch
+      .then((dto) => {
+        if (cancelled) return;
+        openProductDetail(mapBackendProduct(dto));
+        setRouteProductPending(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRouteProductPending(false);
+        setRouteProductInvalid(true);
+      });
+    return () => { cancelled = true; };
+  }, [activeView, routeProduct, products, currentProductDetail]);
+
+  const openStaticPage = (key: StaticPageKey) => {
+    setStaticPageKey(key);
+    setActiveView('static_page', { staticPageKey: key });
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const addStore = (store: Store) => {
+    setStores((prev) => [...prev, store]);
+    setCurrentStore(store);
+  };
+
+  const toggleStoreStatus = (storeId: string): 'active' | 'suspended' => {
+    const current = storeStatuses[storeId] || 'active';
+    const next = current === 'active' ? 'suspended' : 'active';
+    setStoreStatuses((prev) => ({ ...prev, [storeId]: next }));
+    return next;
+  };
+
+  const updateCurrentStoreObject = (updated: Store) => {
+    setCurrentStore(updated);
+    setStores((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  };
+
+  const updateStoreActiveProducts = (productIds: string[]) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, activeProductIds: productIds });
+    if (!isMockMode() && currentStore.slug) {
+      storeApi.saveStoreProducts(currentStore.slug, productIds).catch((err) => console.warn('Failed to persist active products:', err));
+    }
+  };
+
+  const toggleCategoryActiveProducts = (categorySlug: string, enable: boolean) => {
+    if (!currentStore) return;
+    const categoryProductIds = products.filter((p) => p.category === categorySlug).map((p) => p.id);
+    const currentActive = currentStore.activeProductIds || products.map((p) => p.id);
+    let nextActive: string[];
+    if (enable) {
+      nextActive = Array.from(new Set([...currentActive, ...categoryProductIds]));
+    } else {
+      nextActive = currentActive.filter((id) => !categoryProductIds.includes(id));
+    }
+    updateStoreActiveProducts(nextActive);
+  };
+
+  const updateStoreProductPriceOverride = (productId: string, profitD: number) => {
+    if (!currentStore) return;
+    const overrides = { ...(currentStore.productPriceOverrides || {}) };
+    if (profitD <= 0) delete overrides[productId];
+    else overrides[productId] = profitD;
+    updateCurrentStoreObject({ ...currentStore, productPriceOverrides: overrides });
+  };
+
+
+  const updateStoreProductPriceOverrideWithMode = (productId: string, profitD: number): Promise<boolean> => {
+    if (!currentStore) return Promise.resolve(false);
+    const overrides = { ...(currentStore.productPriceOverrides || {}) };
+    const modes = { ...(currentStore.productPriceOverrideModes || {}) };
+    if (profitD <= 0) {
+      delete overrides[productId];
+      delete modes[productId];
+    } else {
+      overrides[productId] = profitD;
+      modes[productId] = 'percent';
+    }
+    const prevProductOverrides = currentStore.productPriceOverrides;
+    const prevProductOverrideModes = currentStore.productPriceOverrideModes;
+    updateCurrentStoreObject({
+      ...currentStore,
+      productPriceOverrides: overrides,
+      productPriceOverrideModes: modes,
+    });
+    if (!isMockMode() && currentStore.slug) {
+      return storeApi.updateStorePricing(currentStore.slug, {
+        type: 'product',
+        targetId: productId,
+        value: profitD,
+        mode: 'percent',
+      }).then(() => true).catch((err) => { console.warn('Failed to persist product price override:', err); updateCurrentStoreObject({ ...currentStore, productPriceOverrides: prevProductOverrides, productPriceOverrideModes: prevProductOverrideModes }); return false; });
+    }
+    return Promise.resolve(true);
+  };
+
+  const updateStoreCategoryPriceOverride = (categorySlug: string, marginPercent: number) => {
+    if (!currentStore) return;
+    const overrides = { ...(currentStore.categoryPriceOverrides || {}) };
+    if (marginPercent <= 0) delete overrides[categorySlug];
+    else overrides[categorySlug] = marginPercent;
+    updateCurrentStoreObject({ ...currentStore, categoryPriceOverrides: overrides });
+  };
+
+
+  const updateStoreNichePriceOverride = (nicheId: string, margin: number): Promise<boolean> => {
+    if (!currentStore) return Promise.resolve(false);
+    const nicheOverrides = { ...(currentStore.nichePriceOverrides || {}) };
+    const nicheModes = { ...(currentStore.nichePriceOverrideModes || {}) };
+    if (margin <= 0) {
+      delete nicheOverrides[nicheId];
+      delete nicheModes[nicheId];
+    } else {
+      nicheOverrides[nicheId] = margin;
+      nicheModes[nicheId] = 'percent';
+    }
+    const prevNicheOverrides = currentStore.nichePriceOverrides;
+    const prevNicheOverrideModes = currentStore.nichePriceOverrideModes;
+    updateCurrentStoreObject({
+      ...currentStore,
+      nichePriceOverrides: nicheOverrides,
+      nichePriceOverrideModes: nicheModes,
+    });
+    if (!isMockMode() && currentStore.slug) {
+      return storeApi.updateStorePricing(currentStore.slug, {
+        type: 'niche',
+        targetId: nicheId,
+        value: margin,
+        mode: 'percent',
+      }).then(() => true).catch((err) => { console.warn('Failed to persist niche price override:', err); updateCurrentStoreObject({ ...currentStore, nichePriceOverrides: prevNicheOverrides, nichePriceOverrideModes: prevNicheOverrideModes }); return false; });
+    }
+    return Promise.resolve(true);
+  };
+
+  const updateStoreBuilderConfig = (config: StoreBuilderConfig, publishImmediately = false) => {
+    if (!currentStore) return;
+    const base = currentStore.builderConfig || {
+      selectedTheme: 'general',
+      accentColor: '#007dfa',
+      widgets: {
+        heroBanner: true,
+        dealsSlider: true,
+        categoriesGrid: true,
+        storeDealsWidget: true,
+        trustBar: true,
+        contactInfo: true,
+      },
+    };
+    const nextConfig: StoreBuilderConfig = publishImmediately
+      ? { ...config, publishedAt: new Date().toLocaleDateString('fa-IR'), draftConfig: undefined }
+      : { ...base, draftConfig: config };
+    updateCurrentStoreObject({ ...currentStore, builderConfig: nextConfig });
+    if (!isMockMode() && currentStore.slug) {
+      storeApi.saveStoreSettings(currentStore.slug, { builderConfig: nextConfig }).catch((err) => console.warn('Failed to persist builder config:', err));
+    }
+  };
+
+  const revertStoreBuilderConfig = () => {
+    if (!currentStore) return;
+    if (!currentStore.builderConfig) return;
+    updateCurrentStoreObject({
+      ...currentStore,
+      builderConfig: { ...currentStore.builderConfig, draftConfig: undefined },
+    });
+  };
+
+  const updateStoreCustomDomain = (domain: string) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, customDomain: domain.trim().toLowerCase() });
+  };
+
+  const updateStorePlan = (planId: 'trial' | 'standard' | 'pro' | 'vip') => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, activePlanId: planId });
+  };
+
+  const requestStoreNameChange = (storeId: string, requestedName: string) => {
+    if (!currentStore) return;
+    const req: StoreNameChangeRequest = {
+      id: `REQ-N-${Date.now().toString().slice(-4)}`,
+      storeId,
+      currentName: currentStore.name,
+      requestedName,
+      sellerMobile: '09121112233',
+      status: 'pending',
+      requestDate: new Date().toLocaleDateString('fa-IR'),
+    };
+    setStoreNameChangeRequests((prev) => [req, ...prev]);
+  };
+
+  const approveStoreNameChange = (requestId: string) => {
+    if (!currentStore) return;
+    const req = storeNameChangeRequests.find((r) => r.id === requestId);
+    if (!req) return;
+    setStoreNameChangeRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'approved' } : r))
+    );
+    updateCurrentStoreObject({ ...currentStore, name: req.requestedName });
+  };
+
+  const rejectStoreNameChange = (requestId: string) => {
+    setStoreNameChangeRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'rejected' } : r))
+    );
+  };
+
+  const requestStoreSlugChange = (storeId: string, requestedSlug: string) => {
+    if (!currentStore) return;
+    const req: StoreSlugChangeRequest = {
+      id: `REQ-S-${Date.now().toString().slice(-4)}`,
+      storeId,
+      currentSlug: currentStore.slug,
+      requestedSlug,
+      sellerMobile: '09121112233',
+      status: 'pending',
+      requestDate: new Date().toLocaleDateString('fa-IR'),
+    };
+    setStoreSlugChangeRequests((prev) => [req, ...prev]);
+  };
+
+  const approveStoreSlugChange = (requestId: string) => {
+    if (!currentStore) return;
+    const req = storeSlugChangeRequests.find((r) => r.id === requestId);
+    if (!req) return;
+    setStoreSlugChangeRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'approved' } : r))
+    );
+    updateCurrentStoreObject({ ...currentStore, slug: req.requestedSlug });
+  };
+
+  const rejectStoreSlugChange = (requestId: string) => {
+    setStoreSlugChangeRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'rejected' } : r))
+    );
+  };
+
+  const requestCustomDomain = (storeId: string, domain: string) => {
+    if (!currentStore) return;
+    const req: CustomDomainRequest = {
+      id: `REQ-D-${Date.now().toString().slice(-4)}`,
+      storeId,
+      storeName: currentStore.name,
+      requestedDomain: domain,
+      status: 'pending',
+      requestDate: new Date().toLocaleDateString('fa-IR'),
+    };
+    setCustomDomainRequests((prev) => [req, ...prev]);
+  };
+
+  const approveCustomDomain = (requestId: string) => {
+    const req = customDomainRequests.find((r) => r.id === requestId);
+    if (!req) return;
+    setCustomDomainRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'approved' } : r))
+    );
+    updateStoreCustomDomain(req.requestedDomain);
+  };
+
+  const rejectCustomDomain = (requestId: string) => {
+    setCustomDomainRequests((prev) =>
+      prev.map((r) => (r.id === requestId ? { ...r, status: 'rejected' } : r))
+    );
+  };
+  const updateStoreSelectedNiches = (nicheIds: string[]) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, selectedNicheIds: nicheIds });
+  };
+
+  const createPreMadeWidget = (widget: Omit<PreMadeWidget, 'id' | 'createdAt'>) => {
+    const created: PreMadeWidget = {
+      id: `WGT-${Date.now().toString().slice(-4)}`,
+      createdAt: new Date().toLocaleDateString('fa-IR'),
+      ...widget,
+    };
+    setPreMadeWidgets((prev) => [created, ...prev]);
+  };
+
+  const updatePreMadeWidget = (id: string, updated: Partial<PreMadeWidget>) => {
+    setPreMadeWidgets((prev) => prev.map((w) => (w.id === id ? { ...w, ...updated } : w)));
+  };
+
+  const updateSellerDealsWidgetConfig = (config: Store['sellerDealsWidgetConfig']) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, sellerDealsWidgetConfig: config });
+  };
+
+  const updateCentralDealsFilter = (filter: 'my_niches' | 'manual' | 'all', productIds?: string[]) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({ ...currentStore, centralDealsFilter: filter, centralDealsProductIds: productIds ?? currentStore.centralDealsProductIds });
+  };
+
+  const verifyAndConnectDomainAutomatically = async (storeId: string, domain: string) => {
+    updateStoreCustomDomain(domain);
+    return { success: true, message: `دامنه ${domain} با موفقیت تایید و به ویترین متصل شد.` };
+  };
+
+  const purchaseServiceWithWallet = (storeId: string, serviceType: any, cost: number, details?: string): boolean => {
+    if (isMockMode()) return true;
+    if (!currentStore?.slug || currentStore.id !== storeId) return false;
+    return false;
+  };
+
+  const updateStoreSocialLinks = (socialLinks: StoreSocialLinks) => {
+    if (!currentStore) return;
+    if (currentStore.builderConfig) {
+      updateCurrentStoreObject({
+        ...currentStore,
+        builderConfig: { ...currentStore.builderConfig, socialLinks },
+      });
+    }
+  };
+
+  const updateStoreAdminMarginOverride = (storeId: string, margin: number, isLocked: boolean) => {
+    if (!currentStore) return;
+    updateCurrentStoreObject({
+      ...currentStore,
+      profitMarginPercent: margin,
+      isMarginLockedByAdmin: isLocked,
+    });
+  };
+
+
+  const value: StoreState = {
+    currentStore,
+    setCurrentStore,
+    stores,
+    addStore,
+    storeStatuses,
+    toggleStoreStatus,
+    updateStoreActiveProducts,
+    toggleCategoryActiveProducts,
+    updateStoreProductPriceOverride,
+    updateStoreProductPriceOverrideWithMode,
+    updateStoreCategoryPriceOverride,
+    updateStoreNichePriceOverride,
+    updateStoreBuilderConfig,
+    revertStoreBuilderConfig,
+    updateStoreCustomDomain,
+    updateStorePlan,
+    storeNameChangeRequests,
+    requestStoreNameChange,
+    approveStoreNameChange,
+    rejectStoreNameChange,
+    storeSlugChangeRequests,
+    requestStoreSlugChange,
+    approveStoreSlugChange,
+    rejectStoreSlugChange,
+    customDomainRequests,
+    requestCustomDomain,
+    approveCustomDomain,
+    rejectCustomDomain,
+    updateStoreSelectedNiches,
+    preMadeWidgets,
+    createPreMadeWidget,
+    updatePreMadeWidget,
+    updateSellerDealsWidgetConfig,
+    updateCentralDealsFilter,
+    referredStoreSlug,
+    setReferredStoreSlug,
+    verifyAndConnectDomainAutomatically,
+    purchaseServiceWithWallet,
+    updateStoreSocialLinks,
+    updateStoreAdminMarginOverride,
+    isSellerModalOpen,
+    setIsSellerModalOpen,
+    directBuy,
+    startDirectBuy,
+    clearDirectBuy,
+    directBuyAddress,
+    setDirectBuyAddress,
+    unreadNotificationCount,
+    setUnreadNotificationCount,
+    activeView,
+    setActiveView,
+    staticPageKey,
+    openStaticPage,
+    storefrontSlug,
+    storefrontLoading,
+    storefrontResolved,
+    storefrontInvalid,
+    storefrontSuspended,
+    storefrontUnsubscribeSlug,
+    sellerDashboardTab,
+    setSellerDashboardTab,
+    routeProductPending,
+    routeProductInvalid,
+    openStorefront,
+  };
+
+  if (storesLoading) {
+    return (
+      <StoreContext.Provider value={value}>
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center">
+          <div className="text-sm text-slate-500">در حال بارگذاری فروشگاه‌ها...</div>
+        </div>
+      </StoreContext.Provider>
+    );
+  }
+
+  if (!currentStore) {
+    return (
+      <StoreContext.Provider value={value}>
+        {allowUnselectedChildren ? children : (
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center">
+            <div className="text-sm text-slate-500">هیچ فروشگاهی برای نمایش انتخاب نشده است.</div>
+          </div>
+        )}
+      </StoreContext.Provider>
+    );
+  }
+
+  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
+};
+
+export const useStoreManager = (): StoreState => {
+  const context = useContext(StoreContext);
+  if (!context) {
+    throw new Error('useStoreManager must be used within a StoreProvider');
+  }
+  return context;
+};
+
+export const useStore = (): StoreContextType => {
+  const store = useStoreManager();
+  const auth = useAuth();
+  const prod = useProducts();
+  const cart = useCart();
+  const ord = useOrders();
+  const fin = useFinance();
+  const wh = useWarehouse();
+
+  if (!store.currentStore) {
+    throw new Error('A store must be selected before consuming the store context');
+  }
+
+  return {
+    currentStore: store.currentStore,
+    setCurrentStore: store.setCurrentStore as (store: Store) => void,
+    stores: store.stores,
+    addStore: store.addStore,
+    storeStatuses: store.storeStatuses,
+    toggleStoreStatus: store.toggleStoreStatus,
+    updateStoreActiveProducts: store.updateStoreActiveProducts,
+    toggleCategoryActiveProducts: store.toggleCategoryActiveProducts,
+    updateStoreProductPriceOverride: store.updateStoreProductPriceOverride,
+    updateStoreProductPriceOverrideWithMode: store.updateStoreProductPriceOverrideWithMode,
+    updateStoreCategoryPriceOverride: store.updateStoreCategoryPriceOverride,
+    updateStoreNichePriceOverride: store.updateStoreNichePriceOverride,
+    updateStoreBuilderConfig: store.updateStoreBuilderConfig,
+    revertStoreBuilderConfig: store.revertStoreBuilderConfig,
+    updateStoreCustomDomain: store.updateStoreCustomDomain,
+    updateStorePlan: store.updateStorePlan,
+    storeNameChangeRequests: store.storeNameChangeRequests,
+    requestStoreNameChange: store.requestStoreNameChange,
+    approveStoreNameChange: store.approveStoreNameChange,
+    rejectStoreNameChange: store.rejectStoreNameChange,
+    storeSlugChangeRequests: store.storeSlugChangeRequests,
+    requestStoreSlugChange: store.requestStoreSlugChange,
+    approveStoreSlugChange: store.approveStoreSlugChange,
+    rejectStoreSlugChange: store.rejectStoreSlugChange,
+    customDomainRequests: store.customDomainRequests,
+    requestCustomDomain: store.requestCustomDomain,
+    approveCustomDomain: store.approveCustomDomain,
+    rejectCustomDomain: store.rejectCustomDomain,
+    updateStoreSelectedNiches: store.updateStoreSelectedNiches,
+    preMadeWidgets: store.preMadeWidgets,
+    createPreMadeWidget: store.createPreMadeWidget,
+    updatePreMadeWidget: store.updatePreMadeWidget,
+    updateSellerDealsWidgetConfig: store.updateSellerDealsWidgetConfig,
+    updateCentralDealsFilter: store.updateCentralDealsFilter,
+    referredStoreSlug: store.referredStoreSlug,
+    setReferredStoreSlug: store.setReferredStoreSlug,
+    verifyAndConnectDomainAutomatically: store.verifyAndConnectDomainAutomatically,
+    purchaseServiceWithWallet: store.purchaseServiceWithWallet,
+    updateStoreSocialLinks: store.updateStoreSocialLinks,
+    updateStoreAdminMarginOverride: store.updateStoreAdminMarginOverride,
+    isSellerModalOpen: store.isSellerModalOpen,
+    setIsSellerModalOpen: store.setIsSellerModalOpen,
+    activeView: store.activeView,
+    setActiveView: store.setActiveView,
+    staticPageKey: store.staticPageKey,
+    openStaticPage: store.openStaticPage,
+    storefrontSlug: store.storefrontSlug,
+    storefrontLoading: store.storefrontLoading,
+    storefrontResolved: store.storefrontResolved,
+    storefrontInvalid: store.storefrontInvalid,
+    storefrontSuspended: store.storefrontSuspended,
+    storefrontUnsubscribeSlug: store.storefrontUnsubscribeSlug,
+    storefrontProductDetail: store.activeView === 'seller_storefront' ? prod.currentProductDetail : null,
+    openStorefront: store.openStorefront,
+    sellerDashboardTab: store.sellerDashboardTab,
+    setSellerDashboardTab: store.setSellerDashboardTab,
+    routeProductPending: store.routeProductPending,
+    routeProductInvalid: store.routeProductInvalid,
+    formatPrice,
+    toPersianDigits,
+    // Auth Context
+    customerUser: auth.customerUser,
+    setCustomerUser: auth.setCustomerUser,
+    logoutCustomer: auth.logoutCustomer,
+    adminSession: auth.adminSession,
+    setAdminSession: auth.setAdminSession,
+    logoutAdmin: auth.logoutAdmin,
+    sellerSession: auth.sellerSession,
+    setSellerSession: auth.setSellerSession,
+    logoutSeller: auth.logoutSeller,
+    supplierSession: auth.supplierSession,
+    setSupplierSession: auth.setSupplierSession,
+    logoutSupplier: auth.logoutSupplier,
+    warehouseSession: auth.warehouseSession,
+    setWarehouseSession: auth.setWarehouseSession,
+    logoutWarehouse: auth.logoutWarehouse,
+
+    // Product Context
+    products: prod.products,
+    categories: prod.categories,
+    niches: prod.niches,
+    catalogLoading: prod.catalogLoading,
+    catalogError: prod.catalogError,
+    searchQuery: prod.searchQuery,
+    setSearchQuery: prod.setSearchQuery,
+    selectedCategory: prod.selectedCategory,
+    setSelectedCategory: prod.setSelectedCategory,
+    selectedProduct: prod.selectedProduct,
+    setSelectedProduct: prod.setSelectedProduct,
+    currentProductDetail: prod.currentProductDetail,
+    openProductDetail: (product: Product) => {
+      prod.openProductDetail(product);
+      store.setActiveView('product_detail', { productId: product.id });
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    },
+    openCatalogCategory: (categorySlug: string, query: string = '') => {
+      prod.openCatalogCategory(categorySlug, query);
+      store.setActiveView('catalog', { searchQuery: query, categorySlug });
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    },
+    // FIX 71: PDP brand click -> catalog filtered to that brand (all categories).
+    openCatalogBrand: (brand: string) => {
+      prod.openCatalogBrand(brand);
+      store.setActiveView('catalog', { searchQuery: '', categorySlug: 'all' });
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    },
+    catalogBrandRequest: prod.catalogBrandRequest,
+    clearCatalogBrand: prod.clearCatalogBrand,
+    wishlistIds: prod.wishlistIds,
+    toggleWishlist: prod.toggleWishlist,
+    isWishlisted: prod.isWishlisted,
+    toggleProductOriginality: prod.toggleProductOriginality,
+    addProduct: prod.addProduct,
+
+    // Cart Context
+    cart: cart.cart,
+    addToCart: (p: Product, q?: number, c?: string, variantId?: string, addonIds?: string[]) => {
+      if (!store.currentStore) return;
+      cart.addToCart(p, q, c, store.currentStore, variantId, addonIds);
+    },
+    removeFromCart: cart.removeFromCart,
+    updateQuantity: cart.updateQuantity,
+    clearCart: cart.clearCart,
+    cartTotal: cart.cartTotal,
+    cartDiscount: cart.cartDiscount,
+    cartPayable: cart.cartPayable,
+    cartItemsCount: cart.cartItemsCount,
+    isCartOpen: cart.isCartOpen,
+    setIsCartOpen: cart.setIsCartOpen,
+    directBuy: store.directBuy,
+    startDirectBuy: store.startDirectBuy,
+    clearDirectBuy: store.clearDirectBuy,
+    directBuyAddress: store.directBuyAddress,
+    setDirectBuyAddress: store.setDirectBuyAddress,
+
+    // Order Context
+    orders: ord.orders,
+    trackingOrder: ord.trackingOrder,
+    setTrackingOrder: ord.setTrackingOrder,
+    isTrackingModalOpen: ord.isTrackingModalOpen,
+    setIsTrackingModalOpen: ord.setIsTrackingModalOpen,
+    // Worker A (buy-now): live's placeOrder wrapper accepts a lines/store
+    // override for direct buy (index-MERGED.js ze(): placeOrder(p, y, j, N)
+    // with N.lines/N.store). A direct order must NOT clear the cart.
+    placeOrder: (customerInfo: Order['customerInfo'], paymentMethod: 'cash', discountCode?: string, shippingQuoteId?: string, direct?: { lines: CartItem[]; store?: DirectBuyStore }, address?: { addressId?: string; saveAddress?: boolean }) => {
+      const directStore = direct?.store
+        ? (store.stores.find((s) => s.id === direct.store!.id) || direct.store || store.currentStore || undefined)
+        : (store.currentStore || undefined);
+      return ord.placeOrder({
+        customerInfo,
+        paymentMethod,
+        discountCode,
+        shippingQuoteId,
+        addressId: address?.addressId,
+        saveAddress: address?.saveAddress,
+        cartItems: direct?.lines ?? cart.cart,
+        currentStore: direct ? directStore : (store.currentStore || undefined),
+        customerPhone: auth.customerUser.mobile,
+        referredStoreSlug: store.referredStoreSlug,
+        stores: store.stores,
+      }).then((res: Order) => {
+        if (!direct) cart.clearCart();
+        return res;
+      });
+    },
+    confirmOrderDelivery: ord.confirmOrderDelivery,
+    disputeOrderDelivery: ord.disputeOrderDelivery,
+    adminResolveDeliveryDispute: ord.adminResolveDeliveryDispute,
+
+    // Finance Context
+    payoutRequests: fin.payoutRequests,
+    requestPayout: fin.requestPayout,
+    approvePayout: fin.approvePayout,
+    rejectPayout: fin.rejectPayout,
+    adjustmentRecords: fin.adjustmentRecords,
+    createAdjustmentRecord: fin.createAdjustmentRecord,
+    disputes: fin.disputes,
+    resolveDisputeAndAdjust: fin.resolveDisputeAndAdjust,
+    verifyShebaOwnerName: fin.verifyShebaOwnerName,
+    executeSupplierMonthlyPayouts: fin.executeSupplierMonthlyPayouts,
+    platformSettings: fin.platformSettings,
+    updatePlatformSettings: fin.updatePlatformSettings,
+    updateContracts: fin.updateContracts,
+    updateSubscriptionPlans: fin.updateSubscriptionPlans,
+    updateTrialCatalogQuota: fin.updateTrialCatalogQuota,
+    updateDeliveryConfirmationSettings: fin.updateDeliveryConfirmationSettings,
+    updateWarehouseTariffs: fin.updateWarehouseTariffs,
+    updatePackagingTariffs: fin.updatePackagingTariffs,
+    unifiedPendingApprovals: fin.unifiedPendingApprovals,
+    approveUnifiedItem: fin.approveUnifiedItem,
+    rejectUnifiedItem: fin.rejectUnifiedItem,
+    auditLogs: fin.auditLogs,
+    logAuditEvent: fin.logAuditEvent,
+
+    // Warehouse Context
+    inboundShipments: wh.inboundShipments,
+    createInboundShipment: wh.createInboundShipment,
+    receiveInboundShipment: wh.receiveInboundShipment,
+    completePutaway: wh.completePutaway,
+    completeOrderPicking: wh.completeOrderPicking,
+    completeOrderPacking: wh.completeOrderPacking,
+    dispatchOrdersToShipping: wh.dispatchOrdersToShipping,
+    processWarehouseReturn: wh.processWarehouseReturn,
+    qcDiscrepancies: wh.qcDiscrepancies,
+    submitQCDiscrepancy: wh.submitQCDiscrepancy,
+    acceptQCDiscrepancy: wh.acceptQCDiscrepancy,
+    disputeQCDiscrepancy: wh.disputeQCDiscrepancy,
+    proposedProducts: wh.proposedProducts,
+    submitProposedProduct: wh.submitProposedProduct,
+    approveAndMergeProduct: wh.approveAndMergeProduct,
+    rejectProposedProduct: wh.rejectProposedProduct,
+    updateWholesaleCost: wh.updateWholesaleCost,
+    adCampaigns: wh.adCampaigns,
+    createAdCampaign: wh.createAdCampaign,
+    toggleAdCampaign: wh.toggleAdCampaign,
+    createSupplierPromotion: wh.createSupplierPromotion,
+    deleteSupplierPromotion: wh.deleteSupplierPromotion,
+  };
+};

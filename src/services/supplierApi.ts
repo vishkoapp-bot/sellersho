@@ -1,0 +1,317 @@
+import { apiRequest, tokenStore, getApiBase } from './apiClient';
+
+export interface SupplierProductDto {
+  id: string;
+  title: string;
+  slug: string;
+  categorySlug: string;
+  supplierId: string;
+  originalPrice: number;
+  supplierBaseCost: number;
+  platformMargin: number;
+  isOriginal: boolean;
+  stock: number;
+  imageUrl: string;
+  description: string;
+  warehouseName: string;
+  preparationDays: number;
+  supplierWarranty: string;
+  supplyOption: '3hour_local' | '1day' | '3day';
+  warrantyPropertyId?: string;
+  brand?: string;
+  fulfillmentMethod?: string;
+  originSupplierWarehouseId?: string;
+  rating?: number;
+  reviewsCount?: number;
+}
+export interface SupplierReturnRequestDto { id:string; supplierId?:string; productId:string; productTitle:string; warehouseName:string; requestedQuantity:number; eligibleQuantity:number; collectionMethod:'supplier_collect'|'postal'; postalCharge:number; status:string; reason:string; createdAt:string; reviewedAt?:string; handoverAt?:string; receivedAt?:string; inspectedAt?:string; inspectionStatus?:string; acceptedQuantity?:number; failedQuantity?:number; }
+export interface ReturnParcelInput { quantity:number; carrierCode:string; paymentMethod:'sender_pays'|'receiver_pays'; origin:string; destination:string; lengthMm:number; widthMm:number; heightMm:number; weightGrams:number; estimatedCharge?:number; estimateSource?:'tariff'|'api'|'manual'; estimateReference?:string; finalCharge?:number; finalChargeSource?:'tariff'|'api'|'manual'; finalChargeReference?:string; trackingNumber?:string; notes?:string; }
+export interface ReturnParcelDto extends ReturnParcelInput { id:string; returnRequestId:string; parcelNumber:number; status:string; createdBy:string; confirmedBy?:string; }
+export interface ReturnFinancialEventDto { id:string; returnRequestId:string; parcelId?:string; operation:string; amount:number; paymentMethod:string; ledgerEntryId?:string; reason:string; actorUserId:string; createdAt:string; }
+export interface CarrierOptionDto { code:string; displayName:string; supportsSenderPays:boolean; supportsReceiverPays:boolean; supportsQuoteApi:boolean; tariffVersion:number; }
+export interface SupplierInventoryLocationDto { productId:string; productTitle:string; ownerType:string; locationType:string; locationKey:string; warehouseName?:string; binCode?:string; status:string; quantity:number; reconciled:boolean; }
+export interface WarrantyPropertyDto { id:string; name:string; description:string; status:string; }
+
+export interface SupplierInboundDto {
+  id: string;
+  supplierId: string;
+  supplierName: string;
+  warehouseName: string;
+  itemsCount: number;
+  cartonsCount: number;
+  carrier: string;
+  truckPlate: string;
+  status: string;
+  createdAt: string;
+  receivedAt?: string;
+}
+
+export interface SupplierDiscrepancyDto {
+  id: string;
+  inbound_id: string;
+  supplier_id: string;
+  product_id: string;
+  product_title?: string;
+  expected_quantity: number;
+  received_quantity: number;
+  defect_count: number;
+  reason: string;
+  status: string;
+  supplier_response?: string;
+  resolution_offer?: string;
+  created_at: string;
+  resolved_at?: string;
+}
+
+export interface SupplierReportDto {
+  total_revenue: number;
+  items_sold: number;
+  orders_count: number;
+  average_order: number;
+}
+
+export interface SupplierCampaignStatsDto {
+  campaign_id: string;
+  impressions: number;
+  clicks: number;
+  spent_budget: number;
+  ctr: number;
+}
+
+export interface SupplierOrderDto {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  customerName: string;
+  customerPhone?: string;
+  status: string;
+  statusText: string;
+  carrier?: string;
+  trackingNumber?: string;
+  shippedAt?: string;
+  createdAt: string;
+  itemCount: number;
+}
+
+export interface SupplierProposalDto {
+  id: string;
+  title: string;
+  supplierBaseCost: number;
+  barcode?: string;
+  status: string;
+  created_at: string;
+  rejection_reason?: string;
+}
+
+export interface SupplierCampaignDto {
+  id: string;
+  campaign_name: string;
+  budget: number;
+  cpc_bid: number;
+  spent_budget: number;
+  impressions: number;
+  clicks: number;
+  status: string;
+}
+
+export interface SupplierPayoutDto {
+  id: string;
+  amount: number;
+  status: string;
+  transfer_reference?: string;
+  shaba: string;
+  bank_name: string;
+  account_holder: string;
+  created_at: string;
+}
+
+export interface SupplierStorageFeeCharge {
+  id: string;
+  productTitle?: string;
+  warehouseName?: string;
+  feeDate: string;
+  qty: number;
+  feeUnitDayToman: number;
+  amountToman: number;
+  goodsClass: string;
+  estimated?: boolean;
+}
+
+export interface SupplierProfileFull {
+  id: string;
+  name: string;
+  company_name: string;
+  description: string;
+  warehouse_city: string;
+  warehouse_city_confirmed: boolean;
+  logo_url: string;
+}
+
+export interface SupplierAddonDto {
+  id: string;
+  title: string;
+  description: string;
+  kind: string;
+  priceMode: string;
+  priceValue: number;
+  capToman: number;
+  approvalStatus: string;
+  proposalStatus?: string;
+  rejectionReason?: string;
+  isActive: boolean;
+  sortOrder: number;
+  linkedProductId?: string;
+  attachments?: { scopeType: string; productId: string }[];
+}
+
+export const supplierApi = {
+  getProducts: () => apiRequest<SupplierProductDto[]>('/supplier/products', { method: 'GET', auth: true }),
+  getProposals: () => apiRequest<SupplierProposalDto[]>('/supplier/products/proposals', { method: 'GET', auth: true }),
+  proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  updateStock: (productId: string, newStock: number, reason?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason }) }),
+  updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
+  updateSupplyOption: (productId: string, supplyOption: SupplierProductDto['supplyOption']) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/supply-option`, { method: 'PUT', auth: true, body: JSON.stringify({ supply_option: supplyOption }) }),
+  getInbounds: () => apiRequest<SupplierInboundDto[]>('/supplier/inbounds', { method: 'GET', auth: true }),
+  createInbound: (payload: { items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  getShipments: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/shipments', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.shipments ?? []);
+  },
+  getVariants: async (productId: string): Promise<any[]> => {
+    const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/variants`, { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.variants ?? []);
+  },
+  // FIX 47 — live gallery modal (Ll) + variants modal (Fl) clients.
+  getProductImages: async (productId: string): Promise<any[]> => {
+    const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/images`, { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.images ?? []);
+  },
+  uploadProductImages: async (productId: string, files: File[]): Promise<any> => {
+    const form = new FormData();
+    files.forEach((f) => form.append('images', f));
+    const token = tokenStore.getToken();
+    const res = await fetch(`${getApiBase()}/supplier/products/${encodeURIComponent(productId)}/images`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر');
+    return data;
+  },
+  deleteProductImage: (productId: string, imageId: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}`, { method: 'DELETE', auth: true }),
+  setProductCoverImage: (productId: string, imageId: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}/cover`, { method: 'PUT', auth: true }),
+  reorderProductImages: (productId: string, orderedIds: string[]) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/images/reorder`, { method: 'PUT', auth: true, body: JSON.stringify({ orderedIds }) }),
+  getLabels: async (productId: string): Promise<any> => {
+    const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/labels`, { method: 'GET', auth: true });
+    return data;
+  },
+  createVariant: (productId: string, payload: { variant_name: string; attributes: Record<string, string> }) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  createVariantsBulk: (productId: string, variants: { variant_name: string; attributes: Record<string, string> }[]) => apiRequest<{ count: number }>(`/supplier/products/${encodeURIComponent(productId)}/variants/bulk`, { method: 'POST', auth: true, body: JSON.stringify({ variants }) }),
+  updateVariantCartLimits: (productId: string, variantId: string, minQty: number, maxQty: number | null) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/cart-limits`, { method: 'PUT', auth: true, body: JSON.stringify({ min_cart_qty: minQty, max_cart_qty: maxQty }) }),
+  // FIX 48 — live reviews modal (jl/rv) + feedback modal (zl) clients.
+  getProductReviews: async (productId: string, limit = 10, offset = 0): Promise<any> => {
+    const data = await apiRequest<any>(`/products/${encodeURIComponent(productId)}/reviews?limit=${limit}&offset=${offset}`, { method: 'GET' });
+    return data;
+  },
+  getCatalogReview: (proposalId: string) => apiRequest<any>(`/supplier/catalog/review/${encodeURIComponent(proposalId)}`, { method: 'GET', auth: true }),
+  resubmitCatalogReview: (proposalId: string, data: Record<string, unknown>) => apiRequest(`/supplier/catalog/review/${encodeURIComponent(proposalId)}/resubmit`, { method: 'POST', auth: true, body: JSON.stringify({ data }) }),
+  createShipment: async (payload: { items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+    const data = await apiRequest<any>('/supplier/shipments', { method: 'POST', auth: true, body: JSON.stringify(payload) });
+    return data?.shipment ?? data;
+  },
+  getCentralWarehouses: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/warehouses/central', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : [];
+  },
+  dispatchInbound: (inboundId: string) => apiRequest(`/supplier/inbounds/${encodeURIComponent(inboundId)}/dispatch`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
+  cancelInbound: (inboundId: string) => apiRequest(`/supplier/inbounds/${encodeURIComponent(inboundId)}/cancel`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
+  getDiscrepancies: () => apiRequest<SupplierDiscrepancyDto[]>('/supplier/discrepancies', { method: 'GET', auth: true }),
+  respondDiscrepancy: (id: string, response: string, resolutionOffer: string) => apiRequest(`/supplier/discrepancies/${encodeURIComponent(id)}/respond`, { method: 'POST', auth: true, body: JSON.stringify({ response, resolution_offer: resolutionOffer }) }),
+  getSalesReport: (startDate?: string, endDate?: string) => apiRequest<SupplierReportDto>(`/supplier/sales-report${startDate || endDate ? `?start_date=${encodeURIComponent(startDate || '')}&end_date=${encodeURIComponent(endDate || '')}` : ''}`, { method: 'GET', auth: true }),
+  requestSettlement: (amount: number, shaba: string, bankName: string, accountHolder: string) => apiRequest('/supplier/settlement/request', { method: 'POST', auth: true, body: JSON.stringify({ amount, shaba, bank_name: bankName, account_holder: accountHolder }) }),
+  getSettlementHistory: () => apiRequest<SupplierPayoutDto[]>('/supplier/settlement/history', { method: 'GET', auth: true }),
+  getStorageFeeCharges: () => apiRequest<{ charges: SupplierStorageFeeCharge[] }>('/supplier/settlement/storage-fees', { method: 'GET', auth: true }),
+  getSupplierProfileFull: () => apiRequest<SupplierProfileFull>('/supplier/profile', { method: 'GET', auth: true }),
+  updateSupplierProfile: (payload: { description?: string; warehouse_city?: string; logo_url?: string }) => apiRequest<SupplierProfileFull>('/supplier/profile', { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
+  uploadLogoImage: async (file: File): Promise<{ imageUrl: string }> => {
+    const form = new FormData();
+    form.append('image', file);
+    const token = tokenStore.getToken();
+    const res = await fetch(`${getApiBase()}/upload/product-image`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود لوگو');
+    if (!(data as any)?.success || !(data as any)?.imageUrl) throw new Error((data as any)?.error || 'خطا در آپلود لوگو');
+    return data as { imageUrl: string };
+  },
+  getSettlementBalance: () => apiRequest<{ earned: number; reserved: number; paid: number; available: number }>('/supplier/settlement/balance', { method: 'GET', auth: true }),
+  getCampaigns: () => apiRequest<SupplierCampaignDto[]>('/supplier/campaigns', { method: 'GET', auth: true }),
+  setCampaignStatus: (id: string, status: 'active' | 'paused') => apiRequest(`/supplier/campaigns/${encodeURIComponent(id)}/status`, { method: 'PUT', auth: true, body: JSON.stringify({ status }) }),
+  createCampaign: (payload: Record<string, unknown>) => apiRequest<{ id: string; campaign_id: string }>('/supplier/campaigns/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  getCampaignStats: (id: string) => apiRequest<SupplierCampaignStatsDto>(`/supplier/campaigns/${encodeURIComponent(id)}/stats`, { method: 'GET', auth: true }),
+  getOrders: () => apiRequest<{ success: boolean; orders: SupplierOrderDto[] }>('/supplier/orders', { method: 'GET', auth: true }),
+  getOrderAddons: async (orderId: string) => { const r = await apiRequest<any>(`/supplier/orders/${encodeURIComponent(orderId)}/addons`, { method: "GET", auth: true }); return { addons: r.addons || [], total: r.total || 0 }; },
+  // FIX 50 — live addons widget (Ql) clients.
+  getAddons: async (): Promise<SupplierAddonDto[]> => { const r = await apiRequest<any>('/supplier/addons', { method: 'GET', auth: true }); return r.addons || []; },
+  createAddon: (payload: Record<string, unknown>) => apiRequest<SupplierAddonDto>('/supplier/addons', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  updateAddon: (id: string, payload: Record<string, unknown>) => apiRequest<{ staged: boolean }>(`/supplier/addons/${encodeURIComponent(id)}`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
+  setAddonActive: (id: string, isActive: boolean) => apiRequest(`/supplier/addons/${encodeURIComponent(id)}/active`, { method: 'PATCH', auth: true, body: JSON.stringify({ isActive }) }),
+  setAddonAttachments: (id: string, productIds: string[]) => apiRequest(`/supplier/addons/${encodeURIComponent(id)}/attachments`, { method: 'PUT', auth: true, body: JSON.stringify({ attachments: productIds.map((productId) => ({ scopeType: 'product', productId })) }) }),
+  submitShipping: (orderId: string, payload: { carrier: string; trackingNumber: string; shippingDate?: string }) => apiRequest<{ success: boolean }>(`/supplier/orders/${encodeURIComponent(orderId)}/shipping`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  getReturns: () => apiRequest<SupplierReturnRequestDto[]>('/supplier/returns', { method:'GET', auth:true }),
+  requestReturn: (productId:string, quantity:number, collectionMethod:'supplier_collect'|'postal', reason:string, idempotencyKey:string) => apiRequest<SupplierReturnRequestDto>('/supplier/returns', { method:'POST', auth:true, headers:{'Idempotency-Key':idempotencyKey}, body:JSON.stringify({productId,quantity,collectionMethod,reason}) }),
+  cancelReturn: (returnId:string, reason:string) => apiRequest(`/supplier/returns/${encodeURIComponent(returnId)}/cancel`, { method:'POST', auth:true, headers:{'Idempotency-Key':`cancel-${returnId}`}, body:JSON.stringify({reason}) }),
+  getWarranties: () => apiRequest<WarrantyPropertyDto[]>('/supplier/warranties', { method:'GET', auth:true }),
+  requestWarranty: (payload:{productId?:string;name:string;description:string;images:string[]}) => apiRequest<{success:boolean;id:string;status:string}>('/supplier/warranties', { method:'POST', auth:true, body:JSON.stringify(payload) }),
+  getInventoryLocations: () => apiRequest<{success:boolean;inventory:SupplierInventoryLocationDto[]}>('/supplier/inventory', { method:'GET', auth:true }),
+  getStockShare: () => apiRequest<any>('/supplier/stock-share', { method: 'GET', auth: true }),
+  getCustomerReturns: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/customer-returns', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.returns ?? data?.data ?? []);
+  },
+  // FIX 44: live's An reads a.data.charges (snake_case return_id grouping).
+  getReturnShippingCharges: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/return-shipping-charges', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.charges ?? []);
+  },
+  // FIX 44: live's An back-request actions (S / R / $ handlers).
+  requestCustomerReturnBack: (returnItemId: string, quantity: number, reason: string, idempotencyKey: string) => apiRequest(`/supplier/customer-returns/${encodeURIComponent(returnItemId)}/request-back`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ quantity, reason }) }),
+  cancelReturnBack: (backId: string, reason: string) => apiRequest(`/supplier/customer-returns/back-requests/${encodeURIComponent(backId)}/cancel`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': `cancel-back-${backId}` }, body: JSON.stringify({ reason }) }),
+  completeReturnBack: (backId: string) => apiRequest(`/supplier/customer-returns/back-requests/${encodeURIComponent(backId)}/complete`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': `complete-back-${backId}` }, body: JSON.stringify({}) }),
+  getShippingMethods: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/shipping-methods', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.methods ?? data?.data ?? []);
+  },
+  requestShippingMethod: (method: string) => apiRequest("/supplier/shipping-methods/request", { method: "POST", auth: true, body: JSON.stringify({ method }) }),
+  getMyWarehouses: async (): Promise<any[]> => {
+    const data = await apiRequest<any>('/supplier/warehouses', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.warehouses ?? data?.data ?? []);
+  },
+  getProfile: () => apiRequest<any>('/supplier/profile', { method: 'GET', auth: true }),
+  acceptContract: (version: number) => apiRequest('/supplier/contract/accept', { method: 'POST', auth: true, body: JSON.stringify({ version }) }),
+  updateProductOrigin: (id: string, warehouseId: string) => apiRequest(`/supplier/products/${encodeURIComponent(id)}/origin`, { method: 'PUT', auth: true, body: JSON.stringify({ supplierWarehouseId: warehouseId }) }),
+  getMyExclusivityChallenges: async (): Promise<any[]> => { const data = await apiRequest<any>('/supplier/exclusivity-challenges', { method: 'GET', auth: true }); return Array.isArray(data) ? data : (data?.challenges ?? []); },
+  // FIX 52 — live challenge-create (Jl challenge box).
+  createExclusivityChallenge: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/exclusivity-challenges', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  createMyWarehouse: (input: { name: string; provinceName: string; cityName: string; address?: string; postalCode?: string; phone?: string }) => apiRequest("/supplier/warehouses", { method: "POST", auth: true, body: JSON.stringify(input) }),
+  updateMyWarehouse: (id: string, input: { name: string; provinceName: string; cityName: string; address?: string; postalCode?: string; phone?: string }) => apiRequest(`/supplier/warehouses/${encodeURIComponent(id)}`, { method: "PUT", auth: true, body: JSON.stringify(input) }),
+  getAnalytics: async (): Promise<any> => apiRequest<any>('/supplier/analytics', { method: 'GET', auth: true }),
+};
+
+export const warehouseReturnsApi = {
+  list: () => apiRequest<{success:boolean;returns:SupplierReturnRequestDto[]}>('/warehouse/returns', { method:'GET', auth:true }),
+  review: (returnId:string, status:'approved'|'rejected', reason:string) => apiRequest(`/warehouse/returns/${encodeURIComponent(returnId)}/review`, { method:'POST', auth:true, headers:{'Idempotency-Key':`review-${returnId}-${status}`}, body:JSON.stringify({status,reason}) }),
+  createParcel: (returnId:string, payload:ReturnParcelInput) => apiRequest<ReturnParcelDto>(`/warehouse/returns/${encodeURIComponent(returnId)}/parcels`, { method:'POST', auth:true, headers:{'Idempotency-Key':`parcel-${returnId}-${payload.quantity}-${payload.carrierCode}`}, body:JSON.stringify(payload) }),
+  confirmCharge: (returnId:string, parcelId:string) => apiRequest(`/warehouse/returns/${encodeURIComponent(returnId)}/parcels/${encodeURIComponent(parcelId)}/confirm-charge`, { method:'POST', auth:true, headers:{'Idempotency-Key':`charge-${parcelId}`} }),
+  handover: (returnId:string) => apiRequest(`/warehouse/returns/${encodeURIComponent(returnId)}/handover`, { method:'POST', auth:true, headers:{'Idempotency-Key':`handover-${returnId}`} }),
+  receive: (returnId:string) => apiRequest(`/warehouse/returns/${encodeURIComponent(returnId)}/receive`, { method:'POST', auth:true, headers:{'Idempotency-Key':`receive-${returnId}`} }),
+  inspect: (returnId:string, acceptedQuantity:number, failedQuantity:number, reason:string) => apiRequest(`/warehouse/returns/${encodeURIComponent(returnId)}/inspect`, { method:'POST', auth:true, headers:{'Idempotency-Key':`inspect-${returnId}-${acceptedQuantity}-${failedQuantity}`}, body:JSON.stringify({acceptedQuantity,failedQuantity,reason}) }),
+  getParcels: (returnId:string) => apiRequest<{success:boolean;parcels:ReturnParcelDto[]}>(`/warehouse/returns/${encodeURIComponent(returnId)}/parcels`, { method:'GET', auth:true }),
+  getFinancialEvents: (returnId:string) => apiRequest<{success:boolean;events:ReturnFinancialEventDto[]}>(`/warehouse/returns/${encodeURIComponent(returnId)}/financial-events`, { method:'GET', auth:true }),
+  getCarrierOptions: () => apiRequest<{success:boolean;carriers:CarrierOptionDto[]}>('/warehouse/carriers', { method:'GET', auth:true }),
+  quote: (payload:{carrierCode:string;originRegion:string;destinationRegion:string;sizeClass:string;weightGrams:number}) => apiRequest<{carrierCode:string;source:string;tariffVersion:number;baseWeightGrams:number;charge:number;roundingRule:string}>('/warehouse/carriers/quote', { method:'POST', auth:true, body:JSON.stringify(payload) }),
+};

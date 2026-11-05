@@ -153,13 +153,25 @@ export const catalogApi = {
     const endpoint = `/products/${qs ? `?${qs}` : ''}`;
     // FIX 4 (team 04 G5): the backend encodes an empty list as JSON
     // null exactly like live; normalise it so callers always get [].
-    const data = await apiRequest<ProductDto[] | null>(endpoint, { method: 'GET' });
+    // Store-scoped reads carry the session token: the backend only
+    // serves cost fields (baseCostB/platformFeeF/supplier*) on a scoped
+    // response to the store owner, the product's supplier, or an admin.
+    // Unscoped (public/central) requests stay anonymous, exactly as before.
+    const data = await apiRequest<ProductDto[] | null>(endpoint, {
+      method: 'GET',
+      ...(params.storeSlug ? { auth: true } : {}),
+    });
     return data ?? [];
   },
 
   getProductById: async (id: string, storeSlug?: string): Promise<ProductDto> => {
     const qs = storeSlug ? `?storeSlug=${encodeURIComponent(storeSlug)}` : '';
-    return apiRequest<ProductDto>(`/products/${id}${qs}`, { method: 'GET' });
+    // Same scoped-cost gate as getProducts: authenticate only when a
+    // store scope is present; unscoped detail requests stay anonymous.
+    return apiRequest<ProductDto>(`/products/${id}${qs}`, {
+      method: 'GET',
+      ...(storeSlug ? { auth: true } : {}),
+    });
   },
 
   // Team 04 server spn lookup (D46): GET /api/v1/products/spn-<n>.

@@ -1320,7 +1320,7 @@ func main() {
 		supplierHandlers.HandleAdminReviewPriceIncrease(w, r, r.PathValue("id"))
 	}))
 
-	mux.HandleFunc("/api/v1/admin/products/{productId}/price-exception", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/products/price-exception/{productId}", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		supplierHandlers.HandleAdminProductPriceException(w, r, r.PathValue("productId"))
 	}))
 

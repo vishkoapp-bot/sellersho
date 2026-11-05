@@ -655,7 +655,7 @@ func (h *SupplierHandlers) HandleGetSupplierPriceIncreases(w http.ResponseWriter
 // Files the supplier's exception request as a finance-section support
 // ticket (migration 202610310003 routes exception tickets by
 // section = 'finance'); an admin later turns it into a per-product grant
-// via POST /api/v1/admin/products/{productId}/price-exception. Body:
+// via POST /api/v1/admin/products/price-exception/{productId}. Body:
 // {productId, newReference, message?}. newReference and message are
 // validated here but not persisted: the sanctioned ticket columns carry
 // no body field (see CreatePriceIncreaseExceptionTicket).
@@ -1941,7 +1941,7 @@ func (h *SupplierHandlers) HandleAdminReviewPriceIncrease(w http.ResponseWriter,
 	})
 }
 
-// POST /api/v1/admin/products/{productId}/price-exception
+// POST /api/v1/admin/products/price-exception/{productId}
 // {exceptionCapPct, ticketId?} — create or replace the product's
 // exception grant. DELETE on the same path revokes it.
 func (h *SupplierHandlers) HandleAdminProductPriceException(w http.ResponseWriter, r *http.Request, productID string) {

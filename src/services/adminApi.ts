@@ -128,14 +128,14 @@ export const adminApi = {
 
   grantPriceException: async (productId: string, exceptionCapPct: number, ticketId?: string): Promise<{ success: boolean }> => {
     return apiRequest<{ success: boolean }>(
-      `/admin/products/${encodeURIComponent(productId)}/price-exception`,
+      `/admin/products/price-exception/${encodeURIComponent(productId)}`,
       { method: 'POST', auth: true, body: JSON.stringify({ exceptionCapPct, ticketId: ticketId || undefined }) }
     );
   },
 
   revokePriceException: async (productId: string): Promise<{ success: boolean }> => {
     return apiRequest<{ success: boolean }>(
-      `/admin/products/${encodeURIComponent(productId)}/price-exception`,
+      `/admin/products/price-exception/${encodeURIComponent(productId)}`,
       { method: 'DELETE', auth: true }
     );
   },

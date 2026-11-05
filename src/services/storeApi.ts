@@ -232,10 +232,16 @@ export const storeApi = {
 
   // Seller variant margins (percent-only, D28).
   getSellerVariantOverrides: async (storeId: string): Promise<Array<{ storeId: string; productId: string; variantId: string; value: number; mode: string }>> => {
-    return apiRequest('/seller/variant-overrides?storeId=' + encodeURIComponent(storeId), {
+    // The backend wraps the list ({ overrides: [...] }) — unwrap it here so
+    // callers always receive the bare array. A wrapped object is not
+    // iterable, which silently restored nothing in the pricing modal.
+    const data: any = await apiRequest('/seller/variant-overrides?storeId=' + encodeURIComponent(storeId), {
       method: 'GET',
       auth: true,
     });
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.overrides)) return data.overrides;
+    return [];
   },
 
   setSellerVariantOverride: async (payload: { storeId: string; productId: string; variantId: string; value: number; mode: 'percent' }): Promise<any> => {

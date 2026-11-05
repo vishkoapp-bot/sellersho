@@ -163,6 +163,7 @@ export const SellerCatalogTab: React.FC = () => {
               <span>•</span>
               <span className="text-emerald-600 font-bold">
                 سود تو: +{formatPrice(profitToman)} ت
+                <span className="text-emerald-700"> ({pricing.marginPercent.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪)</span>
               </span>
             </div>
             {(isNew || isRemoved) && (

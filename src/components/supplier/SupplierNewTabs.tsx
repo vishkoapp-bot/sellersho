@@ -70,7 +70,10 @@ const pick = (item: any, keys: string[]): string => {
 // amount chart, returns and quality section, per product table).
 // The help box renders intro plus help title and text statically;
 // live help box expand behavior is unproven.
-const formatFaDay = (t: string) => new Intl.DateTimeFormat("fa-IR", { day: "numeric", month: "short" }).format(new Date(t + "T12:00:00"));
+const formatFaDay = (t: string) => {
+  const d = new Date((t || "").slice(0, 10) + "T12:00:00");
+  return isNaN(d.getTime()) ? "" : new Intl.DateTimeFormat("fa-IR", { day: "numeric", month: "short" }).format(d);
+};
 
 const AnalyticsChart: React.FC<{ daily: any[]; formatPrice: (n: number) => string; toPersianDigits: (n: number | string) => string }> = ({ daily, formatPrice, toPersianDigits }) => {
   const max = Math.max(1, ...daily.map((x) => x.revenue));

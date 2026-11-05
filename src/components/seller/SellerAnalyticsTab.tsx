@@ -69,7 +69,11 @@ const percentChange = (current: number, previous: number): number | null =>
   previous === 0 ? (current === 0 ? 0 : null) : ((current - previous) / Math.abs(previous)) * 100;
 
 const formatChartDate = (date: string): string => {
-  const d = new Date(`${date}T12:00:00`);
+  // Backend day strings are 'YYYY-MM-DD'; slice defensively so a full
+  // timestamp can never produce an Invalid Date (Intl.format throws on
+  // one and blanked the whole tab).
+  const d = new Date(`${(date || '').slice(0, 10)}T12:00:00`);
+  if (isNaN(d.getTime())) return '';
   return new Intl.DateTimeFormat('fa-IR', { day: 'numeric', month: 'short' }).format(d);
 };
 

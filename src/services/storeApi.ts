@@ -5,7 +5,7 @@ export interface RegisterStorePayload {
   storeName: string;
   slug: string;
   ownerName: string;
-  profitMarginPercent: number;
+  profitMarginPercent?: number;
   referralCode?: string;
 }
 

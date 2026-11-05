@@ -54,7 +54,6 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
   const [newStoreName, setNewStoreName] = useState('');
   const [newStoreSlug, setNewStoreSlug] = useState('');
   const [newStoreTagline, setNewStoreTagline] = useState('منتخب بهترین کالاهای دیجیتال و سبک زندگی');
-  const [newStoreMargin, setNewStoreMargin] = useState(15);
 
   // Suspended Appeal State
   const [appealText, setAppealText] = useState('');
@@ -254,7 +253,7 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
       ownerType: 'dropshipper' as const,
       ownerName: sellerSession?.fullName || 'دراپ‌شیپر جدید',
       tagline: newStoreTagline.trim() || 'ویترین رسمی منتخب کالاها',
-      profitMarginPercent: newStoreMargin,
+      profitMarginPercent: 0,
       description: 'ویترین اختصاصی راه‌اندازی‌شده در شبکه سلرشو با ارسال مستقیم از انبار مرکزی.',
       activeCategories: ['digital', 'fashion', 'beauty', 'gold'],
       totalSales: 0,
@@ -267,7 +266,6 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
           storeName: newStoreName.trim(),
           slug: newStoreSlug.trim().toLowerCase(),
           ownerName: sellerSession?.fullName || 'فروشنده جدید',
-          profitMarginPercent: newStoreMargin,
         });
         createdStore = {
           ...createdStore,
@@ -671,21 +669,6 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
                 value={newStoreTagline}
                 onChange={(e) => setNewStoreTagline(e.target.value)}
                 className="w-full text-xs p-3 rounded-2xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-blue-500 outline-hidden"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between text-xs font-bold mb-1">
-                <span className="text-slate-700">حاشیه سود پیش‌فرض روی کاتالوگ (D):</span>
-                <span className="text-blue-600">٪{toPersianDigits(newStoreMargin)}</span>
-              </div>
-              <input
-                type="range"
-                min={5}
-                max={35}
-                value={newStoreMargin}
-                onChange={(e) => setNewStoreMargin(Number(e.target.value))}
-                className="w-full accent-[#007dfa]"
               />
             </div>
 

@@ -4,7 +4,7 @@ import { Store as StoreIcon, ChevronDown, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export const StoreDropdown: React.FC = () => {
-  const { currentStore, setCurrentStore, stores, toPersianDigits } = useStore();
+  const { currentStore, setCurrentStore, stores } = useStore();
   const [isOpen, setIsOpen] = useState(false);
 
 
@@ -53,12 +53,8 @@ export const StoreDropdown: React.FC = () => {
                 <div>
                   <div className="font-bold flex items-center gap-1.5">
                     {store.name}
-                    {store.ownerType === 'central' ? (
+                    {store.ownerType === 'central' && (
                       <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded font-normal">مرکزی</span>
-                    ) : (
-                      <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.2 rounded font-normal">
-                        +{toPersianDigits(store.profitMarginPercent)}٪ سود
-                      </span>
                     )}
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{store.tagline}</p>

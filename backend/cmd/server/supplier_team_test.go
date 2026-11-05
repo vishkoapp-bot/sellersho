@@ -29,6 +29,14 @@ func TestSupplierTeamPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Registration leaves the owner inactive (approval_status =
+	// 'pending_approval'); GetSupplierAccess denies a pending supplier's
+	// whole team via the owner-active gate (standing D54 policy). Member
+	// permission checks only make sense for an approved supplier, so run
+	// the production approval transition first.
+	if _, err := repo.ApproveSupplier(context.Background(), supplier.ID, owner.ID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM users WHERE id IN (SELECT user_id FROM supplier_members WHERE supplier_id = $1)`, supplier.ID)
 		_, _ = db.Exec(`DELETE FROM suppliers WHERE id = $1`, supplier.ID)

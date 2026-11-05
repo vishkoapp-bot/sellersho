@@ -59,6 +59,15 @@ const STATIC_PAGE_KEYS: Record<string, StaticPageKey> = {
   license: 'license',
 };
 
+// The central store's slug (backend store row, also a RESERVED_SLUG so
+// no dropshipper can claim it). A store slug equal to this is NOT a
+// store scope: scoped product URLs are only built for real stores.
+export const CENTRAL_STORE_SLUG = 'central';
+
+export function isStoreScopeSlug(slug: string | null | undefined): slug is string {
+  return !!slug && slug !== CENTRAL_STORE_SLUG;
+}
+
 // Normalise Persian/Arabic letters and Persian/Arabic digits to a single
 // form (live LS behaviour): Arabic yeh/kaf -> Persian yeh/kaf, all
 // Arabic-Indic and Persian digits -> Latin digits.
@@ -83,16 +92,29 @@ export function normalizeProductSlug(value: string): string {
 // variant query is preserved by the caller, not added here.
 // Server lookup for spn- is Team 04's: GET /api/v1/products/spn-<n>
 // (catalogApi.getProductBySpn). No second lookup is built here.
-export function buildProductUrl(product: {
-  id: string;
-  slug?: string;
-  spnNumber?: number | null;
-}): string {
+export function buildProductUrl(
+  product: {
+    id: string;
+    slug?: string;
+    spnNumber?: number | null;
+  },
+  storeSlug?: string,
+): string {
+  let base: string;
   if (product.spnNumber !== undefined && product.spnNumber !== null) {
     const slug = product.slug ? normalizeProductSlug(product.slug) : product.id;
-    return `/product/spn-${product.spnNumber}/${slug}/`;
+    base = `/product/spn-${product.spnNumber}/${slug}/`;
+  } else {
+    base = `/product/${encodeURIComponent(product.id)}`;
   }
-  return `/product/${encodeURIComponent(product.id)}`;
+  // Store-carrying form: /store/<slug>/product/... — the only URL
+  // shape that names a store AND a product, so a copied/shared link
+  // lands on that store's PDP at that store's prices. The central
+  // store (and no scope) keep the bare product path forever.
+  if (isStoreScopeSlug(storeSlug)) {
+    return `/store/${encodeURIComponent(storeSlug)}${base}`;
+  }
+  return base;
 }
 
 export function parseSpnSegment(segment: string): number | null {
@@ -108,9 +130,25 @@ export type ParsedRoute =
   | { view: 'customer' }
   | { view: 'seller_dashboard'; sellerTab: SellerDashboardTab }
   | { view: 'seller_storefront'; slug: string; unsubscribe: boolean }
-  | { view: 'product_detail'; id?: string; spnNumber?: number; spnc?: string }
+  | { view: 'product_detail'; id?: string; spnNumber?: number; spnc?: string; storeSlug?: string }
   | { view: 'static_page'; staticPageKey: StaticPageKey }
   | { view: 'not_found' };
+
+// Shared tail parser for product paths: the segment(s) after
+// /product/ (or after /store/<slug>/product/). Returns null when
+// there is no product segment at all.
+function parseProductRemainder(
+  rest: string,
+  params: URLSearchParams,
+): { id?: string; spnNumber?: number; spnc?: string } | null {
+  const parts = rest.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (parts.length === 0) return null;
+  const spn = parseSpnSegment(parts[0]);
+  if (spn !== null) {
+    return { spnNumber: spn, spnc: params.get('spnc') || undefined };
+  }
+  return { id: decodeURIComponent(parts[0]) };
+}
 
 export function parsePathname(pathname: string, search = ''): ParsedRoute {
   const path = pathname.replace(/\/+$/, '') || '/';
@@ -129,6 +167,23 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
     };
   }
 
+  // Store-scoped product URL: /store/<slug>/product/<id|spn-n/...>.
+  // Matched BEFORE the plain store route: the link names both the
+  // store and the product, and must land on that store's PDP. The
+  // central slug is not a scope (bare product route, as always).
+  const storeProductMatch = /^\/store\/([^/?#]+)\/product\/(.+)$/.exec(path);
+  if (storeProductMatch) {
+    const product = parseProductRemainder(storeProductMatch[2], params);
+    if (product) {
+      const slug = decodeURIComponent(storeProductMatch[1]);
+      return {
+        view: 'product_detail',
+        ...product,
+        storeSlug: isStoreScopeSlug(slug) ? slug : undefined,
+      };
+    }
+  }
+
   const storeMatch = /^\/store\/([^/?#]+)(\/unsubscribe)?$/.exec(path);
   if (storeMatch) {
     return {
@@ -140,14 +195,17 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
 
   const productMatch = /^\/product\/(.+)$/.exec(path);
   if (productMatch) {
-    const rest = productMatch[1].replace(/\/+$/, '');
-    const parts = rest.split('/').filter(Boolean);
-    const spn = parts.length > 0 ? parseSpnSegment(parts[0]) : null;
-    if (spn !== null) {
-      return { view: 'product_detail', spnNumber: spn, spnc: params.get('spnc') || undefined };
-    }
-    if (parts.length > 0) {
-      return { view: 'product_detail', id: decodeURIComponent(parts[0]) };
+    const product = parseProductRemainder(productMatch[1], params);
+    if (product) {
+      // Legacy seed: /product/<id>?storeSlug=<slug> scopes the PDP
+      // to that store, exactly like the /store/<slug>/product/ path
+      // form. The bare path itself stays the central PDP forever.
+      const seed = params.get('storeSlug');
+      return {
+        view: 'product_detail',
+        ...product,
+        storeSlug: isStoreScopeSlug(seed) ? (seed as string) : undefined,
+      };
     }
   }
 
@@ -193,8 +251,16 @@ export function pathForView(
       return '/admin';
     case 'seller_storefront':
       return options.storeSlug ? `/store/${encodeURIComponent(options.storeSlug)}` : '/';
-    case 'product_detail':
-      return options.productUrl || '/';
+    case 'product_detail': {
+      const productPath = options.productUrl || '/';
+      // A store-scoped product view keeps its store prefix, so a
+      // caller building the path from a bare product URL stays
+      // inside the store.
+      if (isStoreScopeSlug(options.storeSlug) && productPath.startsWith('/product/')) {
+        return `/store/${encodeURIComponent(options.storeSlug)}${productPath}`;
+      }
+      return productPath;
+    }
     case 'static_page':
       return options.staticPageKey ? STATIC_PAGE_PATHS[options.staticPageKey] : '/';
     case 'seller_dashboard':

@@ -22,7 +22,7 @@ func supplierPermissionForPath(path string) string {
 		return "finance.manage"
 	case strings.Contains(path, "/campaigns"):
 		return "marketing.manage"
-	case strings.Contains(path, "/orders"), strings.Contains(path, "/shipments"):
+	case strings.Contains(path, "/orders"), strings.Contains(path, "/shipments"), strings.Contains(path, "/warehouse-orders"):
 		return "orders.manage"
 	case strings.Contains(path, "/inbounds"), strings.Contains(path, "/discrepancies"), strings.HasSuffix(path, "/stock"):
 		return "inventory.manage"

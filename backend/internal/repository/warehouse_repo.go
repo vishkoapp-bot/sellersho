@@ -433,8 +433,9 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 	}
 	// Serialize concurrent passes on the shipment row (mirrors CompleteQC).
 	var supplierID string
+	var warehouseID string
 	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
 		return err
 	}
 	if qty > received {
@@ -454,6 +455,10 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 		return err
 	}
 
+	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
+	if err != nil {
+		return err
+	}
 	if err := moveInventoryTx(ctx, tx, productID, supplierID, qty, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", resID, "qc-pass:"+inboundID+":"+productID, inspectorUserID, `{}`); err != nil {
 		return err
 	}
@@ -480,6 +485,16 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 		return err
 	}
 
+	// Storage-fee position (gap 7 lifecycle): this pass minted the
+	// sellable warehouse stock above, so the same quantity joins the
+	// position ledger in this transaction (skipped when an earlier
+	// QC path already credited this inbound's sellable move).
+	if !qcCredited {
+		if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, qty); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -493,8 +508,9 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 	}
 	defer tx.Rollback()
 	var supplierID string
+	var warehouseID string
 	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
 		return err
 	}
 	if passed+failed > received {
@@ -513,6 +529,10 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 			return err
 		}
 	}
+	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
+	if err != nil {
+		return err
+	}
 	if passed > 0 {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,inbound_id,bin_location,quantity,status,created_at) VALUES ($1,$2,$3,NULL,$4,'pending',NOW())`, "PUT-"+uuid.NewString(), productID, inboundID, passed); err != nil {
 			return err
@@ -529,6 +549,14 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 		}
 		if err := syncProductStockTx(ctx, tx, productID); err != nil {
 			return err
+		}
+		// Storage-fee position (gap 7 lifecycle): same rule as
+		// RecordQCPass — the passed quantity joins the position
+		// ledger in this transaction, once per inbound QC credit.
+		if !qcCredited {
+			if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, passed); err != nil {
+				return err
+			}
 		}
 	}
 	if failed > 0 {
@@ -969,15 +997,19 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 	// are fulfilled by the supplier; listing them here caused double
 	// fulfillment (warehouse AND supplier both shipping).
 	//
-	// Per-item routing is a SQL mirror of shippingMethodGate
-	// (cmd/server/order_handlers.go): the admin's supplier_shipping_methods
-	// toggles are authoritative, and the product's fulfillment_method flag
-	// decides only when both methods are enabled. The aggregate-without-
-	// GROUP-BY lateral subquery always yields exactly one row, defaulting to
-	// 'warehouse' (fail-safe) when the supplier has no shipping-method rows
-	// or the product row is unknown. Only warehouse-routed items enter the
-	// pick list; each carries its 'fulfillmentMethod' indicator so mixed
-	// orders are explicit in the UI.
+	// Per-item routing (gap 13) reads the PERSISTED origin: order
+	// creation resolves every line once through
+	// routing.ResolveItemRouting (the single routing truth shared
+	// with the shipping quote) and writes one order_item_origins row
+	// per line, so the queue never re-derives routing from the
+	// supplier_shipping_methods toggles — a later toggle flip cannot
+	// move an already-placed order between fulfilers. Origin-less
+	// (legacy) items fall back to the product's fulfillment_method
+	// flag only. Only warehouse-routed items enter the pick list;
+	// each carries its 'fulfillmentMethod' indicator so mixed orders
+	// are explicit in the UI. The per-item LATERAL keeps exactly one
+	// origin per item (the lowest leg_index) even if a legacy line
+	// was split across several origin rows.
 	query := `
 		SELECT o.id, o.order_number, o.store_name, o.customer_full_name, o.total_amount, o.status,
 		       COALESCE(o.fulfillment_method, 'warehouse'),
@@ -1003,19 +1035,18 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 			       )) FILTER (WHERE r.routing = 'warehouse') AS items
 			FROM order_items oi
 			LEFT JOIN products p ON p.id = oi.product_id
+			LEFT JOIN LATERAL (
+				SELECT origin_type FROM order_item_origins
+				WHERE order_item_id = oi.id
+				ORDER BY leg_index ASC
+				LIMIT 1
+			) oio ON true
 			CROSS JOIN LATERAL (
 				SELECT CASE
-					WHEN SUM(CASE WHEN ssm.method = 'direct' AND ssm.status = 'enabled' THEN 1 ELSE 0 END) > 0
-					 AND SUM(CASE WHEN ssm.method = 'warehouse' AND ssm.status = 'enabled' THEN 1 ELSE 0 END) = 0
-						THEN 'supplier_direct'
-					WHEN SUM(CASE WHEN ssm.method = 'direct' AND ssm.status = 'enabled' THEN 1 ELSE 0 END) > 0
-					 AND SUM(CASE WHEN ssm.method = 'warehouse' AND ssm.status = 'enabled' THEN 1 ELSE 0 END) > 0
-						THEN COALESCE(p.fulfillment_method, 'warehouse')
-					ELSE 'warehouse'
+					WHEN oio.origin_type = 'supplier' THEN 'supplier_direct'
+					WHEN oio.origin_type = 'warehouse' THEN 'warehouse'
+					ELSE COALESCE(p.fulfillment_method, 'warehouse')
 				END AS routing
-				FROM supplier_shipping_methods ssm
-				JOIN suppliers s ON s.owner_user_id::text = ssm.owner_user_id
-				WHERE s.id = p.supplier_id
 			) r
 			WHERE oi.order_id = o.id
 		) wh ON true
@@ -1260,6 +1291,13 @@ func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, t
 		return fmt.Errorf("سفارش یافت نشد، هنوز پرداخت نشده است، روش ارسال آن مستقیم است، در مرحله بسته‌بندی (packed) نیست یا سفارش ترکیبی (mixed) هنوز محموله مستقیم ارسال‌نشده دارد: %s", orderID)
 	}
 	if err != nil {
+		return err
+	}
+	// Storage-fee positions (gap 7 lifecycle): the goods physically
+	// leave the warehouse at this carrier handover, so the order's
+	// warehouse-routed quantities leave the position ledger (FIFO)
+	// in the same transaction.
+	if err := consumeShippedOrderPositionsTx(ctx, tx, updatedID); err != nil {
 		return err
 	}
 	if err := NotifyUser(ctx, tx, customerUserID, NotifKindOrderStatus,

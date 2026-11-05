@@ -11,6 +11,8 @@ import (
 
 var ErrShipmentState = errors.New("shipment is not ready for shipping")
 
+var ErrShipmentNotPending = errors.New("shipment is not pending")
+
 // SubmitShipping updates only the caller's shipment, and advances the whole
 // order only when every direct shipment is sent and there are no warehouse items.
 func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplierID, id, carrier, tracking, actor string) error {
@@ -44,6 +46,32 @@ func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplie
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'shipped', tracking_code = $1, shipped_at = COALESCE(shipped_at, NOW()), updated_at = NOW() WHERE id = $2 AND fulfillment_method = 'supplier_direct' AND status NOT IN ('delivered','delivered_confirmed','cancelled') AND NOT EXISTS (SELECT 1 FROM supplier_shipments WHERE order_id = $2 AND status NOT IN ('shipped','in_transit','delivered'))`, tracking, orderID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AcceptShipment moves the caller's own direct shipment from 'pending' to
+// 'processing': an explicit "I take this order" step in the supplier panel.
+// It is NOT a gate for SubmitShipping, which keeps accepting both 'pending'
+// and 'processing' exactly as before, so the ship flow is unchanged.
+func (r *SupplierShipmentRepository) AcceptShipment(ctx context.Context, supplierID, id, actor string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var shipmentID, status string
+	if err := tx.QueryRowContext(ctx, `SELECT id, status FROM supplier_shipments WHERE (id = $1 OR order_id = $1) AND supplier_id = $2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, id, supplierID).Scan(&shipmentID, &status); err != nil {
+		return err
+	}
+	if status != "pending" {
+		return ErrShipmentNotPending
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status = 'processing', updated_at = NOW() WHERE id = $1 AND supplier_id = $2`, shipmentID, supplierID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipment_audit_logs (id, shipment_id, actor_user_id, action, timestamp) VALUES ($1, $2, $3, 'accepted', NOW())`, uuid.NewString(), shipmentID, actor); err != nil {
 		return err
 	}
 	return tx.Commit()

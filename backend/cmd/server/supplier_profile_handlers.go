@@ -101,7 +101,7 @@ func (h *SupplierHandlers) HandleUpdateSupplierProfile(w http.ResponseWriter, r 
 		"logo_url":                 updated.LogoURL,
 		"description":              updated.Description,
 		"badge":                    updated.Badge,
-		"supportsDirectShipping":   updated.SupportsDirectShipping,
+		"supportsDirectShipping":   derivedSupportsDirectShipping(r.Context(), h.supplierRepo, updated.ID, updated.SupportsDirectShipping),
 		"approvalStatus":           updated.ApprovalStatus,
 		"signedContractVersion":    updated.SignedContractVersion,
 	})

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +72,13 @@ func (r *SupplierRepository) GetSupplierAccess(ctx context.Context, userID strin
 		if ownerActive, oerr := r.supplierOwnerIsActive(ctx, supplierID); oerr != nil || !ownerActive {
 			return "", nil, false, oerr
 		}
+		// Gap 12: a SUSPENDED supplier business shuts off its whole team
+		// too (approval_status = 'suspended' on the suppliers row). The
+		// members' own accounts and the owner's customer account are
+		// untouched — only panel access ends.
+		if suspended, serr := r.supplierIsSuspended(ctx, supplierID); serr != nil || suspended {
+			return "", nil, false, serr
+		}
 		var permissions []string
 		if jsonErr := json.Unmarshal(permissionsJSON, &permissions); jsonErr != nil {
 			return "", nil, false, jsonErr
@@ -86,7 +94,8 @@ func (r *SupplierRepository) GetSupplierAccess(ctx context.Context, userID strin
 	err = r.db.QueryRowContext(ctx, `
 		SELECT s.id FROM suppliers s
 		JOIN users u ON u.id = s.owner_user_id
-		WHERE s.owner_user_id = $1 AND u.is_active = TRUE`, userID).Scan(&supplierID)
+		WHERE s.owner_user_id = $1 AND u.is_active = TRUE
+		  AND s.approval_status <> 'suspended'`, userID).Scan(&supplierID)
 	if err == sql.ErrNoRows {
 		return "", nil, false, nil
 	}
@@ -94,6 +103,22 @@ func (r *SupplierRepository) GetSupplierAccess(ctx context.Context, userID strin
 		return "", nil, false, err
 	}
 	return supplierID, SupplierRolePermissions["manager"], true, nil
+}
+
+// supplierIsSuspended reports whether the supplier business is in the
+// 'suspended' approval state (gap 12). Unknown suppliers report false:
+// suspension is an explicit admin state, never an inference.
+func (r *SupplierRepository) supplierIsSuspended(ctx context.Context, supplierID string) (bool, error) {
+	var suspended bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT approval_status = 'suspended' FROM suppliers WHERE id = $1`, supplierID).Scan(&suspended)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return suspended, nil
 }
 
 // supplierOwnerIsActive reports whether the supplier's owner account is
@@ -145,7 +170,16 @@ func (r *SupplierRepository) CreateMember(ctx context.Context, supplierID, invit
 	}
 	var member domain.SupplierMember
 	rawPermissions, _ := json.Marshal(permissions)
-	err = r.db.QueryRowContext(ctx, `WITH new_user AS (INSERT INTO users (mobile, full_name, role, is_active, username, password_hash) VALUES ($1, $2, 'supplier', TRUE, $3, $4) RETURNING id) INSERT INTO supplier_members (supplier_id, user_id, role_key, permissions, invited_by) SELECT $5, id, $6, $7, $8 FROM new_user RETURNING id, supplier_id, user_id, role_key, permissions, is_active`, mobile, fullName, username, string(hash), supplierID, roleKey, rawPermissions, invitedBy).Scan(&member.ID, &member.SupplierID, &member.UserID, &member.RoleKey, &rawPermissions, &member.IsActive)
+	// GAP 16: grant the 'supplier' capability in the same statement that
+	// creates the member. AuthMiddleware refreshes capabilities from
+	// user_capabilities on every request, so without this row a member
+	// created after the last server start held no active capability
+	// until the startup backfill (BackfillOwnershipCapabilities) ran
+	// again. The row mirrors the backfill's exactly (status defaults to
+	// 'active', source 'supplier_membership', source_id = supplier id);
+	// ON CONFLICT DO NOTHING keeps an existing grant (e.g. an owner who
+	// is also a member elsewhere) untouched, as the backfill does.
+	err = r.db.QueryRowContext(ctx, `WITH new_user AS (INSERT INTO users (mobile, full_name, role, is_active, username, password_hash) VALUES ($1, $2, 'supplier', TRUE, $3, $4) RETURNING id), new_member AS (INSERT INTO supplier_members (supplier_id, user_id, role_key, permissions, invited_by) SELECT $5, id, $6, $7, $8 FROM new_user RETURNING id, supplier_id, user_id, role_key, permissions, is_active), new_capability AS (INSERT INTO user_capabilities (user_id, capability, source_type, source_id) SELECT user_id, 'supplier', 'supplier_membership', supplier_id FROM new_member ON CONFLICT (user_id, capability) DO NOTHING RETURNING user_id) SELECT id, supplier_id, user_id, role_key, permissions, is_active FROM new_member`, mobile, fullName, username, string(hash), supplierID, roleKey, rawPermissions, invitedBy).Scan(&member.ID, &member.SupplierID, &member.UserID, &member.RoleKey, &rawPermissions, &member.IsActive)
 	if err != nil {
 		return domain.SupplierMember{}, err
 	}
@@ -288,14 +322,20 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 	userID := uuid.New().String()
 	now := time.Now()
 
+	// GAP 19a: the registration payload's email is persisted on the user
+	// row (users.email, migration 202611050004); it was previously
+	// decoded by the handler and silently discarded. Stored trimmed,
+	// empty as NULL; no format validation exists in the codebase for
+	// stored emails, so none is invented here.
+	email = strings.TrimSpace(email)
 	queryUser := `
-		INSERT INTO users (id, mobile, full_name, role, is_active, username, password_hash, created_at, updated_at)
-		VALUES ($1, $2, $3, 'supplier', FALSE, $4, $5, $6, $6)
-		RETURNING id, mobile, full_name, role, is_active, username, created_at, updated_at
+		INSERT INTO users (id, mobile, full_name, role, is_active, username, password_hash, email, created_at, updated_at)
+		VALUES ($1, $2, $3, 'supplier', FALSE, $4, $5, NULLIF($6, ''), $7, $7)
+		RETURNING id, mobile, full_name, role, is_active, username, COALESCE(email, ''), created_at, updated_at
 	`
 	var u domain.User
-	err = tx.QueryRowContext(ctx, queryUser, userID, mobile, contactPerson, username, string(hashedPassword), now).Scan(
-		&u.ID, &u.Mobile, &u.FullName, &u.Role, &u.IsActive, &u.Username, &u.CreatedAt, &u.UpdatedAt,
+	err = tx.QueryRowContext(ctx, queryUser, userID, mobile, contactPerson, username, string(hashedPassword), email, now).Scan(
+		&u.ID, &u.Mobile, &u.FullName, &u.Role, &u.IsActive, &u.Username, &u.Email, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to insert supplier user: %w", err)
@@ -406,6 +446,153 @@ func (r *SupplierRepository) RejectSupplier(ctx context.Context, supplierID, rej
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("supplier not found or already processed")
+	}
+	return nil
+}
+
+// --- Supplier suspension (gap 12, migration 202611050007) -------------
+//
+// Suspension is the BUSINESS-level stop, distinct from blocking the
+// owner's user account (users.is_active, a person-level switch under
+// which products keep selling). A suspended supplier loses panel
+// access for owner and team (GetSupplierAccess), disappears from the
+// public catalog and PDP, cannot take new orders, and cannot request
+// new settlements — while its balance keeps accruing on read and its
+// already-pending payout requests stay admin-reviewable.
+//
+// ErrSupplierStateConflict reports a suspend/reactivate attempted from
+// a state that does not allow the transition (pending, rejected,
+// already suspended, not suspended, or unknown id). Handlers map it
+// to 409.
+var ErrSupplierStateConflict = errors.New("supplier not found or not in a state that allows this transition")
+
+// ErrCentralSupplierProtected reports a suspend/reactivate attempted
+// on the platform's own central supplier record. The central record
+// is identified the way the rest of the tree identifies it: it is
+// the OWNERLESS suppliers row (owner_user_id IS NULL) — the platform
+// card in the admin records surface. Handlers map it to 409.
+var ErrCentralSupplierProtected = errors.New("the central supplier record cannot be suspended or reactivated")
+
+// ErrSupplierSuspended reports a settlement request by a suspended
+// supplier. Handlers map it to 409.
+var ErrSupplierSuspended = errors.New("supplier is suspended")
+
+// isCentralSupplierRecord reports whether id names the platform's own
+// central supplier record (the ownerless suppliers row).
+func (r *SupplierRepository) isCentralSupplierRecord(ctx context.Context, supplierID string) (bool, error) {
+	var ownerless bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT owner_user_id IS NULL FROM suppliers WHERE id = $1`, supplierID).Scan(&ownerless)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return ownerless, nil
+}
+
+// insertAdminSupplierAuditTx appends one audit_logs row for an admin
+// action on a supplier, in the shape of insertSupplierAuditTx but
+// with the acting admin as the operator.
+func insertAdminSupplierAuditTx(ctx context.Context, tx *sql.Tx, adminID, action string, details map[string]interface{}) error {
+	payload, _ := json.Marshal(details)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_logs (id, timestamp, operator, action, category, details)
+		VALUES ($1, NOW(), $2, $3, 'supplier', $4)
+	`, "LOG-"+uuid.NewString(), "admin:"+adminID, action, string(payload))
+	return err
+}
+
+// SuspendSupplier moves an APPROVED supplier to 'suspended',
+// recording who suspended it and why. users.is_active is deliberately
+// NOT touched: suspension and user-block are orthogonal switches.
+func (r *SupplierRepository) SuspendSupplier(ctx context.Context, supplierID, adminID, reason string) error {
+	central, err := r.isCentralSupplierRecord(ctx, supplierID)
+	if err != nil {
+		return err
+	}
+	if central {
+		return ErrCentralSupplierProtected
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE suppliers
+		SET approval_status = 'suspended', suspended_at = NOW(), suspended_by = $2, suspension_reason = $3
+		WHERE id = $1 AND approval_status = 'approved'
+	`, supplierID, adminID, reason)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrSupplierStateConflict
+	}
+	if err := insertAdminSupplierAuditTx(ctx, tx, adminID, "supplier_suspend", map[string]interface{}{
+		"supplier_id": supplierID, "reason": reason,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ReactivateSupplier returns a SUSPENDED supplier to 'approved' and
+// clears the suspension bookkeeping. It never touches
+// users.is_active: a separately blocked owner stays blocked.
+func (r *SupplierRepository) ReactivateSupplier(ctx context.Context, supplierID, adminID string) error {
+	central, err := r.isCentralSupplierRecord(ctx, supplierID)
+	if err != nil {
+		return err
+	}
+	if central {
+		return ErrCentralSupplierProtected
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE suppliers
+		SET approval_status = 'approved', suspended_at = NULL, suspended_by = NULL, suspension_reason = NULL
+		WHERE id = $1 AND approval_status = 'suspended'
+	`, supplierID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrSupplierStateConflict
+	}
+	if err := insertAdminSupplierAuditTx(ctx, tx, adminID, "supplier_reactivate", map[string]interface{}{
+		"supplier_id": supplierID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RejectProposal performs the full-proposal rejection of one
+// proposed_product pending approval: exactly the writes the generic
+// approvals inbox makes when it rejects (ReviewPendingApproval —
+// status 'rejected', rejection_reason, reviewed_at), scoped to a
+// product proposal that is still pending. The pending guard mirrors
+// ApproveProposal's atomic backstop: an already-approved proposal
+// can never be flipped back to rejected, and a double rejection
+// reports ErrProposalNotPending instead of rewriting the row.
+func (r *SupplierRepository) RejectProposal(ctx context.Context, proposalID, reason string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE pending_approvals
+		SET status = 'rejected', rejection_reason = NULLIF($2, ''), reviewed_at = NOW()
+		WHERE id = $1 AND entity_type = 'proposed_product' AND status = 'pending'
+	`, proposalID, reason)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrProposalNotPending
 	}
 	return nil
 }
@@ -621,17 +808,6 @@ func (r *SupplierRepository) ListSuppliersForAdmin(ctx context.Context) ([]Suppl
 		out = append(out, s)
 	}
 	return out, rows.Err()
-}
-
-// UpdateDirectShippingSetting toggles supplier direct fulfillment capability
-func (r *SupplierRepository) UpdateDirectShippingSetting(ctx context.Context, supplierID string, enabled bool) error {
-	query := `
-		UPDATE suppliers
-		SET supports_direct_shipping = $1
-		WHERE id = $2 OR owner_user_id::text = $2
-	`
-	_, err := r.db.ExecContext(ctx, query, enabled, supplierID)
-	return err
 }
 
 // CreateDirectProduct inserts a verified or supplier-direct product into products catalog
@@ -1018,11 +1194,38 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		fulfillmentMethod = method
 	}
 
+	// Gap 8: write the proposal's measurements into the product's
+	// measurement columns at birth (the same columns
+	// RecordProductMeasurement later overwrites: length_mm, width_mm,
+	// height_mm, weight_grams). The propose handler now refuses
+	// proposals without all four, but approval still tolerates older
+	// pending proposals that predate the gate — absent/invalid values
+	// insert NULL and the product behaves exactly like a pre-fix
+	// approval (warehouse measures later). measurement_status is
+	// deliberately NOT written: it stays 'unverified', because the
+	// warehouse verification remains the trust step that unlocks
+	// putaway. The ON CONFLICT clause below intentionally does not
+	// update these columns either — a re-approval must never clobber
+	// warehouse-verified measurements.
+	var measLength, measWidth, measHeight, measWeight sql.NullInt64
+	if v, ok := payloadMeasurementValue(data, "lengthMm", "length_mm"); ok {
+		measLength = sql.NullInt64{Int64: int64(v), Valid: true}
+	}
+	if v, ok := payloadMeasurementValue(data, "widthMm", "width_mm"); ok {
+		measWidth = sql.NullInt64{Int64: int64(v), Valid: true}
+	}
+	if v, ok := payloadMeasurementValue(data, "heightMm", "height_mm"); ok {
+		measHeight = sql.NullInt64{Int64: int64(v), Valid: true}
+	}
+	if v, ok := payloadMeasurementValue(data, "weightGrams", "weight_grams"); ok {
+		measWeight = sql.NullInt64{Int64: int64(v), Valid: true}
+	}
+
 	specsBytes, _ := json.Marshal(data["specs"])
 
 	queryProduct := `
-		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, NOW(), NOW())
+		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, length_mm, width_mm, height_mm, weight_grams, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20, $21, $22, $23, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, supplier_base_cost = EXCLUDED.supplier_base_cost, image_url = EXCLUDED.image_url, description = EXCLUDED.description, specs = EXCLUDED.specs, brand = EXCLUDED.brand,
 		                               barcode = CASE WHEN EXCLUDED.barcode IS NOT NULL THEN EXCLUDED.barcode ELSE products.barcode END
 	`
@@ -1033,7 +1236,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&existedBefore); err != nil {
 		return "", fmt.Errorf("failed to check product existence: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand)
+	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight)
 	if err != nil {
 		return "", fmt.Errorf("failed to insert product: %w", err)
 	}
@@ -1125,6 +1328,85 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		}
 	}
 
+	// --- Gap 9a: persist the proposal's Digikala category attributes. ---
+	// product_attribute_values (migration 202610280012) is the product ↔
+	// dk-value link the faceted filters and the PDP attribute table are
+	// built on, but its approval write path was never implemented, so
+	// approval silently dropped categoryAttributes. First approval only
+	// (the Fix 9 no-clobber rule). The platform is single-select per
+	// attribute (Oct 29 rule), so only the FIRST proposed value per
+	// attribute is stored. Validation is the join, per the migration
+	// contract: a (attribute, value) pair that does not exist in
+	// dk_attribute_values inserts nothing. categoryAttributes.colorId /
+	// brandId are NOT persisted here: no product link table exists for
+	// them (the brand pick already lands as the free-text brand above).
+	if !existedBefore {
+		for attrID, valueID := range proposalAttributePicks(data) {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO product_attribute_values (product_id, dk_attribute_id, dk_value_id)
+				SELECT $1, v.dk_attr_id, v.dk_value_id
+				FROM dk_attribute_values v
+				WHERE v.dk_attr_id = $2 AND v.dk_value_id = $3
+				ON CONFLICT (product_id, dk_value_id) DO NOTHING`, productID, attrID, valueID); err != nil {
+				return "", fmt.Errorf("failed to persist attribute pick %d/%d: %w", attrID, valueID, err)
+			}
+		}
+	}
+
+	// --- Gap 9b: create the proposal's variants. ---
+	// Approval used to drop variants[] entirely (only specs persisted),
+	// forcing the supplier to re-create variants post-approval with
+	// stock 0 and no cost. Reconciliation rule: when the payload carries
+	// at least one VALID variant entry, the product ends with exactly
+	// the proposed set — the first valid entry becomes the default — and
+	// the synthetic 'پیش‌فرض' variant in the C7 block below is skipped
+	// (its hasVariant guard sees these rows). With no valid entries, C7
+	// behaves exactly as before. Malformed entries (not an object, blank
+	// name, duplicate name) are skipped with an audit note; they never
+	// fail the approval itself. Variant stock lives only on the variant
+	// row in this codebase (UpdateProductStock is product-level), so the
+	// proposed stock is written there; the proposed supplier cost goes
+	// to product_variants.supplier_base_cost (gap 10's column).
+	if !existedBefore {
+		seenVariantNames := map[string]bool{}
+		var skippedVariants []string
+		createdVariants := 0
+		for i, pv := range parseProposedVariants(data) {
+			if pv.Name == "" || seenVariantNames[pv.Name] {
+				skippedVariants = append(skippedVariants, fmt.Sprintf("entry %d (%q)", i, pv.RawName))
+				continue
+			}
+			seenVariantNames[pv.Name] = true
+			attrJSON, mErr := json.Marshal(pv.Attributes)
+			if mErr != nil {
+				skippedVariants = append(skippedVariants, fmt.Sprintf("entry %d (%q)", i, pv.RawName))
+				continue
+			}
+			spnc, sErr := uniqueSPNCTx(ctx, tx)
+			if sErr != nil {
+				return "", fmt.Errorf("failed to generate variant SKU for %s: %w", productID, sErr)
+			}
+			var variantCost interface{}
+			if pv.Cost > 0 {
+				variantCost = pv.Cost
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO product_variants (product_id, spnc, variant_name, attributes, is_default, stock, supplier_base_cost)
+				VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
+				productID, spnc, pv.Name, string(attrJSON), createdVariants == 0, pv.Stock, variantCost); err != nil {
+				return "", fmt.Errorf("failed to create proposed variant %q: %w", pv.Name, err)
+			}
+			createdVariants++
+		}
+		if len(skippedVariants) > 0 && requestedBy != "" {
+			if err := insertSupplierAuditTx(ctx, tx, requestedBy, "proposal_variants_skipped", map[string]interface{}{
+				"proposal_id": proposalID, "product_id": productID, "skipped": skippedVariants,
+			}); err != nil {
+				return "", fmt.Errorf("failed to audit skipped proposal variants: %w", err)
+			}
+		}
+	}
+
 	// --- Audit C7: canonical inventory row + default SKU variant. ---
 	// The approval previously entered on the legacy path only (products.stock
 	// set directly, no inventory_balances row, no product_variants row):
@@ -1179,6 +1461,110 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		return "", err
 	}
 	return productID, nil
+}
+
+// payloadMeasurementValue reads a positive measurement number from a
+// proposal payload map (JSON numbers arrive as float64; plain ints are
+// accepted too). Missing, non-numeric or non-positive values report as
+// absent.
+func payloadMeasurementValue(data map[string]interface{}, keys ...string) (int, bool) {
+	for _, key := range keys {
+		switch v := data[key].(type) {
+		case float64:
+			if v > 0 {
+				return int(v), true
+			}
+		case int:
+			if v > 0 {
+				return v, true
+			}
+		case int64:
+			if v > 0 {
+				return int(v), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// proposalAttributePicks extracts the first value per attribute from a
+// proposal's categoryAttributes, in the shape SupplierProposeForm sends:
+// {"attributes": {"<dkAttrId>": [dkValueId, ...]}, "colorId":…, "brandId":…}.
+// Single-select is the platform rule (Oct 29), so later values in each
+// list are dropped. Unparseable keys/values are ignored.
+func proposalAttributePicks(data map[string]interface{}) map[int64]int64 {
+	out := map[int64]int64{}
+	ca, ok := data["categoryAttributes"].(map[string]interface{})
+	if !ok {
+		return out
+	}
+	attrs, ok := ca["attributes"].(map[string]interface{})
+	if !ok {
+		return out
+	}
+	for key, raw := range attrs {
+		attrID, err := strconv.ParseInt(strings.TrimSpace(key), 10, 64)
+		if err != nil || attrID <= 0 {
+			continue
+		}
+		list, ok := raw.([]interface{})
+		if !ok || len(list) == 0 {
+			continue
+		}
+		if v, ok := list[0].(float64); ok && v > 0 {
+			out[attrID] = int64(v)
+		}
+	}
+	return out
+}
+
+// proposedVariant is one parsed entry of a proposal's variants[] list.
+type proposedVariant struct {
+	Name       string // trimmed variant_name; empty means malformed
+	RawName    string // variant_name as sent (for audit notes)
+	Attributes map[string]string
+	Stock      int
+	Cost       int64 // proposed supplier cost; 0 = not proposed (inherit)
+}
+
+// parseProposedVariants extracts the variants[] entries from a proposal
+// payload in the shape SupplierProposeForm sends:
+// {variant_name, attributes{...}, stock, supplier_base_cost?}.
+// Malformed entries are returned with an empty Name so the caller can
+// skip-and-audit them without failing the approval.
+func parseProposedVariants(data map[string]interface{}) []proposedVariant {
+	raw, ok := data["variants"].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]proposedVariant, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			out = append(out, proposedVariant{})
+			continue
+		}
+		pv := proposedVariant{Attributes: map[string]string{}}
+		pv.RawName, _ = m["variant_name"].(string)
+		pv.Name = strings.TrimSpace(pv.RawName)
+		if attrs, ok := m["attributes"].(map[string]interface{}); ok {
+			for k, v := range attrs {
+				if s, ok := v.(string); ok {
+					pv.Attributes[k] = s
+				}
+			}
+		}
+		if s, ok := m["stock"].(float64); ok && s > 0 {
+			pv.Stock = int(s)
+		}
+		if c, ok := m["supplier_base_cost"].(float64); ok && c > 0 {
+			pv.Cost = int64(c)
+		} else if c, ok := m["supplierBaseCost"].(float64); ok && c > 0 {
+			pv.Cost = int64(c)
+		}
+		out = append(out, pv)
+	}
+	return out
 }
 
 // uniqueSPNCTx generates a unique 8-char uppercase-hex SPNC (variant code),
@@ -1682,6 +2068,19 @@ func (r *SupplierRepository) consumeReturnReservations(ctx context.Context, tx *
 	if count == 0 {
 		return fmt.Errorf("return reservation is inconsistent")
 	}
+	// Storage-fee positions (gap 7 lifecycle): handover is the
+	// physical warehouse exit for the reserved supplier stock, so
+	// the consumed quantity leaves the position ledger (FIFO) in
+	// the same transaction. Reservations carry no warehouse id
+	// (bin lots predate the warehouses table), so the FIFO runs
+	// over this supplier's positions for the product un-narrowed.
+	totalConsumed := 0
+	for _, item := range reservations {
+		totalConsumed += item.quantity
+	}
+	if err := decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1983,6 +2382,71 @@ func (r *SupplierRepository) UpdateProductPricing(ctx context.Context, supplierI
 		return err
 	}
 	return tx.Commit()
+}
+
+// GetSupplierProductBaseCost loads the product's current wholesale cost
+// under the caller's ownership (gap 11: the pricing handler compares
+// against this before choosing the direct vs governed path). A product
+// that is missing or belongs to another supplier returns the same error
+// text UpdateProductPricing produces.
+func (r *SupplierRepository) GetSupplierProductBaseCost(ctx context.Context, supplierID, productID string) (int64, error) {
+	var cost int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT supplier_base_cost FROM products WHERE id = $1 AND supplier_id = $2
+	`, productID, supplierID).Scan(&cost)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("product %s not found", productID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return cost, nil
+}
+
+// ErrExceptionTicketProductNotFound: the exception-ticket target product
+// does not belong to the requesting supplier.
+var ErrExceptionTicketProductNotFound = errors.New("product not found for supplier")
+
+// CreatePriceIncreaseExceptionTicket files the supplier's reference-price
+// exception request as a finance-section support ticket (migration
+// 202610310003 routes these by section = 'finance'). Only the columns the
+// existing ticket inserts use are written (id, requester_user_id,
+// requester_role, subject) plus that section column; the requested
+// newReference and free-text message are validated by the handler but
+// have no sanctioned column and are not persisted.
+func (r *SupplierRepository) CreatePriceIncreaseExceptionTicket(ctx context.Context, supplierID, requesterUserID, productID string) (string, error) {
+	var title string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT title FROM products WHERE id = $1 AND supplier_id = $2
+	`, productID, supplierID).Scan(&title)
+	if err == sql.ErrNoRows {
+		return "", ErrExceptionTicketProductNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if requesterUserID == "" {
+		// support_tickets.requester_user_id is a UUID column: fall back to
+		// the supplier's owner user id, never to the supplier record id.
+		var ownerID sql.NullString
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT owner_user_id FROM suppliers WHERE id = $1
+		`, supplierID).Scan(&ownerID); err != nil {
+			return "", err
+		}
+		if ownerID.Valid {
+			requesterUserID = ownerID.String
+		}
+	}
+	id := "ticket-" + uuid.NewString()
+	subject := "درخواست استثنای افزایش قیمت — " + title
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT INTO support_tickets (id, requester_user_id, requester_role, subject, section)
+		VALUES ($1, $2, 'supplier', $3, 'finance')
+	`, id, requesterUserID, subject); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // CreateInbound registers a new ASN shipment to the warehouse
@@ -2482,11 +2946,14 @@ type SupplierProductVariant struct {
 	IsDefault   bool              `json:"is_default"`
 	MinCartQty  *int              `json:"min_cart_qty"`
 	MaxCartQty  *int              `json:"max_cart_qty"`
+	// SupplierBaseCost is the variant's own cost C (product_variants.
+	// supplier_base_cost, gap 10); nil = inherit the product's cost.
+	SupplierBaseCost *int64 `json:"supplier_base_cost"`
 }
 
 func (r *SupplierRepository) ListProductVariants(ctx context.Context, supplierID, productID string) ([]SupplierProductVariant, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT pv.id, pv.variant_name, pv.spnc, pv.stock, pv.attributes, pv.is_default, pv.min_cart_qty, pv.max_cart_qty
+		SELECT pv.id, pv.variant_name, pv.spnc, pv.stock, pv.attributes, pv.is_default, pv.min_cart_qty, pv.max_cart_qty, pv.supplier_base_cost
 		FROM product_variants pv
 		JOIN products p ON p.id = pv.product_id
 		WHERE pv.product_id = $1 AND p.supplier_id = $2
@@ -2500,8 +2967,8 @@ func (r *SupplierRepository) ListProductVariants(ctx context.Context, supplierID
 	for rows.Next() {
 		var v SupplierProductVariant
 		var attrs []byte
-		var minQ, maxQ sql.NullInt64
-		if err := rows.Scan(&v.ID, &v.VariantName, &v.SPNC, &v.Stock, &attrs, &v.IsDefault, &minQ, &maxQ); err != nil {
+		var minQ, maxQ, cost sql.NullInt64
+		if err := rows.Scan(&v.ID, &v.VariantName, &v.SPNC, &v.Stock, &attrs, &v.IsDefault, &minQ, &maxQ, &cost); err != nil {
 			return nil, err
 		}
 		v.Attributes = map[string]string{}
@@ -2515,6 +2982,10 @@ func (r *SupplierRepository) ListProductVariants(ctx context.Context, supplierID
 		if maxQ.Valid {
 			n := int(maxQ.Int64)
 			v.MaxCartQty = &n
+		}
+		if cost.Valid {
+			n := cost.Int64
+			v.SupplierBaseCost = &n
 		}
 		out = append(out, v)
 	}
@@ -2848,6 +3319,164 @@ func (r *SupplierRepository) UpdateVariantCartLimits(ctx context.Context, suppli
 	return out, nil
 }
 
+// UpdateVariantPricing sets (or clears) a variant's own supplier base
+// cost — gap 10: pricing has always READ product_variants.
+// supplier_base_cost (NULL = inherit the product's cost), but no write
+// path existed. Mirrors UpdateProductPricing: the product must belong
+// to the caller (else sql.ErrNoRows, surfaced as 404), a set cost must
+// be positive (the column's CHECK agrees), and the change is written
+// to audit_logs with the caller's reason. clear=true restores
+// inheritance by setting the column back to NULL; a non-nil cost wins
+// over clear when both are sent.
+// GetVariantEffectiveBaseCost returns a variant's own cost (nil when
+// the variant inherits) and its EFFECTIVE cost — the variant's own
+// supplier_base_cost when set, else the product's current cost, the
+// inheritance every pricing read applies. The product must belong to
+// the caller and the variant to the product; any miss is
+// sql.ErrNoRows (the handler surfaces it as 404, matching
+// UpdateVariantPricing).
+func (r *SupplierRepository) GetVariantEffectiveBaseCost(ctx context.Context, supplierID, productID, variantID string) (own *int64, effective int64, err error) {
+	var ownCost sql.NullInt64
+	var productCost int64
+	err = r.db.QueryRowContext(ctx, `
+		SELECT pv.supplier_base_cost, p.supplier_base_cost
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $1 AND pv.product_id = $2 AND p.supplier_id = $3
+	`, variantID, productID, supplierID).Scan(&ownCost, &productCost)
+	if err != nil {
+		return nil, 0, err
+	}
+	effective = productCost
+	if ownCost.Valid {
+		v := ownCost.Int64
+		own = &v
+		effective = v
+	}
+	return own, effective, nil
+}
+
+// GetVariantOwnAndProductCost returns a variant's own cost (nil when
+// the variant inherits) alongside the product's current cost — the
+// pair the variant-pricing handler compares to decide whether a
+// clear-to-inherit LOWERS the effective cost (direct) or RAISES it to
+// the product's cost (governed, migration 202611050010). Same
+// ownership/miss semantics as GetVariantEffectiveBaseCost.
+func (r *SupplierRepository) GetVariantOwnAndProductCost(ctx context.Context, supplierID, productID, variantID string) (own *int64, productCost int64, err error) {
+	var ownCost sql.NullInt64
+	err = r.db.QueryRowContext(ctx, `
+		SELECT pv.supplier_base_cost, p.supplier_base_cost
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $1 AND pv.product_id = $2 AND p.supplier_id = $3
+	`, variantID, productID, supplierID).Scan(&ownCost, &productCost)
+	if err != nil {
+		return nil, 0, err
+	}
+	if ownCost.Valid {
+		v := ownCost.Int64
+		own = &v
+	}
+	return own, productCost, nil
+}
+
+// GetSupplierVariant returns one variant of a supplier-owned product
+// in ListProductVariants' row shape (used to answer the governed
+// variant-pricing PUT with the variant's post-write state).
+func (r *SupplierRepository) GetSupplierVariant(ctx context.Context, supplierID, productID, variantID string) (SupplierProductVariant, error) {
+	var out SupplierProductVariant
+	var attrs []byte
+	var minQ, maxQ, cost sql.NullInt64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT pv.id, pv.variant_name, pv.spnc, pv.stock, pv.attributes, pv.is_default, pv.min_cart_qty, pv.max_cart_qty, pv.supplier_base_cost
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $1 AND pv.product_id = $2 AND p.supplier_id = $3
+	`, variantID, productID, supplierID).Scan(&out.ID, &out.VariantName, &out.SPNC, &out.Stock, &attrs, &out.IsDefault, &minQ, &maxQ, &cost)
+	if err != nil {
+		return out, err
+	}
+	out.Attributes = map[string]string{}
+	if len(attrs) > 0 {
+		_ = json.Unmarshal(attrs, &out.Attributes)
+	}
+	if minQ.Valid {
+		n := int(minQ.Int64)
+		out.MinCartQty = &n
+	}
+	if maxQ.Valid {
+		n := int(maxQ.Int64)
+		out.MaxCartQty = &n
+	}
+	if cost.Valid {
+		n := cost.Int64
+		out.SupplierBaseCost = &n
+	}
+	return out, nil
+}
+
+func (r *SupplierRepository) UpdateVariantPricing(ctx context.Context, supplierID, productID, variantID string, newBaseCost *int64, clear bool, reason string) (SupplierProductVariant, error) {
+	var out SupplierProductVariant
+	owns, err := r.supplierOwnsProduct(ctx, supplierID, productID)
+	if err != nil {
+		return out, err
+	}
+	if !owns {
+		return out, sql.ErrNoRows
+	}
+	var costArg sql.NullInt64
+	if newBaseCost != nil {
+		if *newBaseCost <= 0 {
+			return out, fmt.Errorf("supplier base cost must be positive")
+		}
+		costArg = sql.NullInt64{Int64: *newBaseCost, Valid: true}
+	} else if !clear {
+		return out, fmt.Errorf("supplier base cost must be positive")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback()
+	var attrs []byte
+	var minQ, maxQ, cost sql.NullInt64
+	err = tx.QueryRowContext(ctx, `UPDATE product_variants SET supplier_base_cost = $1 WHERE id = $2 AND product_id = $3 RETURNING id, variant_name, spnc, stock, attributes, is_default, min_cart_qty, max_cart_qty, supplier_base_cost`, costArg, variantID, productID).Scan(&out.ID, &out.VariantName, &out.SPNC, &out.Stock, &attrs, &out.IsDefault, &minQ, &maxQ, &cost)
+	if err != nil {
+		return out, err
+	}
+	out.Attributes = map[string]string{}
+	if len(attrs) > 0 {
+		_ = json.Unmarshal(attrs, &out.Attributes)
+	}
+	if minQ.Valid {
+		n := int(minQ.Int64)
+		out.MinCartQty = &n
+	}
+	if maxQ.Valid {
+		n := int(maxQ.Int64)
+		out.MaxCartQty = &n
+	}
+	if cost.Valid {
+		n := cost.Int64
+		out.SupplierBaseCost = &n
+	}
+	details := map[string]interface{}{
+		"product_id": productID, "variant_id": variantID, "reason": reason,
+	}
+	if newBaseCost != nil {
+		details["new_supplier_base_cost"] = *newBaseCost
+	} else {
+		details["cleared"] = true
+	}
+	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_variant_pricing_update", details); err != nil {
+		return out, err
+	}
+	if err := tx.Commit(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 // SupplierVariantLabel is one row of live's Fl print-label sheet.
 type SupplierVariantLabel struct {
 	SPNC         string `json:"spnc"`
@@ -3077,8 +3706,15 @@ func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID s
 	}
 	defer tx.Rollback()
 	var locked string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM suppliers WHERE id = $1 FOR UPDATE`, supplierID).Scan(&locked); err != nil {
+	var approvalStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT id, approval_status FROM suppliers WHERE id = $1 FOR UPDATE`, supplierID).Scan(&locked, &approvalStatus); err != nil {
 		return "", err
+	}
+	// Gap 12: a suspended supplier cannot request NEW settlements
+	// (already-pending requests stay admin-reviewable). The balance
+	// computation itself is untouched: Earned keeps accruing on read.
+	if approvalStatus == "suspended" {
+		return "", ErrSupplierSuspended
 	}
 	var balance SupplierBalance
 	if err := scanSupplierBalance(ctx, tx, supplierID, &balance); err != nil {
@@ -3168,7 +3804,7 @@ func (r *SupplierRepository) ListSuppliersForAdminDetail(ctx context.Context) ([
 		       COALESCE(supports_direct_shipping, FALSE), default_markup_type, default_markup_value,
 		       COALESCE(signed_contract_version, 1), approval_status, approved_by, approved_at,
 		       rejection_reason, tapin_shop_id, COALESCE(warehouse_city_confirmed, FALSE),
-		       warehouse_city_source
+		       warehouse_city_source, suspended_at, suspended_by, suspension_reason
 		FROM suppliers
 		ORDER BY created_at DESC
 	`)
@@ -3179,14 +3815,24 @@ func (r *SupplierRepository) ListSuppliersForAdminDetail(ctx context.Context) ([
 	out := []domain.Supplier{}
 	for rows.Next() {
 		var s domain.Supplier
-		var ownerUID, approvedBy, rejectionReason, tapinShopID, warehouseCitySource sql.NullString
-		var approvedAt sql.NullTime
+		var ownerUID, approvedBy, rejectionReason, tapinShopID, warehouseCitySource, suspendedBy, suspensionReason sql.NullString
+		var approvedAt, suspendedAt sql.NullTime
 		if err := rows.Scan(&s.ID, &ownerUID, &s.Name, &s.LogoURL, &s.Rating, &s.TotalProducts,
 			&s.DeliveryScore, &s.WarehouseCity, &s.Description, &s.Badge, &s.CreatedAt,
 			&s.SupportsDirectShipping, &s.DefaultMarkupType, &s.DefaultMarkupValue,
 			&s.SignedContractVersion, &s.ApprovalStatus, &approvedBy, &approvedAt,
-			&rejectionReason, &tapinShopID, &s.WarehouseCityConfirmed, &warehouseCitySource); err != nil {
+			&rejectionReason, &tapinShopID, &s.WarehouseCityConfirmed, &warehouseCitySource,
+			&suspendedAt, &suspendedBy, &suspensionReason); err != nil {
 			return nil, err
+		}
+		if suspendedAt.Valid {
+			s.SuspendedAt = &suspendedAt.Time
+		}
+		if suspendedBy.Valid {
+			s.SuspendedBy = &suspendedBy.String
+		}
+		if suspensionReason.Valid {
+			s.SuspensionReason = &suspensionReason.String
 		}
 		if ownerUID.Valid {
 			s.OwnerUserID = &ownerUID.String
@@ -3255,6 +3901,44 @@ func (r *SupplierRepository) ListSupplierShippingMethods(ctx context.Context, su
 	}
 	defer rows.Close()
 	return scanSupplierShippingMethods(rows)
+}
+
+// ListShippingMethodsBySupplierIDs returns the shipping-method
+// status maps for many suppliers in ONE query, keyed
+// supplierID -> method -> status — the exact shape
+// routing.ResolveItemRouting consumes. It reuses the join shape of
+// supplierShippingMethodsWhere (method rows are keyed by the
+// supplier OWNER's user id, joined through suppliers). Suppliers
+// with no method rows are absent from the result; callers treat
+// absence as "no methods enabled" (the routing fail-safe).
+func (r *SupplierRepository) ListShippingMethodsBySupplierIDs(ctx context.Context, supplierIDs []string) (map[string]map[string]string, error) {
+	out := map[string]map[string]string{}
+	if len(supplierIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT s.id, ssm.method, ssm.status
+		FROM supplier_shipping_methods ssm
+		JOIN suppliers s ON s.owner_user_id::text = ssm.owner_user_id
+		WHERE s.id = ANY($1::text[])
+	`, pq.Array(supplierIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var supplierID, method, status string
+		if err := rows.Scan(&supplierID, &method, &status); err != nil {
+			return nil, err
+		}
+		m, ok := out[supplierID]
+		if !ok {
+			m = map[string]string{}
+			out[supplierID] = m
+		}
+		m[method] = status
+	}
+	return out, rows.Err()
 }
 
 // ListAllSupplierShippingMethods returns every supplier's method rows for
@@ -3651,30 +4335,41 @@ func (r *SupplierRepository) ListSupplierExclusivityChallenges(ctx context.Conte
 }
 
 // SupplierPriceIncrease mirrors supplier_price_increases
-// (migration 202610310003) as a read-only list (D12). No price is
-// applied here: price application belongs to the pricing engine and to
-// the implicit-agreement policy, neither of which is guessed here (U07).
+// (migration 202610310003) as a read-only list (D12). Rows are
+// written by the governed pricing paths (PricingRepository): a
+// product-level increase has VariantID nil; a variant-level one
+// (migration 202611050009) names its product_variants row, whose
+// name is joined in for display where available.
 type SupplierPriceIncrease struct {
-	ID              string     `json:"id"`
-	ProductID       string     `json:"productId"`
-	OldReference    int64      `json:"oldReference"`
-	NewReference    int64      `json:"newReference"`
-	Pct             float64    `json:"pct"`
-	Status          string     `json:"status"`
-	IsException     bool       `json:"isException"`
-	ExceptionCapPct *float64   `json:"exceptionCapPct,omitempty"`
-	AutoApproved    bool       `json:"autoApproved"`
-	AgreementReview bool       `json:"agreementReview"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	ReviewedAt      *time.Time `json:"reviewedAt,omitempty"`
+	ID              string   `json:"id"`
+	ProductID       string   `json:"productId"`
+	VariantID       *string  `json:"variantId,omitempty"`
+	VariantName     string   `json:"variantName,omitempty"`
+	OldReference    int64    `json:"oldReference"`
+	NewReference    int64    `json:"newReference"`
+	Pct             float64  `json:"pct"`
+	Status          string   `json:"status"`
+	IsException     bool     `json:"isException"`
+	ExceptionCapPct *float64 `json:"exceptionCapPct,omitempty"`
+	AutoApproved    bool     `json:"autoApproved"`
+	AgreementReview bool     `json:"agreementReview"`
+	// ClearOnApprove (migration 202611050010): a variant row whose
+	// approval applies as a clear-to-inherit (variant cost back to
+	// NULL) rather than setting NewReference on the variant.
+	ClearOnApprove bool       `json:"clearOnApprove"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	ReviewedAt     *time.Time `json:"reviewedAt,omitempty"`
 }
 
 func (r *SupplierRepository) ListSupplierPriceIncreases(ctx context.Context, supplierID string) ([]SupplierPriceIncrease, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, product_id, old_reference, new_reference, pct, status, is_exception,
-		       exception_cap_pct, COALESCE(auto_approved, FALSE), COALESCE(agreement_review, FALSE),
-		       created_at, reviewed_at
-		FROM supplier_price_increases WHERE supplier_id = $1 ORDER BY created_at DESC
+		SELECT spi.id, spi.product_id, spi.variant_id, COALESCE(pv.variant_name, ''),
+		       spi.old_reference, spi.new_reference, spi.pct, spi.status, spi.is_exception,
+		       spi.exception_cap_pct, COALESCE(spi.auto_approved, FALSE), COALESCE(spi.agreement_review, FALSE),
+		       COALESCE(spi.clear_on_approve, FALSE), spi.created_at, spi.reviewed_at
+		FROM supplier_price_increases spi
+		LEFT JOIN product_variants pv ON pv.id::text = spi.variant_id
+		WHERE spi.supplier_id = $1 ORDER BY spi.created_at DESC
 	`, supplierID)
 	if err != nil {
 		return nil, err
@@ -3683,8 +4378,8 @@ func (r *SupplierRepository) ListSupplierPriceIncreases(ctx context.Context, sup
 	out := []SupplierPriceIncrease{}
 	for rows.Next() {
 		var p SupplierPriceIncrease
-		if err := rows.Scan(&p.ID, &p.ProductID, &p.OldReference, &p.NewReference, &p.Pct, &p.Status,
-			&p.IsException, &p.ExceptionCapPct, &p.AutoApproved, &p.AgreementReview, &p.CreatedAt, &p.ReviewedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.ProductID, &p.VariantID, &p.VariantName, &p.OldReference, &p.NewReference, &p.Pct, &p.Status,
+			&p.IsException, &p.ExceptionCapPct, &p.AutoApproved, &p.AgreementReview, &p.ClearOnApprove, &p.CreatedAt, &p.ReviewedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -3779,13 +4474,15 @@ func (r *SupplierRepository) ListSupplierCustomerReturns(ctx context.Context, su
 		SELECT DISTINCT cr.id, cr.order_id, COALESCE(o.order_number, cr.order_id),
 			cr.status, cr.reason, cr.return_code, cr.created_at,
 			cr.return_shipping_amount, cr.return_shipping_bearer,
-			w.name, w.city_name
+			w.name, w.city_name,
+			cr.destination_supplier_warehouse_id, sw.name, sw.city_name
 		FROM customer_returns cr
 		JOIN return_items ri ON ri.return_id = cr.id
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
 		JOIN products p ON p.id = oi.product_id
 		LEFT JOIN orders o ON o.id = cr.order_id
 		LEFT JOIN warehouses w ON w.id = cr.warehouse_id
+		LEFT JOIN supplier_warehouses sw ON sw.id = cr.destination_supplier_warehouse_id
 		WHERE p.supplier_id = $1
 		ORDER BY cr.created_at DESC
 	`, supplierID)
@@ -3798,19 +4495,35 @@ func (r *SupplierRepository) ListSupplierCustomerReturns(ctx context.Context, su
 	for rows.Next() {
 		var c SupplierCustomerReturn
 		var destName, destCity sql.NullString
+		var destSupplierWarehouseID, supplierDestName, supplierDestCity sql.NullString
 		if err := rows.Scan(&c.ReturnID, &c.OrderID, &c.OrderNumber, &c.Status,
 			&c.Reason, &c.ReturnCode, &c.CreatedAt, &c.ReturnShippingAmount,
-			&c.ReturnShippingBearer, &destName, &destCity); err != nil {
+			&c.ReturnShippingBearer, &destName, &destCity,
+			&destSupplierWarehouseID, &supplierDestName, &supplierDestCity); err != nil {
 			return nil, err
 		}
-		if destName.Valid {
+		// Destination (owner rule, Oct 28 2026): a recorded supplier
+		// warehouse destination (migration 202611050003) wins over the
+		// central warehouse columns — the two are mutually exclusive
+		// by construction at creation.
+		if destSupplierWarehouseID.Valid && destSupplierWarehouseID.String != "" {
+			t := "supplier"
+			c.DestinationType = &t
+			if supplierDestName.Valid {
+				c.DestinationName = &supplierDestName.String
+				c.WarehouseName = &supplierDestName.String
+			}
+			if supplierDestCity.Valid {
+				c.WarehouseCity = &supplierDestCity.String
+			}
+		} else if destName.Valid {
 			c.DestinationName = &destName.String
 			c.WarehouseName = &destName.String
 			t := "central"
 			c.DestinationType = &t
-		}
-		if destCity.Valid {
-			c.WarehouseCity = &destCity.String
+			if destCity.Valid {
+				c.WarehouseCity = &destCity.String
+			}
 		}
 		c.Items = []SupplierCustomerReturnItem{}
 		out = append(out, c)
@@ -3923,6 +4636,51 @@ func (r *SupplierRepository) ListSupplierReturnShippingCharges(ctx context.Conte
 	for rows.Next() {
 		var c SupplierReturnShippingCharge
 		if err := rows.Scan(&c.ID, &c.ReturnID, &c.Bearer, &c.Amount, &c.Reason, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SupplierReturnClawback mirrors one customer_return_financial_events
+// product_cost row (migration 202611050006, GAP 6): a refunded customer
+// return reversing this supplier's product cost for one return item.
+// Keys follow the shipping-charge reader's snake_case shape.
+type SupplierReturnClawback struct {
+	ID        string    `json:"id"`
+	ReturnID  string    `json:"return_id"`
+	Amount    int64     `json:"amount"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListSupplierReturnClawbacks lists the supplier's customer-return
+// cost reversals, newest first — the settlement surface that explains
+// a drop in Available. Returns an empty list on a database where the
+// events table does not exist yet.
+func (r *SupplierRepository) ListSupplierReturnClawbacks(ctx context.Context, supplierID string) ([]SupplierReturnClawback, error) {
+	var hasTable bool
+	if err := r.db.QueryRowContext(ctx, `SELECT to_regclass('public.customer_return_financial_events') IS NOT NULL`).Scan(&hasTable); err != nil {
+		return nil, err
+	}
+	out := []SupplierReturnClawback{}
+	if !hasTable {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, return_id::text, amount, reason, created_at
+		FROM customer_return_financial_events
+		WHERE supplier_id = $1 AND component = 'product_cost'
+		ORDER BY created_at DESC
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c SupplierReturnClawback
+		if err := rows.Scan(&c.ID, &c.ReturnID, &c.Amount, &c.Reason, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -4788,4 +5546,366 @@ func (r *SupplierRepository) UpdateSupplierProfile(ctx context.Context, supplier
 	}
 	_ = currentConfirmed
 	return r.GetSupplierByID(ctx, supplierID)
+}
+
+// --- Supplier search insight (D12) ----------------------------------
+//
+// search_queries carries no supplier key: a row is a normalized term, a
+// store slug and result counts. The insight is therefore computed over
+// PLATFORM-WIDE aggregates and then FOOTPRINT-SCOPED to the caller: a
+// term is shown only when it matches the supplier's own catalog
+// footprint (their product titles, their brands, or the titles of the
+// categories their products sit in), and matched products are
+// hard-filtered to the caller's own products. Store slugs, per-store
+// splits, platform totals and other suppliers' products are never
+// exposed.
+
+const supplierSearchInsightMinSearches = 3
+const supplierSearchInsightCandidateLimit = 300
+const supplierSearchInsightSectionLimit = 20
+
+type SupplierSearchInsightMatchedProduct struct {
+	ProductID string `json:"productId"`
+	Title     string `json:"title"`
+	ImageURL  string `json:"imageUrl,omitempty"`
+}
+
+type SupplierSearchInsightDemandTerm struct {
+	Term               string                                `json:"term"`
+	Searches           int64                                 `json:"searches"`
+	ZeroResultSearches int64                                 `json:"zeroResultSearches"`
+	MatchedProducts    []SupplierSearchInsightMatchedProduct `json:"matchedProducts"`
+}
+
+type SupplierSearchInsightScopeMatch struct {
+	Type string `json:"type"` // "category" | "brand"
+	Name string `json:"name"`
+}
+
+type SupplierSearchInsightUnmetTerm struct {
+	Term               string                            `json:"term"`
+	Searches           int64                             `json:"searches"`
+	ZeroResultSearches int64                             `json:"zeroResultSearches"`
+	ScopeMatches       []SupplierSearchInsightScopeMatch `json:"scopeMatches"`
+}
+
+type SupplierSearchInsightTrendItem struct {
+	ProductID string   `json:"productId"`
+	Title     string   `json:"title"`
+	Units     int64    `json:"units"`
+	PrevUnits int64    `json:"prevUnits"`
+	DeltaPct  *float64 `json:"deltaPct"` // null when prev = 0 and units > 0
+}
+
+type SupplierSearchInsight struct {
+	WindowDays      int                               `json:"windowDays"`
+	TopDemand       []SupplierSearchInsightDemandTerm `json:"topDemand"`
+	UnmetInScope    []SupplierSearchInsightUnmetTerm  `json:"unmetInScope"`
+	OwnProductTrend []SupplierSearchInsightTrendItem  `json:"ownProductTrend"`
+}
+
+// normalizeInsightTerm mirrors the search-log normalisation
+// (cmd/server normalizeSearchTerm): trim, collapse whitespace runs and
+// map Arabic Yeh/Kaf to Persian Yeh/Kaf. Applied to footprint names so
+// they compare against logged terms on equal footing; idempotent on
+// already-normalized terms.
+func normalizeInsightTerm(s string) string {
+	collapsed := strings.Join(strings.Fields(s), " ")
+	var b strings.Builder
+	for _, r := range collapsed {
+		switch r {
+		case 'ي':
+			b.WriteRune('ی')
+		case 'ك':
+			b.WriteRune('ک')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+type supplierInsightFootprintEntry struct {
+	typ        string // "brand" | "category"
+	name       string // display name as stored
+	normalized string
+}
+
+// matchSupplierInsightFootprint returns the footprint entries a
+// normalized term matches: bidirectional substring on normalized forms
+// (the term contains the name, or the name contains the term).
+func matchSupplierInsightFootprint(term string, footprint []supplierInsightFootprintEntry) []supplierInsightFootprintEntry {
+	if term == "" {
+		return nil
+	}
+	var out []supplierInsightFootprintEntry
+	for _, e := range footprint {
+		if e.normalized == "" {
+			continue
+		}
+		if strings.Contains(term, e.normalized) || strings.Contains(e.normalized, term) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+var supplierInsightLikeReplacer = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (r *SupplierRepository) supplierInsightFootprint(ctx context.Context, supplierID string) ([]supplierInsightFootprintEntry, error) {
+	var out []supplierInsightFootprintEntry
+	seen := map[string]bool{}
+	add := func(typ, name string) {
+		normalized := normalizeInsightTerm(name)
+		key := typ + "\x00" + normalized
+		if normalized == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, supplierInsightFootprintEntry{typ: typ, name: name, normalized: normalized})
+	}
+	brandRows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT brand FROM products
+		WHERE supplier_id = $1 AND brand <> ''
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	for brandRows.Next() {
+		var brand string
+		if err := brandRows.Scan(&brand); err != nil {
+			brandRows.Close()
+			return nil, err
+		}
+		add("brand", brand)
+	}
+	if err := brandRows.Err(); err != nil {
+		brandRows.Close()
+		return nil, err
+	}
+	brandRows.Close()
+	catRows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT c.title FROM products p
+		JOIN categories c ON c.slug = p.category_slug
+		WHERE p.supplier_id = $1 AND c.title <> ''
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	for catRows.Next() {
+		var title string
+		if err := catRows.Scan(&title); err != nil {
+			catRows.Close()
+			return nil, err
+		}
+		add("category", title)
+	}
+	if err := catRows.Err(); err != nil {
+		catRows.Close()
+		return nil, err
+	}
+	catRows.Close()
+	return out, nil
+}
+
+type supplierInsightCandidate struct {
+	term          string
+	searches      int64
+	zeroSearches  int64
+	positiveRows  int64
+	totalRows     int64
+	catalogRows   int64
+	catalogZero   int64
+	catalogKnown  bool
+}
+
+// GetSupplierSearchInsight computes the supplier demand-insight over a
+// trailing window of `days` days (see the footprint-scoping note at the
+// top of this section). A supplier with no products gets the same shape
+// with every section empty.
+func (r *SupplierRepository) GetSupplierSearchInsight(ctx context.Context, supplierID string, days int) (*SupplierSearchInsight, error) {
+	if days != 7 && days != 30 && days != 90 {
+		days = 30
+	}
+	out := &SupplierSearchInsight{
+		WindowDays:      days,
+		TopDemand:       []SupplierSearchInsightDemandTerm{},
+		UnmetInScope:    []SupplierSearchInsightUnmetTerm{},
+		OwnProductTrend: []SupplierSearchInsightTrendItem{},
+	}
+	now := time.Now()
+	windowStart := now.AddDate(0, 0, -days)
+	prevStart := now.AddDate(0, 0, -2*days)
+
+	footprint, err := r.supplierInsightFootprint(ctx, supplierID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Search sections are skipped (left empty) when the search log
+	// table is absent, mirroring the seller handler's guard; the trend
+	// below is computed regardless.
+	var searchTableExists bool
+	if err := r.db.QueryRowContext(ctx, `SELECT to_regclass('public.search_queries') IS NOT NULL`).Scan(&searchTableExists); err != nil {
+		return nil, err
+	}
+	if searchTableExists {
+		var catalogColExists bool
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = 'search_queries' AND column_name = 'catalog_result_count')
+		`).Scan(&catalogColExists); err != nil {
+			return nil, err
+		}
+		catalogExpr := "0"
+		catalogZeroExpr := "0"
+		if catalogColExists {
+			catalogExpr = "COUNT(catalog_result_count)"
+			catalogZeroExpr = "COALESCE(SUM(CASE WHEN catalog_result_count = 0 THEN 1 ELSE 0 END), 0)"
+		}
+		rows, err := r.db.QueryContext(ctx, `
+			SELECT term_normalized,
+			  COUNT(*) AS searches,
+			  COALESCE(SUM(CASE WHEN result_count = 0 THEN 1 ELSE 0 END), 0) AS zero_searches,
+			  COALESCE(SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END), 0) AS positive_rows,
+			  COUNT(*) AS total_rows,
+			  `+catalogExpr+` AS catalog_rows,
+			  `+catalogZeroExpr+` AS catalog_zero_rows
+			FROM search_queries
+			WHERE term_normalized <> '' AND created_at >= $1
+			GROUP BY term_normalized
+			HAVING COUNT(*) >= $2
+			ORDER BY COUNT(*) DESC, term_normalized ASC
+			LIMIT $3
+		`, windowStart, supplierSearchInsightMinSearches, supplierSearchInsightCandidateLimit)
+		if err != nil {
+			return nil, err
+		}
+		var candidates []supplierInsightCandidate
+		for rows.Next() {
+			var c supplierInsightCandidate
+			if err := rows.Scan(&c.term, &c.searches, &c.zeroSearches, &c.positiveRows, &c.totalRows, &c.catalogRows, &c.catalogZero); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			c.catalogKnown = catalogColExists
+			candidates = append(candidates, c)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+
+		// Top demand: terms matching the caller's own products (by
+		// title) or their brand/category footprint, in rank order.
+		for _, c := range candidates {
+			if len(out.TopDemand) >= supplierSearchInsightSectionLimit {
+				break
+			}
+			pattern := "%" + supplierInsightLikeReplacer.Replace(c.term) + "%"
+			mrows, err := r.db.QueryContext(ctx, `
+				SELECT id, title, COALESCE(image_url, '') FROM products
+				WHERE supplier_id = $1 AND is_active AND title ILIKE $2 ESCAPE '\'
+				ORDER BY title LIMIT 4
+			`, supplierID, pattern)
+			if err != nil {
+				return nil, err
+			}
+			matched := []SupplierSearchInsightMatchedProduct{}
+			for mrows.Next() {
+				var p SupplierSearchInsightMatchedProduct
+				if err := mrows.Scan(&p.ProductID, &p.Title, &p.ImageURL); err != nil {
+					mrows.Close()
+					return nil, err
+				}
+				matched = append(matched, p)
+			}
+			if err := mrows.Err(); err != nil {
+				mrows.Close()
+				return nil, err
+			}
+			mrows.Close()
+			footprintMatches := matchSupplierInsightFootprint(normalizeInsightTerm(c.term), footprint)
+			if len(matched) == 0 && len(footprintMatches) == 0 {
+				continue
+			}
+			out.TopDemand = append(out.TopDemand, SupplierSearchInsightDemandTerm{
+				Term: c.term, Searches: c.searches, ZeroResultSearches: c.zeroSearches, MatchedProducts: matched,
+			})
+		}
+
+		// Unmet in scope: never answered with a positive result, and
+		// proven absent from the whole catalog by the log (every row's
+		// catalog_result_count = 0; a NULL row means "unknown" and
+		// disqualifies the term) — then verified once more against the
+		// live catalog, because the writer conflates the two counts: a
+		// live title match is a discoverability gap, not a supply gap.
+		for _, c := range candidates {
+			if len(out.UnmetInScope) >= supplierSearchInsightSectionLimit {
+				break
+			}
+			if c.positiveRows != 0 || !c.catalogKnown || c.catalogRows != c.totalRows || c.catalogZero != c.totalRows {
+				continue
+			}
+			footprintMatches := matchSupplierInsightFootprint(normalizeInsightTerm(c.term), footprint)
+			if len(footprintMatches) == 0 {
+				continue
+			}
+			pattern := "%" + supplierInsightLikeReplacer.Replace(c.term) + "%"
+			var liveMatches int64
+			if err := r.db.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM products WHERE is_active AND title ILIKE $1 ESCAPE '\'
+			`, pattern).Scan(&liveMatches); err != nil {
+				return nil, err
+			}
+			if liveMatches > 0 {
+				continue
+			}
+			scopeMatches := []SupplierSearchInsightScopeMatch{}
+			for i, e := range footprintMatches {
+				if i >= 3 {
+					break
+				}
+				scopeMatches = append(scopeMatches, SupplierSearchInsightScopeMatch{Type: e.typ, Name: e.name})
+			}
+			out.UnmetInScope = append(out.UnmetInScope, SupplierSearchInsightUnmetTerm{
+				Term: c.term, Searches: c.searches, ZeroResultSearches: c.zeroSearches, ScopeMatches: scopeMatches,
+			})
+		}
+	}
+
+	// Own product trend: paid-order units in the window vs the previous
+	// equal window (same payment rule as GetSupplierAnalytics).
+	trendRows, err := r.db.QueryContext(ctx, `
+		SELECT p.id, p.title,
+		  COALESCE(SUM(CASE WHEN o.created_at >= $2 THEN oi.quantity ELSE 0 END), 0) AS units,
+		  COALESCE(SUM(CASE WHEN o.created_at < $2 THEN oi.quantity ELSE 0 END), 0) AS prev_units
+		FROM order_items oi
+		JOIN orders o ON o.id = oi.order_id
+		JOIN products p ON p.id = oi.product_id
+		WHERE p.supplier_id = $1 AND o.payment_status = 'paid' AND o.created_at >= $3
+		GROUP BY p.id, p.title
+		ORDER BY units DESC, p.title ASC
+		LIMIT 5
+	`, supplierID, windowStart, prevStart)
+	if err != nil {
+		return nil, err
+	}
+	defer trendRows.Close()
+	for trendRows.Next() {
+		var item SupplierSearchInsightTrendItem
+		if err := trendRows.Scan(&item.ProductID, &item.Title, &item.Units, &item.PrevUnits); err != nil {
+			return nil, err
+		}
+		if item.PrevUnits > 0 {
+			pct := math.Round(float64(item.Units-item.PrevUnits)/float64(item.PrevUnits)*1000) / 10
+			item.DeltaPct = &pct
+		}
+		out.OwnProductTrend = append(out.OwnProductTrend, item)
+	}
+	if err := trendRows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

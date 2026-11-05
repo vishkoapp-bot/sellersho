@@ -113,7 +113,7 @@ func supplierGateRepos(t *testing.T) (*repository.CatalogRepository, *repository
 		`CREATE TABLE search_queries (id BIGSERIAL PRIMARY KEY, term_normalized TEXT NOT NULL, store_slug TEXT NOT NULL, result_count INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE pending_approvals (id VARCHAR(50) PRIMARY KEY, entity_type VARCHAR(50) NOT NULL, target_id VARCHAR(50) NOT NULL, title TEXT NOT NULL, requested_data JSONB NOT NULL DEFAULT '{}', requested_by VARCHAR(50) NOT NULL, status VARCHAR(50) NOT NULL, rejection_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), reviewed_at TIMESTAMPTZ)`,
 		`CREATE TABLE users (id VARCHAR(50) PRIMARY KEY, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
-		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50))`,
+		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), approval_status VARCHAR(20) NOT NULL DEFAULT 'approved')`,
 		`CREATE TABLE supplier_members (supplier_id VARCHAR(50) NOT NULL, user_id VARCHAR(50) NOT NULL, role_key VARCHAR(50) NOT NULL DEFAULT 'owner', permissions JSONB NOT NULL DEFAULT '[]'::jsonb, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
 	}
 	for _, q := range ddl {

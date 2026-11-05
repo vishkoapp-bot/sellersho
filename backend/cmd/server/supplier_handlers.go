@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -17,6 +19,8 @@ import (
 type SupplierHandlers struct {
 	supplierRepo                  *repository.SupplierRepository
 	capabilityRepo                *repository.CapabilityRepository
+	pricingRepo                   *repository.PricingRepository
+	tapinRepo                     *repository.TapinRepository
 	jwtService                    *auth.JWTService
 	networkVolumeIncentiveEnabled bool
 }
@@ -32,6 +36,23 @@ func NewSupplierHandlers(supplierRepo *repository.SupplierRepository, jwtService
 		jwtService:                    jwtService,
 		networkVolumeIncentiveEnabled: networkVolumeIncentiveEnabled,
 	}
+}
+
+// WithPricingRepository attaches the pricing repository used by the
+// governed price-increase path (gap 11) and the admin price-increase
+// queue. It is a setter rather than a constructor argument so existing
+// call sites (and tests) keep compiling unchanged.
+func (h *SupplierHandlers) WithPricingRepository(pricingRepo *repository.PricingRepository) *SupplierHandlers {
+	h.pricingRepo = pricingRepo
+	return h
+}
+
+// WithTapinRepository attaches the Tapin repository used by the
+// supplier Tapin boxes endpoint (gaps 1-3). Setter rather than a
+// constructor argument, same rationale as WithPricingRepository.
+func (h *SupplierHandlers) WithTapinRepository(tapinRepo *repository.TapinRepository) *SupplierHandlers {
+	h.tapinRepo = tapinRepo
+	return h
 }
 
 // 1. POST /api/v1/auth/supplier/register
@@ -106,6 +127,30 @@ func getSupplierIDFromContext(r *http.Request, repo *repository.SupplierReposito
 	return ""
 }
 
+// derivedSupportsDirectShipping (gap 13) is the ONLY value DTOs
+// emit for supportsDirectShipping: the capability is DERIVED from
+// the supplier's shipping-method toggles (direct == enabled), the
+// same source routing.ResolveItemRouting reads. The stored
+// suppliers.supports_direct_shipping column is inert legacy — its
+// write path (HandleUpdateShippingSettings +
+// UpdateDirectShippingSetting) is removed — and is used here only
+// as the fallback when the toggles cannot be loaded.
+func derivedSupportsDirectShipping(ctx context.Context, repo *repository.SupplierRepository, supplierID string, stored bool) bool {
+	if repo == nil || supplierID == "" {
+		return stored
+	}
+	methods, err := repo.ListSupplierShippingMethods(ctx, supplierID)
+	if err != nil {
+		return stored
+	}
+	for _, m := range methods {
+		if m.Method == "direct" {
+			return m.Status == "enabled"
+		}
+	}
+	return false
+}
+
 // 3. GET /api/v1/supplier/profile
 func (h *SupplierHandlers) HandleGetProfile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -135,28 +180,75 @@ func (h *SupplierHandlers) HandleGetProfile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"permissions":            permissions,
-		"id":                     sup.ID,
-		"name":                   sup.Name,
-		"company_name":           sup.Name,
-		"rating":                 sup.Rating,
-		"total_products":         sup.TotalProducts,
-		"delivery_score":         sup.DeliveryScore,
-		"warehouse_city":         sup.WarehouseCity,
+		"permissions":              permissions,
+		"id":                       sup.ID,
+		"name":                     sup.Name,
+		"company_name":             sup.Name,
+		"rating":                   sup.Rating,
+		"total_products":           sup.TotalProducts,
+		"delivery_score":           sup.DeliveryScore,
+		"warehouse_city":           sup.WarehouseCity,
 		"warehouse_city_confirmed": sup.WarehouseCityConfirmed,
-		"logo_url":               sup.LogoURL,
-		"description":            sup.Description,
-		"badge":                  sup.Badge,
-		"supportsDirectShipping": sup.SupportsDirectShipping,
-		"approvalStatus":         sup.ApprovalStatus,
-		"signedContractVersion":  sup.SignedContractVersion,
-		"defaultMarkupType":      sup.DefaultMarkupType,
-		"defaultMarkupValue":     sup.DefaultMarkupValue,
-		"warehouseCityConfirmed": sup.WarehouseCityConfirmed,
-		"warehouseCitySource":    sup.WarehouseCitySource,
-		"tapinShopId":            sup.TapinShopID,
-		"tapinConnected":         sup.TapinShopID != nil && *sup.TapinShopID != "",
+		"logo_url":                 sup.LogoURL,
+		"description":              sup.Description,
+		"badge":                    sup.Badge,
+		"supportsDirectShipping":   derivedSupportsDirectShipping(r.Context(), h.supplierRepo, sup.ID, sup.SupportsDirectShipping),
+		"approvalStatus":           sup.ApprovalStatus,
+		"signedContractVersion":    sup.SignedContractVersion,
+		"defaultMarkupType":        sup.DefaultMarkupType,
+		"defaultMarkupValue":       sup.DefaultMarkupValue,
+		"warehouseCityConfirmed":   sup.WarehouseCityConfirmed,
+		"warehouseCitySource":      sup.WarehouseCitySource,
+		"tapinShopId":              sup.TapinShopID,
+		"tapinConnected":           sup.TapinShopID != nil && *sup.TapinShopID != "",
 	})
+}
+
+// proposalMeasurementInt reads one measurement field from a propose
+// payload. JSON numbers decode as float64; plain ints are accepted too
+// (dossier tooling). Missing, non-numeric or non-positive values report
+// as absent — the form's rule is "present and > 0" for all four fields.
+func proposalMeasurementInt(payload map[string]interface{}, keys ...string) (int, bool) {
+	for _, key := range keys {
+		switch v := payload[key].(type) {
+		case float64:
+			if v > 0 {
+				return int(v), true
+			}
+		case int:
+			if v > 0 {
+				return v, true
+			}
+		case int64:
+			if v > 0 {
+				return int(v), true
+			}
+		case json.Number:
+			if n, err := v.Int64(); err == nil && n > 0 {
+				return int(n), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// missingProposalMeasurements returns the Persian names of the required
+// proposal measurements that are absent or non-positive (gap 8).
+func missingProposalMeasurements(payload map[string]interface{}) []string {
+	var missing []string
+	if _, ok := proposalMeasurementInt(payload, "weightGrams", "weight_grams"); !ok {
+		missing = append(missing, "وزن")
+	}
+	if _, ok := proposalMeasurementInt(payload, "lengthMm", "length_mm"); !ok {
+		missing = append(missing, "طول")
+	}
+	if _, ok := proposalMeasurementInt(payload, "widthMm", "width_mm"); !ok {
+		missing = append(missing, "عرض")
+	}
+	if _, ok := proposalMeasurementInt(payload, "heightMm", "height_mm"); !ok {
+		missing = append(missing, "ارتفاع")
+	}
+	return missing
 }
 
 // 4. POST /api/v1/supplier/products/propose
@@ -211,6 +303,22 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	payload["fulfillmentMethod"] = fulfillmentMethod
 	if strings.TrimSpace(title) == "" || len(title) > 500 || cost <= 0 || stock < 0 {
 		http.Error(w, `{"error":"Title, positive cost and nonnegative stock required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Gap 8 (supplier-flow audit): the measurements gate used to be
+	// frontend-only — the form refuses to submit without weight + all
+	// three dimensions («بدون آن‌ها پیشنهاد تأیید نمی‌شود»), but this
+	// handler never checked, so non-form proposals reached approval with
+	// no measurements and were born unmeasurable (putaway then blocks
+	// until measurement_status='verified'). Enforce the same rule here,
+	// naming what is missing. Values arrive exactly as the form sends
+	// them: weightGrams (grams), lengthMm/widthMm/heightMm (millimetres).
+	if missing := missingProposalMeasurements(payload); len(missing) > 0 {
+		msg := "وزن و ابعاد کالا ناقص است؛ این موارد الزامی‌اند و وارد نشده‌اند: " + strings.Join(missing, "، ") +
+			". وزن (گرم) و هر سه بُعد کالا (طول، عرض و ارتفاع) الزامی است؛ بدون آن‌ها پیشنهاد تأیید نمی‌شود."
+		body, _ := json.Marshal(map[string]string{"error": msg})
+		http.Error(w, string(body), http.StatusBadRequest)
 		return
 	}
 
@@ -318,32 +426,6 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	})
 }
 
-// 4b. PUT /api/v1/supplier/profile/shipping-settings
-func (h *SupplierHandlers) HandleUpdateShippingSettings(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
-
-	var req struct {
-		SupportsDirectShipping bool `json:"supportsDirectShipping"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
-		return
-	}
-
-	err := h.supplierRepo.UpdateDirectShippingSetting(r.Context(), supplierID, req.SupportsDirectShipping)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":                true,
-		"supportsDirectShipping": req.SupportsDirectShipping,
-		"message":                "Direct shipping settings updated successfully",
-	})
-}
-
 // 5. GET /api/v1/supplier/products/proposals
 func (h *SupplierHandlers) HandleGetProposals(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -361,19 +443,51 @@ func (h *SupplierHandlers) HandleGetProposals(w http.ResponseWriter, r *http.Req
 }
 
 // 6. POST /api/v1/admin/products/approve/:proposal_id
+//
+// GAP 20: the {approved} body field is honoured. An explicit
+// {"approved": false} (with an optional "reason", falling back to
+// "notes") runs the proposal rejection path instead of approving;
+// {"approved": true} — and every pre-existing caller that sends no
+// field at all — keeps the original approve behaviour, so the field
+// is a *bool to keep "absent" distinct from an explicit false.
 func (h *SupplierHandlers) HandleApproveProposal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	parts := strings.Split(r.URL.Path, "/")
 	proposalID := parts[len(parts)-1]
 
 	var req struct {
-		Approved bool   `json:"approved"`
+		Approved *bool  `json:"approved"`
 		Notes    string `json:"notes"`
+		Reason   string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
+	if req.Approved != nil && !*req.Approved {
+		reason := req.Reason
+		if reason == "" {
+			reason = req.Notes
+		}
+		if err := h.supplierRepo.RejectProposal(r.Context(), proposalID, reason); err != nil {
+			if errors.Is(err, repository.ErrProposalNotPending) {
+				http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
+				return
+			}
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"status":  "rejected",
+		})
+		return
+	}
+
 	productID, err := h.supplierRepo.ApproveProposal(r.Context(), proposalID, req.Notes)
 	if err != nil {
+		if errors.Is(err, repository.ErrProposalNotPending) {
+			http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
@@ -509,6 +623,11 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 }
 
 // 9. PUT /api/v1/supplier/products/:id/pricing
+// Gap 11: price DECREASES (and unchanged prices) take the direct path
+// exactly as before. An INCREASE is governed by the recorded policy
+// (migrations 202610310003 + 202610310006): it either auto-applies under
+// the effective cap / an exception grant, or is queued as a pending
+// review row and answered 202 with the Persian explanation.
 func (h *SupplierHandlers) HandleUpdatePricing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/pricing"), "/")
@@ -523,16 +642,86 @@ func (h *SupplierHandlers) HandleUpdatePricing(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	err := h.supplierRepo.UpdateProductPricing(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.NewSupplierBaseCost, req.Reason)
+	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
+	currentCost, err := h.supplierRepo.GetSupplierProductBaseCost(r.Context(), supplierID, productID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
+	if req.NewSupplierBaseCost <= currentCost {
+		err := h.supplierRepo.UpdateProductPricing(r.Context(), supplierID, productID, req.NewSupplierBaseCost, req.Reason)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":            true,
+			"supplier_base_cost": req.NewSupplierBaseCost,
+		})
+		return
+	}
+
+	// Governed increase path. Without a pricing repository the increase
+	// cannot be evaluated, so it is refused rather than applied ungated.
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	result, err := h.pricingRepo.ApplyGovernedPriceIncrease(r.Context(), supplierID, productID, req.NewSupplierBaseCost, req.Reason)
+	if err != nil {
+		if errors.Is(err, repository.ErrPriceIncreaseDuplicatePending) {
+			http.Error(w, `{"error":"برای این کالا یک درخواست افزایش قیمت در حال بررسی وجود دارد."}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrGovernedProductNotFound) {
+			http.Error(w, fmt.Sprintf(`{"error":"product %s not found"}`, productID), http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	if result.Applied {
+		resp := map[string]interface{}{
+			"success":            true,
+			"supplier_base_cost": req.NewSupplierBaseCost,
+			"applied":            true,
+			"autoApproved":       result.AutoApproved,
+		}
+		if result.RequestID != "" {
+			resp["requestId"] = result.RequestID
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":            true,
-		"supplier_base_cost": req.NewSupplierBaseCost,
+		"success":   false,
+		"status":    "pending_review",
+		"requestId": result.RequestID,
+		"pct":       result.Pct,
+		"capPct":    result.CapPct,
+		"reason":    result.Reason,
+		"message":   priceIncreasePendingMessage(result.Reason),
 	})
+}
+
+// priceIncreasePendingMessage maps a governance reason to the supplier-
+// facing Persian explanation. exception_cap deliberately reuses the
+// above_cap message: from the supplier's side both mean "above the cap
+// that applies to this product, queued for management review".
+func priceIncreasePendingMessage(reason string) string {
+	switch reason {
+	case "locked":
+		return "افزایش قیمت در بازهٔ قفل‌شده نیازمند تأیید مدیریت است؛ درخواست شما ثبت شد و پس از بررسی اعمال می‌شود."
+	case "agreement":
+		return "این کالا تحت توافق ثبات قیمت است؛ درخواست افزایش شما برای بررسی مدیریت ثبت شد."
+	default: // above_cap, exception_cap
+		return "افزایش بیش از سقف مجاز نیازمند بررسی مدیریت است؛ درخواست شما ثبت شد."
+	}
 }
 
 // 10. POST /api/v1/supplier/inbounds/create
@@ -785,6 +974,12 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 	}
 	reqID, err := h.supplierRepo.RequestSettlement(r.Context(), supplierID, req.Amount, req.Shaba, verification.BankName, req.AccountHolder)
 	if err != nil {
+		// Gap 12: new settlement requests are frozen while the
+		// supplier is suspended (409, like the balance conflict).
+		if errors.Is(err, repository.ErrSupplierSuspended) {
+			http.Error(w, `{"error":"Supplier is suspended"}`, http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "insufficient settlement balance") {
 			http.Error(w, `{"error":"Insufficient settlement balance"}`, http.StatusConflict)
 			return

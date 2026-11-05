@@ -3,12 +3,14 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/tapin"
 	"github.com/drup/platform/internal/domain"
 	"io"
 	"os"
@@ -161,13 +163,6 @@ func (h *SupplierHandlers) HandleGetTapinSettings(w http.ResponseWriter, r *http
 	})
 }
 
-// Tapin upstream (Fix61): Tipax options endpoint from Tapin's own guide;
-// the read-only call used for the connectivity test. The 10s client
-// timeout bounds the call; only the upstream status class is ever used.
-const tapinTipaxOptionsURL = "https://api.tapin.ir/api/v4/tipax/public/user/order/options/"
-
-var tapinHTTPClient = &http.Client{Timeout: 10 * time.Second}
-
 // PUT/POST /api/v1/supplier/tapin/settings (D11, Fix61).
 // Stores the trimmed shop id and, when a non-empty token is supplied, the
 // Tapin token. Accepts the live client's {shopId, token?} shape as well as
@@ -254,23 +249,49 @@ func (h *SupplierHandlers) HandleDeleteTapinSettings(w http.ResponseWriter, r *h
 	})
 }
 
-// GET /api/v1/supplier/tapin/boxes (D11, stub -- Fix61 open question).
-// Boxes upstream is UNIDENTIFIED: the live binary contains no tapin.ir or
-// tipax URL literal; the live frontend accepts flexible box shapes
-// (id/pk/box_id/boxId/code/value + title/name/label); platform_settings
-// has tapin_default_box_id but its platform token/shop are empty. Left as
-// an explicit stub until the upstream boxes endpoint is proven; not guessed.
+// GET /api/v1/supplier/tapin/boxes (D11, gaps 1-3).
+// Tapin's API has NO boxes endpoint (verified against Tapin's
+// official Tipax guide — the capture in ~/workspace/tapin-spec), so
+// the box catalogue is platform-managed (tapin_boxes, migration
+// 202611050008): this returns the active catalogue plus the
+// platform default box id the client pre-selects.
 func (h *SupplierHandlers) HandleTapinBoxes(w http.ResponseWriter, r *http.Request) {
-	supplierLiveParityStub(w, r, "U07/U63", "Tapin box list requires the unverified Tapin service and token handling; not guessed.")
+	w.Header().Set("Content-Type", "application/json")
+	if _, ok := supplierLiveParitySupplierID(w, r, h); !ok {
+		return
+	}
+	if h.tapinRepo == nil {
+		supplierLiveParityStub(w, r, "U07/U63", "Tapin repository not wired; box catalogue unavailable.")
+		return
+	}
+	boxes, err := h.tapinRepo.ListActiveBoxes(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"boxes":        boxes,
+		"defaultBoxId": h.tapinRepo.DefaultBoxID(r.Context()),
+	})
 }
 
-// POST /api/v1/supplier/tapin/test (D11, Fix61).
-// Server-side connectivity test: loads the supplier's stored Tapin token
-// and shop id and calls Tapin's read-only Tipax options endpoint. The
-// token, shop id, and upstream body are never included in any response
-// or log line; only the upstream status class is used. HTTP 200 (and
-// 400/422, which still prove authentication passed) mean connected;
-// 401/403 mean invalid credentials; network/timeout means unreachable.
+// POST /api/v1/supplier/tapin/test (D11, gaps 1-3).
+// Envelope-aware connectivity test: the stored token + shop id are
+// sent to Tapin's Tipax options method (the shop id in the BODY —
+// an empty body is answered 338 "no shop selected", live-verified)
+// through internal/tapin, and the verdict reads the ENVELOPE, not
+// the HTTP status class (Tapin wraps business failures in HTTP 200;
+// the old status-class test called a dead token "connected").
+// Verdicts (live-verified codes, 2026-11-05):
+//   - envelope success (20/21): connected, Tipax service active.
+//   - 30129: token + shop are VALID but the Tipax service is not
+//     activated for this shop (activation is a Tapin support ticket)
+//     -> ok:true with serviceActive:false, upstream message shown.
+//   - 332 (token not found) and every other envelope failure:
+//     ok:false with the upstream Persian message verbatim.
+//   - transport failure: 502, unreachable.
+// The token and shop id never appear in any response or log line.
 func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
@@ -304,47 +325,40 @@ func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, tapinTipaxOptionsURL, strings.NewReader("{}"))
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := tapinHTTPClient.Do(req)
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
+	callErr := newTapinClient().Options(r.Context(), token, shopID)
+	if callErr == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":      false,
-			"error":   "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
-			"message": "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+			"ok":            true,
+			"serviceActive": true,
+			"message":       "اتصال به تاپین برقرار است و سرویس تیپاکس برای فروشگاه شما فعال است.",
 		})
 		return
 	}
-	defer resp.Body.Close()
-	// Drain a bounded prefix without keeping or logging the content.
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	switch {
-	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":      true,
-			"message": "اتصال به تاپین برقرار است.",
-		})
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":      false,
-			"error":   "توکن یا شناسه فروشگاه تاپین معتبر نیست. اتصال را بررسی و دوباره ذخیره کنید.",
-			"message": "توکن یا شناسه فروشگاه تاپین معتبر نیست. اتصال را بررسی و دوباره ذخیره کنید.",
-		})
-	default:
-		w.WriteHeader(http.StatusBadGateway)
+	var ue *tapin.UpstreamError
+	if errors.As(callErr, &ue) {
+		if ue.Status == tapin.StatusServiceNotActivated {
+			// Credentials proven valid; only the Tipax activation is
+			// missing on Tapin's side.
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok":            true,
+				"serviceActive": false,
+				"message":       ue.Message,
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":      false,
-			"error":   "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
-			"message": "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+			"error":   ue.Message,
+			"message": ue.Message,
 		})
+		return
 	}
+	w.WriteHeader(http.StatusBadGateway)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":      false,
+		"error":   "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+		"message": "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید.",
+	})
 }
 
 // GET /api/v1/supplier/shipping-methods (D11).
@@ -637,11 +651,48 @@ func (h *SupplierHandlers) HandleGetSupplierPriceIncreases(w http.ResponseWriter
 	json.NewEncoder(w).Encode(list)
 }
 
-// POST /api/v1/supplier/price-increases/exception-ticket (D12, stub).
-// TODO (U07): no exception-ticket table or body shape exists in source;
-// the is_exception/exception_cap_pct columns alone do not define a ticket.
+// POST /api/v1/supplier/price-increases/exception-ticket (D12; gap 11).
+// Files the supplier's exception request as a finance-section support
+// ticket (migration 202610310003 routes exception tickets by
+// section = 'finance'); an admin later turns it into a per-product grant
+// via POST /api/v1/admin/products/{productId}/price-exception. Body:
+// {productId, newReference, message?}. newReference and message are
+// validated here but not persisted: the sanctioned ticket columns carry
+// no body field (see CreatePriceIncreaseExceptionTicket).
 func (h *SupplierHandlers) HandleSupplierPriceIncreaseExceptionTicket(w http.ResponseWriter, r *http.Request) {
-	supplierLiveParityStub(w, r, "U07", "Exception-ticket creation shape is unverified; no ticket table exists in source.")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req struct {
+		ProductID    string `json:"productId"`
+		NewReference int64  `json:"newReference"`
+		Message      string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ProductID) == "" || req.NewReference <= 0 {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	// requester_user_id is a UUID column: the claims user id is the
+	// requester; when absent, the repository falls back to the supplier's
+	// owner_user_id (never the supplier record id).
+	requesterUserID := supplierLiveParityClaimsUserID(r)
+	ticketID, err := h.supplierRepo.CreatePriceIncreaseExceptionTicket(r.Context(), supplierID, requesterUserID, strings.TrimSpace(req.ProductID))
+	if err != nil {
+		if errors.Is(err, repository.ErrExceptionTicketProductNotFound) {
+			http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "ticketId": ticketID})
 }
 
 // GET /api/v1/supplier/stock-share (D12, stub).
@@ -1131,6 +1182,180 @@ func (h *SupplierHandlers) HandleUpdateVariantCartLimits(w http.ResponseWriter, 
 	json.NewEncoder(w).Encode(out)
 }
 
+// PUT /api/v1/supplier/products/{id}/variants/{vid}/pricing (gap 10) —
+// sets or clears the variant's own supplier base cost, the value the
+// pricing resolver has always read (product_variants.supplier_base_cost,
+// NULL = inherit the product's cost) but could never be written.
+// Mirrors the product pricing PUT: cost must be positive; an explicit
+// {"clear": true} restores inheritance. Both "supplierBaseCost" and the
+// product endpoint's "new_supplier_base_cost" field names are accepted.
+//
+// Governance (critic fix F1): a cost at or below the variant's
+// EFFECTIVE cost (its own cost, else the product's — inheritance)
+// applies directly, and so does a clear-to-inherit that lowers or
+// matches the effective cost (own cost at/above the product's, or
+// nothing to clear). An INCREASE goes through the same recorded
+// policy matrix as a product increase
+// (PricingRepository.ApplyGovernedVariantPriceIncrease): it either
+// auto-applies under the effective cap / an exception grant, or is
+// queued as a pending review row and answered 202. A clear whose own
+// cost sits BELOW the product's is an increase in disguise — clearing
+// would raise the effective cost to the product's — so it takes the
+// same governed path with the product's cost as the target
+// (PricingRepository.ApplyGovernedVariantClear, migration
+// 202611050010), and approval applies as a clear.
+func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		SupplierBaseCost    *int64 `json:"supplierBaseCost"`
+		NewSupplierBaseCost *int64 `json:"new_supplier_base_cost"`
+		Clear               bool   `json:"clear"`
+		Reason              string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	cost := body.SupplierBaseCost
+	if cost == nil {
+		cost = body.NewSupplierBaseCost
+	}
+	if cost == nil && !body.Clear {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if cost != nil && *cost <= 0 {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if cost != nil {
+		_, effective, err := h.supplierRepo.GetVariantEffectiveBaseCost(r.Context(), supplierID, productID, variantID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		if *cost > effective {
+			h.applyGovernedVariantIncrease(w, r, supplierID, productID, variantID, *cost, body.Reason)
+			return
+		}
+	}
+	if cost == nil && body.Clear {
+		own, productCost, err := h.supplierRepo.GetVariantOwnAndProductCost(r.Context(), supplierID, productID, variantID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		// A clear only escapes governance when it cannot raise the
+		// effective cost: nothing to clear, or the own cost already
+		// meets/exceeds the product's (clearing lowers or matches).
+		// Below the product's cost, clearing is a governed increase.
+		if own != nil && *own < productCost {
+			h.applyGovernedVariantClear(w, r, supplierID, productID, variantID, body.Reason)
+			return
+		}
+	}
+	out, err := h.supplierRepo.UpdateVariantPricing(r.Context(), supplierID, productID, variantID, cost, body.Clear, body.Reason)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// applyGovernedVariantIncrease answers a variant cost INCREASE the
+// way HandleUpdatePricing answers a product one: applied -> the
+// variant's post-write shape plus applied/autoApproved/requestId;
+// queued -> 202 pending_review with the Persian explanation; a
+// duplicate pending row for the same variant -> 409.
+func (h *SupplierHandlers) applyGovernedVariantIncrease(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, newCost int64, reason string) {
+	// Without a pricing repository the increase cannot be evaluated,
+	// so it is refused rather than applied ungated (mirrors the
+	// product pricing handler).
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	result, err := h.pricingRepo.ApplyGovernedVariantPriceIncrease(r.Context(), supplierID, productID, variantID, newCost, reason)
+	h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
+}
+
+// applyGovernedVariantClear answers a clear-to-inherit that would
+// RAISE the variant's effective cost (own cost below the product's)
+// with the same governed responses as an increase; approval applies
+// as a clear (see PricingRepository.ApplyGovernedVariantClear).
+func (h *SupplierHandlers) applyGovernedVariantClear(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, reason string) {
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	result, err := h.pricingRepo.ApplyGovernedVariantClear(r.Context(), supplierID, productID, variantID, reason)
+	h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
+}
+
+// writeGovernedVariantResult renders one governed variant-pricing
+// outcome (an increase or a governed clear) in HandleUpdatePricing's
+// shapes: applied -> the variant's post-write shape plus
+// applied/autoApproved/requestId; queued -> 202 pending_review with
+// the Persian explanation; duplicate pending -> 409.
+func (h *SupplierHandlers) writeGovernedVariantResult(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, result *repository.GovernedIncreaseResult, err error) {
+	if err != nil {
+		if errors.Is(err, repository.ErrPriceIncreaseDuplicatePending) {
+			http.Error(w, `{"error":"برای این کالا یک درخواست افزایش قیمت در حال بررسی وجود دارد."}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrGovernedProductNotFound) {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if result.Applied {
+		out, err := h.supplierRepo.GetSupplierVariant(r.Context(), supplierID, productID, variantID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		raw, _ := json.Marshal(out)
+		resp := map[string]interface{}{}
+		_ = json.Unmarshal(raw, &resp)
+		resp["applied"] = true
+		resp["autoApproved"] = result.AutoApproved
+		if result.RequestID != "" {
+			resp["requestId"] = result.RequestID
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   false,
+		"status":    "pending_review",
+		"requestId": result.RequestID,
+		"pct":       result.Pct,
+		"capPct":    result.CapPct,
+		"reason":    result.Reason,
+		"message":   priceIncreasePendingMessage(result.Reason),
+	})
+}
+
 // GET /api/v1/supplier/products/{id}/labels
 func (h *SupplierHandlers) HandleGetProductLabels(w http.ResponseWriter, r *http.Request, productID string) {
 	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
@@ -1288,12 +1513,35 @@ func (h *SupplierHandlers) HandleGetSupplierImplicitAgreements(w http.ResponseWr
 	json.NewEncoder(w).Encode(list)
 }
 
-// GET /api/v1/supplier/search-insight (D12, stub).
-// TODO (U07): search_queries stores only a normalized term and a store
-// slug (migration 202610220003) with no supplier key, so a supplier-scoped
-// insight cannot be computed from source data without guessing the scope.
+// GET /api/v1/supplier/search-insight (D12).
+//
+// search_queries has no supplier key (migration 202610220003): a row is
+// a normalized term, a store slug and result counts only. The insight
+// is therefore FOOTPRINT-SCOPED in the repository: platform-wide search
+// aggregates are shown to a supplier only for terms matching their own
+// catalog footprint (their product titles, brands and category titles),
+// and matched products are hard-filtered to the caller's own products.
+// No store slug, per-store split, platform total or other supplier's
+// product ever leaves this endpoint. Window: ?days=7|30|90 (else 30).
 func (h *SupplierHandlers) HandleSupplierSearchInsight(w http.ResponseWriter, r *http.Request) {
-	supplierLiveParityStub(w, r, "U07", "Search log has no supplier key; supplier scoping is unverified.")
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	days := 30
+	switch strings.TrimSpace(r.URL.Query().Get("days")) {
+	case "7":
+		days = 7
+	case "90":
+		days = 90
+	}
+	insight, err := h.supplierRepo.GetSupplierSearchInsight(r.Context(), supplierID, days)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(insight)
 }
 
 // --- Admin supplier routes (D54/D15) ------------------------------------
@@ -1334,6 +1582,10 @@ func supplierAdminRecordRow(s domain.Supplier) map[string]interface{} {
 	row["tapinConnected"] = s.TapinShopID != nil && strings.TrimSpace(*s.TapinShopID) != ""
 	row["description"] = s.Description
 	row["badge"] = s.Badge
+	// Gap 12: suspension bookkeeping, admin records surface only.
+	row["suspendedAt"] = s.SuspendedAt
+	row["suspendedBy"] = s.SuspendedBy
+	row["suspensionReason"] = s.SuspensionReason
 	return row
 }
 
@@ -1345,16 +1597,43 @@ func (h *SupplierHandlers) handleAdminSuppliersDetail(w http.ResponseWriter, r *
 		return
 	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	// Gap 13: supportsDirectShipping is emitted DERIVED from the
+	// shipping-method toggles, loaded here in ONE batched query for
+	// the whole list (the row builders are pure functions of the
+	// stored record, so the handler overrides their stored value).
+	// A failed load leaves the stored value in place.
+	derivedBySupplier := map[string]bool{}
+	{
+		ids := make([]string, 0, len(list))
+		for _, sup := range list {
+			ids = append(ids, sup.ID)
+		}
+		if batch, merr := h.supplierRepo.ListShippingMethodsBySupplierIDs(r.Context(), ids); merr == nil {
+			for id, methods := range batch {
+				derivedBySupplier[id] = methods["direct"] == "enabled"
+			}
+			for _, sup := range list {
+				if _, ok := batch[sup.ID]; !ok {
+					derivedBySupplier[sup.ID] = false
+				}
+			}
+		}
+	}
 	rows := []map[string]interface{}{}
 	for _, s := range list {
 		if status != "" && s.ApprovalStatus != status {
 			continue
 		}
+		var row map[string]interface{}
 		if records {
-			rows = append(rows, supplierAdminRecordRow(s))
+			row = supplierAdminRecordRow(s)
 		} else {
-			rows = append(rows, supplierAdminSummaryRow(s))
+			row = supplierAdminSummaryRow(s)
 		}
+		if derived, ok := derivedBySupplier[s.ID]; ok {
+			row["supportsDirectShipping"] = derived
+		}
+		rows = append(rows, row)
 	}
 	json.NewEncoder(w).Encode(rows)
 }
@@ -1469,6 +1748,67 @@ func (h *SupplierHandlers) HandleAdminSupplierReject(w http.ResponseWriter, r *h
 	})
 }
 
+// supplierSuspensionError maps the gap-12 repo sentinels to 409:
+// a wrong-state transition and the protected central record are both
+// conflicts, never 500s.
+func supplierSuspensionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, repository.ErrSupplierStateConflict) || errors.Is(err, repository.ErrCentralSupplierProtected) {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
+		return
+	}
+	writeInternalError(w, err)
+}
+
+// POST /api/v1/admin/suppliers/:id/suspend (gap 12).
+// Body: {"reason": "..."} (also accepts "suspensionReason").
+func (h *SupplierHandlers) HandleAdminSupplierSuspend(w http.ResponseWriter, r *http.Request, supplierID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var req struct {
+		Reason           string `json:"reason"`
+		SuspensionReason string `json:"suspensionReason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(req.SuspensionReason)
+	}
+	if err := h.supplierRepo.SuspendSupplier(r.Context(), supplierID, supplierLiveParityClaimsUserID(r), reason); err != nil {
+		supplierSuspensionError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"supplierId": supplierID,
+		"status":     "suspended",
+		"reason":     reason,
+	})
+}
+
+// POST /api/v1/admin/suppliers/:id/reactivate (gap 12).
+func (h *SupplierHandlers) HandleAdminSupplierReactivate(w http.ResponseWriter, r *http.Request, supplierID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if err := h.supplierRepo.ReactivateSupplier(r.Context(), supplierID, supplierLiveParityClaimsUserID(r)); err != nil {
+		supplierSuspensionError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"supplierId": supplierID,
+		"status":     "approved",
+	})
+}
+
 // GET/POST /api/v1/admin/suppliers/shipping-methods (D15).
 // GET returns all method rows. POST decides a method:
 // {"supplierId": "...", "method": "direct"|"warehouse",
@@ -1521,4 +1861,126 @@ func (h *SupplierHandlers) HandleAdminStoreIntelSuppliers(w http.ResponseWriter,
 		return
 	}
 	h.handleAdminSuppliersDetail(w, r, false)
+}
+
+// --- Admin price-increase governance (gap 11) ---------------------------
+// Review queue + per-product exception grants for the policy recorded in
+// migrations 202610310003 + 202610310006. All state changes run through
+// PricingRepository in single transactions with audit_logs rows
+// (operator "admin:<userID>", category 'finance').
+
+func adminClaimsUserID(r *http.Request) string {
+	if claims, ok := r.Context().Value(userClaimsKey).(*auth.UserClaims); ok && claims != nil {
+		return claims.UserID
+	}
+	return ""
+}
+
+// GET /api/v1/admin/price-increases?status=pending — the review queue.
+// status may be pending | approved | rejected | all (default pending).
+func (h *SupplierHandlers) HandleAdminPriceIncreases(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "pending"
+	}
+	list, err := h.pricingRepo.ListAdminPriceIncreases(r.Context(), status)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+// POST /api/v1/admin/price-increases/{id}/review {approved} — approve
+// applies the queued reference (with the stale-cost guard) or rejects.
+// Both decisions stamp reviewed_at and write an audit row.
+func (h *SupplierHandlers) HandleAdminReviewPriceIncrease(w http.ResponseWriter, r *http.Request, requestID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	var req struct {
+		Approved bool `json:"approved"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	row, err := h.pricingRepo.ReviewPriceIncrease(r.Context(), requestID, req.Approved, adminClaimsUserID(r))
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrPriceIncreaseNotFound):
+			http.Error(w, `{"error":"Price increase request not found"}`, http.StatusNotFound)
+		case errors.Is(err, repository.ErrPriceIncreaseNotPending):
+			http.Error(w, `{"error":"Price increase request already reviewed"}`, http.StatusConflict)
+		case errors.Is(err, repository.ErrPriceIncreaseStaleCost):
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
+		default:
+			writeInternalError(w, err)
+		}
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"id":      row.ID,
+		"status":  row.Status,
+	})
+}
+
+// POST /api/v1/admin/products/{productId}/price-exception
+// {exceptionCapPct, ticketId?} — create or replace the product's
+// exception grant. DELETE on the same path revokes it.
+func (h *SupplierHandlers) HandleAdminProductPriceException(w http.ResponseWriter, r *http.Request, productID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.pricingRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	adminUserID := adminClaimsUserID(r)
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			ExceptionCapPct float64 `json:"exceptionCapPct"`
+			TicketID        *string `json:"ticketId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ExceptionCapPct <= 0 {
+			http.Error(w, `{"error":"exceptionCapPct must be positive"}`, http.StatusBadRequest)
+			return
+		}
+		if err := h.pricingRepo.UpsertProductPriceException(r.Context(), productID, req.ExceptionCapPct, req.TicketID, adminUserID); err != nil {
+			if errors.Is(err, repository.ErrProductNotFound) {
+				http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "exceptionCapPct": req.ExceptionCapPct})
+	case http.MethodDelete:
+		if err := h.pricingRepo.DeleteProductPriceException(r.Context(), productID, adminUserID); err != nil {
+			if errors.Is(err, repository.ErrPriceExceptionNotFound) {
+				http.Error(w, `{"error":"No price exception grant exists for this product"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID})
+	default:
+		writeMethodNotAllowed(w)
+	}
 }

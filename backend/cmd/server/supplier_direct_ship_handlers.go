@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
@@ -486,6 +487,8 @@ func handleSupplierSubmitShipping(
 	orderID string,
 	shipmentRepo *repository.SupplierShipmentRepository,
 	orderRepo *repository.OrderRepository,
+	supplierRepo *repository.SupplierRepository,
+	tapinRepo *repository.TapinRepository,
 ) {
 	w.Header().Set("Content-Type", "application/json")
 	claims, ok := ctx.Value(userClaimsKey).(*auth.UserClaims)
@@ -503,15 +506,16 @@ func handleSupplierSubmitShipping(
 		Carrier        string `json:"carrier"`
 		TrackingNumber string `json:"trackingNumber"`
 		ShippingDate   string `json:"shippingDate,omitempty"`
+		// Ship-with-Tapin (gaps 1-3): when ViaTapin is true the
+		// carrier/tracking pair is produced by Tapin registration
+		// (submitShippingViaTapin) and the manual fields are ignored.
+		ViaTapin     bool   `json:"viaTapin,omitempty"`
+		TapinService string `json:"tapinService,omitempty"` // "post" (default) | "tipax"
+		TapinBoxID   string `json:"tapinBoxId,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
-		return
-	}
-
-	if strings.TrimSpace(req.Carrier) == "" || strings.TrimSpace(req.TrackingNumber) == "" {
-		http.Error(w, `{"error":"Carrier and trackingNumber are required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -521,6 +525,22 @@ func handleSupplierSubmitShipping(
 	}
 	if supplierID == "" {
 		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+		return
+	}
+
+	if req.ViaTapin {
+		service := strings.TrimSpace(req.TapinService)
+		if service == "" {
+			service = "post"
+		}
+		outcome := submitShippingViaTapin(ctx, supplierID, orderID, service, req.TapinBoxID, claims.UserID, shipmentRepo, orderRepo, tapinRepo)
+		w.WriteHeader(outcome.Status)
+		json.NewEncoder(w).Encode(outcome.Body)
+		return
+	}
+
+	if strings.TrimSpace(req.Carrier) == "" || strings.TrimSpace(req.TrackingNumber) == "" {
+		http.Error(w, `{"error":"Carrier and trackingNumber are required"}`, http.StatusBadRequest)
 		return
 	}
 	if err := shipmentRepo.SubmitShipping(ctx, supplierID, orderID, strings.TrimSpace(req.Carrier), strings.TrimSpace(req.TrackingNumber), claims.UserID); err != nil {
@@ -542,5 +562,160 @@ func handleSupplierSubmitShipping(
 		"carrier":        req.Carrier,
 		"trackingNumber": req.TrackingNumber,
 		"status":         "shipped",
+	})
+}
+
+// handleGetSupplierWarehouseOrders handles GET /api/v1/supplier/warehouse-orders
+// Read-only visibility: paid orders fulfilled from the central warehouse
+// that contain the caller's products. The supplier takes no action on
+// these; the response carries only the caller's own items at wholesale
+// cost plus the destination province/city.
+func handleGetSupplierWarehouseOrders(
+	w http.ResponseWriter,
+	r *http.Request,
+	ctx context.Context,
+	shipmentRepo *repository.SupplierShipmentRepository,
+	supplierRepo *repository.SupplierRepository,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	claims, ok := ctx.Value(userClaimsKey).(*auth.UserClaims)
+	if !ok || claims == nil {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	supplierID := ""
+	if claims.Role == "supplier" {
+		supplierID = getSupplierIDFromContext(r, supplierRepo)
+	} else if claims.Role == "admin" {
+		supplierID = r.URL.Query().Get("supplierId")
+	} else {
+		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if supplierID == "" {
+		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+		return
+	}
+
+	page := 1
+	if v, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && v > 0 {
+		page = v
+	}
+	pageSize := 20
+	if v, err := strconv.Atoi(r.URL.Query().Get("pageSize")); err == nil && v > 0 {
+		pageSize = v
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	orders, total, err := shipmentRepo.GetSupplierWarehouseOrders(ctx, supplierID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	type WarehouseOrderItemView struct {
+		ProductID     string `json:"productId"`
+		ProductTitle  string `json:"productTitle"`
+		Quantity      int    `json:"quantity"`
+		WholesaleCost int64  `json:"wholesaleCost"`
+		LineTotal     int64  `json:"lineTotal"`
+	}
+	type WarehouseOrderView struct {
+		OrderID     string                   `json:"orderId"`
+		OrderNumber string                   `json:"orderNumber"`
+		Status      string                   `json:"status"`
+		Province    string                   `json:"province"`
+		City        string                   `json:"city"`
+		CreatedAt   string                   `json:"createdAt"`
+		Items       []WarehouseOrderItemView `json:"items"`
+		ItemsTotal  int64                    `json:"itemsTotal"`
+	}
+
+	views := make([]WarehouseOrderView, 0, len(orders))
+	for _, o := range orders {
+		view := WarehouseOrderView{
+			OrderID:     o.OrderID,
+			OrderNumber: o.OrderNumber,
+			Status:      o.Status,
+			Province:    o.Province,
+			City:        o.City,
+			CreatedAt:   o.CreatedAt.Format("2006/01/02 15:04"),
+			Items:       make([]WarehouseOrderItemView, 0, len(o.Items)),
+			ItemsTotal:  o.ItemsTotal,
+		}
+		for _, item := range o.Items {
+			view.Items = append(view.Items, WarehouseOrderItemView{
+				ProductID:     item.ProductID,
+				ProductTitle:  item.ProductTitle,
+				Quantity:      item.Quantity,
+				WholesaleCost: item.WholesaleCost,
+				LineTotal:     item.LineTotal,
+			})
+		}
+		views = append(views, view)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"orders":   views,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
+}
+
+// handleSupplierAcceptOrder handles POST /api/v1/supplier/orders/:orderId/accept
+// Moves the caller's direct shipment from 'pending' to 'processing'.
+// Accepting is an explicit acknowledgement step only: SubmitShipping keeps
+// accepting 'pending' shipments exactly as before, so skipping the accept
+// step never blocks shipping.
+func handleSupplierAcceptOrder(
+	w http.ResponseWriter,
+	r *http.Request,
+	ctx context.Context,
+	orderID string,
+	shipmentRepo *repository.SupplierShipmentRepository,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	claims, ok := ctx.Value(userClaimsKey).(*auth.UserClaims)
+	if !ok || claims == nil {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if claims.Role != "supplier" && claims.Role != "admin" {
+		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	supplierID, _ := ctx.Value(supplierIDKey).(string)
+	if claims.Role == "admin" {
+		supplierID = r.URL.Query().Get("supplierId")
+	}
+	if supplierID == "" {
+		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+		return
+	}
+
+	if err := shipmentRepo.AcceptShipment(ctx, supplierID, orderID, claims.UserID); err != nil {
+		if repository.IsMissingShipment(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if errors.Is(err, repository.ErrShipmentNotPending) {
+			http.Error(w, `{"error":"این سفارش دیگر در وضعیت انتظار نیست؛ قبلاً قبول شده یا ارسال شده است."}`, http.StatusConflict)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "سفارش قبول شد و در حال آماده‌سازی است.",
+		"status":  "processing",
 	})
 }

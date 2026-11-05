@@ -1,0 +1,299 @@
+package main
+
+// Tapin leg pricing for the shipping quote (owner directive,
+// 2026-11-05: «هزینه ارسال ها از تاپین خونده بشه»).
+//
+// Rule: a supplier-direct leg whose supplier has connected Tapin
+// (stored shop id + token) is priced by Tapin's LIVE price inquiry
+// (internal/tapin TipaxCheckPrice — the only inquiry contract
+// Tapin's official guide publishes; capture file in
+// ~/workspace/tapin-spec) using the supplier's OWN credentials.
+// Every other leg — unconnected suppliers, and the platform /
+// central warehouse leg — keeps the existing weight-formula price,
+// untouched.
+//
+// FAIL-CLOSED (deliberate, recorded): when a connected supplier's
+// inquiry answers with an envelope failure or cannot be reached,
+// the quote FAILS with the upstream Persian message surfaced. The
+// formula price is never silently substituted for a Tapin-connected
+// leg. The same applies when the leg cannot even be inquired
+// (origin warehouse has no Tapin geo ids, or the destination is not
+// in the stored Tapin geography): the quote fails with an explicit
+// Persian message instead of guessing a price.
+//
+// ONE EXCEPTION (critic fix F4, 2026-11-05): envelope 30129 — the
+// Tipax service is not activated for the supplier's shop (their
+// activation ticket is pending in the Tapin panel). Tapin cannot
+// price the leg AT ALL in that state, so the leg keeps its formula
+// fare (Source stays "weight_formula") instead of killing the
+// supplier's checkout until activation lands. Every other envelope
+// error (token, shop, geo, ...) still fails closed as above.
+//
+// PARITY: both quote call sites — the quote endpoint
+// (handleShippingQuote) and order creation's recompute
+// (handleCreateOrder) — run this step over lines built from the same
+// product reads, and the step re-derives the quoteId over the final
+// legs, so a Tapin-priced quote re-derives identically at order
+// time (no shipping_quote_changed divergence). A short in-memory
+// cache (2 minutes) additionally pins a leg's fare across the
+// checkout -> order window; it is keyed by every input the fare
+// depends on, and only successful fares are cached.
+//
+// Origin geo simplification (parity-driven): the inquiry prices
+// from the supplier's DEFAULT (first active) warehouse geo ids in
+// both paths. Registration, by contrast, uses the order items' real
+// origin warehouse.
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/tapin"
+)
+
+// tapinAPIBaseURL is the single upstream host override point; tests
+// point it at an httptest server.
+var tapinAPIBaseURL = tapin.DefaultBaseURL
+
+func newTapinClient() *tapin.Client {
+	return tapin.NewClient(tapinAPIBaseURL)
+}
+
+// errTapinServiceNotActivated marks the 30129 envelope outcome
+// inside the quote step: priceTapinQuoteLegs treats it as "keep the
+// leg's formula fare" rather than a failure (see the header's F4
+// note). It never reaches a response body.
+var errTapinServiceNotActivated = errors.New("tapin: service not activated for shop (30129)")
+
+// tapinQuoteError is a user-facing quote failure: its message is
+// shown to the customer verbatim (an upstream Tapin message, or one
+// of the explicit Persian explanations below).
+type tapinQuoteError struct{ Message string }
+
+func (e *tapinQuoteError) Error() string { return e.Message }
+
+const (
+	tapinMsgUnreachable   = "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید."
+	tapinMsgOriginUnmapped = "مختصات تاپین انبار تأمین‌کننده ثبت نشده است؛ هزینه ارسال این سفارش از تاپین قابل استعلام نیست."
+	tapinMsgDestUnmapped  = "استان/شهر مقصد در داده‌های جغرافیایی تاپین یافت نشد؛ هزینه ارسال قابل استعلام نیست."
+)
+
+// tapinQuoteErrorBody renders the quote failure in the quote
+// endpoints' {"error": ...} shape, flagged so clients can tell a
+// Tapin verdict from a local validation error.
+func tapinQuoteErrorBody(err error) string {
+	msg := tapinMsgUnreachable
+	var qe *tapinQuoteError
+	if errors.As(err, &qe) {
+		msg = qe.Message
+	}
+	body, _ := json.Marshal(map[string]interface{}{"error": msg, "tapinError": true})
+	return string(body)
+}
+
+// --- fare cache -----------------------------------------------------
+
+type tapinFareCacheEntry struct {
+	fareToman int64
+	expires   time.Time
+}
+
+var tapinFareCache = struct {
+	sync.Mutex
+	entries map[string]tapinFareCacheEntry
+}{entries: map[string]tapinFareCacheEntry{}}
+
+const tapinFareCacheTTL = 2 * time.Minute
+
+func tapinFareCacheGet(key string) (int64, bool) {
+	tapinFareCache.Lock()
+	defer tapinFareCache.Unlock()
+	e, ok := tapinFareCache.entries[key]
+	if !ok || time.Now().After(e.expires) {
+		return 0, false
+	}
+	return e.fareToman, true
+}
+
+func tapinFareCachePut(key string, fareToman int64) {
+	tapinFareCache.Lock()
+	defer tapinFareCache.Unlock()
+	tapinFareCache.entries[key] = tapinFareCacheEntry{fareToman: fareToman, expires: time.Now().Add(tapinFareCacheTTL)}
+}
+
+// tapinLineWeightGrams is the goods weight fed to the inquiry: the
+// recorded weight, or the platform's 500g fallback for an unweighed
+// item (the same fallback the formula quote documents).
+func tapinLineWeightGrams(line shippingQuoteLine) int {
+	if line.WeightG > 0 {
+		return line.WeightG
+	}
+	return 500
+}
+
+// rialToToman converts Rials to Tomans rounded half-up — the same
+// conversion shippingquote.LegFareToman applies to formula fares.
+func rialToToman(rial int64) int64 {
+	fare := (rial + 5) / 10
+	if fare < 0 {
+		fare = 0
+	}
+	return fare
+}
+
+// priceTapinQuoteLegs reprices the connected suppliers' legs of an
+// already-computed formula quote, in place, and re-derives the
+// total + quoteId when at least one leg changed. See the file
+// header for the fail-closed and parity rules.
+func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, lines []shippingQuoteLine, dest shippingQuoteDestination) error {
+	if db == nil || quote == nil {
+		return nil
+	}
+	// Group lines by leg origin key, exactly as computeShippingQuote
+	// grouped them into quote.Legs.
+	linesByLeg := map[string][]shippingQuoteLine{}
+	for _, line := range lines {
+		if line.Quantity <= 0 {
+			continue
+		}
+		key, _ := legOrigin(line)
+		linesByLeg[key] = append(linesByLeg[key], line)
+	}
+	repo := repository.NewTapinRepository(db)
+	client := newTapinClient()
+	changed := false
+	for i := range quote.Legs {
+		leg := &quote.Legs[i]
+		if !strings.HasPrefix(leg.OriginID, "supplier:") {
+			continue // warehouse / central leg: formula, untouched
+		}
+		supplierID := strings.TrimPrefix(leg.OriginID, "supplier:")
+		creds, err := repo.GetSupplierCredentials(ctx, supplierID)
+		if err != nil {
+			return &tapinQuoteError{Message: tapinMsgUnreachable}
+		}
+		if !creds.Connected() {
+			continue // not connected: formula price stands
+		}
+		fare, err := tapinLegFare(ctx, repo, client, creds, linesByLeg[leg.OriginID], leg.WeightGrams, dest)
+		if err != nil {
+			if errors.Is(err, errTapinServiceNotActivated) {
+				// F4: the shop's Tipax service is not activated —
+				// Tapin cannot price this leg at all, so its formula
+				// fare + Source stand (changed stays as it was).
+				continue
+			}
+			return err
+		}
+		leg.Fare = fare
+		leg.Source = "tapin"
+		leg.Estimated = false
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	var total int64
+	for _, leg := range quote.Legs {
+		total += leg.Fare
+	}
+	quote.TotalShipping = total
+	quote.QuoteID = shippingQuoteIDFor(quote.Legs, total, quoteDestinationKey(dest))
+	return nil
+}
+
+// tapinLegFare prices ONE connected supplier's leg via the inquiry.
+// Any failure is a *tapinQuoteError carrying the message to surface.
+func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client *tapin.Client, creds repository.SupplierTapinCredentials, legLines []shippingQuoteLine, legWeightGrams int64, dest shippingQuoteDestination) (int64, error) {
+	origin, err := repo.GetSupplierDefaultWarehouseGeo(ctx, creds.SupplierID)
+	if err != nil {
+		return 0, &tapinQuoteError{Message: tapinMsgUnreachable}
+	}
+	if origin == nil || origin.TapinCityID <= 0 || origin.TapinProvinceID <= 0 {
+		return 0, &tapinQuoteError{Message: tapinMsgOriginUnmapped}
+	}
+	destProvinceID, destCityID, ok, err := repo.ResolveDestinationGeo(ctx, dest.Province, dest.City)
+	if err != nil {
+		return 0, &tapinQuoteError{Message: tapinMsgUnreachable}
+	}
+	if !ok {
+		return 0, &tapinQuoteError{Message: tapinMsgDestUnmapped}
+	}
+	serviceType := 2 // inter-city (guide p.8)
+	if origin.TapinCityID == destCityID {
+		serviceType = 7 // intra-city
+	}
+	products := make([]tapin.TipaxProduct, 0, len(legLines))
+	var goodsWeight int64
+	var goodsValueRial int64
+	for _, line := range legLines {
+		w := tapinLineWeightGrams(line)
+		goodsWeight += int64(w) * int64(line.Quantity)
+		amount := line.UnitPriceToman * 10 // Toman -> Rial
+		goodsValueRial += amount * int64(line.Quantity)
+		products = append(products, tapin.TipaxProduct{
+			AmountPerCount:   amount,
+			DiscountPerCount: 0,
+			WeightPerCount:   w,
+			Count:            line.Quantity,
+		})
+	}
+	// Guide rule (pp.3, 20): a Tipax parcel's total weight is at
+	// least 1kg — lighter parcels are entered as 1kg. The padding is
+	// carried in package_weight so the goods lines stay truthful.
+	packageWeight := 0
+	if goodsWeight < 1000 {
+		packageWeight = int(1000 - goodsWeight)
+	}
+	// Dims: the platform box auto-picked for this leg (dims unknown
+	// at quote time -> the platform default box). A catalogue with
+	// no dimensions falls back to the guide's Tipax simplification
+	// (5x5x5, p.17 note).
+	length, width, height := 5, 5, 5
+	if box, _, berr := repo.PickBoxForParcel(ctx, 0, 0, 0, int(legWeightGrams)); berr == nil &&
+		box.LengthCm > 0 && box.WidthCm > 0 && box.HeightCm > 0 {
+		length, width, height = box.LengthCm, box.WidthCm, box.HeightCm
+	}
+	cacheKey := fmt.Sprintf("%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+		creds.SupplierID, origin.TapinCityID, destProvinceID, destCityID,
+		goodsWeight, goodsValueRial, serviceType, packageWeight, length, width, height)
+	if fare, hit := tapinFareCacheGet(cacheKey); hit {
+		return fare, nil
+	}
+	res, err := client.TipaxCheckPrice(ctx, creds.Token, tapin.TipaxCheckPriceRequest{
+		ShopID:             creds.ShopID,
+		ReceiverProvinceID: destProvinceID,
+		ReceiverCityID:     destCityID,
+		ProductTypeID:      1,  // general/package (guide p.8)
+		PackingTypeID:      2,  // «نیاز به بسته بندی ندارد» — seller packs (guide p.2)
+		PaymentType:        10, // online/prepaid (guide p.7)
+		ServiceType:        serviceType,
+		DeliveryType:       10, // deliver at customer address (guide p.7)
+		PickupType:         20, // drop at branch — the guide's rule under 10 orders (p.3)
+		Products:           products,
+		Length:             length,
+		Width:              width,
+		Height:             height,
+		PackageWeight:      packageWeight,
+	})
+	if err != nil {
+		if tapin.IsServiceNotActivated(err) {
+			return 0, errTapinServiceNotActivated
+		}
+		var ue *tapin.UpstreamError
+		if errors.As(err, &ue) {
+			return 0, &tapinQuoteError{Message: ue.Message}
+		}
+		return 0, &tapinQuoteError{Message: tapinMsgUnreachable}
+	}
+	fare := rialToToman(res.TotalSendPrice)
+	tapinFareCachePut(cacheKey, fare)
+	return fare, nil
+}

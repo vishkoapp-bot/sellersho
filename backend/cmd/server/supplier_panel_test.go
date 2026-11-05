@@ -153,7 +153,7 @@ func TestSupplierProposalNotPublishedBeforeApproval(t *testing.T) {
 		_, _ = db.Exec(`DELETE FROM users WHERE id=$1`, owner.ID)
 	})
 	h := NewSupplierHandlers(repo, auth.NewJWTService("panel-test"), false)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/products/propose", strings.NewReader(`{"title":"Pending product","categorySlug":"digital","supplierBaseCost":1000,"stock":10}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/products/propose", strings.NewReader(`{"title":"Pending product","categorySlug":"digital","supplierBaseCost":1000,"stock":10,"weightGrams":500,"lengthMm":100,"widthMm":100,"heightMm":100,"fulfillmentMethod":"supplier_direct"}`))
 	req = req.WithContext(context.WithValue(req.Context(), supplierIDKey, supplier.ID))
 	w := httptest.NewRecorder()
 	h.HandleProposeProduct(w, req)

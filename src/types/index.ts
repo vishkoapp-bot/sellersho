@@ -213,6 +213,9 @@ export interface Store {
     productIds: string[];
     countdownHours: number;
     endsAt: string;
+    // Campaign discount per product, carved out of the seller's own
+    // resolved margin (percent, capped at that product's margin).
+    discounts?: Record<string, number>;
   };
   centralDealsFilter?: 'my_niches' | 'manual' | 'all';
   centralDealsProductIds?: string[];

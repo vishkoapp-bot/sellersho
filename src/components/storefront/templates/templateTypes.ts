@@ -101,6 +101,7 @@ export interface TemplateCustom {
   heroFallbackSubtitle?: string;
   categoriesTitle?: string;
   categoriesCount?: number;
+  collectionsTitle?: string;
   categoryRailsMax?: number;
   categoryRailsCount?: number;
   categoryOverrides?: TemplateCategoryOverride[];
@@ -174,6 +175,8 @@ export const DEFAULT_TEMPLATE_SECTIONS: TemplateSection[] = [
   { key: 'topRated', label: 'پرامتیازترین‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'promo', label: 'بنر تبلیغاتی', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'lookbook', label: 'لوک‌بوک / کالکشن', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+  { key: 'categoryGrid', label: 'گرید دسته‌بندی‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+  { key: 'collections', label: 'مجموعه‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'campaign', label: 'کمپین', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'newsletter', label: 'خبرنامه', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'testimonials', label: 'نظرات مشتریان', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
@@ -330,18 +333,20 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
     newsletterSubtitle: 'پیشنهادهای محدود و قیمت‌های ویژه، اول برای اعضای خبرنامه.',
   }),
   'tpl-fashion-1': bp('tpl-fashion-1', 'روشن و ادیتوریال؛ گالری کیوریت‌شده به سبک آستین', [
-    'announcement', 'hero', 'categoryRail', 'about', 'lookbook', 'brands', 'banners',
-    'featured', 'testimonials', 'faq', 'products', 'newsletter',
+    'announcement', 'hero', 'categoryRail', 'about', 'categoryGrid', 'collections',
+    'lookbook', 'brands', 'banners', 'featured', 'testimonials', 'products', 'faq', 'newsletter',
   ], {
     categoriesTitle: 'دسته‌بندی‌ها',
+    collectionsTitle: 'مجموعه‌ها',
     featuredTitle: 'منتخب استایل',
     lookbookTitle: 'کالکشن جدید',
     lookbookSubtitle: 'جدیدترین‌های این فصل را ببینید.',
     brandsTitle: 'برندها',
     aboutTitle: 'درباره فروشگاه',
     productsTitle: 'همه کالاها',
-    newsletterTitle: 'عضو باشگاه مشتریان شوید',
-    newsletterSubtitle: 'دسترسی زودتر به کالکشن‌ها و فروش‌های ویژه اعضا.',
+    heroAutoplay: true,
+    newsletterTitle: 'از کالاهای تازه باخبر شوید',
+    newsletterSubtitle: 'با ثبت شماره موبایل، از رسیدن کالکشن‌های تازه و موجود شدن دوباره کالاها باخبر می‌شوید.',
   }),
   'tpl-digikala-1': bp('tpl-digikala-1', 'مارکت‌پلیس متراکم؛ مثل فروشگاه‌های بزرگ', [
     'announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners',
@@ -381,22 +386,48 @@ function sectionLabel(key: string): string {
 // list are appended in blueprint order so new sections never vanish.
 // Enabled flags come from the saved config when present, else from the
 // blueprint lineup (in lineup = enabled, absent = disabled).
+// Legacy bundled-section expansions, per template. Fashion's saved
+// configs written before the section split carry ONE 'lookbook' key
+// that bundled three blocks (category grid + collections + editorial
+// band). When such a config is resolved for tpl-fashion-1 — and it
+// does not yet carry the split keys — the bundled key expands into
+// the three split keys AT THE LEGACY POSITION, all inheriting the
+// legacy key's enabled flag, so old storefronts keep rendering the
+// three blocks exactly where the seller left the one bundle. Configs
+// that already carry any split key are left untouched.
+const LEGACY_SECTION_EXPANSIONS: Record<string, Record<string, string[]>> = {
+  'tpl-fashion-1': { lookbook: ['categoryGrid', 'collections', 'lookbook'] },
+};
+
 export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig | null): TemplateConfig {
   const blueprint = blueprintFor(templateId);
   const base: TemplateConfig = saved && typeof saved === 'object' ? saved : {};
   if (!blueprint) return base;
   const savedSections = normalizeTemplateSections(base.sections) || [];
   const savedByKey = new Map(savedSections.map((sec) => [canonicalSectionKey(sectionKey(sec)), sec] as const));
+  const expansions = LEGACY_SECTION_EXPANSIONS[templateId] || {};
+  const expandedFrom = new Map<string, string>();
   const orderedKeys: string[] = [];
   for (const sec of savedSections) {
     const k = canonicalSectionKey(sectionKey(sec));
-    if (k && !orderedKeys.includes(k)) orderedKeys.push(k);
+    if (!k) continue;
+    const targets = expansions[k];
+    if (targets && !targets.some((t) => t !== k && savedByKey.has(t))) {
+      for (const t of targets) {
+        if (!orderedKeys.includes(t)) {
+          orderedKeys.push(t);
+          expandedFrom.set(t, k);
+        }
+      }
+    } else if (!orderedKeys.includes(k)) {
+      orderedKeys.push(k);
+    }
   }
   for (const k of blueprint.sections) {
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
   const sections: TemplateSection[] = orderedKeys.map((k) => {
-    const savedSec = savedByKey.get(k);
+    const savedSec = savedByKey.get(k) || (expandedFrom.has(k) ? savedByKey.get(expandedFrom.get(k) as string) : undefined);
     return {
       key: k,
       label: sectionLabel(k),

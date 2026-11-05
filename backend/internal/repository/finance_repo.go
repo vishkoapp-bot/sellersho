@@ -284,6 +284,9 @@ type StoreBalance struct {
 	BonusTotal                  int64      `json:"bonusTotal"`
 	ReferralCommissionEarned    int64      `json:"referralCommissionEarned"`
 	LastReleasedAt              *time.Time `json:"lastReleasedAt,omitempty"`
+	// GAP 6/15 deductions (0 when the source table is absent):
+	SellerReturnReversals int64 `json:"sellerReturnReversals"`
+	Adjustments           int64 `json:"adjustments"`
 }
 
 type StatementEntry struct {
@@ -464,8 +467,38 @@ func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string)
 		return nil, err
 	}
 
+	// GAP 6: refunded customer returns reverse the seller margin that
+	// was (or will be) released for them, per item at the order-time
+	// snapshot. One read-side term covers both timelines: a refund
+	// before release nets against the later release; a refund after
+	// release claws back from Available. Guarded like the
+	// early-withdrawal terms so a database without migration
+	// 202611050006 still reads a plain balance.
+	var sellerReturnReversals int64
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT CASE WHEN to_regclass('public.customer_return_financial_events') IS NOT NULL
+			THEN COALESCE((SELECT SUM(amount) FROM customer_return_financial_events WHERE store_id = $1 AND component = 'seller_profit' AND operation = 'debit'), 0)
+			ELSE 0 END
+	`, storeID).Scan(&sellerReturnReversals); err != nil {
+		return nil, err
+	}
+
+	// GAP 15 (seller mirror of the supplier adjustments term):
+	// finance adjustment documents write ledger_entries payable legs
+	// ('store_payable:<id>'); credit +, debit -, per the form's own
+	// labels. Dispute debits never match (free-form target_account,
+	// no سند تعدیل prefix).
+	var sellerAdjustments int64
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0)
+		FROM ledger_entries
+		WHERE target_account = 'store_payable:' || $1 AND target_type = 'seller' AND reason LIKE 'سند تعدیل%'
+	`, storeID).Scan(&sellerAdjustments); err != nil {
+		return nil, err
+	}
+
 	// Only immutable released profit is withdrawable; never infer profit from revenue.
-	salesProfit := releasedProfit
+	salesProfit := releasedProfit - sellerReturnReversals
 	totalBalance := salesProfit + bonusAvailable + bonusLocked + referralCommissionEarned
 
 	// Available for withdrawal includes salesProfit + released bonus + earned referral commission minus pending payouts
@@ -495,7 +528,7 @@ func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string)
 	`, storeID).Scan(&earlyPendingGross); err != nil {
 		return nil, err
 	}
-	available := (salesProfit + bonusAvailable + referralCommissionEarned) - pendingSettlements - settledPayouts - earlyApprovedFees - earlyPendingGross
+	available := (salesProfit + bonusAvailable + referralCommissionEarned + sellerAdjustments) - pendingSettlements - settledPayouts - earlyApprovedFees - earlyPendingGross
 	if available < 0 {
 		available = 0
 	}
@@ -512,6 +545,8 @@ func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string)
 		BonusTotal:                  bonusLocked + bonusAvailable,
 		ReferralCommissionEarned:    referralCommissionEarned,
 		LastReleasedAt:              lastReleasedAt,
+		SellerReturnReversals:       sellerReturnReversals,
+		Adjustments:                 sellerAdjustments,
 	}, nil
 }
 

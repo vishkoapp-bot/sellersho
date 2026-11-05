@@ -86,12 +86,19 @@ func TestPayoutStatusAvailableNeverJumpsBack(t *testing.T) {
 		t.Fatalf("ping test DB: %v", err)
 	}
 	ddl := []string{
-		`DROP TABLE IF EXISTS payout_requests, seller_service_purchases, referral_bonuses, orders, stores CASCADE`,
+		`DROP TABLE IF EXISTS payout_requests, seller_service_purchases, referral_bonuses, orders, stores, customer_return_financial_events, ledger_entries, seller_early_withdrawals CASCADE`,
 		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, referrer_seller_id VARCHAR(50))`,
 		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, store_id VARCHAR(50), status VARCHAR(30), payable_amount BIGINT, dropshipper_profit BIGINT, profit_released BOOLEAN, referral_commission BIGINT, referrer_seller_id VARCHAR(50), referral_commission_released BOOLEAN)`,
 		`CREATE TABLE referral_bonuses (id VARCHAR(50) PRIMARY KEY, referrer_store_id VARCHAR(50), amount BIGINT, status VARCHAR(30), released_at TIMESTAMPTZ)`,
 		`CREATE TABLE payout_requests (id VARCHAR(50) PRIMARY KEY, store_id VARCHAR(50), amount BIGINT, status VARCHAR(30))`,
 		`CREATE TABLE seller_service_purchases (id VARCHAR(50) PRIMARY KEY, store_id VARCHAR(50), amount BIGINT)`,
+		// Tables GetStoreBalance reads since the gap-6/15 balance terms
+		// (and the D31 early-withdrawal terms): empty here, so every new
+		// term contributes 0 and the payout-status expectations below
+		// are unchanged.
+		`CREATE TABLE customer_return_financial_events (id VARCHAR(80) PRIMARY KEY, store_id TEXT, component VARCHAR(20), operation VARCHAR(20), amount BIGINT)`,
+		`CREATE TABLE ledger_entries (id VARCHAR(80) PRIMARY KEY, target_account TEXT, target_type TEXT, type TEXT, amount BIGINT, reason TEXT)`,
+		`CREATE TABLE seller_early_withdrawals (id VARCHAR(80) PRIMARY KEY, store_id VARCHAR(50), status VARCHAR(30), fee_amount BIGINT, gross_amount BIGINT)`,
 	}
 	for _, q := range ddl {
 		if _, err := db.ExecContext(ctx, q); err != nil {
@@ -99,7 +106,7 @@ func TestPayoutStatusAvailableNeverJumpsBack(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DROP TABLE IF EXISTS payout_requests, seller_service_purchases, referral_bonuses, orders, stores CASCADE`)
+		_, _ = db.Exec(`DROP TABLE IF EXISTS payout_requests, seller_service_purchases, referral_bonuses, orders, stores, customer_return_financial_events, ledger_entries, seller_early_withdrawals CASCADE`)
 	})
 
 	storeID := "test-store-a1"

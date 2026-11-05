@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -120,8 +121,43 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 			t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status = 'paid' AND created_at >= $1`, cutoff)
 		heldInOrders := t01Sum(ctx, db, `SELECT COALESCE(SUM(payable_amount), 0) FROM orders WHERE payment_status = 'paid' AND COALESCE(profit_released, FALSE) = FALSE AND status != 'cancelled'`)
 		heldOrderCount := t01Count(ctx, db, `SELECT COUNT(*) FROM orders WHERE payment_status = 'paid' AND COALESCE(profit_released, FALSE) = FALSE AND status != 'cancelled'`)
-		owedToStores := t01Sum(ctx, db, `SELECT COALESCE(SUM(dropshipper_profit), 0) FROM orders WHERE profit_released = TRUE AND status IN ('delivered', 'delivered_confirmed')`)
-		owedToSuppliers := t01Sum(ctx, db, `SELECT COALESCE(SUM(payable_amount - platform_profit - dropshipper_profit), 0) FROM orders WHERE profit_released = TRUE AND status IN ('delivered', 'delivered_confirmed')`)
+		// GAP 15: the owed figures are the canonical balances, never
+		// a second definition. owedToSuppliers is the signed sum of
+		// every supplier's Available (the figure the payout gate
+		// itself trusts, built from the same SQL fragments);
+		// owedToStores is the sum of every store's GetStoreBalance
+		// AvailableAmount. Both already net payouts, charges,
+		// customer-return reversals and finance adjustments, so
+		// safeToSpend no longer double-counts money that has
+		// already left through payout_requests.
+		supplierRepo := repository.NewSupplierRepository(db)
+		// F11 (critic): this figure feeds safeToSpend directly, so a
+		// failed read must never silently render as "owes suppliers
+		// 0" — log it and fail the response like the neighbouring
+		// handlers in this file do (writeInternalError).
+		owedToSuppliers, owedErr := supplierRepo.SumAllSuppliersAvailable(ctx)
+		if owedErr != nil {
+			log.Printf("finance treasury cash-position: SumAllSuppliersAvailable failed: %v", owedErr)
+			writeInternalError(w, owedErr)
+			return
+		}
+		financeRepo := repository.NewFinanceRepository(db)
+		var owedToStores int64
+		if storeRows, err := db.QueryContext(ctx, `SELECT id FROM stores`); err == nil {
+			var storeIDs []string
+			for storeRows.Next() {
+				var storeID string
+				if err := storeRows.Scan(&storeID); err == nil {
+					storeIDs = append(storeIDs, storeID)
+				}
+			}
+			storeRows.Close()
+			for _, storeID := range storeIDs {
+				if bal, err := financeRepo.GetStoreBalance(ctx, storeID); err == nil {
+					owedToStores += bal.AvailableAmount
+				}
+			}
+		}
 		pendingRefundCount := t01Count(ctx, db, `SELECT COUNT(*) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
 		pendingRefunds := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
 		pendingPayouts := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'pending'`)

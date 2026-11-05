@@ -40,11 +40,31 @@ func TestSettlementApprovalIsIdempotent(t *testing.T) {
 	if status != "approved" {
 		t.Fatalf("settlement status = %q, want approved", status)
 	}
+	// D32: approval is only a manual-transfer marker — it writes NO
+	// ledger entry. The debit is recorded by ConfirmManualTransfer.
 	var ledgerCount int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger_entries WHERE related_order_or_dispute = $1`, requestID).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
 	}
+	if ledgerCount != 0 {
+		t.Fatalf("ledger entries after approval = %d, want 0 (D32)", ledgerCount)
+	}
+	if err := repo.ConfirmManualTransfer(ctx, requestID, "audit-transfer-ref", "finance-test"); err != nil {
+		t.Fatalf("transfer confirmation failed: %v", err)
+	}
+	if err := repo.ConfirmManualTransfer(ctx, requestID, "audit-transfer-ref", "finance-test"); err == nil {
+		t.Fatal("duplicate transfer confirmation should fail")
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM payout_requests WHERE id = $1`, requestID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "transfer_confirmed" {
+		t.Fatalf("settlement status after transfer = %q, want transfer_confirmed", status)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger_entries WHERE related_order_or_dispute = $1`, requestID).Scan(&ledgerCount); err != nil {
+		t.Fatal(err)
+	}
 	if ledgerCount != 1 {
-		t.Fatalf("ledger entries = %d, want 1", ledgerCount)
+		t.Fatalf("ledger entries after transfer = %d, want 1", ledgerCount)
 	}
 }

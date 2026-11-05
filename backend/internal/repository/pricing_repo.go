@@ -3,10 +3,14 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/drup/platform/internal/pricing"
+	"github.com/google/uuid"
 )
 
 // PricingRepository is the storage backing for the live percent engine
@@ -38,6 +42,15 @@ func (r *PricingRepository) GetPlatformPricingSettings(ctx context.Context) (*pr
 		ProductPlatformPcts:  map[string]float64{},
 		CategoryPlatformPcts: map[string]float64{},
 	}
+	// early_withdrawal_fee_pct is nullable by schema (migration
+	// 202611020002 adds it with no default; NULL is a legitimate
+	// "not configured" state). Scanning it straight into a float64
+	// fails the WHOLE settings load on a NULL row ("converting NULL
+	// to float64 is unsupported") and every consumer silently falls
+	// back to DefaultPlatformPricingSettings, discarding the admin's
+	// real row. Scan it as NullFloat64 instead: NULL maps to 0, the
+	// value DefaultPlatformPricingSettings itself carries.
+	var earlyWithdrawalFeePct sql.NullFloat64
 	err := r.db.QueryRowContext(ctx, `
 		SELECT platform_pct, central_profit_pct, increase_cap_pct, increase_locked,
 		       max_profit_margin, min_profit_margin, default_margin, central_store_markup_percent,
@@ -49,9 +62,12 @@ func (r *PricingRepository) GetPlatformPricingSettings(ctx context.Context) (*pr
 		&s.PlatformPct, &s.CentralProfitPct, &s.IncreaseCapPct, &s.IncreaseLocked,
 		&s.MaxProfitMargin, &s.MinProfitMargin, &s.DefaultMargin, &s.CentralStoreMarkupPercent,
 		&s.ReferralIsEnabled, &s.ReferralCommissionPercent,
-		&s.SettlementDay, &s.EarlyWithdrawalFeePct, &s.WalletMinWithdrawal,
+		&s.SettlementDay, &earlyWithdrawalFeePct, &s.WalletMinWithdrawal,
 		&s.WalletSpendEnabled, &s.WalletWithdrawEnabled,
 	)
+	if err == nil {
+		s.EarlyWithdrawalFeePct = earlyWithdrawalFeePct.Float64
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query platform pricing settings: %w", err)
 	}
@@ -647,4 +663,787 @@ func (r *PricingRepository) GetStoreVariantOverride(ctx context.Context, storeID
 		return nil, err
 	}
 	return &o, nil
+}
+
+// ---------------------------------------------------------------------------
+// Price-increase governance (gap 11; migrations 202610310003 +
+// 202610310006). The policy recorded there is enforced here: a supplier
+// reference-price increase either auto-applies (within the effective cap
+// during an unlocked window, or under a per-product exception grant — a
+// grant is itself an approval, including while locked and including for
+// implicit-agreement products) or is queued as a pending
+// supplier_price_increases row for admin review. Decreases and unchanged
+// prices never reach this code: the table CHECK forbids new <= old rows,
+// and the direct PUT path applies them exactly as before.
+// ---------------------------------------------------------------------------
+
+var (
+	// ErrPriceIncreaseNotFound: no supplier_price_increases row with the id.
+	ErrPriceIncreaseNotFound = errors.New("price increase request not found")
+	// ErrPriceIncreaseNotPending: the row exists but was already reviewed.
+	ErrPriceIncreaseNotPending = errors.New("price increase request is not pending")
+	// ErrPriceIncreaseStaleCost: on approve, the product's current cost no
+	// longer equals the row's old_reference; the row STAYS pending.
+	ErrPriceIncreaseStaleCost = errors.New("قیمت کالا از زمان ثبت درخواست تغییر کرده است")
+	// ErrPriceIncreaseDuplicatePending: a pending row already exists for
+	// the product; a second governed increase is refused with HTTP 409.
+	ErrPriceIncreaseDuplicatePending = errors.New("a pending price increase already exists for this product")
+	// ErrGovernedProductNotFound: the product does not belong to the supplier.
+	ErrGovernedProductNotFound = errors.New("product not found for supplier")
+	// ErrProductNotFound: no product with the id exists at all.
+	ErrProductNotFound = errors.New("product not found")
+	// ErrPriceExceptionNotFound: no grant row exists for the product.
+	ErrPriceExceptionNotFound = errors.New("no price exception grant exists for this product")
+)
+
+// ProductPriceException mirrors product_price_exceptions: the per-product
+// grant that replaces the global increase cap for one product only.
+type ProductPriceException struct {
+	ProductID       string
+	ExceptionCapPct float64
+	TicketID        *string
+	GrantedBy       string
+	CreatedAt       time.Time
+}
+
+// IsImplicitAgreementActive implements the migration 202610310006 ACTIVE
+// definition: the flag is TRUE AND (implicit_agreement_until IS NULL OR
+// implicit_agreement_until >= NOW()). A missing product is not under an
+// active agreement.
+func (r *PricingRepository) IsImplicitAgreementActive(ctx context.Context, productID string) (bool, error) {
+	var active bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT implicit_agreement AND (implicit_agreement_until IS NULL OR implicit_agreement_until >= NOW())
+		FROM products WHERE id = $1
+	`, productID).Scan(&active)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return active, nil
+}
+
+// GetProductPriceException returns the product's grant, or (nil, nil)
+// when the product holds no grant.
+func (r *PricingRepository) GetProductPriceException(ctx context.Context, productID string) (*ProductPriceException, error) {
+	var ex ProductPriceException
+	var ticket sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT product_id, exception_cap_pct, ticket_id, granted_by, created_at
+		FROM product_price_exceptions WHERE product_id = $1
+	`, productID).Scan(&ex.ProductID, &ex.ExceptionCapPct, &ticket, &ex.GrantedBy, &ex.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ticket.Valid {
+		ex.TicketID = &ticket.String
+	}
+	return &ex, nil
+}
+
+// PriceIncreaseRow is one supplier_price_increases insert.
+type PriceIncreaseRow struct {
+	ProductID       string
+	VariantID       string // "" = product-level request; else the product_variants row the increase targets (migration 202611050009)
+	SupplierID      string
+	OldReference    int64
+	NewReference    int64
+	Pct             float64
+	Status          string // 'pending' | 'approved' | 'rejected'
+	IsException     bool
+	ExceptionCapPct *float64
+	AutoApproved    bool
+	AgreementReview bool
+	ClearOnApprove  bool // variant rows only: approval applies as a clear-to-inherit (migration 202611050010)
+	Reviewed        bool // stamp reviewed_at = NOW() (auto-approved rows)
+}
+
+func insertPriceIncreaseTx(ctx context.Context, tx *sql.Tx, row PriceIncreaseRow) (string, error) {
+	id := "PIN-" + uuid.NewString()
+	var reviewedAt interface{}
+	if row.Reviewed {
+		reviewedAt = time.Now()
+	}
+	var variantArg interface{}
+	if row.VariantID != "" {
+		variantArg = row.VariantID
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO supplier_price_increases
+			(id, product_id, variant_id, supplier_id, old_reference, new_reference, pct, status,
+			 is_exception, exception_cap_pct, auto_approved, agreement_review, clear_on_approve, reviewed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`, id, row.ProductID, variantArg, row.SupplierID, row.OldReference, row.NewReference, row.Pct,
+		row.Status, row.IsException, row.ExceptionCapPct, row.AutoApproved, row.AgreementReview, row.ClearOnApprove, reviewedAt)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// CreatePriceIncreaseRow inserts one supplier_price_increases row in its
+// own transaction and returns the new row id.
+func (r *PricingRepository) CreatePriceIncreaseRow(ctx context.Context, row PriceIncreaseRow) (string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := insertPriceIncreaseTx(ctx, tx, row)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// priceIncreaseDecision is the recorded decision matrix for new > old,
+// factored pure so the matrix (and the fail-closed schema defaults) can be
+// unit-tested without a database. grantCap is nil when the product holds
+// no exception grant; the effective cap is the grant cap when a grant
+// exists, else the global increase_cap_pct.
+type priceIncreaseDecision struct {
+	Apply       bool
+	Reason      string // "" when Apply; else "locked" | "above_cap" | "agreement" | "exception_cap"
+	CapPct      float64
+	IsException bool
+}
+
+func decidePriceIncrease(settings *pricing.PlatformPricingSettings, grantCap *float64, agreementActive bool, pct float64) priceIncreaseDecision {
+	if grantCap != nil {
+		if pct <= *grantCap {
+			return priceIncreaseDecision{Apply: true, CapPct: *grantCap, IsException: true}
+		}
+		return priceIncreaseDecision{CapPct: *grantCap, Reason: "exception_cap", IsException: true}
+	}
+	if agreementActive {
+		return priceIncreaseDecision{CapPct: settings.IncreaseCapPct, Reason: "agreement"}
+	}
+	if settings.IncreaseLocked {
+		return priceIncreaseDecision{CapPct: settings.IncreaseCapPct, Reason: "locked"}
+	}
+	if pct <= settings.IncreaseCapPct {
+		return priceIncreaseDecision{Apply: true, CapPct: settings.IncreaseCapPct}
+	}
+	return priceIncreaseDecision{CapPct: settings.IncreaseCapPct, Reason: "above_cap"}
+}
+
+// GovernedIncreaseResult is the outcome of ApplyGovernedPriceIncrease.
+type GovernedIncreaseResult struct {
+	Applied      bool
+	AutoApproved bool
+	RequestID    string // supplier_price_increases row id; "" when applied directly with no row
+	OldReference int64
+	Pct          float64
+	CapPct       float64
+	Reason       string // pending reason when Applied is false
+}
+
+// ApplyGovernedPriceIncrease runs one governed increase (new > old) in a
+// single transaction: the product row is locked and its cost re-read
+// (stale-check against the caller's earlier read), the recorded matrix is
+// evaluated, and the increase is either applied (products.supplier_base_cost
+// updated + approved audit row + supplier_pricing_update audit entry) or
+// queued as a pending row with the cost untouched. A pending row already
+// existing for the product refuses the request with
+// ErrPriceIncreaseDuplicatePending. Settings-load failure fails CLOSED to
+// the schema defaults (locked, cap 10) via
+// pricing.DefaultPlatformPricingSettings. If the locked re-read shows the
+// cost already reached or passed the requested value (concurrent write),
+// the request degrades to the direct-apply path with no row, exactly like
+// a decrease.
+func (r *PricingRepository) ApplyGovernedPriceIncrease(ctx context.Context, supplierID, productID string, newCost int64, reason string) (*GovernedIncreaseResult, error) {
+	settings, serr := r.GetPlatformPricingSettings(ctx)
+	if serr != nil || settings == nil {
+		settings = pricing.DefaultPlatformPricingSettings()
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var oldCost int64
+	var implicitAgreement bool
+	var agreementUntil sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT supplier_base_cost, COALESCE(implicit_agreement, FALSE), implicit_agreement_until
+		FROM products WHERE id = $1 AND supplier_id = $2 FOR UPDATE
+	`, productID, supplierID).Scan(&oldCost, &implicitAgreement, &agreementUntil)
+	if err == sql.ErrNoRows {
+		return nil, ErrGovernedProductNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	applyDirect := func() (*GovernedIncreaseResult, error) {
+		if _, err := tx.ExecContext(ctx, `UPDATE products SET supplier_base_cost = $1, updated_at = NOW() WHERE id = $2`, newCost, productID); err != nil {
+			return nil, err
+		}
+		if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_pricing_update", map[string]interface{}{
+			"product_id": productID, "new_supplier_base_cost": newCost, "reason": reason,
+		}); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &GovernedIncreaseResult{Applied: true, OldReference: oldCost}, nil
+	}
+
+	if newCost <= oldCost {
+		return applyDirect()
+	}
+	pct := float64(newCost-oldCost) / float64(oldCost) * 100
+
+	var hasPending bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM supplier_price_increases WHERE product_id = $1 AND status = 'pending')
+	`, productID).Scan(&hasPending); err != nil {
+		return nil, err
+	}
+	if hasPending {
+		return nil, ErrPriceIncreaseDuplicatePending
+	}
+
+	var grantCap *float64
+	var grantCapVal sql.NullFloat64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT exception_cap_pct FROM product_price_exceptions WHERE product_id = $1
+	`, productID).Scan(&grantCapVal); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if grantCapVal.Valid {
+		grantCap = &grantCapVal.Float64
+	}
+
+	agreementActive := implicitAgreement && (!agreementUntil.Valid || !agreementUntil.Time.Before(time.Now()))
+	decision := decidePriceIncrease(settings, grantCap, agreementActive, pct)
+
+	row := PriceIncreaseRow{
+		ProductID:    productID,
+		SupplierID:   supplierID,
+		OldReference: oldCost,
+		NewReference: newCost,
+		Pct:          pct,
+		IsException:  decision.IsException,
+	}
+	if decision.IsException {
+		cap := decision.CapPct
+		row.ExceptionCapPct = &cap
+	}
+
+	if !decision.Apply {
+		row.Status = "pending"
+		row.AgreementReview = decision.Reason == "agreement"
+		id, err := insertPriceIncreaseTx(ctx, tx, row)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &GovernedIncreaseResult{
+			Applied: false, RequestID: id, OldReference: oldCost,
+			Pct: pct, CapPct: decision.CapPct, Reason: decision.Reason,
+		}, nil
+	}
+
+	row.Status = "approved"
+	row.AutoApproved = true
+	row.Reviewed = true
+	id, err := insertPriceIncreaseTx(ctx, tx, row)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE products SET supplier_base_cost = $1, updated_at = NOW() WHERE id = $2`, newCost, productID); err != nil {
+		return nil, err
+	}
+	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_pricing_update", map[string]interface{}{
+		"product_id": productID, "new_supplier_base_cost": newCost, "reason": reason,
+		"request_id": id, "auto_approved": true,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &GovernedIncreaseResult{
+		Applied: true, AutoApproved: true, RequestID: id, OldReference: oldCost,
+		Pct: pct, CapPct: decision.CapPct,
+	}, nil
+}
+
+// ApplyGovernedVariantPriceIncrease is ApplyGovernedPriceIncrease for
+// one variant's supplier_base_cost (critic fix F1, migration
+// 202611050009): gap 10's write path previously applied any variant
+// cost change immediately, bypassing the recorded matrix entirely.
+// The decision matrix is the product one (decidePriceIncrease); the
+// grant and the implicit-agreement flag are product-level and are
+// read from the locked product row, exactly as for a product
+// increase. The "old" reference is the variant's EFFECTIVE cost —
+// its own supplier_base_cost when set, else the product's current
+// cost (the inheritance every pricing read applies). A new cost at
+// or below the effective cost degrades to the direct-apply path with
+// no row (mirroring a product decrease). Clear-to-inherit reaches
+// this path ONLY through ApplyGovernedVariantClear: a clear lowers
+// or matches the effective cost (and stays on the direct
+// UpdateVariantPricing path) unless the variant's own cost sits
+// BELOW the product's, where clearing would RAISE the effective cost
+// to the product's — that raise is governed like any other increase,
+// with the clear intent recorded on the row (clear_on_approve,
+// migration 202611050010) so approval applies as a clear instead of
+// a set. The pending-duplicate guard is
+// scoped to (product, variant): a product-level pending row does not
+// block a variant request and vice versa. Settings-load failure
+// fails CLOSED to the schema defaults, as in the product path.
+func (r *PricingRepository) ApplyGovernedVariantPriceIncrease(ctx context.Context, supplierID, productID, variantID string, newCost int64, reason string) (*GovernedIncreaseResult, error) {
+	return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, newCost, false, reason)
+}
+
+// ApplyGovernedVariantClear is the governed half of a variant
+// clear-to-inherit (migration 202611050010): the handler routes a
+// clear here when the variant's own cost sits below the product's,
+// so clearing would raise the effective cost to the product's cost.
+// The increase the matrix evaluates is own cost -> product cost,
+// derived from the locked rows inside the transaction (never from a
+// caller-side read); an approval — auto or reviewed — applies AS A
+// CLEAR (the variant's cost returns to NULL and thereafter tracks
+// the product's), recorded via the row's clear_on_approve flag. A
+// locked re-read showing no raise (nothing to clear, or the own cost
+// already meets the product's) degrades to the direct clear with no
+// row, mirroring a decrease.
+func (r *PricingRepository) ApplyGovernedVariantClear(ctx context.Context, supplierID, productID, variantID string, reason string) (*GovernedIncreaseResult, error) {
+	return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, 0, true, reason)
+}
+
+func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, supplierID, productID, variantID string, newCost int64, clearOnApprove bool, reason string) (*GovernedIncreaseResult, error) {
+	settings, serr := r.GetPlatformPricingSettings(ctx)
+	if serr != nil || settings == nil {
+		settings = pricing.DefaultPlatformPricingSettings()
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var productCost int64
+	var implicitAgreement bool
+	var agreementUntil sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT supplier_base_cost, COALESCE(implicit_agreement, FALSE), implicit_agreement_until
+		FROM products WHERE id = $1 AND supplier_id = $2 FOR UPDATE
+	`, productID, supplierID).Scan(&productCost, &implicitAgreement, &agreementUntil)
+	if err == sql.ErrNoRows {
+		return nil, ErrGovernedProductNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var variantCost sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT supplier_base_cost FROM product_variants
+		WHERE id = $1 AND product_id = $2 FOR UPDATE
+	`, variantID, productID).Scan(&variantCost)
+	if err == sql.ErrNoRows {
+		return nil, ErrGovernedProductNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	oldCost := productCost
+	if variantCost.Valid {
+		oldCost = variantCost.Int64
+	}
+	if clearOnApprove {
+		// The governed "increase" is the raise the clear itself would
+		// cause: from the variant's effective cost up to the product's
+		// cost. When the locked re-read shows no such raise (nothing
+		// to clear, or the own cost already meets/exceeds the
+		// product's), newCost <= oldCost below degrades to the direct
+		// clear, exactly like a decrease degrades to a direct set.
+		newCost = productCost
+	}
+
+	applyDirect := func() (*GovernedIncreaseResult, error) {
+		if clearOnApprove {
+			if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = NULL WHERE id = $1 AND product_id = $2`, variantID, productID); err != nil {
+				return nil, err
+			}
+			if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_variant_pricing_update", map[string]interface{}{
+				"product_id": productID, "variant_id": variantID, "cleared": true, "reason": reason,
+			}); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = $1 WHERE id = $2 AND product_id = $3`, newCost, variantID, productID); err != nil {
+				return nil, err
+			}
+			if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_variant_pricing_update", map[string]interface{}{
+				"product_id": productID, "variant_id": variantID, "new_supplier_base_cost": newCost, "reason": reason,
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &GovernedIncreaseResult{Applied: true, OldReference: oldCost}, nil
+	}
+
+	if newCost <= oldCost {
+		return applyDirect()
+	}
+	pct := float64(newCost-oldCost) / float64(oldCost) * 100
+
+	var hasPending bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM supplier_price_increases WHERE product_id = $1 AND variant_id = $2 AND status = 'pending')
+	`, productID, variantID).Scan(&hasPending); err != nil {
+		return nil, err
+	}
+	if hasPending {
+		return nil, ErrPriceIncreaseDuplicatePending
+	}
+
+	var grantCap *float64
+	var grantCapVal sql.NullFloat64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT exception_cap_pct FROM product_price_exceptions WHERE product_id = $1
+	`, productID).Scan(&grantCapVal); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if grantCapVal.Valid {
+		grantCap = &grantCapVal.Float64
+	}
+
+	agreementActive := implicitAgreement && (!agreementUntil.Valid || !agreementUntil.Time.Before(time.Now()))
+	decision := decidePriceIncrease(settings, grantCap, agreementActive, pct)
+
+	row := PriceIncreaseRow{
+		ProductID:      productID,
+		VariantID:      variantID,
+		SupplierID:     supplierID,
+		OldReference:   oldCost,
+		NewReference:   newCost,
+		Pct:            pct,
+		IsException:    decision.IsException,
+		ClearOnApprove: clearOnApprove,
+	}
+	if decision.IsException {
+		cap := decision.CapPct
+		row.ExceptionCapPct = &cap
+	}
+
+	if !decision.Apply {
+		row.Status = "pending"
+		row.AgreementReview = decision.Reason == "agreement"
+		id, err := insertPriceIncreaseTx(ctx, tx, row)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &GovernedIncreaseResult{
+			Applied: false, RequestID: id, OldReference: oldCost,
+			Pct: pct, CapPct: decision.CapPct, Reason: decision.Reason,
+		}, nil
+	}
+
+	row.Status = "approved"
+	row.AutoApproved = true
+	row.Reviewed = true
+	id, err := insertPriceIncreaseTx(ctx, tx, row)
+	if err != nil {
+		return nil, err
+	}
+	auditDetails := map[string]interface{}{
+		"product_id": productID, "variant_id": variantID, "reason": reason,
+		"request_id": id, "auto_approved": true,
+	}
+	if clearOnApprove {
+		if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = NULL WHERE id = $1 AND product_id = $2`, variantID, productID); err != nil {
+			return nil, err
+		}
+		auditDetails["cleared"] = true
+	} else {
+		if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = $1 WHERE id = $2 AND product_id = $3`, newCost, variantID, productID); err != nil {
+			return nil, err
+		}
+		auditDetails["new_supplier_base_cost"] = newCost
+	}
+	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_variant_pricing_update", auditDetails); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &GovernedIncreaseResult{
+		Applied: true, AutoApproved: true, RequestID: id, OldReference: oldCost,
+		Pct: pct, CapPct: decision.CapPct,
+	}, nil
+}
+
+// insertPricingAuditTx appends one audit_logs row inside the caller's
+// transaction (same column shape as insertSupplierAuditTx; the operator
+// carries the actor prefix, e.g. "admin:<userID>"). The category is
+// 'finance', NOT 'pricing': the audit_logs_category_check constraint
+// (migration 202610210001) allows exactly 16 categories and 'pricing' is
+// not one of them — a 'pricing' insert is rejected with SQLSTATE 23514
+// (proven by the gap-11 DB-gated tests). 'finance' is the sanctioned
+// category for money-adjacent admin decisions and matches the exception
+// tickets' own section = 'finance' routing.
+func insertPricingAuditTx(ctx context.Context, tx *sql.Tx, operator, action string, details map[string]interface{}) error {
+	payload, _ := json.Marshal(details)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_logs (id, timestamp, operator, action, category, details)
+		VALUES ($1, NOW(), $2, $3, 'finance', $4)
+	`, "LOG-"+uuid.NewString(), operator, action, string(payload))
+	return err
+}
+
+// ReviewPriceIncrease applies the admin decision for one pending row in a
+// single transaction. Approve re-checks the current cost against the
+// row's old_reference (stale guard): a drifted cost returns
+// ErrPriceIncreaseStaleCost and the row STAYS pending. A successful
+// approve updates products.supplier_base_cost to new_reference — or,
+// for a variant row (variant_id set, migration 202611050009),
+// product_variants.supplier_base_cost, with the stale guard comparing
+// the variant's current EFFECTIVE cost (its own cost, else the
+// product's). A variant row flagged clear_on_approve (migration
+// 202611050010) applies AS A CLEAR instead: approval sets the
+// variant's cost back to NULL, so its effective cost lands on the
+// product's current cost — the raise the row was filed for. Reject
+// changes no cost. Both stamp reviewed_at and
+// write an audit_logs row (operator "admin:<userID>", category
+// 'finance' — see insertPricingAuditTx).
+func (r *PricingRepository) ReviewPriceIncrease(ctx context.Context, requestID string, approve bool, adminUserID string) (*SupplierPriceIncrease, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var row SupplierPriceIncrease
+	var supplierID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, product_id, variant_id, supplier_id, old_reference, new_reference, pct, status, is_exception,
+		       exception_cap_pct, COALESCE(auto_approved, FALSE), COALESCE(agreement_review, FALSE),
+		       COALESCE(clear_on_approve, FALSE), created_at, reviewed_at
+		FROM supplier_price_increases WHERE id = $1 FOR UPDATE
+	`, requestID).Scan(&row.ID, &row.ProductID, &row.VariantID, &supplierID, &row.OldReference, &row.NewReference,
+		&row.Pct, &row.Status, &row.IsException, &row.ExceptionCapPct, &row.AutoApproved,
+		&row.AgreementReview, &row.ClearOnApprove, &row.CreatedAt, &row.ReviewedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrPriceIncreaseNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.Status != "pending" {
+		return nil, ErrPriceIncreaseNotPending
+	}
+
+	action := "price_increase_rejected"
+	newStatus := "rejected"
+	if approve {
+		if row.VariantID != nil && *row.VariantID != "" {
+			// Variant row: the stale guard compares the variant's
+			// EFFECTIVE cost (own cost, else the product's) and the
+			// approval lands on the variant, never the product.
+			var productCost int64
+			err = tx.QueryRowContext(ctx, `
+				SELECT supplier_base_cost FROM products WHERE id = $1 FOR UPDATE
+			`, row.ProductID).Scan(&productCost)
+			if err == sql.ErrNoRows {
+				return nil, ErrPriceIncreaseStaleCost
+			}
+			if err != nil {
+				return nil, err
+			}
+			var variantCost sql.NullInt64
+			err = tx.QueryRowContext(ctx, `
+				SELECT supplier_base_cost FROM product_variants WHERE id = $1 AND product_id = $2 FOR UPDATE
+			`, *row.VariantID, row.ProductID).Scan(&variantCost)
+			if err == sql.ErrNoRows {
+				return nil, ErrPriceIncreaseStaleCost
+			}
+			if err != nil {
+				return nil, err
+			}
+			current := productCost
+			if variantCost.Valid {
+				current = variantCost.Int64
+			}
+			if current != row.OldReference {
+				return nil, ErrPriceIncreaseStaleCost
+			}
+			if row.ClearOnApprove {
+				// Governed clear (migration 202611050010): approval
+				// restores inheritance instead of writing the row's
+				// new_reference onto the variant.
+				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = NULL WHERE id = $1 AND product_id = $2`, *row.VariantID, row.ProductID); err != nil {
+					return nil, err
+				}
+			} else if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET supplier_base_cost = $1 WHERE id = $2 AND product_id = $3`, row.NewReference, *row.VariantID, row.ProductID); err != nil {
+				return nil, err
+			}
+		} else {
+			var current int64
+			err = tx.QueryRowContext(ctx, `
+				SELECT supplier_base_cost FROM products WHERE id = $1 FOR UPDATE
+			`, row.ProductID).Scan(&current)
+			if err == sql.ErrNoRows || (err == nil && current != row.OldReference) {
+				return nil, ErrPriceIncreaseStaleCost
+			}
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE products SET supplier_base_cost = $1, updated_at = NOW() WHERE id = $2`, row.NewReference, row.ProductID); err != nil {
+				return nil, err
+			}
+		}
+		action = "price_increase_approved"
+		newStatus = "approved"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE supplier_price_increases SET status = $1, reviewed_at = NOW() WHERE id = $2`, newStatus, requestID); err != nil {
+		return nil, err
+	}
+	auditDetails := map[string]interface{}{
+		"request_id": requestID, "product_id": row.ProductID, "supplier_id": supplierID,
+		"old_reference": row.OldReference, "new_reference": row.NewReference, "pct": row.Pct,
+	}
+	if row.VariantID != nil && *row.VariantID != "" {
+		auditDetails["variant_id"] = *row.VariantID
+	}
+	if row.ClearOnApprove {
+		auditDetails["clear_on_approve"] = true
+	}
+	if err := insertPricingAuditTx(ctx, tx, "admin:"+adminUserID, action, auditDetails); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	row.Status = newStatus
+	row.ReviewedAt = &now
+	return &row, nil
+}
+
+// AdminPriceIncrease is one review-queue row: the supplier's read model
+// plus the admin display fields (product title, supplier id + name).
+type AdminPriceIncrease struct {
+	SupplierPriceIncrease
+	SupplierID   string `json:"supplierId"`
+	ProductTitle string `json:"productTitle"`
+	SupplierName string `json:"supplierName"`
+}
+
+// ListAdminPriceIncreases returns the review queue joined with product
+// titles and supplier names, newest first. status "pending" (the queue),
+// "approved", "rejected" filter; "" and "all" return every row.
+func (r *PricingRepository) ListAdminPriceIncreases(ctx context.Context, status string) ([]AdminPriceIncrease, error) {
+	query := `
+		SELECT spi.id, spi.product_id, spi.variant_id, spi.supplier_id, spi.old_reference, spi.new_reference,
+		       spi.pct, spi.status, spi.is_exception, spi.exception_cap_pct,
+		       COALESCE(spi.auto_approved, FALSE), COALESCE(spi.agreement_review, FALSE),
+		       COALESCE(spi.clear_on_approve, FALSE), spi.created_at, spi.reviewed_at,
+		       COALESCE(p.title, ''), COALESCE(s.name, ''), COALESCE(pv.variant_name, '')
+		FROM supplier_price_increases spi
+		LEFT JOIN products p ON p.id = spi.product_id
+		LEFT JOIN suppliers s ON s.id = spi.supplier_id
+		LEFT JOIN product_variants pv ON pv.id::text = spi.variant_id
+	`
+	args := []interface{}{}
+	if status != "" && status != "all" {
+		query += ` WHERE spi.status = $1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY spi.created_at DESC`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AdminPriceIncrease{}
+	for rows.Next() {
+		var a AdminPriceIncrease
+		if err := rows.Scan(&a.ID, &a.ProductID, &a.VariantID, &a.SupplierID, &a.OldReference, &a.NewReference,
+			&a.Pct, &a.Status, &a.IsException, &a.ExceptionCapPct, &a.AutoApproved,
+			&a.AgreementReview, &a.ClearOnApprove, &a.CreatedAt, &a.ReviewedAt, &a.ProductTitle, &a.SupplierName, &a.VariantName); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UpsertProductPriceException creates or replaces the product's exception
+// grant (a later grant replaces the earlier one) and records the grant in
+// audit_logs. The product must exist.
+func (r *PricingRepository) UpsertProductPriceException(ctx context.Context, productID string, capPct float64, ticketID *string, adminUserID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrProductNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO product_price_exceptions (product_id, exception_cap_pct, ticket_id, granted_by, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (product_id) DO UPDATE SET
+			exception_cap_pct = EXCLUDED.exception_cap_pct,
+			ticket_id = EXCLUDED.ticket_id,
+			granted_by = EXCLUDED.granted_by,
+			created_at = NOW()
+	`, productID, capPct, ticketID, adminUserID); err != nil {
+		return err
+	}
+	if err := insertPricingAuditTx(ctx, tx, "admin:"+adminUserID, "price_exception_granted", map[string]interface{}{
+		"product_id": productID, "exception_cap_pct": capPct, "ticket_id": ticketID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteProductPriceException revokes the product's grant and records the
+// revocation in audit_logs. No grant → ErrPriceExceptionNotFound.
+func (r *PricingRepository) DeleteProductPriceException(ctx context.Context, productID, adminUserID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM product_price_exceptions WHERE product_id = $1`, productID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrPriceExceptionNotFound
+	}
+	if err := insertPricingAuditTx(ctx, tx, "admin:"+adminUserID, "price_exception_revoked", map[string]interface{}{
+		"product_id": productID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

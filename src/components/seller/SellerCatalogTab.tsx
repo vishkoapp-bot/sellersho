@@ -6,7 +6,7 @@ import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { resolvePricing } from '../../utils/pricingEngine';
 import { catalogApi } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
-import { Search, Check, Plus, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 'lucide-react';
+import { Search, Check, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 'lucide-react';
 
 // Live parity ("انتخاب کالا"): picking is a DRAFT. Tapping a product or a
 // niche only changes pending state; nothing is applied to the storefront
@@ -189,17 +189,28 @@ export const SellerCatalogTab: React.FC = () => {
 
           <button
             type="button"
+            role="switch"
+            aria-checked={isPending}
+            aria-label={isPending ? `غیرفعال کردن ${product.title} در فروشگاه` : `فعال کردن ${product.title} در فروشگاه`}
+            title={isPending ? 'فعال در فروشگاه — برای غیرفعال کردن بزن' : 'غیرفعال — برای فعال کردن در فروشگاه بزن'}
             onClick={() => toggleProductSelect(product.id)}
-            className={`min-h-[44px] px-2.5 rounded-xl flex items-center gap-1 transition-colors ${
-              isPending
-                ? purple
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-[#007dfa] text-white shadow-xs'
-                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-            }`}
+            className="min-h-[44px] px-1.5 rounded-xl flex items-center gap-2 transition-colors hover:bg-slate-50"
           >
-            {isPending ? <Check className="w-4 h-4" strokeWidth={1.5} /> : <Plus className="w-4 h-4" strokeWidth={1.5} />}
-            <span className="text-[11px] font-bold">{isPending ? 'در فروشگاه' : 'افزودن'}</span>
+            <span className={`text-[11px] font-bold ${isPending ? 'text-emerald-600' : 'text-slate-400'}`}>
+              {isPending ? 'فعال' : 'غیرفعال'}
+            </span>
+            <span
+              dir="ltr"
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+                isPending ? (purple ? 'bg-purple-600' : 'bg-[#007dfa]') : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  isPending ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </span>
           </button>
         </div>
       </div>

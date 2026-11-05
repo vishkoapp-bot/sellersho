@@ -42,50 +42,31 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/routing"
+	"github.com/drup/platform/internal/shippingquote"
 )
 
 // shippingRates are the admin tariff inputs for the quote formula.
-type shippingRates struct {
-	BaseRateRial   int64
-	PerKgRial      int64
-	VolumetricDiv  int64
-	DefaultWeightG int64
-}
+// The type (and the pricing primitives below) live in
+// internal/shippingquote so the customer-return shipping settlement
+// prices with the SAME engine (migration 202610250202 policy).
+type shippingRates = shippingquote.Rates
 
 // loadShippingRates reads the admin tariff from platform_settings
 // id = 1. A missing/unreadable row is shipping_unavailable, never a
 // silent zero quote: a zero rate must be an admin choice, not a read
 // failure.
 func loadShippingRates(ctx context.Context, db *sql.DB) (shippingRates, error) {
-	var r shippingRates
-	var div, def sql.NullInt64
 	if db == nil {
-		return r, fmt.Errorf("database not initialized")
+		return shippingRates{}, fmt.Errorf("database not initialized")
 	}
-	err := db.QueryRowContext(ctx, `SELECT COALESCE(shipping_base_rate, 0),
-		COALESCE(shipping_per_kg, 0), volumetric_divisor, default_item_weight_grams
-		FROM platform_settings ORDER BY id LIMIT 1`).Scan(
-		&r.BaseRateRial, &r.PerKgRial, &div, &def)
-	if err != nil {
-		return r, err
-	}
-	if div.Valid {
-		r.VolumetricDiv = div.Int64
-	} else {
-		r.VolumetricDiv = 5000
-	}
-	if def.Valid && def.Int64 > 0 {
-		r.DefaultWeightG = def.Int64
-	} else {
-		r.DefaultWeightG = 500
-	}
-	return r, nil
+	return shippingquote.LoadRates(ctx, db)
 }
 
 // shippingQuoteLine is one cart line resolved against the catalog:
@@ -101,6 +82,13 @@ type shippingQuoteLine struct {
 	LengthMM    int
 	WidthMM     int
 	HeightMM    int
+	// UnitPriceToman is the catalog unit price (products.original_price)
+	// at resolution time. It is NOT part of the formula quote; the
+	// Tapin price inquiry (tapin_quote.go) uses it as the declared
+	// goods value. Both line builders (resolveQuoteLines and order
+	// creation's item loop) fill it from the same product read, so a
+	// quote and its order-time recompute feed the inquiry identically.
+	UnitPriceToman int64
 }
 
 // shippingQuoteLeg is one shipment-per-origin leg of a quote.
@@ -134,20 +122,7 @@ type shippingQuote struct {
 }
 
 func billableWeightGrams(line shippingQuoteLine, rates shippingRates) int64 {
-	actual := int64(line.WeightG)
-	if actual <= 0 {
-		actual = rates.DefaultWeightG
-	}
-	billable := actual
-	if rates.VolumetricDiv > 0 && line.LengthMM > 0 && line.WidthMM > 0 && line.HeightMM > 0 {
-		// Volumetric grams = volume(mm^3) / divisor: volume in cm^3
-		// is mm^3/1000 and kg is cm^3/divisor, so grams is mm^3/divisor.
-		vol := (int64(line.LengthMM) * int64(line.WidthMM) * int64(line.HeightMM)) / rates.VolumetricDiv
-		if vol > billable {
-			billable = vol
-		}
-	}
-	return billable
+	return shippingquote.BillableWeightGrams(line.WeightG, line.LengthMM, line.WidthMM, line.HeightMM, rates)
 }
 
 func legOrigin(line shippingQuoteLine) (key, label string) {
@@ -206,13 +181,7 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 	out := shippingQuote{Legs: []shippingQuoteLeg{}, Allocations: allocs}
 	var total int64
 	for i, lg := range legs {
-		billableKg := int64(math.Ceil(float64(lg.weight) / 1000.0))
-		fareRial := rates.BaseRateRial + rates.PerKgRial*billableKg
-		// Rials -> Tomans, rounded half-up.
-		fare := (fareRial + 5) / 10
-		if fare < 0 {
-			fare = 0
-		}
+		fare := shippingquote.LegFareToman(lg.weight, rates)
 		total += fare
 		out.Legs = append(out.Legs, shippingQuoteLeg{
 			LegIndex: i, Index: i, OriginID: lg.key, OriginLabel: lg.label,
@@ -222,15 +191,23 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 		})
 	}
 	out.TotalShipping = total
-	// Deterministic quote id over the priced quote + destination.
+	out.QuoteID = shippingQuoteIDFor(out.Legs, total, destination)
+	return out
+}
+
+// shippingQuoteIDFor is the deterministic quote id over the priced
+// quote + destination. computeShippingQuote uses it for formula
+// quotes; the Tapin repricing step (tapin_quote.go) re-derives it
+// after replacing leg fares, so a Tapin-priced quote and its
+// order-time recompute hash identically.
+func shippingQuoteIDFor(legs []shippingQuoteLeg, total int64, destination string) string {
 	canonical, _ := json.Marshal(struct {
 		Legs  []shippingQuoteLeg `json:"legs"`
 		Total int64              `json:"totalShipping"`
 		Dest  string             `json:"destination"`
-	}{Legs: out.Legs, Total: total, Dest: destination})
+	}{Legs: legs, Total: total, Dest: destination})
 	sum := sha256.Sum256(canonical)
-	out.QuoteID = "sq_" + fmt.Sprintf("%x", sum)[:24]
-	return out
+	return "sq_" + fmt.Sprintf("%x", sum)[:24]
 }
 
 // shippingQuoteItemReq decodes a quote/order line tolerantly: live
@@ -290,10 +267,17 @@ func quoteDestinationKey(d shippingQuoteDestination) string {
 
 // resolveQuoteLines turns request lines into catalog-resolved lines.
 // Unknown products are an invalid quote, not a zero-weight guess.
+//
+// Gap 13: every line's Fulfillment is the RESOLVED routing from
+// routing.ResolveItemRouting — the same resolver (and the same
+// batched toggle load) order creation uses — so a quote groups its
+// legs exactly as the order built from it will, and the order-time
+// recomputation can only differ when the cart or the toggles
+// actually changed.
 func resolveQuoteLines(ctx context.Context, catalogRepo interface {
 	GetProductByID(ctx context.Context, idOrSlug string) (*domain.Product, error)
-}, items []shippingQuoteItemReq) ([]shippingQuoteLine, error) {
-	lines := make([]shippingQuoteLine, 0, len(items))
+}, supplierRepo *repository.SupplierRepository, items []shippingQuoteItemReq) ([]shippingQuoteLine, error) {
+	products := make([]*domain.Product, 0, len(items))
 	for _, it := range items {
 		if strings.TrimSpace(it.ProductID) == "" || it.Quantity <= 0 {
 			return nil, fmt.Errorf("invalid shipping quote")
@@ -302,28 +286,56 @@ func resolveQuoteLines(ctx context.Context, catalogRepo interface {
 		if err != nil || p == nil {
 			return nil, fmt.Errorf("invalid shipping quote")
 		}
+		products = append(products, p)
+	}
+	// One batched toggle load for every distinct supplier in the
+	// cart. A missing repo or a load error leaves the map empty,
+	// which the resolver reads as "no methods enabled" (warehouse
+	// fail-safe) — identical to order creation's methodsFor.
+	methodsBySupplier := map[string]map[string]string{}
+	if supplierRepo != nil {
+		seen := map[string]bool{}
+		var supplierIDs []string
+		for _, prod := range products {
+			if prod.SupplierID != "" && !seen[prod.SupplierID] {
+				seen[prod.SupplierID] = true
+				supplierIDs = append(supplierIDs, prod.SupplierID)
+			}
+		}
+		if len(supplierIDs) > 0 {
+			if batch, merr := supplierRepo.ListShippingMethodsBySupplierIDs(ctx, supplierIDs); merr == nil {
+				methodsBySupplier = batch
+			}
+		}
+	}
+	lines := make([]shippingQuoteLine, 0, len(items))
+	for i, it := range items {
+		prod := products[i]
+		itemRouting := routing.ResolveItemRouting(prod.FulfillmentMethod, methodsBySupplier[prod.SupplierID])
 		// ISO-PURCHASE: a supplier-direct line with no supplier has no
 		// fulfillment origin to quote from. Fail the quote instead of
 		// pricing it under a substituted supplier's leg (the old
-		// legOrigin fallback) or under the central warehouse.
-		if p.FulfillmentMethod == "supplier_direct" && strings.TrimSpace(p.SupplierID) == "" {
+		// legOrigin fallback) or under the central warehouse. The
+		// check keys on the RESOLVED routing, not the raw flag.
+		if itemRouting == "supplier_direct" && strings.TrimSpace(prod.SupplierID) == "" {
 			return nil, fmt.Errorf("invalid shipping quote")
 		}
 		line := shippingQuoteLine{
 			ProductID: it.ProductID, VariantID: it.VariantID, Quantity: it.Quantity,
-			Fulfillment: p.FulfillmentMethod, SupplierID: p.SupplierID, Warehouse: p.WarehouseName,
+			Fulfillment: itemRouting, SupplierID: prod.SupplierID, Warehouse: prod.WarehouseName,
+			UnitPriceToman: prod.OriginalPrice,
 		}
-		if p.WeightGrams != nil {
-			line.WeightG = *p.WeightGrams
+		if prod.WeightGrams != nil {
+			line.WeightG = *prod.WeightGrams
 		}
-		if p.LengthMM != nil {
-			line.LengthMM = *p.LengthMM
+		if prod.LengthMM != nil {
+			line.LengthMM = *prod.LengthMM
 		}
-		if p.WidthMM != nil {
-			line.WidthMM = *p.WidthMM
+		if prod.WidthMM != nil {
+			line.WidthMM = *prod.WidthMM
 		}
-		if p.HeightMM != nil {
-			line.HeightMM = *p.HeightMM
+		if prod.HeightMM != nil {
+			line.HeightMM = *prod.HeightMM
 		}
 		lines = append(lines, line)
 	}
@@ -346,7 +358,7 @@ func sortQuoteLines(lines []shippingQuoteLine) {
 
 func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo interface {
 	GetProductByID(ctx context.Context, idOrSlug string) (*domain.Product, error)
-}, db *sql.DB) {
+}, supplierRepo *repository.SupplierRepository, db *sql.DB) {
 	w.Header().Set("Content-Type", "application/json")
 	if catalogRepo == nil || db == nil {
 		http.Error(w, `{"error":"shipping_unavailable"}`, http.StatusServiceUnavailable)
@@ -376,12 +388,21 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 		http.Error(w, `{"error":"shipping_unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	lines, err := resolveQuoteLines(ctx, catalogRepo, req.Items)
+	lines, err := resolveQuoteLines(ctx, catalogRepo, supplierRepo, req.Items)
 	if err != nil {
 		http.Error(w, `{"error":"invalid shipping quote"}`, http.StatusBadRequest)
 		return
 	}
 	quote := computeShippingQuote(lines, rates, quoteDestinationKey(*req.Destination))
+	// Tapin-connected supplier legs are priced by Tapin's live price
+	// inquiry, not the formula (owner directive, gaps 1-3). The step
+	// fails closed: an inquiry error fails the whole quote with the
+	// upstream message — a connected leg is never silently repriced
+	// by the formula.
+	if err := priceTapinQuoteLegs(ctx, db, &quote, lines, *req.Destination); err != nil {
+		http.Error(w, tapinQuoteErrorBody(err), http.StatusBadRequest)
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true, "quoteId": quote.QuoteID, "legs": quote.Legs,
 		"totalShipping": quote.TotalShipping, "allocations": quote.Allocations,

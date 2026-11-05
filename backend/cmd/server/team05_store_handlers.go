@@ -27,6 +27,18 @@ import (
 //     (what any visitor sees), not owner-private data. Profit/margin,
 //     owner data, phone, sales, referral codes, custom domains and
 //     builderConfig are still never emitted here.
+//     Widgets-only exception (F5): builderWidgets IS emitted —
+//     only the six boolean widget toggles inside
+//     builderConfig.widgets (see team05PublicBuilderWidgets).
+//     They are presentation data (they decide which public
+//     sections a visitor sees); every other builderConfig key
+//     stays private under D52.
+//     Central-deals exception (F1): centralDealsFilter and
+//     centralDealsProductIds ARE emitted when set — the public
+//     storefront's deals slider filters by them for real
+//     visitors, so they are presentation data of the same
+//     class. Both keys are omitted while unset, which the
+//     storefront reads as the default niche mode.
 //   - D48: discount campaigns are MANAGEMENT ONLY. No campaign query
 //     exists in any price path in this tree, and none is added here:
 //     price application of campaigns is unproven in live (U04).
@@ -58,7 +70,12 @@ import (
 // team05PublicTemplateConfig: accent, section toggles and custom
 // presentation keys only) and logo (the store's public brand image).
 // Never add owner, margin, sales, phone, referral, domain or builder
-// fields here.
+// fields here — the only exceptions are builderWidgets, which
+// carries ONLY the six boolean widget toggles from
+// builderConfig.widgets (presentation data, F5), and the
+// centralDealsFilter/centralDealsProductIds pair, which the
+// public deals slider consumes (F1); builderConfig itself
+// stays excluded.
 type team05PublicStore struct {
 	// FIX 14b: field order is live's struct order (probed 2026-11-03 on
 	// /stores/mone: id, slug, name, tagline, description,
@@ -81,6 +98,60 @@ type team05PublicStore struct {
 	TemplateID              string          `json:"templateId"`
 	TemplateConfig          json.RawMessage `json:"templateConfig"`
 	Logo                    string          `json:"logo"`
+	BuilderWidgets          *team05PublicBuilderWidgets `json:"builderWidgets,omitempty"`
+	// F1: the central-deals filter pair — presentation data the
+	// public storefront deals slider consumes; omitted while
+	// unset (unset == the default niche mode downstream).
+	CentralDealsFilter      string          `json:"centralDealsFilter,omitempty"`
+	CentralDealsProductIDs  []string        `json:"centralDealsProductIds,omitempty"`
+}
+
+// team05PublicBuilderWidgets is the widgets-only subset of
+// builderConfig that the public store DTO may emit (F5): the six
+// boolean toggles that decide which builder sections a real
+// visitor sees. Everything else in builderConfig (theme, accent,
+// social links, drafts) remains owner-private under D52.
+type team05PublicBuilderWidgets struct {
+	HeroBanner       bool `json:"heroBanner"`
+	DealsSlider      bool `json:"dealsSlider"`
+	CategoriesGrid   bool `json:"categoriesGrid"`
+	StoreDealsWidget bool `json:"storeDealsWidget"`
+	TrustBar         bool `json:"trustBar"`
+	ContactInfo      bool `json:"contactInfo"`
+}
+
+// team05PublicBuilderWidgetsFrom extracts the widgets subset from
+// a raw builderConfig document. A missing/unparseable document or
+// a missing widgets object yields nil (the key is omitted and the
+// storefront keeps its all-visible default); inside widgets, only
+// an explicit false turns a section off, matching the builder
+// default that every widget starts enabled.
+func team05PublicBuilderWidgetsFrom(raw json.RawMessage) *team05PublicBuilderWidgets {
+	var doc struct {
+		Widgets map[string]json.RawMessage `json:"widgets"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &doc) != nil || doc.Widgets == nil {
+		return nil
+	}
+	on := func(key string) bool {
+		v, ok := doc.Widgets[key]
+		if !ok {
+			return true
+		}
+		var b bool
+		if json.Unmarshal(v, &b) != nil {
+			return true
+		}
+		return b
+	}
+	return &team05PublicBuilderWidgets{
+		HeroBanner:       on("heroBanner"),
+		DealsSlider:      on("dealsSlider"),
+		CategoriesGrid:   on("categoriesGrid"),
+		StoreDealsWidget: on("storeDealsWidget"),
+		TrustBar:         on("trustBar"),
+		ContactInfo:      on("contactInfo"),
+	}
 }
 
 // team05PublicTemplateConfigAllowlist is the FIX3 least-privilege
@@ -170,6 +241,9 @@ func team05PublicStoreView(s *domain.Store) team05PublicStore {
 	out := team05PublicStore{
 		ActiveCategories:        s.ActiveCategories,
 		ActiveProductIDs:        s.ActiveProductIDs,
+		BuilderWidgets:          team05PublicBuilderWidgetsFrom(s.BuilderConfig),
+		CentralDealsFilter:      s.CentralDealsFilter,
+		CentralDealsProductIDs:  s.CentralDealsProductIDs,
 		Description:             s.Description,
 		ID:                      s.ID,
 		Logo:                    s.Logo,

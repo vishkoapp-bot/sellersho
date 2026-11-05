@@ -134,7 +134,7 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 	if err := fin.PurchaseSellerService(ctx, stranger, store.ID, "vip"); !errors.Is(err, repository.ErrStoreForbidden) {
 		t.Fatalf("foreign subscription: %v", err)
 	}
-	if err := fin.PurchaseSellerService(ctx, owner, store.ID, "vip"); !errors.Is(err, repository.ErrStoreInput) {
+	if err := fin.PurchaseSellerService(ctx, owner, store.ID, "vip"); !errors.Is(err, repository.ErrStoreInsufficientBalance) {
 		t.Fatalf("unfunded subscription: %v", err)
 	}
 	var credits int

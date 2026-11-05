@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/routing"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type CreateOrderItemReq struct {
@@ -49,6 +52,58 @@ type CreateOrderReq struct {
 
 const maxOrderItemQuantity = 1000
 
+// firstSuspendedSupplierProduct (gap 12) returns the first cart
+// product — in REQUEST order — whose supplier is currently suspended,
+// or "" when the cart is clean. One batch query over the cart's
+// product ids; products with no suppliers row (legacy) and unknown
+// product ids are not flagged here (the item loop reports unknown
+// products itself).
+func firstSuspendedSupplierProduct(ctx context.Context, db *sql.DB, items []CreateOrderItemReq) (string, error) {
+	if db == nil || len(items) == 0 {
+		return "", nil
+	}
+	ids := make([]string, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		if it.ProductID != "" && !seen[it.ProductID] {
+			seen[it.ProductID] = true
+			ids = append(ids, it.ProductID)
+		}
+	}
+	if len(ids) == 0 {
+		return "", nil
+	}
+	var hasSuppliers bool
+	if err := db.QueryRowContext(ctx, `SELECT to_regclass('public.suppliers') IS NOT NULL`).Scan(&hasSuppliers); err != nil || !hasSuppliers {
+		return "", err
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT p.id FROM products p
+		JOIN suppliers s ON s.id = p.supplier_id AND s.approval_status = 'suspended'
+		WHERE p.id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	suspended := make(map[string]bool)
+	for rows.Next() {
+		var pid string
+		if err := rows.Scan(&pid); err != nil {
+			return "", err
+		}
+		suspended[pid] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	for _, it := range items {
+		if suspended[it.ProductID] {
+			return it.ProductID, nil
+		}
+	}
+	return "", nil
+}
+
 func validateOrderItemQuantity(quantity int) error {
 	if quantity <= 0 {
 		return fmt.Errorf("quantity must be greater than zero")
@@ -78,6 +133,7 @@ func handleCreateOrder(
 	storeRepo *repository.StoreRepository,
 	shipmentRepo *repository.SupplierShipmentRepository,
 	pricingRepo *repository.PricingRepository,
+	supplierRepo *repository.SupplierRepository,
 	db *sql.DB,
 ) {
 	w.Header().Set("Content-Type", "application/json")
@@ -277,9 +333,47 @@ func handleCreateOrder(
 	// addons land in their respective order columns.
 	var platformAddonTotal int64 = 0
 	var supplierAddonTotal int64 = 0
+	// Gap 12: suspended-supplier gate, BEFORE the item loop and
+	// independent of its per-line routing resolution: one item from a
+	// suspended supplier rejects the WHOLE order, mirroring the
+	// per-line publication gate's whole-order semantics below.
+	if suspendedProductID, serr := firstSuspendedSupplierProduct(ctx, db, req.Items); serr != nil {
+		http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
+		return
+	} else if suspendedProductID != "" {
+		http.Error(w, fmt.Sprintf(`{"error":"Product %s is unavailable because its supplier is suspended"}`, suspendedProductID), http.StatusBadRequest)
+		return
+	}
+
 	var orderItems []domain.OrderItem
 	var quoteLines []shippingQuoteLine
 	fulfillmentMethod := "warehouse"
+	// Gap 13: the supplier shipping-method toggles behind the single
+	// routing resolver are loaded lazily, once per distinct supplier,
+	// through the batched repo method (memoised here so a cart with
+	// many lines from one supplier costs one query). A missing
+	// supplierRepo or a load error yields an empty map, which the
+	// resolver treats as "no methods enabled" — the warehouse
+	// fail-safe, never a guessed direct route.
+	routingMethodsMemo := map[string]map[string]string{}
+	methodsFor := func(supplierID string) map[string]string {
+		if supplierID == "" {
+			return nil
+		}
+		if m, ok := routingMethodsMemo[supplierID]; ok {
+			return m
+		}
+		m := map[string]string{}
+		if supplierRepo != nil {
+			if batch, merr := supplierRepo.ListShippingMethodsBySupplierIDs(ctx, []string{supplierID}); merr == nil {
+				if mm, ok := batch[supplierID]; ok {
+					m = mm
+				}
+			}
+		}
+		routingMethodsMemo[supplierID] = m
+		return m
+	}
 	directSupplierIDs := make(map[string]struct{})
 	hasWarehouseItems := false
 
@@ -366,11 +460,19 @@ func handleCreateOrder(
 			}
 		}
 
-		if p.FulfillmentMethod == "supplier_direct" {
+		// Gap 13: ONE routing truth — the resolver combines the
+		// product flag with the supplier's shipping-method toggles
+		// (the warehouse queue's documented semantics, adopted as
+		// the platform rule). Creation used to read the flag alone,
+		// so a direct-only supplier's warehouse-flagged lines got no
+		// shipment here yet routed direct in the queue.
+		itemRouting := routing.ResolveItemRouting(p.FulfillmentMethod, methodsFor(p.SupplierID))
+		if itemRouting == "supplier_direct" {
 			// ISO-PURCHASE: a direct-fulfillment product with no supplier
 			// must fail, never be attributed to a hardcoded supplier:
 			// that substitution created a shipment (and a shipping leg)
-			// for a supplier that does not own the product.
+			// for a supplier that does not own the product. The check
+			// keys on the RESOLVED routing, not the raw flag.
 			if strings.TrimSpace(p.SupplierID) == "" {
 				http.Error(w, fmt.Sprintf(`{"error":"Product %s has no supplier for direct fulfillment"}`, p.ID), http.StatusBadRequest)
 				return
@@ -446,6 +548,20 @@ func handleCreateOrder(
 		// res already carries the variant price). This replaces the
 		// Fix 5 rule that variant prices were a frontend-only
 		// display override.
+		// Gap 13: the origin snapshot persisted as this line's
+		// order_item_origins row. The label mirrors legOrigin
+		// (shipping_quote_handlers.go): a supplier leg is labelled
+		// with the product's warehouse name when one is recorded,
+		// else the direct-shipping label; a warehouse leg carries
+		// the warehouse name (central fallback when unnamed).
+		// WarehouseID / SupplierWarehouseID / LegIndex are resolved
+		// in batch after the loop.
+		originLabel := "انبار مرکزی"
+		if strings.TrimSpace(p.WarehouseName) != "" {
+			originLabel = p.WarehouseName
+		} else if itemRouting == "supplier_direct" {
+			originLabel = "ارسال مستقیم تأمین‌کننده"
+		}
 		item := domain.OrderItem{
 			ProductID:      p.ID,
 			ProductTitle:   p.Title,
@@ -455,6 +571,9 @@ func handleCreateOrder(
 			SellerMargin:   res.SellerMargin,
 			FinalUnitPrice: res.FinalPrice,
 			DiscountAmount: discounted.DiscountAmount,
+			Routing:        itemRouting,
+			OriginLabel:    originLabel,
+			SupplierID:     p.SupplierID,
 		}
 		// ISO-PURCHASE: resolve addonIds against product_addons
 		// (active + approved only) AND scoped to this (store, product),
@@ -561,7 +680,8 @@ func handleCreateOrder(
 		orderItems = append(orderItems, item)
 		quoteLine := shippingQuoteLine{
 			ProductID: p.ID, VariantID: itemReq.VariantID, Quantity: qty,
-			Fulfillment: p.FulfillmentMethod, SupplierID: p.SupplierID, Warehouse: p.WarehouseName,
+			Fulfillment: itemRouting, SupplierID: p.SupplierID, Warehouse: p.WarehouseName,
+			UnitPriceToman: p.OriginalPrice,
 		}
 		if p.WeightGrams != nil {
 			quoteLine.WeightG = *p.WeightGrams
@@ -577,6 +697,92 @@ func handleCreateOrder(
 		}
 		quoteLines = append(quoteLines, quoteLine)
 
+	}
+
+	// Gap 13: resolve the origin identities the origins rows carry,
+	// in batch. A supplier leg's supplier_warehouse_id is the
+	// product's recorded origin supplier warehouse (catalogRepo's
+	// product read does not select that column, so it is fetched
+	// here with the warehouses lookup); a warehouse leg's
+	// warehouse_id is the warehouses row whose name matches the
+	// product's warehouse_name (NULL when unmatched — the origin
+	// label still records the name). Lookup failures degrade to
+	// NULL identities rather than failing a priced order.
+	if len(orderItems) > 0 {
+		if db != nil {
+			productIDs := []string{}
+			seenProduct := map[string]bool{}
+			warehouseNames := []string{}
+			seenName := map[string]bool{}
+			for i := range orderItems {
+				if !seenProduct[orderItems[i].ProductID] {
+					seenProduct[orderItems[i].ProductID] = true
+					productIDs = append(productIDs, orderItems[i].ProductID)
+				}
+				if orderItems[i].Routing != "supplier_direct" {
+					if name := quoteLines[i].Warehouse; name != "" && !seenName[name] {
+						seenName[name] = true
+						warehouseNames = append(warehouseNames, name)
+					}
+				}
+			}
+			originSwhByProduct := map[string]string{}
+			if rows, qerr := db.QueryContext(ctx, `SELECT id, COALESCE(origin_supplier_warehouse_id, '') FROM products WHERE id = ANY($1::text[])`, pq.Array(productIDs)); qerr == nil {
+				for rows.Next() {
+					var pid, swh string
+					if err := rows.Scan(&pid, &swh); err == nil && swh != "" {
+						originSwhByProduct[pid] = swh
+					}
+				}
+				rows.Close()
+			}
+			warehouseIDByName := map[string]string{}
+			if len(warehouseNames) > 0 {
+				if rows, qerr := db.QueryContext(ctx, `SELECT id, name FROM warehouses WHERE name = ANY($1::text[])`, pq.Array(warehouseNames)); qerr == nil {
+					for rows.Next() {
+						var wid, wname string
+						if err := rows.Scan(&wid, &wname); err == nil {
+							warehouseIDByName[wname] = wid
+						}
+					}
+					rows.Close()
+				}
+			}
+			for i := range orderItems {
+				if orderItems[i].Routing == "supplier_direct" {
+					if swh, ok := originSwhByProduct[orderItems[i].ProductID]; ok {
+						v := swh
+						orderItems[i].SupplierWarehouseID = &v
+					}
+				} else if wid, ok := warehouseIDByName[quoteLines[i].Warehouse]; ok {
+					v := wid
+					orderItems[i].WarehouseID = &v
+				}
+			}
+		}
+		// leg_index: first-appearance index of the origin key over
+		// the quote-sorted lines — the same grouping and order
+		// computeShippingQuote prices, so an origin row's leg_index
+		// is the quote leg the line was priced into.
+		sortedIdx := make([]int, len(quoteLines))
+		for i := range sortedIdx {
+			sortedIdx[i] = i
+		}
+		sort.SliceStable(sortedIdx, func(a, b int) bool {
+			ka, _ := legOrigin(quoteLines[sortedIdx[a]])
+			kb, _ := legOrigin(quoteLines[sortedIdx[b]])
+			return ka < kb
+		})
+		legOf := map[string]int{}
+		for _, idx := range sortedIdx {
+			key, _ := legOrigin(quoteLines[idx])
+			li, ok := legOf[key]
+			if !ok {
+				li = len(legOf)
+				legOf[key] = li
+			}
+			orderItems[idx].LegIndex = li
+		}
 	}
 
 	// Referral commission (D33): respected only when the flag is on.
@@ -619,10 +825,20 @@ func handleCreateOrder(
 			return
 		}
 		sortQuoteLines(quoteLines)
-		quote := computeShippingQuote(quoteLines, rates, quoteDestinationKey(shippingQuoteDestination{
+		quoteDest := shippingQuoteDestination{
 			Province: req.CustomerInfo.Province, City: req.CustomerInfo.City,
 			Address: req.CustomerInfo.Address, PostalCode: req.CustomerInfo.PostalCode,
-		}))
+		}
+		quote := computeShippingQuote(quoteLines, rates, quoteDestinationKey(quoteDest))
+		// Tapin repricing (tapin_quote.go): the identical step the
+		// quote endpoint ran, over lines built from the same product
+		// reads — a Tapin-priced quote re-derives the same quoteId
+		// here; a Tapin failure fails the order with the upstream
+		// message instead of silently repricing by formula.
+		if terr := priceTapinQuoteLegs(ctx, db, &quote, quoteLines, quoteDest); terr != nil {
+			http.Error(w, tapinQuoteErrorBody(terr), http.StatusBadRequest)
+			return
+		}
 		if quote.QuoteID != req.ShippingQuoteID {
 			http.Error(w, `{"error":"shipping_quote_changed"}`, http.StatusBadRequest)
 			return
@@ -1047,11 +1263,16 @@ func handleOrderReturnQuote(w http.ResponseWriter, r *http.Request, ctx context.
 	for _, id := range itemIDs {
 		wanted[id] = true
 	}
-	var lines []shippingQuoteLine
+	// F3 (critic): the selection still validates the catalog rows,
+	// but the FARE no longer groups by the products' CURRENT
+	// fulfillment flag — it prices from the order's persisted
+	// order_item_origins, grouped exactly the way the receive-time
+	// settlement groups them (ComputeReturnQuoteLegs), so the quoted
+	// fare and the destination below describe the same legs and the
+	// quote equals the settlement fare for the same returned set.
+	quantities := map[string]int{}
+	var pricedItemIDs []string
 	for _, it := range order.Items {
-		if len(wanted) > 0 && !wanted[it.ID] {
-			continue
-		}
 		if len(wanted) > 0 && !wanted[it.ID] {
 			continue
 		}
@@ -1064,48 +1285,56 @@ func handleOrderReturnQuote(w http.ResponseWriter, r *http.Request, ctx context.
 			http.Error(w, `{"error":"Order or item not found"}`, http.StatusNotFound)
 			return
 		}
-		line := shippingQuoteLine{
-			ProductID: it.ProductID, Quantity: it.Quantity,
-			Fulfillment: p.FulfillmentMethod, SupplierID: p.SupplierID, Warehouse: p.WarehouseName,
-		}
-		if it.VariantID != nil {
-			line.VariantID = *it.VariantID
-		}
-		if p.WeightGrams != nil {
-			line.WeightG = *p.WeightGrams
-		}
-		if p.LengthMM != nil {
-			line.LengthMM = *p.LengthMM
-		}
-		if p.WidthMM != nil {
-			line.WidthMM = *p.WidthMM
-		}
-		if p.HeightMM != nil {
-			line.HeightMM = *p.HeightMM
-		}
-		lines = append(lines, line)
+		quantities[it.ID] = it.Quantity
+		pricedItemIDs = append(pricedItemIDs, it.ID)
 	}
-	if len(lines) == 0 {
+	if len(pricedItemIDs) == 0 {
 		http.Error(w, `{"error":"Order or item not found"}`, http.StatusNotFound)
 		return
 	}
+	// Destination (owner rule, Oct 28 2026): derived for the SAME
+	// selected item set the fare prices, so the customer sees where
+	// the parcel goes before filing. Derivation is display-only here;
+	// creation re-derives authoritatively, so a failure omits the
+	// field instead of failing the fare quote.
+	destination, derr := orderRepo.DeriveReturnDestination(ctx, order.ID, pricedItemIDs)
 	rates, rerr := loadShippingRates(ctx, db)
 	if rerr != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		payload := map[string]interface{}{
 			"shippingQuoteUnavailable": true,
 			"groups":                   []shippingQuoteLeg{},
 			"totalFareToman":           0,
-		})
+		}
+		if derr == nil {
+			payload["destination"] = destination
+		}
+		json.NewEncoder(w).Encode(payload)
 		return
 	}
-	sortQuoteLines(lines)
-	quote := computeShippingQuote(lines, rates, "")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"groups":         quote.Legs,
-		"totalFareToman": quote.TotalShipping,
+	quoteLegs, quoteTotal, qerr := orderRepo.ComputeReturnQuoteLegs(ctx, order.ID, quantities, rates)
+	if qerr != nil {
+		http.Error(w, qerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	groups := make([]shippingQuoteLeg, 0, len(quoteLegs))
+	for i, leg := range quoteLegs {
+		groups = append(groups, shippingQuoteLeg{
+			LegIndex: i, Index: i, OriginID: leg.Key, OriginLabel: leg.Label,
+			Fare: leg.Fare, WeightGrams: leg.WeightGrams,
+			BoxLabel: fmt.Sprintf("بسته %d", i+1),
+			Source:   "weight_formula", Estimated: false,
+		})
+	}
+	payload := map[string]interface{}{
+		"groups":         groups,
+		"totalFareToman": quoteTotal,
 		"orderId":        order.ID,
 		"orderNumber":    order.OrderNumber,
-	})
+	}
+	if derr == nil {
+		payload["destination"] = destination
+	}
+	json.NewEncoder(w).Encode(payload)
 }
 
 func handleOrderDispute(w http.ResponseWriter, r *http.Request, ctx context.Context, idOrNumber string, finRepo *repository.FinanceRepository, orderRepo *repository.OrderRepository) {
@@ -1490,20 +1719,32 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		for _, it := range noteReq.Items {
 			qc = append(qc, repository.CustomerReturnItemQC{ReturnItemID: it.ReturnItemID, QCStatus: it.QCStatus})
 		}
-		if err := orderRepo.ReceiveCustomerReturn(ctx, id, qc); err != nil {
+		settlement, err := orderRepo.ReceiveCustomerReturn(ctx, id, qc, claims.UserID)
+		if err != nil {
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return or item not found, or return not approved"}`, http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, repository.ErrReturnCODRefused) {
+				http.Error(w, `{"error":"`+repository.ErrReturnCODRefused.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		ret, err := orderRepo.GetCustomerReturn(ctx, id)
+		if err != nil || ret == nil {
+			http.Error(w, `{"error":"Return not found"}`, http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"return": ret, "returnShipping": settlement})
+		return
 	case "refund":
 		if !claims.HasCapability("admin") && !claims.HasCapability("finance_specialist") {
 			http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 			return
 		}
-		amount, err := orderRepo.RefundCustomerReturn(ctx, id)
+		amount, settlement, err := orderRepo.RefundCustomerReturn(ctx, id, claims.UserID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return not found"}`, http.StatusNotFound)
@@ -1512,7 +1753,16 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "returnId": id, "status": "refunded", "refundAmount": amount})
+		resp := map[string]interface{}{"success": true, "returnId": id, "status": "refunded", "refundAmount": amount}
+		if settlement != nil {
+			resp["returnShippingAmount"] = settlement.ReturnShippingAmount
+			resp["returnShippingBearer"] = settlement.ReturnShippingBearer
+			resp["returnShippingSupplierBorne"] = settlement.SupplierBorneTotal
+			resp["returnShippingCustomerBorne"] = settlement.CustomerBorneTotal
+			resp["returnShippingCustomerDebited"] = settlement.CustomerDebited
+			resp["returnShippingWrittenOff"] = settlement.CustomerWrittenOff
+		}
+		json.NewEncoder(w).Encode(resp)
 		return
 	case "ship":
 		// FIX 14: live's ship action -- the customer ships an approved
@@ -1609,7 +1859,14 @@ func handleWarehousesReturns(w http.ResponseWriter, r *http.Request, ctx context
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	returns, err := orderRepo.ListCustomerReturnsForWarehouse(ctx)
+	// Optional destination filter (?warehouseId= / ?warehouse_id=):
+	// a central warehouse id or a supplier warehouse id narrows the
+	// queue to that destination's returns only.
+	destinationID := r.URL.Query().Get("warehouseId")
+	if destinationID == "" {
+		destinationID = r.URL.Query().Get("warehouse_id")
+	}
+	returns, err := orderRepo.ListCustomerReturnsForWarehouse(ctx, destinationID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

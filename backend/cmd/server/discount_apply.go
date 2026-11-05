@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -115,7 +116,23 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 		}
 		p, err := catalogRepo.GetProductByID(ctx, itemReq.ProductID)
 		if err != nil || p == nil {
-			continue
+			http.Error(w, fmt.Sprintf(`{"error":"Product %s not found"}`, itemReq.ProductID), http.StatusBadRequest)
+			return
+		}
+		// Same assortment gate as order creation (handleCreateOrder):
+		// a dropshipper quote must never price a product the store
+		// does not publish, so the quote stays a faithful predictor
+		// of what checkout will accept.
+		if store.OwnerType == "dropshipper" {
+			active, activeErr := storeRepo.StoreProductActive(ctx, store.ID, p.ID)
+			if activeErr != nil {
+				http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
+				return
+			}
+			if !active {
+				http.Error(w, fmt.Sprintf(`{"error":"Product %s is not published by this store"}`, p.ID), http.StatusBadRequest)
+				return
+			}
 		}
 		var res pricing.ReferenceResolution
 		if variantID := strings.TrimSpace(itemReq.VariantID); variantID != "" {

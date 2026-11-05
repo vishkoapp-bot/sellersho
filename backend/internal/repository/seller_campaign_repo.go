@@ -15,6 +15,7 @@ import (
 var ErrCampaignForbidden = errors.New("campaign is not owned by the authenticated seller")
 var ErrCampaignInput = errors.New("invalid seller campaign input")
 var ErrCampaignInactive = errors.New("campaign is not active")
+var ErrCampaignWidgetManaged = errors.New("campaign status is managed from the widgets section")
 
 type SellerCampaign struct {
 	ID            string             `json:"id"`
@@ -187,6 +188,24 @@ func (r *StoreRepository) SetSellerCampaignStatus(ctx context.Context, ownerID, 
 	store, err := r.OwnedStore(ctx, ownerID, slug)
 	if err != nil {
 		return err
+	}
+	// F2: a 'widget' campaign row is only a MIRROR of
+	// stores.seller_deals_widget_config (SaveOwnedWidgetConfig
+	// upserts it on every widget save); pricing
+	// (loadDealsWidgetConfig) and the storefront sections read
+	// the config, never this row's status. Changing the status
+	// here would hide the public campaign listing while prices
+	// stay discounted, so refuse: the deal is managed from the
+	// deals-widget section itself.
+	var campaignType string
+	if err := r.db.QueryRowContext(ctx, `SELECT campaign_type FROM seller_campaigns WHERE id=$1 AND store_id=$2`, campaignID, store.ID).Scan(&campaignType); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrCampaignForbidden
+		}
+		return err
+	}
+	if campaignType == "widget" {
+		return ErrCampaignWidgetManaged
 	}
 	res, err := r.db.ExecContext(ctx, `UPDATE seller_campaigns SET status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 AND status<>'archived'`, status, campaignID, store.ID)
 	if err != nil {

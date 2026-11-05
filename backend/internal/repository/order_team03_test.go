@@ -49,10 +49,12 @@ func openTeam03DB(t *testing.T) *sql.DB {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_items, orders, products, platform_settings CASCADE`,
-		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT)`,
+		`DROP TABLE IF EXISTS return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, products, supplier_warehouses, warehouses, platform_settings, customer_return_shipping_charges CASCADE`,
+		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
+		`CREATE SEQUENCE customer_return_code_seq`,
+		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days) VALUES (1, 7)`,
-		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0)`,
+		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
 			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
@@ -90,8 +92,21 @@ func openTeam03DB(t *testing.T) *sql.DB {
 			status VARCHAR(20) NOT NULL DEFAULT 'requested', reason TEXT NOT NULL DEFAULT '',
 			admin_note TEXT NOT NULL DEFAULT '', warehouse_id TEXT, prepaid BOOLEAN NOT NULL DEFAULT FALSE,
 			tracking_number TEXT, shipped_at TIMESTAMPTZ, return_code TEXT,
+			cod_refused BOOLEAN NOT NULL DEFAULT FALSE,
 			return_shipping_amount BIGINT, return_shipping_bearer VARCHAR(20),
+			return_shipping_settled_at TIMESTAMPTZ,
+			destination_supplier_warehouse_id TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
+		`CREATE TABLE supplier_warehouses (id TEXT PRIMARY KEY, supplier_id TEXT, name TEXT, province_name TEXT, city_name TEXT, address TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id TEXT, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT)`,
+		`CREATE TABLE customer_return_shipping_charges (
+			id TEXT PRIMARY KEY, return_id UUID NOT NULL, return_item_id UUID NOT NULL,
+			supplier_id VARCHAR(50) NOT NULL, bearer VARCHAR(20) NOT NULL,
+			amount BIGINT NOT NULL, ledger_entry_id VARCHAR(80),
+			idempotency_key VARCHAR(150) NOT NULL UNIQUE, reason TEXT NOT NULL,
+			actor_user_id VARCHAR(80) NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE return_items (
 			id UUID PRIMARY KEY, return_id UUID NOT NULL, order_item_id VARCHAR(50) NOT NULL,
@@ -277,10 +292,16 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	if err := repo.ApproveCustomerReturn(ctx, ret.ID, "ok"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if err := repo.ReceiveCustomerReturn(ctx, ret.ID, []CustomerReturnItemQC{{ReturnItemID: ret.Items[0].ID, QCStatus: "ok"}}); err != nil {
+	// The customer ships the parcel back prepaid (FIX 14 ship action);
+	// a post-paid parcel would be refused at receive (202610250202).
+	prepaid := true
+	if err := repo.ShipCustomerReturn(ctx, ret.ID, "TRK-RET-1", &prepaid); err != nil {
+		t.Fatalf("ship return: %v", err)
+	}
+	if _, err := repo.ReceiveCustomerReturn(ctx, ret.ID, []CustomerReturnItemQC{{ReturnItemID: ret.Items[0].ID, QCStatus: "ok"}}, "warehouse-team03"); err != nil {
 		t.Fatalf("receive QC: %v", err)
 	}
-	amount, err := repo.RefundCustomerReturn(ctx, ret.ID)
+	amount, _, err := repo.RefundCustomerReturn(ctx, ret.ID, "finance-team03")
 	if err != nil {
 		t.Fatalf("refund: %v", err)
 	}

@@ -37,8 +37,13 @@ func team04TestDB(t *testing.T) *sql.DB {
 func team04Seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ddl := []string{
-		`DROP TABLE IF EXISTS dk_category_attribute_values, dk_category_attributes, dk_attribute_values, dk_attributes, dk_category_brands, dk_category_colors, search_queries, store_products, product_images, product_variants, product_niches, pending_approvals, products, categories CASCADE`,
+		`DROP TABLE IF EXISTS dk_category_attribute_values, dk_category_attributes, dk_attribute_values, dk_attributes, dk_category_brands, dk_category_colors, search_queries, store_products, product_images, product_variants, product_niches, pending_approvals, products, categories, suppliers CASCADE`,
 		`CREATE TABLE categories (id VARCHAR(50) PRIMARY KEY, title TEXT NOT NULL, slug VARCHAR(100) NOT NULL, icon_name TEXT, gradient TEXT, image_url TEXT, parent_id VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
+		// suppliers carries approval_status (migration 202610190003):
+		// the gap-12 catalog predicate reads it whenever the table
+		// exists. No rows are seeded — the seeded products' supplier
+		// has no row, which the predicate deliberately fails open on.
+		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, approval_status VARCHAR(20) NOT NULL DEFAULT 'approved')`,
 		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE product_niches (product_id VARCHAR(50) NOT NULL, niche_id VARCHAR(50) NOT NULL, PRIMARY KEY (product_id, niche_id))`,
 		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'x', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,

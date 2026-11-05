@@ -45,6 +45,47 @@ type ProductFilter struct {
 	StoreProductIDs []string
 }
 
+// notSuspendedSupplierClause hides every product whose supplier is in
+// the 'suspended' approval state (gap 12). It is a NOT EXISTS, never a
+// join, so the GROUP BY p.id row multiplicity is unchanged, and it
+// fails OPEN for legacy products whose supplier_id has no suppliers
+// row (no row -> no 'suspended' match -> product stays visible). The
+// price-bounds surface reads through GetProducts, so it inherits the
+// same gate.
+const notSuspendedSupplierClause = "NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id AND s.approval_status = 'suspended')"
+
+// suppliersTableExists probes for the suppliers table the way the
+// balance code probes its optional tables (to_regclass): production
+// always has it, but a partial fixture database must degrade to the
+// pre-suspension behaviour instead of erroring every catalog read.
+func (r *CatalogRepository) suppliersTableExists(ctx context.Context) bool {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx, `SELECT to_regclass('public.suppliers') IS NOT NULL`).Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
+// IsSupplierSuspended reports whether the given supplier is currently
+// suspended. Used by the PUBLIC product-detail handlers to 404 a
+// suspended supplier's product; GetProductByID itself stays ungated
+// because order history, warehouse, admin and supplier reads use it.
+func (r *CatalogRepository) IsSupplierSuspended(ctx context.Context, supplierID string) (bool, error) {
+	if supplierID == "" {
+		return false, nil
+	}
+	if !r.suppliersTableExists(ctx) {
+		return false, nil
+	}
+	var suspended bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM suppliers WHERE id = $1 AND approval_status = 'suspended')`, supplierID).Scan(&suspended)
+	if err != nil {
+		return false, err
+	}
+	return suspended, nil
+}
+
 // GetProducts returns active reference products matching the filter with their assigned niche IDs.
 // With filter.StoreScoped set it instead returns the named store's own
 // assortment (see ProductFilter), with no other change to the query shape.
@@ -84,6 +125,15 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 		argIdx++
 	} else {
 		whereClauses = append(whereClauses, "p.is_active = TRUE")
+	}
+
+	// Gap 12: a suspended supplier's products stop selling everywhere
+	// the catalog lists them — scoped storefront assortments included
+	// (assortment membership never resurrects a suspended supplier).
+	// The clause is appended only when the suppliers table exists
+	// (always in production; partial fixture DBs keep the old shape).
+	if r.suppliersTableExists(ctx) {
+		whereClauses = append(whereClauses, notSuspendedSupplierClause)
 	}
 
 	// D41 brand filter: EXACT match, never partial.
@@ -206,9 +256,15 @@ func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string)
 // child "گوشی موبایل" 2); every other top-level count matched either
 // way, so the direct count is the live definition.
 func (r *CatalogRepository) GetCategoryProductCounts(ctx context.Context) (map[string]int, error) {
+	// Gap 12 predicate, same to_regclass guard as GetProducts.
+	suspendedClause := ""
+	if r.suppliersTableExists(ctx) {
+		suspendedClause = `
+			AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id AND s.approval_status = 'suspended')`
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT c.id, COUNT(p.id) FROM categories c
-		LEFT JOIN products p ON p.category_slug = c.slug AND p.is_active = TRUE
+		LEFT JOIN products p ON p.category_slug = c.slug AND p.is_active = TRUE`+suspendedClause+`
 		GROUP BY c.id
 	`)
 	if err != nil {

@@ -48,6 +48,7 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 			id BIGSERIAL PRIMARY KEY,
 			status TEXT NOT NULL,
 			shipped_at TIMESTAMPTZ,
+			confirmed_at TIMESTAMPTZ,
 			profit_released BOOLEAN NOT NULL DEFAULT FALSE,
 			profit_released_at TIMESTAMPTZ,
 			referral_commission_released BOOLEAN NOT NULL DEFAULT FALSE,

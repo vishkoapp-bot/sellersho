@@ -704,6 +704,14 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 		http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
 		return
 	}
+	// Gap 12: the PUBLIC detail hides a suspended supplier's product
+	// exactly like a missing one (both the id/slug and spn- paths land
+	// here). GetProductByID itself stays ungated — order history,
+	// warehouse, admin and supplier reads still resolve the product.
+	if suspended, serr := catalogRepo.IsSupplierSuspended(ctx, p.SupplierID); serr == nil && suspended {
+		http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
+		return
+	}
 
 	settings, _ := loadPricingSettings(ctx, pricingRepo)
 	storeSlug := r.URL.Query().Get("storeSlug")

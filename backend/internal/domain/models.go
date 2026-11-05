@@ -13,6 +13,7 @@ type User struct {
 	Role      string    `json:"role" db:"role"`
 	IsActive  bool      `json:"isActive" db:"is_active"`
 	Username  string    `json:"username,omitempty" db:"username"`
+	Email     string    `json:"email,omitempty" db:"email"`
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }
@@ -68,7 +69,13 @@ type Supplier struct {
 	// serialized in any API response; no handler in this tree selects
 	// or returns it. Tapin crypto details are unverified (U63).
 	TapinToken string    `json:"-" db:"tapin_token"`
-	CreatedAt  time.Time `json:"createdAt" db:"created_at"`
+	// Gap 12: suspension bookkeeping (migration 202611050007). Served
+	// only on the admin records surface; nil unless the supplier is or
+	// was suspended (reactivation clears all three).
+	SuspendedAt      *time.Time `json:"suspendedAt,omitempty" db:"suspended_at"`
+	SuspendedBy      *string    `json:"suspendedBy,omitempty" db:"suspended_by"`
+	SuspensionReason *string    `json:"suspensionReason,omitempty" db:"suspension_reason"`
+	CreatedAt        time.Time  `json:"createdAt" db:"created_at"`
 }
 
 type SupplierMember struct {
@@ -119,6 +126,8 @@ type Store struct {
 	SelectedNicheIDs          []string           `json:"selectedNicheIds"`
 	ActiveCategories          []string           `json:"activeCategories"`
 	BuilderConfig             json.RawMessage    `json:"builderConfig,omitempty"`
+	CentralDealsFilter        string             `json:"centralDealsFilter,omitempty"`
+	CentralDealsProductIDs    []string           `json:"centralDealsProductIds,omitempty"`
 	Status                    string             `json:"status"`
 	PanelConfig               json.RawMessage    `json:"-"`
 	SellerDealsWidgetConfig   json.RawMessage    `json:"sellerDealsWidgetConfig,omitempty"`
@@ -279,6 +288,23 @@ type OrderItem struct {
 	VariantID   *string `json:"variantId,omitempty" db:"variant_id"`
 	VariantName *string `json:"variantName,omitempty" db:"variant_name"`
 	VariantSPNC *string `json:"variantSpnc,omitempty" db:"variant_spnc"`
+	// Gap 13: resolved-routing snapshot consumed only by
+	// CreateOrderWithShipments, which persists one
+	// order_item_origins row per line from these fields inside
+	// the order transaction. Internal transport only: Routing is
+	// routing.ResolveItemRouting's verdict for this line;
+	// OriginLabel mirrors shippingQuoteLine legOrigin's label;
+	// WarehouseID / SupplierWarehouseID are the origin's
+	// warehouse identities (nil = none recorded); LegIndex is
+	// the first-appearance index of the line's origin key
+	// (supplier:<id> / warehouse), same grouping as
+	// computeShippingQuote.
+	Routing             string  `json:"-"`
+	OriginLabel         string  `json:"-"`
+	WarehouseID         *string `json:"-"`
+	SupplierWarehouseID *string `json:"-"`
+	SupplierID          string  `json:"-"`
+	LegIndex            int     `json:"-"`
 }
 
 // Order represents customer purchase contract

@@ -246,7 +246,7 @@ func main() {
 		jwtService,
 		cfg.NetworkVolumeIncentiveEnabled,
 		capabilityRepo,
-	)
+	).WithPricingRepository(pricingRepo).WithTapinRepository(repository.NewTapinRepository(db.DB))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/admin/ippanel/settings", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelSettings(w, r, db.DB) }))
@@ -317,7 +317,7 @@ func main() {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		handlePasswordLogin(w, r, r.Context(), userRepo, jwtService)
+		handlePasswordLogin(w, r, r.Context(), userRepo, jwtService, supplierRepo)
 	})
 
 	mux.HandleFunc("/api/v1/auth/supplier/register", func(w http.ResponseWriter, r *http.Request) {
@@ -749,7 +749,7 @@ func main() {
 
 	ordersHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			handleCreateOrder(w, r, r.Context(), orderRepo, catalogRepo, storeRepo, shipmentRepo, pricingRepo, db.DB)
+			handleCreateOrder(w, r, r.Context(), orderRepo, catalogRepo, storeRepo, shipmentRepo, pricingRepo, supplierRepo, db.DB)
 			return
 		}
 		if r.Method == http.MethodGet {
@@ -764,7 +764,7 @@ func main() {
 	// warehouse carrier tariff (/warehouse/carriers/quote) is a
 	// different, warehouse-role route and is kept as-is.
 	mux.HandleFunc("/api/v1/shipping/quote", RequireRoles(jwtService, "customer", "seller", "admin")(func(w http.ResponseWriter, r *http.Request) {
-		handleShippingQuote(w, r, r.Context(), catalogRepo, db.DB)
+		handleShippingQuote(w, r, r.Context(), catalogRepo, supplierRepo, db.DB)
 	}))
 
 	// Order Tracking by Order ID (GET /api/v1/orders/:orderId/tracking)
@@ -1230,7 +1230,7 @@ func main() {
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/approvals/")
 		if strings.HasSuffix(subPath, "/review") && r.Method == http.MethodPost {
 			id := strings.TrimSuffix(subPath, "/review")
-			handleReviewApproval(w, r, ctx, id, adminRepo)
+			handleReviewApproval(w, r, ctx, id, adminRepo, supplierRepo)
 			return
 		}
 		handleGetApprovals(w, r, ctx, adminRepo)
@@ -1309,6 +1309,21 @@ func main() {
 		handleAdminPricingSettings(w, r, pricingRepo)
 	}))
 
+	// Gap 11: price-increase governance — admin review queue, per-request
+	// review, and per-product exception grants (migrations 202610310003 +
+	// 202610310006).
+	mux.HandleFunc("/api/v1/admin/price-increases", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+		supplierHandlers.HandleAdminPriceIncreases(w, r)
+	}))
+
+	mux.HandleFunc("/api/v1/admin/price-increases/{id}/review", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+		supplierHandlers.HandleAdminReviewPriceIncrease(w, r, r.PathValue("id"))
+	}))
+
+	mux.HandleFunc("/api/v1/admin/products/{productId}/price-exception", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+		supplierHandlers.HandleAdminProductPriceException(w, r, r.PathValue("productId"))
+	}))
+
 	mux.HandleFunc("/api/v1/admin/settings/margins", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleAdminMargins(w, r, pricingRepo)
 	}))
@@ -1379,13 +1394,10 @@ func main() {
 		}
 	}))
 
-	mux.HandleFunc("/api/v1/supplier/profile/shipping-settings", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut && r.Method != http.MethodPost {
-			writeMethodNotAllowed(w)
-			return
-		}
-		supplierHandlers.HandleUpdateShippingSettings(w, r)
-	}))
+	// Gap 13: the legacy PUT /supplier/profile/shipping-settings
+	// route is REMOVED with its handler — supports_direct_shipping
+	// is no longer writable; the DTO field is derived from the
+	// supplier_shipping_methods toggles.
 
 	// Supplier Direct Dropshipping Routes
 	mux.HandleFunc("/api/v1/supplier/shipments/pending", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
@@ -1398,6 +1410,12 @@ func main() {
 
 	mux.HandleFunc("/api/v1/supplier/shipments/", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/supplier/shipments/")
+		if strings.HasSuffix(sub, "/tapin-label") && r.Method == http.MethodGet {
+			shipmentID := strings.TrimSuffix(sub, "/tapin-label")
+			shipmentID = strings.Trim(shipmentID, "/")
+			handleSupplierTapinLabel(w, r, r.Context(), shipmentID, supplierRepo, repository.NewTapinRepository(db.DB))
+			return
+		}
 		if strings.HasSuffix(sub, "/ship") && r.Method == http.MethodPost {
 			shipmentID := strings.TrimSuffix(sub, "/ship")
 			shipmentID = strings.Trim(shipmentID, "/")
@@ -1434,13 +1452,27 @@ func main() {
 		handleGetSupplierOrders(w, r, r.Context(), shipmentRepo, supplierRepo, orderRepo)
 	}))
 
+	mux.HandleFunc("/api/v1/supplier/warehouse-orders", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w)
+			return
+		}
+		handleGetSupplierWarehouseOrders(w, r, r.Context(), shipmentRepo, supplierRepo)
+	}))
+
 	mux.HandleFunc("/api/v1/supplier/orders/", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/supplier/orders/")
 		if (strings.HasSuffix(sub, "/shipping") || strings.HasSuffix(sub, "/ship")) && r.Method == http.MethodPost {
 			orderID := strings.TrimSuffix(sub, "/shipping")
 			orderID = strings.TrimSuffix(orderID, "/ship")
 			orderID = strings.Trim(orderID, "/")
-			handleSupplierSubmitShipping(w, r, r.Context(), orderID, shipmentRepo, orderRepo)
+			handleSupplierSubmitShipping(w, r, r.Context(), orderID, shipmentRepo, orderRepo, supplierRepo, repository.NewTapinRepository(db.DB))
+			return
+		}
+		if strings.HasSuffix(sub, "/accept") && r.Method == http.MethodPost {
+			orderID := strings.TrimSuffix(sub, "/accept")
+			orderID = strings.Trim(orderID, "/")
+			handleSupplierAcceptOrder(w, r, r.Context(), orderID, shipmentRepo)
 			return
 		}
 		if strings.HasSuffix(sub, "/addons") && r.Method == http.MethodGet {
@@ -1526,6 +1558,18 @@ func main() {
 		if strings.HasSuffix(sub, "/stock") && r.Method == http.MethodPut {
 			supplierHandlers.HandleUpdateStock(w, r)
 			return
+		}
+		// Gap 10: variant pricing must be matched BEFORE the product
+		// pricing suffix below — {id}/variants/{vid}/pricing also ends in
+		// "/pricing" and HandleUpdatePricing would otherwise swallow it,
+		// treating the variant id as a product id.
+		if strings.HasSuffix(sub, "/pricing") && r.Method == http.MethodPut {
+			rest := strings.TrimSuffix(sub, "/pricing")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 3 && parts[1] == "variants" {
+				supplierHandlers.HandleUpdateVariantPricing(w, r, parts[0], parts[2])
+				return
+			}
 		}
 		if strings.HasSuffix(sub, "/pricing") && r.Method == http.MethodPut {
 			supplierHandlers.HandleUpdatePricing(w, r)
@@ -1956,6 +2000,14 @@ func main() {
 			supplierHandlers.HandleAdminSupplierReject(w, r, strings.TrimSuffix(sub, "/reject"))
 			return
 		}
+		if strings.HasSuffix(sub, "/suspend") && r.Method == http.MethodPost {
+			supplierHandlers.HandleAdminSupplierSuspend(w, r, strings.TrimSuffix(sub, "/suspend"))
+			return
+		}
+		if strings.HasSuffix(sub, "/reactivate") && r.Method == http.MethodPost {
+			supplierHandlers.HandleAdminSupplierReactivate(w, r, strings.TrimSuffix(sub, "/reactivate"))
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	mux.HandleFunc("/api/v1/admin/store-intel/suppliers", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
@@ -1989,7 +2041,7 @@ func main() {
 	mux.HandleFunc("/api/v1/geo/provinces", AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) { handleT01GeoProvinces(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/geo/cities", AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) { handleT01GeoCities(w, r, db.DB) }))
 	// Customer (D06, D07) and logout (D08).
-	mux.HandleFunc("/api/v1/wishlist", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01Wishlist(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/wishlist", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01Wishlist(w, r, db.DB, storeRepo) }))
 	mux.HandleFunc("/api/v1/addresses", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01Addresses(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/addresses/", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/addresses/")
@@ -2079,7 +2131,10 @@ func main() {
 	mux.HandleFunc("/api/v1/admin/settings/packaging-tariffs", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsPackagingTariffs(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/settings/tapin-tariff", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsTapinTariff(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/settings/tapin-platform", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsTapinPlatform(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/settings/tapin-boxes", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsTapinBoxes(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/settings/supplier-contract", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsSupplierContract(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/settings/storage-fees", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSettingsStorageFees(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/storage-fees/run", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleAdminStorageFeeRun(w, r, supplierRepo) }))
 	// Admin operations (D15). Supplier admin routes stay with Team 06.
 	mux.HandleFunc("/api/v1/admin/banners", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminBanners(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/banners/sync-sections", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminBannersSyncSections(w, r, db.DB) }))

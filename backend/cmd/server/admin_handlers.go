@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -56,7 +58,7 @@ func handleCreateApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 	json.NewEncoder(w).Encode(req)
 }
 
-func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Context, id string, adminRepo *repository.AdminRepository) {
+func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Context, id string, adminRepo *repository.AdminRepository, supplierRepo *repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	if adminRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
@@ -71,6 +73,64 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
 		return
+	}
+
+	// GAP 20: a proposed_product review must run the SAME pipeline as
+	// the dedicated /admin/products/approve route — one code path, no
+	// fork. Approving here creates the product via ApproveProposal
+	// (whose atomic pending guard keeps a race between the two routes
+	// at exactly one product; the loser gets the guard's conflict),
+	// and rejecting runs the same RejectProposal. Every other entity
+	// type (warranty_property, ...) keeps the generic review below,
+	// byte for byte.
+	entityType, err := adminRepo.GetPendingApprovalEntityType(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, `{"error":"Approval not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if entityType == "proposed_product" && supplierRepo != nil {
+		switch req.Status {
+		case "approved":
+			productID, err := supplierRepo.ApproveProposal(ctx, id, "")
+			if err != nil {
+				if errors.Is(err, repository.ErrProposalNotPending) {
+					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
+					return
+				}
+				if errors.Is(err, sql.ErrNoRows) {
+					http.Error(w, `{"error":"Approval not found"}`, http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":   true,
+				"id":        id,
+				"status":    "approved",
+				"productId": productID,
+			})
+			return
+		case "rejected":
+			if err := supplierRepo.RejectProposal(ctx, id, req.RejectionReason); err != nil {
+				if errors.Is(err, repository.ErrProposalNotPending) {
+					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"id":      id,
+				"status":  "rejected",
+			})
+			return
+		}
 	}
 
 	if err := adminRepo.ReviewPendingApproval(ctx, id, req.Status, req.RejectionReason); err != nil {

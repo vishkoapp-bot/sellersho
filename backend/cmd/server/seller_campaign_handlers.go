@@ -22,6 +22,11 @@ func campaignError(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"Invalid campaign"}`, http.StatusBadRequest)
 	case errors.Is(err, repository.ErrCampaignInactive):
 		http.Error(w, `{"error":"Campaign is inactive"}`, http.StatusConflict)
+	case errors.Is(err, repository.ErrCampaignWidgetManaged):
+		// F2: the widget campaign row mirrors the deals-widget
+		// config; its status is not the switch. Tell the seller
+		// where the deal is actually managed, in Persian.
+		http.Error(w, `{"error":"کمپین ویجت پیشنهاد شگفت‌انگیز از بخش ویجت‌ها مدیریت می‌شود؛ برای توقف یا فعال‌سازی پیشنهاد از همان بخش اقدام کنید."}`, http.StatusBadRequest)
 	default:
 		writeInternalError(w, err)
 	}

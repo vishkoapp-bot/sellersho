@@ -50,15 +50,18 @@ func (r *StoreRepository) loadPanelConfig(ctx context.Context, store *domain.Sto
 		if pgErr, ok := err.(*pq.Error); ok && (pgErr.Code == "42703" || pgErr.Code == "42P01") {
 			store.SelectedNicheIDs = []string{}
 			store.ActiveProductIDs = []string{}
+			store.CentralDealsProductIDs = []string{}
 			store.Status = "active"
 			return nil
 		}
 		return err
 	}
 	var config struct {
-		ShortDescription string          `json:"shortDescription"`
-		SelectedNicheIDs []string        `json:"selectedNicheIds"`
-		BuilderConfig    json.RawMessage `json:"builderConfig"`
+		ShortDescription       string          `json:"shortDescription"`
+		SelectedNicheIDs       []string        `json:"selectedNicheIds"`
+		BuilderConfig          json.RawMessage `json:"builderConfig"`
+		CentralDealsFilter     string          `json:"centralDealsFilter"`
+		CentralDealsProductIDs []string        `json:"centralDealsProductIds"`
 	}
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return err
@@ -67,6 +70,11 @@ func (r *StoreRepository) loadPanelConfig(ctx context.Context, store *domain.Sto
 	store.ShortDescription = config.ShortDescription
 	store.SelectedNicheIDs = config.SelectedNicheIDs
 	store.BuilderConfig = config.BuilderConfig
+	store.CentralDealsFilter = config.CentralDealsFilter
+	store.CentralDealsProductIDs = config.CentralDealsProductIDs
+	if store.CentralDealsProductIDs == nil {
+		store.CentralDealsProductIDs = []string{}
+	}
 	if store.Status == "" {
 		store.Status = "active"
 	}

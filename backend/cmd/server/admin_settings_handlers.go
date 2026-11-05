@@ -387,3 +387,28 @@ func handleT01AdminSettingsSupplierContract(w http.ResponseWriter, r *http.Reque
 		writeMethodNotAllowed(w)
 	}
 }
+
+// handleT01AdminSettingsStorageFees serves GET/PUT
+// /api/v1/admin/settings/storage-fees (gap 7). The flag defaults OFF
+// (migration 202611050005); activation is a separate owner decision.
+// Tariffs are integer Tomans; the assessment engine reads these same
+// columns (repository GetStorageFeeSettings).
+func t01StorageFeeSettingsFields() []t01SettingField {
+	return []t01SettingField{
+		{JSONKey: "storageFeeEnabled", Column: "storage_fee_enabled", Kind: "bool"},
+		{JSONKey: "storageFeeFreeDays", Column: "storage_fee_free_days", Kind: "int", Min: 0, HasMin: true, Max: 365, HasMax: true},
+		{JSONKey: "storageFeePerKgDay", Column: "storage_fee_per_kg_day", Kind: "int", Min: 0, HasMin: true},
+		{JSONKey: "storageFeePerM3Day", Column: "storage_fee_per_m3_day", Kind: "int", Min: 0, HasMin: true},
+	}
+}
+
+func handleT01AdminSettingsStorageFees(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	switch r.Method {
+	case http.MethodGet:
+		t01SettingsGet(w, r, db, t01StorageFeeSettingsFields())
+	case http.MethodPut, http.MethodPatch:
+		t01SettingsPut(w, r, db, t01StorageFeeSettingsFields())
+	default:
+		writeMethodNotAllowed(w)
+	}
+}

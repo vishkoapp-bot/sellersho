@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
 )
 
@@ -30,9 +31,18 @@ import (
 
 // handleT01Wishlist serves /api/v1/wishlist and is registered for both
 // /wishlist and /customer/wishlist-style callers through main.go.
-// Table: customer_wishlists (user_id, product_id), migration
-// 202610310002. TODO: the exact live response envelope is unverified.
-func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+// Table: customer_wishlists (user_id, store_id, product_id) — created
+// by migration 202610310002, given its per-store dimension by
+// 202611050002. Wishlists are PER STORE (owner doctrine: every
+// dropshipper store is a separate site with its own wishlist), so
+// every operation is scoped by the store the caller names: the
+// storeSlug query param on GET, the storeSlug JSON field on
+// POST/DELETE. A missing slug means the central store
+// ('store-central'), preserving the pre-split behaviour for legacy
+// callers; an unknown slug fails closed with 404, mirroring order
+// creation — a heart must never land in the wrong store's list.
+// TODO: the exact live response envelope is unverified.
+func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB, storeRepo *repository.StoreRepository) {
 	if t01DBNil(w, db) {
 		return
 	}
@@ -44,12 +54,16 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	ctx := r.Context()
 	switch r.Method {
 	case http.MethodGet:
+		storeID, ok := t01WishlistStoreID(w, r, storeRepo, r.URL.Query().Get("storeSlug"))
+		if !ok {
+			return
+		}
 		if !t01TableExists(ctx, db, "customer_wishlists") {
 			t01WriteJSON(w, http.StatusOK, map[string]interface{}{"wishlist": []string{}})
 			return
 		}
 		rows, err := db.QueryContext(ctx,
-			`SELECT product_id FROM customer_wishlists WHERE user_id = $1 ORDER BY created_at DESC`, userID)
+			`SELECT product_id FROM customer_wishlists WHERE user_id = $1 AND store_id = $2 ORDER BY created_at DESC`, userID, storeID)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -72,12 +86,17 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	case http.MethodPost:
 		var req struct {
 			ProductID string `json:"productId"`
+			StoreSlug string `json:"storeSlug"`
 		}
 		if !t01DecodeJSON(w, r, &req) {
 			return
 		}
 		if strings.TrimSpace(req.ProductID) == "" {
 			http.Error(w, `{"error":"productId is required"}`, http.StatusBadRequest)
+			return
+		}
+		storeID, ok := t01WishlistStoreID(w, r, storeRepo, req.StoreSlug)
+		if !ok {
 			return
 		}
 		if !t01TableExists(ctx, db, "customer_wishlists") {
@@ -85,8 +104,8 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 			return
 		}
 		if _, err := db.ExecContext(ctx,
-			`INSERT INTO customer_wishlists (user_id, product_id) VALUES ($1, $2) ON CONFLICT (user_id, product_id) DO NOTHING`,
-			userID, req.ProductID); err != nil {
+			`INSERT INTO customer_wishlists (user_id, store_id, product_id) VALUES ($1, $2, $3) ON CONFLICT (user_id, store_id, product_id) DO NOTHING`,
+			userID, storeID, req.ProductID); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -94,6 +113,7 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	case http.MethodDelete:
 		var req struct {
 			ProductID string `json:"productId"`
+			StoreSlug string `json:"storeSlug"`
 		}
 		if !t01DecodeJSON(w, r, &req) {
 			return
@@ -102,8 +122,12 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 			http.Error(w, `{"error":"productId is required"}`, http.StatusBadRequest)
 			return
 		}
+		storeID, ok := t01WishlistStoreID(w, r, storeRepo, req.StoreSlug)
+		if !ok {
+			return
+		}
 		if _, err := db.ExecContext(ctx,
-			`DELETE FROM customer_wishlists WHERE user_id = $1 AND product_id = $2`, userID, req.ProductID); err != nil {
+			`DELETE FROM customer_wishlists WHERE user_id = $1 AND store_id = $2 AND product_id = $3`, userID, storeID, req.ProductID); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -111,6 +135,31 @@ func handleT01Wishlist(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	default:
 		writeMethodNotAllowed(w)
 	}
+}
+
+// t01WishlistStoreID resolves the wishlist's store dimension. An
+// empty slug is the central store (legacy callers named no store).
+// Any other slug must resolve through the store repo; an unknown one
+// fails closed with 404 — the same rule order creation applies.
+func t01WishlistStoreID(w http.ResponseWriter, r *http.Request, storeRepo *repository.StoreRepository, slug string) (string, bool) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "store-central", true
+	}
+	if storeRepo == nil {
+		http.Error(w, `{"error":"Store not found"}`, http.StatusNotFound)
+		return "", false
+	}
+	store, err := storeRepo.GetStoreBySlug(r.Context(), slug)
+	if err != nil {
+		writeInternalError(w, err)
+		return "", false
+	}
+	if store == nil {
+		http.Error(w, `{"error":"Store not found"}`, http.StatusNotFound)
+		return "", false
+	}
+	return store.ID, true
 }
 
 // --- addresses (D06) ---------------------------------------------------------
@@ -629,8 +678,11 @@ func handleT01ViewEvent(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 //
 // POST only: the live probe returns 405 for GET /newsletter/subscribe.
 // Table: newsletter_subscribers (migration 202610200004), one row per
-// (store, mobile). When no storeId is given, the central store is used;
-// TODO: the live default-store choice is unverified.
+// (store, mobile). Storefront templates send storeSlug, which is
+// resolved to the store id (unknown slug → 400, never a silent
+// fall back to central); storeId is still accepted for compatibility
+// and storeSlug wins when both are present. When neither is given,
+// the central store is used.
 
 func t01CentralStoreID(ctx context.Context, db *sql.DB) string {
 	var id string
@@ -639,6 +691,23 @@ func t01CentralStoreID(ctx context.Context, db *sql.DB) string {
 		return ""
 	}
 	return id
+}
+
+// t01StoreIDBySlug resolves a store slug to its id with the same
+// case-insensitive match StoreRepository.GetStoreBySlug performs.
+// The T01 handlers receive only *sql.DB (no repo is in scope here),
+// so the lookup runs on it directly, mirroring t01CentralStoreID.
+func t01StoreIDBySlug(ctx context.Context, db *sql.DB, slug string) (string, bool, error) {
+	var id string
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM stores WHERE LOWER(slug) = LOWER($1)`, slug).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
 }
 
 func t01RandomToken() string {
@@ -654,9 +723,10 @@ func handleT01NewsletterSubscribe(w http.ResponseWriter, r *http.Request, db *sq
 		return
 	}
 	var req struct {
-		Mobile  string `json:"mobile"`
-		StoreID string `json:"storeId"`
-		Email   string `json:"email"`
+		Mobile    string `json:"mobile"`
+		StoreID   string `json:"storeId"`
+		StoreSlug string `json:"storeSlug"`
+		Email     string `json:"email"`
 	}
 	if !t01DecodeJSON(w, r, &req) {
 		return
@@ -667,6 +737,23 @@ func handleT01NewsletterSubscribe(w http.ResponseWriter, r *http.Request, db *sq
 		return
 	}
 	storeID := strings.TrimSpace(req.StoreID)
+	if slug := strings.TrimSpace(req.StoreSlug); slug != "" {
+		// storeSlug (sent by every storefront template) wins over
+		// storeId and resolves fail-closed: an unknown slug is a
+		// 400, never a silent fall back to the central store —
+		// that fall back is what used to misfile every storefront
+		// subscription under central.
+		resolved, found, err := t01StoreIDBySlug(r.Context(), db, slug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !found {
+			http.Error(w, `{"error":"unknown storeSlug"}`, http.StatusBadRequest)
+			return
+		}
+		storeID = resolved
+	}
 	if storeID == "" {
 		storeID = t01CentralStoreID(r.Context(), db)
 	}

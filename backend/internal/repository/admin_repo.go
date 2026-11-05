@@ -92,6 +92,19 @@ func (r *AdminRepository) CreatePendingApproval(ctx context.Context, item Pendin
 	return err
 }
 
+// GetPendingApprovalEntityType returns the entity_type of one
+// pending_approvals row (sql.ErrNoRows when the id is unknown). The
+// approvals inbox uses it to route proposed_product reviews through
+// the supplier proposal pipeline instead of the generic status flip.
+func (r *AdminRepository) GetPendingApprovalEntityType(ctx context.Context, id string) (string, error) {
+	var entityType string
+	err := r.db.QueryRowContext(ctx, `SELECT entity_type FROM pending_approvals WHERE id = $1`, id).Scan(&entityType)
+	if err != nil {
+		return "", err
+	}
+	return entityType, nil
+}
+
 // ReviewPendingApproval updates status of approval item
 func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status, reason string) error {
 	now := time.Now()

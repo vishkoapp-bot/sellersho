@@ -29,9 +29,10 @@ export const SectionTitle: React.FC<{ children: React.ReactNode; accentColor?: s
   children,
   accentColor,
 }) => (
-  <div className="flex items-center gap-2">
-    <span className="h-4 w-1 rounded-full" style={{ backgroundColor: accentColor || '#5d44f8' }} />
-    <h3 className="text-sm font-black text-slate-900">{children}</h3>
+  <div className="flex items-center gap-2.5">
+    <span className="h-5 w-1.5 rounded-full shadow-sm" style={{ backgroundColor: accentColor || '#5d44f8' }} />
+    <h3 className="text-base font-black tracking-tight text-slate-900">{children}</h3>
+    <span className="h-px flex-1 bg-slate-200/80" />
   </div>
 );
 
@@ -47,8 +48,8 @@ export const AnnouncementSection: React.FC<{
   if (!text) return null;
   const link = (custom.announcementLink || '').trim();
   const bar = (
-    <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: accentColor }}>
-      <p className="text-xs font-bold text-white">{text}</p>
+    <div className="rounded-full px-4 py-2.5 text-center shadow-sm" style={{ backgroundColor: accentColor }}>
+      <p className="text-[13px] font-extrabold leading-5 text-white">{text}</p>
     </div>
   );
   return (
@@ -83,29 +84,29 @@ export const HeroSlider: React.FC<{
   if (count === 0) return null;
   const slide = slides[index % count];
   const body = (
-    <div className="relative overflow-hidden rounded-2xl bg-slate-100">
+    <div className="relative overflow-hidden rounded-[1.75rem] bg-slate-100 shadow-lg shadow-slate-900/10 ring-1 ring-black/5">
       {slide.image ? (
         <img
           src={slide.image}
           alt={slide.title || ''}
-          className="h-44 w-full object-cover lg:h-64"
+          className="h-52 w-full object-cover lg:h-80"
           loading="lazy"
         />
       ) : (
-        <div className="flex h-44 w-full items-center justify-center lg:h-64" style={{ backgroundColor: accentColor }}>
-          <span className="px-4 text-center text-base font-black text-white">{slide.title || ''}</span>
+        <div className="flex h-52 w-full items-center justify-center lg:h-80" style={{ backgroundColor: accentColor }}>
+          <span className="px-4 text-center text-xl font-black text-white lg:text-2xl">{slide.title || ''}</span>
         </div>
       )}
       {(slide.title || slide.subtitle) && slide.image ? (
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 pt-10">
-          {slide.title ? <p className="text-sm font-black text-white">{slide.title}</p> : null}
-          {slide.subtitle ? <p className="mt-0.5 text-xs text-white/90">{slide.subtitle}</p> : null}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-5 pt-16">
+          {slide.title ? <p className="text-lg font-black leading-8 text-white drop-shadow-md lg:text-2xl lg:leading-10">{slide.title}</p> : null}
+          {slide.subtitle ? <p className="mt-1 text-sm leading-6 text-white/90">{slide.subtitle}</p> : null}
         </div>
       ) : null}
     </div>
   );
   return (
-    <div data-testid="store-hero-slider" className="relative">
+    <div data-testid="store-hero-slider" className="group relative">
       {slide.link ? (
         <a href={slide.link} target="_blank" rel="noreferrer" className="block">
           {body}
@@ -119,7 +120,7 @@ export const HeroSlider: React.FC<{
             type="button"
             aria-label="اسلاید قبلی"
             onClick={() => setIndex((i) => (i - 1 + count) % count)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 px-2 py-1 text-sm text-white"
+            className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-lg text-white shadow-lg ring-1 ring-white/30 backdrop-blur-md transition hover:bg-white/30 lg:opacity-0 lg:group-hover:opacity-100"
           >
             ›
           </button>
@@ -127,18 +128,19 @@ export const HeroSlider: React.FC<{
             type="button"
             aria-label="اسلاید بعدی"
             onClick={() => setIndex((i) => (i + 1) % count)}
-            className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 px-2 py-1 text-sm text-white"
+            className="absolute left-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-lg text-white shadow-lg ring-1 ring-white/30 backdrop-blur-md transition hover:bg-white/30 lg:opacity-0 lg:group-hover:opacity-100"
           >
             ‹
           </button>
-          <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1">
+          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-black/25 px-2 py-1.5 backdrop-blur-sm">
             {slides.map((s, i) => (
               <button
                 key={`${s.image || s.title || ''}-${i}`}
                 type="button"
                 aria-label={`اسلاید ${toPersianDigits(i + 1)}`}
                 onClick={() => setIndex(i)}
-                className={`h-1.5 rounded-full transition-all ${i === index ? 'w-5 bg-white' : 'w-1.5 bg-white/60'}`}
+                className={`h-2 rounded-full shadow-sm transition-all duration-300 ${i === index ? 'w-7' : 'w-2 bg-white/60 hover:bg-white/85'}`}
+                style={i === index ? { backgroundColor: accentColor } : undefined}
               />
             ))}
           </div>
@@ -164,15 +166,19 @@ export const HeroFallbackBanners: React.FC<{ config: TemplateConfig; accentColor
   ];
   const subtitle = custom.heroFallbackSubtitle || 'هر روز، پیشنهادهای تازه';
   return (
-    <div data-testid="store-hero-fallback" className="grid grid-cols-3 gap-2">
+    <div data-testid="store-hero-fallback" className="grid grid-cols-3 gap-3">
       {banners.map((text, i) => (
         <div
           key={text}
-          className="rounded-2xl p-3 text-white"
+          className="relative overflow-hidden rounded-3xl p-4 text-white shadow-md"
           style={{ backgroundColor: accentColor, opacity: 1 - i * 0.15 }}
         >
-          <p className="text-xs font-black leading-5">{text}</p>
-          {i === 0 ? <p className="mt-1 text-[11px] opacity-90">{subtitle}</p> : null}
+          <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/25 via-white/5 to-black/10" />
+          <span className="relative mb-2.5 flex h-8 w-8 items-center justify-center rounded-xl bg-white/20 shadow-sm ring-1 ring-white/30">
+            <span className="h-2 w-2 rounded-full bg-white" />
+          </span>
+          <p className="relative text-sm font-black leading-6">{text}</p>
+          {i === 0 ? <p className="relative mt-1 text-[11px] leading-5 opacity-90">{subtitle}</p> : null}
         </div>
       ))}
     </div>
@@ -220,11 +226,11 @@ export function groupProductsByCategory(
 }
 
 const CategoryThumb: React.FC<{ group: CategoryGroup }> = ({ group }) => (
-  <div className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br ${group.gradient} border border-slate-100`}>
+  <div className={`flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${group.gradient} shadow-md ring-1 ring-slate-900/5 transition duration-300 group-hover:scale-105 group-hover:shadow-lg`}>
     {group.image ? (
-      <img src={group.image} alt={group.title} className="h-full w-full object-contain p-1.5" loading="lazy" />
+      <img src={group.image} alt={group.title} className="h-full w-full object-cover" loading="lazy" />
     ) : (
-      <span className="text-base font-black text-slate-500">{group.title.slice(0, 1)}</span>
+      <span className="text-lg font-black text-slate-500">{group.title.slice(0, 1)}</span>
     )}
   </div>
 );
@@ -247,18 +253,18 @@ export const CategoryRail: React.FC<{
   const rails = groups.slice(0, maxRails);
   const title = customText(config, 'categoriesTitle', 'دسته‌بندی‌ها'); // live Digikala + Electronic render default
   return (
-    <section data-testid="store-category-rail" className="space-y-4">
+    <section data-testid="store-category-rail" className="space-y-5">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       {rails.map((group) => (
-        <div key={group.slug} className="space-y-2">
-          <div className="flex items-center gap-2 px-1">
+        <div key={group.slug} className="group space-y-3">
+          <div className="flex items-center gap-3 px-1">
             <CategoryThumb group={group} />
             <div>
-              <p className="text-xs font-black text-slate-900">{group.title}</p>
-              <p className="text-[11px] text-slate-500">{toPersianDigits(group.count)} کالا</p>
+              <p className="text-sm font-black text-slate-900">{group.title}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{toPersianDigits(group.count)} کالا</p>
             </div>
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+          <div className="flex gap-3 overflow-x-auto pb-1.5 no-scrollbar">
             {group.products.slice(0, perRail).map((p) => (
               <div key={p.id} className="w-[160px] shrink-0 lg:w-[180px]">
                 <ProductCard product={p} />
@@ -287,14 +293,14 @@ export const CategoryCards: React.FC<{
   const limit = customCount(config, 'categoriesCount', 8);
   const title = customText(config, 'categoriesTitle', 'دسته‌بندی‌ها');
   return (
-    <section data-testid="store-category-cards" className="space-y-3">
+    <section data-testid="store-category-cards" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
-      <div className="grid grid-cols-4 gap-2 lg:grid-cols-8">
+      <div className="grid grid-cols-4 gap-3 lg:grid-cols-8">
         {groups.slice(0, limit).map((group) => (
-          <div key={group.slug} className="flex flex-col items-center gap-1.5 text-center">
+          <div key={group.slug} className="group flex flex-col items-center gap-2 text-center">
             <CategoryThumb group={group} />
-            <span className="w-full truncate text-[11px] font-bold text-slate-700">{group.title}</span>
-            <span className="text-[10px] text-slate-400">{toPersianDigits(group.count)} کالا</span>
+            <span className="w-full truncate text-xs font-extrabold text-slate-800">{group.title}</span>
+            <span className="text-[11px] text-slate-400">{toPersianDigits(group.count)} کالا</span>
           </div>
         ))}
       </div>
@@ -307,21 +313,27 @@ export const BannerRow: React.FC<{ config: TemplateConfig }> = ({ config }) => {
   const banners = bannersOf(config);
   if (!sectionEnabled(config, 'banners') || banners.length === 0) return null;
   return (
-    <section data-testid="store-banners" className="grid grid-cols-2 gap-2">
+    <section data-testid="store-banners" className="grid grid-cols-2 gap-3">
       {banners.map((b, i) => {
-        const img = (
-          <img src={b.image} alt={b.title || ''} className="h-28 w-full rounded-2xl object-cover lg:h-36" loading="lazy" />
+        const tile = (
+          <div className="group relative overflow-hidden rounded-3xl shadow-sm ring-1 ring-slate-900/5">
+            <img src={b.image} alt={b.title || ''} className="h-32 w-full object-cover transition duration-500 group-hover:scale-105 lg:h-44" loading="lazy" />
+            {b.title ? (
+              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/25 to-transparent p-3 pt-10">
+                <p className="text-sm font-black text-white drop-shadow">{b.title}</p>
+              </div>
+            ) : null}
+          </div>
         );
         return (
           <div key={`${b.image}-${i}`}>
             {b.link ? (
               <a href={b.link} target="_blank" rel="noreferrer" className="block">
-                {img}
+                {tile}
               </a>
             ) : (
-              img
+              tile
             )}
-            {b.title ? <p className="mt-1 px-1 text-[11px] font-bold text-slate-700">{b.title}</p> : null}
           </div>
         );
       })}
@@ -346,7 +358,7 @@ export const DealsSection: React.FC<{
   if (deals.length === 0) return null;
   const title = customText(config, 'dealsTitle', 'پیشنهاد شگفت‌انگیز'); // live Digikala + Electronic render default
   return (
-    <section data-testid="store-deals" className="space-y-3">
+    <section data-testid="store-deals" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       <TemplateProductGrid products={deals} columnsClass="grid-cols-2 lg:grid-cols-4" />
     </section>
@@ -382,11 +394,11 @@ export const TimedDealsSection: React.FC<{
     countdown = `${toPersianDigits(String(h).padStart(2, '0'))}:${toPersianDigits(String(m).padStart(2, '0'))}:${toPersianDigits(String(s).padStart(2, '0'))}`;
   }
   return (
-    <section data-testid="store-timed-deals" className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+    <section data-testid="store-timed-deals" className="space-y-4 rounded-3xl border border-slate-200/60 bg-gradient-to-b from-slate-50 to-white p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <SectionTitle accentColor={accentColor}>{widget.title || 'پیشنهاد زمان‌دار'}</SectionTitle>
         {countdown ? (
-          <span className="rounded-lg bg-slate-900 px-2 py-1 text-[11px] font-black text-white" dir="ltr">
+          <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-black text-white shadow-sm" dir="ltr">
             {countdown}
           </span>
         ) : null}
@@ -410,15 +422,15 @@ export const BrandsRail: React.FC<{
   });
   if (brands.length === 0) return null;
   return (
-    <section data-testid="store-brands" className="space-y-3">
+    <section data-testid="store-brands" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{customText(config, 'brandsTitle', 'برندها')}</SectionTitle>
-      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+      <div className="flex gap-3 overflow-x-auto pb-1.5 no-scrollbar">
         {brands.map((brand) => (
           <div
             key={brand}
-            className="flex shrink-0 items-center gap-2 rounded-2xl border border-slate-100 bg-white px-3 py-2 shadow-2xs"
+            className="flex shrink-0 items-center gap-2.5 rounded-2xl border border-slate-200/60 bg-white px-3.5 py-2.5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-md"
           >
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-xs font-black text-slate-600">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-xs font-black text-slate-600 ring-1 ring-slate-900/5">
               {brand.slice(0, 2)}
             </span>
             <span className="text-xs font-bold text-slate-800">{brand}</span>
@@ -440,7 +452,7 @@ export const FeaturedSection: React.FC<{
   if (featured.length === 0) return null;
   const title = customText(config, 'featuredTitle', 'کالاهای منتخب');
   return (
-    <section data-testid="store-featured" className="space-y-3">
+    <section data-testid="store-featured" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       <TemplateProductGrid products={featured} columnsClass="grid-cols-2 lg:grid-cols-4" />
     </section>
@@ -459,9 +471,9 @@ export const BestsellersSection: React.FC<{
   if (best.length === 0 || best.every((p) => (p.salesCount || 0) <= 0)) return null;
   const title = customText(config, 'bestSellersTitle', 'پرفروش‌ترین‌ها');
   return (
-    <section data-testid="store-bestsellers" className="space-y-3">
+    <section data-testid="store-bestsellers" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
-      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+      <div className="flex gap-3 overflow-x-auto pb-1.5 no-scrollbar">
         {best.map((p) => (
           <div key={p.id} className="w-[160px] shrink-0 lg:w-[180px]">
             <ProductCard product={p} />
@@ -497,12 +509,14 @@ export const TrustStripSection: React.FC<{
       : fetched;
   if (!sectionEnabled(config, 'trustStrip') || items.length === 0) return null;
   return (
-    <section data-testid="store-trust-strip" className="grid grid-cols-2 gap-2">
+    <section data-testid="store-trust-strip" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       {items.map((f) => (
-        <div key={f.title} className="rounded-2xl border border-slate-100 bg-white p-3">
-          <span className="mb-1.5 block h-1.5 w-6 rounded-full" style={{ backgroundColor: accentColor }} />
-          <p className="text-xs font-black text-slate-900">{f.title}</p>
-          {f.subtitle ? <p className="text-[11px] text-slate-500 leading-5 mt-0.5">{f.subtitle}</p> : null}
+        <div key={f.title} className="rounded-3xl border border-slate-200/60 bg-white p-4 shadow-sm">
+          <span className="mb-2.5 flex h-9 w-9 items-center justify-center rounded-xl text-sm font-black text-white shadow-sm" style={{ backgroundColor: accentColor }}>
+            {f.title.slice(0, 1)}
+          </span>
+          <p className="text-[13px] font-black text-slate-900">{f.title}</p>
+          {f.subtitle ? <p className="text-[11px] text-slate-500 leading-6 mt-0.5">{f.subtitle}</p> : null}
         </div>
       ))}
     </section>
@@ -518,7 +532,7 @@ export const DiscountedSection: React.FC<{
   const items = discountedProducts(products).slice(0, customCount(config, 'discountedCount', 10));
   if (items.length === 0) return null;
   return (
-    <section data-testid="store-discounted" className="space-y-3">
+    <section data-testid="store-discounted" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{customText(config, 'discountedTitle', 'کالاهای تخفیف‌دار')}</SectionTitle>
       <TemplateProductGrid products={items} columnsClass="grid-cols-2 lg:grid-cols-4" />
     </section>
@@ -539,10 +553,10 @@ export const AboutSection: React.FC<{
   // content contract and may land in TemplateCustom separately.
   const aboutImage = ((custom as TemplateCustom & { aboutImage?: string }).aboutImage || '').trim();
   return (
-    <section data-testid="store-about" className="space-y-2">
+    <section data-testid="store-about" className="space-y-3">
       <SectionTitle accentColor={accentColor}>{customText(config, 'aboutTitle', 'درباره فروشگاه')}</SectionTitle>
-      {aboutImage ? <img src={aboutImage} alt="" className="h-40 w-full rounded-2xl object-cover" loading="lazy" /> : null}
-      <p className="text-xs leading-6 text-slate-500">{text}</p>
+      {aboutImage ? <img src={aboutImage} alt="" className="h-48 w-full rounded-3xl object-cover shadow-sm lg:h-56" loading="lazy" /> : null}
+      <p className="text-[13px] leading-7 text-slate-500">{text}</p>
     </section>
   );
 };
@@ -559,7 +573,7 @@ export const TopRatedSection: React.FC<{
     .slice(0, customCount(config, 'topRatedCount', 10));
   if (items.length === 0) return null;
   return (
-    <section data-testid="store-top-rated" className="space-y-3">
+    <section data-testid="store-top-rated" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{customText(config, 'topRatedTitle', 'پرامتیازترین‌ها')}</SectionTitle>
       <TemplateProductGrid products={items} columnsClass="grid-cols-2 lg:grid-cols-4" />
     </section>
@@ -578,7 +592,7 @@ export const CampaignSection: React.FC<{
   const items = products.filter((p) => (widget.productIds || []).includes(p.id));
   if (items.length === 0) return null;
   return (
-    <section data-testid="store-campaign" className="space-y-3">
+    <section data-testid="store-campaign" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{widget.title || 'پیشنهاد ویژه'}</SectionTitle>
       <TemplateProductGrid products={items} columnsClass="grid-cols-2 lg:grid-cols-4" />
     </section>
@@ -613,9 +627,9 @@ export const NewsletterSection: React.FC<{
     }
   };
   return (
-    <section data-testid="store-newsletter" className="space-y-2 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+    <section data-testid="store-newsletter" className="space-y-3 rounded-3xl border border-slate-200/60 bg-slate-50 p-5 shadow-sm">
       <SectionTitle accentColor={accentColor}>{customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی')}</SectionTitle>
-      {newsletterSubtitle ? <p className="text-[11px] leading-5 text-slate-500">{newsletterSubtitle}</p> : null}
+      {newsletterSubtitle ? <p className="text-xs leading-6 text-slate-500">{newsletterSubtitle}</p> : null}
       {done ? (
         // ISO-A: POST /newsletter/subscribe carries no store slug, so
         // the old text ("registered for THIS store's notifications")
@@ -629,9 +643,9 @@ export const NewsletterSection: React.FC<{
             value={mobile}
             onChange={(e) => setMobile(e.target.value)}
             placeholder="09xxxxxxxxx"
-            className="flex-1 min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-left outline-hidden focus:border-brand"
+            className="flex-1 min-w-0 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-xs text-left shadow-sm outline-hidden focus:border-brand"
           />
-          <button type="submit" className="rounded-xl px-4 py-2 text-xs font-bold text-white" style={{ backgroundColor: accentColor }}>
+          <button type="submit" className="rounded-2xl px-5 py-2.5 text-xs font-bold text-white shadow-sm transition hover:opacity-90" style={{ backgroundColor: accentColor }}>
             عضویت
           </button>
         </form>
@@ -670,12 +684,12 @@ export const FaqSection: React.FC<{
   const items = configItems.length > 0 ? configItems : faqs;
   if (!sectionEnabled(config, 'faq') || items.length === 0) return null;
   return (
-    <section data-testid="store-faq" className="space-y-2">
+    <section data-testid="store-faq" className="space-y-3">
       <SectionTitle accentColor={accentColor}>پرسش‌های متداول</SectionTitle>
       {items.map((f) => (
-        <div key={f.q} className="rounded-2xl border border-slate-100 bg-white p-3">
-          <p className="text-xs font-black text-slate-900">{f.q}</p>
-          <p className="text-[11px] text-slate-500 leading-5 mt-1">{f.a}</p>
+        <div key={f.q} className="rounded-3xl border border-slate-200/60 bg-white p-4 shadow-sm">
+          <p className="text-[13px] font-black text-slate-900">{f.q}</p>
+          <p className="text-xs text-slate-500 leading-6 mt-1.5">{f.a}</p>
         </div>
       ))}
     </section>
@@ -692,14 +706,21 @@ export const TestimonialsSection: React.FC<{
   );
   if (items.length === 0) return null;
   return (
-    <section data-testid="store-testimonials" className="space-y-3">
+    <section data-testid="store-testimonials" className="space-y-4">
       <SectionTitle accentColor={accentColor}>نظرات مشتریان</SectionTitle>
-      <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {items.map((t, i) => (
-          <figure key={`${t.name || ''}-${i}`} className="rounded-2xl border border-slate-100 bg-white p-3">
-            <span className="text-xl font-black leading-none" style={{ color: accentColor }}>“</span>
-            <blockquote className="mt-1 text-xs leading-6 text-slate-600">{t.text}</blockquote>
-            {t.name ? <figcaption className="mt-2 text-xs font-bold text-slate-900">{t.name}</figcaption> : null}
+          <figure key={`${t.name || ''}-${i}`} className="rounded-3xl border border-slate-200/60 bg-white p-5 shadow-sm">
+            <span className="text-4xl font-black leading-none" style={{ color: accentColor }}>“</span>
+            <blockquote className="mt-2 text-[13px] leading-7 text-slate-600">{t.text}</blockquote>
+            {t.name ? (
+              <figcaption className="mt-3 flex items-center gap-2">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black text-white" style={{ backgroundColor: accentColor }}>
+                  {t.name.slice(0, 1)}
+                </span>
+                <span className="text-xs font-bold text-slate-900">{t.name}</span>
+              </figcaption>
+            ) : null}
           </figure>
         ))}
       </div>
@@ -720,18 +741,18 @@ export const LookbookSection: React.FC<{
   if (!image && !title) return null;
   const link = (custom.lookbookLink || '').trim();
   const body = (
-    <div className="relative overflow-hidden rounded-3xl bg-slate-100">
+    <div className="relative overflow-hidden rounded-3xl bg-slate-100 shadow-lg shadow-slate-900/10 ring-1 ring-black/5">
       {image ? (
-        <img src={image} alt={title} className="h-56 w-full object-cover lg:h-72" loading="lazy" />
+        <img src={image} alt={title} className="h-64 w-full object-cover lg:h-80" loading="lazy" />
       ) : (
-        <div className="flex h-56 w-full items-center justify-center lg:h-72" style={{ backgroundColor: accentColor }}>
-          <span className="px-4 text-center text-base font-black text-white">{title}</span>
+        <div className="flex h-64 w-full items-center justify-center lg:h-80" style={{ backgroundColor: accentColor }}>
+          <span className="px-4 text-center text-xl font-black text-white lg:text-2xl">{title}</span>
         </div>
       )}
       {image && (title || subtitle) ? (
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 pt-12 text-right">
-          {title ? <p className="text-base font-black text-white">{title}</p> : null}
-          {subtitle ? <p className="mt-1 text-xs text-white/90">{subtitle}</p> : null}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-5 pt-16 text-right">
+          {title ? <p className="text-2xl font-black leading-9 text-white drop-shadow-md">{title}</p> : null}
+          {subtitle ? <p className="mt-1 text-sm leading-6 text-white/90">{subtitle}</p> : null}
         </div>
       ) : null}
     </div>
@@ -759,7 +780,7 @@ export const ProductsGridSection: React.FC<{
   if (!sectionEnabled(config, 'products') && !sectionEnabled(config, 'allProducts')) return null;
   if (products.length === 0) return null;
   return (
-    <section data-testid="store-products" className="space-y-3">
+    <section data-testid="store-products" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{customText(config, 'productsTitle', 'همه کالاهای فروشگاه')}</SectionTitle>
       <TemplateProductGrid products={products} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
     </section>

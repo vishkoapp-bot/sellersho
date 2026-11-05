@@ -17,7 +17,11 @@ import {
   RotateCcw,
   Truck,
   User,
-  FileText
+  FileText,
+  Building2,
+  Boxes,
+  Users,
+  Wallet
 } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
@@ -74,14 +78,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'orders', label: 'سفارش‌های من', icon: ShoppingBag },
     { id: 'customer-returns', label: 'مرجوعی‌های مشتریان', icon: RotateCcw },
     { id: 'products', label: 'کالاها و تنوع‌ها', icon: Package },
-    { id: 'inventory', label: 'موجودی کالاها', icon: Warehouse },
+    { id: 'inventory', label: 'موجودی کالاها', icon: Boxes },
     { id: 'my-warehouses', label: 'انبارهای من', icon: Warehouse },
     { id: 'inbound', label: 'فرستادن بار به انبار', icon: PackagePlus },
     { id: 'shipping-methods', label: 'روش‌های ارسال', icon: Truck },
     { id: 'discrepancies', label: 'اختلاف‌های تحویل', icon: AlertTriangle },
     { id: 'settlement', label: 'تسویه‌حساب', icon: Receipt },
     { id: 'ads', label: 'تبلیغات', icon: Megaphone },
-    { id: 'team', label: 'همکاران من', icon: PackagePlus },
+    { id: 'team', label: 'همکاران من', icon: Users },
     { id: 'profile', label: 'پروفایل', icon: User },
     { id: 'contract', label: 'قرارداد من', icon: FileText },
   ];
@@ -90,6 +94,40 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const permissions = supplierSession?.permissions || [];
   const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]));
   const visibleTab = allowedTabs.some((item) => item.id === activeTab) ? activeTab : allowedTabs[0]?.id;
+
+  // Desktop sidebar grouping (layout only): the same permission-filtered
+  // tabs as the mobile tab bar, partitioned into sidebar groups covering
+  // all 16 tab ids exactly once. A group with no permitted tab disappears
+  // entirely, so gating is inherited unchanged.
+  const menuGroups: { heading: string; icon: typeof LayoutDashboard; ids: string[] }[] = [
+    { heading: 'پیشخوان', icon: LayoutDashboard, ids: ['overview', 'analytics', 'demand-insight'] },
+    { heading: 'سفارش و ارسال', icon: Truck, ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
+    { heading: 'کالا و انبار', icon: Warehouse, ids: ['products', 'inventory', 'my-warehouses', 'inbound'] },
+    { heading: 'مالی', icon: Wallet, ids: ['settlement'] },
+    { heading: 'بازاریابی', icon: Megaphone, ids: ['ads'] },
+    { heading: 'حساب کاربری', icon: User, ids: ['team', 'profile', 'contract'] },
+  ];
+  const sidebarGroups = menuGroups
+    .map((group) => ({
+      heading: group.heading,
+      icon: group.icon,
+      items: group.ids
+        .map((id) => allowedTabs.find((item) => item.id === id))
+        .filter((item): item is (typeof menuItems)[number] => !!item),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  // Active tab label for the desktop header title slot (item: at lg the
+  // header stops repeating the identity and names the current section).
+  const activeTabLabel = allowedTabs.find((item) => item.id === visibleTab)?.label;
+  // Warehouse status pill for the sidebar identity card, driven by the same
+  // warehouseCityConfirmed flag as the header line: explicitly unconfirmed
+  // -> amber; a recorded city -> confirmed (emerald); no city -> neutral.
+  const warehousePill = warehouseCityConfirmed === false
+    ? { text: 'انبار تأییدنشده', cls: 'bg-amber-50 text-amber-700 border-amber-200' }
+    : supplierSession?.warehouseCity
+      ? { text: 'انبار تأییدشده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+      : { text: 'بدون انبار ثبت‌شده', cls: 'bg-slate-50 text-slate-500 border-slate-200' };
 
   return (
     <SupplierAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
@@ -119,23 +157,30 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </div>
       )}
       {/* Top Header */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3.5 py-2.5 flex items-center justify-between">
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 py-2.5">
+        <div className="max-w-7xl mx-auto w-full px-3.5 lg:px-6 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
             onClick={onBackToCustomerSite}
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            className="p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
             title="بازگشت به سایت اصلی"
             aria-label="بازگشت به سایت اصلی"
           >
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
-          <div>
+          {/* Below lg the header carries the identity; at lg the sidebar
+              identity card is the single identity surface, so the header
+              slot shows the active tab's label instead. */}
+          <div className="lg:hidden">
             <h1 className="text-xs font-bold text-slate-800">
               {supplierSession?.companyName || 'پنل تأمین‌کننده'}
             </h1>
             <span className="text-[10px] text-slate-400 block">
               مدیر: {supplierSession?.managerName} • انبار: {warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity}
             </span>
+          </div>
+          <div className="hidden lg:block">
+            <h1 className="text-[13px] font-extrabold text-slate-900">{activeTabLabel || 'پنل تأمین‌کننده'}</h1>
           </div>
         </div>
 
@@ -150,10 +195,11 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
           <LogOut className="w-4 h-4"  strokeWidth={1.5}/>
           <span>خروج</span>
         </button>
+        </div>
       </header>
 
       {/* Horizontal Tabs */}
-      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar lg:hidden">
         {allowedTabs.map((item) => {
           const Icon = item.icon;
           const isActive = visibleTab === item.id;
@@ -161,9 +207,9 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
                 isActive
-                  ? 'bg-indigo-600 text-white shadow-xs'
+                  ? 'bg-brand text-white shadow-xs'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
               }`}
             >
@@ -174,25 +220,101 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         })}
       </div>
 
-      {/* Main Tab Content */}
-      <div className="p-3.5 flex-1">
-        {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
-        {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={setActiveTab} />}
-        {visibleTab === 'orders' && <SupplierOrdersTab />}
-        {visibleTab === 'products' && <SupplierProductsTab />}
-        {visibleTab === 'inventory' && <SupplierInventoryTab />}
-        {visibleTab === 'inbound' && <SupplierInboundFlowTab />}
-        {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
-        {visibleTab === 'ads' && <SupplierAdsCampaignTab />}
-        {visibleTab === 'settlement' && <SupplierSettlementTab />}
-        {visibleTab === 'team' && <SupplierTeamTab />}
-        {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
-        {visibleTab === 'demand-insight' && <SupplierDemandInsightTab />}
-        {visibleTab === 'customer-returns' && <SupplierCustomerReturnsTab />}
-        {visibleTab === 'my-warehouses' && <SupplierMyWarehousesTab />}
-        {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}
-        {visibleTab === 'profile' && <SupplierProfileTab />}
-        {visibleTab === 'contract' && <SupplierContractTab />}
+      {/* Desktop workspace (sidebar + content), following the admin
+          workspace geometry (max-w-7xl row, w-72 aside, white rounded-2xl
+          cards) and the seller panel's brand accent. Below lg the wrapper
+          is a plain flex column, the sidebar is hidden and the content
+          keeps its exact mobile padding, so mobile is pixel-unchanged.
+          Content width: tab content inside <main> is intentionally
+          uncapped (unlike admin's max-w-3xl tab cap) because the
+          supplier tabs are data-table-heavy and need the full row width. */}
+      <div className="flex-1 w-full min-w-0 max-w-7xl mx-auto flex flex-col lg:flex-row lg:gap-6 lg:p-6">
+        {/* Sidebar Navigation (desktop only; same permission-filtered tabs as the mobile bar) */}
+        <aside className="hidden lg:block w-72 shrink-0 space-y-4 lg:sticky lg:top-[73px] lg:self-start lg:max-h-[calc(100vh-97px)] lg:overflow-y-auto">
+          {/* Identity Card */}
+          <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-brand flex items-center justify-center text-white shrink-0">
+              <Building2 className="w-4 h-4" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[10px] text-slate-400 block">پنل تأمین‌کننده</span>
+              <span className="text-xs font-extrabold text-slate-900 block truncate" title={supplierSession?.companyName || 'تأمین‌کننده'}>
+                {supplierSession?.companyName || 'تأمین‌کننده'}
+              </span>
+              <span className="text-[10px] text-slate-400 block truncate" title={`مدیر: ${supplierSession?.managerName ?? ''} • انبار: ${warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity ?? ''}`}>
+                مدیر: {supplierSession?.managerName} • انبار: {warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity}
+              </span>
+              <span className={`inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full border ${warehousePill.cls}`}>
+                {warehousePill.text}
+              </span>
+            </div>
+          </div>
+
+          {/* Grouped Menu */}
+          {sidebarGroups.length > 0 && (
+            <nav className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs" aria-label="منوی پنل تأمین‌کننده">
+              {sidebarGroups.map((group, groupIndex) => {
+                const GroupIcon = group.icon;
+                return (
+                  <div key={group.heading} className={groupIndex > 0 ? 'mt-3 border-t border-slate-100 pt-2' : ''}>
+                    <div className="flex items-center gap-2.5 px-2 py-1.5">
+                      <GroupIcon className="w-4 h-4 shrink-0 text-slate-400" strokeWidth={1.5} />
+                      <span className="flex-1 text-xs font-extrabold text-slate-900">{group.heading}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                        {toPersianDigits(group.items.length)}
+                      </span>
+                    </div>
+                    <div className="border-r-2 border-slate-100 pr-2 space-y-1">
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const isActive = visibleTab === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            onClick={() => setActiveTab(item.id)}
+                            aria-current={isActive ? 'page' : undefined}
+                            title={item.label}
+                            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all w-full text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
+                              isActive
+                                ? 'bg-brand text-white shadow-xs'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} strokeWidth={1.5} />
+                            <span className="flex-1 truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </nav>
+          )}
+        </aside>
+
+        {/* Main Tab Content */}
+        <main className="flex-1 min-w-0">
+          <div className="p-3.5 lg:p-0">
+            {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
+            {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={setActiveTab} />}
+            {visibleTab === 'orders' && <SupplierOrdersTab />}
+            {visibleTab === 'products' && <SupplierProductsTab />}
+            {visibleTab === 'inventory' && <SupplierInventoryTab />}
+            {visibleTab === 'inbound' && <SupplierInboundFlowTab />}
+            {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
+            {visibleTab === 'ads' && <SupplierAdsCampaignTab />}
+            {visibleTab === 'settlement' && <SupplierSettlementTab />}
+            {visibleTab === 'team' && <SupplierTeamTab />}
+            {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
+            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab />}
+            {visibleTab === 'customer-returns' && <SupplierCustomerReturnsTab />}
+            {visibleTab === 'my-warehouses' && <SupplierMyWarehousesTab />}
+            {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}
+            {visibleTab === 'profile' && <SupplierProfileTab />}
+            {visibleTab === 'contract' && <SupplierContractTab />}
+          </div>
+        </main>
       </div>
     </div>
     </SupplierAuthGuard>

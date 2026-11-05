@@ -1,10 +1,16 @@
 import React from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
-import { storefrontProducts, sectionEnabled, heroSlidesOf, templateCustom } from './templateTypes';
-import { TemplateProductGrid } from './TemplateProductGrid';
 import {
+  resolveTemplateConfig,
+  orderedEnabledSections,
+  heroSlidesOf,
+  templateCustom,
+  customText,
+  storefrontProducts,
+} from './templateTypes';
+import {
+  AnnouncementSection,
   HeroSlider,
-  HeroFallbackBanners,
   CategoryRail,
   BannerRow,
   DealsSection,
@@ -12,53 +18,115 @@ import {
   BrandsRail,
   FeaturedSection,
   BestsellersSection,
-  SectionTitle,
+  TrustStripSection,
+  DiscountedSection,
+  AboutSection,
+  TopRatedSection,
+  CampaignSection,
+  NewsletterSection,
+  FaqSection,
+  TestimonialsSection,
+  LookbookSection,
+  ProductsGridSection,
+  HeroFallbackBanners,
 } from './StoreSections';
 
-// FIX3 (live parity, tpl-digikala-1): live block order, rebuilt from
-// live chunk evidence — heroSlides (+ heroFallbackBanner when there
-// are no slides) → categoryRail → deals → timedDeals → brands →
-// bestsellers → products. Sections self-hide when disabled or empty,
-// so a store without slides/config still shows name + products.
+// Config-driven storefront: sections render in the order and
+// enablement stored in the resolved template config (template
+// blueprint merged under the seller's saved config); every text,
+// image and link comes from the seller-editable custom config or
+// the store's own data — nothing is hardcoded per store.
 export const DigikalaTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
+  const cfg = resolveTemplateConfig('tpl-digikala-1', config);
   const items = storefrontProducts(store, products);
-  const slides = heroSlidesOf(config);
-  const showSlides = sectionEnabled(config, 'heroSlides') && slides.length > 0;
+  const order = orderedEnabledSections(cfg);
+  const slides = heroSlidesOf(cfg);
+  const custom = templateCustom(cfg);
+  const seen = new Set<string>();
+  const once = (group: string): boolean => {
+    if (seen.has(group)) return false;
+    seen.add(group);
+    return true;
+  };
+
+  const renderHero = (): React.ReactNode => (
+    <div className="grid gap-3 lg:grid-cols-3">
+      <div className="lg:col-span-2">
+        {slides.length > 0 ? (
+          <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />
+        ) : (
+          <HeroFallbackBanners config={cfg} accentColor={accentColor} />
+        )}
+      </div>
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-4 text-center">
+        {store.logo ? (
+          <img src={store.logo} alt={store.name} className="h-16 w-auto rounded-xl object-contain" />
+        ) : null}
+        <h1 className="mt-2 text-base font-black text-slate-900">{store.name}</h1>
+        {store.tagline ? <p className="mt-1 text-xs leading-6 text-slate-500">{store.tagline}</p> : null}
+      </div>
+    </div>
+  );
+
+  const renderSection = (key: string): React.ReactNode => {
+    switch (key) {
+      case 'announcement':
+        return <AnnouncementSection store={store} config={cfg} accentColor={accentColor} />;
+      case 'hero':
+      case 'heroSlides':
+        return once('hero') ? renderHero() : null;
+      case 'trustStrip':
+        return <TrustStripSection config={cfg} accentColor={accentColor} />;
+      case 'categoryRail':
+        return <CategoryRail products={items} categories={categories} config={cfg} accentColor={accentColor} />;
+      case 'banners':
+      case 'promo':
+        return once('banners') ? <BannerRow config={cfg} /> : null;
+      case 'deals':
+        return <DealsSection products={items} config={cfg} accentColor={accentColor} />;
+      case 'timedDeals':
+        return <TimedDealsSection store={store} products={items} config={cfg} accentColor={accentColor} />;
+      case 'brands':
+        return <BrandsRail products={items} config={cfg} accentColor={accentColor} />;
+      case 'featured':
+        return <FeaturedSection products={items} config={cfg} accentColor={accentColor} />;
+      case 'bestsellers':
+        return <BestsellersSection products={items} config={cfg} accentColor={accentColor} />;
+      case 'discounted':
+        return <DiscountedSection products={items} config={cfg} accentColor={accentColor} />;
+      case 'topRated':
+        return <TopRatedSection products={items} config={cfg} accentColor={accentColor} />;
+      case 'about':
+        return <AboutSection store={store} config={cfg} accentColor={accentColor} />;
+      case 'campaign':
+        return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
+      case 'newsletter':
+        return <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />;
+      case 'testimonials':
+        return <TestimonialsSection config={cfg} accentColor={accentColor} />;
+      case 'faq':
+        return <FaqSection config={cfg} accentColor={accentColor} />;
+      case 'lookbook':
+        return <LookbookSection config={cfg} accentColor={accentColor} />;
+      case 'products':
+      case 'allProducts':
+        return once('products') ? (
+          <ProductsGridSection products={items} config={cfg} accentColor={accentColor} columnsClass="grid-cols-2 lg:grid-cols-5" />
+        ) : null;
+      default:
+        return null;
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col bg-white" data-template-desktop="lg:grid" style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}>
-      <nav aria-label="مسیر صفحه" className="px-3 py-2 text-[11px] text-slate-400">
+    <div className="flex-1 flex flex-col bg-[#f0f0f1]" data-template-desktop="lg:grid" style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}>
+      <nav aria-label="مسیر صفحه" className="px-3 pt-3 text-[11px] text-slate-400 lg:px-4">
         <span>خانه</span><span className="mx-1">/</span><span className="text-slate-700 font-bold">{store.name}</span>
       </nav>
-      <div className="px-3 pb-2 lg:flex lg:items-center lg:justify-between">
-        <h1 className="text-base font-black text-slate-900">{store.name}</h1>
-        {sectionEnabled(config, 'announcement') && store.tagline ? (
-          <p className="mt-1 text-xs font-bold lg:mt-0" style={{ color: accentColor }}>{store.tagline}</p>
-        ) : null}
-      </div>
-      <div className="space-y-4 p-3">
-        {showSlides ? (
-          <HeroSlider slides={slides} accentColor={accentColor} autoplay={templateCustom(config).heroAutoplay} />
-        ) : sectionEnabled(config, 'hero') ? (
-          <>
-            <HeroFallbackBanners config={config} accentColor={accentColor} />
-            {store.logo ? (
-              <img src={store.logo} alt={store.name} className="mx-auto h-28 rounded-2xl object-contain bg-slate-50 border border-slate-100" />
-            ) : null}
-          </>
-        ) : null}
-        <BannerRow config={config} />
-        <CategoryRail products={items} categories={categories} config={config} accentColor={accentColor} />
-        <DealsSection products={items} config={config} accentColor={accentColor} />
-        <TimedDealsSection store={store} products={items} config={config} accentColor={accentColor} />
-        <BrandsRail products={items} config={config} accentColor={accentColor} />
-        <FeaturedSection products={items} config={config} accentColor={accentColor} />
-        <BestsellersSection products={items} config={config} accentColor={accentColor} />
-        {sectionEnabled(config, 'products') ? (
-          <section className="space-y-3">
-            <SectionTitle accentColor={accentColor}>همه کالاهای فروشگاه</SectionTitle>
-            <TemplateProductGrid products={items} columnsClass="grid-cols-2 lg:grid-cols-4" />
-          </section>
-        ) : null}
+      <div className="mx-auto w-full max-w-[1400px] space-y-4 p-3 lg:p-4">
+        {order.map((key) => (
+          <React.Fragment key={key}>{renderSection(key)}</React.Fragment>
+        ))}
       </div>
     </div>
   );

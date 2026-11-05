@@ -10,7 +10,7 @@ import {
   customText,
   customCount,
 } from './templateTypes';
-import type { TemplateConfig, TemplateHeroSlide } from './templateTypes';
+import type { TemplateConfig, TemplateCustom, TemplateHeroSlide } from './templateTypes';
 import { toPersianDigits } from '../../../utils/formatters';
 import { siteContentApi } from '../../../services/siteContentApi';
 import { apiRequest } from '../../../services/apiClient';
@@ -34,6 +34,35 @@ export const SectionTitle: React.FC<{ children: React.ReactNode; accentColor?: s
     <h3 className="text-sm font-black text-slate-900">{children}</h3>
   </div>
 );
+
+// --- Announcement bar (editable announcement / store tagline) -----
+export const AnnouncementSection: React.FC<{
+  store: Store;
+  config: TemplateConfig;
+  accentColor: string;
+}> = ({ store, config, accentColor }) => {
+  if (!sectionEnabled(config, 'announcement')) return null;
+  const custom = templateCustom(config);
+  const text = (custom.announcementText || '').trim() || (store.tagline || '').trim();
+  if (!text) return null;
+  const link = (custom.announcementLink || '').trim();
+  const bar = (
+    <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: accentColor }}>
+      <p className="text-xs font-bold text-white">{text}</p>
+    </div>
+  );
+  return (
+    <section data-testid="store-announcement">
+      {link ? (
+        <a href={link} target="_blank" rel="noreferrer" className="block">
+          {bar}
+        </a>
+      ) : (
+        bar
+      )}
+    </section>
+  );
+};
 
 // --- Hero slider (live heroSlides) ---------------------------------
 export const HeroSlider: React.FC<{
@@ -382,7 +411,7 @@ export const BrandsRail: React.FC<{
   if (brands.length === 0) return null;
   return (
     <section data-testid="store-brands" className="space-y-3">
-      <SectionTitle accentColor={accentColor}>برندها</SectionTitle>
+      <SectionTitle accentColor={accentColor}>{customText(config, 'brandsTitle', 'برندها')}</SectionTitle>
       <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
         {brands.map((brand) => (
           <div
@@ -450,19 +479,30 @@ export const TrustStripSection: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ config, accentColor }) => {
-  const [items, setItems] = useState<{ icon: string; title: string; subtitle: string }[]>([]);
+  // Seller-configured trust items win: when the template config carries
+  // its own trustItems, the platform-wide siteContent fetch is skipped.
+  const configItems = (templateCustom(config).trustItems || []).filter(
+    (t) => t && typeof t.title === 'string' && t.title.trim() !== '',
+  );
+  const [fetched, setFetched] = useState<{ icon: string; title: string; subtitle: string }[]>([]);
   useEffect(() => {
+    if (configItems.length > 0) return undefined;
     let on = true;
-    siteContentApi.getTrustFeatures().then((list) => { if (on) setItems(list.slice(0, 4).map((f) => ({ icon: f.icon, title: f.title, subtitle: f.description }))); }).catch(() => {});
+    siteContentApi.getTrustFeatures().then((list) => { if (on) setFetched(list.slice(0, 4).map((f) => ({ icon: f.icon, title: f.title, subtitle: f.description }))); }).catch(() => {});
     return () => { on = false; };
-  }, []);
+  }, [config]);
+  const items: { title: string; subtitle: string }[] =
+    configItems.length > 0
+      ? configItems.slice(0, 4).map((t) => ({ title: t.title, subtitle: t.subtitle || '' }))
+      : fetched;
   if (!sectionEnabled(config, 'trustStrip') || items.length === 0) return null;
   return (
     <section data-testid="store-trust-strip" className="grid grid-cols-2 gap-2">
       {items.map((f) => (
         <div key={f.title} className="rounded-2xl border border-slate-100 bg-white p-3">
+          <span className="mb-1.5 block h-1.5 w-6 rounded-full" style={{ backgroundColor: accentColor }} />
           <p className="text-xs font-black text-slate-900">{f.title}</p>
-          <p className="text-[11px] text-slate-500 leading-5 mt-0.5">{f.subtitle}</p>
+          {f.subtitle ? <p className="text-[11px] text-slate-500 leading-5 mt-0.5">{f.subtitle}</p> : null}
         </div>
       ))}
     </section>
@@ -491,11 +531,17 @@ export const AboutSection: React.FC<{
   accentColor: string;
 }> = ({ store, config, accentColor }) => {
   if (!sectionEnabled(config, 'about')) return null;
-  const text = (store.description || store.shortDescription || store.tagline || '').trim();
+  const custom = templateCustom(config);
+  const customAbout = (custom.aboutText || '').trim();
+  const text = customAbout || (store.description || store.shortDescription || store.tagline || '').trim();
   if (!text) return null;
+  // aboutImage is read defensively: the key is part of the editable
+  // content contract and may land in TemplateCustom separately.
+  const aboutImage = ((custom as TemplateCustom & { aboutImage?: string }).aboutImage || '').trim();
   return (
     <section data-testid="store-about" className="space-y-2">
-      <SectionTitle accentColor={accentColor}>درباره فروشگاه</SectionTitle>
+      <SectionTitle accentColor={accentColor}>{customText(config, 'aboutTitle', 'درباره فروشگاه')}</SectionTitle>
+      {aboutImage ? <img src={aboutImage} alt="" className="h-40 w-full rounded-2xl object-cover" loading="lazy" /> : null}
       <p className="text-xs leading-6 text-slate-500">{text}</p>
     </section>
   );
@@ -554,6 +600,7 @@ export const NewsletterSection: React.FC<{
   const [error, setError] = useState('');
   useEffect(() => { setMobile(''); setDone(false); setError(''); }, [storeSlug]);
   if (!sectionEnabled(config, 'newsletter')) return null;
+  const newsletterSubtitle = (templateCustom(config).newsletterSubtitle || '').trim();
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!/^09\d{9}$/.test(mobile.trim())) { setError('شماره موبایل معتبر وارد کنید.'); return; }
@@ -567,7 +614,8 @@ export const NewsletterSection: React.FC<{
   };
   return (
     <section data-testid="store-newsletter" className="space-y-2 rounded-2xl border border-slate-100 bg-slate-50 p-3">
-      <SectionTitle accentColor={accentColor}>عضویت در اطلاع‌رسانی</SectionTitle>
+      <SectionTitle accentColor={accentColor}>{customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی')}</SectionTitle>
+      {newsletterSubtitle ? <p className="text-[11px] leading-5 text-slate-500">{newsletterSubtitle}</p> : null}
       {done ? (
         // ISO-A: POST /newsletter/subscribe carries no store slug, so
         // the old text ("registered for THIS store's notifications")
@@ -597,8 +645,14 @@ export const FaqSection: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ config, accentColor }) => {
+  // Seller-configured FAQ items win: when the template config carries
+  // its own faqItems, the platform-wide /static-pages fetch is skipped.
+  const configItems = (templateCustom(config).faqItems || []).filter(
+    (f) => f && typeof f.q === 'string' && f.q.trim() !== '' && typeof f.a === 'string' && f.a.trim() !== '',
+  );
   const [faqs, setFaqs] = useState<{ q: string; a: string }[]>([]);
   useEffect(() => {
+    if (configItems.length > 0) return undefined;
     let on = true;
     apiRequest<{ pages: { key: string; content: string }[] }>('/static-pages')
       .then((res) => {
@@ -612,17 +666,102 @@ export const FaqSection: React.FC<{
       })
       .catch(() => {});
     return () => { on = false; };
-  }, []);
-  if (!sectionEnabled(config, 'faq') || faqs.length === 0) return null;
+  }, [config]);
+  const items = configItems.length > 0 ? configItems : faqs;
+  if (!sectionEnabled(config, 'faq') || items.length === 0) return null;
   return (
     <section data-testid="store-faq" className="space-y-2">
       <SectionTitle accentColor={accentColor}>پرسش‌های متداول</SectionTitle>
-      {faqs.map((f) => (
+      {items.map((f) => (
         <div key={f.q} className="rounded-2xl border border-slate-100 bg-white p-3">
           <p className="text-xs font-black text-slate-900">{f.q}</p>
           <p className="text-[11px] text-slate-500 leading-5 mt-1">{f.a}</p>
         </div>
       ))}
+    </section>
+  );
+};
+// --- Testimonials (seller-configured customer quotes) ---------------
+export const TestimonialsSection: React.FC<{
+  config: TemplateConfig;
+  accentColor: string;
+}> = ({ config, accentColor }) => {
+  if (!sectionEnabled(config, 'testimonials')) return null;
+  const items = (templateCustom(config).testimonials || []).filter(
+    (t) => t && typeof t.text === 'string' && t.text.trim() !== '',
+  );
+  if (items.length === 0) return null;
+  return (
+    <section data-testid="store-testimonials" className="space-y-3">
+      <SectionTitle accentColor={accentColor}>نظرات مشتریان</SectionTitle>
+      <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+        {items.map((t, i) => (
+          <figure key={`${t.name || ''}-${i}`} className="rounded-2xl border border-slate-100 bg-white p-3">
+            <span className="text-xl font-black leading-none" style={{ color: accentColor }}>“</span>
+            <blockquote className="mt-1 text-xs leading-6 text-slate-600">{t.text}</blockquote>
+            {t.name ? <figcaption className="mt-2 text-xs font-bold text-slate-900">{t.name}</figcaption> : null}
+          </figure>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+// --- Lookbook (wide collection banner with overlaid title) ----------
+export const LookbookSection: React.FC<{
+  config: TemplateConfig;
+  accentColor: string;
+}> = ({ config, accentColor }) => {
+  if (!sectionEnabled(config, 'lookbook')) return null;
+  const custom = templateCustom(config);
+  const image = (custom.lookbookImage || '').trim();
+  const title = (custom.lookbookTitle || '').trim();
+  const subtitle = (custom.lookbookSubtitle || '').trim();
+  if (!image && !title) return null;
+  const link = (custom.lookbookLink || '').trim();
+  const body = (
+    <div className="relative overflow-hidden rounded-3xl bg-slate-100">
+      {image ? (
+        <img src={image} alt={title} className="h-56 w-full object-cover lg:h-72" loading="lazy" />
+      ) : (
+        <div className="flex h-56 w-full items-center justify-center lg:h-72" style={{ backgroundColor: accentColor }}>
+          <span className="px-4 text-center text-base font-black text-white">{title}</span>
+        </div>
+      )}
+      {image && (title || subtitle) ? (
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-4 pt-12 text-right">
+          {title ? <p className="text-base font-black text-white">{title}</p> : null}
+          {subtitle ? <p className="mt-1 text-xs text-white/90">{subtitle}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+  return (
+    <section data-testid="store-lookbook">
+      {link ? (
+        <a href={link} target="_blank" rel="noreferrer" className="block">
+          {body}
+        </a>
+      ) : (
+        body
+      )}
+    </section>
+  );
+};
+
+// --- Full products grid (custom-titled catalogue) -------------------
+export const ProductsGridSection: React.FC<{
+  products: Product[];
+  config: TemplateConfig;
+  accentColor: string;
+  columnsClass?: string;
+}> = ({ products, config, accentColor, columnsClass }) => {
+  if (!sectionEnabled(config, 'products') && !sectionEnabled(config, 'allProducts')) return null;
+  if (products.length === 0) return null;
+  return (
+    <section data-testid="store-products" className="space-y-3">
+      <SectionTitle accentColor={accentColor}>{customText(config, 'productsTitle', 'همه کالاهای فروشگاه')}</SectionTitle>
+      <TemplateProductGrid products={products} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
     </section>
   );
 };

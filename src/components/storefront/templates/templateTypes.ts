@@ -65,6 +65,22 @@ export interface TemplateBanner {
   link?: string;
 }
 
+export interface TemplateTestimonial {
+  name: string;
+  text: string;
+}
+
+export interface TemplateFaqItem {
+  q: string;
+  a: string;
+}
+
+export interface TemplateTrustItem {
+  icon?: string;
+  title: string;
+  subtitle?: string;
+}
+
 export interface TemplateCategoryOverride {
   slug: string;
   label?: string;
@@ -107,6 +123,26 @@ export interface TemplateCustom {
   lookbookImage?: string;
   lookbookSubtitle?: string;
   lookbookLink?: string;
+  // Editable content keys (seller panel «ظاهر فروشگاه»). All optional;
+  // renderers fall back to store data or blueprint defaults, so a store
+  // that never opened the editor still renders a complete page.
+  announcementText?: string;
+  announcementLink?: string;
+  heroTitle?: string;
+  heroSubtitle?: string;
+  heroCtaText?: string;
+  heroCtaLink?: string;
+  heroImage?: string;
+  aboutTitle?: string;
+  aboutText?: string;
+  aboutImage?: string;
+  brandsTitle?: string;
+  productsTitle?: string;
+  testimonials?: TemplateTestimonial[];
+  faqItems?: TemplateFaqItem[];
+  trustItems?: TemplateTrustItem[];
+  newsletterTitle?: string;
+  newsletterSubtitle?: string;
 }
 
 // FIX6 - the public store API returns templateConfig.sections as a
@@ -137,6 +173,7 @@ export const DEFAULT_TEMPLATE_SECTIONS: TemplateSection[] = [
   { key: 'about', label: 'درباره فروشگاه', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'topRated', label: 'پرامتیازترین‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'promo', label: 'بنر تبلیغاتی', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+  { key: 'lookbook', label: 'لوک‌بوک / کالکشن', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'campaign', label: 'کمپین', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'newsletter', label: 'خبرنامه', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'testimonials', label: 'نظرات مشتریان', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
@@ -244,4 +281,146 @@ export function customText(config: TemplateConfig, key: keyof TemplateCustom, fa
 export function customCount(config: TemplateConfig, key: keyof TemplateCustom, fallback: number): number {
   const value = templateCustom(config)[key];
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+// ---------------------------------------------------------------------
+// Template blueprints: the unique structure + starter content of each
+// template. Activating a template applies its blueprint (ordered section
+// lineup + default titles) merged UNDER the seller's saved config, so
+// switching templates visibly restructures the storefront while the
+// seller's own edits always win. Every value here is presentation-only
+// and editable later from the panel; nothing is store data.
+// ---------------------------------------------------------------------
+
+export interface TemplateBlueprint {
+  templateId: string;
+  tagline: string;
+  sections: string[];
+  custom: TemplateCustom;
+}
+
+function bp(templateId: string, tagline: string, sections: string[], custom: TemplateCustom): TemplateBlueprint {
+  return { templateId, tagline, sections, custom };
+}
+
+export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
+  'tpl-modern-1': bp('tpl-modern-1', 'مینیمال و آرام؛ تمرکز روی خودِ کالا', [
+    'announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners',
+    'bestsellers', 'about', 'testimonials', 'newsletter', 'faq', 'products',
+  ], {
+    categoriesTitle: 'دسته‌بندی‌ها',
+    featuredTitle: 'منتخب‌های فروشگاه',
+    bestSellersTitle: 'پرفروش‌ترین‌ها',
+    productsTitle: 'همه کالاهای فروشگاه',
+    aboutTitle: 'درباره فروشگاه ما',
+    newsletterTitle: 'از پیشنهادهای تازه جا نمانید',
+    newsletterSubtitle: 'با عضویت، اولین نفر از کالاها و پیشنهادهای جدید باخبر شوید.',
+  }),
+  'tpl-electronic-1': bp('tpl-electronic-1', 'پرانرژی و ریل‌محور؛ مخصوص گجت و کالای دیجیتال', [
+    'announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners',
+    'bestsellers', 'brands', 'discounted', 'testimonials', 'faq', 'products',
+  ], {
+    categoriesTitle: 'خرید بر اساس دسته‌بندی',
+    dealsTitle: 'پیشنهاد شگفت‌انگیز',
+    discountedTitle: 'تخفیف‌های داغ',
+    bestSellersTitle: 'پرفروش‌ترین گجت‌ها',
+    brandsTitle: 'برندهای محبوب',
+    productsTitle: 'همه کالاها',
+    newsletterTitle: 'از تخفیف‌های گجت جا نمانی',
+    newsletterSubtitle: 'پیشنهادهای محدود و قیمت‌های ویژه، اول برای اعضای خبرنامه.',
+  }),
+  'tpl-fashion-1': bp('tpl-fashion-1', 'تیره و لوکس؛ مخصوص مد و پوشاک', [
+    'announcement', 'hero', 'lookbook', 'categoryRail', 'featured', 'banners',
+    'testimonials', 'newsletter', 'products',
+  ], {
+    categoriesTitle: 'دسته‌بندی‌ها',
+    featuredTitle: 'منتخب استایل',
+    lookbookTitle: 'کالکشن جدید',
+    lookbookSubtitle: 'جدیدترین‌های این فصل را ببینید.',
+    productsTitle: 'همه کالاها',
+    newsletterTitle: 'عضو باشگاه مشتریان شوید',
+    newsletterSubtitle: 'دسترسی زودتر به کالکشن‌ها و فروش‌های ویژه اعضا.',
+  }),
+  'tpl-digikala-1': bp('tpl-digikala-1', 'مارکت‌پلیس متراکم؛ مثل فروشگاه‌های بزرگ', [
+    'announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners',
+    'brands', 'bestsellers', 'discounted', 'topRated', 'campaign', 'faq', 'products',
+  ], {
+    categoriesTitle: 'دسته‌بندی‌ها',
+    dealsTitle: 'پیشنهاد شگفت‌انگیز',
+    bestSellersTitle: 'پرفروش‌ترین‌ها',
+    discountedTitle: 'کالاهای تخفیف‌دار',
+    topRatedTitle: 'پرامتیازترین‌ها',
+    brandsTitle: 'برندها',
+    productsTitle: 'همه کالاها',
+  }),
+  'tpl-tech-1': bp('tpl-tech-1', 'حرفه‌ای و خنک؛ کاتالوگ‌محور با گرید کامل', [
+    'announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'brands',
+    'topRated', 'about', 'faq', 'products',
+  ], {
+    categoriesTitle: 'دسته‌بندی‌ها',
+    featuredTitle: 'منتخب تکنولوژی',
+    topRatedTitle: 'پرامتیازترین‌ها',
+    brandsTitle: 'برندها',
+    aboutTitle: 'چرا از ما بخرید؟',
+    productsTitle: 'کاتالوگ کامل',
+  }),
+};
+
+export function blueprintFor(templateId: string): TemplateBlueprint | undefined {
+  return TEMPLATE_BLUEPRINTS[templateId];
+}
+
+function sectionLabel(key: string): string {
+  return DEFAULT_TEMPLATE_SECTIONS.find((d) => sectionKey(d) === key)?.label || key;
+}
+
+// Merge a saved config over a template blueprint. Sections: the saved
+// order wins when present; blueprint sections missing from the saved
+// list are appended in blueprint order so new sections never vanish.
+// Enabled flags come from the saved config when present, else from the
+// blueprint lineup (in lineup = enabled, absent = disabled).
+export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig | null): TemplateConfig {
+  const blueprint = blueprintFor(templateId);
+  const base: TemplateConfig = saved && typeof saved === 'object' ? saved : {};
+  if (!blueprint) return base;
+  const savedSections = normalizeTemplateSections(base.sections) || [];
+  const savedByKey = new Map(savedSections.map((sec) => [canonicalSectionKey(sectionKey(sec)), sec] as const));
+  const orderedKeys: string[] = [];
+  for (const sec of savedSections) {
+    const k = canonicalSectionKey(sectionKey(sec));
+    if (k && !orderedKeys.includes(k)) orderedKeys.push(k);
+  }
+  for (const k of blueprint.sections) {
+    if (!orderedKeys.includes(k)) orderedKeys.push(k);
+  }
+  const sections: TemplateSection[] = orderedKeys.map((k) => {
+    const savedSec = savedByKey.get(k);
+    return {
+      key: k,
+      label: sectionLabel(k),
+      toggleable: true,
+      orderable: true,
+      defaultEnabled: blueprint.sections.includes(k),
+      selfHidesWhenEmpty: true,
+      enabled: savedSec ? savedSec.enabled !== false : blueprint.sections.includes(k),
+    };
+  });
+  const savedCustom = templateCustom(base);
+  return {
+    accentColor: base.accentColor,
+    sections,
+    custom: { ...blueprint.custom, ...savedCustom },
+  };
+}
+
+// Ordered, enabled, canonical section keys for a resolved config.
+export function orderedEnabledSections(config: TemplateConfig): string[] {
+  const normalized = normalizeTemplateSections(config.sections);
+  if (!normalized || normalized.length === 0) {
+    return DEFAULT_TEMPLATE_SECTIONS.filter((d) => d.defaultEnabled).map((d) => canonicalSectionKey(sectionKey(d)));
+  }
+  return normalized
+    .filter((sec) => sec.enabled !== false)
+    .map((sec) => canonicalSectionKey(sectionKey(sec)))
+    .filter((k, i, arr) => k !== '' && arr.indexOf(k) === i);
 }

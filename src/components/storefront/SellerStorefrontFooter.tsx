@@ -140,9 +140,12 @@ export const SellerStorefrontFooter: React.FC = () => {
   );
 };
 
-// Live's storefront bottom nav (bundle component I4): fixed, centred,
-// max 504px, visible at all sizes. Tabs: خانه / دسته‌بندی‌ها / حساب من
-// / تماس. Active tab: accent tint background + accent text.
+// Storefront bottom nav (bundle component I4): fixed, centred,
+// max 504px. Tabs: خانه / دسته‌بندی‌ها / حساب من / تماس. Active tab:
+// accent tint background + accent text. Mobile/tablet only (owner
+// order, Nov 5, 2026): on desktop the pill overlapped hero titles and
+// footer content, and the store header already carries these actions
+// there, so it is hidden at lg and up.
 export const StorefrontBottomNav: React.FC = () => {
   const { setActiveView, currentStore } = useStore();
   const [active, setActive] = React.useState<'home' | 'categories' | 'account' | 'contact'>('home');
@@ -169,7 +172,7 @@ export const StorefrontBottomNav: React.FC = () => {
 
   return (
     <nav
-      className="fixed bottom-0 z-30 border-t border-x"
+      className="fixed bottom-0 z-30 border-t border-x lg:hidden"
       style={{
         left: 0,
         right: 0,

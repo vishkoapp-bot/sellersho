@@ -369,6 +369,9 @@ export interface StoreContextType {
   setSellerDashboardTab: (tab: string) => void;
   routeProductPending: boolean;
   routeProductInvalid: boolean;
+  // Store scope of a product opened from inside a seller storefront
+  // (null = unscoped product route, i.e. the central PDP).
+  routeStoreSlug: string | null;
   formatPrice: (price: number) => string;
   toPersianDigits: (strOrNum: string | number) => string;
 }

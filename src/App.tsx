@@ -62,6 +62,7 @@ export const AppContent: React.FC = () => {
     storefrontUnsubscribeSlug,
     routeProductPending,
     routeProductInvalid,
+    routeStoreSlug,
     openStorefront,
   } = useStore();
 
@@ -180,7 +181,7 @@ export const AppContent: React.FC = () => {
   // (browser-observed), but the candidate shell capped it at 504px, making
   // the gate a narrow centered column. The gate component itself matches
   // live; the cap came from this shell expression, not the gate.
-  const isWideChrome = ['seller_dashboard', 'categories_tree', 'customer_profile', 'customer_orders', 'customer_wishlist', 'supplier_landing', 'dropshipper_landing'].includes(activeView as string);
+  const isWideChrome = ['seller_dashboard', 'supplier_dashboard', 'categories_tree', 'customer_profile', 'customer_orders', 'customer_wishlist', 'supplier_landing', 'dropshipper_landing'].includes(activeView as string);
   const nonHomepageViews = ['seller_dashboard', 'seller_storefront', 'supplier_dashboard', 'warehouse_panel', 'product_detail', 'categories_tree', 'customer_profile', 'customer_orders', 'customer_wishlist', 'static_page', 'supplier_landing', 'dropshipper_landing'];
   const isHomepage = !nonHomepageViews.includes(activeView as string);
   // FIX 8: the live standalone product page renders full-width on desktop
@@ -199,7 +200,7 @@ export const AppContent: React.FC = () => {
           was lg:max-w-7xl, leaving pale side voids on wide desktops — the
           owner rejected the framed column; storefronts now render
           full-width on desktop like the homepage/static views. */}
-      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
+      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
         {currentUser && authorizedPanels.length > 1 && (
           <nav aria-label="Workspace switcher" className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 no-scrollbar">
             {authorizedPanels.map((panel) => {
@@ -268,15 +269,15 @@ export const AppContent: React.FC = () => {
             <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری کالا…</div>
           ) : routeProductInvalid || !currentProductDetail ? (
             <NotFoundView onBack={() => setActiveView('customer')} />
-          ) : currentStore?.ownerType === 'dropshipper' ? (
+          ) : routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
             <>
               <SellerStorefrontHeader
-                onOpenSearch={() => setActiveView('seller_storefront')}
+                onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
                 variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <ProductDetailView
                 product={currentProductDetail}
-                onBack={() => setActiveView('seller_storefront')}
+                onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
               />
               <SellerStorefrontFooter />
             </>

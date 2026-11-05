@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { storeApi } from '../../services/storeApi';
 import { ShoppingCart, Search, Store, Heart, User, Bell } from 'lucide-react';
 import { NotificationDrawer } from '../common/NotificationDrawer';
 
@@ -38,7 +37,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   searchQuery = '',
   onSearchChange,
 }) => {
-  const { currentStore, cartItemsCount, setIsCartOpen, setActiveView, toPersianDigits, customerUser, setCurrentStore } = useStore();
+  const { currentStore, cartItemsCount, setIsCartOpen, setActiveView, toPersianDigits, customerUser, activeView, routeStoreSlug } = useStore();
   const [logoFailed, setLogoFailed] = useState(false);
   // ISO-E: a failed logo for store A must not suppress store B's
   // valid logo (same component instance across SPA navigation).
@@ -55,24 +54,25 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   const tagline = currentStore.shortDescription || currentStore.tagline || '';
   const initial = (currentStore.name || '?').charAt(0);
 
-  // Storefront brand click escapes to the central store (Fix70 parity):
-  // the App post-login effect redirects to the own storefront on every
-  // customer-frame entry while the own dropshipper store is current, so
-  // a central-navigation action MUST set the central store first, or
-  // the click bounces straight back to this storefront.
-  const goToCentral = async () => {
-    // Fix75: for a logged-in seller the stores list is getOwnedStores()
-    // (own stores only — central is NOT in it), so the old
-    // find(central) || stores[0] fallback silently set the OWN store and
-    // the App effect bounced straight back to this storefront. Resolve
-    // central from the PUBLIC list instead, independent of the session.
-    try {
-      const all = await storeApi.getAllStores();
-      const central = (Array.isArray(all) ? all : []).find((s) => s.ownerType === 'central');
-      if (central) setCurrentStore(central);
-    } catch { /* keep current store; still leave the storefront frame */ }
-    setActiveView('customer');
-    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Brand click goes to THIS store's home (owner decision, Nov 5,
+  // 2026 — reverses the Fix70 goToCentral escape to the central
+  // store): a storefront must never eject its visitor to the central
+  // store. On the storefront itself the click mirrors the bottom
+  // nav's «خانه» action exactly — a smooth scroll to the top and
+  // nothing else (that action resets no tab/filter state either).
+  // From a store-scoped PDP it navigates back to this store's
+  // storefront carrying the store's slug, exactly like the PDP's
+  // own back/search actions in App.tsx; the store used is the one
+  // this header renders for (routeStoreSlug, else currentStore —
+  // the context keeps currentStore aligned to routeStoreSlug while
+  // a scoped PDP is shown).
+  const goToStoreHome = () => {
+    if (activeView === 'seller_storefront') {
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    const slug = routeStoreSlug || currentStore?.slug;
+    setActiveView('seller_storefront', slug ? { storeSlug: slug } : {});
   };
 
   const iconContent = currentStore.logo && !logoFailed ? (
@@ -120,7 +120,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
       <>
       <header className="sticky top-0 z-30 bg-white border-b border-slate-200">
         <div className="flex items-center justify-between px-4 py-2.5">
-          <div className="flex items-center gap-2.5 min-w-0 cursor-pointer" onClick={goToCentral} title="فروشگاه مرکزی سلرشو">
+          <div className="flex items-center gap-2.5 min-w-0 cursor-pointer" onClick={goToStoreHome} title={`خانه ${currentStore.name}`}>
             <div
               className="w-8 h-8 rounded-full flex items-center justify-center text-white font-black text-base shrink-0 shadow-sm overflow-hidden"
               style={{ backgroundColor: iconBg }}
@@ -174,7 +174,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
       style={{ backgroundColor: '#FAF8F4', borderColor: '#ECE4D6' }}
     >
       <div className="flex items-center justify-between px-4 py-2.5">
-        <div className="flex items-center gap-2.5 min-w-0 cursor-pointer" onClick={goToCentral} title="فروشگاه مرکزی سلرشو">
+        <div className="flex items-center gap-2.5 min-w-0 cursor-pointer" onClick={goToStoreHome} title={`خانه ${currentStore.name}`}>
           <div
             className="w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-base shrink-0 shadow-sm overflow-hidden"
             style={{ backgroundColor: iconBg }}

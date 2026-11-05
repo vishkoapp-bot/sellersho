@@ -329,14 +329,16 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
     newsletterTitle: 'از تخفیف‌های گجت جا نمانی',
     newsletterSubtitle: 'پیشنهادهای محدود و قیمت‌های ویژه، اول برای اعضای خبرنامه.',
   }),
-  'tpl-fashion-1': bp('tpl-fashion-1', 'تیره و لوکس؛ مخصوص مد و پوشاک', [
-    'announcement', 'hero', 'lookbook', 'categoryRail', 'featured', 'banners',
-    'testimonials', 'newsletter', 'products',
+  'tpl-fashion-1': bp('tpl-fashion-1', 'روشن و ادیتوریال؛ گالری کیوریت‌شده به سبک آستین', [
+    'announcement', 'hero', 'categoryRail', 'about', 'lookbook', 'brands', 'banners',
+    'featured', 'testimonials', 'faq', 'products', 'newsletter',
   ], {
     categoriesTitle: 'دسته‌بندی‌ها',
     featuredTitle: 'منتخب استایل',
     lookbookTitle: 'کالکشن جدید',
     lookbookSubtitle: 'جدیدترین‌های این فصل را ببینید.',
+    brandsTitle: 'برندها',
+    aboutTitle: 'درباره فروشگاه',
     productsTitle: 'همه کالاها',
     newsletterTitle: 'عضو باشگاه مشتریان شوید',
     newsletterSubtitle: 'دسترسی زودتر به کالکشن‌ها و فروش‌های ویژه اعضا.',

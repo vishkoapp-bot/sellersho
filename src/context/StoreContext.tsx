@@ -100,9 +100,9 @@ export interface StoreState {
   updateStoreActiveProducts: (productIds: string[]) => void;
   toggleCategoryActiveProducts: (categorySlug: string, enable: boolean) => void;
   updateStoreProductPriceOverride: (productId: string, profitD: number) => void;
-  updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<boolean>;
+  updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<{ ok: boolean; status?: number }>;
   updateStoreCategoryPriceOverride: (categorySlug: string, marginPercent: number) => void;
-  updateStoreNichePriceOverride: (nicheId: string, margin: number) => Promise<boolean>;
+  updateStoreNichePriceOverride: (nicheId: string, margin: number) => Promise<{ ok: boolean; status?: number }>;
   updateStoreBuilderConfig: (config: StoreBuilderConfig, publishImmediately?: boolean) => void;
   revertStoreBuilderConfig: () => void;
   updateStoreCustomDomain: (domain: string) => void;
@@ -667,8 +667,8 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   };
 
 
-  const updateStoreProductPriceOverrideWithMode = (productId: string, profitD: number): Promise<boolean> => {
-    if (!currentStore) return Promise.resolve(false);
+  const updateStoreProductPriceOverrideWithMode = (productId: string, profitD: number): Promise<{ ok: boolean; status?: number }> => {
+    if (!currentStore) return Promise.resolve({ ok: false });
     const overrides = { ...(currentStore.productPriceOverrides || {}) };
     const modes = { ...(currentStore.productPriceOverrideModes || {}) };
     if (profitD <= 0) {
@@ -691,9 +691,9 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
         targetId: productId,
         value: profitD,
         mode: 'percent',
-      }).then(() => true).catch((err) => { console.warn('Failed to persist product price override:', err); updateCurrentStoreObject({ ...currentStore, productPriceOverrides: prevProductOverrides, productPriceOverrideModes: prevProductOverrideModes }); return false; });
+      }).then(() => ({ ok: true })).catch((err: any) => { console.warn('Failed to persist product price override:', err); updateCurrentStoreObject({ ...currentStore, productPriceOverrides: prevProductOverrides, productPriceOverrideModes: prevProductOverrideModes }); return { ok: false, status: typeof err?.status === 'number' ? err.status : undefined }; });
     }
-    return Promise.resolve(true);
+    return Promise.resolve({ ok: true });
   };
 
   const updateStoreCategoryPriceOverride = (categorySlug: string, marginPercent: number) => {
@@ -705,8 +705,8 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   };
 
 
-  const updateStoreNichePriceOverride = (nicheId: string, margin: number): Promise<boolean> => {
-    if (!currentStore) return Promise.resolve(false);
+  const updateStoreNichePriceOverride = (nicheId: string, margin: number): Promise<{ ok: boolean; status?: number }> => {
+    if (!currentStore) return Promise.resolve({ ok: false });
     const nicheOverrides = { ...(currentStore.nichePriceOverrides || {}) };
     const nicheModes = { ...(currentStore.nichePriceOverrideModes || {}) };
     if (margin <= 0) {
@@ -729,9 +729,9 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
         targetId: nicheId,
         value: margin,
         mode: 'percent',
-      }).then(() => true).catch((err) => { console.warn('Failed to persist niche price override:', err); updateCurrentStoreObject({ ...currentStore, nichePriceOverrides: prevNicheOverrides, nichePriceOverrideModes: prevNicheOverrideModes }); return false; });
+      }).then(() => ({ ok: true })).catch((err: any) => { console.warn('Failed to persist niche price override:', err); updateCurrentStoreObject({ ...currentStore, nichePriceOverrides: prevNicheOverrides, nichePriceOverrideModes: prevNicheOverrideModes }); return { ok: false, status: typeof err?.status === 'number' ? err.status : undefined }; });
     }
-    return Promise.resolve(true);
+    return Promise.resolve({ ok: true });
   };
 
   const updateStoreBuilderConfig = (config: StoreBuilderConfig, publishImmediately = false) => {

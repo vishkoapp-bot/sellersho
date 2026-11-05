@@ -267,8 +267,8 @@ export interface StoreContextType {
 
   // Niche Management & Multi-level Pricing
   updateStoreSelectedNiches: (nicheIds: string[]) => void;
-  updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<boolean>;
-  updateStoreNichePriceOverride: (nicheId: string, margin: number) => Promise<boolean>;
+  updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<{ ok: boolean; status?: number }>;
+  updateStoreNichePriceOverride: (nicheId: string, margin: number) => Promise<{ ok: boolean; status?: number }>;
   
   // Marketing & Available Widgets
   preMadeWidgets: PreMadeWidget[];

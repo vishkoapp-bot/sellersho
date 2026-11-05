@@ -75,6 +75,18 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   const maxAllowed = platformSettings.maxProfitMargin ?? 35;
   const isProfitValid = profitVal !== '' && !isNaN(numVal) && numVal >= minAllowed && numVal <= maxAllowed;
 
+  // The allowed margin band comes from the server's pricing settings
+  // (platformSettings), so the seller always sees the real range before
+  // saving. Save failures are reported by kind: a 400 names the range, a
+  // 403 is the admin lock, anything else is a server error — never blame
+  // the range for a server failure.
+  const rangeText = `از ${toPersianDigits(minAllowed)}٪ تا ${toPersianDigits(maxAllowed)}٪`;
+  const saveErrorText = (status?: number): string => {
+    if (status === 400) return `ذخیره انجام نشد؛ درصد سود باید در بازه مجاز پلتفرم باشد (${rangeText}).`;
+    if (status === 403) return 'ذخیره انجام نشد؛ قیمت‌گذاری این فروشگاه توسط مدیر پلتفرم قفل شده است.';
+    return 'ذخیره انجام نشد؛ خطای سرور رخ داد. چند لحظه دیگر دوباره تلاش کنید.';
+  };
+
   // Priority 2.1: Use Canonical resolvePricing from pricingEngine
   const simulatedStore = {
     ...currentStore,
@@ -106,9 +118,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
     // Awaited: the toast must not claim success when the server rejects
     // (floor/ceiling/lock); on rejection the context reverts the value.
-    const ok = await updateStoreProductPriceOverrideWithMode(product.id, numVal);
-    if (!ok) {
-      error('ذخیره انجام نشد؛ مقدار باید در محدوده مجاز پلتفرم باشد.');
+    const res = await updateStoreProductPriceOverrideWithMode(product.id, numVal);
+    if (!res.ok) {
+      error(saveErrorText(res.status));
       return;
     }
     if (numVal <= 0) {
@@ -120,10 +132,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   };
 
   const handleConfirmNicheBulkApply = async () => {
-    const okNiche = await updateStoreNichePriceOverride(productNiche.id, numVal);
-    const okProduct = await updateStoreProductPriceOverrideWithMode(product.id, numVal);
-    if (!okNiche || !okProduct) {
-      error('ذخیره گروهی انجام نشد؛ مقدار باید در محدوده مجاز پلتفرم باشد.');
+    const resNiche = await updateStoreNichePriceOverride(productNiche.id, numVal);
+    const resProduct = await updateStoreProductPriceOverrideWithMode(product.id, numVal);
+    if (!resNiche.ok || !resProduct.ok) {
+      error(saveErrorText((!resNiche.ok ? resNiche.status : resProduct.status)));
       return;
     }
     success(
@@ -234,7 +246,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
         <form onSubmit={handleInitialSubmit} className="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1 pb-1 text-xs">
           {/* Section 3.1: Single unified base price (R) */}
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
-            <span className="text-slate-600 font-bold text-[11px]">قیمت پایه (مرجع × سهم پلتفرم):</span>
+            <span className="text-slate-600 font-bold text-[11px]">قیمت پایه:</span>
             <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{formatPrice(baseCostR)} تومان</span>
           </div>
 
@@ -249,6 +261,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
               <p className="text-[11px] font-bold text-slate-800">سود هر تنوع (درصد روی قیمت پایه همان تنوع)</p>
               <p className="text-[10px] leading-5 text-slate-500">
                 قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. خالی یعنی پیرو سود کالا.
+              </p>
+              <p className="text-[10px] leading-5 text-slate-500">
+                بازه مجاز سود برای هر تنوع هم همان بازه پلتفرم است: {rangeText}
               </p>
               {(product.variants || []).map((v) => {
                 const costV = v.supplierBaseCost ?? product.supplierBaseCost;
@@ -317,12 +332,17 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
               </span>
             </div>
 
+            <p className="mt-1 text-[10px] leading-5 text-slate-500">
+              بازه مجاز سود در پلتفرم: {rangeText}
+            </p>
             {/* Requirement 1: Real-time validation warning */}
-            {!isProfitValid && (
+            {!isProfitValid && profitVal !== '' && (
               <div className="flex items-center gap-1 text-[10px] text-rose-600 mt-1">
                 <AlertTriangle className="w-3 h-3 shrink-0"  strokeWidth={1.5}/>
                 <span>
-                  سود منفی مجاز نیست؛ حداقل درصد سود مصوب پلتفرم {toPersianDigits(minAllowed)}٪ است.
+                  {!isNaN(numVal) && numVal > maxAllowed
+                    ? `حداکثر درصد سود مجاز ${toPersianDigits(maxAllowed)}٪ است.`
+                    : `سود منفی مجاز نیست؛ حداقل درصد سود مصوب پلتفرم ${toPersianDigits(minAllowed)}٪ است.`}
                 </span>
               </div>
             )}

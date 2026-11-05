@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { catalogApi } from '../../services/catalogApi';
-import { useStore } from '../../context/StoreContext';
+import { useStore, activeStoreSlugOf } from '../../context/StoreContext';
 import { ProductCard } from '../ProductCard';
 import { PriceRangeSlider } from '../PriceRangeSlider';
 import {
@@ -24,7 +24,36 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     catalogBrandRequest,
     clearCatalogBrand,
     setActiveView,
+    currentStore,
+    routeStoreSlug,
   } = useStore();
+
+  // If a store context is somehow active while this central catalog
+  // is on screen, sidebar category clicks must not keep the shopper
+  // in the central assortment: they take the same store-aware
+  // channel as every other category entry point and land on the
+  // store's own storefront with the category applied. With no store
+  // context this is exactly the local filter it has always been.
+  const storeSlug = activeStoreSlugOf({ routeStoreSlug, currentStore });
+  const handleSelectCategory = (slug: string) => {
+    if (storeSlug) openCatalogCategory(slug);
+    else setSelectedCategory(slug);
+  };
+
+  // Self-guard: this view is the CENTRAL catalogue. If it mounts
+  // while a store context is active (a history/URL leftover —
+  // every in-app entry point now routes in-store shoppers to the
+  // storefront), rendering it would show the central assortment
+  // at central prices inside that store's session. Bounce once to
+  // the store's own storefront instead. Central mounts (no store
+  // context) never fire this.
+  const storeGuardFiredRef = useRef(false);
+  useEffect(() => {
+    if (storeSlug && !storeGuardFiredRef.current) {
+      storeGuardFiredRef.current = true;
+      setActiveView('seller_storefront', { storeSlug });
+    }
+  }, [storeSlug, setActiveView]);
 
   const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount' | 'newest'>('featured');
   const [onlyInStock, setOnlyInStock] = useState(false);
@@ -132,8 +161,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
     const matchesSearch = !searchQuery || 
       p.title.includes(searchQuery) || 
-      p.description.includes(searchQuery) ||
-      p.supplierName.includes(searchQuery);
+      p.description.includes(searchQuery);
     const matchesStock = !onlyInStock || (p.stock || 0) > 0;
     const matchesOriginal = !onlyOriginal || p.isOriginal === true;
     
@@ -243,7 +271,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             <h3 className="hidden lg:block text-xs font-bold text-slate-500 mb-2">دسته‌بندی</h3>
             <div className="flex gap-1.5 overflow-x-auto lg:overflow-visible lg:flex-wrap lg:flex-col lg:items-stretch no-scrollbar px-3 lg:px-0 py-0.5 text-[11px] lg:text-sm">
               <button
-                onClick={() => setSelectedCategory('all')}
+                onClick={() => handleSelectCategory('all')}
                 className={`px-3 py-1 min-h-[36px] lg:min-h-[40px] inline-flex items-center justify-center lg:justify-start rounded-xl font-bold shrink-0 transition-all ${selectedCategory === 'all' ? 'bg-brand text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
               >
                 همه
@@ -254,7 +282,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   node={cat}
                   categories={categories}
                   selectedCategory={selectedCategory}
-                  setSelectedCategory={setSelectedCategory}
+                  setSelectedCategory={handleSelectCategory}
                   expandedSlugs={expandedSlugs}
                   toggleExpanded={toggleExpanded}
                   onViewTree={() => setActiveView('categories_tree')}

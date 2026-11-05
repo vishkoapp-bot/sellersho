@@ -150,10 +150,13 @@ export interface StoreContextType {
   staticPageKey: StaticPageKey;
   openStaticPage: (key: StaticPageKey) => void;
 
-  // Customer Wishlist
+  // Customer Wishlist (per store: every dropshipper store is a
+  // separate site with its own wishlist; wishlistIds is the CURRENT
+  // store's list, wishlists the full per-store map)
   wishlistIds: string[];
-  toggleWishlist: (productId: string) => void;
-  isWishlisted: (productId: string) => boolean;
+  wishlists: Record<string, string[]>;
+  toggleWishlist: (productId: string, store?: { id: string; slug?: string }) => void;
+  isWishlisted: (productId: string, store?: { id: string; slug?: string }) => boolean;
 
   // Customer Account & Profile
   customerUser: {

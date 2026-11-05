@@ -1,22 +1,73 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { mapBackendProduct } from '../../context/ProductContext';
+import { catalogApi } from '../../services/catalogApi';
+import type { Product } from '../../types';
+import { cardPriceOf } from '../../utils/cardPrice';
 import { ArrowRight, Heart, ShoppingCart, Trash2, PackageOpen } from 'lucide-react';
 
 export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { 
-    products, 
-    wishlistIds, 
-    toggleWishlist, 
-    addToCart, 
-    openProductDetail, 
+  const {
+    products,
+    wishlists,
+    toggleWishlist,
+    addToCart,
+    openProductDetail,
     openCatalogCategory,
-    formatPrice, 
-    toPersianDigits 
+    formatPrice,
+    toPersianDigits,
+    currentStore,
+    stores,
+    routeStoreSlug
   } = useStore();
   const { success, info } = useToast();
 
-  const savedProducts = products.filter((p) => wishlistIds.includes(p.id));
+  // Per-store wishlist: the view belongs to the store it was entered
+  // under - the routed store of a store-scoped session, else a
+  // dropshipper session store, else central - resolved exactly as
+  // the PDP scopes. The ids are THAT store's list only; a dropshipper
+  // store's entries resolve through the store-scoped fetch at store
+  // prices (ids whose product left the store's assortment are
+  // naturally omitted), central entries through the context catalogue
+  // at central prices - the exact parallel.
+  const scopedStoreSlug: string | null =
+    routeStoreSlug ??
+    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
+      ? currentStore.slug
+      : null);
+  const entryStore =
+    scopedStoreSlug == null
+      ? currentStore
+      : currentStore?.slug === scopedStoreSlug
+        ? currentStore
+        : stores.find((s) => s.slug === scopedStoreSlug) ?? currentStore;
+  const entryIds = entryStore ? wishlists[entryStore.id] ?? [] : [];
+  const isScopedStore = entryStore?.ownerType === 'dropshipper';
+  const [scopedProducts, setScopedProducts] = useState<Product[] | null>(null);
+  useEffect(() => {
+    if (!isScopedStore || !entryStore) {
+      setScopedProducts(null);
+      return;
+    }
+    setScopedProducts(null);
+    let cancelled = false;
+    catalogApi
+      .getProducts({ storeSlug: entryStore.slug })
+      .then((dtos) => {
+        if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct));
+      })
+      .catch(() => {
+        if (!cancelled) setScopedProducts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isScopedStore, entryStore?.id, entryStore?.slug]);
+
+  const savedProducts = (isScopedStore ? scopedProducts ?? [] : products).filter((p) =>
+    entryIds.includes(p.id),
+  );
 
   return (
     <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20">
@@ -71,14 +122,38 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                     {product.title}
                   </h4>
                   <span className="text-xs font-black text-blue-600 block mt-1">
-                    {formatPrice(product.price)} ت
+                    {formatPrice(cardPriceOf(product).price)} ت
                   </span>
                 </div>
 
                 <div className="p-2 border-t border-slate-100 grid grid-cols-2 gap-1.5 bg-slate-50/50">
                   <button
                     onClick={() => {
-                      addToCart(product, 1);
+                      // Default-variant rule (the PDP displayProduct
+                      // pattern): when the card price comes from a
+                      // priced default variant, the cart line carries
+                      // that variant and its price - the customer
+                      // pays the price this card showed.
+                      const defaultVariant = product.variants?.find((v) => v.isDefault);
+                      const variantPrice = defaultVariant
+                        ? product.variantPrices?.[defaultVariant.id]
+                        : undefined;
+                      if (defaultVariant && variantPrice && variantPrice.price != null) {
+                        const triple = cardPriceOf(product);
+                        addToCart(
+                          {
+                            ...product,
+                            price: triple.price,
+                            originalPrice: triple.originalPrice,
+                            discountPercent: triple.discountPercent,
+                          },
+                          1,
+                          undefined,
+                          defaultVariant.id,
+                        );
+                      } else {
+                        addToCart(product, 1);
+                      }
                       success(`«${product.title}» به سبد خرید اضافه شد.`);
                     }}
                     className="py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-[10px] flex items-center justify-center gap-1 transition-colors"
@@ -88,7 +163,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                   </button>
                   <button
                     onClick={() => {
-                      toggleWishlist(product.id);
+                      toggleWishlist(product.id, entryStore ?? undefined);
                       info('کالا از علاقه‌مندی‌ها حذف شد.');
                     }}
                     className="py-1.5 bg-white border border-slate-200 text-slate-500 hover:text-rose-600 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"

@@ -36,6 +36,20 @@ export const SellerStorefrontFooter: React.FC = () => {
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const scrollToBottom = () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  // «درباره ما» is the STORE's own about, never the platform CMS
+  // about page: on template storefronts the about section is on this
+  // very page (data-testid="store-about") and scrolls into view; on
+  // the fallback layout the about lives behind the storefront's own
+  // «درباره فروشگاه» tab, which only the view can select - ask it
+  // via this event (SellerStorefrontView listens for it).
+  const goToStoreAbout = () => {
+    const el = document.querySelector('[data-testid="store-about"]');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('selersho:storefront-about'));
+  };
 
   return (
     <>
@@ -91,7 +105,7 @@ export const SellerStorefrontFooter: React.FC = () => {
           </button>
         </nav>
         <nav aria-label="لینک‌های اعتماد" className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-5">
-          <button onClick={() => openStaticPage('about')} className="text-[11px] text-stone-500 transition-colors hover:text-stone-200">
+          <button onClick={goToStoreAbout} className="text-[11px] text-stone-500 transition-colors hover:text-stone-200">
             درباره ما
           </button>
           <button onClick={() => openStaticPage('terms')} className="text-[11px] text-stone-500 transition-colors hover:text-stone-200">

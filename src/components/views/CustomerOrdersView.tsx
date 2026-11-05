@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useOrders } from '../../context/OrderContext';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { Order } from '../../types';
-import { orderApi, CustomerReturnDto } from '../../services/orderApi';
+import { orderApi, CustomerReturnDto, ReturnDestinationInfo } from '../../services/orderApi';
 import { ArrowRight, Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle } from 'lucide-react';
 
 export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
@@ -16,7 +16,8 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   const [returnQty, setReturnQty] = useState<Record<string, number>>({});
   const [returnReason, setReturnReason] = useState('');
   const [returnPrepaid, setReturnPrepaid] = useState(false);
-  const [returnWarehouse, setReturnWarehouse] = useState('');
+  const [returnDestination, setReturnDestination] = useState<ReturnDestinationInfo | null>(null);
+  const returnQuoteSeq = useRef(0);
   const [returnShippingCost, setReturnShippingCost] = useState<number | null>(null);
   const [returnBusy, setReturnBusy] = useState(false);
   const [confirmingCancelId, setConfirmingCancelId] = useState<string | null>(null);
@@ -88,13 +89,36 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
     setReturnQty(qty);
     setReturnReason('');
     setReturnPrepaid(false);
-    setReturnWarehouse('');
+    setReturnDestination(null);
     setReturnShippingCost(null);
     const ids = ord.items.filter((it) => it.orderItemId).map((it) => ({ order_item_id: it.orderItemId as string }));
     if (ids.length > 0) {
       orderApi.requestReturnQuote(ord.id, ids).then((q) => setReturnShippingCost(q.totalFareToman)).catch(() => {});
     }
   };
+
+  // The return destination is DERIVED by the backend from the
+  // shipment origins of the selected items (owner rule, Oct 28 2026)
+  // — never typed by the customer. Re-quote whenever the selection
+  // changes so the fare estimate and the destination both describe
+  // the selected set; the created return confirms the same
+  // destination in the success message.
+  useEffect(() => {
+    if (!returnModalOrder) return;
+    const ids = Object.entries(returnSelected)
+      .filter(([, v]) => v)
+      .map(([id]) => ({ order_item_id: id }));
+    if (ids.length === 0) {
+      setReturnDestination(null);
+      return;
+    }
+    const seq = ++returnQuoteSeq.current;
+    orderApi.requestReturnQuote(returnModalOrder.id, ids).then((q) => {
+      if (returnQuoteSeq.current !== seq) return;
+      setReturnShippingCost(q.totalFareToman);
+      setReturnDestination(q.destination ?? null);
+    }).catch(() => {});
+  }, [returnSelected, returnModalOrder]);
 
   const submitReturn = async () => {
     if (!returnModalOrder) return;
@@ -111,13 +135,15 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
     }
     setReturnBusy(true);
     try {
-      await orderApi.requestReturn(returnModalOrder.id, {
+      const created = await orderApi.requestReturn(returnModalOrder.id, {
         items,
         reason: returnReason.trim(),
-        warehouse_id: returnWarehouse.trim() || undefined,
         prepaid: returnPrepaid,
       });
-      success('درخواست مرجوعی با موفقیت ثبت شد.');
+      const destLabel = created.destinationType
+        ? ` مقصد مرجوعی: ${created.destinationType === 'supplier' ? 'انبار تأمین‌کننده' : 'انبار مرکزی'}${created.destinationName ? ` — ${created.destinationName}` : ''}${created.destinationCity ? ` (${created.destinationCity})` : ''}`
+        : '';
+      success(`درخواست مرجوعی با موفقیت ثبت شد.${destLabel}`);
       setReturnModalOrder(null);
       await fetchMyOrders();
       const rs = await orderApi.getMyReturns().catch(() => []);
@@ -269,7 +295,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                       type="button"
                       onClick={() => {
                         disputeOrderDelivery(ord.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
-                        success(`عدم دریافت بسته گزارش شد و سفارش جهت پیگیری در صف پلتفرم قرار گرفت.`);
+                        success(`گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.`);
                       }}
                       className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-lg border border-rose-200 transition-colors flex items-center justify-center gap-1"
                     >
@@ -337,9 +363,12 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
         )}
       </div>
 
-      {/* FIX 5: return form — live shape (order_item_id + warehouse_id
-          + prepaid). The backend enforces the delivered_confirmed
-          status and the return window. */}
+      {/* FIX 5: return form — live shape (order_item_id + prepaid).
+          The destination is not asked anymore: the backend derives
+          it from the shipment origins (owner rule, Oct 28 2026) and
+          it is shown read-only from the quote response. The backend
+          enforces the delivered_confirmed status and the return
+          window. */}
       {returnModalOrder && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-[480px] w-full p-4 space-y-3 text-xs max-h-[90vh] overflow-y-auto">
@@ -374,12 +403,18 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
               value={returnReason}
               onChange={(e) => setReturnReason(e.target.value)}
             />
-            <input
-              className="w-full border rounded-xl p-2"
-              placeholder="انبار مقصد (اختیاری)"
-              value={returnWarehouse}
-              onChange={(e) => setReturnWarehouse(e.target.value)}
-            />
+            {returnDestination && (
+              <div className="bg-slate-50 rounded-xl p-2 space-y-0.5">
+                <p className="text-slate-700 font-bold">
+                  مقصد مرجوعی: {returnDestination.type === 'supplier' ? 'انبار تأمین‌کننده' : 'انبار مرکزی'}
+                  {returnDestination.name ? ` — ${returnDestination.name}` : ''}
+                  {returnDestination.city ? ` (${returnDestination.city})` : ''}
+                </p>
+                {returnDestination.address && (
+                  <p className="text-[11px] text-slate-500">{returnDestination.address}</p>
+                )}
+              </div>
+            )}
             <label className="flex items-center gap-2 text-slate-700">
               <input type="checkbox" checked={returnPrepaid} onChange={(e) => setReturnPrepaid(e.target.checked)} />
               <span>هزینه ارسال مرجوعی را پیش‌پرداخت می‌کنم</span>

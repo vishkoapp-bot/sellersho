@@ -4,6 +4,7 @@ import { useStore } from '../../context/StoreContext';
 import { roundTo100 } from '../../utils/pricingEngine';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
+import { SupplierAccountStateScreen, SupplierAccountStateInfo } from '../supplier/SupplierAccountStateScreen';
 import { isMockMode, tokenStore } from '../../services/apiClient';
 
 interface Props { onBack: () => void; }
@@ -15,6 +16,7 @@ export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
   const { success, error } = useToast();
   const [faq, setFaq] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [registered, setRegistered] = useState<SupplierAccountStateInfo | null>(null);
   const [form, setForm] = useState({ companyName:'', managerName:'', username:'', password:'', phone:'', email:'', warehouseCity:'تهران' });
   const pct = platformSettings.platformPct ?? 0;
   const C = 1200000, B = roundTo100(C * (1 + pct / 100)), fee = B - C, D = 200000, P = B + D;
@@ -25,11 +27,16 @@ export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
     setLoading(true);
     try {
       if (isMockMode()) setSupplierSession({ token:'mock-supplier-token', supplierId:`sup-${form.username}`, companyName:form.companyName, managerName:form.managerName || form.companyName, warehouseCity:form.warehouseCity, loginAt:new Date().toISOString(), signedContractVersion:platformSettings.contracts.supplierContractVersion });
-      else { const result = await authApi.registerSupplier({ company_name:form.companyName, contact_person:form.managerName || form.companyName, username:form.username, password:form.password, phone:form.phone, email:form.email, warehouse_city:form.warehouseCity }); if (!result.success || !result.token || !result.supplier?.id) throw new Error('پاسخ ثبت‌نام معتبر نیست. لطفاً دوباره تلاش کنید.'); if (result.token) { tokenStore.setToken(result.token); setSupplierSession({ token:result.token, supplierId:result.supplier?.id || form.username, companyName:form.companyName, managerName:form.managerName || form.companyName, warehouseCity:form.warehouseCity, loginAt:new Date().toISOString() }); } }
+      else { const result = await authApi.registerSupplier({ company_name:form.companyName, contact_person:form.managerName || form.companyName, username:form.username, password:form.password, phone:form.phone, email:form.email, warehouse_city:form.warehouseCity }); if (!result.success || !result.supplier?.id) throw new Error('پاسخ ثبت‌نام معتبر نیست. لطفاً دوباره تلاش کنید.'); // GAP 19b: a fresh supplier account is pending_approval and its
+      // registration token cannot open the panel (it carries no active
+      // capability), so do NOT store the token or enter the dashboard —
+      // land on the pending-approval state screen instead.
+      setRegistered({ kind:'pending', companyName: result.supplier?.name || form.companyName, warehouseCity: result.supplier?.warehouseCity || form.warehouseCity }); return; }
       success('درخواست همکاری با موفقیت ثبت شد.'); setActiveView('supplier_dashboard');
     } catch (e: any) { error(e?.message || 'ثبت‌نام انجام نشد.'); } finally { setLoading(false); }
   };
   const scrollToForm = () => document.getElementById('supplier-form')?.scrollIntoView({ behavior:'smooth' });
+  if (registered) return <SupplierAccountStateScreen {...registered} onBack={() => setRegistered(null)} />;
   return <div dir="rtl" className="flex-1 min-h-screen bg-slate-50 text-slate-800 pb-20">
     <header className="sticky top-0 z-20 flex items-center justify-between border-b bg-white/95 px-3 py-2.5 backdrop-blur"><button onClick={onBack} className="rounded-xl p-2 hover:bg-slate-100" title="بازگشت"><ArrowRight className="h-5 w-5"  strokeWidth={1.5}/></button><div><h1 className="text-xs font-black">همکاری با تأمین‌کنندگان</h1><span className="text-[10px] text-slate-400">رشد فروش بدون هزینه بازاریابی</span></div><button onClick={scrollToForm} className="rounded-xl bg-blue-600 px-3 py-2 text-[10px] font-bold text-white">ثبت‌نام</button></header>
     <main className="space-y-4 p-3.5">

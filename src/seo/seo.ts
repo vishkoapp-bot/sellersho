@@ -51,9 +51,30 @@ export function setDocumentHead(head: Partial<SeoHead> = {}): void {
   upsertMeta('meta[name="twitter:description"]', description);
 }
 
+export const PLATFORM_THEME_COLOR = '#5d44f8';
+export const PLATFORM_ICON_HREF = '/icon-192.png';
+
+// Runtime store identity: while a store scope is active, the live
+// tab's theme-color and favicon are the STORE's (template accent and
+// logo); when the scope clears, the platform values from index.html
+// are restored. This affects only the live tab - the scraper-facing
+// OG tags stay neutral by design (see the note at the top of this
+// file); it never writes og:site_name or a brand og:image.
+export function setStoreIdentity(identity: { themeColor?: string; iconHref?: string } | null): void {
+  if (typeof document === 'undefined') return;
+  upsertMeta('meta[name="theme-color"]', identity?.themeColor || PLATFORM_THEME_COLOR);
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.setAttribute('rel', 'icon');
+    document.head.appendChild(link);
+  }
+  link.setAttribute('href', identity?.iconHref || PLATFORM_ICON_HREF);
+}
+
 export function headForView(
   view: string,
-  options: { storeName?: string; storeTagline?: string; productTitle?: string } = {},
+  options: { storeName?: string; storeTagline?: string; storeDescription?: string; productTitle?: string } = {},
 ): SeoHead {
   if (view === 'seller_storefront' && options.storeName) {
     // Live uses the store tagline as the title suffix, not a generic
@@ -62,6 +83,15 @@ export function headForView(
     return { title: `${options.storeName}${suffix}`, description: DEFAULT_HEAD.description };
   }
   if (view === 'product_detail' && options.productTitle) {
+    if (options.storeName) {
+      // Store-scoped PDP: the tab names the STORE - the business the
+      // customer is buying from - and describes it with the store's
+      // own text, not the platform's name and description.
+      return {
+        title: `${options.productTitle} | ${options.storeName}`,
+        description: options.storeDescription || options.storeTagline || DEFAULT_HEAD.description,
+      };
+    }
     // FIX 12: live product title suffix is "| سلرشو".
     return { title: `${options.productTitle} | سلرشو`, description: DEFAULT_HEAD.description };
   }

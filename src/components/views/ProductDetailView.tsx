@@ -7,7 +7,10 @@ import { ProductCard } from '../ProductCard';
 import { ProductDetailGallery } from './product/ProductDetailGallery';
 import { ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
 import { catalogApi } from '../../services/catalogApi';
+import { buildProductUrl } from '../../utils/routing';
+import { NotFoundView } from '../NotFoundView';
 import { storefrontProducts } from '../storefront/templates/templateTypes';
+import { resolvePdpTheme } from './product/pdpTheme';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { ProductVariantSelector } from '../ProductVariantSelector';
 import { ArrowRight, Share2, Heart, ShoppingCart, Sparkles } from 'lucide-react';
@@ -33,6 +36,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     cart,
     products,
     routeStoreSlug,
+    stores,
   } = useStore();
   const { success, info, error } = useToast();
   const [qty, setQty] = useState(1);
@@ -49,6 +53,17 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   // exact copy (real "۱۸ ماه گارانتی شرکتی" warranty, single image,
   // empty specs — the detail DTO has no images/specs keys, like live).
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  // PDP store scope: the route scope (a /store/<slug>/product/ URL or
+  // a storefront click) wins; otherwise a dropshipper current store
+  // scopes its own PDP. Derived BEFORE the detail fetch so a cold
+  // store-product URL is store-priced from the very first request -
+  // keying the fetch on currentStore alone flashed the central price
+  // until the context alignment installed the routed store.
+  const scopedStoreSlug: string | null =
+    routeStoreSlug ??
+    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
+      ? currentStore.slug
+      : null);
   useEffect(() => {
     setDetailProduct(null);
     let cancelled = false;
@@ -57,28 +72,37 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     // (staging prod-vitamin-serum: 462000/32% unscoped vs
     // 483000/29% for storeSlug=mone). Re-fetch when the store
     // changes, even for the same product id.
-    catalogApi.getProductById(product.id, currentStore?.slug)
+    catalogApi.getProductById(product.id, scopedStoreSlug ?? currentStore?.slug)
       .then((dto) => { if (!cancelled) setDetailProduct(mapBackendProduct(dto)); })
       .catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.id, currentStore?.slug]);
+  }, [product.id, scopedStoreSlug, currentStore?.slug]);
 
-  // Related-rail scope: when this PDP is bound to a store (route
-  // scope captured from a storefront click, or the current store is
-  // itself a dropshipper), the rail must be priced by THAT store.
-  // The context catalogue is unscoped (central margins) while the
-  // order path charges store prices, so a scoped PDP fetches the
+  // Related-rail scope: when this PDP is bound to a store (the scope
+  // derived above), the rail must be priced by THAT store. The
+  // context catalogue is unscoped (central margins) while the order
+  // path charges store prices, so a scoped PDP fetches the
   // store-scoped list with the same mechanism as the detail refetch
   // above (catalogApi keyed by the store slug, mapped the same way).
   // While the scoped list is in flight the rail stays empty - it
   // must never flash central-priced cards first; a failed fetch
   // leaves it empty too. Central PDPs keep the context list below.
-  const scopedStoreSlug: string | null =
-    routeStoreSlug ??
-    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
-      ? currentStore.slug
-      : null);
+  // PDP template bridge: a store-bound PDP adopts that store's
+  // template identity (product/pdpTheme.ts) instead of the central
+  // design. The themed store is the one the scope names - the aligned
+  // currentStore when it already is that store, else the store-list
+  // entry (the context alignment effect installs it as currentStore
+  // a tick later and this derivation follows). No scope -> the
+  // default theme -> every class below is today's string.
+  const pdpStore =
+    scopedStoreSlug == null
+      ? undefined
+      : currentStore?.slug === scopedStoreSlug
+        ? currentStore
+        : stores.find((s) => s.slug === scopedStoreSlug);
+  const pdpTheme = resolvePdpTheme(pdpStore);
+  const fashion = pdpTheme.fashion;
   const [scopedRelated, setScopedRelated] = useState<Product[] | null>(null);
   useEffect(() => {
     if (!scopedStoreSlug) {
@@ -120,7 +144,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id]);
 
-  const wishlisted = isWishlisted(product.id);
+  const wishlisted = isWishlisted(product.id, pdpStore);
   const variants = product.variants ?? [];
   const showVariantSelector = variants.length > 1;
   const selectedVariant =
@@ -178,7 +202,12 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   const handleShare = () => {
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(window.location.href);
+      // Share the canonical product URL for THIS PDP's store scope,
+      // not the address bar: a scoped PDP reached through a legacy
+      // storeless path must still share the store's link, so the
+      // recipient lands in the same store at the same prices.
+      const url = window.location.origin + buildProductUrl(displayBase, scopedStoreSlug ?? undefined);
+      navigator.clipboard.writeText(url);
       success('لینک کالا در حافظه کپی شد.');
     }
   };
@@ -214,19 +243,40 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     setBuyNowModalOpen(true);
   };
 
+  // Store-scoped route, wrong store: the URL names a store that does
+  // not publish this product. Render the store 404 (bare shell, no
+  // central chrome - App frames it with the store's header/footer)
+  // instead of a PDP shell, and never redirect to the central PDP:
+  // that redirect is the leak the store-carrying URL exists to
+  // close. The check runs against the ALIGNED currentStore - the
+  // context installs the routed store as currentStore from the
+  // single-store DTO whose activeProductIds the publication rule
+  // trusts - so it cannot fire on transient pre-alignment state.
+  if (
+    routeStoreSlug &&
+    currentStore?.slug === routeStoreSlug &&
+    currentStore.ownerType === 'dropshipper' &&
+    !publishedInCurrentStore
+  ) {
+    return <NotFoundView variant="store" onBack={onBack} />;
+  }
+
   return (
-    <div className="flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8">
+    <div
+      className={fashion ? 'flex-1 flex flex-col bg-[#faf8f5] text-[#1c1c1a] select-none pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
+      style={fashion ? ({ ['--tpl-accent' as string]: pdpTheme.accent } as React.CSSProperties) : undefined}
+    >
       {/* Header Bar */}
-      <header className="sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12">
+      <header className={fashion ? 'sticky top-0 z-30 lg:static bg-[#faf8f5] border-b border-[#e5e0d8] px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12' : 'sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12'}>
         <div className="flex items-center gap-2">
           <button
             onClick={onBack}
             aria-label="بازگشت"
-            className="w-11 h-11 rounded-lg hover:bg-slate-100 text-slate-700 transition-colors flex items-center justify-center"
+            className={fashion ? 'w-11 h-11 rounded-none hover:bg-[#f2f2f2] text-[#1c1c1a] transition-colors flex items-center justify-center' : 'w-11 h-11 rounded-lg hover:bg-slate-100 text-slate-700 transition-colors flex items-center justify-center'}
           >
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
-          <span className="text-xs font-bold text-slate-800 truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none">
+          <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none' : 'text-xs font-bold text-slate-800 truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none'}>
             {product.title}
           </span>
         </div>
@@ -235,19 +285,23 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleShare}
             aria-label="اشتراک‌گذاری"
-            className="w-11 h-11 text-slate-600 hover:bg-slate-100 rounded-lg flex items-center justify-center"
+            className={fashion ? 'w-11 h-11 text-[#737373] hover:bg-[#f2f2f2] rounded-none flex items-center justify-center' : 'w-11 h-11 text-slate-600 hover:bg-slate-100 rounded-lg flex items-center justify-center'}
           >
             <Share2 className="w-4 h-4"  strokeWidth={1.5}/>
           </button>
           <button
             onClick={() => {
-              toggleWishlist(product.id);
+              toggleWishlist(product.id, pdpStore);
               if (!wishlisted) success('به لیست علاقه‌مندی‌ها اضافه شد.');
               else info('از لیست علاقه‌مندی‌ها حذف شد.');
             }}
             aria-label="علاقه‌مندی"
-            className={`w-11 h-11 rounded-lg flex items-center justify-center ${
-              wishlisted ? 'text-rose-500 bg-rose-50' : 'text-slate-600 hover:bg-slate-100'
+            className={`w-11 h-11 ${fashion ? 'rounded-none' : 'rounded-lg'} flex items-center justify-center ${
+              wishlisted
+                ? 'text-rose-500 bg-rose-50'
+                : fashion
+                  ? 'text-[#737373] hover:bg-[#f2f2f2]'
+                  : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
             <Heart className={`w-4 h-4 ${wishlisted ? 'fill-rose-500' : ''}`}  strokeWidth={1.5}/>
@@ -265,55 +319,57 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         images={displayProduct.images}
         title={displayProduct.title}
         discountPercent={displayProduct.discountPercent}
+        fashion={fashion}
       />
       </div>
 
       {/* Info column — live order: info (with tabs at its end) ->
           variant box -> buy bar. No sticky bottom bar on desktop. */}
       <div className="p-3.5 space-y-4 lg:p-0">
-        <ProductDetailInfo product={displayProduct} />
-        <ProductDetailTabs product={displayProduct} />
+        <ProductDetailInfo product={displayProduct} fashion={fashion} />
+        <ProductDetailTabs product={displayProduct} fashion={fashion} />
         {showVariantSelector && selectedVariant && (
-          <div className="bg-white border border-slate-200 rounded-2xl p-3">
+          <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
             <ProductVariantSelector
               variants={variants}
               variantPrices={displayProduct.variantPrices}
               selectedId={selectedVariant.id}
               onSelect={handleSelectVariant}
-              storeCount={displayProduct.storeCount}
+              storeCount={scopedStoreSlug ? 0 : displayProduct.storeCount}
+              theme={fashion ? 'fashion' : 'default'}
             />
           </div>
         )}
         {detailAddons.length > 0 && (
-          <div className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2">
-            <h4 className="text-xs font-bold text-slate-800">{displayBase.addonSectionTitle || 'محصولات مکمل'}</h4>
+          <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 space-y-2' : 'bg-white border border-slate-200 rounded-2xl p-3 space-y-2'}>
+            <h4 className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{displayBase.addonSectionTitle || 'محصولات مکمل'}</h4>
             {detailAddons.map((addon) => {
               const checked = selectedAddonIds.includes(addon.id);
               return (
-                <label key={addon.id} className="flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                <label key={addon.id} className={fashion ? 'flex items-start gap-2 rounded-none border border-[#e5e0d8] px-3 py-2 cursor-pointer hover:bg-[#faf8f5]' : 'flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50'}>
                   <input
                     type="checkbox"
                     checked={checked}
                     onChange={() => setSelectedAddonIds((prev) => checked ? prev.filter((id) => id !== addon.id) : [...prev, addon.id])}
-                    className="w-4 h-4 mt-0.5 shrink-0 accent-brand"
+                    className={fashion ? 'w-4 h-4 mt-0.5 shrink-0 accent-[#1c1c1a]' : 'w-4 h-4 mt-0.5 shrink-0 accent-brand'}
                   />
                   <span className="flex-1 min-w-0">
-                    <span className="block text-xs font-bold text-slate-800">{addon.title}</span>
-                    {addon.description ? <span className="block text-[11px] text-slate-500">{addon.description}</span> : null}
+                    <span className={fashion ? 'block text-xs font-bold text-[#1c1c1a]' : 'block text-xs font-bold text-slate-800'}>{addon.title}</span>
+                    {addon.description ? <span className={fashion ? 'block text-[11px] text-[#737373]' : 'block text-[11px] text-slate-500'}>{addon.description}</span> : null}
                   </span>
-                  <span className="text-xs font-bold text-brand-deep shrink-0">+{formatPrice(addon.feePerUnit)} ت</span>
+                  <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] shrink-0' : 'text-xs font-bold text-brand-deep shrink-0'}>+{formatPrice(addon.feePerUnit)} ت</span>
                 </label>
               );
             })}
           </div>
         )}
-        <div className="fixed bottom-16 inset-x-0 max-w-[504px] mx-auto bg-white border-t border-slate-200 p-2.5 flex items-center justify-between gap-2 z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:max-w-none lg:shadow-none lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3">
-          <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between">
+        <div className={fashion ? 'fixed bottom-16 inset-x-0 max-w-[504px] mx-auto bg-[#faf8f5] border-t border-[#e5e0d8] p-2.5 flex items-center justify-between gap-2 z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:max-w-none lg:shadow-none lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3' : 'fixed bottom-16 inset-x-0 max-w-[504px] mx-auto bg-white border-t border-slate-200 p-2.5 flex items-center justify-between gap-2 z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:max-w-none lg:shadow-none lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3'}>
+          <div className={fashion ? 'flex items-center bg-white rounded-none border border-[#e5e0d8] shrink-0 lg:justify-between' : 'flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between'}>
             <button
               onClick={() => setQty(Math.max(minQty, qty - 1))}
               disabled={outOfStock}
               aria-label="کاهش تعداد"
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors"
+              className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors'}
             >
               -
             </button>
@@ -322,17 +378,17 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
               onClick={() => setQty(maxQty > 0 ? Math.min(maxQty, qty + 1) : qty + 1)}
               disabled={outOfStock || (maxQty > 0 && qty >= maxQty)}
               aria-label="افزایش تعداد"
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors"
+              className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors'}
             >
               +
             </button>
           </div>
           {outOfStock ? (
-            <div className="flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center">
-              ناموجود در انبار مرکزی
+            <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
+              {scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
             </div>
           ) : !publishedInCurrentStore ? (
-            <div className="flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center">
+            <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
               این کالا در فروشگاه «{currentStore?.name}» عرضه نمی‌شود
             </div>
           ) : (
@@ -340,7 +396,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
               <button
                 onClick={handleAddToCart}
                 title="افزودن کالا به سبد خرید"
-                className="flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors"
+                className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-white hover:bg-[#f2f2f2] text-[#1c1c1a] border border-[#1c1c1a] font-bold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
               >
                 <ShoppingCart className="w-4 h-4"  strokeWidth={1.5}/>
                 <span>افزودن به سبد</span>
@@ -348,7 +404,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
               <button
                 onClick={handleBuyNow}
                 title="خرید فوری بدون سبد خرید"
-                className="flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors"
+                className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-[#3a4441] hover:bg-[#1c1c1a] text-[#faf8f5] font-extrabold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
               >
                 <span>خرید فوری</span>
                 <span className="text-[10px] lg:text-xs opacity-90">
@@ -360,6 +416,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           )}
         </div>
         <BuyNowAddressModal
+          fashion={fashion}
           open={buyNowModalOpen}
           item={{ title: product.title, qty, totalPrice: buyNowUnit * qty, ...(selectedVariant ? { variantLabel: selectedVariant.name } : {}) }}
           onClose={() => { setBuyNowModalOpen(false); clearDirectBuy(); }}
@@ -376,9 +433,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       </div>
       {related.length > 0 && (
         <div className="px-3.5 -mt-3.5 pb-3.5 lg:px-0 lg:pb-0 lg:mt-0 lg:col-span-2">
-          <div className="pt-3 border-t border-slate-100 space-y-2">
-          <h3 className="text-base lg:text-lg xl:text-xl font-bold text-slate-800 flex items-center gap-1">
-            <Sparkles className="w-3.5 h-3.5 text-brand-deep"  strokeWidth={1.5}/>
+          <div className={fashion ? 'pt-3 border-t border-[#e5e0d8] space-y-2' : 'pt-3 border-t border-slate-100 space-y-2'}>
+          <h3 className={fashion ? 'text-base lg:text-lg xl:text-xl font-bold text-[#1c1c1a] flex items-center gap-1' : 'text-base lg:text-lg xl:text-xl font-bold text-slate-800 flex items-center gap-1'}>
+            <Sparkles className={fashion ? 'w-3.5 h-3.5 text-[#1c1c1a]' : 'w-3.5 h-3.5 text-brand-deep'}  strokeWidth={1.5}/>
             <span>کالاهای مرتبط و مشابه</span>
           </h3>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">

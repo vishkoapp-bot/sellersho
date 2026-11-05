@@ -112,7 +112,7 @@ const mapBackendOrder = (order: BackendOrderDto): Order => ({
 // genuinely new backend error stays visible instead of being masked.
 const mapOrderCreateError = (message: string): string => {
   if (message.includes('is not published by this store')) {
-    return 'این کالا در فروشگاه انتخاب‌شده منتشر نشده است؛ لطفاً سبد را با کالاهای همین فروشگاه تکمیل کنید یا همان کالا را از فروشگاه مرکزی سفارش بدهید.';
+    return 'این کالا در این فروشگاه عرضه نمی‌شود؛ لطفاً آن را از سبد حذف کنید یا کالاهای همین فروشگاه را انتخاب کنید';
   }
   if (message.includes('Store catalog is unavailable')) {
     return 'کاتالوگ فروشگاه در حال حاضر در دسترس نیست؛ لطفاً چند لحظه دیگر دوباره تلاش کنید.';

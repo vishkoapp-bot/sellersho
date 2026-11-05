@@ -5,6 +5,7 @@ import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from '../context/ToastContext';
 import { Package, Plus } from 'lucide-react';
 import { ReturnWindowBadge } from './ReturnWindowBadge';
+import { cardPriceOf } from '../utils/cardPrice';
 
 interface ProductCardProps {
   product: Product;
@@ -17,6 +18,30 @@ interface ProductCardProps {
 export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = true }) => {
   const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore } = useStore();
   const published = isProductPublishedInStore(currentStore, product.id);
+  // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
+  const displayPrice = cardPriceOf(product);
+
+  // Quick-add must put in the cart exactly what the card displays:
+  // when a priced default variant exists (the one cardPriceOf used),
+  // add it the way the PDP does — the price-swapped snapshot plus the
+  // variant id — so the quick-add line carries the default variant's
+  // price and merges with a PDP default add (same cart key). When
+  // cardPriceOf fell back to the product triple there is no such
+  // variant and the call stays the historical addToCart(product, 1).
+  const defaultVariant = product.variants?.find((v) => v.isDefault);
+  const defaultVariantPrice = defaultVariant ? product.variantPrices?.[defaultVariant.id] : undefined;
+  const handleQuickAdd = () => {
+    if (defaultVariant && defaultVariantPrice && defaultVariantPrice.price != null) {
+      addToCart(
+        { ...product, price: displayPrice.price, originalPrice: displayPrice.originalPrice, discountPercent: displayPrice.discountPercent },
+        1,
+        undefined,
+        defaultVariant.id,
+      );
+    } else {
+      addToCart(product, 1);
+    }
+  };
   const { success } = useToast();
 
   return (
@@ -69,19 +94,19 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
 
         <div>
           {/* Discount & Old Price Row */}
-          {product.discountPercent > 0 ? (
+          {displayPrice.discountPercent > 0 ? (
             <div className="flex items-center gap-1.5 pb-1">
               <span
                 data-testid="discount-badge"
                 className="bg-[#fb2c2c] text-white text-[11px] font-bold px-2 py-0.5 rounded-full inline-block leading-none"
               >
-                {toPersianDigits(product.discountPercent)}٪
+                {toPersianDigits(displayPrice.discountPercent)}٪
               </span>
               <span
                 data-testid="old-price"
                 className="text-[11px] text-slate-400 line-through font-normal"
               >
-                {formatPrice(product.originalPrice)}
+                {formatPrice(displayPrice.originalPrice)}
               </span>
             </div>
           ) : (
@@ -100,7 +125,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
           <div className="flex items-center justify-between pt-0.5">
             <div className="flex items-baseline gap-1">
               <span className="text-[13px] font-bold text-[#252a3c]">
-                {formatPrice(product.price)}
+                {formatPrice(displayPrice.price)}
               </span>
               <span className="text-[10px] text-slate-500 font-light">تومان</span>
             </div>
@@ -126,7 +151,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                   onClick={(e) => {
                     e.stopPropagation();
                     if ((product.stock || 0) <= 0 || !published) return;
-                    addToCart(product, 1);
+                    handleQuickAdd();
                     success(`«${product.title}» به سبد خرید اضافه شد.`);
                   }}
                   disabled={(product.stock || 0) <= 0 || !published}
@@ -141,7 +166,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                   onClick={(e) => {
                     e.stopPropagation();
                     if ((product.stock || 0) <= 0 || !published) return;
-                    addToCart(product, 1);
+                    handleQuickAdd();
                     success(`«${product.title}» به سبد خرید اضافه شد.`);
                   }}
                   disabled={(product.stock || 0) <= 0 || !published}

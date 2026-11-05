@@ -180,7 +180,7 @@ export const TechTemplate: React.FC<StorefrontTemplateProps> = ({ store, product
   const heroTitle = customText(cfg, 'heroTitle', store.name);
   const heroSubtitle = customText(cfg, 'heroSubtitle', store.description || store.shortDescription || store.tagline || '');
   const heroImage = (custom.heroImage || '').trim();
-  const brandCount = new Set(items.map((p) => (p.supplierName || '').trim()).filter(Boolean)).size;
+  const brandCount = new Set(items.map((p) => (p.brand || '').trim()).filter(Boolean)).size;
   const categoryCount = categories
     ? categories.length
     : new Set(items.map((p) => p.category).filter(Boolean)).size;
@@ -193,7 +193,7 @@ export const TechTemplate: React.FC<StorefrontTemplateProps> = ({ store, product
   const brandTallies = (() => {
     const counts = new Map<string, number>();
     items.forEach((p) => {
-      const name = (p.supplierName || '').trim();
+      const name = (p.brand || '').trim();
       if (name) counts.set(name, (counts.get(name) || 0) + 1);
     });
     return [...counts.entries()]

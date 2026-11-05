@@ -35,6 +35,7 @@ import type { CategoryGroup } from './StoreSections';
 import { TemplateProductGrid } from './TemplateProductGrid';
 import { useStore } from '../../../context/StoreContext';
 import { formatPrice, toPersianDigits } from '../../../utils/formatters';
+import { cardPriceOf } from '../../../utils/cardPrice';
 
 // Config-driven storefront: sections render in the order and
 // enablement stored in the resolved template config (template
@@ -148,6 +149,8 @@ const FeaturedSpotlight: React.FC<{
   const featured = products.filter((p) => p.featured).slice(0, customCount(config, 'featuredCount', 10));
   if (featured.length === 0) return null;
   const lead = featured[0];
+  // Spotlight card display price = the default variant's triple (owner decision, see utils/cardPrice).
+  const leadPrice = cardPriceOf(lead);
   const rest = featured.slice(1);
   const title = customText(config, 'featuredTitle', 'کالاهای منتخب');
   const leadImage = productImage(lead);
@@ -175,9 +178,9 @@ const FeaturedSpotlight: React.FC<{
               <span className="px-6 text-center text-lg font-black text-slate-400">{lead.title}</span>
             </div>
           )}
-          {lead.discountPercent > 0 ? (
+          {leadPrice.discountPercent > 0 ? (
             <span className="absolute right-4 top-4 rounded-full bg-[#fb2c2c] px-2.5 py-1 text-xs font-black text-white shadow">
-              {toPersianDigits(lead.discountPercent)}٪ تخفیف
+              {toPersianDigits(leadPrice.discountPercent)}٪ تخفیف
             </span>
           ) : null}
         </div>
@@ -203,11 +206,11 @@ const FeaturedSpotlight: React.FC<{
           ) : null}
           <div className="mt-1 flex flex-wrap items-end justify-between gap-3 border-t border-dashed border-slate-200 pt-4">
             <div>
-              {lead.discountPercent > 0 && lead.originalPrice > lead.price ? (
-                <p className="text-xs text-slate-400 line-through">{formatPrice(lead.originalPrice)}</p>
+              {leadPrice.discountPercent > 0 && leadPrice.originalPrice > leadPrice.price ? (
+                <p className="text-xs text-slate-400 line-through">{formatPrice(leadPrice.originalPrice)}</p>
               ) : null}
               <p className="text-xl font-black text-slate-900 lg:text-2xl">
-                {formatPrice(lead.price)}{' '}
+                {formatPrice(leadPrice.price)}{' '}
                 <span className="text-xs font-bold text-slate-500">تومان</span>
               </p>
             </div>

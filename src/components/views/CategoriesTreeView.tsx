@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../../context/StoreContext';
+import { useStore, useActiveStoreCategorySlugs, expandCategorySlugsWithAncestors } from '../../context/StoreContext';
 import { ArrowRight, ChevronDown, ChevronLeft, LayoutGrid, Package } from 'lucide-react';
 import type { Category } from '../../types';
 
@@ -27,8 +27,22 @@ const buildTree = (categories: Category[]): TreeNode[] => {
 // CategoriesBar.tsx, so the card uses the category image or a LayoutGrid
 // fallback — the one approximation in this file.
 export const CategoriesTreeView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { openCatalogCategory, toPersianDigits, categories, catalogLoading } = useStore();
-  const roots = useMemo(() => buildTree(categories), [categories]);
+  const { openCatalogCategory, toPersianDigits, categories, catalogLoading, currentStore } = useStore();
+  // While a store context is active, this tree is the STORE's tree:
+  // only the categories the store actually sells (ancestors
+  // included) are listed, and clicks route through
+  // openCatalogCategory, which lands them inside the store. Central
+  // browsing (no store context) is untouched. While the store's set
+  // loads, a loading row replaces the tree — the full platform tree
+  // never flashes.
+  const { storeSlug, categorySlugs } = useActiveStoreCategorySlugs();
+  const visibleCategories = useMemo(() => {
+    if (!storeSlug) return categories;
+    if (!categorySlugs) return null;
+    const included = expandCategorySlugsWithAncestors(categories, categorySlugs);
+    return categories.filter((c) => included.has(c.slug));
+  }, [categories, storeSlug, categorySlugs]);
+  const roots = useMemo(() => buildTree(visibleCategories ?? []), [visibleCategories]);
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set());
   const initialized = useRef(false);
 
@@ -96,15 +110,19 @@ export const CategoriesTreeView: React.FC<{ onBack: () => void }> = ({ onBack })
           </button>
           <div className="flex items-center gap-1.5">
             <LayoutGrid className="w-4 h-4 text-brand-deep" strokeWidth={1.5} />
-            <h1 className="text-xs lg:text-lg xl:text-xl font-bold text-slate-900">دسته‌بندی‌های کاتالوگ مرکزی</h1>
+            <h1 className="text-xs lg:text-lg xl:text-xl font-bold text-slate-900">{storeSlug ? `دسته‌بندی‌های ${currentStore.name}` : 'دسته‌بندی‌های کاتالوگ مرکزی'}</h1>
           </div>
         </div>
         <span className="text-[10px] lg:text-xs text-slate-400">
-          {catalogLoading ? 'در حال بارگذاری' : `${toPersianDigits(categories.length)} دسته‌بندی`}
+          {storeSlug && !visibleCategories ? 'در حال بارگذاری' : catalogLoading ? 'در حال بارگذاری' : `${toPersianDigits((visibleCategories ?? categories).length)} دسته‌بندی`}
         </span>
       </header>
 
-      {!catalogLoading && roots.length === 0 ? (
+      {storeSlug && !visibleCategories ? (
+        <div className="p-6 lg:py-16 text-center space-y-3">
+          <p className="text-[11px] lg:text-sm text-slate-500">در حال بارگذاری دسته‌بندی‌های فروشگاه…</p>
+        </div>
+      ) : !catalogLoading && roots.length === 0 ? (
         <div className="p-6 lg:py-16 text-center space-y-3">
           <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
             <Package className="w-6 h-6" strokeWidth={1.5} />

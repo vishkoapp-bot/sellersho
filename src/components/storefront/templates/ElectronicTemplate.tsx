@@ -77,7 +77,7 @@ const CategoryChips: React.FC<{ groups: CategoryGroup[]; accentColor: string }> 
 };
 
 // --- Brand tiles (same derivation as the shared BrandsRail:
-// distinct supplier names carried by the store's own products) -----
+// distinct real brand names carried by the store's own products) -----
 const BrandTiles: React.FC<{ products: Product[]; config: TemplateConfig; accentColor: string }> = ({
   products,
   config,
@@ -86,7 +86,7 @@ const BrandTiles: React.FC<{ products: Product[]; config: TemplateConfig; accent
   if (!sectionEnabled(config, 'brands')) return null;
   const counts = new Map<string, number>();
   products.forEach((p) => {
-    const name = (p.supplierName || '').trim();
+    const name = (p.brand || '').trim();
     if (name) counts.set(name, (counts.get(name) || 0) + 1);
   });
   const brands = Array.from(counts.entries());
@@ -169,7 +169,7 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
   const categoryGroups = groupProductsByCategory(items, categories, custom.categoryOverrides);
   const brandNames: string[] = [];
   items.forEach((p) => {
-    const name = (p.supplierName || '').trim();
+    const name = (p.brand || '').trim();
     if (name && !brandNames.includes(name)) brandNames.push(name);
   });
 

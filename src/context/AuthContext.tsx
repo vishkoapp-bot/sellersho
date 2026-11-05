@@ -296,7 +296,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       localStorage.removeItem('drup_customer_user');
       localStorage.removeItem('drup_cart');
       localStorage.removeItem('drup_carts');
-      localStorage.removeItem('drup_wishlist');
+      localStorage.removeItem('drup_wishlists');
       localStorage.removeItem('drup_orders');
     }
   };

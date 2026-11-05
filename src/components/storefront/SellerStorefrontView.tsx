@@ -102,9 +102,26 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
     setTemplateStoreId(storeId);
   }, [currentStore.id, currentStore.slug, currentStore.templateId, sellerSession?.storeId]);
   const [activeTab, setActiveTab] = useState<'home' | 'about' | 'contact'>('home');
+  // The storefront footer's «درباره ما» points at the store's OWN
+  // about: template layouts render it as a page section and the
+  // footer scrolls to it directly; this fallback layout keeps the
+  // about behind the tab above, so the footer dispatches this event
+  // and the view selects the tab itself.
+  useEffect(() => {
+    const showAbout = () => {
+      setActiveTab('about');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+    window.addEventListener('selersho:storefront-about', showAbout);
+    return () => window.removeEventListener('selersho:storefront-about', showAbout);
+  }, []);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [publicWidget, setPublicWidget] = useState<{ id: string; name: string; productIds: string[] } | null>(null);
-  const builderWidgets = currentStore.builderConfig?.widgets || {
+  // Owner preview resolves builderConfig.widgets from the panel
+  // session; real visitors carry no builderConfig, so fall back to
+  // the public DTO's widgets-only subset (builderWidgets) before
+  // defaulting every toggle to on.
+  const builderWidgets = currentStore.builderConfig?.widgets || currentStore.builderWidgets || {
     heroBanner: true,
     dealsSlider: true,
     categoriesGrid: true,
@@ -361,7 +378,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
           <>
             {builderWidgets.heroBanner && <SellerStorefrontHero />}
             {builderWidgets.categoriesGrid && <SellerStorefrontCategories />}
-            {builderWidgets.dealsSlider && <SpecialDealsSlider products={fallbackProducts} />}
+            {builderWidgets.dealsSlider && <SpecialDealsSlider products={fallbackProducts} storeBrand={{ name: currentStore.name, accentColor: currentStore.builderConfig?.accentColor ?? resolveTemplateAccent(currentStore.templateId || 'tpl-modern-1', templateConfig.accentColor) }} />}
             {builderWidgets.storeDealsWidget && publicWidget && (
               <div className="mx-3.5 my-2 p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl text-white flex items-center justify-between shadow-xs">
                 <div>

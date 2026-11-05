@@ -12,8 +12,8 @@ import {
 } from './templateTypes';
 import type { TemplateConfig, TemplateCustom, TemplateHeroSlide } from './templateTypes';
 import { toPersianDigits } from '../../../utils/formatters';
-import { siteContentApi } from '../../../services/siteContentApi';
 import { apiRequest } from '../../../services/apiClient';
+import { useStore } from '../../../context/StoreContext';
 
 // FIX3 — shared storefront section components, rebuilt from live
 // behaviour (live tpl-* chunk evidence), not copied live code.
@@ -36,6 +36,14 @@ export const SectionTitle: React.FC<{ children: React.ReactNode; accentColor?: s
   </div>
 );
 
+// Seller-configured links open in a new tab ONLY when they point
+// at an external http(s) URL; internal links (#products, paths)
+// stay in the same tab. Same test as FashionTemplate's
+// externalLinkProps (duplicated here: FashionTemplate imports
+// from this module, so importing its helper back would cycle).
+const externalLinkProps = (link: string): { target?: string; rel?: string } =>
+  /^https?:\/\//i.test((link || '').trim()) ? { target: '_blank', rel: 'noreferrer' } : {};
+
 // --- Announcement bar (editable announcement / store tagline) -----
 export const AnnouncementSection: React.FC<{
   store: Store;
@@ -55,7 +63,7 @@ export const AnnouncementSection: React.FC<{
   return (
     <section data-testid="store-announcement">
       {link ? (
-        <a href={link} target="_blank" rel="noreferrer" className="block">
+        <a href={link} {...externalLinkProps(link)} className="block">
           {bar}
         </a>
       ) : (
@@ -108,7 +116,7 @@ export const HeroSlider: React.FC<{
   return (
     <div data-testid="store-hero-slider" className="group relative">
       {slide.link ? (
-        <a href={slide.link} target="_blank" rel="noreferrer" className="block">
+        <a href={slide.link} {...externalLinkProps(slide.link)} className="block">
           {body}
         </a>
       ) : (
@@ -328,7 +336,7 @@ export const BannerRow: React.FC<{ config: TemplateConfig }> = ({ config }) => {
         return (
           <div key={`${b.image}-${i}`}>
             {b.link ? (
-              <a href={b.link} target="_blank" rel="noreferrer" className="block">
+              <a href={b.link} {...externalLinkProps(b.link)} className="block">
                 {tile}
               </a>
             ) : (
@@ -418,7 +426,7 @@ export const TimedDealsSection: React.FC<{
   );
 };
 
-// --- Brands rail (live brands: distinct suppliers of the store) ----
+// --- Brands rail (live brands: distinct real brands of the store) ----
 export const BrandsRail: React.FC<{
   products: Product[];
   config: TemplateConfig;
@@ -427,7 +435,7 @@ export const BrandsRail: React.FC<{
   if (!sectionEnabled(config, 'brands')) return null;
   const brands: string[] = [];
   products.forEach((p) => {
-    const name = (p.supplierName || '').trim();
+    const name = (p.brand || '').trim();
     if (name && !brands.includes(name)) brands.push(name);
   });
   if (brands.length === 0) return null;
@@ -501,22 +509,17 @@ export const TrustStripSection: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ config, accentColor }) => {
-  // Seller-configured trust items win: when the template config carries
-  // its own trustItems, the platform-wide siteContent fetch is skipped.
+  // ONLY the seller's own configured trust items render here. The
+  // platform-wide siteContent trust features used to be the fallback,
+  // which put platform marketing copy (naming the central warehouse)
+  // on the store's own surface as if it were the store's promise -
+  // removed: no seller items -> the section renders nothing.
   const configItems = (templateCustom(config).trustItems || []).filter(
     (t) => t && typeof t.title === 'string' && t.title.trim() !== '',
   );
-  const [fetched, setFetched] = useState<{ icon: string; title: string; subtitle: string }[]>([]);
-  useEffect(() => {
-    if (configItems.length > 0) return undefined;
-    let on = true;
-    siteContentApi.getTrustFeatures().then((list) => { if (on) setFetched(list.slice(0, 4).map((f) => ({ icon: f.icon, title: f.title, subtitle: f.description }))); }).catch(() => {});
-    return () => { on = false; };
-  }, [config]);
-  const items: { title: string; subtitle: string }[] =
-    configItems.length > 0
-      ? configItems.slice(0, 4).map((t) => ({ title: t.title, subtitle: t.subtitle || '' }))
-      : fetched;
+  const items: { title: string; subtitle: string }[] = configItems
+    .slice(0, 4)
+    .map((t) => ({ title: t.title, subtitle: t.subtitle || '' }));
   if (!sectionEnabled(config, 'trustStrip') || items.length === 0) return null;
   return (
     <section data-testid="store-trust-strip" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -599,6 +602,11 @@ export const CampaignSection: React.FC<{
   if (!sectionEnabled(config, 'campaign')) return null;
   const widget = store.sellerDealsWidgetConfig;
   if (!widget) return null;
+  const endsAt = widget.endsAt ? Date.parse(widget.endsAt) : NaN;
+  // Mirror TimedDealsSection's expiry rule: once the widget window
+  // has ended, the campaign showcase hides itself instead of
+  // presenting the widget products under the widget title forever.
+  if (!Number.isNaN(endsAt) && endsAt <= Date.now()) return null;
   const items = products.filter((p) => (widget.productIds || []).includes(p.id)).map(withCampaignCompareAt);
   if (items.length === 0) return null;
   return (
@@ -641,9 +649,10 @@ export const NewsletterSection: React.FC<{
       <SectionTitle accentColor={accentColor}>{customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی')}</SectionTitle>
       {newsletterSubtitle ? <p className="text-xs leading-6 text-slate-500">{newsletterSubtitle}</p> : null}
       {done ? (
-        // ISO-A: POST /newsletter/subscribe carries no store slug, so
-        // the old text ("registered for THIS store's notifications")
-        // claimed a per-store subscription the backend never records.
+        // The subscribe POST carries storeSlug and the backend
+        // resolves it to this store (unknown slug → 400), so the
+        // subscription is recorded against this store; the success
+        // copy stays neutral and claims nothing beyond registration.
         <p className="text-emerald-600 font-bold text-xs">شماره شما ثبت شد.</p>
       ) : (
         <form onSubmit={submit} className="flex gap-2">
@@ -770,7 +779,7 @@ export const LookbookSection: React.FC<{
   return (
     <section data-testid="store-lookbook">
       {link ? (
-        <a href={link} target="_blank" rel="noreferrer" className="block">
+        <a href={link} {...externalLinkProps(link)} className="block">
           {body}
         </a>
       ) : (
@@ -787,12 +796,74 @@ export const ProductsGridSection: React.FC<{
   accentColor: string;
   columnsClass?: string;
 }> = ({ products, config, accentColor, columnsClass }) => {
+  // Category navigation inside a store writes the shared
+  // selectedCategory state (see StoreContext.openCatalogCategory);
+  // the fashion floor and the legacy storefront grid already honour
+  // it, so this shared floor — used by the Modern, Electronic,
+  // Digikala and Tech templates — does too: a selected category
+  // filters the grid, renames the heading to the category and
+  // offers the same «نمایش همه کالاها» reset, with the legacy
+  // grid's empty state when nothing in the store matches. 'all'
+  // (the default) renders exactly as before.
+  const { selectedCategory, setSelectedCategory, categories, searchQuery, setSearchQuery, catalogBrandRequest, clearCatalogBrand } = useStore();
   if (!sectionEnabled(config, 'products') && !sectionEnabled(config, 'allProducts')) return null;
   if (products.length === 0) return null;
+  const filtered = selectedCategory !== 'all';
+  // A brand request raised by a brand click on this store's PDP
+  // applies only when the store actually sells that brand — the
+  // fashion floor's guard; a foreign brand is ignored rather than
+  // emptying the floor.
+  const brandOf = (prod: Product): string => (prod.brand || '').trim();
+  const brandFilter =
+    catalogBrandRequest && products.some((prod) => brandOf(prod) === catalogBrandRequest.brand)
+      ? catalogBrandRequest.brand
+      : null;
+  // The store's own search box writes the shared searchQuery;
+  // honour it over this floor's (already store-scoped) items with
+  // the legacy grid's title/description predicate, composed with
+  // the brand/category filters (brand first, as on the fashion
+  // floor).
+  const searching = !!searchQuery;
+  const matchesSearch = (prod: Product): boolean =>
+    !searching || prod.title.includes(searchQuery) || prod.description.includes(searchQuery);
+  const visible = (brandFilter
+    ? products.filter((prod) => brandOf(prod) === brandFilter)
+    : filtered
+      ? products.filter((prod) => prod.category === selectedCategory)
+      : products
+  ).filter(matchesSearch);
+  const anyFilter = filtered || !!brandFilter || searching;
+  const title = searching
+    ? `جستجو: «${searchQuery}»`
+    : brandFilter
+      ? brandFilter
+      : filtered
+        ? categories.find((c) => c.slug === selectedCategory)?.title || customText(config, 'productsTitle', 'همه کالاهای فروشگاه')
+        : customText(config, 'productsTitle', 'همه کالاهای فروشگاه');
+  const resetFilters = () => {
+    if (filtered) setSelectedCategory('all');
+    if (brandFilter) clearCatalogBrand();
+    if (searching) setSearchQuery('');
+  };
   return (
     <section data-testid="store-products" className="space-y-4">
-      <SectionTitle accentColor={accentColor}>{customText(config, 'productsTitle', 'همه کالاهای فروشگاه')}</SectionTitle>
-      <TemplateProductGrid products={products} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
+      <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
+      {anyFilter && (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={resetFilters}
+            className="text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+          >
+            نمایش همه کالاها
+          </button>
+        </div>
+      )}
+      {visible.length === 0 ? (
+        <p className="text-xs font-bold text-slate-600 py-6 text-center">کالایی با این مشخصات یافت نشد.</p>
+      ) : (
+        <TemplateProductGrid products={visible} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
+      )}
     </section>
   );
 };

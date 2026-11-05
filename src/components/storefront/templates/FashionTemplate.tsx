@@ -16,6 +16,7 @@ import type { TemplateBanner, TemplateConfig, TemplateHeroSlide } from './templa
 import type { Product, Store } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
 import { formatPrice, toPersianDigits } from '../../../utils/formatters';
+import { cardPriceOf } from '../../../utils/cardPrice';
 import { apiRequest } from '../../../services/apiClient';
 import { groupProductsByCategory } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
@@ -83,7 +84,7 @@ const TileLabel: React.FC<{ title: string; sub?: string }> = ({ title, sub }) =>
   </div>
 );
 
-const brandOf = (p: Product): string => (p.brand || p.supplierName || '').trim();
+const brandOf = (p: Product): string => (p.brand || '').trim();
 
 // --- Media ledger ---------------------------------------------------
 // One used-images set threaded through the page in render order:
@@ -482,8 +483,11 @@ const AastinCategoryGrid: React.FC<{
 // from one category group — never padded with the category image.
 // Four distinct images form the 2×2 mosaic; three form one wide
 // tile over two squares; two sit as equal tiles; below two distinct
-// unused images the group is skipped. Caption is the real category
-// name and its real product count.
+// unused images the group is skipped — a group renders only a
+// complete mosaic or not at all. Caption is the real category
+// name and its real product count. When exactly one group survives
+// the ledger, its mosaic renders as a centred spotlight at a
+// capped width instead of a lone rail card in an empty row.
 const AastinCollections: React.FC<{
   groups: CategoryGroup[];
   title: string;
@@ -508,26 +512,34 @@ const AastinCollections: React.FC<{
     }
   }
   if (cards.length === 0) return null;
-  return (
-    <section data-testid="store-collections" className="space-y-6 lg:space-y-8">
-      <AastinSectionHeader title={title} />
-      <div className="flex snap-x gap-4 overflow-x-auto pb-2 no-scrollbar">
-        {cards.map(({ group, images }) => (
-          <div key={group.slug} className="w-[270px] shrink-0 snap-start lg:w-[350px]">
-            <div className="grid grid-cols-2 gap-1 overflow-hidden rounded-[2px] bg-white">
-              {images.map((im, i) => (
-                <div
-                  key={`${im.src}-${i}`}
-                  className={`overflow-hidden bg-[#f2f2f2] ${images.length === 3 && i === 0 ? 'col-span-2 aspect-[16/10]' : 'aspect-square'}`}
-                >
-                  <img src={im.src} alt={im.title} loading="lazy" className="h-full w-full object-cover" />
-                </div>
-              ))}
-            </div>
-            <TileLabel title={group.title} sub={`${toPersianDigits(group.count)} کالا`} />
+  const renderCard = (card: (typeof cards)[number], widthCls: string): React.ReactNode => (
+    <div key={card.group.slug} className={widthCls}>
+      <div className="grid grid-cols-2 gap-1 overflow-hidden rounded-[2px] bg-white">
+        {card.images.map((im, i) => (
+          <div
+            key={`${im.src}-${i}`}
+            className={`overflow-hidden bg-[#f2f2f2] ${card.images.length === 3 && i === 0 ? 'col-span-2 aspect-[16/10]' : 'aspect-square'}`}
+          >
+            <img src={im.src} alt={im.title} loading="lazy" className="h-full w-full object-cover" />
           </div>
         ))}
       </div>
+      <TileLabel title={card.group.title} sub={`${toPersianDigits(card.group.count)} کالا`} />
+    </div>
+  );
+  return (
+    <section data-testid="store-collections" className="space-y-6 lg:space-y-8">
+      <AastinSectionHeader title={title} />
+      {cards.length === 1 ? (
+        // A lone surviving mosaic is a spotlight, not a rail item:
+        // centred at a capped width, so the section never reads as
+        // a broken grid whose remaining cells sit empty.
+        <div className="mx-auto w-full max-w-[680px]">{renderCard(cards[0], 'w-full')}</div>
+      ) : (
+        <div className="flex snap-x gap-4 overflow-x-auto pb-2 no-scrollbar">
+          {cards.map((card) => renderCard(card, 'w-[270px] shrink-0 snap-start lg:w-[350px]'))}
+        </div>
+      )}
     </section>
   );
 };
@@ -579,8 +591,8 @@ const AastinLookbookBand: React.FC<{ config: TemplateConfig }> = ({ config }) =>
   );
 };
 
-// Brand tiles: distinct product brands (falling back to supplier
-// names), each represented by a real product image the ledger still
+// Brand tiles: distinct real product brands, each represented by
+// a real product image the ledger still
 // has, label centred underneath; tiles are real links into the
 // brand-filtered catalogue floor. A brand without an available
 // image appears as a text chip instead of a placeholder tile. The
@@ -836,11 +848,11 @@ const AastinProductCard: React.FC<{ product: Product; onOpen: (p: Product) => vo
       )}
     </div>
     <p className="mt-3 line-clamp-2 text-sm font-bold leading-6 text-[#1c1c1a]">{product.title}</p>
-    {product.brand || product.supplierName ? (
-      <p className="mt-0.5 truncate text-xs leading-5 text-[#737373]">{product.brand || product.supplierName}</p>
+    {product.brand ? (
+      <p className="mt-0.5 truncate text-xs leading-5 text-[#737373]">{product.brand}</p>
     ) : null}
     <p className="mt-1.5 text-sm font-black text-[#1c1c1a]">
-      {formatPrice(product.price)} <span className="text-xs font-bold text-[#737373]">تومان</span>
+      {formatPrice(cardPriceOf(product).price)} <span className="text-xs font-bold text-[#737373]">تومان</span>
     </p>
   </button>
 );
@@ -930,6 +942,8 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
     openCatalogBrand,
     catalogBrandRequest,
     clearCatalogBrand,
+    searchQuery,
+    setSearchQuery,
   } = useStore();
   const seen = new Set<string>();
   const once = (group: string): boolean => {
@@ -969,15 +983,24 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
     catalogBrandRequest && items.some((p) => brandOf(p) === catalogBrandRequest.brand)
       ? catalogBrandRequest.brand
       : null;
-  const floorItems = brandFilter
+  const categoryItems = brandFilter
     ? items.filter((p) => brandOf(p) === brandFilter)
     : selectedGroup
       ? items.filter((p) => p.category === selectedGroup.slug)
       : items;
-  const floorTitle = brandFilter || (selectedGroup ? selectedGroup.title : productsTitle);
+  // The store's own search box writes the shared searchQuery; it
+  // composes with the brand/category filters above over this
+  // store's items, using the legacy grid's title/description
+  // predicate, and the heading names the search while it is on.
+  const searching = !!searchQuery;
+  const floorItems = searching
+    ? categoryItems.filter((p) => p.title.includes(searchQuery) || p.description.includes(searchQuery))
+    : categoryItems;
+  const floorTitle = searching ? `جستجو: «${searchQuery}»` : brandFilter || (selectedGroup ? selectedGroup.title : productsTitle);
   const clearFloorFilter = (): void => {
     if (brandFilter) clearCatalogBrand();
-    else if (selectedGroup) setSelectedCategory('all');
+    if (selectedGroup) setSelectedCategory('all');
+    if (searching) setSearchQuery('');
   };
 
   const renderSection = (key: string): React.ReactNode => {
@@ -1111,7 +1134,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
       case 'products':
       case 'allProducts': {
         if (!once('products')) return null;
-        if (floorItems.length === 0) return null;
+        if (floorItems.length === 0 && !searching) return null;
         const count = floorItems.length;
         const gridCls =
           count === 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-2' : count === 3 ? 'grid-cols-2 lg:grid-cols-3' : 'grid-cols-2 lg:grid-cols-4';
@@ -1121,7 +1144,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
             <section id="products" data-testid="store-products" className="space-y-6 lg:space-y-8">
               <div className="flex items-center justify-between gap-4">
                 <AastinSectionHeader title={floorTitle} />
-                {brandFilter || selectedGroup ? (
+                {brandFilter || selectedGroup || searching ? (
                   <button
                     type="button"
                     onClick={clearFloorFilter}
@@ -1131,13 +1154,17 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
                   </button>
                 ) : null}
               </div>
-              <div className={wrapCls}>
-                <div className={`grid gap-x-3 gap-y-8 lg:gap-x-4 ${gridCls}`}>
-                  {floorItems.map((p) => (
-                    <AastinProductCard key={p.id} product={p} onOpen={openProductDetail} />
-                  ))}
+              {floorItems.length === 0 ? (
+                <p className="py-6 text-center text-xs font-bold text-[#737373]">کالایی با این مشخصات یافت نشد.</p>
+              ) : (
+                <div className={wrapCls}>
+                  <div className={`grid gap-x-3 gap-y-8 lg:gap-x-4 ${gridCls}`}>
+                    {floorItems.map((p) => (
+                      <AastinProductCard key={p.id} product={p} onOpen={openProductDetail} />
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </section>
           </Wrap>
         );

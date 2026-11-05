@@ -87,7 +87,17 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // store becomes the visible cart. No conflict modal, no replace:
     // other stores' carts are untouched.
     const storeId = currentStore?.id || activeStoreId || 'store-central';
-    const storeName = currentStore?.name || 'فروشگاه مرکزی';
+    // The stamped label must name the bucket's OWN store. With no
+    // store object passed, recover the name already stamped on this
+    // bucket's lines (ignoring a stale central stamp on a non-central
+    // bucket); only the central bucket may carry the central name,
+    // and a genuinely unknown store gets a neutral label.
+    const storeName =
+      currentStore?.name ||
+      (carts[storeId] ?? []).find(
+        (item) => item.storeName && (storeId === 'store-central' || item.storeName !== 'فروشگاه مرکزی')
+      )?.storeName ||
+      (storeId === 'store-central' ? 'فروشگاه مرکزی' : 'فروشگاه');
 
     // FIX 5: key by product::variant, so two variants of one
     // product are two lines instead of merging into one.

@@ -1,0 +1,19 @@
+-- 202611050010: governed clear-to-inherit for variant pricing (critic
+-- fix F1 follow-up).
+--
+-- Migration 202611050009 routed variant cost INCREASES through
+-- supplier_price_increases, but a {"clear": true} on the variant
+-- pricing PUT always applied directly. When a variant carries its own
+-- supplier_base_cost BELOW the product's cost, clearing it RAISES the
+-- variant's effective cost to the product's cost — an ungoverned
+-- increase through the side door. Such a clear now files a row in the
+-- same table with clear_on_approve = TRUE: old_reference is the
+-- variant's own cost at filing time, new_reference is the product's
+-- cost (the effective cost the clear would land on), and approval —
+-- auto or reviewed — applies AS A CLEAR (product_variants.
+-- supplier_base_cost set back to NULL) instead of writing
+-- new_reference onto the variant. Clears that lower or match the
+-- effective cost (own cost >= product cost, or nothing to clear) keep
+-- the direct path and never file a row, so every pre-existing row is
+-- a plain set-on-approve request (FALSE).
+ALTER TABLE supplier_price_increases ADD COLUMN IF NOT EXISTS clear_on_approve BOOLEAN NOT NULL DEFAULT FALSE;

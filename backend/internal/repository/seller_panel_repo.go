@@ -338,7 +338,7 @@ func (r *StoreRepository) SaveOwnedPricing(ctx context.Context, ownerID, slug, k
 				return ErrStoreInput
 			}
 		}
-		_, err = r.db.ExecContext(ctx, `INSERT INTO store_product_overrides(store_id,product_id,override_value,mode) SELECT $1,$2,$3,$4 WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1 AND owner_user_id=$5) ON CONFLICT(store_id,product_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO store_product_overrides(store_id,product_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$5::uuid) ON CONFLICT(store_id,product_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
 	case "niche":
 		var exists bool
 		if err = r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM niches WHERE id=$1)`, target).Scan(&exists); err != nil {
@@ -347,7 +347,7 @@ func (r *StoreRepository) SaveOwnedPricing(ctx context.Context, ownerID, slug, k
 		if !exists {
 			return ErrStoreInput
 		}
-		_, err = r.db.ExecContext(ctx, `INSERT INTO store_niche_overrides(store_id,niche_id,override_value,mode) SELECT $1,$2,$3,$4 WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1 AND owner_user_id=$5) ON CONFLICT(store_id,niche_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO store_niche_overrides(store_id,niche_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$5::uuid) ON CONFLICT(store_id,niche_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
 	default:
 		return ErrStoreInput
 	}

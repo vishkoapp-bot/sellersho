@@ -6,16 +6,20 @@ import {
   heroSlidesOf,
   templateCustom,
   customText,
+  bannersOf,
+  sectionEnabled,
   storefrontProducts,
 } from './templateTypes';
+import type { TemplateConfig } from './templateTypes';
+import type { Product } from '../../../types';
 import {
   AnnouncementSection,
   HeroSlider,
   CategoryRail,
+  CategoryCards,
   BannerRow,
   DealsSection,
   TimedDealsSection,
-  BrandsRail,
   FeaturedSection,
   BestsellersSection,
   TrustStripSection,
@@ -28,19 +32,133 @@ import {
   TestimonialsSection,
   LookbookSection,
   ProductsGridSection,
+  SectionTitle,
+  discountedProducts,
+  groupProductsByCategory,
 } from './StoreSections';
+import type { CategoryGroup } from './StoreSections';
+import { toPersianDigits } from '../../../utils/formatters';
 
 // Config-driven storefront: sections render in the order and
 // enablement stored in the resolved template config (template
 // blueprint merged under the seller's saved config); every text,
 // image and link comes from the seller-editable custom config or
 // the store's own data — nothing is hardcoded per store.
+//
+// Electronic identity: an energetic gadget retailer — bold orange
+// gradient hero with a dot-grid pattern, a sticky category-chip
+// rail under the hero, an accent-tinted deals panel, brand tiles
+// and big promo tiles, all on a light slate canvas.
+
+// --- Sticky category chips (top categories by product count) -------
+const CategoryChips: React.FC<{ groups: CategoryGroup[]; accentColor: string }> = ({ groups, accentColor }) => {
+  const top = groups.slice(0, 10);
+  if (top.length < 2) return null;
+  return (
+    <div className="sticky top-2 z-30 lg:top-3">
+      <div className="flex snap-x gap-2 overflow-x-auto rounded-2xl border border-slate-200/70 bg-white/85 p-2 shadow-sm backdrop-blur no-scrollbar">
+        {top.map((g) => (
+          <a
+            key={g.slug}
+            href="#products"
+            className="flex shrink-0 snap-start items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 transition duration-300 hover:-translate-y-0.5 hover:shadow-sm"
+            style={{ backgroundColor: `${accentColor}14` }}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: accentColor }} />
+            <span className="whitespace-nowrap">{g.title}</span>
+            <span className="text-[11px] font-black" style={{ color: accentColor }}>
+              {toPersianDigits(g.count)}
+            </span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// --- Brand tiles (same derivation as the shared BrandsRail:
+// distinct supplier names carried by the store's own products) -----
+const BrandTiles: React.FC<{ products: Product[]; config: TemplateConfig; accentColor: string }> = ({
+  products,
+  config,
+  accentColor,
+}) => {
+  if (!sectionEnabled(config, 'brands')) return null;
+  const counts = new Map<string, number>();
+  products.forEach((p) => {
+    const name = (p.supplierName || '').trim();
+    if (name) counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const brands = Array.from(counts.entries());
+  if (brands.length < 2) return null;
+  return (
+    <section data-testid="store-brands" className="space-y-3">
+      <SectionTitle accentColor={accentColor}>{customText(config, 'brandsTitle', 'برندها')}</SectionTitle>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+        {brands.map(([brand, count]) => (
+          <div
+            key={brand}
+            className="group rounded-2xl border border-slate-100 bg-white p-3 text-center shadow-2xs transition duration-300 hover:-translate-y-0.5 hover:shadow-md"
+          >
+            <span
+              className="mx-auto flex h-11 w-11 items-center justify-center rounded-full text-sm font-black transition duration-300 group-hover:scale-110"
+              style={{ backgroundColor: `${accentColor}1a`, color: accentColor }}
+            >
+              {brand.slice(0, 2)}
+            </span>
+            <p className="mt-2 truncate text-xs font-bold text-slate-800">{brand}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400">{toPersianDigits(count)} کالا</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+// --- Dual promo tiles (config banners as big cover tiles) ----------
+const PromoTiles: React.FC<{ config: TemplateConfig }> = ({ config }) => {
+  const banners = bannersOf(config);
+  if (banners.length < 2) return null;
+  return (
+    <section data-testid="store-banners" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {banners.map((b, i) => {
+        const inner = (
+          <>
+            <img
+              src={b.image}
+              alt={b.title || ''}
+              className="h-40 w-full object-cover transition duration-500 group-hover:scale-105 lg:h-52"
+              loading="lazy"
+            />
+            {b.title ? (
+              <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/25 to-transparent p-4 pt-12 text-sm font-black text-white">
+                {b.title}
+              </span>
+            ) : null}
+          </>
+        );
+        const cls = 'group relative block overflow-hidden rounded-3xl shadow-sm transition duration-300 hover:shadow-lg';
+        return b.link ? (
+          <a key={`${b.image}-${i}`} href={b.link} target="_blank" rel="noreferrer" className={cls}>
+            {inner}
+          </a>
+        ) : (
+          <div key={`${b.image}-${i}`} className={cls}>
+            {inner}
+          </div>
+        );
+      })}
+    </section>
+  );
+};
+
 export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
   const cfg = resolveTemplateConfig('tpl-electronic-1', config);
   const items = storefrontProducts(store, products);
   const order = orderedEnabledSections(cfg);
   const slides = heroSlidesOf(cfg);
   const custom = templateCustom(cfg);
+  const banners = bannersOf(cfg);
   const seen = new Set<string>();
   const once = (group: string): boolean => {
     if (seen.has(group)) return false;
@@ -48,29 +166,136 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
     return true;
   };
 
+  const categoryGroups = groupProductsByCategory(items, categories, custom.categoryOverrides);
+  const brandNames: string[] = [];
+  items.forEach((p) => {
+    const name = (p.supplierName || '').trim();
+    if (name && !brandNames.includes(name)) brandNames.push(name);
+  });
+
   const heroTitle = customText(cfg, 'heroTitle', store.name);
   const heroSubtitle = customText(cfg, 'heroSubtitle', store.description || store.shortDescription || store.tagline || '');
   const heroCtaText = customText(cfg, 'heroCtaText', 'مشاهده کالاها');
   const heroCtaLink = custom.heroCtaLink || '#products';
+  const heroImage = typeof custom.heroImage === 'string' && custom.heroImage.trim() !== '' ? custom.heroImage : '';
 
-  const renderHero = (): React.ReactNode => {
+  const renderHeroPanel = (): React.ReactNode => {
     if (slides.length > 0) {
-      return <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />;
+      return (
+        <div className="rounded-3xl shadow-lg shadow-slate-900/5 ring-1 ring-slate-900/5">
+          <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />
+        </div>
+      );
     }
     return (
       <section
-        className="rounded-3xl p-6 text-white lg:p-10"
-        style={{ background: `linear-gradient(135deg, ${accentColor}, #ea580c)` }}
+        className="relative overflow-hidden rounded-3xl text-white shadow-xl shadow-orange-200/60"
+        style={{ background: `linear-gradient(135deg, ${accentColor} 0%, #ea580c 92%)` }}
       >
-        <h1 className="text-2xl font-black leading-snug lg:text-4xl">{heroTitle}</h1>
-        {heroSubtitle ? <p className="mt-3 max-w-xl text-sm leading-8 text-white/85">{heroSubtitle}</p> : null}
-        <a
-          href={heroCtaLink}
-          className="mt-5 inline-block rounded-2xl bg-white px-5 py-3 text-sm font-black"
-          style={{ color: accentColor }}
-        >
-          {heroCtaText}
-        </a>
+        <div aria-hidden="true" className="pointer-events-none absolute -top-24 -left-20 h-72 w-72 rounded-full bg-white/10" />
+        <div aria-hidden="true" className="pointer-events-none absolute -bottom-28 right-1/4 h-80 w-80 rounded-full bg-white/10" />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-20"
+          style={{
+            backgroundImage: 'radial-gradient(rgba(255,255,255,0.6) 1.2px, transparent 1.4px)',
+            backgroundSize: '22px 22px',
+          }}
+        />
+        <div className="relative flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:p-10">
+          <div className="min-w-0 flex-1">
+            {store.logo ? (
+              <img
+                src={store.logo}
+                alt={store.name}
+                className="mb-4 h-14 w-14 rounded-2xl bg-white object-contain p-1.5 shadow-md"
+                loading="lazy"
+              />
+            ) : null}
+            <h1 className="text-3xl font-black leading-tight lg:text-5xl">{heroTitle}</h1>
+            {heroSubtitle ? (
+              <p className="mt-3 max-w-xl text-sm leading-8 text-white/85 lg:text-base">{heroSubtitle}</p>
+            ) : null}
+            <div className="mt-6">
+              <a
+                href={heroCtaLink}
+                className="inline-block rounded-full bg-white px-6 py-3 text-sm font-black shadow-lg transition duration-300 hover:-translate-y-0.5 hover:shadow-xl"
+                style={{ color: accentColor }}
+              >
+                {heroCtaText}
+              </a>
+            </div>
+            {items.length > 0 ? (
+              <div className="mt-6 flex flex-wrap gap-2">
+                <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
+                  {toPersianDigits(items.length)} کالا
+                </span>
+                {brandNames.length > 0 ? (
+                  <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
+                    {toPersianDigits(brandNames.length)} برند
+                  </span>
+                ) : null}
+                {categoryGroups.length > 0 ? (
+                  <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
+                    {toPersianDigits(categoryGroups.length)} دسته‌بندی
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          {heroImage ? (
+            <img
+              src={heroImage}
+              alt={heroTitle}
+              className="h-44 w-full shrink-0 rounded-2xl object-cover shadow-2xl ring-1 ring-white/40 lg:h-60 lg:w-96"
+              loading="lazy"
+            />
+          ) : null}
+        </div>
+      </section>
+    );
+  };
+
+  const renderHero = (): React.ReactNode => (
+    <>
+      {renderHeroPanel()}
+      <CategoryChips groups={categoryGroups} accentColor={accentColor} />
+    </>
+  );
+
+  const renderDeals = (): React.ReactNode => {
+    const deals = discountedProducts(items);
+    if (!sectionEnabled(cfg, 'deals') || deals.length === 0) {
+      // Let the shared section self-hide exactly as before.
+      return <DealsSection products={items} config={cfg} accentColor={accentColor} />;
+    }
+    return (
+      <section className="rounded-3xl border border-orange-100 bg-orange-50 p-3 lg:p-4">
+        <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
+          <span
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-base shadow-sm"
+            style={{ background: `linear-gradient(135deg, ${accentColor}, #ea580c)` }}
+          >
+            ⚡
+          </span>
+          <h3 className="text-sm font-black text-slate-900 lg:text-base">
+            {customText(cfg, 'dealsTitle', 'پیشنهاد شگفت‌انگیز')}
+          </h3>
+          <span
+            className="rounded-full px-2.5 py-1 text-[11px] font-black text-white"
+            style={{ backgroundColor: accentColor }}
+          >
+            پیشنهادهای امروز
+          </span>
+          <span className="ms-auto text-[11px] font-bold text-slate-500">
+            {toPersianDigits(deals.length)} کالا با تخفیف
+          </span>
+        </div>
+        {/* The shared section renders its own title row first; the
+            panel header above replaces it visually. */}
+        <div className="[&>section>div:first-child]:hidden">
+          <DealsSection products={items} config={cfg} accentColor={accentColor} />
+        </div>
       </section>
     );
   };
@@ -83,18 +308,30 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
       case 'heroSlides':
         return once('hero') ? renderHero() : null;
       case 'trustStrip':
-        return <TrustStripSection config={cfg} accentColor={accentColor} />;
+        return (
+          <div className="rounded-3xl border border-slate-100 bg-white p-3 shadow-sm empty:hidden lg:p-4">
+            <TrustStripSection config={cfg} accentColor={accentColor} />
+          </div>
+        );
       case 'categoryRail':
         return <CategoryRail products={items} categories={categories} config={cfg} accentColor={accentColor} />;
+      case 'categoryCards':
+        return <CategoryCards products={items} categories={categories} config={cfg} accentColor={accentColor} />;
       case 'banners':
       case 'promo':
-        return once('banners') ? <BannerRow config={cfg} /> : null;
+        return once('banners') ? (
+          banners.length >= 2 ? (
+            <PromoTiles config={cfg} />
+          ) : (
+            <BannerRow config={cfg} />
+          )
+        ) : null;
       case 'deals':
-        return <DealsSection products={items} config={cfg} accentColor={accentColor} />;
+        return renderDeals();
       case 'timedDeals':
         return <TimedDealsSection store={store} products={items} config={cfg} accentColor={accentColor} />;
       case 'brands':
-        return <BrandsRail products={items} config={cfg} accentColor={accentColor} />;
+        return <BrandTiles products={items} config={cfg} accentColor={accentColor} />;
       case 'featured':
         return <FeaturedSection products={items} config={cfg} accentColor={accentColor} />;
       case 'bestsellers':
@@ -108,17 +345,36 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
       case 'campaign':
         return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
       case 'newsletter':
-        return <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />;
+        return (
+          <div className="rounded-3xl bg-white p-2 shadow-sm empty:hidden lg:p-3">
+            <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />
+          </div>
+        );
       case 'testimonials':
-        return <TestimonialsSection config={cfg} accentColor={accentColor} />;
+        return (
+          <div className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm empty:hidden lg:p-5">
+            <TestimonialsSection config={cfg} accentColor={accentColor} />
+          </div>
+        );
       case 'faq':
-        return <FaqSection config={cfg} accentColor={accentColor} />;
+        return (
+          <div className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm empty:hidden lg:p-5">
+            <FaqSection config={cfg} accentColor={accentColor} />
+          </div>
+        );
       case 'lookbook':
         return <LookbookSection config={cfg} accentColor={accentColor} />;
       case 'products':
       case 'allProducts':
         return once('products') ? (
-          <ProductsGridSection products={items} config={cfg} accentColor={accentColor} columnsClass="grid-cols-2 lg:grid-cols-5" />
+          <div id="products" className="scroll-mt-24">
+            <ProductsGridSection
+              products={items}
+              config={cfg}
+              accentColor={accentColor}
+              columnsClass="grid-cols-2 lg:grid-cols-5"
+            />
+          </div>
         ) : null;
       default:
         return null;
@@ -130,7 +386,7 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
       <nav aria-label="مسیر صفحه" className="px-3 pt-3 text-[11px] text-slate-400 lg:px-5">
         <span>خانه</span><span className="mx-1">/</span><span className="text-slate-700 font-bold">{store.name}</span>
       </nav>
-      <div className="mx-auto w-full max-w-7xl space-y-5 p-3 lg:p-5">
+      <div className="mx-auto w-full max-w-7xl space-y-6 p-3 lg:space-y-8 lg:p-5">
         {order.map((key) => (
           <React.Fragment key={key}>{renderSection(key)}</React.Fragment>
         ))}

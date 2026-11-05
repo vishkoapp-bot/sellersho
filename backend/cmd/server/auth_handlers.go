@@ -60,6 +60,42 @@ func AuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.Han
 	}
 }
 
+// OptionalAuthMiddleware is the public-route counterpart of
+// AuthMiddleware: it never rejects a request. When the caller
+// presents a valid Bearer token it places the refreshed claims in
+// the request context exactly like AuthMiddleware; absent, invalid
+// or blocked credentials simply leave the request anonymous. It
+// exists for surfaces that are public by design but key part of
+// their payload to the caller's identity -- the product list/detail
+// gate on supplier cost fields (see canSeeSupplierFields). Every
+// failure mode degrades to anonymous, which can only hide gated
+// fields, never expose them.
+func OptionalAuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			next(w, r)
+			return
+		}
+		claims, err := jwtService.ValidateToken(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			next(w, r)
+			return
+		}
+		if err := jwtService.RefreshCapabilities(r.Context(), claims); err != nil {
+			next(w, r)
+			return
+		}
+		blocked, err := jwtService.IsUserBlocked(r.Context(), claims.UserID)
+		if err != nil || blocked {
+			next(w, r)
+			return
+		}
+		ctx := context.WithValue(r.Context(), userClaimsKey, claims)
+		next(w, r.WithContext(ctx))
+	}
+}
+
 // RequireCapabilities wraps an endpoint with JWT authentication and an
 // explicit active-capability allowlist. Legacy role-only tokens (no
 // capabilities claim at all) remain valid through HasCapability's

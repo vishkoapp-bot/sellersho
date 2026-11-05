@@ -38,7 +38,9 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   // 2,277,000 for the same speaker. For a dropshipper storefront, fetch the
   // store-scoped list (same products, priced at the store's margin) and use
   // it for every grid/template/widget in this view. Central storefronts keep
-  // the context list. On fetch failure fall back to the central list.
+  // the context list. Priced surfaces never fall back to the central list:
+  // while the scoped fetch is in flight or after it fails they receive an
+  // empty list instead (see templateProducts / fallbackProducts below).
   const [scopedProducts, setScopedProducts] = useState<ReturnType<typeof mapBackendProduct>[] | null>(null);
   useEffect(() => {
     if (currentStore?.ownerType !== 'dropshipper' || !currentStore.slug) {
@@ -142,6 +144,18 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
     );
   }
 
+  // Fix74 (completed): the template renderer and the fallback
+  // public-widget section are as strict as the fallback grid/slider
+  // below: on a dropshipper storefront they receive the store-scoped
+  // list only - empty while it loads or after it failed - never the
+  // central-priced context catalogue, whose prices checkout would
+  // contradict. Central storefronts keep `products` (their context
+  // catalogue) unchanged. With an empty list the template branch
+  // takes its designed empty state (Fix81: template chrome plus the
+  // coming-soon block), not an error page.
+  const templateProducts =
+    currentStore.ownerType === 'dropshipper' ? scopedProducts ?? [] : products;
+
   // FIX3: when a template is resolved, the template component
   // renders the storefront (with the existing about/contact/footer
   // sections below it, placement unchanged). An unknown templateId
@@ -152,7 +166,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   // other value means "not resolved yet" (builder loading layout).
   const resolvedTemplateId = templateStoreId === currentStore.id ? templateId : null;
   if (resolvedTemplateId) {
-    const items = storefrontProducts(currentStore, products);
+    const items = storefrontProducts(currentStore, templateProducts);
     const searchOverlay = isSearchOpen ? (
       <div className="bg-slate-50 border-b border-slate-200 p-3 flex items-center gap-2 animate-in fade-in duration-200">
         <div className="relative flex-1 flex items-center bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-2xs">
@@ -245,7 +259,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
           <StorefrontTemplate
             templateId={resolvedTemplateId}
             store={currentStore}
-            products={products}
+            products={templateProducts}
             categories={categories}
             accentColor={resolveTemplateAccent(resolvedTemplateId, templateConfig.accentColor)}
             config={templateConfig}
@@ -257,6 +271,17 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
       </div>
     );
   }
+
+  // Fallback (builder) layout surfaces: the deals slider and the
+  // legacy grid used to read the unscoped context catalogue directly,
+  // showing central prices while the order path charges store
+  // prices. On a dropshipper storefront they now receive the
+  // store-scoped list; while that fetch is in flight (or has failed)
+  // they receive an empty list - their existing empty states - and
+  // never central-priced cards. Central storefronts keep the view's
+  // list, which for them is the context catalogue, unchanged.
+  const fallbackProducts =
+    currentStore.ownerType === 'dropshipper' ? scopedProducts ?? [] : products;
 
   return (
     <div className="flex-1 flex flex-col bg-white">
@@ -336,7 +361,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
           <>
             {builderWidgets.heroBanner && <SellerStorefrontHero />}
             {builderWidgets.categoriesGrid && <SellerStorefrontCategories />}
-            {builderWidgets.dealsSlider && <SpecialDealsSlider />}
+            {builderWidgets.dealsSlider && <SpecialDealsSlider products={fallbackProducts} />}
             {builderWidgets.storeDealsWidget && publicWidget && (
               <div className="mx-3.5 my-2 p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl text-white flex items-center justify-between shadow-xs">
                 <div>
@@ -347,9 +372,9 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
               </div>
             )}
             {builderWidgets.storeDealsWidget && publicWidget && <section className="mx-3.5 grid grid-cols-2 gap-2" aria-label="کالاهای منتخب ویجت">
-              {storefrontProducts(currentStore, products).filter((product) => publicWidget.productIds.includes(product.id)).map((product) => <ProductCard key={product.id} product={product} />)}
+              {storefrontProducts(currentStore, templateProducts).filter((product) => publicWidget.productIds.includes(product.id)).map((product) => <ProductCard key={product.id} product={product} />)}
             </section>}
-            <SellerStorefrontProductGrid />
+            <SellerStorefrontProductGrid products={fallbackProducts} />
           </>
         )}
 

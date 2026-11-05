@@ -1,11 +1,21 @@
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
+import { Product } from '../../types';
 import { ProductCard } from '../ProductCard';
 import { SlidersHorizontal, Package } from 'lucide-react';
 
-export const SellerStorefrontProductGrid: React.FC = () => {
-  const { products, currentStore, selectedCategory, searchQuery, toPersianDigits } = useStore();
+interface SellerStorefrontProductGridProps {
+  // The list to render. SellerStorefrontView passes its store-scoped
+  // list so this legacy grid shows STORE prices (the context catalogue
+  // is central-priced while the order path charges store prices).
+  // When omitted, the context catalogue is used, exactly as before.
+  products?: Product[];
+}
+
+export const SellerStorefrontProductGrid: React.FC<SellerStorefrontProductGridProps> = ({ products: productsProp }) => {
+  const { products: contextProducts, currentStore, selectedCategory, searchQuery, toPersianDigits } = useStore();
+  const products = productsProp ?? contextProducts;
   const [sortBy, setSortBy] = useState<'popular' | 'cheapest' | 'expensive' | 'discount'>('popular');
 
   let filtered = products.filter((p) => {

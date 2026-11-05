@@ -1,12 +1,23 @@
 import React from 'react';
 import { useStore } from '../context/StoreContext';
 import { getCentralDeals } from '../utils/centralDeals';
+import { Product } from '../types';
 import { DealProductCard } from './DealProductCard';
 import { ProductCarousel } from "./ProductCarousel";
 import { ArrowLeft, Tag } from 'lucide-react';
 
-export const SpecialDealsSlider: React.FC = () => {
-  const { products, currentStore, openCatalogCategory } = useStore();
+interface SpecialDealsSliderProps {
+  // Optional pre-scoped list. A dropshipper storefront passes its
+  // store-scoped list so the deal prices are the STORE's (the context
+  // catalogue is central-priced while the order path charges store
+  // prices). The central home passes nothing and keeps the context
+  // catalogue, exactly as before.
+  products?: Product[];
+}
+
+export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products: productsProp }) => {
+  const { products: contextProducts, currentStore, openCatalogCategory } = useStore();
+  const products = productsProp ?? contextProducts;
 
   const dealProducts = getCentralDeals(products, currentStore);
   if (dealProducts.length === 0) return null;

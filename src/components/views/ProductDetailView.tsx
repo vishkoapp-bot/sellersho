@@ -32,6 +32,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     cartItemsCount,
     cart,
     products,
+    routeStoreSlug,
   } = useStore();
   const { success, info, error } = useToast();
   const [qty, setQty] = useState(1);
@@ -62,6 +63,36 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id, currentStore?.slug]);
+
+  // Related-rail scope: when this PDP is bound to a store (route
+  // scope captured from a storefront click, or the current store is
+  // itself a dropshipper), the rail must be priced by THAT store.
+  // The context catalogue is unscoped (central margins) while the
+  // order path charges store prices, so a scoped PDP fetches the
+  // store-scoped list with the same mechanism as the detail refetch
+  // above (catalogApi keyed by the store slug, mapped the same way).
+  // While the scoped list is in flight the rail stays empty - it
+  // must never flash central-priced cards first; a failed fetch
+  // leaves it empty too. Central PDPs keep the context list below.
+  const scopedStoreSlug: string | null =
+    routeStoreSlug ??
+    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
+      ? currentStore.slug
+      : null);
+  const [scopedRelated, setScopedRelated] = useState<Product[] | null>(null);
+  useEffect(() => {
+    if (!scopedStoreSlug) {
+      setScopedRelated(null);
+      return;
+    }
+    setScopedRelated(null);
+    let cancelled = false;
+    catalogApi
+      .getProducts({ storeSlug: scopedStoreSlug, category: product.category })
+      .then((dtos) => { if (!cancelled) setScopedRelated(dtos.map(mapBackendProduct)); })
+      .catch(() => { if (!cancelled) setScopedRelated([]); });
+    return () => { cancelled = true; };
+  }, [scopedStoreSlug, product.id, product.category]);
 
   // FIX 7: the standalone product page previously ignored variants entirely
   // (FIX 4 wired the selector only into ProductDetailModal). Same live
@@ -141,7 +172,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       return max > 0 ? Math.min(clamped, max) : clamped;
     });
   };
-  const related = products
+  const related = (scopedStoreSlug ? scopedRelated ?? [] : products)
     .filter((p) => p.category === product.category && p.id !== product.id && isProductPublishedInStore(currentStore, p.id))
     .slice(0, 4);
 

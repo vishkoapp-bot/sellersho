@@ -32,9 +32,22 @@ type ProductFilter struct {
 	InStockOnly  bool
 	Search       string
 	SortBy       string // 'featured' | 'cheapest' | 'expensive' | 'discount'
+
+	// StoreScoped restricts the listing to one dropshipper store's own
+	// assortment: StoreProductIDs is the store's store_products set in
+	// panel (position) order, exactly as exposed on the store DTO as
+	// activeProductIds. In this mode assortment membership replaces the
+	// global D42 is_active gate — a product the seller picked for the
+	// store is listable for that store even when its global catalog row
+	// is inactive — and the default ordering is the assortment order.
+	// An empty StoreProductIDs yields an empty list, never the catalog.
+	StoreScoped     bool
+	StoreProductIDs []string
 }
 
-// GetProducts returns active reference products matching the filter with their assigned niche IDs
+// GetProducts returns active reference products matching the filter with their assigned niche IDs.
+// With filter.StoreScoped set it instead returns the named store's own
+// assortment (see ProductFilter), with no other change to the query shape.
 func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilter) ([]domain.Product, error) {
 	var whereClauses []string
 	var args []interface{}
@@ -59,7 +72,19 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	// D42 list-only: the public list returns active products only.
 	// Detail (GetProductByID/GetProductBySpn) deliberately has no
 	// such condition: live returns 200 for inactive detail.
-	whereClauses = append(whereClauses, "p.is_active = TRUE")
+	// Store-scoped exception: for a dropshipper store's own listing,
+	// membership in the store's store_products assortment is the
+	// listing gate instead (the seller's pick IS the activation for
+	// that store), so the global flag must not drop store products.
+	assortmentArg := 0
+	if filter.StoreScoped {
+		whereClauses = append(whereClauses, fmt.Sprintf("p.id = ANY($%d)", argIdx))
+		args = append(args, pq.Array(filter.StoreProductIDs))
+		assortmentArg = argIdx
+		argIdx++
+	} else {
+		whereClauses = append(whereClauses, "p.is_active = TRUE")
+	}
 
 	// D41 brand filter: EXACT match, never partial.
 	if filter.Brand != "" {
@@ -87,6 +112,12 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	}
 
 	orderBySQL := " ORDER BY p.is_featured DESC, p.created_at DESC"
+	if filter.StoreScoped && (filter.SortBy == "" || filter.SortBy == "featured") {
+		// The seller arranged the assortment by position; keep that
+		// order for the store's own listing instead of recency, which
+		// would bury the store's older picks under newer catalog rows.
+		orderBySQL = fmt.Sprintf(" ORDER BY array_position($%d::text[], p.id::text)", assortmentArg)
+	}
 	switch filter.SortBy {
 	case "cheapest":
 		orderBySQL = " ORDER BY p.supplier_base_cost ASC"

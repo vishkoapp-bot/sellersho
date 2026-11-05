@@ -320,10 +320,13 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 // product cost is used. Variant percent overrides from
 // store_variant_overrides win over the product resolution; fixed-mode
 // overrides fall back inside the resolver (TODO U10, owned by Team 02).
+// The store's timed-deals widget discount (when the product is in a
+// live widget campaign) is then applied per variant for display.
 // This function never touches pricing internals: it only calls the
 // resolver Team 02 supplies.
 func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride) map[string]VariantPriceResponse {
 	out := make(map[string]VariantPriceResponse, len(variants))
+	widgetCfg := loadDealsWidgetConfig(&store)
 	for _, v := range variants {
 		cost := p.SupplierBaseCost
 		if v.SupplierBaseCost != nil {
@@ -335,6 +338,7 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 			ov = &oc
 		}
 		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(p, cost, v.ID, store, settings, locks, ov)
+		res = applyDealsWidgetDiscountForDisplay(&store, widgetCfg, p.ID, res)
 		out[v.ID] = VariantPriceResponse{
 			Price:           res.FinalPrice,
 			OriginalPrice:   res.OriginalPrice,
@@ -385,7 +389,15 @@ func resolveListStore(ctx context.Context, storeRepo *repository.StoreRepository
 // List filtering is live behaviour (D42): only active products are
 // listed (enforced in the repository); brand filtering is an EXACT
 // match (D41), never partial.
-func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository) {
+// Store views are the exception that makes a storefront work: when
+// ?storeSlug= names an existing non-central dropshipper store, the
+// list is THAT store's own assortment (its store_products set, the
+// same IDs the store DTO exposes as activeProductIds), priced with
+// the store's resolved margins below. The unscoped catalog is never
+// leaked into a store view, and assortment membership replaces the
+// global is_active gate there — without this, a dropshipper whose
+// picks are globally inactive renders an empty store.
+func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository, supplierRepos ...*repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
 
 	category := r.URL.Query().Get("category")
@@ -418,6 +430,10 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
+	var supplierRepo *repository.SupplierRepository
+	if len(supplierRepos) > 0 {
+		supplierRepo = supplierRepos[0]
+	}
 
 	filter := repository.ProductFilter{
 		CategorySlug: category,
@@ -427,6 +443,19 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		InStockOnly:  inStockOnly,
 		Search:       search,
 		SortBy:       sort,
+	}
+
+	// The explicitly requested store (no central fallback): an existing
+	// non-central dropshipper store scopes the listing to its own
+	// assortment. reqStore is reused for the FIX 14 supplier fields
+	// below, which key on the same condition.
+	var reqStore *domain.Store
+	if storeSlug != "" {
+		reqStore, _ = storeRepo.GetStoreBySlug(ctx, storeSlug)
+	}
+	if reqStore != nil && reqStore.Slug != "central" && reqStore.OwnerType == "dropshipper" {
+		filter.StoreScoped = true
+		filter.StoreProductIDs = reqStore.ActiveProductIDs
 	}
 
 	products, err := catalogRepo.GetProducts(ctx, filter)
@@ -480,19 +509,25 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// (vishkostor: all 40 items carry them; central or no slug or an
 	// unknown slug: none). The fallback central store used for pricing
 	// must NOT trigger the fields.
-	showSupplier := false
-	if storeSlug != "" {
-		if reqStore, _ := storeRepo.GetStoreBySlug(ctx, storeSlug); reqStore != nil && reqStore.Slug != "central" {
-			showSupplier = true
-		}
+	// AUTH-KEYED (owner secrecy rule): the store view alone no longer
+	// suffices -- the fields are the supplier's cost book and are
+	// filled per item only for a caller related to the store or the
+	// product (see canSeeSupplierFields); everyone else gets the
+	// central shape, platformFeeF included (zeroed below).
+	viewStore := reqStore != nil && reqStore.Slug != "central"
+	var viewer supplierFieldsViewer
+	if viewStore {
+		viewer = resolveSupplierFieldsViewer(ctx, supplierRepo)
 	}
 	supplierNameByID := map[string]string{}
+	widgetCfg := loadDealsWidgetConfig(store)
 	var resp []ProductResponse
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
 		variants := variantsByProduct[p.ID]
 		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides))
-		if showSupplier {
+		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
 			sid := p.SupplierID
 			item.SupplierID = &sid
 			if name, ok := supplierNameByID[p.SupplierID]; !ok {
@@ -504,6 +539,8 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			}
 			b := p.SupplierBaseCost
 			item.BaseCostB = &b
+		} else {
+			item.PlatformFeeF = 0
 		}
 		resp = append(resp, item)
 	}
@@ -531,6 +568,7 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		overrides = map[string]pricing.StoreVariantOverride{}
 	}
 	res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+	res = applyDealsWidgetDiscountForDisplay(store, loadDealsWidgetConfig(store), p.ID, res)
 	variants, _ := catalogRepo.GetProductVariants(ctx, p.ID)
 	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides))
 	storeCount, _ := catalogRepo.GetProductStoreCount(ctx, p.ID)
@@ -569,6 +607,16 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		b := p.SupplierBaseCost
 		baseCostB = &b
 	}
+	// The two non-pointer cost fields follow the same gate as the
+	// pointer fields above: without a related caller (see
+	// canSeeSupplierFields) platformFeeF is zeroed and supplierWarranty
+	// is emptied, matching the central shape.
+	platformFeeF := base.PlatformFeeF
+	supplierWarranty := p.SupplierWarranty
+	if !showSupplier {
+		platformFeeF = 0
+		supplierWarranty = ""
+	}
 	return ProductDetailResponse{
 		ID:               base.ID,
 		Title:            base.Title,
@@ -578,13 +626,13 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		DiscountEligible: base.DiscountEligible,
 		DiscountPercent:  base.DiscountPercent,
 		Price:            base.Price,
-		PlatformFeeF:     base.PlatformFeeF,
+		PlatformFeeF:     platformFeeF,
 		IsOriginal:       base.IsOriginal,
 		Stock:            base.Stock,
 		Image:            base.Image,
 		Description:      base.Description,
 		Warehouse:        base.Warehouse,
-		SupplierWarranty: p.SupplierWarranty,
+		SupplierWarranty: supplierWarranty,
 		NicheIDs:         base.NicheIDs,
 		IsActive:         base.IsActive,
 		StoreCount:       storeCount,
@@ -611,7 +659,7 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 // product, it never 404s). The literal "price-bounds" path is routed
 // here too as a safety net if the exact route registration is lost in
 // integration merging.
-func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository, subPath string) {
+func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository, subPath string, supplierRepos ...*repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
 
 	trimmed := strings.Trim(strings.TrimSuffix(subPath, "/"), "/")
@@ -635,6 +683,10 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 	if catalogRepo == nil || storeRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
+	}
+	var supplierRepo *repository.SupplierRepository
+	if len(supplierRepos) > 0 {
+		supplierRepo = supplierRepos[0]
 	}
 
 	var p *domain.Product
@@ -661,10 +713,13 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 	// never for central even when explicitly requested, never for an
 	// unknown slug. The old (storeSlug != "") rule leaked baseCostB
 	// (e.g. bracelet 58,000,000) in the central view.
+	// AUTH-KEYED (owner secrecy rule): as in the list, the store view
+	// alone no longer suffices -- the caller must own the store,
+	// supply the product, or be an admin (see canSeeSupplierFields).
 	showSupplier := false
 	if storeSlug != "" {
 		if reqStore, _ := storeRepo.GetStoreBySlug(ctx, storeSlug); reqStore != nil && reqStore.Slug != "central" {
-			showSupplier = true
+			showSupplier = resolveSupplierFieldsViewer(ctx, supplierRepo).canSeeSupplierFields(reqStore, p.SupplierID)
 		}
 	}
 
@@ -757,28 +812,51 @@ func computePriceBounds(prices []int64) productPriceBoundsResponse {
 // active products only (GetProducts enforces is_active), with the same
 // exact category_slug match as the list. The live probe
 // {198000, 63800000, 40} is a shape example, never hardcoded data.
+// Storefront exception, mirroring handleProductsList: a ?storeSlug=
+// naming an existing non-central dropshipper store scopes the priced
+// set to that store's own assortment and applies its deals-widget
+// campaign prices, so the bounds match the storefront card prices.
 func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	if catalogRepo == nil || storeRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	products, err := catalogRepo.GetProducts(ctx, repository.ProductFilter{CategorySlug: r.URL.Query().Get("category")})
+	storeSlug := r.URL.Query().Get("storeSlug")
+	filter := repository.ProductFilter{CategorySlug: r.URL.Query().Get("category")}
+	// Mirror handleProductsList's store resolution (the explicitly
+	// requested store, no central fallback): an existing non-central
+	// dropshipper store scopes the priced set to its own assortment,
+	// so the bounds describe the same products the storefront lists.
+	// Central/unknown slugs keep the global active-catalog path,
+	// byte-identical to before.
+	var reqStore *domain.Store
+	if storeSlug != "" {
+		reqStore, _ = storeRepo.GetStoreBySlug(ctx, storeSlug)
+	}
+	if reqStore != nil && reqStore.Slug != "central" && reqStore.OwnerType == "dropshipper" {
+		filter.StoreScoped = true
+		filter.StoreProductIDs = reqStore.ActiveProductIDs
+	}
+	products, err := catalogRepo.GetProducts(ctx, filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	settings, _ := loadPricingSettings(ctx, pricingRepo)
-	store := resolveListStore(ctx, storeRepo, r.URL.Query().Get("storeSlug"))
+	store := resolveListStore(ctx, storeRepo, storeSlug)
 	var storeVal domain.Store
 	var locks []pricing.MarginLock
 	if store != nil {
 		storeVal = *store
 		locks = loadStoreMarginLocks(ctx, pricingRepo, store.ID)
 	}
+	widgetCfg := loadDealsWidgetConfig(store)
 	prices := make([]int64, 0, len(products))
 	for _, p := range products {
-		prices = append(prices, pricing.ResolveReferencePricing(p, storeVal, settings, locks).FinalPrice)
+		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
+		prices = append(prices, res.FinalPrice)
 	}
 	json.NewEncoder(w).Encode(computePriceBounds(prices))
 }

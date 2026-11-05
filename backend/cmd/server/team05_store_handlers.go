@@ -106,6 +106,16 @@ var team05PublicTemplateCustomAllowlist = map[string]bool{
 	"lookbookSubtitle": true, "lookbookLink": true,
 	"campaignImage": true, "campaignLink": true, "campaignEndsAt": true,
 	"trustItems": true, "aboutImage": true,
+	// Editable-appearance keys (seller panel section editor): the
+	// storefront renders these on the public page, so they are
+	// presentation values of exactly the same class as the keys above.
+	"announcementText": true, "announcementLink": true,
+	"heroTitle": true, "heroSubtitle": true, "heroCtaText": true,
+	"heroCtaLink": true, "heroImage": true,
+	"aboutTitle": true, "aboutText": true,
+	"brandsTitle": true, "productsTitle": true,
+	"testimonials": true, "faqItems": true,
+	"newsletterTitle": true, "newsletterSubtitle": true,
 }
 
 // team05PublicTemplateConfig returns the public-safe subset of a raw

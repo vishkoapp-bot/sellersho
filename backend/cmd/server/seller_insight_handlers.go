@@ -190,7 +190,7 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 	if len(storeIDs) > 0 {
 		ph, args := t01MergeInClause(storeIDs)
 		rows, err := db.QueryContext(ctx,
-			`SELECT d::date AS day, COALESCE(SUM(o.payable_amount), 0), COUNT(o.id)
+			`SELECT TO_CHAR(d::date, 'YYYY-MM-DD') AS day, COALESCE(SUM(o.payable_amount), 0), COUNT(o.id)
 			FROM generate_series(CURRENT_DATE - 29, CURRENT_DATE, '1 day'::interval) d
 			LEFT JOIN orders o ON o.created_at::date = d::date AND o.store_id IN (`+ph+`) AND o.`+paid+`
 			GROUP BY d::date ORDER BY d::date`, args...)

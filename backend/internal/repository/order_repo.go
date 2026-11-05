@@ -786,7 +786,7 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		return nil, err
 	}
 	if _, err = dbTx.ExecContext(ctx, `
-		UPDATE orders SET payment_status = 'paid', updated_at = NOW() WHERE id = $1
+		UPDATE orders SET payment_status = 'paid', inventory_captured = TRUE, updated_at = NOW() WHERE id = $1
 	`, payment.OrderID); err != nil {
 		return nil, err
 	}

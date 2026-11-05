@@ -101,6 +101,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   const handleInitialSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Variant products have no product-level margin: their prices come
+    // from the per-variant percents only (saved by the variant button).
+    if (variantCount > 0) { onClose(); return; }
     if (isLocked) return;
     if (!isProfitValid) {
       if (!isNaN(numVal) && numVal > maxAllowed) {
@@ -215,6 +218,34 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
     success('سود تنوع‌ها ذخیره شد.');
   };
 
+  // Summary for variant products: computed from each variant's EFFECTIVE
+  // percent (typed ?? saved ?? product fallback) and its own base price —
+  // the same numbers the backend charges with (variant override wins).
+  const variantSummary = (() => {
+    if (variantCount === 0) return null;
+    const rowsV = (product.variants || []).map((v) => {
+      const costV = v.supplierBaseCost ?? product.supplierBaseCost;
+      const baseV = roundTo100(costV * (1 + productPct / 100));
+      const typed = variantInputs[v.id] ?? '';
+      // Inputs initialize from the saved overrides on open, so `typed`
+      // already carries them; a cleared input means "delete on save" and
+      // previews the fallback — exactly like the per-variant rows above.
+      const eff = typed !== '' && !isNaN(Number(typed)) ? Number(typed)
+        : (isNaN(numVal) ? 0 : numVal);
+      const finalV = roundTo100(baseV * (1 + eff / 100));
+      return { baseV, eff, finalV, profitV: finalV - baseV };
+    }).filter((r) => r.baseV > 0);
+    if (rowsV.length === 0) return null;
+    const pcts = rowsV.map((r) => r.eff);
+    const finals = rowsV.map((r) => r.finalV);
+    const profits = rowsV.map((r) => r.profitV);
+    return {
+      minPct: Math.min(...pcts), maxPct: Math.max(...pcts),
+      minFinal: Math.min(...finals), maxFinal: Math.max(...finals),
+      minProfit: Math.min(...profits), maxProfit: Math.max(...profits),
+    };
+  })();
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
       <motion.div
@@ -250,9 +281,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{formatPrice(baseCostR)} تومان</span>
           </div>
 
-          {variantCount >= 2 && (
+          {variantCount > 0 && (
             <p className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 text-[11px] leading-5 text-slate-600">
-              این کالا ۲ تنوع یا بیشتر دارد؛ سود سطح کالا در قیمت فروش اثری ندارد و قیمت از سود هر تنوع حساب می‌شود.
+              این کالا تنوع دارد؛ قیمتش فقط از سود هر تنوع حساب می‌شود و سود جداگانه‌ای در سطح کالا ندارد. درصد هر تنوع را همین‌جا تعیین کن.
             </p>
           )}
 
@@ -260,7 +291,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             <div className="space-y-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
               <p className="text-[11px] font-bold text-slate-800">سود هر تنوع (درصد روی قیمت پایه همان تنوع)</p>
               <p className="text-[10px] leading-5 text-slate-500">
-                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. خالی یعنی پیرو سود کالا.
+                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. تنوعی که خالی بماند، با درصد پیش‌فرضی حساب می‌شود که در جعبه همان ردیف می‌بینی.
               </p>
               <p className="text-[10px] leading-5 text-slate-500">
                 بازه مجاز سود برای هر تنوع هم همان بازه پلتفرم است: {rangeText}
@@ -309,7 +340,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             </div>
           )}
 
-          {/* Section 3.2: Percent-only profit input */}
+          {/* Section 3.2: Percent-only profit input (single-variant / plain products only) */}
+          {variantCount === 0 && (
           <div>
 
             <div className={`relative flex items-center rounded-xl px-3 py-2 border transition-all ${
@@ -328,7 +360,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 required
               />
               <span className="text-[10px] text-slate-400 font-bold mr-1 shrink-0">
-                درصد سود روی مبنا
+                درصد سود این کالا
               </span>
             </div>
 
@@ -348,7 +380,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             )}
           </div>
 
-          {/* Section 3.3.b: Niche Bulk Checkbox */}
+          )}
+
+          {/* Section 3.3.b: Niche Bulk Checkbox (plain products only) */}
+          {variantCount === 0 && (<>
           <div className="p-2.5 bg-blue-50/50 border border-blue-100 rounded-xl flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-600 shrink-0"  strokeWidth={1.5}/>
@@ -370,7 +405,24 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             />
           </div>
 
-          {baseUnknown ? (
+          </>)}
+
+          {variantCount > 0 && variantSummary ? (
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-emerald-800 font-bold">قیمت نهایی تنوع‌ها (رند ۱۰۰ ت):</span>
+                <span className="text-base font-black text-emerald-800 font-mono">
+                  {variantSummary.minFinal === variantSummary.maxFinal
+                    ? `${formatPrice(variantSummary.minFinal)} تومان`
+                    : `از ${formatPrice(variantSummary.minFinal)} تومان`}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-emerald-700 pt-1 border-t border-emerald-200/60">
+                <span>سود شما در هر فروش: <strong className="font-mono">+{formatPrice(variantSummary.minProfit)} ت{variantSummary.maxProfit !== variantSummary.minProfit ? ' به بالا' : ''}</strong></span>
+                <span>حاشیه سود: {variantSummary.minPct === variantSummary.maxPct ? `٪${toPersianDigits(variantSummary.minPct)}` : `٪${toPersianDigits(variantSummary.minPct)} تا ٪${toPersianDigits(variantSummary.maxPct)}`}</span>
+              </div>
+            </div>
+          ) : baseUnknown ? (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
               {isProfitValid ? (
                 <>
@@ -397,6 +449,15 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           </div>
 
           )}
+          {variantCount > 0 ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl"
+            >
+              بستن
+            </button>
+          ) : (
           <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
             <button
               type="button"
@@ -413,6 +474,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
               {applyToNiche ? 'مرحله بعد: بازبینی و تایید' : 'ذخیره و اعمال در ویترین'}
             </button>
           </div>
+          )}
         </form>
 
         {/* Requirement 3: Two-Step Confirmation Modal for Bulk Niche Pricing */}

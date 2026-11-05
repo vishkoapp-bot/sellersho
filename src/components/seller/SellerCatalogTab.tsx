@@ -3,7 +3,9 @@ import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { SellerProductPricingModal } from './SellerProductPricingModal';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
-import { resolvePricing } from '../../utils/pricingEngine';
+import { resolvePricing, resolvePlatformPct, roundTo100 } from '../../utils/pricingEngine';
+import { storeApi } from '../../services/storeApi';
+import { isMockMode } from '../../services/apiClient';
 import { catalogApi } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { Search, Check, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 'lucide-react';
@@ -124,6 +126,26 @@ export const SellerCatalogTab: React.FC = () => {
     return isOutside && matchesSearch;
   });
 
+  // Per-variant seller percents for this store (productId -> variantId -> pct).
+  // Variant products price from these (backend: variant override wins), so
+  // the list must show them — not the product-level fallback percent.
+  const [variantPctByProduct, setVariantPctByProduct] = useState<Record<string, Record<string, number>>>({});
+  useEffect(() => {
+    if (!currentStore?.id || isMockMode()) return;
+    let cancelled = false;
+    storeApi.getSellerVariantOverrides(currentStore.id)
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, Record<string, number>> = {};
+        for (const r of rows) {
+          (map[r.productId] = map[r.productId] || {})[r.variantId] = r.value;
+        }
+        setVariantPctByProduct(map);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentStore?.id]);
+
   const renderRow = (product: any, purple: boolean) => {
     const isPending = pendingProductIds.includes(product.id);
     const isSaved = savedProductIds.includes(product.id);
@@ -133,6 +155,38 @@ export const SellerCatalogTab: React.FC = () => {
     const baseCostR = pricing.baseCost;
     const finalPrice = pricing.finalPrice;
     const profitToman = pricing.sellerMargin;
+
+    // Variant products: the row shows the VARIANT pricing (what is actually
+    // charged), using each variant's effective percent (its own override,
+    // else the product fallback). Uniform -> exact numbers; mixed -> «از».
+    let displayFinal = finalPrice;
+    let displayProfit = profitToman;
+    let displayPctText = `${pricing.marginPercent.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪`;
+    let fromPrefix = '';
+    const rowVariants: Array<{ id: string; supplierBaseCost?: number }> = (product as any).variants || [];
+    if (rowVariants.length > 0) {
+      const ovMap = variantPctByProduct[product.id] || {};
+      const pctR = resolvePlatformPct(product, platformSettings);
+      const rowsV = rowVariants.map((v) => {
+        const costV = v.supplierBaseCost ?? product.supplierBaseCost ?? 0;
+        const baseV = roundTo100(costV * (1 + pctR / 100));
+        const pct = ovMap[v.id] ?? pricing.marginPercent;
+        const finV = roundTo100(baseV * (1 + pct / 100));
+        return { pct, finV, profitV: finV - baseV, baseV };
+      }).filter((r) => r.baseV > 0);
+      if (rowsV.length > 0) {
+        const pcts = rowsV.map((r) => r.pct);
+        const fins = rowsV.map((r) => r.finV);
+        const profs = rowsV.map((r) => r.profitV);
+        const minPct = Math.min(...pcts);
+        const maxPct = Math.max(...pcts);
+        displayFinal = Math.min(...fins);
+        displayProfit = Math.min(...profs);
+        if (Math.max(...fins) !== displayFinal || maxPct !== minPct) fromPrefix = 'از ';
+        const fa = (n: number) => n.toLocaleString('fa-IR', { maximumFractionDigits: 2 });
+        displayPctText = minPct === maxPct ? `${fa(minPct)}٪` : `${fa(minPct)}٪ تا ${fa(maxPct)}٪`;
+      }
+    }
 
     return (
       <div
@@ -159,11 +213,11 @@ export const SellerCatalogTab: React.FC = () => {
             <div className="flex items-center gap-2 text-[10px] text-slate-500">
               <span>خرید: <strong className="text-slate-800">{formatPrice(baseCostR)}</strong></span>
               <span>•</span>
-              <span>فروش: <strong className="text-slate-800">{formatPrice(finalPrice)}</strong></span>
+              <span>فروش: <strong className="text-slate-800">{fromPrefix}{formatPrice(displayFinal)}</strong></span>
               <span>•</span>
               <span className="text-emerald-600 font-bold">
-                سود تو: +{formatPrice(profitToman)} ت
-                <span className="text-emerald-700"> ({pricing.marginPercent.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪)</span>
+                سود تو: +{formatPrice(displayProfit)} ت
+                <span className="text-emerald-700"> ({displayPctText})</span>
               </span>
             </div>
             {(isNew || isRemoved) && (

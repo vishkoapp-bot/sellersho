@@ -257,6 +257,9 @@ func handleCreateOrder(
 	locks := loadStoreMarginLocks(ctx, pricingRepo, store.ID)
 	// Fix69 M1: variant overrides once per order (variant pricing below).
 	variantOverrides := loadVariantOverridesForStore(ctx, pricingRepo, store.ID)
+	// The store's timed-deals widget config, parsed once for every
+	// order line (see applyDealsWidgetDiscount).
+	widgetCfg := loadDealsWidgetConfig(store)
 
 	// Cryptographically secure non-monotonic IDs using crypto/rand UUIDv4
 	orderUUID := uuid.New()
@@ -396,10 +399,17 @@ func handleCreateOrder(
 		} else {
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
+		// The timed-deals widget discount (margin percentage points
+		// from the store's widget config) is the first discount
+		// layer: it is the advertised campaign price, so it is what
+		// the customer is charged. Its amount folds into the line's
+		// DiscountAmount alongside the DB layers below.
+		res, widgetDiscountAmount := applyDealsWidgetDiscount(store, widgetCfg, p.ID, res)
 		// Dropshipper discounts (campaign, then code) layer on the
 		// percent-engine resolution: wholesale cost and platform fee
 		// in res are untouched, only FinalPrice/SellerMargin shrink.
 		discounted := applyStoreDiscounts(ctx, storeRepo, store, p, res, discountCodeObj)
+		discounted.DiscountAmount += widgetDiscountAmount
 		// Fix69 follow-up: DiscountResult.Code is set only by
 		// ApplyCodeDiscount, which runs only when the code passed
 		// the lock gate in applyStoreDiscounts (dropshipper store,

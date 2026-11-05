@@ -100,6 +100,7 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 	// Same per-store variant overrides order creation loads: a variant
 	// override of any other store must never price this store's quote.
 	variantOverrides := loadVariantOverridesForStore(ctx, pricingRepo, store.ID)
+	widgetCfg := loadDealsWidgetConfig(store)
 	var code *repository.DiscountCode
 	if req.DiscountCode != "" {
 		if c, err := storeRepo.ValidateDiscountCode(ctx, store.ID, req.DiscountCode); err == nil {
@@ -155,7 +156,13 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
 		originalPayable += res.FinalPrice * int64(itemReq.Quantity)
+		// Same first layer as order creation: the timed-deals
+		// widget discount, its amount folded into the line's
+		// discount amount so the quote's sellerDiscount matches
+		// the order's.
+		res, widgetDiscountAmount := applyDealsWidgetDiscount(store, widgetCfg, p.ID, res)
 		d := applyStoreDiscounts(ctx, storeRepo, store, p, res, code)
+		d.DiscountAmount += widgetDiscountAmount
 		if d.Code != "" {
 			codeApplied = true
 		}

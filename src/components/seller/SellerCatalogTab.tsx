@@ -252,7 +252,12 @@ export const SellerCatalogTab: React.FC = () => {
             aria-checked={isPending}
             aria-label={isPending ? `غیرفعال کردن ${product.title} در فروشگاه` : `فعال کردن ${product.title} در فروشگاه`}
             title={isPending ? 'فعال در فروشگاه — برای غیرفعال کردن بزن' : 'غیرفعال — برای فعال کردن در فروشگاه بزن'}
-            onClick={() => toggleProductSelect(product.id)}
+            onClick={(e) => {
+              // Without stopPropagation the click bubbles to the row's own
+              // onClick and toggles twice — the switch looked dead.
+              e.stopPropagation();
+              toggleProductSelect(product.id);
+            }}
             className="min-h-[44px] px-1.5 rounded-xl flex items-center gap-2 transition-colors hover:bg-slate-50"
           >
             <span className={`text-[11px] font-bold ${isPending ? 'text-emerald-600' : 'text-slate-400'}`}>

@@ -150,7 +150,7 @@ export const SellerTemplateTab: React.FC = () => {
               >
                 <span className="block text-xs font-bold text-slate-900">{meta.name || id}</span>
                 <span className="mt-1 block text-[11px] text-slate-500" dir="ltr">{id}</span>
-                {meta.thumbnailUrl ? <img src={meta.thumbnailUrl} alt="" className="mt-2 h-16 w-full rounded-xl object-cover bg-slate-100" /> : null}
+                {meta.thumbnailUrl ? <img src={meta.thumbnailUrl} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} className="mt-2 h-16 w-full rounded-xl object-cover bg-slate-100" /> : null}
                 {preset ? (
                   <span className="mt-2 inline-block h-4 w-4 rounded-full border border-slate-200" style={{ backgroundColor: preset }} />
                 ) : null}

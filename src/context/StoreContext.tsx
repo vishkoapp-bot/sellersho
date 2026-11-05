@@ -160,6 +160,9 @@ export interface StoreState {
   setSellerDashboardTab: (tab: string) => void;
   routeProductPending: boolean;
   routeProductInvalid: boolean;
+  // Store context of a product opened from inside a seller storefront
+  // (null = the product route is unscoped, i.e. the central PDP).
+  routeStoreSlug: string | null;
   openStorefront: (slug?: string) => void;
 }
 
@@ -215,7 +218,16 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   );
   const [routeProductPending, setRouteProductPending] = useState<boolean>(initialRouteState.view === 'product_detail');
   const [routeProductInvalid, setRouteProductInvalid] = useState<boolean>(false);
+  // Store scope of the current product route. The product URL itself
+  // (/product/<id>) carries no store, so a product opened from inside a
+  // storefront records the store's slug here; without it the PDP falls
+  // back to the ambient currentStore (the central store by default) and
+  // the click silently leaves the store. Set by storefront product
+  // opens, restored from history state on popstate, cleared by any
+  // navigation that is not a scoped product open.
+  const [routeStoreSlug, setRouteStoreSlug] = useState<string | null>(null);
   const resolvedStorefrontSlugRef = useRef<string | null>(null);
+  const routeStoreResolveRef = useRef<string | null>(null);
 
   type NavigationState = {
     activeView: ActiveView;
@@ -247,6 +259,16 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     if (view === 'product_detail') {
       setRouteProductInvalid(false);
       if (navigation.productId) setRouteProduct({ id: navigation.productId });
+      // The store scope of a product open is explicit: a navigation
+      // naming a store scopes the PDP to it; a fresh product open
+      // naming none is unscoped (central) — it must never inherit a
+      // stale scope from an earlier in-store product. Navigations with
+      // neither (e.g. the ad-token effect re-asserting the view) leave
+      // the scope the opener set untouched.
+      if (navigation.storeSlug !== undefined) setRouteStoreSlug(navigation.storeSlug);
+      else if (navigation.productId) setRouteStoreSlug(null);
+    } else {
+      setRouteStoreSlug(null);
     }
     if (typeof window !== 'undefined') {
       // FIX 11: views without an explicit branch used to push a bare '/'
@@ -302,6 +324,14 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // Live router: back/forward re-parses the pathname (plus tab and
       // static-page params); stored history state is only a fallback.
       const parsed = parsePathname(window.location.pathname, window.location.search);
+      // The product route's store scope lives in the history state
+      // (the URL carries no store): restore it for product entries,
+      // clear it for everything else.
+      setRouteStoreSlug(
+        parsed.view === 'product_detail'
+          ? ((event.state as NavigationState | null)?.storeSlug ?? null)
+          : null,
+      );
       if (parsed.view === 'seller_storefront') {
         setStorefrontSlug(parsed.slug);
         setStorefrontUnsubscribeSlug(parsed.unsubscribe ? parsed.slug : null);
@@ -563,6 +593,60 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
       });
     return () => { cancelled = true; };
   }, [activeView, storefrontSlug, storefrontUnsubscribeSlug]);
+
+  // In-store PDP: while a store-scoped product route is shown, the
+  // scoped store must BE the current store — the PDP frames itself,
+  // prices itself (detail fetch with ?storeSlug) and validates
+  // publication against currentStore, so a central currentStore would
+  // silently turn the page into the central store's PDP. Resolve the
+  // slug (loaded list first, public endpoint as fallback) with the
+  // same merged shape the storefront resolver installs.
+  useEffect(() => {
+    if (activeView !== 'product_detail' || !routeStoreSlug) {
+      routeStoreResolveRef.current = null;
+      return;
+    }
+    if (currentStore?.slug === routeStoreSlug) return;
+    if (routeStoreResolveRef.current === routeStoreSlug) return;
+    routeStoreResolveRef.current = routeStoreSlug;
+    const inList = stores.find((s) => s.slug === routeStoreSlug);
+    if (inList) {
+      setCurrentStore(inList);
+      return;
+    }
+    let cancelled = false;
+    storeApi.getStoreBySlug(routeStoreSlug)
+      .then((resolved: any) => {
+        if (cancelled || !resolved) return;
+        setCurrentStore((previous) => {
+          if (previous?.slug === routeStoreSlug) return previous;
+          return {
+            id: resolved.id || `store-${routeStoreSlug}`,
+            name: resolved.name || routeStoreSlug,
+            slug: resolved.slug || routeStoreSlug,
+            ownerType: resolved.ownerType || 'dropshipper',
+            ownerName: resolved.ownerName || '',
+            tagline: resolved.tagline || '',
+            shortDescription: resolved.shortDescription,
+            logo: resolved.logo,
+            profitMarginPercent: resolved.profitMarginPercent || 0,
+            description: resolved.description || '',
+            activeCategories: resolved.activeCategories || [],
+            totalSales: resolved.totalSales || 0,
+            monthlyRevenueEstimate: resolved.monthlyRevenueEstimate || 0,
+            activeProductIds: resolved.activeProductIds,
+            selectedNicheIds: resolved.selectedNicheIds,
+            sellerDealsWidgetConfig: resolved.sellerDealsWidgetConfig,
+            status: resolved.status,
+            ownerPhone: resolved.ownerPhone,
+            templateId: resolved.templateId,
+            templateConfig: resolved.templateConfig,
+          } as Store;
+        });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeView, routeStoreSlug, currentStore?.slug, stores]);
 
   // Team 08 (D46): routed product resolve. Uses Team 04's server spn
   // lookup (catalogApi.getProductBySpn) for /product/spn-<n>/ URLs and
@@ -986,6 +1070,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     setSellerDashboardTab,
     routeProductPending,
     routeProductInvalid,
+    routeStoreSlug,
     openStorefront,
   };
 
@@ -1094,6 +1179,7 @@ export const useStore = (): StoreContextType => {
     setSellerDashboardTab: store.setSellerDashboardTab,
     routeProductPending: store.routeProductPending,
     routeProductInvalid: store.routeProductInvalid,
+    routeStoreSlug: store.routeStoreSlug,
     formatPrice,
     toPersianDigits,
     // Auth Context
@@ -1128,7 +1214,22 @@ export const useStore = (): StoreContextType => {
     currentProductDetail: prod.currentProductDetail,
     openProductDetail: (product: Product) => {
       prod.openProductDetail(product);
-      store.setActiveView('product_detail', { productId: product.id });
+      // Store-scoped opens: a click inside a seller storefront — or on
+      // a product reached from one (e.g. PDP related items) — must keep
+      // that store as the PDP's context. The product route carries no
+      // store, so the slug is threaded through the navigation state;
+      // without it the PDP defaults to the central store's frame,
+      // pricing and back target.
+      const scopedSlug =
+        store.activeView === 'seller_storefront' && store.currentStore?.ownerType === 'dropshipper'
+          ? store.currentStore.slug
+          : store.activeView === 'product_detail'
+            ? store.routeStoreSlug
+            : null;
+      store.setActiveView(
+        'product_detail',
+        scopedSlug ? { productId: product.id, storeSlug: scopedSlug } : { productId: product.id },
+      );
       if (typeof window !== 'undefined') {
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }

@@ -9,6 +9,7 @@ import { WarehouseProvider } from './context/WarehouseContext';
 import { StoreProvider, useStore } from './context/StoreContext';
 import { ToastProvider } from './context/ToastContext';
 import { RoleSwitcherBar } from './components/RoleSwitcherBar';
+import { ConnectionTestPopup } from './components/ConnectionTestPopup';
 import { Header } from './components/Header';
 import { CategoriesBar } from './components/CategoriesBar';
 import { HeroSlider } from './components/HeroSlider';
@@ -353,6 +354,7 @@ export const AppContent: React.FC = () => {
               <HomeFeedSections />
             </main>
             <Footer />
+            <ConnectionTestPopup />
           </>
         )}
 

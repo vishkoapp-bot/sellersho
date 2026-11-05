@@ -238,6 +238,14 @@ type ReferenceResolution struct {
 	ActiveTier        string  `json:"activeTier"`    // "central" | "product" | "product-locked" | "niche" | "variant" | "default" | "max-default"
 	PricingMode       string  `json:"pricingMode"`   // "percent" only (percent-only platform)
 	MarginPercent     float64 `json:"marginPercent"` // applied margin percent
+	// AdminLocked is true when an admin margin lock determined the
+	// margin: a product or variant admin_set lock, or the legacy admin
+	// store lock. It is never serialized — the tier string alone cannot
+	// carry this fact, because the variant admin-lock branch reports
+	// ActiveTier "variant" (the same string as a seller variant
+	// override) and the legacy store lock reports "default". Discount
+	// layers must leave a locked resolution's price untouched.
+	AdminLocked bool `json:"-"`
 	// UnverifiedNote names the TODO that limits this resolution, if any
 	// (currently only the U10 niche fallback; fixed rows are inert under
 	// percent-only). Empty means the resolution used only proven rules.
@@ -296,7 +304,9 @@ func applyDropshipperOverride(currentMargin float64, currentTier string, value f
 // compute time by capSellerMargin in ResolveReferencePricing (and in the
 // variant-override branch): a per-product ceiling row replaces the global
 // MaxProfitMargin for that product; admin_set locks are exempt.
-func selectDropshipperMarginForProduct(product domain.Product, store domain.Store, settings *PlatformPricingSettings, locks []MarginLock) (margin float64, tier string, mode string, note string) {
+// The locked return reports whether an admin lock (steps 1 or 3)
+// determined the margin; it becomes ReferenceResolution.AdminLocked.
+func selectDropshipperMarginForProduct(product domain.Product, store domain.Store, settings *PlatformPricingSettings, locks []MarginLock) (margin float64, tier string, mode string, note string, locked bool) {
 	settings = OrDefault(settings)
 
 	// Tier 4 (owner rule, 2026-11-05): the max-allowed fallback — the
@@ -307,7 +317,7 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 	// 1. admin_set product lock for this product.
 	for _, l := range locks {
 		if l.Scope == "product" && l.ScopeID == product.ID && l.Mode == "admin_set" && l.Value != nil {
-			return *l.Value, "product-locked", "percent", ""
+			return *l.Value, "product-locked", "percent", "", true
 		}
 	}
 
@@ -322,7 +332,7 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 			}
 			m, t, md, n := applyDropshipperOverride(def, "default", v, mode, "product")
 			if n == "" {
-				return m, t, md, ""
+				return m, t, md, "", false
 			}
 			// Fixed override: TODO U10 — fall through to the
 			// max-allowed fallback (or the legacy lock below) and
@@ -333,15 +343,15 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 			_ = md
 			// Continue to lock/fallback below with the note attached.
 			if store.IsMarginLockedByAdmin && store.CustomStoreMarginOverride != nil {
-				return *store.CustomStoreMarginOverride, "default", "percent", note
+				return *store.CustomStoreMarginOverride, "default", "percent", note, true
 			}
-			return def, "max-default", "percent", note
+			return def, "max-default", "percent", note, false
 		}
 	}
 
 	// 3. legacy boolean lock, read compatibility only (D29).
 	if store.IsMarginLockedByAdmin && store.CustomStoreMarginOverride != nil {
-		return *store.CustomStoreMarginOverride, "default", "percent", ""
+		return *store.CustomStoreMarginOverride, "default", "percent", "", true
 	}
 
 	// 4. max-allowed fallback (tier "max-default"). Niche overrides, if
@@ -349,11 +359,11 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 	if len(store.NichePriceOverrides) > 0 {
 		for _, nid := range product.NicheIDs {
 			if _, ok := store.NichePriceOverrides[nid]; ok {
-				return def, "max-default", "percent", "U10: niche override present but not applied; max allowed margin used"
+				return def, "max-default", "percent", "U10: niche override present but not applied; max allowed margin used", false
 			}
 		}
 	}
-	return def, "max-default", "percent", ""
+	return def, "max-default", "percent", "", false
 }
 
 // ResolveReferencePricing is the live percent engine (D23/D24/D26/D27).
@@ -369,8 +379,9 @@ func ResolveReferencePricing(product domain.Product, store domain.Store, setting
 
 	var margin float64
 	var tier, mode, note string
+	var locked bool
 	if store.OwnerType == "dropshipper" {
-		margin, tier, mode, note = selectDropshipperMarginForProduct(product, store, settings, locks)
+		margin, tier, mode, note, locked = selectDropshipperMarginForProduct(product, store, settings, locks)
 		margin = capSellerMargin(margin, tier, product.ID, settings)
 	} else {
 		margin = settings.CentralProfitPct
@@ -396,6 +407,7 @@ func ResolveReferencePricing(product domain.Product, store domain.Store, setting
 		ActiveTier:        tier,
 		PricingMode:       mode,
 		MarginPercent:     margin,
+		AdminLocked:       locked,
 		UnverifiedNote:    note,
 	}
 }
@@ -456,6 +468,7 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 			base.ActiveTier = "variant"
 			base.PricingMode = "percent"
 			base.MarginPercent = *l.Value
+			base.AdminLocked = true
 			if finalPrice > base.OriginalPrice {
 				base.OriginalPrice = finalPrice
 			}
@@ -476,6 +489,7 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 			base.ActiveTier = "product-locked"
 			base.PricingMode = "percent"
 			base.MarginPercent = *l.Value
+			base.AdminLocked = true
 			if finalPrice > base.OriginalPrice {
 				base.OriginalPrice = finalPrice
 			}

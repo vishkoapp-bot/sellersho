@@ -2,6 +2,7 @@
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
+import { SupplierAccountStateScreen, SupplierAccountStateInfo, supplierAccountStateFromError } from './SupplierAccountStateScreen';
 import { tokenStore } from '../../services/apiClient';
 import { Building2, KeyRound, ArrowRight, ShieldCheck, X, CheckCircle2, FileText } from 'lucide-react';
 
@@ -57,6 +58,7 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
   const [contractAccepted, setContractAccepted] = useState(false);
   const [showContractModal, setShowContractModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [accountState, setAccountState] = useState<SupplierAccountStateInfo | null>(null);
 
   useEffect(() => {
     if (!otpSent || countdown <= 0) {
@@ -133,6 +135,14 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
       success(`ورود با حساب «${profile.company_name}» انجام شد.`);
     } catch (err: any) {
       setIsSubmitting(false);
+      // GAP 19b: if the login response carries a supplier
+      // account-state code (pending/rejected), show the dedicated
+      // state screen instead of the generic error toast.
+      const state = supplierAccountStateFromError(err);
+      if (state) {
+        setAccountState(state);
+        return;
+      }
       error(err.message || 'احراز هویت یا دریافت پروفایل تأمین‌کننده با خطا مواجه شد.');
     }
   };
@@ -150,6 +160,10 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
       error(err.message || 'خطا در ارسال مجدد کد');
     }
   };
+
+  if (accountState) {
+    return <SupplierAccountStateScreen {...accountState} onBack={() => setAccountState(null)} />;
+  }
 
   return (
     <div className="flex-1 flex flex-col bg-[#f8fafc] select-none min-h-[82vh]">

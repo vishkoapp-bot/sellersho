@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { wmsApi, WarehouseBinDto } from '../../services/wmsApi';
+import { adminApi, TapinBoxAdminDto } from '../../services/adminApi';
 import { Warehouse, Plus, Settings2, CheckCircle2, ShieldCheck, TrendingUp, Boxes } from 'lucide-react';
 
 export const AdminWarehousesTab: React.FC = () => {
@@ -322,6 +323,122 @@ export const AdminWarehousesTab: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Tapin box catalogue (gaps 1-3) */}
+      <AdminTapinBoxesCard />
     </div>
   );
 };
+
+// AdminTapinBoxesCard edits the platform Tapin box catalogue
+// (tapin_boxes). Tapin's API exposes no boxes endpoint, so this
+// catalogue is the platform's own: suppliers pick from it when
+// registering a Tapin shipment, and the quote flow auto-picks from
+// it. The platform default box id itself lives in the Tapin platform
+// settings (tapin_default_box_id) and is shown here read-only.
+const AdminTapinBoxesCard: React.FC = () => {
+  const { toPersianDigits } = useStore();
+  const { success, error } = useToast();
+  const [boxes, setBoxes] = useState<TapinBoxAdminDto[]>([]);
+  const [defaultBoxId, setDefaultBoxId] = useState('4');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    adminApi.getTapinBoxes()
+      .then((res) => {
+        setBoxes(res.boxes || []);
+        setDefaultBoxId(res.defaultBoxId || '4');
+      })
+      .catch((err: any) => { error(err?.message || 'دریافت کاتالوگ جعبه‌های تاپین انجام نشد.'); })
+      .finally(() => { setLoading(false); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const patch = (idx: number, part: Partial<TapinBoxAdminDto>) => {
+    setBoxes((prev) => prev.map((b, i) => (i === idx ? { ...b, ...part } : b)));
+  };
+
+  const addRow = () => {
+    setBoxes((prev) => [...prev, { id: '', title: '', lengthCm: 0, widthCm: 0, heightCm: 0, maxWeightGrams: null, isActive: true, sort: prev.length }]);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await adminApi.updateTapinBoxes(boxes);
+      setBoxes(res.boxes || []);
+      setDefaultBoxId(res.defaultBoxId || '4');
+      success('کاتالوگ جعبه‌های تاپین ذخیره شد.');
+    } catch (err: any) {
+      error(err?.message || 'ذخیره کاتالوگ جعبه‌ها انجام نشد.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const num = (v: string) => {
+    const n = parseInt(v.replace(/[^0-9]/g, ''), 10);
+    return Number.isNaN(n) ? 0 : n;
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-bold text-slate-800">جعبه‌های پستی تاپین (کاتالوگ پلتفرم)</h3>
+        <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full font-bold">
+          جعبه پیش‌فرض پلتفرم: {toPersianDigits(defaultBoxId)}
+        </span>
+      </div>
+      <p className="text-[11px] leading-6 text-slate-500">
+        تاپین برای جعبه‌ها API ندارد؛ این کاتالوگ را پلتفرم نگه می‌دارد. تأمین‌کننده هنگام ثبت مرسوله تاپین از همین فهرست انتخاب می‌کند و سیستم هم بر اساس ابعاد و وزن بسته، نزدیک‌ترین جعبه را از همین‌ها پیشنهاد می‌دهد. حذف جعبه با غیرفعال‌کردن آن است تا سوابق مرسوله‌ها سالم بماند.
+      </p>
+      {loading && <p className="text-[11px] text-slate-500">در حال بارگذاری…</p>}
+      {!loading && (
+        <div className="space-y-2">
+          {boxes.map((b, idx) => (
+            <div key={idx} className="grid grid-cols-2 md:grid-cols-8 gap-2 items-end rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
+              <label className="block">
+                <span className="text-[10px] text-slate-500 block mb-1">شناسه</span>
+                <input value={b.id} onChange={(e) => patch(idx, { id: e.target.value })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="text-[10px] text-slate-500 block mb-1">عنوان</span>
+                <input value={b.title} onChange={(e) => patch(idx, { title: e.target.value })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] text-slate-500 block mb-1">طول (cm)</span>
+                <input value={b.lengthCm || ''} onChange={(e) => patch(idx, { lengthCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] text-slate-500 block mb-1">عرض (cm)</span>
+                <input value={b.widthCm || ''} onChange={(e) => patch(idx, { widthCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] text-slate-500 block mb-1">ارتفاع (cm)</span>
+                <input value={b.heightCm || ''} onChange={(e) => patch(idx, { heightCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] text-slate-500 block mb-1">حداکثر وزن (گرم، خالی = نامحدود)</span>
+                <input value={b.maxWeightGrams ?? ''} onChange={(e) => patch(idx, { maxWeightGrams: e.target.value.trim() === '' ? null : num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+              </label>
+              <label className="flex items-center gap-1.5 pb-2">
+                <input type="checkbox" checked={b.isActive} onChange={(e) => patch(idx, { isActive: e.target.checked })} />
+                <span className="text-[11px] font-bold text-slate-600">فعال</span>
+              </label>
+            </div>
+          ))}
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={addRow} className="rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold text-slate-700">
+              + جعبه جدید
+            </button>
+            <button type="button" disabled={saving} onClick={() => void save()} className="flex-1 rounded-xl bg-brand-deep py-2.5 text-xs font-bold text-white disabled:opacity-50">
+              {saving ? 'در حال ذخیره…' : 'ذخیره کاتالوگ جعبه‌ها'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+

@@ -207,26 +207,72 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
     { id: 'support', label: 'پشتیبانی', icon: Headphones },
   ];
 
+  // Desktop sidebar grouping (layout only): the same 19 tabs as the
+  // mobile tab bar, partitioned into sidebar groups covering every tab
+  // id exactly once. The seller panel has no per-tab permission filter
+  // (the tab bar renders menuItems whole), so the sidebar inherits the
+  // exact same visibility -- no tab is added, removed, or re-gated.
+  const menuGroups: { heading: string; icon: typeof LayoutDashboard; ids: string[] }[] = [
+    { heading: 'پیشخوان', icon: LayoutDashboard, ids: ['overview', 'analytics', 'search-insight'] },
+    { heading: 'سفارش و مرجوعی', icon: ShoppingBag, ids: ['orders', 'returns'] },
+    { heading: 'کاتالوگ و سود', icon: Package, ids: ['catalog', 'pricing'] },
+    { heading: 'فروشگاه من', icon: Store, ids: ['store-setup', 'template', 'builder', 'links'] },
+    { heading: 'مالی', icon: Wallet, ids: ['wallet', 'subscription'] },
+    { heading: 'بازاریابی و رشد', icon: Megaphone, ids: ['discount-campaigns', 'discount-codes', 'ads', 'subscribers', 'referral'] },
+    { heading: 'پشتیبانی', icon: Headphones, ids: ['support'] },
+  ];
+  const sidebarGroups = menuGroups
+    .map((group) => ({
+      heading: group.heading,
+      icon: group.icon,
+      items: group.ids
+        .map((id) => menuItems.find((item) => item.id === id))
+        .filter((item): item is (typeof menuItems)[number] => !!item),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  // Active tab label for the desktop header title slot (at lg the
+  // header stops repeating the identity and names the current section).
+  const activeTabLabel = menuItems.find((item) => item.id === activeTab)?.label;
+
+  // Header back button: from inside any tab it first returns to the
+  // panel's own main view (the overview tab). Only on the overview
+  // does the button leave the panel for the customer site.
+  const isPanelHome = activeTab === 'overview';
+  const handleHeaderBack = () => {
+    if (!isPanelHome) {
+      setActiveTab('overview');
+    } else {
+      onBackToCustomerSite();
+    }
+  };
+
   return (
     <SellerAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
       <div className="flex-1 flex flex-col bg-[#f8fafc]">
         {/* Top Sticky Header */}
         <header className="sticky top-0 z-30 bg-white border-b border-slate-200/80">
-          <div className="max-w-7xl mx-auto w-full flex flex-wrap gap-2 items-center justify-between px-3.5 py-2.5">
+          <div className="max-w-7xl mx-auto w-full flex flex-wrap lg:flex-nowrap gap-2 items-center justify-between px-3.5 lg:px-6 py-2.5">
           <div className="flex items-center gap-2">
             <button
-              onClick={onBackToCustomerSite}
+              onClick={handleHeaderBack}
               className="p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-              title="بازگشت به فروشگاه من"
-              aria-label="بازگشت به فروشگاه من"
+              title={isPanelHome ? 'بازگشت به فروشگاه من' : 'بازگشت به نمای کلی'}
+              aria-label={isPanelHome ? 'بازگشت به فروشگاه من' : 'بازگشت به نمای کلی'}
             >
               <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
             </button>
-            <div>
+            {/* Below lg the header carries the identity; at lg the sidebar
+                identity card is the single identity surface, so the header
+                slot shows the active tab's label instead. */}
+            <div className="lg:hidden">
               <h1 className="text-[13px] font-bold text-slate-800">پنل فروشگاه من</h1>
               <span className="text-[11px] text-slate-400 block">
                 {sellerSession?.fullName} • {toPersianDigits(sellerSession?.mobile || '')}
               </span>
+            </div>
+            <div className="hidden lg:block">
+              <h1 className="text-[13px] font-extrabold text-slate-900">{activeTabLabel || 'پنل فروشگاه من'}</h1>
             </div>
           </div>
 
@@ -237,7 +283,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
                 const selected = ownedStores.find((store) => store.id === event.target.value);
                 if (selected) setCurrentStore(selected);
               }}
-              className="max-w-[150px] rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-bold text-slate-700"
+              className="max-w-[150px] min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-bold text-slate-700"
               aria-label="فروشگاه فعال"
             >
               {ownedStores.map((store) => (
@@ -317,8 +363,8 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
             </form>
           </div>
         )}
-      {/* Horizontal Scrollable Tabs */}
-      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+      {/* Horizontal Scrollable Tabs (below lg only; desktop uses the sidebar) */}
+      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar lg:hidden">
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -326,7 +372,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`flex items-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 ${
+              className={`flex items-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
                 isActive
                   ? 'bg-brand text-white shadow-xs'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
@@ -389,7 +435,83 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
           </div>
         )}
 
-      <div className="p-3.5 flex-1">
+      {/* Desktop workspace (sidebar + content), following the admin /
+          supplier workspace geometry (max-w-7xl row, w-72 aside, white
+          rounded-2xl cards) and the seller panel's brand accent. Below
+          lg the wrapper is a plain flex column, the sidebar is hidden
+          and the content keeps its exact mobile padding, so mobile is
+          pixel-unchanged. Content width: the workspace caps the row at
+          max-w-7xl (parity with the supplier panel's recorded
+          decision); tab content inside <main> stays uncapped because
+          the seller tabs are data-table-heavy. */}
+      <div className="flex-1 w-full min-w-0 max-w-7xl mx-auto flex flex-col lg:flex-row lg:gap-6 lg:p-6">
+        {/* Sidebar Navigation (desktop only; same tabs as the mobile bar) */}
+        <aside className="hidden lg:block w-72 shrink-0 space-y-4 lg:sticky lg:top-[73px] lg:self-start lg:max-h-[calc(100vh-97px)] lg:overflow-y-auto">
+          {/* Identity Card */}
+          <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-brand flex items-center justify-center text-white shrink-0">
+              <Store className="w-4 h-4" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[10px] text-slate-400 block">پنل فروشگاه من</span>
+              <span className="text-xs font-extrabold text-slate-900 block truncate" title={currentStore.name}>
+                {currentStore.name}
+              </span>
+              <span className="text-[10px] text-slate-400 block truncate" title={`${sellerSession?.fullName ?? ''} • ${sellerSession?.mobile ?? ''}`}>
+                {sellerSession?.fullName} • {toPersianDigits(sellerSession?.mobile || '')}
+              </span>
+              <span className="inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-500 border-slate-200 font-mono" dir="ltr">
+                /{currentStore.slug}
+              </span>
+            </div>
+          </div>
+
+          {/* Grouped Menu */}
+          {sidebarGroups.length > 0 && (
+            <nav className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs" aria-label="منوی پنل فروشگاه">
+              {sidebarGroups.map((group, groupIndex) => {
+                const GroupIcon = group.icon;
+                return (
+                  <div key={group.heading} className={groupIndex > 0 ? 'mt-3 border-t border-slate-100 pt-2' : ''}>
+                    <div className="flex items-center gap-2.5 px-2 py-1.5">
+                      <GroupIcon className="w-4 h-4 shrink-0 text-slate-400" strokeWidth={1.5} />
+                      <span className="flex-1 text-xs font-extrabold text-slate-900">{group.heading}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                        {toPersianDigits(group.items.length)}
+                      </span>
+                    </div>
+                    <div className="border-r-2 border-slate-100 pr-2 space-y-1">
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const isActive = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            onClick={() => setActiveTab(item.id)}
+                            aria-current={isActive ? 'page' : undefined}
+                            title={item.label}
+                            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all w-full text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
+                              isActive
+                                ? 'bg-brand text-white shadow-xs'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} strokeWidth={1.5} />
+                            <span className="flex-1 truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </nav>
+          )}
+        </aside>
+
+        {/* Main Tab Content */}
+        <main className="flex-1 min-w-0">
+          <div className="p-3.5 lg:p-0">
         {activeTab === 'overview' && (
         <section className="mb-4 space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -426,6 +548,8 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         {activeTab === 'discount-campaigns' && <SellerDiscountCampaignsTab />}
         {activeTab === 'discount-codes' && <SellerDiscountTab />}
         {activeTab === 'subscribers' && <SellerSubscribersTab onOpenStorefront={onOpenStorefront} />}
+          </div>
+        </main>
       </div>
       </div>
     </SellerAuthGuard>

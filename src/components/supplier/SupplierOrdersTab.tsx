@@ -13,9 +13,13 @@ import {
   User,
   Calendar,
   AlertCircle,
-  ChevronDown
+  ChevronDown,
+  MapPin,
+  Warehouse,
+  Printer
 } from 'lucide-react';
-import { supplierApi } from '../../services/supplierApi';
+import { supplierApi, TapinBoxDto } from '../../services/supplierApi';
+import type { SupplierWarehouseOrderDto } from '../../services/supplierApi';
 
 interface SupplierOrder {
   id: string;
@@ -49,10 +53,11 @@ interface SupplierOrderAddon {
 // (live has separate all-empty and filtered-empty states), missing
 // access-hint error branch, missing per-order addons expand section, and
 // wrong modal labels/validation/error strings (see below).
-// NOTE: live's Tapin ship section inside the shipping modal (boxes, weight,
-// dimensions, shipWithTapin) is NOT rebuilt here — it depends on the Tapin
-// token-storage decision (same blocker as the wn settings block), and a
-// dead ship button without the backend would be worse than its absence.
+// NOTE: live's Tapin ship section inside the shipping modal is built
+// below (gaps 1-3): when Tapin is connected the modal gains a
+// «ثبت ارسال با تاپین» mode (service + box selects, tracking issued
+// by Tapin, label printing). Post registration stays disabled with a
+// note — its contract is not published in Tapin's guide.
 // NOTE: live's badge/expand glyphs are minified away; Truck (badge),
 // Package (expand icon) and ChevronDown (expand chevron) are lucide
 // approximations. Live's createdAt formatter (Ka) is not reimplemented:
@@ -68,6 +73,15 @@ export const SupplierOrdersTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  // Gap 14: view toggle — direct shipments to fulfil vs warehouse-routed
+  // orders (read-only visibility), plus the accept-step in-flight marker.
+  const [ordersView, setOrdersView] = useState<'direct' | 'warehouse'>('direct');
+  const [warehouseOrders, setWarehouseOrders] = useState<SupplierWarehouseOrderDto[]>([]);
+  const [warehouseLoading, setWarehouseLoading] = useState(false);
+  const [warehouseError, setWarehouseError] = useState('');
+  const [warehouseLoaded, setWarehouseLoaded] = useState(false);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Addons expand state (live's Pe toggle per order card).
@@ -81,6 +95,51 @@ export const SupplierOrdersTab: React.FC = () => {
   const [trackingNumber, setTrackingNumber] = useState('');
   const [shippingDate, setShippingDate] = useState(new Date().toLocaleDateString('fa-IR'));
   const [submittingShipping, setSubmittingShipping] = useState(false);
+
+  // Tapin ship mode (gaps 1-3).
+  const [shipMode, setShipMode] = useState<'manual' | 'tapin'>('manual');
+  const [tapinConnected, setTapinConnected] = useState(false);
+  const [tapinBoxes, setTapinBoxes] = useState<TapinBoxDto[]>([]);
+  const [tapinDefaultBoxId, setTapinDefaultBoxId] = useState('4');
+  const [tapinService, setTapinService] = useState<'post' | 'tipax'>('tipax');
+  const [tapinBoxId, setTapinBoxId] = useState('');
+  const [tapinTracking, setTapinTracking] = useState('');
+  const [printingLabel, setPrintingLabel] = useState(false);
+
+  // Each modal open starts in manual mode with no stale Tapin result,
+  // and refreshes the connection + box catalogue for the mode toggle.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    setShipMode('manual');
+    setTapinService('tipax');
+    setTapinTracking('');
+    supplierApi.getTapinSettings()
+      .then((res) => setTapinConnected(!!res.tapinConnected))
+      .catch(() => setTapinConnected(false));
+    supplierApi.getTapinBoxes()
+      .then((res) => {
+        setTapinBoxes(res.boxes || []);
+        setTapinDefaultBoxId(res.defaultBoxId || '4');
+        setTapinBoxId(res.defaultBoxId || '4');
+      })
+      .catch(() => { setTapinBoxes([]); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrder?.orderId]);
+
+  const handlePrintTapinLabel = async () => {
+    if (!selectedOrder || printingLabel) return;
+    setPrintingLabel(true);
+    try {
+      const blob = await supplierApi.getTapinLabel(selectedOrder.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err: any) {
+      error(err?.message || 'دریافت برچسب از تاپین انجام نشد.');
+    } finally {
+      setPrintingLabel(false);
+    }
+  };
 
   // Fetch from backend API
   const fetchSupplierOrders = async () => {
@@ -99,6 +158,48 @@ export const SupplierOrdersTab: React.FC = () => {
   useEffect(() => {
     fetchSupplierOrders();
   }, []);
+
+  const fetchWarehouseOrders = async () => {
+    setWarehouseLoading(true);
+    setWarehouseError('');
+    try {
+      const res = await supplierApi.getWarehouseOrders();
+      setWarehouseOrders(res.orders || []);
+      setWarehouseLoaded(true);
+    } catch (err: any) {
+      setWarehouseError(err?.message || 'دریافت سفارش‌های انبار مرکزی انجام نشد.');
+    } finally {
+      setWarehouseLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (ordersView === 'warehouse' && !warehouseLoaded) {
+      void fetchWarehouseOrders();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordersView]);
+
+  const handleAcceptOrder = async (ord: SupplierOrder) => {
+    if (acceptingId) return;
+    setAcceptingId(ord.id);
+    try {
+      await supplierApi.acceptOrder(ord.orderId);
+      setBackendOrders((prev) => prev.map((o) => (o.id === ord.id ? { ...o, status: 'processing' } : o)));
+      success(`سفارش ${ord.orderNumber} قبول شد و در حال آماده‌سازی است.`);
+    } catch (err: any) {
+      error(err?.message || 'قبول سفارش انجام نشد.');
+    } finally {
+      setAcceptingId(null);
+    }
+  };
+
+  const warehouseStatusChip = (status: string): { text: string; cls: string } => {
+    if (status === 'delivered' || status === 'delivered_confirmed') return { text: 'به دست مشتری رسیده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+    if (status === 'shipped') return { text: 'ارسال شده از انبار', cls: 'bg-brand-soft text-brand-deep border-brand-border' };
+    if (status === 'cancelled') return { text: 'لغو شده', cls: 'bg-rose-50 text-rose-700 border-rose-200' };
+    return { text: 'در حال پردازش در انبار', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
+  };
 
   const allOrders: SupplierOrder[] = backendOrders;
 
@@ -144,6 +245,25 @@ export const SupplierOrdersTab: React.FC = () => {
   const handleConfirmShipping = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrder || submittingShipping) return;
+    if (shipMode === 'tapin') {
+      setSubmittingShipping(true);
+      try {
+        const res = await supplierApi.submitShipping(selectedOrder.orderId, {
+          viaTapin: true,
+          tapinService,
+          tapinBoxId: tapinBoxId || undefined,
+        });
+        const tracking = res.tapin?.trackingNumber || res.trackingNumber || '';
+        setTapinTracking(tracking);
+        success(`مرسوله سفارش ${selectedOrder.orderNumber} در تاپین ثبت شد؛ کد رهگیری: «${tracking}»`);
+        await fetchSupplierOrders();
+      } catch (err: any) {
+        error(err.message || 'ثبت مرسوله در تاپین انجام نشد.');
+      } finally {
+        setSubmittingShipping(false);
+      }
+      return;
+    }
     if (!trackingNumber.trim()) {
       error('کد رهگیری را وارد کن.');
       return;
@@ -167,6 +287,106 @@ export const SupplierOrdersTab: React.FC = () => {
   return (
     <div className="space-y-3.5 pb-6">
       <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">سفارش‌هایی که کالایش با توست اینجاست: بسته‌بندی کن، بفرست و بعد کد رهگیری را روی همان سفارش ثبت کن.</div>
+
+      {/* View toggle: direct fulfilment vs warehouse-routed (read-only) */}
+      <div className="flex items-center gap-1.5 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-2xs text-xs font-bold">
+        <button
+          type="button"
+          onClick={() => setOrdersView('direct')}
+          className={`flex-1 px-3 min-h-[40px] rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+            ordersView === 'direct' ? 'bg-brand-deep text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Truck className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>ارسال مستقیم توسط تو</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setOrdersView('warehouse')}
+          className={`flex-1 px-3 min-h-[40px] rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+            ordersView === 'warehouse' ? 'bg-brand-deep text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Warehouse className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>سفارش‌های انبار مرکزی</span>
+        </button>
+      </div>
+
+      {ordersView === 'warehouse' ? (
+        <>
+          <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">این سفارش‌ها از انبار مرکزی ارسال می‌شوند و نیازی به اقدام تو نیست؛ این فهرست فقط برای این است که بدانی کالاهای تو چطور فروخته و ارسال شده‌اند. مبلغ‌ها بر اساس قیمت پایه خودت (عمده) است.</div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xs font-bold text-slate-800">سفارش‌های انبار مرکزی</h3>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                سفارش‌های پرداخت‌شده‌ای که کالای تو را از انبار مرکزی می‌فرستند
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 bg-brand-soft px-2.5 py-1 rounded-xl text-brand-deep font-bold text-[11px]">
+              <Warehouse className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <span>{toPersianDigits(warehouseOrders.length)} سفارش</span>
+            </div>
+          </div>
+
+          {warehouseLoading && <div role="status" className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت سفارش‌های انبار مرکزی…</div>}
+          {warehouseError && (
+            <div role="alert" className="space-y-2 rounded-2xl bg-rose-50 p-4 text-xs text-rose-800">
+              <p>{warehouseError}</p>
+              <button type="button" onClick={fetchWarehouseOrders} className="rounded-lg bg-white px-3 py-2 font-bold">تلاش دوباره</button>
+            </div>
+          )}
+          {!warehouseLoading && !warehouseError && warehouseOrders.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-2">
+              <Warehouse className="w-10 h-10 text-slate-300 mx-auto" strokeWidth={1.5} />
+              <h4 className="text-xs font-bold text-slate-700">هنوز سفارشی از انبار مرکزی برای کالاهای تو ثبت نشده است.</h4>
+              <p className="text-[10px] leading-5 text-slate-400">وقتی مشتری کالایی از تو را که در انبار مرکزی است بخرد و پرداخت کند، سفارشش اینجا دیده می‌شود.</p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {warehouseOrders.map((ord) => {
+                const chip = warehouseStatusChip(ord.status);
+                return (
+                  <div key={ord.orderId} className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-2xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-extrabold text-xs text-brand-deep" dir="ltr">
+                          {ord.orderNumber}
+                        </span>
+                        <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                          <Calendar className="w-3 h-3" strokeWidth={1.5} />
+                          <span>{ord.createdAt}</span>
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${chip.cls}`}>
+                        <span>{chip.text}</span>
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {ord.items.map((item) => (
+                        <div key={item.productId} className="flex items-center justify-between text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg">
+                          <span className="truncate">{item.productTitle}</span>
+                          <span className="font-bold text-slate-700 shrink-0 mr-2">{toPersianDigits(item.wholesaleCost.toLocaleString())} × {toPersianDigits(item.quantity)} = {toPersianDigits(item.lineTotal.toLocaleString())} تومان</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-800 px-1">
+                        <span>جمع کالاهای تو در این سفارش</span>
+                        <span>{toPersianDigits(ord.itemsTotal.toLocaleString())} تومان</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.5} />
+                      <span>مقصد: {ord.province}، {ord.city}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
       {/* Header and Quick Stats */}
       <div className="flex items-center justify-between">
         <div>
@@ -302,6 +522,11 @@ export const SupplierOrdersTab: React.FC = () => {
                       <Truck className="w-3 h-3"  strokeWidth={1.5}/>
                       <span>ارسال شده</span>
                     </span>
+                  ) : ord.status === 'processing' ? (
+                    <span className="text-[10px] bg-brand-soft text-brand-deep font-bold px-2 py-1 rounded-full border border-brand-border flex items-center gap-1">
+                      <Package className="w-3 h-3"  strokeWidth={1.5}/>
+                      <span>در حال آماده‌سازی</span>
+                    </span>
                   ) : (
                     <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-2 py-1 rounded-full border border-amber-200 flex items-center gap-1">
                       <Clock className="w-3 h-3"  strokeWidth={1.5}/>
@@ -364,22 +589,38 @@ export const SupplierOrdersTab: React.FC = () => {
                 </div>
 
                 {isPending && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedOrder(ord);
-                      setTrackingNumber(ord.trackingNumber || '');
-                    }}
-                    className="w-full py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
-                  >
-                    <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                    <span>ثبت اطلاعات ارسال</span>
-                  </button>
+                  <div className="space-y-2">
+                    {ord.status === 'pending' && (
+                      <button
+                        type="button"
+                        disabled={acceptingId === ord.id}
+                        onClick={() => void handleAcceptOrder(ord)}
+                        className="w-full py-2 bg-white border border-brand-deep text-brand-deep hover:bg-brand-soft disabled:opacity-50 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
+                        <span>{acceptingId === ord.id ? 'در حال ثبت…' : 'قبول سفارش'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedOrder(ord);
+                        setTrackingNumber(ord.trackingNumber || '');
+                      }}
+                      className="w-full py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
+                      <span>ثبت اطلاعات ارسال</span>
+                    </button>
+                  </div>
                 )}
               </div>
             );
           })}
         </div>
+      )}
+
+        </>
       )}
 
       {/* Shipping Modal / Drawer */}
@@ -401,6 +642,91 @@ export const SupplierOrdersTab: React.FC = () => {
             </div>
 
             <form onSubmit={handleConfirmShipping} className="space-y-3">
+              {tapinConnected ? (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShipMode('manual')}
+                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border ${shipMode === 'manual' ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
+                  >
+                    ثبت دستی
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShipMode('tapin')}
+                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border ${shipMode === 'tapin' ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
+                  >
+                    ثبت ارسال با تاپین
+                  </button>
+                </div>
+              ) : (
+                <p className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] leading-5 text-slate-500">
+                  برای ثبت خودکار مرسوله و دریافت کد رهگیری از تاپین، از تب «روش‌های ارسال» اتصال تاپین را فعال کن.
+                </p>
+              )}
+
+              {shipMode === 'tapin' && tapinConnected && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      سرویس تاپین:
+                    </label>
+                    <select
+                      value={tapinService}
+                      onChange={(e) => setTapinService(e.target.value as 'post' | 'tipax')}
+                      className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+                    >
+                      <option value="post" disabled>پست (به‌زودی)</option>
+                      <option value="tipax">تیپاکس</option>
+                    </select>
+                    <p className="mt-1 text-[10px] leading-5 text-slate-400">
+                      ثبت مرسوله پست تاپین به‌زودی فعال می‌شود؛ در حال حاضر فقط تیپاکس ثبت می‌شود و باید برای فروشگاهت در تاپین فعال شده باشد.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      جعبه پستی:
+                    </label>
+                    <select
+                      value={tapinBoxId}
+                      onChange={(e) => setTapinBoxId(e.target.value)}
+                      className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+                    >
+                      {tapinBoxes.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.title} ({toPersianDigits(b.lengthCm)}×{toPersianDigits(b.widthCm)}×{toPersianDigits(b.heightCm)} سانتی‌متر){b.id === tapinDefaultBoxId ? ' — پیشنهادی سیستم' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {tapinTracking ? (
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-700 space-y-2">
+                      <p>
+                        کد رهگیری تاپین: <span className="font-mono font-bold" dir="ltr">{tapinTracking}</span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handlePrintTapinLabel()}
+                        disabled={printingLabel}
+                        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white disabled:opacity-50"
+                      >
+                        <Printer className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        {printingLabel ? 'در حال دریافت…' : 'چاپ برچسب'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 bg-brand-soft border border-brand-border rounded-xl text-[10px] text-brand-deep flex items-start gap-1.5">
+                      <AlertCircle className="w-4 h-4 text-brand-deep shrink-0 mt-0.5" strokeWidth={1.5} />
+                      <span>با ثبت، مرسوله مستقیم در تاپین ثبت می‌شود و کد رهگیری به‌صورت خودکار روی سفارش می‌نشیند.</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {shipMode === 'manual' && (
+              <>
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
                   شرکت پستی:
@@ -457,7 +783,20 @@ export const SupplierOrdersTab: React.FC = () => {
                   با ثبت اطلاعات ارسال، وضعیت سفارش به «ارسال شده» تغییر می‌کند.
                 </span>
               </div>
+              </>
+              )}
 
+              {shipMode === 'tapin' && tapinTracking ? (
+                <div className="flex gap-2 pt-2 border-t">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrder(null)}
+                    className="flex-1 py-2.5 bg-brand-deep text-white font-bold rounded-xl"
+                  >
+                    بستن
+                  </button>
+                </div>
+              ) : (
               <div className="flex gap-2 pt-2 border-t">
                 <button
                   type="submit"
@@ -465,7 +804,7 @@ export const SupplierOrdersTab: React.FC = () => {
                   className="flex-1 py-2.5 bg-brand-deep hover:bg-brand-deep disabled:opacity-50 text-white font-bold rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
                 >
                   <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                  <span>{submittingShipping ? 'در حال ثبت…' : 'ثبت و ارسال اطلاعات'}</span>
+                  <span>{submittingShipping ? 'در حال ثبت…' : shipMode === 'tapin' ? 'ثبت مرسوله در تاپین' : 'ثبت و ارسال اطلاعات'}</span>
                 </button>
                 <button
                   type="button"
@@ -475,6 +814,7 @@ export const SupplierOrdersTab: React.FC = () => {
                   انصراف
                 </button>
               </div>
+              )}
             </form>
           </div>
         </div>

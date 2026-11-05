@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
-import { supplierApi } from '../../services/supplierApi';
+import { supplierApi, SupplierPriceIncreaseDto } from '../../services/supplierApi';
+import { formatPrice } from '../../utils/formatters';
 import { X, Plus, Trash2, Printer, Loader2, Tag } from 'lucide-react';
 
 // Live variants modal (Fl) + cart-limits editor (Ul) + label print
@@ -20,6 +21,7 @@ interface VariantRow {
   is_default?: boolean;
   min_cart_qty?: number | null;
   max_cart_qty?: number | null;
+  supplier_base_cost?: number | null;
 }
 
 interface CustomAttr {
@@ -107,6 +109,104 @@ const VariantCartLimits: React.FC<{
   );
 };
 
+const VariantCostEditor: React.FC<{
+  productId: string;
+  variant: VariantRow;
+  productBaseCost?: number | null;
+  onSaved: (v: VariantRow) => void;
+  pendingReview?: boolean;
+  onReviewQueued?: () => void;
+}> = ({ productId, variant, productBaseCost, onSaved, pendingReview, onReviewQueued }) => {
+  const { error, success, warning } = useToast();
+  const [cost, setCost] = useState(variant.supplier_base_cost != null ? String(variant.supplier_base_cost) : '');
+  const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    setCost(variant.supplier_base_cost != null ? String(variant.supplier_base_cost) : '');
+  }, [variant.supplier_base_cost]);
+
+  const parseNum = (s: string): number | null => {
+    const d = s.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
+    if (!/^\d+$/.test(d)) return null;
+    return parseInt(d, 10);
+  };
+
+  const ownCost = variant.supplier_base_cost ?? null;
+  const effective = ownCost ?? productBaseCost ?? null;
+
+  const save = async () => {
+    const n = parseNum(cost.trim());
+    if (n === null || n <= 0) {
+      error('قیمت عمده تنوع باید عددی مثبت به تومان باشد.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await supplierApi.updateVariantPricing(productId, variant.id, { supplierBaseCost: n });
+      if (res && res.status === 'pending_review') {
+        // Governed increase queued for management review (HTTP 202):
+        // the stored cost has NOT changed, so warn with the server's
+        // own message and let the parent refresh the pending chip
+        // instead of reporting a save.
+        warning(res.message || 'درخواست افزایش قیمت برای بررسی مدیریت ثبت شد.');
+        onReviewQueued?.();
+        return;
+      }
+      success('قیمت عمده این تنوع ذخیره شد.');
+      onSaved({ ...variant, supplier_base_cost: res?.supplier_base_cost ?? n });
+    } catch (e: any) {
+      error(e?.message || 'ذخیره قیمت عمده تنوع انجام نشد.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    setClearing(true);
+    try {
+      const updated = await supplierApi.updateVariantPricing(productId, variant.id, { clear: true });
+      success('قیمت اختصاصی حذف شد؛ این تنوع از قیمت عمده کالا ارث می‌برد.');
+      onSaved({ ...variant, supplier_base_cost: updated.supplier_base_cost ?? null });
+    } catch (e: any) {
+      error(e?.message || 'حذف قیمت اختصاصی انجام نشد.');
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const inputCls = 'w-full rounded-xl border border-slate-200 p-2 text-xs bg-white focus:border-brand-deep outline-none text-center';
+  return (
+    <div className="border-t border-slate-100 pt-2 space-y-1.5">
+      <div className="flex items-end gap-2">
+        <label className="flex-1">
+          <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 mb-1">
+            قیمت عمده این تنوع (تومان)
+            {pendingReview && (
+              <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.2 rounded-full border border-amber-200">
+                در حال بررسی
+              </span>
+            )}
+          </span>
+          <input value={cost} onChange={(e) => setCost(e.target.value)} inputMode="numeric" dir="ltr" placeholder={productBaseCost != null ? String(productBaseCost) : '—'} className={inputCls} aria-label="قیمت عمده تنوع" />
+        </label>
+        <button type="button" onClick={save} disabled={saving} className="px-3.5 py-2 rounded-xl bg-brand-deep text-white text-[11px] font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center gap-1 shrink-0">
+          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} />}
+          <span>{saving ? 'در حال ذخیره…' : 'ذخیره'}</span>
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-400 leading-relaxed">
+        {effective !== null ? <>قیمت مؤثر این تنوع: <strong className="text-slate-600">{formatPrice(effective)} تومان</strong>{ownCost === null ? ' (از قیمت عمده کالا ارث می‌برد)' : ''}</> : 'برای این تنوع قیمت عمده‌ای ثبت نشده است.'}
+      </p>
+      {ownCost !== null && (
+        <button type="button" onClick={clear} disabled={clearing} className="text-[10px] font-bold text-rose-600 hover:underline disabled:opacity-50">
+          {clearing ? 'در حال حذف…' : 'حذف قیمت اختصاصی و ارث‌بری از کالا'}
+        </button>
+      )}
+    </div>
+  );
+};
+
 const LabelPrintPreview: React.FC<{
   spn: string;
   productTitle: string;
@@ -163,9 +263,10 @@ const LabelPrintPreview: React.FC<{
 export const SupplierVariantsModal: React.FC<{
   productId: string;
   productTitle: string;
+  productBaseCost?: number | null;
   onClose: () => void;
   onChanged?: () => void;
-}> = ({ productId, productTitle, onClose, onChanged }) => {
+}> = ({ productId, productTitle, productBaseCost, onClose, onChanged }) => {
   const { toPersianDigits } = useStore();
   const { success, error } = useToast();
   const [variants, setVariants] = useState<VariantRow[]>([]);
@@ -181,6 +282,16 @@ export const SupplierVariantsModal: React.FC<{
   const [bulkRows, setBulkRows] = useState([emptyBulkRow(), emptyBulkRow()]);
   const [bulkSaving, setBulkSaving] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  const [priceIncreases, setPriceIncreases] = useState<SupplierPriceIncreaseDto[]>([]);
+  const reloadPriceIncreases = useCallback(() => {
+    supplierApi.getPriceIncreases().then(setPriceIncreases).catch(() => undefined);
+  }, []);
+  useEffect(() => { reloadPriceIncreases(); }, [reloadPriceIncreases]);
+  const pendingVariantIds = new Set(
+    priceIncreases
+      .filter((row) => row.status === 'pending' && row.productId === productId && row.variantId)
+      .map((row) => row.variantId as string),
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -424,6 +535,7 @@ export const SupplierVariantsModal: React.FC<{
                       </div>
                     )}
                     <VariantCartLimits productId={productId} variant={v} onSaved={(updated) => setVariants((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))} />
+                    <VariantCostEditor productId={productId} variant={v} productBaseCost={productBaseCost} pendingReview={pendingVariantIds.has(v.id)} onReviewQueued={reloadPriceIncreases} onSaved={(updated) => setVariants((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))} />
                   </div>
                 ))}
               </div>

@@ -1,5 +1,7 @@
 import { apiRequest, tokenStore, getApiBase } from './apiClient';
 
+export interface TapinBoxDto { id: string; title: string; lengthCm: number; widthCm: number; heightCm: number; maxWeightGrams?: number | null; isActive: boolean; sort: number }
+
 export interface SupplierProductDto {
   id: string;
   title: string;
@@ -93,6 +95,25 @@ export interface SupplierOrderDto {
   itemCount: number;
 }
 
+export interface SupplierWarehouseOrderItemDto {
+  productId: string;
+  productTitle: string;
+  quantity: number;
+  wholesaleCost: number;
+  lineTotal: number;
+}
+
+export interface SupplierWarehouseOrderDto {
+  orderId: string;
+  orderNumber: string;
+  status: string;
+  province: string;
+  city: string;
+  createdAt: string;
+  items: SupplierWarehouseOrderItemDto[];
+  itemsTotal: number;
+}
+
 export interface SupplierProposalDto {
   id: string;
   title: string;
@@ -123,6 +144,17 @@ export interface SupplierPayoutDto {
   bank_name: string;
   account_holder: string;
   created_at: string;
+}
+
+export interface SupplierSettlementBalance {
+  earned: number;
+  reserved: number;
+  paid: number;
+  returnCharges: number;
+  returnClawbacks: number;
+  adjustments: number;
+  storageFees: number;
+  available: number;
 }
 
 export interface SupplierStorageFeeCharge {
@@ -164,12 +196,65 @@ export interface SupplierAddonDto {
   attachments?: { scopeType: string; productId: string }[];
 }
 
+export interface SupplierSearchInsightProduct { productId: string; title: string; imageUrl?: string }
+export interface SupplierSearchInsightScopeMatch { type: 'category' | 'brand'; name: string }
+export interface SupplierSearchDemandTerm { term: string; searches: number; zeroResultSearches: number; matchedProducts: SupplierSearchInsightProduct[] }
+export interface SupplierSearchUnmetTerm { term: string; searches: number; zeroResultSearches: number; scopeMatches: SupplierSearchInsightScopeMatch[] }
+export interface SupplierSearchTrendItem { productId: string; title: string; units: number; prevUnits: number; deltaPct: number | null }
+export interface SupplierSearchInsight { windowDays: number; topDemand: SupplierSearchDemandTerm[]; unmetInScope: SupplierSearchUnmetTerm[]; ownProductTrend: SupplierSearchTrendItem[] }
+
+export interface SupplierPriceIncreaseDto {
+  id: string;
+  productId: string;
+  // Variant-targeted rows (governed variant pricing) carry the variant
+  // they belong to; product-level rows leave both unset.
+  variantId?: string;
+  variantName?: string;
+  oldReference: number;
+  newReference: number;
+  pct: number;
+  status: 'pending' | 'approved' | 'rejected';
+  isException: boolean;
+  exceptionCapPct?: number;
+  autoApproved: boolean;
+  agreementReview: boolean;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+// PUT /supplier/products/{id}/pricing response. A governed increase that
+// cannot auto-apply comes back HTTP 202 with status 'pending_review' and
+// the Persian explanation in `message`; an applied increase carries
+// applied/autoApproved (and requestId when an audit row was written).
+export interface UpdatePricingResponse {
+  success: boolean;
+  supplier_base_cost?: number;
+  applied?: boolean;
+  autoApproved?: boolean;
+  requestId?: string;
+  status?: string;
+  pct?: number;
+  capPct?: number;
+  reason?: string;
+  message?: string;
+}
+
+// PUT /supplier/products/{id}/variants/{vid}/pricing response: the
+// same governed shapes as UpdatePricingResponse (applied carries
+// applied/autoApproved/requestId + supplier_base_cost; a queued
+// increase is HTTP 202 with status 'pending_review' and the Persian
+// explanation in `message`).
+export type UpdateVariantPricingResponse = UpdatePricingResponse;
+
 export const supplierApi = {
   getProducts: () => apiRequest<SupplierProductDto[]>('/supplier/products', { method: 'GET', auth: true }),
   getProposals: () => apiRequest<SupplierProposalDto[]>('/supplier/products/proposals', { method: 'GET', auth: true }),
   proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   updateStock: (productId: string, newStock: number, reason?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason }) }),
-  updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
+  updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest<UpdatePricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
+  // Gap 11 — price-increase governance: own request history + exception tickets.
+  getPriceIncreases: () => apiRequest<SupplierPriceIncreaseDto[]>('/supplier/price-increases', { method: 'GET', auth: true }),
+  createPriceIncreaseExceptionTicket: (productId: string, newReference: number, message?: string) => apiRequest<{ success: boolean; ticketId: string }>('/supplier/price-increases/exception-ticket', { method: 'POST', auth: true, body: JSON.stringify({ productId, newReference, message }) }),
   updateSupplyOption: (productId: string, supplyOption: SupplierProductDto['supplyOption']) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/supply-option`, { method: 'PUT', auth: true, body: JSON.stringify({ supply_option: supplyOption }) }),
   getInbounds: () => apiRequest<SupplierInboundDto[]>('/supplier/inbounds', { method: 'GET', auth: true }),
   createInbound: (payload: { items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
@@ -209,6 +294,8 @@ export const supplierApi = {
   createVariant: (productId: string, payload: { variant_name: string; attributes: Record<string, string> }) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   createVariantsBulk: (productId: string, variants: { variant_name: string; attributes: Record<string, string> }[]) => apiRequest<{ count: number }>(`/supplier/products/${encodeURIComponent(productId)}/variants/bulk`, { method: 'POST', auth: true, body: JSON.stringify({ variants }) }),
   updateVariantCartLimits: (productId: string, variantId: string, minQty: number, maxQty: number | null) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/cart-limits`, { method: 'PUT', auth: true, body: JSON.stringify({ min_cart_qty: minQty, max_cart_qty: maxQty }) }),
+  // Gap 10 — variant's own supplier cost (null on the row = inherit the product cost); clear restores inheritance.
+  updateVariantPricing: (productId: string, variantId: string, payload: { supplierBaseCost?: number; clear?: boolean; reason?: string }) => apiRequest<UpdateVariantPricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
   // FIX 48 — live reviews modal (jl/rv) + feedback modal (zl) clients.
   getProductReviews: async (productId: string, limit = 10, offset = 0): Promise<any> => {
     const data = await apiRequest<any>(`/products/${encodeURIComponent(productId)}/reviews?limit=${limit}&offset=${offset}`, { method: 'GET' });
@@ -248,7 +335,7 @@ export const supplierApi = {
     if (!(data as any)?.success || !(data as any)?.imageUrl) throw new Error((data as any)?.error || 'خطا در آپلود لوگو');
     return data as { imageUrl: string };
   },
-  getSettlementBalance: () => apiRequest<{ earned: number; reserved: number; paid: number; available: number }>('/supplier/settlement/balance', { method: 'GET', auth: true }),
+  getSettlementBalance: () => apiRequest<SupplierSettlementBalance>('/supplier/settlement/balance', { method: 'GET', auth: true }),
   getCampaigns: () => apiRequest<SupplierCampaignDto[]>('/supplier/campaigns', { method: 'GET', auth: true }),
   setCampaignStatus: (id: string, status: 'active' | 'paused') => apiRequest(`/supplier/campaigns/${encodeURIComponent(id)}/status`, { method: 'PUT', auth: true, body: JSON.stringify({ status }) }),
   createCampaign: (payload: Record<string, unknown>) => apiRequest<{ id: string; campaign_id: string }>('/supplier/campaigns/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
@@ -261,7 +348,32 @@ export const supplierApi = {
   updateAddon: (id: string, payload: Record<string, unknown>) => apiRequest<{ staged: boolean }>(`/supplier/addons/${encodeURIComponent(id)}`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
   setAddonActive: (id: string, isActive: boolean) => apiRequest(`/supplier/addons/${encodeURIComponent(id)}/active`, { method: 'PATCH', auth: true, body: JSON.stringify({ isActive }) }),
   setAddonAttachments: (id: string, productIds: string[]) => apiRequest(`/supplier/addons/${encodeURIComponent(id)}/attachments`, { method: 'PUT', auth: true, body: JSON.stringify({ attachments: productIds.map((productId) => ({ scopeType: 'product', productId })) }) }),
-  submitShipping: (orderId: string, payload: { carrier: string; trackingNumber: string; shippingDate?: string }) => apiRequest<{ success: boolean }>(`/supplier/orders/${encodeURIComponent(orderId)}/shipping`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  submitShipping: (orderId: string, payload: { carrier?: string; trackingNumber?: string; shippingDate?: string; viaTapin?: boolean; tapinService?: 'post' | 'tipax'; tapinBoxId?: string }) => apiRequest<{ success: boolean; carrier?: string; trackingNumber?: string; tapin?: { service: string; boxId: string; trackingNumber: string } }>(`/supplier/orders/${encodeURIComponent(orderId)}/shipping`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  // Tapin connection (gaps 1-3). The token is write-only: it is sent
+  // to the backend on save and NEVER returned by any endpoint.
+  getTapinSettings: () => apiRequest<{ supplierId: string; tapinShopId: string | null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'GET', auth: true }),
+  updateTapinSettings: (payload: { shopId: string; token?: string }) => apiRequest<{ supplierId: string; tapinShopId: string | null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
+  deleteTapinSettings: () => apiRequest<{ supplierId: string; tapinShopId: null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'DELETE', auth: true }),
+  testTapinConnection: () => apiRequest<{ ok: boolean; serviceActive?: boolean; message: string; error?: string }>('/supplier/tapin/test', { method: 'POST', auth: true, body: JSON.stringify({}) }),
+  getTapinBoxes: () => apiRequest<{ success: boolean; boxes: TapinBoxDto[]; defaultBoxId: string }>('/supplier/tapin/boxes', { method: 'GET', auth: true }),
+  getTapinLabel: async (shipmentId: string): Promise<Blob> => {
+    const token = tokenStore.getToken();
+    const res = await fetch(`${getApiBase()}/supplier/shipments/${encodeURIComponent(shipmentId)}/tapin-label`, {
+      method: 'GET',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = 'دریافت برچسب از تاپین انجام نشد.';
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch { /* non-JSON error body */ }
+      throw new Error(message);
+    }
+    return res.blob();
+  },
+  acceptOrder: (orderId: string) => apiRequest<{ success: boolean; status: string }>(`/supplier/orders/${encodeURIComponent(orderId)}/accept`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
+  getWarehouseOrders: (page = 1, pageSize = 20) => apiRequest<{ success: boolean; orders: SupplierWarehouseOrderDto[]; total: number; page: number; pageSize: number }>(`/supplier/warehouse-orders?page=${page}&pageSize=${pageSize}`, { method: 'GET', auth: true }),
   getReturns: () => apiRequest<SupplierReturnRequestDto[]>('/supplier/returns', { method:'GET', auth:true }),
   requestReturn: (productId:string, quantity:number, collectionMethod:'supplier_collect'|'postal', reason:string, idempotencyKey:string) => apiRequest<SupplierReturnRequestDto>('/supplier/returns', { method:'POST', auth:true, headers:{'Idempotency-Key':idempotencyKey}, body:JSON.stringify({productId,quantity,collectionMethod,reason}) }),
   cancelReturn: (returnId:string, reason:string) => apiRequest(`/supplier/returns/${encodeURIComponent(returnId)}/cancel`, { method:'POST', auth:true, headers:{'Idempotency-Key':`cancel-${returnId}`}, body:JSON.stringify({reason}) }),
@@ -300,6 +412,7 @@ export const supplierApi = {
   createMyWarehouse: (input: { name: string; provinceName: string; cityName: string; address?: string; postalCode?: string; phone?: string }) => apiRequest("/supplier/warehouses", { method: "POST", auth: true, body: JSON.stringify(input) }),
   updateMyWarehouse: (id: string, input: { name: string; provinceName: string; cityName: string; address?: string; postalCode?: string; phone?: string }) => apiRequest(`/supplier/warehouses/${encodeURIComponent(id)}`, { method: "PUT", auth: true, body: JSON.stringify(input) }),
   getAnalytics: async (): Promise<any> => apiRequest<any>('/supplier/analytics', { method: 'GET', auth: true }),
+  getSearchInsight: async (days: number = 30): Promise<SupplierSearchInsight> => apiRequest<SupplierSearchInsight>(`/supplier/search-insight?days=${days}`, { method: 'GET', auth: true }),
 };
 
 export const warehouseReturnsApi = {

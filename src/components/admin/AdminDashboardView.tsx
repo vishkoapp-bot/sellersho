@@ -62,6 +62,7 @@ import { SupportDisputesTab } from '../finance/SupportDisputesTab';
 import { HistoricalReconciliationReviewTab } from './HistoricalReconciliationReviewTab';
 import { AdminSmsTab } from './AdminSmsTab';
 import { AdminSettlementSettingsTab } from './AdminSettlementSettingsTab';
+import { AdminStorageFeeSettingsTab } from './AdminStorageFeeSettingsTab';
 import { AdminPlaceholderTab, AdminSupportReturnsTab } from './AdminNewTabs';
 import { AdminAuditLogTab } from './AdminAuditLogTab';
 
@@ -123,6 +124,7 @@ const ADMIN_NAV_SECTIONS: AdminNavSection[] = [
     { id: 'finance-adjustments', label: 'تعدیل و برگشتی', icon: FileEdit, allowedRoles: ['super_admin', 'finance_specialist', 'admin'] },
     { id: 'commission', label: 'سهم پلتفرم', icon: DollarSign, allowedRoles: ['super_admin', 'admin'] },
     { id: 'settlement-settings', label: 'تنظیمات تسویه ماهانه', icon: CalendarClock, allowedRoles: ['super_admin'] },
+    { id: 'storage-fee-settings', label: 'هزینه انبارداری', icon: Warehouse, allowedRoles: ['super_admin'] },
   ] },
   { heading: 'بازاریابی', variant: 'slate', items: [
     { id: 'campaigns', label: 'کمپین‌ها و بودجه', icon: Crown, allowedRoles: ['super_admin', 'admin'] },
@@ -391,6 +393,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'finance-reconciliation' && <FinanceReconciliationTab />}
               {activeTab === 'finance-payouts' && <FinancePayoutsTab />}
               {activeTab === 'settlement-settings' && <AdminSettlementSettingsTab />}
+              {activeTab === 'storage-fee-settings' && <AdminStorageFeeSettingsTab />}
               {activeTab === 'finance-adjustments' && <FinanceAdjustmentsTab />}
               {activeTab === 'support-disputes' && <SupportDisputesTab />}
               {activeTab === 'support-tickets' && <SupportTicketsTab />}

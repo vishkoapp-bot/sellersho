@@ -87,17 +87,15 @@ export const SellerWalletTab: React.FC = () => {
 
   const totalPaidOut = totalApprovedPayouts;
 
-  // Live parity (W1): return-window banner (live kn oe/U). Shown when
-  // there is no server balance yet, or when the server reports a
-  // locked-in-return-window figure; hidden when a server balance
-  // exists but reports no such figure. The extra fields are read via
-  // cast: StoreBalanceResponse (outside this file's scope) declares
-  // none of them, and the live backend's field name is unproven, so
-  // every live alias is accepted.
-  const balanceExtras = serverBalance as (StoreBalanceResponse & { locked_in_return_window?: number; lockedInReturnWindow?: number; pendingRelease?: number; pending_release?: number; pendingReserve?: number; pending_reserve?: number }) | null;
-  const lockedFigure = balanceExtras ? (balanceExtras.locked_in_return_window ?? balanceExtras.lockedInReturnWindow ?? balanceExtras.pendingRelease ?? balanceExtras.pending_release ?? balanceExtras.pendingReserve ?? balanceExtras.pending_reserve ?? null) : null;
-  const showReturnBanner = serverBalance ? lockedFigure !== null : true;
-  const returnBannerAmount = lockedFigure !== null ? lockedFigure : pendingBalance;
+  // Return-window banner: the real StoreBalanceResponse carries no
+  // locked-in-return-window figure (an earlier alias chain read
+  // locked_in_return_window / pendingRelease / pending_reserve style
+  // fields that do not exist on the DTO, so it never fired for
+  // server data). The banner is therefore only the LOCAL estimate -
+  // the not-yet-released orders' profit, shown while no server
+  // balance has loaded - and its label marks it as an estimate.
+  const showReturnBanner = !serverBalance;
+  const returnBannerAmount = pendingBalance;
 
   const releaseText = (o: { returnWindowDaysLeft?: unknown }): { text: string; urgent: boolean } => {
     const days = (o as { returnWindowDaysLeft?: unknown }).returnWindowDaysLeft;
@@ -262,7 +260,7 @@ export const SellerWalletTab: React.FC = () => {
               <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
                 <Clock className="w-4 h-4" strokeWidth={1.5} />
               </div>
-              <h3 className="text-xs font-bold text-slate-800">در انتظار پایان مهلت مرجوعی</h3>
+              <h3 className="text-xs font-bold text-slate-800">در انتظار پایان مهلت مرجوعی (برآورد محلی)</h3>
             </div>
             {returnBannerAmount > 0 ? (
               <span className="text-base font-black text-amber-700">{formatPrice(returnBannerAmount)}<span className="text-[10px] font-normal mr-1">تومان</span></span>

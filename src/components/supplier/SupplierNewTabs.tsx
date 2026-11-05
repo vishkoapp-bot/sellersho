@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
 
@@ -8,8 +8,9 @@ import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Wareh
 // FIX 17: supplier tabs added to reach live's 17-tab structure.
 // Analytics / customer-returns / my-warehouses / shipping-methods /
 // profile are wired to real GET endpoints that exist in main.go.
-// Demand-insight and contract have no GET endpoint in this branch,
-// so they stay honest placeholders (no fabricated data).
+// Demand-insight is wired to GET /supplier/search-insight (real tab in
+// SupplierDemandInsightTab.tsx, re-exported below). Contract has no GET
+// endpoint in this branch, so it stays an honest placeholder.
 
 export const SupplierPlaceholderTab: React.FC<{ title: string; description?: string }> = ({ title, description }) => (
   <div className="space-y-3">
@@ -558,7 +559,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
 // with live titles, descriptions and status labels. The previous generic list rendered
 // pick(name/title/carrier/code), which the backend never sends, so every row was "—".
 // NOTE: live also renders a Tapin settings block (wn) at the bottom of this tab;
-// that block is not rebuilt here yet (pending follow-up).
+// that block is SupplierTapinCard below (gaps 1-3).
 const SHIPPING_METHOD_META: Record<string, { title: string; description: string; icon: React.ElementType }> = {
   direct: { title: "ارسال مستقیم", description: "سفارش را خودت از انبارت بسته‌بندی می‌کنی و مستقیم به دست مشتری می‌رسانی.", icon: Truck },
   warehouse: { title: "ارسال به انبار مرکزی", description: "کالا را اول به انبار مرکزی می‌فرستی؛ کنترل کیفیت، بسته‌بندی و فرستادن به مشتری با پلتفرم است.", icon: Warehouse },
@@ -568,6 +569,231 @@ const SHIPPING_STATUS_META: Record<string, { label: string; badgeClass: string; 
   enabled: { label: "فعال", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: CheckCircle2 },
   requested: { label: "در انتظار تأیید", badgeClass: "bg-amber-50 text-amber-700 border-amber-200", icon: Clock },
   disabled: { label: "غیرفعال", badgeClass: "bg-slate-100 text-slate-500 border-slate-200", icon: XCircle },
+};
+
+
+// Tapin connection card (gaps 1-3) — rendered at the bottom of the
+// shipping-methods tab, where live renders its Tapin block (wn).
+// The supplier creates their own Tapin account, then pastes the shop
+// id + API token from the Tapin panel (یکپارچه‌سازی ← مدیریت توکن).
+// The token is write-only: it is never displayed, and the backend
+// never returns it.
+const TAPIN_SIGNUP_URL = "https://my.tapin.ir/authentication/login?utm_source=selersho&utm_medium=supplier_panel&utm_campaign=tapin_signup";
+
+type TapinTestResult = { kind: "active" | "inactive" | "invalid" | "error"; message: string };
+
+export const SupplierTapinCard: React.FC = () => {
+  const { success, error } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [connected, setConnected] = useState(false);
+  const [shopId, setShopId] = useState("");
+  const [inputShopId, setInputShopId] = useState("");
+  const [inputToken, setInputToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [testResult, setTestResult] = useState<TapinTestResult | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    supplierApi.getTapinSettings()
+      .then((res) => {
+        setConnected(!!res.tapinConnected);
+        setShopId(res.tapinShopId || "");
+        setInputShopId(res.tapinShopId || "");
+      })
+      .catch(() => { /* the card degrades to the not-connected form */ })
+      .finally(() => { setLoading(false); });
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    if (!inputShopId.trim()) { error("شناسه فروشگاه تاپین را وارد کن."); return; }
+    if (!connected && !inputToken.trim()) { error("توکن تاپین را وارد کن."); return; }
+    setSaving(true);
+    try {
+      const res = await supplierApi.updateTapinSettings({
+        shopId: inputShopId.trim(),
+        token: inputToken.trim() ? inputToken.trim() : undefined,
+      });
+      setConnected(!!res.tapinConnected);
+      setShopId(res.tapinShopId || "");
+      setInputToken("");
+      setTestResult(null);
+      success("اتصال تاپین ذخیره شد.");
+    } catch (err: any) {
+      error(err?.message || "ذخیره اتصال تاپین انجام نشد.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await supplierApi.testTapinConnection();
+      if (res.ok && res.serviceActive) {
+        setTestResult({ kind: "active", message: res.message });
+      } else if (res.ok) {
+        setTestResult({ kind: "inactive", message: res.message });
+      } else {
+        setTestResult({ kind: "invalid", message: res.message || res.error || "اتصال برقرار نیست." });
+      }
+    } catch (err: any) {
+      setTestResult({ kind: "error", message: err?.message || "برقراری ارتباط با تاپین ممکن نشد." });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // The service state is part of the card, not a button's secret:
+  // once the saved connection has loaded, test it once automatically.
+  const autoTestedRef = useRef(false);
+  useEffect(() => {
+    if (loading || !connected || autoTestedRef.current) return;
+    autoTestedRef.current = true;
+    void test();
+  }, [loading, connected]);
+
+  const disconnect = async () => {
+    setDisconnecting(true);
+    try {
+      await supplierApi.deleteTapinSettings();
+      setConnected(false);
+      setShopId("");
+      setInputShopId("");
+      setInputToken("");
+      setTestResult(null);
+      success("اتصال تاپین قطع شد.");
+    } catch (err: any) {
+      error(err?.message || "قطع اتصال تاپین انجام نشد.");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border bg-white p-4 space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-soft text-brand-deep">
+            <Truck className="h-5 w-5" />
+          </span>
+          <div>
+            <h3 className="text-xs font-extrabold text-slate-800">اتصال تاپین</h3>
+            <p className="mt-0.5 text-[11px] leading-5 text-slate-500">
+              با اتصال تاپین، هزینه ارسال سفارش‌های مستقیم تو از خود تاپین خوانده می‌شود و ثبت مرسوله و کد رهگیری خودکار انجام می‌شود.
+            </p>
+          </div>
+        </div>
+        {connected && (
+          testResult?.kind === "inactive" ? (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-amber-50 text-amber-700 border-amber-200">
+              <Info className="h-3 w-3" />
+              سرویس تیپاکس غیرفعال
+            </span>
+          ) : testResult?.kind === "invalid" || testResult?.kind === "error" ? (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-rose-50 text-rose-600 border-rose-200">
+              <Info className="h-3 w-3" />
+              اتصال نامعتبر
+            </span>
+          ) : (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 border-emerald-200">
+              <CheckCircle2 className="h-3 w-3" />
+              متصل
+            </span>
+          )
+        )}
+      </div>
+
+      {loading && <p className="text-[11px] text-slate-500">در حال بارگذاری…</p>}
+
+      {!loading && !connected && (
+        <>
+          <p className="text-[11px] leading-6 text-slate-600">
+            اول در تاپین حساب بساز؛ بعد از پنل تاپین (یکپارچه‌سازی ← مدیریت توکن — با آی‌پی سرور و رمز پنل) توکن و شناسه فروشگاه را بگیر و اینجا وارد کن.
+          </p>
+          <a
+            href={TAPIN_SIGNUP_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand-deep py-2.5 min-h-[44px] text-xs font-bold text-white transition-colors hover:bg-brand"
+          >
+            <Send className="h-3.5 w-3.5" strokeWidth={1.5} />
+            ثبت‌نام در تاپین
+          </a>
+        </>
+      )}
+
+      {!loading && (
+        <div className="space-y-2.5">
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">شناسه فروشگاه تاپین</label>
+            <input
+              type="text"
+              value={inputShopId}
+              onChange={(e) => setInputShopId(e.target.value)}
+              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+              dir="ltr"
+              placeholder="shop id"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+              توکن تاپین {connected && <span className="font-normal text-slate-400">(برای تغییر توکن پر کن؛ خالی یعنی همان قبلی)</span>}
+            </label>
+            <input
+              type="password"
+              value={inputToken}
+              onChange={(e) => setInputToken(e.target.value)}
+              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+              dir="ltr"
+              placeholder="••••••••"
+              autoComplete="off"
+            />
+          </div>
+          <p className="flex items-start gap-1.5 text-[10px] leading-5 text-slate-400">
+            <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />
+            مسیر دریافت توکن: پنل تاپین ← یکپارچه‌سازی ← مدیریت توکن (با آی‌پی سرور و رمز پنل). توکن فقط ذخیره می‌شود و هیچ‌جا نمایش داده نمی‌شود.
+          </p>
+          <div className="flex gap-2">
+            <button type="button" disabled={saving} onClick={() => void save()} className="flex-1 rounded-xl bg-brand-deep py-2.5 min-h-[44px] text-xs font-bold text-white disabled:opacity-50">
+              {saving ? "در حال ذخیره…" : "ذخیره اتصال"}
+            </button>
+            {connected && (
+              <>
+                <button type="button" disabled={testing} onClick={() => void test()} className="flex-1 rounded-xl border border-slate-200 py-2.5 min-h-[44px] text-xs font-bold text-slate-700 disabled:opacity-50">
+                  {testing ? "در حال تست…" : "تست اتصال"}
+                </button>
+                <button type="button" disabled={disconnecting} onClick={() => void disconnect()} className="rounded-xl border border-rose-200 py-2.5 px-3 min-h-[44px] text-xs font-bold text-rose-600 disabled:opacity-50">
+                  {disconnecting ? "…" : "قطع اتصال"}
+                </button>
+              </>
+            )}
+          </div>
+          {connected && (
+            <p className="flex items-start gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 font-bold text-amber-700">
+              <Clock className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />
+              سرویس فعال این اتصال تیپاکس است و برای هر فروشگاه جداگانه، بر اساس شهر فروشگاه فعال می‌شود؛ اگر وضعیت اتصال گفت سرویس فعال نیست، از پشتیبانی تاپین درخواست فعال‌سازی تیپاکس بده. سرویس پست به‌زودی اضافه می‌شود.
+            </p>
+          )}
+          {testResult && (
+            <p className={`flex items-start gap-1.5 rounded-xl px-3 py-2 text-[11px] leading-5 font-bold ${
+              testResult.kind === "active" ? "bg-emerald-50 text-emerald-700" :
+              testResult.kind === "inactive" ? "bg-amber-50 text-amber-700" :
+              "bg-rose-50 text-rose-600"
+            }`}>
+              {testResult.kind === "active" ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} /> : <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />}
+              {testResult.kind === "inactive"
+                ? "سرویس تیپاکس برای فروشگاهت هنوز فعال نیست؛ فعال‌سازی از طریق پشتیبانی تاپین انجام می‌شود. تا آن زمان هزینه ارسال سفارش‌هایت با تعرفه داخلی محاسبه می‌شود."
+                : testResult.message}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
 };
 
 export const SupplierShippingMethodsTab: React.FC = () => {
@@ -661,13 +887,14 @@ export const SupplierShippingMethodsTab: React.FC = () => {
           </section>
         );
       })}
+      <SupplierTapinCard />
     </div>
   );
 };
 
-export const SupplierDemandInsightTab: React.FC = () => (
-  <SupplierPlaceholderTab title="اینسایت تقاضا" description="اینسایت تقاضا در این نسخه اندپوینت GET ندارد؛ محتوای آن پس از ورود به حساب و با داده واقعی سرور نمایش داده می‌شود." />
-);
+// The demand-insight tab lives in its own file; re-exported here so
+// SupplierDashboardView keeps importing it from this module unchanged.
+export { SupplierDemandInsightTab } from './SupplierDemandInsightTab';
 
 export const SupplierContractTab: React.FC = () => {
   const { toPersianDigits, supplierSession, platformSettings } = useStore();

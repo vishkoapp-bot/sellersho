@@ -5,10 +5,13 @@ import { useStore } from '../../context/StoreContext';
 import { isValidIranianSheba } from '../../utils/validators';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
-import { Clock } from 'lucide-react';
 
-// Live settlement tab (on): supplier balance, return-window lock, manual
-// bank-transfer withdrawal requests, storage-fee charges, payout history.
+// Live settlement tab (on): supplier balance, manual bank-transfer
+// withdrawal requests, storage-fee charges (separate endpoint), payout
+// history. The backend computes the balance on read: earned (orders paid
+// AND delivered) - reserved (payout requests still pending review)
+// - paid - return charges - storage fees = available. Supplier money has NO
+// return-window hold; it becomes withdrawable once the order is delivered.
 const formatAmount = (raw: string): string => {
   const digits = raw.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
   if (digits === '') return '';
@@ -46,7 +49,7 @@ export const SupplierSettlementTab: React.FC = () => {
     event.preventDefault();
     if (saving) return;
     const value = Number(parseAmount(amount));
-    if (!Number.isSafeInteger(value) || value <= 0 || value > ((balance.data as any)?.available || 0)) {
+    if (!Number.isSafeInteger(value) || value <= 0 || value > (balance.data?.available || 0)) {
       error('مبلغ را درست وارد کن؛ بیشتر از پولی که می‌توانی برداشت کنی نباشد.');
       return;
     }
@@ -68,48 +71,87 @@ export const SupplierSettlementTab: React.FC = () => {
     }
   };
 
-  const b: any = balance.data || {};
-  const locked = b.locked_in_return_window ?? b.lockedInReturnWindow ?? b.pendingRelease ?? b.pending_release ?? b.pendingReserve ?? b.pending_reserve ?? null;
-  const showLocked = locked !== null;
-  const returnCharges = b.returnCharges ?? b.return_charges ?? null;
-  const net = b.net_balance ?? b.netBalance ?? null;
-  const storageFees = b.storageFees ?? b.storage_fees ?? null;
-  const charges = (fees.data as any)?.charges || [];
+  const b = balance.data;
+  const returnCharges = b?.returnCharges ?? 0;
+  const returnClawbacks = b?.returnClawbacks ?? 0;
+  const adjustments = b?.adjustments ?? 0;
+  const storageFees = b?.storageFees ?? 0;
+  const charges = fees.data?.charges ?? [];
 
   return (
     <div className="space-y-3 pb-6">
       <h2 className="text-sm font-bold">تسویه‌حساب و برداشت پول</h2>
       <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">
-        <p>پول فروش کالاهایت اینجاست. وقتی مهلت مرجوعی سفارش تمام شود، پولش آزاد می‌شود و می‌توانی برداشتش کنی.</p>
-        <p className="mt-2"><b>چرا بعضی پول‌ها هنوز آزاد نشده‌اند؟</b> مشتری تا چند روز حق برگرداندن کالا را دارد. تا آن مهلت تمام نشود، پول آن سفارش نگه داشته می‌شود؛ بعد خودش کامل آزاد می‌شود.</p>
+        <p>پول فروش کالاهایت اینجاست. موجودی پس از تحویل سفارش قابل برداشت است؛ یعنی مبلغ هر سفارش به‌محض اینکه پرداخت شود و به دست مشتری برسد، وارد درآمدت می‌شود و لازم نیست منتظر پایان مهلت مرجوعی بمانی.</p>
+        <p className="mt-2"><b>چرا موجودی قابل برداشت از کل درآمدت کمتر است؟</b> مبلغ درخواست‌های برداشتی که هنوز در انتظار بررسی‌اند و مبالغی که قبلاً برایت واریز شده‌اند از درآمدت کم شده‌اند. ریز هر بخش را در کارت زیر می‌بینی.</p>
       </div>
       <SupplierResourceState loading={balance.loading || history.loading} error={balance.error || history.error} retry={() => { void balance.reload(); void history.reload(); }} />
       {!balance.error && (
         <>
           <section className="rounded-2xl bg-slate-900 p-4 text-white">
-            <span className="text-xs text-slate-300">پولی که می‌توانی برداشت کنی</span>
-            <strong className="mt-1 block text-xl text-emerald-300">{formatPrice(b.available || 0)} تومان</strong>
-            <p className="mt-2 text-[10px] text-slate-400">کل فروخته‌شده: {formatPrice(b.earned || 0)} · در راه (مهلت مرجوعی): {formatPrice(b.reserved || 0)} · تا حالا واریزشده: {formatPrice(b.paid || 0)}</p>
-            {(returnCharges !== null || net !== null) && (
-              <div className="mt-3 border-t border-white/10 pt-2 space-y-1 text-[10px] leading-relaxed">
-                {returnCharges !== null && returnCharges > 0 && <p className="text-slate-300">هزینه ارسال مرجوعی معیوب (از حساب شما پرداخت شده): <span className="font-bold text-amber-300">{formatPrice(returnCharges)} تومان</span></p>}
-                {storageFees !== null && storageFees > 0 && <p className="text-slate-300">هزینه انبارداری کالاهای دپوشده در انبار مرکزی (از حساب شما پرداخت شده): <span className="font-bold text-amber-300">{formatPrice(storageFees)} تومان</span></p>}
-                {net !== null && <p className="text-slate-300">تراز خالص حساب: <span className={`font-bold ${net < 0 ? 'text-rose-300' : 'text-emerald-300'}`}>{formatPrice(net)} تومان</span>{net < 0 && ' — حساب شما منفی است؛ هزینه ارسال مرجوعی‌های معیوب از آن کسر شده و با فروش‌های بعدی جبران می‌شود.'}</p>}
-              </div>
-            )}
-          </section>
-          {showLocked && (
-            <section className="rounded-2xl border border-amber-200/80 bg-amber-50 p-4">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0"><Clock className="w-4 h-4" strokeWidth={1.5} /></div>
-                  <span className="text-xs font-bold text-slate-800">در انتظار پایان مهلت مرجوعی</span>
+            <span className="text-xs text-slate-300">موجودی قابل برداشت</span>
+            <strong className="mt-1 block text-xl text-emerald-300">{formatPrice(b?.available || 0)} تومان</strong>
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-400">موجودی پس از تحویل سفارش قابل برداشت است.</p>
+            <div className="mt-3 space-y-2.5 border-t border-white/10 pt-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-bold text-slate-100">درآمد قطعی‌شده از سفارش‌های تحویل‌شده</p>
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">جمع مبلغ پایه کالاهای تو در سفارش‌هایی که هم پرداخت شده‌اند و هم به دست مشتری رسیده‌اند.</p>
                 </div>
-                {locked !== null && locked > 0 ? <strong className="text-base text-amber-700">{formatPrice(locked)} تومان</strong> : <span className="text-[11px] font-bold text-slate-400">موردی نیست</span>}
+                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.earned || 0)} تومان</span>
               </div>
-              <p className="mt-2 text-[10px] text-slate-500 leading-relaxed">سود سفارش تا پایان مهلت مرجوعی مشتری نگه داشته می‌شود و سپس کامل آزاد می‌شود.</p>
-            </section>
-          )}
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-bold text-slate-100">در انتظار بررسی برداشت</p>
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">مبلغ درخواست‌های برداشتی که ثبت کرده‌ای و تیم مالی هنوز بررسی نکرده است؛ تا مشخص‌شدن نتیجه، از موجودی قابل برداشتت کم می‌شود.</p>
+                </div>
+                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.reserved || 0)} تومان</span>
+              </div>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-bold text-slate-100">پرداخت‌شده</p>
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">مجموع مبالغی که از درخواست‌های برداشتت تأیید و به حسابت واریز شده است.</p>
+                </div>
+                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.paid || 0)} تومان</span>
+              </div>
+              {returnCharges !== 0 && (
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-bold text-amber-200">کسر بابت مرجوعی‌ها</p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">هزینه‌هایی که بابت مرجوعی کالاها از حسابت کسر شده و از موجودی قابل برداشتت کم می‌شود.</p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(returnCharges)} تومان</span>
+                </div>
+              )}
+              {returnClawbacks !== 0 && (
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-bold text-amber-200">برگشت هزینه کالا از مرجوعی‌های بازپرداخت‌شده</p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">مبلغ پایه کالاهایی که مشتری برگردانده و پولش به مشتری بازپرداخت شده است؛ از موجودی قابل برداشتت کم می‌شود.</p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(returnClawbacks)} تومان</span>
+                </div>
+              )}
+              {adjustments !== 0 && (
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-100">اسناد تعدیل مالی</p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">تعدیل‌های ثبت‌شده توسط تیم مالی؛ مبلغ مثبت به موجودی قابل برداشتت اضافه و مبلغ منفی از آن کم می‌شود.</p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-bold">{formatPrice(adjustments)} تومان</span>
+                </div>
+              )}
+              {storageFees !== 0 && (
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-bold text-amber-200">کسر بابت انبارداری</p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">هزینه نگهداری کالاهای ثبت‌شده در انبار مرکزی (کالاهایی که از مسیر ورود کالا به انبار ثبت شده‌اند) پس از پایان روزهای رایگان؛ ریز آن را در بخش «هزینه انبارداری» پایین همین صفحه می‌بینی.</p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(storageFees)} تومان</span>
+                </div>
+              )}
+            </div>
+          </section>
           <form onSubmit={submit} className="space-y-2 rounded-2xl border bg-white p-3">
             <label className="block text-[11px] font-bold text-slate-600">نام صاحب حساب
               <input required value={holder} onChange={(event) => setHolder(event.target.value)} placeholder="مثلاً: علی رضایی" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
@@ -130,7 +172,7 @@ export const SupplierSettlementTab: React.FC = () => {
         <>
           <h3 className="text-xs font-bold text-slate-700">هزینه انبارداری</h3>
           <div className="space-y-2">
-            {charges.map((charge: any) => (
+            {charges.map((charge) => (
               <div key={charge.id} className="rounded-2xl border bg-white p-3 text-[11px] leading-5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-slate-800">{charge.productTitle || 'کالا'}</span>
@@ -144,7 +186,7 @@ export const SupplierSettlementTab: React.FC = () => {
         </>
       )}
       {!history.error && (history.data || []).length > 0 && <h3 className="text-xs font-bold text-slate-700">برداشت‌های قبلی تو</h3>}
-      {!history.error && !(history.data || []).length && !history.loading && <p className="rounded-2xl border bg-white p-4 text-[11px] leading-5 text-slate-500">هنوز برداشتی نداشته‌ای. وقتی پول آزادشده داشتی، از فرم بالا اولین برداشتت را ثبت کن.</p>}
+      {!history.error && !(history.data || []).length && !history.loading && <p className="rounded-2xl border bg-white p-4 text-[11px] leading-5 text-slate-500">هنوز برداشتی نداشته‌ای. وقتی موجودی قابل برداشت داشتی، از فرم بالا اولین برداشتت را ثبت کن.</p>}
       {!history.error && (history.data || []).map((item) => (
         <section key={item.id} className="rounded-2xl border bg-white p-3 text-xs">
           <strong>{formatPrice(item.amount)} تومان</strong>

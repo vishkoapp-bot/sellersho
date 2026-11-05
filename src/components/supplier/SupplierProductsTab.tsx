@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
-import { supplierApi, SupplierProductDto, WarrantyPropertyDto } from '../../services/supplierApi';
+import { supplierApi, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { Package, Plus, CheckCircle2, Clock, ShieldCheck, Edit3, XCircle, AlertCircle, Save, Upload, Trash2, Star, Layers, Image as ImageIcon } from 'lucide-react';
@@ -18,7 +18,7 @@ export const SupplierProductsTab: React.FC = () => {
     formatPrice,
     toPersianDigits,
   } = useStore();
-  const { success, error } = useToast();
+  const { success, error, warning } = useToast();
   const productsResource = useSupplierResource(supplierApi.getProducts);
   const proposalsResource = useSupplierResource(supplierApi.getProposals);
   const [saving, setSaving] = useState(false);
@@ -60,6 +60,13 @@ export const SupplierProductsTab: React.FC = () => {
   const canManageStock = supplierSession?.permissions?.some(permission => permission === 'supplier.manage' || permission === 'inventory.manage');
   React.useEffect(() => { supplierApi.getWarranties().then(setWarranties).catch(() => undefined); }, []);
 
+  // Gap 11 — governed price increases: products with a pending review row
+  // get a «در حال بررسی» chip; the list also refreshes after a 202 save.
+  const [priceIncreases, setPriceIncreases] = useState<SupplierPriceIncreaseDto[]>([]);
+  const reloadPriceIncreases = () => { supplierApi.getPriceIncreases().then(setPriceIncreases).catch(() => undefined); };
+  useEffect(() => { reloadPriceIncreases(); }, []);
+  const pendingPriceProductIds = new Set(priceIncreases.filter((row) => row.status === 'pending').map((row) => row.productId));
+
 
   const handleSaveWholesaleCost = async (productId: string) => {
     if (saving) return;
@@ -70,7 +77,18 @@ export const SupplierProductsTab: React.FC = () => {
     }
 
     setSaving(true);
-    try { await supplierApi.updatePricing(productId, cost); success(`قیمت عمده کالا به ${formatPrice(cost)} تومان تغییر کرد.`); setEditingProduct(null); setEditedCostC(''); await productsResource.reload(); }
+    try {
+      const res = await supplierApi.updatePricing(productId, cost);
+      if (res && res.status === 'pending_review') {
+        // Gap 11 — the increase was queued for management review (HTTP 202).
+        warning(res.message || 'درخواست افزایش قیمت برای بررسی مدیریت ثبت شد.');
+        setEditingProduct(null); setEditedCostC('');
+        reloadPriceIncreases();
+        await productsResource.reload();
+      } else {
+        success(`قیمت عمده کالا به ${formatPrice(cost)} تومان تغییر کرد.`); setEditingProduct(null); setEditedCostC(''); await productsResource.reload();
+      }
+    }
     catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'ذخیره قیمت انجام نشد.'); }
     finally { setSaving(false); }
   };
@@ -182,8 +200,15 @@ export const SupplierProductsTab: React.FC = () => {
                       <h4 className="text-xs font-bold text-slate-800 truncate">
                         {product.title}
                       </h4>
-                      <span className="text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded-full border border-emerald-200">
-                        تأییدشده
+                      <span className="flex items-center gap-1 shrink-0">
+                        {pendingPriceProductIds.has(product.id) && (
+                          <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.2 rounded-full border border-amber-200">
+                            در حال بررسی
+                          </span>
+                        )}
+                        <span className="text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded-full border border-emerald-200">
+                          تأییدشده
+                        </span>
                       </span>
                     </div>
                     <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-1">
@@ -472,7 +497,7 @@ export const SupplierProductsTab: React.FC = () => {
         <SupplierGalleryModal productId={galleryProduct.id} productTitle={galleryProduct.title} onClose={() => setGalleryProduct(null)} onChanged={() => productsResource.reload()} />
       )}
       {variantsProduct && (
-        <SupplierVariantsModal productId={variantsProduct.id} productTitle={variantsProduct.title} onClose={() => setVariantsProduct(null)} onChanged={() => productsResource.reload()} />
+        <SupplierVariantsModal productId={variantsProduct.id} productTitle={variantsProduct.title} productBaseCost={variantsProduct.supplierBaseCost} onClose={() => setVariantsProduct(null)} onChanged={() => productsResource.reload()} />
       )}
       {reviewsProduct && (
         <SupplierReviewsModal productId={reviewsProduct.id} productTitle={reviewsProduct.title} rating={reviewsProduct.rating ?? 0} reviewsCount={reviewsProduct.reviewsCount ?? 0} onClose={() => setReviewsProduct(null)} />

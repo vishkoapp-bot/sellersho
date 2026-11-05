@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi, StoreTemplate, SellerStoreTemplate } from '../../services/storeApi';
+import { catalogApi } from '../../services/catalogApi';
+import { mapBackendProduct } from '../../context/ProductContext';
 import { TEMPLATE_ACCENTS, resolveTemplateAccent } from '../storefront/templates/TemplateRegistry';
 import {
   blueprintFor,
@@ -226,6 +228,25 @@ export const SellerTemplateTab: React.FC = () => {
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [applying, setApplying] = useState<boolean>(false);
   const [publishing, setPublishing] = useState<boolean>(false);
+
+  // Preview data mirrors SellerStorefrontView: a dropshipper's
+  // emulator is fed the store-scoped list (this store's prices),
+  // never the unscoped central catalogue; while the scoped fetch
+  // is in flight the emulator receives an empty list instead of
+  // central-priced stand-ins.
+  const [scopedProducts, setScopedProducts] = useState<ReturnType<typeof mapBackendProduct>[] | null>(null);
+  useEffect(() => {
+    if (currentStore?.ownerType !== 'dropshipper' || !slug) {
+      setScopedProducts(null);
+      return;
+    }
+    let cancelled = false;
+    catalogApi
+      .getProducts({ storeSlug: slug })
+      .then((dtos) => { if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct)); })
+      .catch((err) => { if (!cancelled) { console.warn('Failed to fetch store-scoped products:', err); setScopedProducts(null); } });
+    return () => { cancelled = true; };
+  }, [currentStore?.ownerType, slug]);
 
   const applyLoaded = (saved: SellerStoreTemplate | null, list: StoreTemplate[]) => {
     const cfg = ((saved?.templateConfig || {}) as TemplateConfig) || {};
@@ -782,7 +803,7 @@ export const SellerTemplateTab: React.FC = () => {
             <TemplatePreviewEmulator
               templateId={selectedId}
               store={currentStore}
-              products={products}
+              products={currentStore.ownerType === 'dropshipper' ? scopedProducts ?? [] : products}
               categories={categories}
               accentColor={effectiveAccent}
               config={{ ...draft, accentColor: effectiveAccent }}

@@ -53,6 +53,22 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
     { id: 'return-backs', label: 'درخواست‌های برگشت تأمین‌کننده', icon: Undo2 },
   ];
 
+  // Header back button: from inside any tab it first returns to the
+  // panel's own main view (the overview tab, which is what the panel
+  // opens on; this panel has no per-tab permissions, so the home tab
+  // is always 'overview'). Only on that main view does the button
+  // leave the panel for the customer site.
+  const panelHomeTab = 'overview';
+  const panelHomeLabel = menuItems.find((item) => item.id === panelHomeTab)?.label;
+  const isPanelHome = activeTab === panelHomeTab;
+  const handleHeaderBack = () => {
+    if (!isPanelHome) {
+      setActiveTab(panelHomeTab);
+    } else {
+      onBackToCustomerSite();
+    }
+  };
+
   return (
     <WarehouseAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
     <div className="flex-1 flex flex-col bg-[#f8fafc]">
@@ -60,9 +76,10 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3.5 py-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
-            onClick={onBackToCustomerSite}
+            onClick={handleHeaderBack}
             className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-            title="بازگشت به سایت اصلی"
+            title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
+            aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
           >
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>

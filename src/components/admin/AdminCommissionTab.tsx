@@ -3,9 +3,10 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { financeApi, CommissionDto } from '../../services/financeApi';
+import { adminApi, AdminPriceIncreaseDto } from '../../services/adminApi';
 import { Sparkline } from '../finance/Sparkline';
 import { mockSuppliers } from '../../data/suppliers';
-import { DollarSign, Save, CheckCircle2, ShieldCheck, Sliders, Plus, Trash2, Building2, Package, Search, Sparkles, Gift, Tag, X } from 'lucide-react';
+import { DollarSign, Save, CheckCircle2, ShieldCheck, Sliders, Plus, Trash2, Building2, Package, Search, Sparkles, Gift, Tag, X, TrendingUp } from 'lucide-react';
 
 export const AdminCommissionTab: React.FC = () => {
   const {
@@ -37,6 +38,68 @@ export const AdminCommissionTab: React.FC = () => {
       .then((res) => setCommission(res && res.success ? res : null))
       .catch(() => setCommissionError(true));
   }, [commissionDays]);
+
+  // Gap 11: price-increase review queue (GET /admin/price-increases).
+  const [priceIncreases, setPriceIncreases] = useState<AdminPriceIncreaseDto[]>([]);
+  const [priceIncreasesError, setPriceIncreasesError] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [grantProductId, setGrantProductId] = useState('');
+  const [grantCapPct, setGrantCapPct] = useState('');
+  const [grantTicketId, setGrantTicketId] = useState('');
+
+  const loadPriceIncreases = async () => {
+    try {
+      const list = await adminApi.getPriceIncreases('pending');
+      setPriceIncreases(Array.isArray(list) ? list : []);
+      setPriceIncreasesError(false);
+    } catch {
+      setPriceIncreasesError(true);
+    }
+  };
+  useEffect(() => { void loadPriceIncreases(); }, []);
+
+  const handleReviewPriceIncrease = async (id: string, approved: boolean) => {
+    if (reviewingId) return;
+    setReviewingId(id);
+    try {
+      await adminApi.reviewPriceIncrease(id, approved);
+      success(approved ? 'افزایش قیمت تأیید و اعمال شد.' : 'درخواست افزایش قیمت رد شد.');
+      await loadPriceIncreases();
+    } catch (cause: unknown) {
+      error(cause instanceof Error ? cause.message : 'بررسی درخواست انجام نشد.');
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const handleGrantPriceException = async () => {
+    const cap = Number(grantCapPct);
+    if (!grantProductId.trim() || !Number.isFinite(cap) || cap <= 0) {
+      error('شناسه کالا و سقف استثنا (درصد مثبت) را وارد کن.');
+      return;
+    }
+    try {
+      await adminApi.grantPriceException(grantProductId.trim(), cap, grantTicketId.trim() || undefined);
+      success('استثنای افزایش قیمت برای کالا ثبت شد.');
+      setGrantProductId(''); setGrantCapPct(''); setGrantTicketId('');
+    } catch (cause: unknown) {
+      error(cause instanceof Error ? cause.message : 'ثبت استثنا انجام نشد.');
+    }
+  };
+
+  const handleRevokePriceException = async () => {
+    if (!grantProductId.trim()) {
+      error('برای لغو استثنا، شناسه کالا را وارد کن.');
+      return;
+    }
+    try {
+      await adminApi.revokePriceException(grantProductId.trim());
+      success('استثنای افزایش قیمت کالا لغو شد.');
+      setGrantProductId('');
+    } catch (cause: unknown) {
+      error(cause instanceof Error ? cause.message : 'لغو استثنا انجام نشد.');
+    }
+  };
 
   // Requirement 12: Supplier Promotion Form State
   const [showPromoModal, setShowPromoModal] = useState(false);
@@ -233,6 +296,58 @@ export const AdminCommissionTab: React.FC = () => {
         onCancel={() => setShowConfirm(false)}
       />
     </form>
+      {/* Gap 11: Price-increase review queue + exception grants */}
+      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-amber-600">
+            <TrendingUp className="w-4 h-4"  strokeWidth={1.5}/>
+            <h3 className="text-xs font-bold text-slate-800">صف بررسی افزایش قیمت تأمین‌کنندگان</h3>
+          </div>
+          <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-2 py-0.5 rounded-full border border-amber-200">
+            {toPersianDigits(priceIncreases.length)} در انتظار بررسی
+          </span>
+        </div>
+        <p className="text-[10px] text-slate-500 leading-relaxed">
+          افزایش قیمت عمده بالاتر از سقف مجاز، در بازه قفل‌شده، برای کالای تحت توافق ثبات قیمت یا بالاتر از سقف استثنا، پیش از اعمال به این صف می‌آید. تأیید درخواست، قیمت مرجع کالا را به‌روزرسانی می‌کند.
+        </p>
+        {priceIncreasesError ? (
+          <p className="text-[11px] text-rose-600">خطا در بارگذاری صف بررسی افزایش قیمت.</p>
+        ) : priceIncreases.length === 0 ? (
+          <p className="text-[11px] text-slate-400">درخواستی در انتظار بررسی نیست.</p>
+        ) : (
+          <div className="space-y-2">
+            {priceIncreases.map((row) => (
+              <div key={row.id} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/60 px-2.5 py-2">
+                <div className="min-w-0 text-[10px] leading-relaxed text-slate-600">
+                  <p className="font-bold text-slate-800 truncate">{row.productTitle || row.productId}</p>
+                  <p>تأمین‌کننده: {row.supplierName || row.supplierId}</p>
+                  <p>
+                    از {formatPrice(row.oldReference)} به {formatPrice(row.newReference)} تومان ({toPersianDigits(row.pct.toFixed(1))}٪ افزایش)
+                    {row.isException && <span className="text-amber-700 font-bold"> · سقف استثنا</span>}
+                    {row.agreementReview && <span className="text-amber-700 font-bold"> · توافق ثبات قیمت</span>}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button type="button" disabled={reviewingId === row.id} onClick={() => handleReviewPriceIncrease(row.id, true)} className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded-lg disabled:opacity-50">تأیید و اعمال</button>
+                  <button type="button" disabled={reviewingId === row.id} onClick={() => handleReviewPriceIncrease(row.id, false)} className="px-2.5 py-1.5 bg-white border border-rose-200 text-rose-600 font-bold text-[10px] rounded-lg disabled:opacity-50">رد درخواست</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="border-t border-slate-100 pt-2.5 space-y-2">
+          <p className="text-[10px] font-bold text-slate-700">ثبت یا لغو استثنای افزایش قیمت برای یک کالا</p>
+          <div className="grid grid-cols-3 gap-2">
+            <input type="text" value={grantProductId} onChange={(e) => setGrantProductId(e.target.value)} placeholder="شناسه کالا" className="text-[11px] p-2 rounded-xl bg-slate-50 border border-slate-200 font-mono focus:outline-hidden" />
+            <input type="number" value={grantCapPct} onChange={(e) => setGrantCapPct(e.target.value)} placeholder="سقف استثنا (٪)" className="text-[11px] p-2 rounded-xl bg-slate-50 border border-slate-200 font-bold focus:outline-hidden" />
+            <input type="text" value={grantTicketId} onChange={(e) => setGrantTicketId(e.target.value)} placeholder="شناسه تیکت (اختیاری)" className="text-[11px] p-2 rounded-xl bg-slate-50 border border-slate-200 font-mono focus:outline-hidden" />
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={handleGrantPriceException} className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] rounded-lg">ثبت استثنا</button>
+            <button type="button" onClick={handleRevokePriceException} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 font-bold text-[10px] rounded-lg">لغو استثنا</button>
+          </div>
+        </div>
+      </div>
       {/* Requirement 12: Supplier Promotion Campaigns */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">

@@ -30,6 +30,9 @@ interface AdminSupplierRow {
   rejectionReason?: string | null;
   tapinShopId?: string | null;
   tapinConnected?: boolean;
+  suspendedAt?: string | null;
+  suspendedBy?: string | null;
+  suspensionReason?: string | null;
 }
 
 interface ShippingMethodRow {
@@ -38,7 +41,7 @@ interface ShippingMethodRow {
   status: string;
 }
 
-type StatusFilter = 'all' | 'pending_approval' | 'approved' | 'rejected';
+type StatusFilter = 'all' | 'pending_approval' | 'approved' | 'rejected' | 'suspended';
 
 const statusLabel = (status?: string): string => {
   switch (status) {
@@ -48,6 +51,8 @@ const statusLabel = (status?: string): string => {
       return 'تأییدشده';
     case 'rejected':
       return 'ردشده';
+    case 'suspended':
+      return 'تعلیق‌شده';
     default:
       return status || 'نامشخص';
   }
@@ -64,6 +69,8 @@ export const AdminSuppliersTab: React.FC = () => {
   const [selectedContractSupplier, setSelectedContractSupplier] = useState<AdminSupplierRow | null>(null);
   const [rejectSupplier, setRejectSupplier] = useState<AdminSupplierRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [suspendSupplier, setSuspendSupplier] = useState<AdminSupplierRow | null>(null);
+  const [suspendReason, setSuspendReason] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const loadSuppliers = useCallback(async () => {
@@ -132,6 +139,40 @@ export const AdminSuppliersTab: React.FC = () => {
     }
   };
 
+  const suspendSupplierConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!suspendSupplier) return;
+    setBusyId(suspendSupplier.id);
+    try {
+      await apiRequest(`/admin/suppliers/${encodeURIComponent(suspendSupplier.id)}/suspend`, {
+        method: 'POST',
+        auth: true,
+        body: JSON.stringify({ reason: suspendReason }),
+      });
+      success('تأمین‌کننده تعلیق شد.');
+      setSuspendSupplier(null);
+      setSuspendReason('');
+      await loadSuppliers();
+    } catch (err: any) {
+      error(err?.message || 'تعلیق تأمین‌کننده ناموفق بود.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const reactivateSupplier = async (id: string) => {
+    setBusyId(id);
+    try {
+      await apiRequest(`/admin/suppliers/${encodeURIComponent(id)}/reactivate`, { method: 'POST', auth: true, body: JSON.stringify({}) });
+      success('تأمین‌کننده دوباره فعال شد.');
+      await loadSuppliers();
+    } catch (err: any) {
+      error(err?.message || 'فعال‌سازی مجدد تأمین‌کننده ناموفق بود.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const toggleDirectShip = async (id: string) => {
     const nextEnabled = !directShip[id];
     setBusyId(id);
@@ -171,12 +212,16 @@ export const AdminSuppliersTab: React.FC = () => {
         <p className="text-[10px] text-slate-500 leading-relaxed">
           پیش‌فرض پلتفرم ارسال از انبار مرکزی است. مجوز ارسال مستقیم فقط با تأیید مدیر برای تأمین‌کنندگان واجد شرایط فعال می‌شود (بخش ۱ و ۹ پروپوزال).
         </p>
+        <p className="text-[10px] text-slate-500 leading-relaxed">
+          تفاوت «مسدودکردن کاربر» و «تعلیق تأمین‌کننده»: مسدودکردن در سطح شخص است — فقط ورود همان کاربر بسته می‌شود و کالاهای تأمین‌کننده همچنان فروخته می‌شوند. تعلیق در سطح کسب‌وکار است — پنل تأمین‌کننده و تیمش بسته می‌شود و کالاهایش از فروش می‌ایستند تا فعال‌سازی مجدد.
+        </p>
         <div className="flex gap-1.5 pt-1">
           {([
             ['all', 'همه'],
             ['pending_approval', 'در انتظار تأیید'],
             ['approved', 'تأییدشده'],
             ['rejected', 'ردشده'],
+            ['suspended', 'تعلیق‌شده'],
           ] as [StatusFilter, string][]).map(([value, label]) => (
             <button
               key={value}
@@ -213,6 +258,8 @@ export const AdminSuppliersTab: React.FC = () => {
         {visibleSuppliers.map((supplier) => {
           const hasDirectShip = !!directShip[supplier.id];
           const isPending = supplier.approvalStatus === 'pending_approval';
+          const isApproved = supplier.approvalStatus === 'approved';
+          const isSuspended = supplier.approvalStatus === 'suspended';
           return (
             <div
               key={supplier.id}
@@ -257,6 +304,12 @@ export const AdminSuppliersTab: React.FC = () => {
                 </div>
               )}
 
+              {isSuspended && supplier.suspensionReason && (
+                <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2">
+                  دلیل تعلیق: {supplier.suspensionReason}
+                </div>
+              )}
+
               <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <Truck className="w-3.5 h-3.5 text-slate-400"  strokeWidth={1.5}/>
@@ -288,6 +341,24 @@ export const AdminSuppliersTab: React.FC = () => {
                         رد
                       </button>
                     </>
+                  )}
+                  {isApproved && (
+                    <button
+                      onClick={() => setSuspendSupplier(supplier)}
+                      disabled={busyId === supplier.id}
+                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-amber-100 text-amber-700 disabled:opacity-50"
+                    >
+                      تعلیق
+                    </button>
+                  )}
+                  {isSuspended && (
+                    <button
+                      onClick={() => reactivateSupplier(supplier.id)}
+                      disabled={busyId === supplier.id}
+                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
+                    >
+                      فعال‌سازی مجدد
+                    </button>
                   )}
                   <button
                     onClick={() => toggleDirectShip(supplier.id)}
@@ -325,6 +396,34 @@ export const AdminSuppliersTab: React.FC = () => {
                 تأیید رد
               </button>
               <button type="button" onClick={() => { setRejectSupplier(null); setRejectReason(''); }} className="px-3 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl">
+                انصراف
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {suspendSupplier && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <form onSubmit={suspendSupplierConfirm} className="bg-white rounded-2xl max-w-sm w-full p-4 border border-slate-200 shadow-2xl space-y-3 text-xs">
+            <h4 className="font-extrabold text-slate-900 text-sm">تعلیق تأمین‌کننده: {suspendSupplier.name}</h4>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              با تعلیق، پنل تأمین‌کننده و تیمش بسته می‌شود، کالاهایش از فروش می‌ایستند، سفارش‌های مستقیمِ در جریان متوقف می‌مانند و درخواست تسویهٔ جدید ممکن نیست؛ سفارش‌های انباری طبق روال ادامه پیدا می‌کنند. موجودی و تسویه‌های در انتظار بررسی دست‌نخورده می‌مانند.
+            </p>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">دلیل تعلیق (اختیاری)</label>
+              <input
+                value={suspendReason}
+                onChange={(e) => setSuspendReason(e.target.value)}
+                placeholder="دلیل تعلیق کسب‌وکار"
+                className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-200"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button type="submit" disabled={busyId === suspendSupplier.id} className="flex-1 py-2 bg-amber-600 text-white font-bold rounded-xl disabled:opacity-50">
+                تأیید تعلیق
+              </button>
+              <button type="button" onClick={() => { setSuspendSupplier(null); setSuspendReason(''); }} className="px-3 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl">
                 انصراف
               </button>
             </div>

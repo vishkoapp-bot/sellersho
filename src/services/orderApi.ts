@@ -120,6 +120,28 @@ export interface OrderShippingInfo {
   };
 }
 
+// The return destination as derived by the backend from the order's
+// shipment origins (owner rule, Oct 28 2026): the parcel goes back to
+// the warehouse it shipped from. Carried by the return-quote payload.
+export interface ReturnDestinationInfo {
+  type: 'central' | 'supplier';
+  warehouseId?: string;
+  supplierWarehouseId?: string;
+  name: string;
+  city?: string;
+  province?: string;
+  address?: string;
+}
+
+export interface ReturnQuoteResponse {
+  groups: { originId?: string; originLabel?: string; fare: number }[];
+  totalFareToman: number;
+  orderId?: string;
+  orderNumber?: string;
+  shippingQuoteUnavailable?: boolean;
+  destination?: ReturnDestinationInfo;
+}
+
 export interface CustomerReturnDto {
   id: string;
   orderId: string;
@@ -127,6 +149,10 @@ export interface CustomerReturnDto {
   status: string;
   reason: string;
   warehouseId?: string;
+  destinationSupplierWarehouseId?: string;
+  destinationName?: string;
+  destinationCity?: string;
+  destinationType?: string;
   prepaid?: boolean;
   trackingNumber?: string;
   createdAt?: string;
@@ -179,8 +205,8 @@ export const orderApi = {
   requestReturnQuote: async (
     idOrNumber: string,
     items: { order_item_id: string }[],
-  ): Promise<{ groups: { originId?: string; originLabel?: string; fare: number }[]; totalFareToman: number; orderId?: string; orderNumber?: string }> => {
-    return apiRequest<{ groups: { originId?: string; originLabel?: string; fare: number }[]; totalFareToman: number; orderId?: string; orderNumber?: string }>(`/orders/${encodeURIComponent(idOrNumber)}/return-quote`, {
+  ): Promise<ReturnQuoteResponse> => {
+    return apiRequest<ReturnQuoteResponse>(`/orders/${encodeURIComponent(idOrNumber)}/return-quote`, {
       method: 'POST',
       auth: true,
       body: JSON.stringify({ items }),

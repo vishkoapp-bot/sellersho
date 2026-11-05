@@ -95,6 +95,22 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]));
   const visibleTab = allowedTabs.some((item) => item.id === activeTab) ? activeTab : allowedTabs[0]?.id;
 
+  // Header back button: from inside any tab it first returns to the
+  // panel's own main view (the overview tab; for team accounts without
+  // the overview permission, the first permitted tab -- which is what
+  // the panel opens on). Only on that main view does the button leave
+  // the panel for the customer site.
+  const panelHomeTab = allowedTabs.some((item) => item.id === 'overview') ? 'overview' : allowedTabs[0]?.id;
+  const panelHomeLabel = allowedTabs.find((item) => item.id === panelHomeTab)?.label;
+  const isPanelHome = visibleTab === panelHomeTab;
+  const handleHeaderBack = () => {
+    if (!isPanelHome && panelHomeTab) {
+      setActiveTab(panelHomeTab);
+    } else {
+      onBackToCustomerSite();
+    }
+  };
+
   // Desktop sidebar grouping (layout only): the same permission-filtered
   // tabs as the mobile tab bar, partitioned into sidebar groups covering
   // all 16 tab ids exactly once. A group with no permitted tab disappears
@@ -161,10 +177,10 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         <div className="max-w-7xl mx-auto w-full px-3.5 lg:px-6 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
-            onClick={onBackToCustomerSite}
+            onClick={handleHeaderBack}
             className="p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-            title="بازگشت به سایت اصلی"
-            aria-label="بازگشت به سایت اصلی"
+            title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
+            aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
           >
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
@@ -307,7 +323,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {visibleTab === 'settlement' && <SupplierSettlementTab />}
             {visibleTab === 'team' && <SupplierTeamTab />}
             {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
-            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab />}
+            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => setActiveTab('products')} />}
             {visibleTab === 'customer-returns' && <SupplierCustomerReturnsTab />}
             {visibleTab === 'my-warehouses' && <SupplierMyWarehousesTab />}
             {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}

@@ -42,6 +42,44 @@ export interface SettlementSettingsPayload {
   earlyWithdrawalFeePct: number | null;
 }
 
+// Storage-fee settings (gap 7): GET/PUT /admin/settings/storage-fees.
+// Amounts are integer Tomans. The flag ships OFF; activation is a
+// separate owner decision. POST /admin/storage-fees/run executes one
+// assessment pass and refuses while the flag is off.
+export interface StorageFeeSettingsDto {
+  storageFeeEnabled: boolean;
+  storageFeeFreeDays: number;
+  storageFeePerKgDay: number;
+  storageFeePerM3Day: number;
+}
+
+export interface StorageFeeRunSummaryDto {
+  positionsCharged: number;
+  positionsSkippedNoMeasurement: number;
+  chargesCreated: number;
+  totalCharged: number;
+}
+
+export interface AdminPriceIncreaseDto {
+  id: string;
+  productId: string;
+  supplierId: string;
+  productTitle: string;
+  supplierName: string;
+  oldReference: number;
+  newReference: number;
+  pct: number;
+  status: 'pending' | 'approved' | 'rejected';
+  isException: boolean;
+  exceptionCapPct?: number;
+  autoApproved: boolean;
+  agreementReview: boolean;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface TapinBoxAdminDto { id: string; title: string; lengthCm: number; widthCm: number; heightCm: number; maxWeightGrams?: number | null; isActive: boolean; sort: number }
+
 export const adminApi = {
   getApprovals: async (status?: string): Promise<PendingApprovalDto[]> => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -71,6 +109,53 @@ export const adminApi = {
         body: JSON.stringify(payload),
       }
     );
+  },
+
+  // Gap 11 — price-increase governance: review queue + exception grants.
+  getPriceIncreases: async (status: string = 'pending'): Promise<AdminPriceIncreaseDto[]> => {
+    return apiRequest<AdminPriceIncreaseDto[]>(`/admin/price-increases?status=${encodeURIComponent(status)}`, {
+      method: 'GET',
+      auth: true,
+    });
+  },
+
+  reviewPriceIncrease: async (id: string, approved: boolean): Promise<{ success: boolean; id: string; status: string }> => {
+    return apiRequest<{ success: boolean; id: string; status: string }>(
+      `/admin/price-increases/${encodeURIComponent(id)}/review`,
+      { method: 'POST', auth: true, body: JSON.stringify({ approved }) }
+    );
+  },
+
+  grantPriceException: async (productId: string, exceptionCapPct: number, ticketId?: string): Promise<{ success: boolean }> => {
+    return apiRequest<{ success: boolean }>(
+      `/admin/products/${encodeURIComponent(productId)}/price-exception`,
+      { method: 'POST', auth: true, body: JSON.stringify({ exceptionCapPct, ticketId: ticketId || undefined }) }
+    );
+  },
+
+  revokePriceException: async (productId: string): Promise<{ success: boolean }> => {
+    return apiRequest<{ success: boolean }>(
+      `/admin/products/${encodeURIComponent(productId)}/price-exception`,
+      { method: 'DELETE', auth: true }
+    );
+  },
+
+  // Gaps 1-3 — Tapin box catalogue (platform-managed; Tapin's API
+  // has no boxes endpoint). PUT upserts the edited list; removal is
+  // by deactivation so past shipments' box ids always resolve.
+  getTapinBoxes: async (): Promise<{ success: boolean; boxes: TapinBoxAdminDto[]; defaultBoxId: string }> => {
+    return apiRequest<{ success: boolean; boxes: TapinBoxAdminDto[]; defaultBoxId: string }>('/admin/settings/tapin-boxes', {
+      method: 'GET',
+      auth: true,
+    });
+  },
+
+  updateTapinBoxes: async (boxes: TapinBoxAdminDto[]): Promise<{ success: boolean; boxes: TapinBoxAdminDto[]; defaultBoxId: string }> => {
+    return apiRequest<{ success: boolean; boxes: TapinBoxAdminDto[]; defaultBoxId: string }>('/admin/settings/tapin-boxes', {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify({ boxes }),
+    });
   },
 
   getAuditLogs: async (category?: string): Promise<AuditLogDto[]> => {
@@ -113,6 +198,28 @@ export const adminApi = {
       method: 'PUT',
       auth: true,
       body: JSON.stringify(payload),
+    });
+  },
+
+  getStorageFeeSettings: async (): Promise<StorageFeeSettingsDto> => {
+    return apiRequest<StorageFeeSettingsDto>('/admin/settings/storage-fees', {
+      method: 'GET',
+      auth: true,
+    });
+  },
+
+  saveStorageFeeSettings: async (payload: StorageFeeSettingsDto): Promise<StorageFeeSettingsDto> => {
+    return apiRequest<StorageFeeSettingsDto>('/admin/settings/storage-fees', {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  runStorageFees: async (): Promise<StorageFeeRunSummaryDto> => {
+    return apiRequest<StorageFeeRunSummaryDto>('/admin/storage-fees/run', {
+      method: 'POST',
+      auth: true,
     });
   },
 };

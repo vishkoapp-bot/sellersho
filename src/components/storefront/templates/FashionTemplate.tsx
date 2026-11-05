@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
 import {
   resolveTemplateConfig,
@@ -11,225 +11,681 @@ import {
   storefrontProducts,
   sectionEnabled,
 } from './templateTypes';
-import type { TemplateBanner, TemplateConfig } from './templateTypes';
+import type { TemplateBanner, TemplateConfig, TemplateHeroSlide } from './templateTypes';
 import type { Product, Store } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
 import { formatPrice, toPersianDigits } from '../../../utils/formatters';
+import { apiRequest } from '../../../services/apiClient';
 import {
-  HeroSlider,
-  CategoryCards,
-  BannerRow,
   DealsSection,
   TimedDealsSection,
-  BrandsRail,
   BestsellersSection,
   TrustStripSection,
   DiscountedSection,
-  AboutSection,
   TopRatedSection,
   CampaignSection,
-  NewsletterSection,
   FaqSection,
-  TestimonialsSection,
-  LookbookSection,
-  ProductsGridSection,
   groupProductsByCategory,
 } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
-import { TemplateProductGrid } from './TemplateProductGrid';
 
-// Fashion = dark luxury editorial. The page is neutral-950; blocks
-// that are cheap to build natively dark (announcement, hero,
-// categories, featured showcase, lookbook tiles) are template-local,
-// while the light-themed shared sections render as deliberate
-// contrast blocks — their white cards sit on the dark page and only
-// their slate-900 titles are re-coloured through the `onDark` scope.
+// Fashion = light editorial gallery, mirroring the aassttiinn.com
+// homepage skeleton filled with the store's own content: a full-bleed
+// hero image stream, a macro category entrance with a chip row, a
+// brand-story split, a «دسته‌بندی‌ها» tile grid, mosaic collection
+// cards, portrait designer/brand tiles, large banner tiles, a
+// price-free featured image cluster, magazine-style quote cards and a
+// dark newsletter band — closing with the catalogue floor, the only
+// place prices appear. Cream/off-white page, square tiles on pale
+// grey (#f2f2f2), sharp corners, charcoal type, large bold
+// right-aligned headings and small bold centred labels under tiles.
 // Everything renders from the resolved config order; every text,
 // image and price comes from the seller-editable custom config, the
-// store's own fields or real product data — nothing is fabricated.
+// store's own fields or real product data — nothing is fabricated,
+// and blocks without data hide cleanly.
 
-const DarkSectionHeader: React.FC<{ eyebrow: string; title: string; accentColor: string }> = ({
-  eyebrow,
-  title,
-  accentColor,
-}) => (
-  <div className="space-y-2">
-    <p className="text-[11px] font-black uppercase tracking-[0.35em]" style={{ color: accentColor }}>
-      {eyebrow}
-    </p>
-    <h2 className="text-2xl font-black tracking-tight text-white lg:text-3xl">{title}</h2>
-    <span className="block h-px w-16 bg-white/25" />
+const CONTAINER = 'mx-auto w-full max-w-[1440px] px-4 lg:px-10';
+
+const Wrap: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className={CONTAINER}>{children}</div>
+);
+
+// Section headings: large, bold, dark, right-aligned — no eyebrows,
+// no rules, no Latin kickers.
+const AastinSectionHeader: React.FC<{ title: string }> = ({ title }) => (
+  <h2 className="text-right text-3xl font-black leading-snug tracking-tight text-neutral-900 lg:text-[2.6rem] lg:leading-tight">
+    {title}
+  </h2>
+);
+
+// Small bold centred label under a tile, with an optional muted
+// sub-line (real count / brand line).
+const TileLabel: React.FC<{ title: string; sub?: string }> = ({ title, sub }) => (
+  <div className="mt-2.5 text-center">
+    <p className="text-sm font-bold leading-6 text-neutral-900">{title}</p>
+    {sub ? <p className="mt-0.5 text-[11px] leading-5 text-neutral-500">{sub}</p> : null}
   </div>
 );
 
-// Marquee-style announcement bar: the announcement text (seller
-// config, else the store tagline) scrolls on a thin accent pill.
-// Letter-spacing is applied only to non-Arabic text — CSS tracking
-// disconnects Persian script, so Persian announcements scroll
-// untracked instead of rendering broken.
-const FashionAnnouncement: React.FC<{ store: Store; config: TemplateConfig; accentColor: string }> = ({
-  store,
-  config,
-  accentColor,
-}) => {
+const groupImage = (group: CategoryGroup): string =>
+  group.image || (group.products[0] && group.products[0].image) || '';
+
+// Quiet static announcement line: the announcement text (seller
+// config, else the store tagline) centred on a hairline — no marquee,
+// no accent pill.
+const AastinAnnouncement: React.FC<{ store: Store; config: TemplateConfig }> = ({ store, config }) => {
   if (!sectionEnabled(config, 'announcement')) return null;
   const custom = templateCustom(config);
   const text = (custom.announcementText || '').trim() || (store.tagline || '').trim();
   if (!text) return null;
   const link = (custom.announcementLink || '').trim();
-  const phrase = Array.from({ length: 6 }, () => text).join('  ✦  ');
-  const spaced = /[\u0600-\u06FF]/.test(text) ? '' : ' tracking-[0.3em]';
-  const bar = (
-    <div className="overflow-hidden rounded-full py-2" style={{ backgroundColor: accentColor }}>
-      <style>{'@keyframes tpl-fashion-marquee{from{transform:translateX(0)}to{transform:translateX(50%)}}'}</style>
-      <div className="flex w-max [animation:tpl-fashion-marquee_24s_linear_infinite] motion-reduce:[animation:none]">
-        {[0, 1].map((half) => (
-          <span key={half} className={`whitespace-nowrap px-3 text-[11px] font-bold text-white${spaced}`}>
-            {phrase}
-          </span>
-        ))}
-      </div>
-    </div>
+  const inner = (
+    <p className="border-b border-neutral-200/90 py-2.5 text-center text-xs font-bold leading-6 text-neutral-600">
+      {text}
+    </p>
   );
   return (
     <section data-testid="store-announcement">
       {link ? (
-        <a href={link} target="_blank" rel="noreferrer" className="block">
-          {bar}
+        <a href={link} target="_blank" rel="noreferrer" className="block transition hover:text-neutral-900">
+          {inner}
         </a>
       ) : (
-        bar
+        inner
       )}
     </section>
   );
 };
 
-// Dark editorial category tiles: real category imagery (category
-// image, else the group's first product image) under a black
-// gradient, name in bold white at the bottom.
-const FashionCategoryTiles: React.FC<{ groups: CategoryGroup[]; title: string; accentColor: string }> = ({
-  groups,
-  title,
-  accentColor,
-}) => (
-  <section data-testid="store-category-cards" className="space-y-4">
-    <DarkSectionHeader eyebrow="Collection" title={title} accentColor={accentColor} />
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-      {groups.map((group) => {
-        const image = group.image || (group.products[0] && group.products[0].image) || '';
-        return (
-          <div key={group.slug} className="group relative h-44 overflow-hidden rounded-[1.5rem] bg-neutral-900 lg:h-56">
-            {image ? (
+// Full-bleed tall hero image stream. Slides crossfade; a slide's
+// title/subtitle sit large and white at the bottom-right, a linked
+// slide is one whole anchor, and small pill dots ride bottom-centre.
+// Without slides, the single hero image (config → first product →
+// store logo) carries the store title plus ONE underlined text link
+// — never a button box.
+const AastinHero: React.FC<{
+  slides: TemplateHeroSlide[];
+  autoplay?: boolean;
+  fallbackImage?: string;
+  fallbackTitle: string;
+  fallbackSubtitle: string;
+  ctaText: string;
+  ctaLink: string;
+}> = ({ slides, autoplay, fallbackImage, fallbackTitle, fallbackSubtitle, ctaText, ctaLink }) => {
+  const count = slides.length;
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+  }, [count]);
+  useEffect(() => {
+    if (!autoplay || count <= 1) return undefined;
+    const timer = setInterval(() => setIndex((i) => (i + 1) % count), 5000);
+    return () => clearInterval(timer);
+  }, [autoplay, count]);
+
+  if (count === 0) {
+    return (
+      <section data-testid="store-hero-slider" className="relative w-full overflow-hidden bg-[#efefef]">
+        {fallbackImage ? (
+          <img src={fallbackImage} alt={fallbackTitle} className="h-[80svh] w-full object-cover lg:h-[92svh]" />
+        ) : (
+          <div className="h-[80svh] w-full lg:h-[92svh]" />
+        )}
+        <div
+          className={`absolute inset-0 flex flex-col justify-end ${
+            fallbackImage ? 'bg-gradient-to-t from-black/60 via-black/15 to-transparent' : ''
+          }`}
+        >
+          <div className={`${CONTAINER} pb-16 lg:pb-20`}>
+            <h1
+              className={`max-w-2xl text-4xl font-black leading-tight tracking-tight lg:text-6xl ${
+                fallbackImage ? 'text-white' : 'text-neutral-900'
+              }`}
+            >
+              {fallbackTitle}
+            </h1>
+            {fallbackSubtitle ? (
+              <p
+                className={`mt-3 max-w-xl text-sm leading-8 lg:text-base ${
+                  fallbackImage ? 'text-white/85' : 'text-neutral-500'
+                }`}
+              >
+                {fallbackSubtitle}
+              </p>
+            ) : null}
+            <a
+              href={ctaLink}
+              className={`mt-5 inline-block text-sm font-bold underline decoration-2 underline-offset-8 transition hover:opacity-75 ${
+                fallbackImage ? 'text-white' : 'text-neutral-900'
+              }`}
+            >
+              {ctaText}
+            </a>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const active = slides[index % count];
+  return (
+    <section data-testid="store-hero-slider" className="relative w-full overflow-hidden bg-[#efefef]">
+      <div className="relative h-[80svh] lg:h-[92svh]">
+        {slides.map((slide, i) => {
+          const frame = slide.image ? (
+            <img src={slide.image} alt={slide.title || ''} className="h-full w-full object-cover" loading="lazy" />
+          ) : (
+            <div className="flex h-full w-full items-center bg-[#ece9e2] px-6">
+              <span className="text-3xl font-black leading-snug text-neutral-900 lg:text-5xl">{slide.title || ''}</span>
+            </div>
+          );
+          const cls = `absolute inset-0 transition-opacity duration-700 ${
+            i === index % count ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`;
+          return slide.link ? (
+            <a key={`${slide.image || slide.title || ''}-${i}`} href={slide.link} target="_blank" rel="noreferrer" className={`block ${cls}`}>
+              {frame}
+            </a>
+          ) : (
+            <div key={`${slide.image || slide.title || ''}-${i}`} className={cls}>
+              {frame}
+            </div>
+          );
+        })}
+        {(active.title || active.subtitle) && active.image ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/15 to-transparent">
+            <div className={`${CONTAINER} pb-16 lg:pb-20`}>
+              {active.title ? (
+                <p className="max-w-2xl text-4xl font-black leading-tight tracking-tight text-white lg:text-6xl">
+                  {active.title}
+                </p>
+              ) : null}
+              {active.subtitle ? (
+                <p className="mt-3 max-w-xl text-sm leading-8 text-white/85 lg:text-base">{active.subtitle}</p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {count > 1 ? (
+          <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5">
+            {slides.map((s, i) => (
+              <button
+                key={`${s.image || s.title || ''}-dot-${i}`}
+                type="button"
+                aria-label={`اسلاید ${toPersianDigits(i + 1)}`}
+                onClick={() => setIndex(i)}
+                className={`h-1.5 rounded-full transition-all duration-300 ${
+                  i === index % count ? 'w-7 bg-white' : 'w-2.5 bg-white/45 hover:bg-white/75'
+                }`}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+};
+
+// Macro category entrance: the first three category groups as large
+// portrait tiles, then the remaining groups as a chip row (each chip
+// names a real category of this store and leads to the catalogue
+// floor). No heading — the entrance speaks for itself.
+const AastinMacroCategories: React.FC<{ groups: CategoryGroup[] }> = ({ groups }) => {
+  const withImagery = groups.filter((g) => groupImage(g));
+  const macro = (withImagery.length > 0 ? withImagery : groups).slice(0, 3);
+  if (macro.length === 0) return null;
+  const macroSlugs = new Set(macro.map((g) => g.slug));
+  const chips = groups.filter((g) => !macroSlugs.has(g.slug));
+  return (
+    <section data-testid="store-category-macro" className="space-y-5">
+      <div className="grid grid-cols-3 gap-2 lg:gap-3">
+        {macro.map((group) => {
+          const image = groupImage(group);
+          return (
+            <div key={group.slug}>
+              <div className="group relative aspect-square overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+                {image ? (
+                  <img
+                    src={image}
+                    alt={group.title}
+                    loading="lazy"
+                    className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                  />
+                ) : (
+                  <span className="absolute inset-0 flex items-center justify-center text-5xl font-black text-neutral-300">
+                    {group.title.slice(0, 1)}
+                  </span>
+                )}
+              </div>
+              <TileLabel title={group.title} sub={`${toPersianDigits(group.count)} کالا`} />
+            </div>
+          );
+        })}
+      </div>
+      {chips.length > 0 ? (
+        <div className="flex flex-wrap justify-center gap-2">
+          {chips.map((group) => (
+            <a
+              key={group.slug}
+              href="#products"
+              className="rounded-full border border-neutral-300 bg-white px-4 py-1.5 text-xs font-bold text-neutral-700 transition hover:border-neutral-900 hover:text-neutral-900"
+            >
+              {group.title}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+};
+
+// Brand-story split: the about text as prose paragraphs beside one
+// large square image (config aboutImage). Text source mirrors the
+// shared AboutSection: config aboutText, else the store's own
+// description fields. No text → the block hides.
+const AastinStory: React.FC<{ store: Store; config: TemplateConfig }> = ({ store, config }) => {
+  if (!sectionEnabled(config, 'about')) return null;
+  const custom = templateCustom(config);
+  const text = (
+    (custom.aboutText || '').trim() ||
+    (store.description || store.shortDescription || store.tagline || '').trim()
+  );
+  if (!text) return null;
+  const paragraphs = text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+  const image = (custom.aboutImage || '').trim();
+  const title = customText(config, 'aboutTitle', 'درباره فروشگاه');
+  const prose = (
+    <div>
+      <AastinSectionHeader title={title} />
+      <div className="mt-5 space-y-4">
+        {paragraphs.map((p, i) => (
+          <p key={i} className="text-[15px] leading-8 text-neutral-600">
+            {p}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <section data-testid="store-about">
+      {image ? (
+        <div className="grid items-center gap-8 lg:grid-cols-2">
+          {prose}
+          <div className="overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+            <img src={image} alt={title} loading="lazy" className="aspect-square w-full object-cover" />
+          </div>
+        </div>
+      ) : (
+        <div className="max-w-3xl">{prose}</div>
+      )}
+    </section>
+  );
+};
+
+// «دسته‌بندی‌ها» tile grid: square tiles on pale grey, label centred
+// underneath. Shows the groups the macro entrance did not take (or
+// all of them when the store has only a few categories).
+const AastinCategoryGrid: React.FC<{ groups: CategoryGroup[]; title: string }> = ({ groups, title }) => {
+  if (groups.length === 0) return null;
+  return (
+    <section data-testid="store-category-cards" className="space-y-6">
+      <AastinSectionHeader title={title} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 lg:gap-4">
+        {groups.map((group) => {
+          const image = groupImage(group);
+          return (
+            <div key={group.slug}>
+              <div className="group relative aspect-square overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+                {image ? (
+                  <img
+                    src={image}
+                    alt={group.title}
+                    loading="lazy"
+                    className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                  />
+                ) : (
+                  <span className="absolute inset-0 flex items-center justify-center text-5xl font-black text-neutral-300">
+                    {group.title.slice(0, 1)}
+                  </span>
+                )}
+              </div>
+              <TileLabel title={group.title} sub={`${toPersianDigits(group.count)} کالا`} />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+};
+
+// «مجموعه جدید» collections rail: each card is a 2×2 mosaic of real
+// product images from one category group, captioned with the group
+// title and its real product count. Groups with fewer than two
+// distinct product images cannot form a mosaic and are skipped.
+const AastinCollections: React.FC<{ groups: CategoryGroup[]; title: string }> = ({ groups, title }) => {
+  const cards = groups
+    .map((group) => {
+      const images: string[] = [];
+      group.products.forEach((p) => {
+        if (p.image && !images.includes(p.image)) images.push(p.image);
+      });
+      if (images.length < 2 && group.image && !images.includes(group.image)) images.push(group.image);
+      return { group, images: images.slice(0, 4) };
+    })
+    .filter((c) => c.images.length >= 2)
+    .slice(0, 6);
+  if (cards.length === 0) return null;
+  return (
+    <section data-testid="store-collections" className="space-y-6">
+      <AastinSectionHeader title={title} />
+      <div className="flex snap-x gap-4 overflow-x-auto pb-2 no-scrollbar">
+        {cards.map(({ group, images }) => (
+          <div key={group.slug} className="w-[270px] shrink-0 snap-start lg:w-[350px]">
+            <div className="grid grid-cols-2 gap-1 overflow-hidden rounded-[2px] bg-white">
+              {images.map((src, i) => (
+                <div key={`${src}-${i}`} className="aspect-square overflow-hidden bg-[#f2f2f2]">
+                  <img src={src} alt={group.title} loading="lazy" className="h-full w-full object-cover" />
+                </div>
+              ))}
+            </div>
+            <TileLabel title={group.title} sub={`${toPersianDigits(group.count)} کالا`} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+// Editorial lookbook band: the configured lookbook image as a tall
+// full-width still with the title/subtitle overlaid, wrapped in its
+// link when set. Without an image, title + subtitle render as a quiet
+// pale panel; with neither, the band hides.
+const AastinLookbookBand: React.FC<{ config: TemplateConfig }> = ({ config }) => {
+  if (!sectionEnabled(config, 'lookbook')) return null;
+  const custom = templateCustom(config);
+  const image = (custom.lookbookImage || '').trim();
+  const title = (custom.lookbookTitle || '').trim();
+  const subtitle = (custom.lookbookSubtitle || '').trim();
+  if (!image && !title) return null;
+  const link = (custom.lookbookLink || '').trim();
+  const body = image ? (
+    <div className="relative overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+      <img src={image} alt={title} loading="lazy" className="h-[52svh] w-full object-cover lg:h-[72svh]" />
+      {title || subtitle ? (
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/15 to-transparent p-6 pt-20 lg:p-10">
+          {title ? <p className="text-3xl font-black leading-snug text-white lg:text-5xl">{title}</p> : null}
+          {subtitle ? <p className="mt-2 max-w-xl text-sm leading-8 text-white/85">{subtitle}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  ) : (
+    <div className="rounded-[2px] bg-[#efefef] px-6 py-14 text-center lg:py-20">
+      {title ? <p className="text-3xl font-black leading-snug text-neutral-900 lg:text-5xl">{title}</p> : null}
+      {subtitle ? <p className="mx-auto mt-3 max-w-xl text-sm leading-8 text-neutral-500">{subtitle}</p> : null}
+    </div>
+  );
+  return (
+    <section data-testid="store-lookbook">
+      {link ? (
+        <a href={link} target="_blank" rel="noreferrer" className="block">
+          {body}
+        </a>
+      ) : (
+        body
+      )}
+    </section>
+  );
+};
+
+// Designer/brand portrait tiles: distinct product brands (falling
+// back to supplier names), each represented by a real product image,
+// label centred underneath. Fewer than two brands → hides, so a
+// single-brand store never shows a degenerate strip.
+const AastinBrandTiles: React.FC<{ products: Product[]; title: string }> = ({ products, title }) => {
+  const brands = useMemo(() => {
+    const byBrand = new Map<string, string>();
+    products.forEach((p) => {
+      const name = (p.brand || p.supplierName || '').trim();
+      if (name && !byBrand.has(name)) byBrand.set(name, p.image || '');
+    });
+    return Array.from(byBrand.entries())
+      .map(([name, image]) => ({ name, image }))
+      .slice(0, 4);
+  }, [products]);
+  if (brands.length < 2) return null;
+  return (
+    <section data-testid="store-brands" className="space-y-6">
+      <AastinSectionHeader title={title} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+        {brands.map((brand) => (
+          <div key={brand.name}>
+            <div className="group relative aspect-[3/4] overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+              {brand.image ? (
+                <img
+                  src={brand.image}
+                  alt={brand.name}
+                  loading="lazy"
+                  className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                />
+              ) : (
+                <span className="absolute inset-0 flex items-center justify-center text-5xl font-black text-neutral-300">
+                  {brand.name.slice(0, 1)}
+                </span>
+              )}
+            </div>
+            <TileLabel title={brand.name} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+// Large sharp banner tiles (the designer-banner slot): one banner
+// spans wide, two or more sit in a pair grid. A banner's title, when
+// the seller set one, sits centred underneath — never overlaid.
+const AastinBanners: React.FC<{ banners: TemplateBanner[] }> = ({ banners }) => {
+  if (banners.length === 0) return null;
+  const single = banners.length === 1;
+  return (
+    <section data-testid="store-banners" className={`grid gap-4 ${single ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
+      {banners.map((b, i) => {
+        const tile = (
+          <>
+            <div
+              className={`group relative overflow-hidden rounded-[2px] bg-[#f2f2f2] ${
+                single ? 'aspect-[16/10] lg:aspect-[21/9]' : 'aspect-[4/3]'
+              }`}
+            >
               <img
-                src={image}
-                alt={group.title}
+                src={b.image}
+                alt={b.title || ''}
+                loading="lazy"
+                className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+              />
+            </div>
+            {b.title ? <TileLabel title={b.title} /> : null}
+          </>
+        );
+        return b.link ? (
+          <a key={`${b.image}-${i}`} href={b.link} target="_blank" rel="noreferrer" className="block">
+            {tile}
+          </a>
+        ) : (
+          <div key={`${b.image}-${i}`}>{tile}</div>
+        );
+      })}
+    </section>
+  );
+};
+
+// Featured image cluster (the category-spotlight slot): featured
+// products as pure imagery — the first spans large, the rest sit in
+// squares. Editorial sections carry NO prices and NO badges; clicking
+// a tile opens the product, like every product surface.
+const AastinSpotlight: React.FC<{
+  products: Product[];
+  title: string;
+  onOpen: (p: Product) => void;
+}> = ({ products, title, onOpen }) => {
+  const picks = products.slice(0, 5);
+  if (picks.length === 0) return null;
+  return (
+    <section data-testid="store-featured" className="space-y-6">
+      <AastinSectionHeader title={title} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {picks.map((p, i) => (
+          <div
+            key={p.id}
+            onClick={() => onOpen(p)}
+            className={`group relative cursor-pointer overflow-hidden rounded-[2px] bg-[#f2f2f2] ${
+              i === 0 ? 'col-span-2 aspect-[4/3] lg:row-span-2 lg:aspect-auto lg:h-full' : 'aspect-square'
+            }`}
+          >
+            {p.image ? (
+              <img
+                src={p.image}
+                alt={p.title}
                 loading="lazy"
                 className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
               />
             ) : (
-              <span className="absolute inset-0 flex items-center justify-center text-6xl font-black text-white/10">
-                {group.title.slice(0, 1)}
+              <span className="absolute inset-0 flex items-center justify-center text-5xl font-black text-neutral-300">
+                {p.title.slice(0, 1)}
               </span>
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
-            <div className="absolute inset-x-0 bottom-0 p-4">
-              <p className="text-base font-black text-white lg:text-lg">{group.title}</p>
-              <p className="mt-0.5 text-[11px] text-white/70">{toPersianDigits(group.count)} کالا</p>
-            </div>
           </div>
-        );
-      })}
-    </div>
-  </section>
-);
-
-// Large lookbook/banner tiles: grayscale editorial stills that come
-// to colour (and scale) on hover. An odd last banner spans the row.
-const FashionDuoTiles: React.FC<{ banners: TemplateBanner[] }> = ({ banners }) => (
-  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-    {banners.map((b, i) => {
-      const oddLast = banners.length % 2 === 1 && i === banners.length - 1;
-      const tile = (
-        <div className="group relative h-72 w-full overflow-hidden rounded-[2rem] bg-neutral-900 lg:h-96">
-          <img
-            src={b.image}
-            alt={b.title || ''}
-            loading="lazy"
-            className="absolute inset-0 h-full w-full object-cover grayscale transition duration-700 group-hover:scale-105 group-hover:grayscale-0"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
-          {b.title ? <p className="absolute inset-x-0 bottom-0 p-5 text-lg font-black text-white">{b.title}</p> : null}
-        </div>
-      );
-      return b.link ? (
-        <a
-          key={`${b.image}-${i}`}
-          href={b.link}
-          target="_blank"
-          rel="noreferrer"
-          className={`block ${oddLast ? 'sm:col-span-2' : ''}`}
-        >
-          {tile}
-        </a>
-      ) : (
-        <div key={`${b.image}-${i}`} className={oddLast ? 'sm:col-span-2' : ''}>
-          {tile}
-        </div>
-      );
-    })}
-  </div>
-);
-
-// Featured showcase: the first featured product as a large cinematic
-// tile (real image, brand, title and price; discount badge only when
-// the product really carries one). Clicking opens the product page,
-// exactly like the shared ProductCard.
-const FashionFeaturedShowcase: React.FC<{
-  product: Product;
-  accentColor: string;
-  onOpen: (p: Product) => void;
-}> = ({ product, accentColor, onOpen }) => (
-  <div
-    onClick={() => onOpen(product)}
-    className="group relative cursor-pointer overflow-hidden rounded-[2rem] bg-neutral-900"
-  >
-    {product.image ? (
-      <img
-        src={product.image}
-        alt={product.title}
-        loading="lazy"
-        className="h-80 w-full object-cover transition duration-700 group-hover:scale-105 lg:h-[26rem]"
-      />
-    ) : (
-      <div className="h-80 w-full lg:h-[26rem]" />
-    )}
-    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
-    {product.discountPercent > 0 ? (
-      <span
-        className="absolute right-4 top-4 rounded-full px-3 py-1 text-[11px] font-black text-white"
-        style={{ backgroundColor: accentColor }}
-      >
-        {toPersianDigits(product.discountPercent)}٪ تخفیف
-      </span>
-    ) : null}
-    <div className="absolute inset-x-0 bottom-0 p-5 lg:p-7">
-      {product.brand ? (
-        <p className="text-[11px] font-black uppercase" style={{ color: accentColor }}>
-          {product.brand}
-        </p>
-      ) : null}
-      <h3 className="mt-1 text-xl font-black text-white lg:text-2xl">{product.title}</h3>
-      <div className="mt-2 flex items-baseline gap-2">
-        {product.originalPrice > product.price ? (
-          <span className="text-sm text-white/50 line-through">{formatPrice(product.originalPrice)}</span>
-        ) : null}
-        <span className="text-lg font-black text-white">
-          {formatPrice(product.price)} <span className="text-xs font-bold text-white/70">تومان</span>
-        </span>
+        ))}
       </div>
+    </section>
+  );
+};
+
+// Magazine cards: the seller-configured testimonials are the only
+// editorial text source the platform has, so they render as quiet
+// article-style quote cards (text + author). Nothing configured →
+// the magazine slot simply does not exist.
+const AastinMagazine: React.FC<{ config: TemplateConfig }> = ({ config }) => {
+  if (!sectionEnabled(config, 'testimonials')) return null;
+  const items = (templateCustom(config).testimonials || []).filter(
+    (t) => t && typeof t.text === 'string' && t.text.trim() !== '',
+  );
+  if (items.length === 0) return null;
+  return (
+    <section data-testid="store-testimonials" className="space-y-6">
+      <AastinSectionHeader title="نظرات مشتریان" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {items.map((t, i) => (
+          <figure key={`${t.name || ''}-${i}`} className="rounded-[2px] border border-neutral-200/80 bg-white p-6">
+            <span className="text-4xl font-black leading-none text-neutral-300">“</span>
+            <blockquote className="mt-3 text-sm leading-8 text-neutral-700">{t.text}</blockquote>
+            {t.name ? <figcaption className="mt-4 text-sm font-bold text-neutral-900">{t.name}</figcaption> : null}
+          </figure>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+// Catalogue-floor card, styled like aassttiinn's listing cards:
+// square tile on pale grey, bold name, muted brand line, price below.
+// This is the ONLY card on the page that shows a price.
+const AastinProductCard: React.FC<{ product: Product; onOpen: (p: Product) => void }> = ({ product, onOpen }) => (
+  <div onClick={() => onOpen(product)} className="group cursor-pointer">
+    <div className="relative aspect-square overflow-hidden rounded-[2px] bg-[#f2f2f2]">
+      {product.image ? (
+        <img
+          src={product.image}
+          alt={product.title}
+          loading="lazy"
+          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+        />
+      ) : (
+        <span className="absolute inset-0 flex items-center justify-center text-5xl font-black text-neutral-300">
+          {product.title.slice(0, 1)}
+        </span>
+      )}
     </div>
+    <p className="mt-3 line-clamp-2 text-sm font-bold leading-6 text-neutral-900">{product.title}</p>
+    {product.brand || product.supplierName ? (
+      <p className="mt-0.5 truncate text-xs leading-5 text-neutral-500">{product.brand || product.supplierName}</p>
+    ) : null}
+    <p className="mt-1.5 text-sm font-black text-neutral-900">
+      {formatPrice(product.price)} <span className="text-xs font-bold text-neutral-500">تومان</span>
+    </p>
   </div>
 );
+
+// Dark charcoal grey-green newsletter band (#3a4441), full-bleed:
+// title + subtitle on one side, an underline-style input and an
+// outline submit button on the other. The subscribe contract is the
+// platform's own (mobile number + store slug, same endpoint and
+// validation as the shared NewsletterSection).
+const AastinNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }> = ({ config, storeSlug }) => {
+  const [mobile, setMobile] = useState('');
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    setMobile('');
+    setDone(false);
+    setError('');
+  }, [storeSlug]);
+  if (!sectionEnabled(config, 'newsletter')) return null;
+  const title = customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی');
+  const subtitle = (templateCustom(config).newsletterSubtitle || '').trim();
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^09\d{9}$/.test(mobile.trim())) {
+      setError('شماره موبایل معتبر وارد کنید.');
+      return;
+    }
+    setError('');
+    try {
+      await apiRequest('/newsletter/subscribe', {
+        method: 'POST',
+        body: JSON.stringify(storeSlug ? { mobile: mobile.trim(), storeSlug } : { mobile: mobile.trim() }),
+      });
+      setDone(true);
+    } catch {
+      setError('ثبت انجام نشد؛ دوباره تلاش کنید.');
+    }
+  };
+  return (
+    <section data-testid="store-newsletter" className="w-full bg-[#3a4441] text-white">
+      <div className={`${CONTAINER} py-12 lg:py-16`}>
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-xl">
+            <h2 className="text-2xl font-black leading-snug lg:text-3xl">{title}</h2>
+            {subtitle ? <p className="mt-2 text-sm leading-7 text-white/70">{subtitle}</p> : null}
+          </div>
+          <div className="w-full max-w-md">
+            {done ? (
+              <p className="text-sm font-bold text-emerald-300">شماره شما ثبت شد.</p>
+            ) : (
+              <form onSubmit={submit} className="flex items-end gap-3">
+                <input
+                  type="tel"
+                  dir="ltr"
+                  value={mobile}
+                  onChange={(e) => setMobile(e.target.value)}
+                  placeholder="09xxxxxxxxx"
+                  className="min-w-0 flex-1 border-0 border-b border-white/40 bg-transparent py-2.5 text-left text-sm text-white outline-none transition placeholder:text-white/40 focus:border-white"
+                />
+                <button
+                  type="submit"
+                  className="shrink-0 rounded-full border border-white/70 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-white hover:text-[#3a4441]"
+                >
+                  عضویت
+                </button>
+              </form>
+            )}
+            {error !== '' && <p className="mt-2 text-xs font-bold text-rose-300">{error}</p>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+};
 
 export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
   const cfg = resolveTemplateConfig('tpl-fashion-1', config);
@@ -261,204 +717,169 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
     () => items.filter((p) => p.featured).slice(0, customCount(cfg, 'featuredCount', 10)),
     [items, cfg],
   );
-  const bannersInOwnSection = order.includes('banners') || order.includes('promo');
-
-  // Shared light sections keep their white cards as contrast blocks;
-  // only their slate-900 section titles need re-colouring on dark.
-  const onDark = '[&_h3]:text-neutral-50';
-
-  const renderHero = (): React.ReactNode => {
-    if (slides.length > 0) {
-      // The shared slider's frame stays, but its imagery is stretched
-      // to cinematic height so slides read as a fashion hero.
-      return (
-        <div className="[&_img]:h-[380px] [&_img]:lg:h-[520px]">
-          <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />
-        </div>
-      );
-    }
-    return (
-      <section className="relative overflow-hidden rounded-[2rem] bg-neutral-900">
-        {heroImage ? (
-          <img src={heroImage} alt={store.name} className="h-[380px] w-full object-cover sm:h-[420px] lg:h-[540px]" />
-        ) : (
-          <div
-            className="h-[380px] w-full sm:h-[420px] lg:h-[540px]"
-            style={{ background: `radial-gradient(60% 90% at 80% 0%, ${accentColor}40 0%, transparent 60%)` }}
-          />
-        )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/10" />
-        <div className="absolute inset-0 flex flex-col justify-end p-6 text-right lg:p-10">
-          <span className="mb-4 block h-1 w-14 rounded-full" style={{ backgroundColor: accentColor }} />
-          <h1 className="text-4xl font-black leading-tight tracking-tight text-white lg:text-6xl">{heroTitle}</h1>
-          {heroSubtitle ? (
-            <p className="mt-3 max-w-xl text-sm leading-8 text-white/80 lg:text-base">{heroSubtitle}</p>
-          ) : null}
-          <div className="mt-6 flex flex-wrap gap-3">
-            <a
-              href={heroCtaLink}
-              className="rounded-full px-6 py-3 text-sm font-black text-white transition hover:opacity-90"
-              style={{ backgroundColor: accentColor }}
-            >
-              {heroCtaText}
-            </a>
-            <a
-              href="#products"
-              className="rounded-full border border-white/70 px-6 py-3 text-sm font-black text-white backdrop-blur transition hover:bg-white/10"
-            >
-              {productsTitle}
-            </a>
-          </div>
-        </div>
-      </section>
-    );
-  };
+  // The «دسته‌بندی‌ها» grid shows the groups the macro entrance did
+  // not take; tiny catalogues (≤3 groups) show all of them instead.
+  const gridGroups = useMemo(() => {
+    const limit = customCount(cfg, 'categoriesCount', 6);
+    if (categoryGroups.length <= 3) return categoryGroups.slice(0, limit);
+    const withImagery = categoryGroups.filter((g) => groupImage(g));
+    const macroPool = withImagery.length > 0 ? withImagery : categoryGroups;
+    const macroSlugs = new Set(macroPool.slice(0, 3).map((g) => g.slug));
+    return categoryGroups.filter((g) => !macroSlugs.has(g.slug)).slice(0, limit);
+  }, [categoryGroups, cfg]);
 
   const renderSection = (key: string): React.ReactNode => {
     switch (key) {
       case 'announcement':
-        return <FashionAnnouncement store={store} config={cfg} accentColor={accentColor} />;
+        return (
+          <Wrap>
+            <AastinAnnouncement store={store} config={cfg} />
+          </Wrap>
+        );
       case 'hero':
       case 'heroSlides':
-        return once('hero') ? renderHero() : null;
-      case 'trustStrip':
-        return <TrustStripSection config={cfg} accentColor={accentColor} />;
-      case 'categoryRail': {
-        const tiles = categoryGroups.slice(0, customCount(cfg, 'categoriesCount', 6));
-        const hasImagery = tiles.some((g) => g.image || (g.products[0] && g.products[0].image));
-        if (tiles.length > 0 && hasImagery) {
-          return (
-            <FashionCategoryTiles
-              groups={tiles}
-              title={customText(cfg, 'categoriesTitle', 'دسته‌بندی‌ها')}
-              accentColor={accentColor}
-            />
-          );
-        }
-        return (
-          <div className={onDark}>
-            <CategoryCards products={items} categories={categories} config={cfg} accentColor={accentColor} />
-          </div>
-        );
-      }
-      case 'banners':
-      case 'promo':
-        return once('banners') ? (
-          banners.length >= 2 ? (
-            <FashionDuoTiles banners={banners} />
-          ) : (
-            <div className="[&_p]:text-neutral-200">
-              <BannerRow config={cfg} />
-            </div>
-          )
+        return once('hero') ? (
+          <AastinHero
+            slides={slides}
+            autoplay={custom.heroAutoplay}
+            fallbackImage={heroImage}
+            fallbackTitle={heroTitle}
+            fallbackSubtitle={heroSubtitle}
+            ctaText={heroCtaText}
+            ctaLink={heroCtaLink}
+          />
         ) : null;
-      case 'deals':
+      case 'categoryRail':
         return (
-          <div className={onDark}>
-            <DealsSection products={items} config={cfg} accentColor={accentColor} />
-          </div>
-        );
-      case 'timedDeals':
-        return <TimedDealsSection store={store} products={items} config={cfg} accentColor={accentColor} />;
-      case 'brands':
-        return (
-          <div className={onDark}>
-            <BrandsRail products={items} config={cfg} accentColor={accentColor} />
-          </div>
-        );
-      case 'featured': {
-        if (featuredList.length === 0) return null;
-        const first = featuredList[0];
-        const rest = featuredList.slice(1);
-        return (
-          <section data-testid="store-featured" className="space-y-4">
-            <DarkSectionHeader
-              eyebrow="Featured"
-              title={customText(cfg, 'featuredTitle', 'کالاهای منتخب')}
-              accentColor={accentColor}
-            />
-            <FashionFeaturedShowcase product={first} accentColor={accentColor} onOpen={openProductDetail} />
-            {rest.length > 0 ? (
-              <TemplateProductGrid products={rest} columnsClass="grid-cols-2 lg:grid-cols-4" />
-            ) : null}
-          </section>
-        );
-      }
-      case 'bestsellers':
-        return (
-          <div className={onDark}>
-            <BestsellersSection products={items} config={cfg} accentColor={accentColor} />
-          </div>
-        );
-      case 'discounted':
-        return (
-          <div className={onDark}>
-            <DiscountedSection products={items} config={cfg} accentColor={accentColor} />
-          </div>
-        );
-      case 'topRated':
-        return (
-          <div className={onDark}>
-            <TopRatedSection products={items} config={cfg} accentColor={accentColor} />
-          </div>
+          <Wrap>
+            <AastinMacroCategories groups={categoryGroups} />
+          </Wrap>
         );
       case 'about':
         return (
-          <div className="[&_h3]:text-neutral-50 [&_p]:text-neutral-300">
-            <AboutSection store={store} config={cfg} accentColor={accentColor} />
-          </div>
+          <Wrap>
+            <AastinStory store={store} config={cfg} />
+          </Wrap>
+        );
+      case 'lookbook':
+        // One slot carries their adjacent category grid + collections
+        // + editorial band, in their order.
+        return (
+          <Wrap>
+            <div className="space-y-14 lg:space-y-24">
+              <AastinCategoryGrid groups={gridGroups} title={customText(cfg, 'categoriesTitle', 'دسته‌بندی‌ها')} />
+              <AastinCollections groups={categoryGroups} title={customText(cfg, 'lookbookTitle', 'کالکشن جدید')} />
+              <AastinLookbookBand config={cfg} />
+            </div>
+          </Wrap>
+        );
+      case 'brands':
+        return (
+          <Wrap>
+            <AastinBrandTiles products={items} title={customText(cfg, 'brandsTitle', 'برندها')} />
+          </Wrap>
+        );
+      case 'banners':
+      case 'promo':
+        return once('banners') ? (
+          <Wrap>
+            <AastinBanners banners={banners} />
+          </Wrap>
+        ) : null;
+      case 'featured':
+        return (
+          <Wrap>
+            <AastinSpotlight
+              products={featuredList}
+              title={customText(cfg, 'featuredTitle', 'کالاهای منتخب')}
+              onOpen={openProductDetail}
+            />
+          </Wrap>
+        );
+      case 'bestsellers':
+        return (
+          <Wrap>
+            <BestsellersSection products={items} config={cfg} accentColor={accentColor} />
+          </Wrap>
+        );
+      case 'deals':
+        return (
+          <Wrap>
+            <DealsSection products={items} config={cfg} accentColor={accentColor} />
+          </Wrap>
+        );
+      case 'timedDeals':
+        return (
+          <Wrap>
+            <TimedDealsSection store={store} products={items} config={cfg} accentColor={accentColor} />
+          </Wrap>
+        );
+      case 'discounted':
+        return (
+          <Wrap>
+            <DiscountedSection products={items} config={cfg} accentColor={accentColor} />
+          </Wrap>
+        );
+      case 'topRated':
+        return (
+          <Wrap>
+            <TopRatedSection products={items} config={cfg} accentColor={accentColor} />
+          </Wrap>
         );
       case 'campaign':
         return (
-          <div className={onDark}>
+          <Wrap>
             <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />
-          </div>
+          </Wrap>
         );
-      case 'newsletter':
-        // The shared form keeps its own light panel; on the dark page
-        // it is framed as a matted contrast card inside a glass shell.
+      case 'trustStrip':
         return (
-          <div className="rounded-[2rem] border border-white/10 bg-white/5 p-2">
-            <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />
-          </div>
-        );
-      case 'testimonials':
-        return (
-          <div className="rounded-[2rem] bg-neutral-900 p-4 [&_h3]:text-neutral-50 lg:p-6">
-            <TestimonialsSection config={cfg} accentColor={accentColor} />
-          </div>
+          <Wrap>
+            <TrustStripSection config={cfg} accentColor={accentColor} />
+          </Wrap>
         );
       case 'faq':
         return (
-          <div className={onDark}>
+          <Wrap>
             <FaqSection config={cfg} accentColor={accentColor} />
-          </div>
+          </Wrap>
         );
-      case 'lookbook':
+      case 'testimonials':
         return (
-          <div className="space-y-3">
-            <LookbookSection config={cfg} accentColor={accentColor} />
-            {!bannersInOwnSection && banners.length >= 2 ? <FashionDuoTiles banners={banners} /> : null}
-          </div>
+          <Wrap>
+            <AastinMagazine config={cfg} />
+          </Wrap>
         );
       case 'products':
       case 'allProducts':
         return once('products') ? (
-          <div id="products" className="[&_h3]:text-xl [&_h3]:text-neutral-50 [&_h3]:lg:text-2xl">
-            <ProductsGridSection products={items} config={cfg} accentColor={accentColor} columnsClass="grid-cols-2 lg:grid-cols-4" />
-          </div>
+          items.length > 0 ? (
+            <Wrap>
+              <section id="products" data-testid="store-products" className="space-y-6">
+                <AastinSectionHeader title={productsTitle} />
+                <div className="grid grid-cols-2 gap-x-3 gap-y-8 lg:grid-cols-4 lg:gap-x-4">
+                  {items.map((p) => (
+                    <AastinProductCard key={p.id} product={p} onOpen={openProductDetail} />
+                  ))}
+                </div>
+              </section>
+            </Wrap>
+          ) : null
         ) : null;
+      case 'newsletter':
+        return <AastinNewsletter config={cfg} storeSlug={store.slug} />;
       default:
         return null;
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-neutral-950 text-neutral-100" data-template-desktop="lg:grid" style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}>
-      <nav aria-label="مسیر صفحه" className="px-4 pt-3 text-[11px] text-neutral-500 lg:px-6">
-        <span>خانه</span><span className="mx-1">/</span><span className="text-neutral-100 font-bold">{store.name}</span>
-      </nav>
-      <div className="mx-auto w-full max-w-6xl space-y-12 p-4 lg:p-6">
+    <div
+      className="flex-1 bg-[#faf8f5] text-neutral-900"
+      data-template-desktop="lg:grid"
+      style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}
+    >
+      <div className="flex flex-col gap-14 lg:gap-24">
         {order.map((key) => (
           <React.Fragment key={key}>{renderSection(key)}</React.Fragment>
         ))}

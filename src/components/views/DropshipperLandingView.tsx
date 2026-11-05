@@ -45,7 +45,7 @@ export const DropshipperLandingView: React.FC<{ onBack: () => void }> = ({ onBac
         <section className="rounded-2xl border bg-white p-4">
           <h3 className="mb-2 text-sm font-black">سود یک سفارش چگونه محاسبه می‌شود؟</h3>
           <p className="mb-3 text-xs leading-6 text-slate-500">مثال آموزشی؛ سود واقعی به محصول، قیمت انتخابی و شرایط سفارش بستگی دارد.</p>
-          {([['قیمت تأمین C', cost], [`سهم پلتفرم (${toPersianDigits(pct)}٪)`, fee], ['قیمت پایه R = C × (۱ + سهم)', cost + fee], ['سود شما D', profit], ['قیمت مشتری P = R + D', cost + fee + profit]] as const).map(([label, value]) => <div key={label} className="flex justify-between gap-2 border-b py-2 text-xs last:border-0"><span>{label}</span><b>{formatPrice(value)} تومان</b></div>)}
+          {([['قیمت خرید شما', cost + fee], ['سود شما', profit], ['قیمت فروش به مشتری', cost + fee + profit]] as const).map(([label, value]) => <div key={label} className="flex justify-between gap-2 border-b py-2 text-xs last:border-0"><span>{label}</span><b>{formatPrice(value)} تومان</b></div>)}
         </section>
 
         <section className="rounded-2xl border bg-white p-4">

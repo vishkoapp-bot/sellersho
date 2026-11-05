@@ -208,9 +208,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white rounded-2xl max-w-[400px] w-full p-4 shadow-2xl border border-slate-100 space-y-3"
+        className="bg-white rounded-2xl max-w-[400px] w-full p-4 shadow-2xl border border-slate-100 flex max-h-[calc(100dvh-1.5rem)] flex-col gap-3 overflow-hidden"
       >
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 pb-2">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
               <Calculator className="w-4 h-4"  strokeWidth={1.5}/>
@@ -231,11 +231,11 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           </div>
         )}
 
-        <form onSubmit={handleInitialSubmit} className="space-y-3 text-xs">
+        <form onSubmit={handleInitialSubmit} className="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1 pb-1 text-xs">
           {/* Section 3.1: Single unified base price (R) */}
-          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between">
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
             <span className="text-slate-600 font-bold text-[11px]">قیمت پایه (مرجع × سهم پلتفرم):</span>
-            <span className="font-extrabold text-slate-900 font-mono text-sm">{formatPrice(baseCostR)} تومان</span>
+            <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{formatPrice(baseCostR)} تومان</span>
           </div>
 
           {variantCount >= 2 && (
@@ -257,26 +257,29 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 const marginV = typed !== '' && !isNaN(Number(typed)) ? Number(typed) : (isNaN(numVal) ? 0 : numVal);
                 const finalV = roundTo100(baseV * (1 + marginV / 100));
                 return (
-                  <div key={v.id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl p-2">
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[11px] font-bold text-slate-800 block truncate">{v.variantName || v.name}</span>
-                      {baseV > 0 ? (
-                        <span className="text-[10px] text-slate-500 font-mono">پایه {formatPrice(baseV)} ت • نهایی {formatPrice(finalV)} ت</span>
-                      ) : (
-                        <span className="text-[10px] text-slate-500">قیمت تنوع هنوز اعلام نشده است.</span>
-                      )}
+                  <div key={v.id} className="space-y-2 bg-white border border-slate-200 rounded-xl p-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 min-w-0 truncate text-[11px] font-bold text-slate-800">{v.variantName || v.name}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        disabled={isLocked || variantSaving}
+                        value={typed}
+                        onChange={(e) => setVariantInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
+                        placeholder={!isNaN(numVal) ? toPersianDigits(numVal) : '۲۰'}
+                        className="w-20 shrink-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
+                        aria-label={`درصد سود تنوع ${v.variantName || v.name}`}
+                      />
+                      <span className="shrink-0 text-[10px] font-bold text-slate-400">٪</span>
                     </div>
-                    <input
-                      type="number"
-                      min={0}
-                      disabled={isLocked || variantSaving}
-                      value={typed}
-                      onChange={(e) => setVariantInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
-                      placeholder={!isNaN(numVal) ? toPersianDigits(numVal) : '۲۰'}
-                      className="w-20 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
-                      aria-label={`درصد سود تنوع ${v.variantName || v.name}`}
-                    />
-                    <span className="text-[10px] text-slate-400 font-bold shrink-0">٪</span>
+                    {baseV > 0 ? (
+                      <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
+                        <span className="whitespace-nowrap">پایه: <span className="font-mono font-bold text-slate-700">{formatPrice(baseV)} ت</span></span>
+                        <span className="whitespace-nowrap">نهایی: <span className="font-mono font-bold text-slate-700">{formatPrice(finalV)} ت</span></span>
+                      </div>
+                    ) : (
+                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">قیمت تنوع هنوز اعلام نشده است.</p>
+                    )}
                   </div>
                 );
               })}
@@ -395,7 +398,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
         {/* Requirement 3: Two-Step Confirmation Modal for Bulk Niche Pricing */}
         {showNicheConfirmModal && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-3 bg-slate-900/70 backdrop-blur-xs select-none">
-            <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-amber-200 space-y-3 text-xs">
+            <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-amber-200 space-y-3 text-xs max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain">
               <div className="flex items-center gap-2 text-amber-600 border-b border-slate-100 pb-2">
                 <AlertTriangle className="w-5 h-5 shrink-0"  strokeWidth={1.5}/>
                 <h4 className="font-bold text-slate-900">این سود روی همه کالاهای این نیچ اعمال شود؟</h4>

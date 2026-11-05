@@ -131,6 +131,10 @@ export const SellerCatalogTab: React.FC = () => {
   // the list must show them — not the product-level fallback percent.
   const [variantPctByProduct, setVariantPctByProduct] = useState<Record<string, Record<string, number>>>({});
   useEffect(() => {
+    // Refetch when the pricing modal closes too: percents saved there must
+    // show in the list immediately (a mount-only fetch went stale and kept
+    // showing the old uniform percent instead of the new range).
+    if (pricingProduct) return;
     if (!currentStore?.id || isMockMode()) return;
     let cancelled = false;
     storeApi.getSellerVariantOverrides(currentStore.id)
@@ -144,7 +148,7 @@ export const SellerCatalogTab: React.FC = () => {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [currentStore?.id]);
+  }, [currentStore?.id, pricingProduct]);
 
   const renderRow = (product: any, purple: boolean) => {
     const isPending = pendingProductIds.includes(product.id);

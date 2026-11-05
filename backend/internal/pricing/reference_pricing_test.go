@@ -8,6 +8,10 @@ import (
 
 // Proven live examples (MASTER-AUDIT section 3(a)). Global platform_pct
 // is 0 in live, so platformFeeF = 0 and baseCostB = C in every case here.
+// Dropshipper expectations were updated for the owner rule of 2026-11-05:
+// there is no store-wide default profit anymore — a store's legacy
+// ProfitMarginPercent is inert, and unset percents resolve at the MAX
+// ALLOWED margin (per-product ceiling row, else MaxProfitMargin = 35).
 
 func liveSettings() *PlatformPricingSettings {
 	return &PlatformPricingSettings{
@@ -34,9 +38,15 @@ func TestReferenceEarbudsPro(t *testing.T) {
 		t.Errorf("central discountPercent = %d; want 29", DiscountPercent(prod.OriginalPrice, c.FinalPrice))
 	}
 
+	// Owner rule (2026-11-05): the store's ProfitMarginPercent (15) is a
+	// legacy store default and no longer influences pricing; with no
+	// product override the margin is the max allowed (35).
 	d := ResolveReferencePricing(prod, dropshipper, liveSettings(), nil)
-	if d.FinalPrice != 1380000 {
-		t.Errorf("dropshipper final = %d; want 1380000", d.FinalPrice)
+	if d.FinalPrice != 1620000 {
+		t.Errorf("dropshipper final = %d; want 1620000 (1200000 x 1.35, max-allowed fallback)", d.FinalPrice)
+	}
+	if d.MarginPercent != 35 || d.ActiveTier != "max-default" {
+		t.Errorf("dropshipper margin=%v tier=%q; want 35/max-default", d.MarginPercent, d.ActiveTier)
 	}
 	if d.BaseCost != 1200000 {
 		t.Errorf("dropshipper baseCostB = %d; want 1200000 (= C, not C+F)", d.BaseCost)
@@ -44,8 +54,8 @@ func TestReferenceEarbudsPro(t *testing.T) {
 	if d.PlatformFee != 0 {
 		t.Errorf("dropshipper platformFee = %d; want 0", d.PlatformFee)
 	}
-	if DiscountPercent(prod.OriginalPrice, d.FinalPrice) != 25 {
-		t.Errorf("dropshipper discountPercent = %d; want 25", DiscountPercent(prod.OriginalPrice, d.FinalPrice))
+	if DiscountPercent(prod.OriginalPrice, d.FinalPrice) != 12 {
+		t.Errorf("dropshipper discountPercent = %d; want 12", DiscountPercent(prod.OriginalPrice, d.FinalPrice))
 	}
 }
 
@@ -80,12 +90,15 @@ func TestReferenceDemoGold(t *testing.T) {
 	if DiscountPercent(prod.OriginalPrice, c.FinalPrice) != 12 {
 		t.Errorf("central discountPercent = %d; want 12 (the x1.10 phenomenon, not a separate 12%% rule, U27)", DiscountPercent(prod.OriginalPrice, c.FinalPrice))
 	}
+	// Owner rule (2026-11-05): no store default — the max-allowed margin
+	// (35) applies, and the final price rises above OriginalPrice, so the
+	// derived discount is 0.
 	d := ResolveReferencePricing(prod, domain.Store{OwnerType: "dropshipper", ProfitMarginPercent: 15}, liveSettings(), nil)
-	if d.FinalPrice != 66700000 {
-		t.Errorf("dropshipper final = %d; want 66700000", d.FinalPrice)
+	if d.FinalPrice != 78300000 {
+		t.Errorf("dropshipper final = %d; want 78300000 (58000000 x 1.35, max-allowed fallback)", d.FinalPrice)
 	}
-	if DiscountPercent(prod.OriginalPrice, d.FinalPrice) != 8 {
-		t.Errorf("dropshipper discountPercent = %d; want 8", DiscountPercent(prod.OriginalPrice, d.FinalPrice))
+	if DiscountPercent(prod.OriginalPrice, d.FinalPrice) != 0 {
+		t.Errorf("dropshipper discountPercent = %d; want 0 (final above original)", DiscountPercent(prod.OriginalPrice, d.FinalPrice))
 	}
 }
 
@@ -118,8 +131,8 @@ func TestReferenceProfitSplit(t *testing.T) {
 	prod := domain.Product{ID: "prod-earbuds-pro", SupplierBaseCost: 1200000}
 	d := ResolveReferencePricing(prod, domain.Store{OwnerType: "dropshipper", ProfitMarginPercent: 15}, liveSettings(), nil)
 	split := ReferenceProfitSplit(d, false)
-	if split.PlatformFeeAmount != 0 || split.DropshipperMargin != 180000 || split.PlatformTotal != 0 {
-		t.Errorf("dropshipper split = %+v; want fee 0, margin 180000, platform total 0", split)
+	if split.PlatformFeeAmount != 0 || split.DropshipperMargin != 420000 || split.PlatformTotal != 0 {
+		t.Errorf("dropshipper split = %+v; want fee 0, margin 420000 (max-allowed 35%% of C), platform total 0", split)
 	}
 	c := ResolveReferencePricing(prod, domain.Store{OwnerType: "central"}, liveSettings(), nil)
 	csplit := ReferenceProfitSplit(c, true)
@@ -131,10 +144,12 @@ func TestReferenceProfitSplit(t *testing.T) {
 func TestReferenceVariantPricing(t *testing.T) {
 	prod := domain.Product{ID: "prod-x", SupplierBaseCost: 1000000, OriginalPrice: 1500000}
 	store := domain.Store{OwnerType: "dropshipper", ProfitMarginPercent: 15}
-	// Variant with its own cost, no override: product resolution on 500,000.
+	// Variant with its own cost, no override: owner rule (2026-11-05) —
+	// the max-allowed margin (35) on the variant cost; the store's legacy
+	// ProfitMarginPercent (15) is inert and nothing is inherited.
 	v := ResolveReferencePricingForStoreProductVariantWithCost(prod, 500000, "var-1", store, liveSettings(), nil, nil)
-	if v.FinalPrice != 575000 {
-		t.Errorf("variant final = %d; want 575000 (500000 x 1.15)", v.FinalPrice)
+	if v.FinalPrice != 675000 || v.ActiveTier != "max-default" {
+		t.Errorf("variant final = %d tier %q; want 675000/max-default (500000 x 1.35)", v.FinalPrice, v.ActiveTier)
 	}
 	// Variant percent override wins over the product margin.
 	ov := &StoreVariantOverride{StoreID: "store-ds", ProductID: "prod-x", VariantID: "var-1", Value: 25, Mode: "percent"}
@@ -167,10 +182,90 @@ func TestReferenceNicheAndFixedAreTODOU10(t *testing.T) {
 		NichePriceOverrideModes: map[string]string{"niche-a": "percent"},
 	}
 	res := ResolveReferencePricing(prod, store, liveSettings(), nil)
-	if res.FinalPrice != 1150000 {
-		t.Errorf("niche fallback final = %d; want 1150000 (store default; niche NOT applied, U10)", res.FinalPrice)
+	if res.FinalPrice != 1350000 {
+		t.Errorf("niche fallback final = %d; want 1350000 (max-allowed fallback; niche NOT applied, U10)", res.FinalPrice)
 	}
 	if res.UnverifiedNote == "" {
 		t.Errorf("expected a U10 unverified note for the niche override")
+	}
+}
+
+// Owner rule (2026-11-05): no store-wide default profit exists anymore.
+// Margins live only per-product and per-variant; wherever no percent is
+// set, the MAX ALLOWED margin for the product applies — its per-product
+// ceiling row when present, else settings.MaxProfitMargin (35 here).
+func TestMaxAllowedFallbackOwnerRule(t *testing.T) {
+	// (a) plain product, no override -> MaxProfitMargin, even though the
+	// store still carries a legacy ProfitMarginPercent (15) and the
+	// settings a DefaultMargin (20): both are inert now.
+	prod := domain.Product{ID: "prod-a", SupplierBaseCost: 1000000, OriginalPrice: 2000000}
+	store := domain.Store{ID: "store-ds", OwnerType: "dropshipper", ProfitMarginPercent: 15}
+	res := ResolveReferencePricing(prod, store, liveSettings(), nil)
+	if res.MarginPercent != 35 || res.FinalPrice != 1350000 || res.ActiveTier != "max-default" {
+		t.Errorf("(a) margin=%v final=%d tier=%q; want 35/1350000/max-default", res.MarginPercent, res.FinalPrice, res.ActiveTier)
+	}
+
+	// (b) per-product ceiling row 25 replaces the global max.
+	s := liveSettings()
+	s.ProductMarginCeilings = map[string]float64{"prod-a": 25}
+	res = ResolveReferencePricing(prod, store, s, nil)
+	if res.MarginPercent != 25 || res.FinalPrice != 1250000 || res.ActiveTier != "max-default" {
+		t.Errorf("(b) margin=%v final=%d tier=%q; want 25/1250000/max-default", res.MarginPercent, res.FinalPrice, res.ActiveTier)
+	}
+
+	// (c) variant with NO override while a product override (20) exists:
+	// the variant does NOT inherit the product override — it resolves at
+	// the max allowed on the variant cost.
+	prodC := domain.Product{ID: "prod-c", SupplierBaseCost: 1000000, OriginalPrice: 2000000}
+	storeC := domain.Store{
+		ID: "store-ds", OwnerType: "dropshipper",
+		ProductPriceOverrides:     map[string]float64{"prod-c": 20},
+		ProductPriceOverrideModes: map[string]string{"prod-c": "percent"},
+	}
+	v := ResolveReferencePricingForStoreProductVariantWithCost(prodC, 500000, "var-1", storeC, liveSettings(), nil, nil)
+	if v.MarginPercent != 35 || v.FinalPrice != 675000 || v.ActiveTier != "max-default" {
+		t.Errorf("(c) variant margin=%v final=%d tier=%q; want 35/675000/max-default (NOT the product override 20)", v.MarginPercent, v.FinalPrice, v.ActiveTier)
+	}
+	// (c2) the variant fallback is ceiling-aware: a ceiling row of 25
+	// binds the variant too.
+	sC := liveSettings()
+	sC.ProductMarginCeilings = map[string]float64{"prod-c": 25}
+	v = ResolveReferencePricingForStoreProductVariantWithCost(prodC, 500000, "var-1", storeC, sC, nil, nil)
+	if v.MarginPercent != 25 || v.FinalPrice != 625000 {
+		t.Errorf("(c2) variant margin=%v final=%d; want 25/625000", v.MarginPercent, v.FinalPrice)
+	}
+	// (c3) a legacy fixed-mode variant row is inert and also resolves at
+	// the max fallback on the variant cost, keeping its U10 note.
+	fixed := &StoreVariantOverride{StoreID: "store-ds", ProductID: "prod-c", VariantID: "var-1", Value: 999, Mode: "fixed"}
+	v = ResolveReferencePricingForStoreProductVariantWithCost(prodC, 500000, "var-1", storeC, liveSettings(), nil, fixed)
+	if v.MarginPercent != 35 || v.FinalPrice != 675000 || v.UnverifiedNote == "" {
+		t.Errorf("(c3) fixed variant margin=%v final=%d note=%q; want 35/675000/U10 note", v.MarginPercent, v.FinalPrice, v.UnverifiedNote)
+	}
+
+	// (e) product override 20 on a plain product -> 20 (unchanged).
+	p := ResolveReferencePricing(prodC, storeC, liveSettings(), nil)
+	if p.MarginPercent != 20 || p.FinalPrice != 1200000 || p.ActiveTier != "product" {
+		t.Errorf("(e) margin=%v final=%d tier=%q; want 20/1200000/product", p.MarginPercent, p.FinalPrice, p.ActiveTier)
+	}
+
+	// (d) variant override 15 -> 15 (unchanged, ceiling-capped as before).
+	ov15 := &StoreVariantOverride{StoreID: "store-ds", ProductID: "prod-c", VariantID: "var-1", Value: 15, Mode: "percent"}
+	v = ResolveReferencePricingForStoreProductVariantWithCost(prodC, 500000, "var-1", storeC, liveSettings(), nil, ov15)
+	if v.MarginPercent != 15 || v.FinalPrice != 575000 || v.ActiveTier != "variant" {
+		t.Errorf("(d) variant margin=%v final=%d tier=%q; want 15/575000/variant", v.MarginPercent, v.FinalPrice, v.ActiveTier)
+	}
+
+	// (f) admin product lock wins over everything: locked 30 beats the
+	// product override (20) on the product, and beats a variant override
+	// (15) on the variant.
+	locked := 30.0
+	locks := []MarginLock{{Scope: "product", ScopeID: "prod-c", Mode: "admin_set", Value: &locked}}
+	p = ResolveReferencePricing(prodC, storeC, liveSettings(), locks)
+	if p.MarginPercent != 30 || p.FinalPrice != 1300000 || p.ActiveTier != "product-locked" {
+		t.Errorf("(f) locked product margin=%v final=%d tier=%q; want 30/1300000/product-locked", p.MarginPercent, p.FinalPrice, p.ActiveTier)
+	}
+	v = ResolveReferencePricingForStoreProductVariantWithCost(prodC, 500000, "var-1", storeC, liveSettings(), locks, ov15)
+	if v.MarginPercent != 30 || v.FinalPrice != 650000 || v.ActiveTier != "product-locked" {
+		t.Errorf("(f) locked variant margin=%v final=%d tier=%q; want 30/650000/product-locked", v.MarginPercent, v.FinalPrice, v.ActiveTier)
 	}
 }

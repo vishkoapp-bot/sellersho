@@ -235,7 +235,7 @@ type ReferenceResolution struct {
 	SellerMargin      int64   `json:"sellerMargin"`  // D = P - R (dropshipper margin, or central profit for central stores)
 	FinalPrice        int64   `json:"finalPrice"`    // P
 	OriginalPrice     int64   `json:"originalPrice"`
-	ActiveTier        string  `json:"activeTier"`    // "central" | "product" | "product-locked" | "niche" | "variant" | "default"
+	ActiveTier        string  `json:"activeTier"`    // "central" | "product" | "product-locked" | "niche" | "variant" | "default" | "max-default"
 	PricingMode       string  `json:"pricingMode"`   // "percent" only (percent-only platform)
 	MarginPercent     float64 `json:"marginPercent"` // applied margin percent
 	// UnverifiedNote names the TODO that limits this resolution, if any
@@ -279,13 +279,19 @@ func applyDropshipperOverride(currentMargin float64, currentTier string, value f
 //     (read compatibility only, D29): when IsMarginLockedByAdmin is set
 //     with a CustomStoreMarginOverride, that value wins over the store
 //     default, as in the source lock behaviour.
-//  4. store default: CustomStoreMarginOverride, else
-//     ProfitMarginPercent, else settings DefaultMargin, else 20.
+//  4. max-allowed fallback (owner rule, 2026-11-05): there is NO
+//     store-wide default profit anymore. When nothing above set a
+//     percent, the margin is the maximum allowed for the product — its
+//     per-product ceiling row when present, else settings
+//     MaxProfitMargin (tier "max-default"). Store ProfitMarginPercent
+//     and settings DefaultMargin no longer influence pricing, and
+//     CustomStoreMarginOverride reaches pricing only through the
+//     tier-3 legacy ADMIN lock above, never as a seller default.
 //
 // Niche overrides are NOT applied: TODO U10 (the niche table is empty in
 // live and no niche behaviour was observed). If a niche override exists
 // and nothing more specific won, the resolution notes U10 and uses the
-// store default instead of guessing niche precedence.
+// max-allowed fallback instead of guessing niche precedence.
 // Ceiling (ISO-C margin model): the margin selected here is capped at
 // compute time by capSellerMargin in ResolveReferencePricing (and in the
 // variant-override branch): a per-product ceiling row replaces the global
@@ -293,14 +299,10 @@ func applyDropshipperOverride(currentMargin float64, currentTier string, value f
 func selectDropshipperMarginForProduct(product domain.Product, store domain.Store, settings *PlatformPricingSettings, locks []MarginLock) (margin float64, tier string, mode string, note string) {
 	settings = OrDefault(settings)
 
-	def := 20.0
-	if store.CustomStoreMarginOverride != nil {
-		def = *store.CustomStoreMarginOverride
-	} else if store.ProfitMarginPercent > 0 {
-		def = store.ProfitMarginPercent
-	} else if settings.DefaultMargin > 0 {
-		def = settings.DefaultMargin
-	}
+	// Tier 4 (owner rule, 2026-11-05): the max-allowed fallback — the
+	// per-product ceiling row when present, else the global
+	// MaxProfitMargin. No store default participates anymore.
+	def := effectiveMarginCeiling(product.ID, settings)
 
 	// 1. admin_set product lock for this product.
 	for _, l := range locks {
@@ -322,17 +324,18 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 			if n == "" {
 				return m, t, md, ""
 			}
-			// Fixed override: TODO U10 — fall through to the store
-			// default (or the legacy lock below) and keep the note.
+			// Fixed override: TODO U10 — fall through to the
+			// max-allowed fallback (or the legacy lock below) and
+			// keep the note.
 			note = n
 			_ = m
 			_ = t
 			_ = md
-			// Continue to lock/default below with the note attached.
+			// Continue to lock/fallback below with the note attached.
 			if store.IsMarginLockedByAdmin && store.CustomStoreMarginOverride != nil {
 				return *store.CustomStoreMarginOverride, "default", "percent", note
 			}
-			return def, "default", "percent", note
+			return def, "max-default", "percent", note
 		}
 	}
 
@@ -341,16 +344,16 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 		return *store.CustomStoreMarginOverride, "default", "percent", ""
 	}
 
-	// 4. store default. Niche overrides, if any, are deliberately not
-	// applied (TODO U10).
+	// 4. max-allowed fallback (tier "max-default"). Niche overrides, if
+	// any, are deliberately not applied (TODO U10).
 	if len(store.NichePriceOverrides) > 0 {
 		for _, nid := range product.NicheIDs {
 			if _, ok := store.NichePriceOverrides[nid]; ok {
-				return def, "default", "percent", "U10: niche override present but not applied; store default used"
+				return def, "max-default", "percent", "U10: niche override present but not applied; max allowed margin used"
 			}
 		}
 	}
-	return def, "default", "percent", ""
+	return def, "max-default", "percent", ""
 }
 
 // ResolveReferencePricing is the live percent engine (D23/D24/D26/D27).
@@ -397,12 +400,47 @@ func ResolveReferencePricing(product domain.Product, store domain.Store, setting
 	}
 }
 
+// resolveVariantAtMargin builds the resolution for one variant priced at
+// an explicit margin percent on the variant's own cost, under the normal
+// platform-pct ladder. variantProduct must already carry the variant cost
+// as SupplierBaseCost.
+func resolveVariantAtMargin(variantProduct domain.Product, variantCost int64, margin float64, tier string, settings *PlatformPricingSettings) ReferenceResolution {
+	pct, pctSource := ResolvePlatformPct(variantProduct.ID, variantProduct.CategorySlug, settings)
+	referenceCost := RoundTo100(float64(variantCost) * (1.0 + pct/100.0))
+	finalPrice := RoundTo100(float64(referenceCost) * (1.0 + margin/100.0))
+	originalPrice := variantProduct.OriginalPrice
+	if finalPrice > originalPrice {
+		originalPrice = finalPrice
+	}
+	return ReferenceResolution{
+		WholesaleCost:     variantCost,
+		PlatformPct:       pct,
+		PlatformPctSource: pctSource,
+		ReferenceCost:     referenceCost,
+		PlatformFee:       referenceCost - variantCost,
+		BaseCost:          referenceCost,
+		SellerMargin:      finalPrice - referenceCost,
+		FinalPrice:        finalPrice,
+		OriginalPrice:     originalPrice,
+		ActiveTier:        tier,
+		PricingMode:       "percent",
+		MarginPercent:     margin,
+	}
+}
+
 // ResolveReferencePricingForStoreProductVariantWithCost prices one variant
 // (D28) from the variant's own supplier_base_cost. A percent variant
-// override (store_variant_overrides, keyed by variant_id) wins over the
-// product override; a legacy fixed variant override is inert under
-// percent-only and falls back to the product resolution. Variant
-// admin_set locks behave like product locks for that variant.
+// override (store_variant_overrides, keyed by variant_id) wins for that
+// variant. When NO percent variant override exists — no override row, or
+// a legacy fixed row, which is inert under percent-only — the variant
+// does NOT inherit the product override and there is no store default:
+// a dropshipper variant prices at the MAX ALLOWED margin for the product
+// (per-product ceiling when present, else MaxProfitMargin), computed on
+// the variant cost with the normal platform pct (owner rule,
+// 2026-11-05). Variant admin_set locks behave like product locks for
+// that variant, and a product admin_set lock binds its variants; both
+// keep winning over every seller value. Central stores keep central
+// pricing via the product resolution.
 func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Product, variantCost int64, variantID string, store domain.Store, settings *PlatformPricingSettings, locks []MarginLock, variantOverride *StoreVariantOverride) ReferenceResolution {
 	settings = OrDefault(settings)
 	// A variant admin_set lock replaces every seller override for it.
@@ -445,42 +483,36 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 		}
 	}
 	if variantOverride != nil && variantOverride.VariantID == variantID {
+		variantProduct := product
+		variantProduct.SupplierBaseCost = variantCost
 		if variantOverride.Mode == "fixed" {
-			// Percent-only defensive branch: legacy fixed rows are inert;
-			// fall back to the product resolution on the variant cost.
-			variantProduct := product
-			variantProduct.SupplierBaseCost = variantCost
+			// Percent-only defensive branch: legacy fixed rows are inert.
+			if store.OwnerType == "dropshipper" {
+				// Owner rule (2026-11-05): with no percent variant
+				// override, the variant resolves at the MAX ALLOWED
+				// margin for the product on the variant cost — never
+				// the product resolution (U10: the fixed row itself
+				// is still not applied).
+				res := resolveVariantAtMargin(variantProduct, variantCost, effectiveMarginCeiling(product.ID, settings), "max-default", settings)
+				res.UnverifiedNote = "U10: fixed-mode variant override present but not applied; max allowed margin used"
+				return res
+			}
 			res := ResolveReferencePricing(variantProduct, store, settings, locks)
 			res.UnverifiedNote = "U10: fixed-mode variant override present but not applied; product resolution used"
 			return res
 		}
-		variantProduct := product
-		variantProduct.SupplierBaseCost = variantCost
-		pct, pctSource := ResolvePlatformPct(variantProduct.ID, variantProduct.CategorySlug, settings)
-		referenceCost := RoundTo100(float64(variantCost) * (1.0 + pct/100.0))
 		cappedValue := capSellerMargin(variantOverride.Value, "variant", variantProduct.ID, settings)
-		finalPrice := RoundTo100(float64(referenceCost) * (1.0 + cappedValue/100.0))
-		originalPrice := variantProduct.OriginalPrice
-		if finalPrice > originalPrice {
-			originalPrice = finalPrice
-		}
-		return ReferenceResolution{
-			WholesaleCost:     variantCost,
-			PlatformPct:       pct,
-			PlatformPctSource: pctSource,
-			ReferenceCost:     referenceCost,
-			PlatformFee:       referenceCost - variantCost,
-			BaseCost:          referenceCost,
-			SellerMargin:      finalPrice - referenceCost,
-			FinalPrice:        finalPrice,
-			OriginalPrice:     originalPrice,
-			ActiveTier:        "variant",
-			PricingMode:       "percent",
-			MarginPercent:     cappedValue,
-		}
+		return resolveVariantAtMargin(variantProduct, variantCost, cappedValue, "variant", settings)
 	}
 	variantProduct := product
 	variantProduct.SupplierBaseCost = variantCost
+	if store.OwnerType == "dropshipper" {
+		// Owner rule (2026-11-05): no variant percent override — the
+		// variant prices at the MAX ALLOWED margin for the product,
+		// computed on the variant cost. It does NOT inherit the product
+		// override, and no store default exists anymore.
+		return resolveVariantAtMargin(variantProduct, variantCost, effectiveMarginCeiling(product.ID, settings), "max-default", settings)
+	}
 	return ResolveReferencePricing(variantProduct, store, settings, locks)
 }
 

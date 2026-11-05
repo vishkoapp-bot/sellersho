@@ -31,8 +31,8 @@ export const ProductDetailModal: React.FC = () => {
       spnc = new URLSearchParams(window.location.search).get('spnc');
     } catch {}
     const bySpnc = spnc ? variants.find((v) => v.spnc === spnc) : undefined;
-    // FIX 10: live's initial selection is the first non-default variant.
-    const next = bySpnc ?? variants.find((v) => !v.isDefault) ?? variants.find((v) => v.isDefault) ?? variants[0];
+    // USER DECISION (Nov 5, 2026): initial selection is the isDefault variant.
+    const next = bySpnc ?? variants.find((v) => v.isDefault) ?? variants[0];
     setSelectedVariantId(next.id);
     setQuantity(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -45,11 +45,9 @@ export const ProductDetailModal: React.FC = () => {
   // variantPrices[variant.id]. FIX 5: the cart now keys on
   // product::variant, so two variants of one product no longer merge.
   const variants = selectedProduct.variants ?? [];
-  const showVariantSelector =
-    variants.length > 1 || variants.some((v) => !v.isDefault);
+  const showVariantSelector = variants.length > 1;
   const selectedVariant =
     variants.find((v) => v.id === selectedVariantId) ??
-    variants.find((v) => !v.isDefault) ??
     variants.find((v) => v.isDefault) ??
     variants[0];
   const variantPrice = selectedVariant

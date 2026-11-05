@@ -80,9 +80,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       spnc = new URLSearchParams(window.location.search).get('spnc');
     } catch {}
     const bySpnc = spnc ? variants.find((v) => v.spnc === spnc) : undefined;
-    // FIX 10: live's initial selection is the first non-default variant
-    // (bracelet: ساده, not the isDefault placeholder پیش‌فرض).
-    const next = bySpnc ?? variants.find((v) => !v.isDefault) ?? variants.find((v) => v.isDefault) ?? variants[0];
+    // USER DECISION (Nov 5, 2026): the initial selection is the
+    // isDefault variant — it is a real, selectable option now.
+    const next = bySpnc ?? variants.find((v) => v.isDefault) ?? variants[0];
     setSelectedVariantId(next.id);
     setSelectedAddonIds([]);
     setQty(next.minCartQty && next.minCartQty > 0 ? next.minCartQty : 1);
@@ -91,11 +91,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   const wishlisted = isWishlisted(product.id);
   const variants = product.variants ?? [];
-  const showVariantSelector =
-    variants.length > 1 || variants.some((v) => !v.isDefault);
+  const showVariantSelector = variants.length > 1;
   const selectedVariant =
     variants.find((v) => v.id === selectedVariantId) ??
-    variants.find((v) => !v.isDefault) ??
     variants.find((v) => v.isDefault) ??
     variants[0];
   // FIX 33 (reverts FIX 32): live settled prod PDP shows the DETAIL

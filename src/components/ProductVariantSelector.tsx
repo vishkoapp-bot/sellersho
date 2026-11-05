@@ -23,15 +23,14 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
 }) => {
   const { toPersianDigits } = useStore();
 
-  // FIX 10 (live parity, proven from the live bundle): live's selector
-  // renders only non-default variants (dd = filter(!isDefault)) and only
-  // shows at all when one exists (no = some(!isDefault)). The API still
-  // carries the isDefault placeholder (e.g. gold bracelet "پیش‌فرض"), but
-  // live shows only ساده and نگین‌دار for it. Same rule here.
-  const visibleVariants = variants.some((v) => !v.isDefault)
-    ? variants.filter((v) => !v.isDefault)
-    : [];
-  if (visibleVariants.length === 0) return null;
+  // USER DECISION (Nov 5, 2026 — supersedes FIX 10 live parity): the
+  // isDefault variant is a normal selectable option like any other.
+  // It can carry its own stock and seller margin (the gold bracelet's
+  // «پیش‌فرض» has stock 5 and its own 15% margin), so hiding it made
+  // that stock unpurchasable. The selector shows whenever a real
+  // choice exists (2+ variants), with every variant as a chip.
+  const visibleVariants = variants;
+  if (visibleVariants.length < 2) return null;
 
   const labelOf = (variant: ProductVariant): string => {
     const attrs = Object.values(variant.attributes || {})

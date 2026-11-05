@@ -124,7 +124,7 @@ func handleT01AdminOverviewSub(w http.ResponseWriter, r *http.Request, db *sql.D
 			}
 		}
 		rows, err := db.QueryContext(ctx, `
-			SELECT d::date AS day,
+			SELECT TO_CHAR(d::date, 'YYYY-MM-DD') AS day,
 				COUNT(o.id) AS orders,
 				COALESCE(SUM(o.payable_amount), 0) AS gmv
 			FROM generate_series(CURRENT_DATE - (INTERVAL '1 day' * ($1 - 1)), CURRENT_DATE, INTERVAL '1 day') AS d

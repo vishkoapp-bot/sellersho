@@ -57,10 +57,11 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // Current product pricing state
   const existingOverride = currentStore.productPriceOverrides?.[product.id];
 
+  // No store-wide default margin exists anymore: with no per-product
+  // percent the input starts EMPTY and the maximum allowed margin
+  // applies automatically (see fallbackPct below).
   const [profitVal, setProfitVal] = useState<string>(
-    existingOverride !== undefined
-      ? existingOverride.toString()
-      : (currentStore.profitMarginPercent || platformSettings.defaultMargin || 20).toString()
+    existingOverride !== undefined ? existingOverride.toString() : ''
   );
   const [applyToNiche, setApplyToNiche] = useState(false);
 
@@ -74,6 +75,14 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // server-side and surfaced by the save error path).
   const maxAllowed = platformSettings.maxProfitMargin ?? 35;
   const isProfitValid = profitVal !== '' && !isNaN(numVal) && numVal >= minAllowed && numVal <= maxAllowed;
+  // Wherever no percent is set, the maximum allowed margin applies
+  // automatically (platform max; a per-product ceiling, when the
+  // platform sets one, is enforced server-side and surfaced via the
+  // save error path). Used for the plain-product preview; per-variant
+  // rows fall back to the max directly (an unset variant never inherits
+  // the product percent — backend parity).
+  const fallbackPct = profitVal !== '' && !isNaN(numVal) ? numVal : maxAllowed;
+  const previewValid = profitVal === '' || isProfitValid;
 
   // The allowed margin band comes from the server's pricing settings
   // (platformSettings), so the seller always sees the real range before
@@ -90,14 +99,14 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // Priority 2.1: Use Canonical resolvePricing from pricingEngine
   const simulatedStore = {
     ...currentStore,
-    productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: numVal },
+    productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: fallbackPct },
   };
   const simulatedPricing = resolvePricing(product, simulatedStore as any, platformSettings);
-  const finalPriceP = isProfitValid ? simulatedPricing.finalPrice : roundTo100(baseCostR);
+  const finalPriceP = previewValid ? simulatedPricing.finalPrice : roundTo100(baseCostR);
   const netProfitToman = finalPriceP - baseCostR;
   // Displayed margin is the applied input margin (server definition), not
   // profit/final — so the number shown matches the number typed.
-  const effectiveMarginPercent = isProfitValid ? simulatedPricing.marginPercent : 0;
+  const effectiveMarginPercent = previewValid ? simulatedPricing.marginPercent : 0;
 
   const handleInitialSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +114,27 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
     // from the per-variant percents only (saved by the variant button).
     if (variantCount > 0) { onClose(); return; }
     if (isLocked) return;
+    if (profitVal === '') {
+      if (applyToNiche) {
+        error('برای اعمال گروهی روی نیچ، ابتدا درصد سود را وارد کن.');
+        return;
+      }
+      // No percent for this product: an existing custom percent is
+      // removed (saving 0 deletes the override); either way the maximum
+      // allowed margin applies automatically from now on.
+      if (existingOverride !== undefined) {
+        const res = await updateStoreProductPriceOverrideWithMode(product.id, 0);
+        if (!res.ok) {
+          error(saveErrorText(res.status));
+          return;
+        }
+        success(`سود سفارشی کالای «${product.title}» حذف شد؛ از این پس حداکثر سود مجاز پلتفرم به‌صورت خودکار اعمال می‌شود.`);
+      } else {
+        success(`برای کالای «${product.title}» درصدی تعیین نشده است؛ حداکثر سود مجاز پلتفرم به‌صورت خودکار اعمال می‌شود.`);
+      }
+      onClose();
+      return;
+    }
     if (!isProfitValid) {
       if (!isNaN(numVal) && numVal > maxAllowed) {
         error(`حداکثر درصد سود مجاز ${toPersianDigits(maxAllowed)}٪ است.`);
@@ -127,7 +157,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
       return;
     }
     if (numVal <= 0) {
-      success(`سود سفارشی کالای «${product.title}» حذف شد؛ از این پس حاشیه سود پیش‌فرض فروشگاه اعمال می‌شود.`);
+      success(`سود سفارشی کالای «${product.title}» حذف شد؛ از این پس حداکثر سود مجاز پلتفرم به‌صورت خودکار اعمال می‌شود.`);
     } else {
       success(`سود ${toPersianDigits(numVal)}٪ برای کالای «${product.title}» ذخیره شد؛ قیمت نهایی پس از اعلام مبنای فروش در ویترین اعمال می‌شود.`);
     }
@@ -143,7 +173,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
     }
     success(
       numVal <= 0
-        ? `نرخ سود نیچ «${productNiche.title}» حذف شد؛ از این پس سود جداگانه هر کالا — یا حاشیه سود پیش‌فرض فروشگاه — اعمال می‌شود.`
+        ? `نرخ سود نیچ «${productNiche.title}» حذف شد؛ از این پس سود جداگانه هر کالا — یا حداکثر سود مجاز پلتفرم به‌صورت خودکار — اعمال می‌شود.`
         : `نرخ سود نیچ «${productNiche.title}» ذخیره شد؛ روی کالاهایی که سود جداگانه دارند اثری ندارد.`
     );
     setShowNicheConfirmModal(false);
@@ -152,7 +182,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   // Per-variant margins (percent-only): the dropshipper sets a profit
   // PERCENT per variant; the supplier sets the variant's own price
-  // (supplierBaseCost). Empty input = follow the product margin above.
+  // (supplierBaseCost). Empty input = the product percent if one is
+  // set, otherwise the maximum allowed margin, automatically.
   // Fetched once per modal open (the content remounts per product via
   // key); the product-margin save must not clobber typed variant values.
   const [variantInputs, setVariantInputs] = useState<Record<string, string>>({});
@@ -219,7 +250,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   };
 
   // Summary for variant products: computed from each variant's EFFECTIVE
-  // percent (typed ?? saved ?? product fallback) and its own base price —
+  // percent (typed ?? saved ?? auto max) and its own base price —
   // the same numbers the backend charges with (variant override wins).
   const variantSummary = (() => {
     if (variantCount === 0) return null;
@@ -229,9 +260,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
       const typed = variantInputs[v.id] ?? '';
       // Inputs initialize from the saved overrides on open, so `typed`
       // already carries them; a cleared input means "delete on save" and
-      // previews the fallback — exactly like the per-variant rows above.
+      // previews the fallback (product percent, else auto max) — exactly
+      // like the per-variant rows above.
       const eff = typed !== '' && !isNaN(Number(typed)) ? Number(typed)
-        : (isNaN(numVal) ? 0 : numVal);
+        : maxAllowed;
       const finalV = roundTo100(baseV * (1 + eff / 100));
       return { baseV, eff, finalV, profitV: finalV - baseV };
     }).filter((r) => r.baseV > 0);
@@ -291,7 +323,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             <div className="space-y-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
               <p className="text-[11px] font-bold text-slate-800">سود هر تنوع (درصد روی قیمت پایه همان تنوع)</p>
               <p className="text-[10px] leading-5 text-slate-500">
-                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. تنوعی که خالی بماند، با درصد پیش‌فرضی حساب می‌شود که در جعبه همان ردیف می‌بینی.
+                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. تنوعی که خالی بماند، درصد محصول به آن نمی‌رسد؛ به‌صورت خودکار حداکثر سود مجاز پلتفرم ({toPersianDigits(maxAllowed)}٪) برای همان تنوع اعمال می‌شود.
               </p>
               <p className="text-[10px] leading-5 text-slate-500">
                 بازه مجاز سود برای هر تنوع هم همان بازه پلتفرم است: {rangeText}
@@ -300,7 +332,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 const costV = v.supplierBaseCost ?? product.supplierBaseCost;
                 const baseV = roundTo100(costV * (1 + productPct / 100));
                 const typed = variantInputs[v.id] ?? '';
-                const marginV = typed !== '' && !isNaN(Number(typed)) ? Number(typed) : (isNaN(numVal) ? 0 : numVal);
+                const marginV = typed !== '' && !isNaN(Number(typed)) ? Number(typed) : maxAllowed;
                 const finalV = roundTo100(baseV * (1 + marginV / 100));
                 return (
                   <div key={v.id} className="space-y-2 bg-white border border-slate-200 rounded-xl p-2.5">
@@ -312,7 +344,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                         disabled={isLocked || variantSaving}
                         value={typed}
                         onChange={(e) => setVariantInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
-                        placeholder={!isNaN(numVal) ? toPersianDigits(numVal) : '۲۰'}
+                        placeholder={toPersianDigits(maxAllowed)}
                         className="w-20 shrink-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
                         aria-label={`درصد سود تنوع ${v.variantName || v.name}`}
                       />
@@ -345,7 +377,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           <div>
 
             <div className={`relative flex items-center rounded-xl px-3 py-2 border transition-all ${
-              !isProfitValid
+              !previewValid
                 ? 'bg-rose-50/50 border-rose-300 ring-1 ring-rose-200'
                 : 'bg-slate-50 border-slate-200 focus-within:bg-white focus-within:border-blue-500'
             }`}>
@@ -355,9 +387,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 disabled={isLocked}
                 value={profitVal}
                 onChange={(e) => setProfitVal(e.target.value)}
-                placeholder='۲۰'
+                placeholder={`خودکار: حداکثر مجاز (${toPersianDigits(maxAllowed)}٪)`}
                 className="w-full bg-transparent text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
-                required
               />
               <span className="text-[10px] text-slate-400 font-bold mr-1 shrink-0">
                 درصد سود این کالا
@@ -367,6 +398,11 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             <p className="mt-1 text-[10px] leading-5 text-slate-500">
               بازه مجاز سود در پلتفرم: {rangeText}
             </p>
+            {profitVal === '' && (
+              <p className="mt-1 text-[10px] leading-5 text-slate-500">
+                این کالا درصد جداگانه ندارد؛ حداکثر سود مجاز به‌صورت خودکار اعمال می‌شود. برای سود دلخواه، درصد را همین‌جا بنویس و ذخیره کن.
+              </p>
+            )}
             {/* Requirement 1: Real-time validation warning */}
             {!isProfitValid && profitVal !== '' && (
               <div className="flex items-center gap-1 text-[10px] text-rose-600 mt-1">
@@ -424,11 +460,11 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             </div>
           ) : baseUnknown ? (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-              {isProfitValid ? (
+              {previewValid ? (
                 <>
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-slate-700 font-bold">سود انتخابی شما:</span>
-                    <span className="text-base font-black text-slate-800 font-mono">`٪${toPersianDigits(numVal)}`</span>
+                    <span className="text-[10px] text-slate-700 font-bold">{profitVal === '' ? 'سود خودکار (حداکثر مجاز):' : 'سود انتخابی شما:'}</span>
+                    <span className="text-base font-black text-slate-800 font-mono">`٪${toPersianDigits(fallbackPct)}`</span>
                   </div>
                   <p className="text-[10px] leading-5 text-slate-600">قیمت نهایی را فعلاً نمی‌شود نشان داد، چون قیمت خرید کالا هنوز اعلام نشده است. وقتی اعلام شود، همین سودی که این‌جا می‌گذاری خودکار روی آن حساب می‌شود.</p>
                 </>
@@ -468,7 +504,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             </button>
             <button
               type="submit"
-              disabled={!isProfitValid || isLocked}
+              disabled={!previewValid || isLocked}
               className="py-2.5 bg-[#007dfa] hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-xs disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {applyToNiche ? 'مرحله بعد: بازبینی و تایید' : 'ذخیره و اعمال در ویترین'}

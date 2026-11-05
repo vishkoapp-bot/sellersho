@@ -76,7 +76,8 @@ export interface ResolvedPricingResult {
  *
  * R = RoundTo100(C * (1 + pct/100)); P = RoundTo100(R * (1 + margin/100)).
  * Margin Priority: Admin Lock -> Single Product Override -> Niche Override
- * -> Category Override -> Store Default / Platform Default 20%.
+ * -> Category Override -> Auto: maximum allowed margin (no store-wide
+ * default exists; wherever nothing is set, the platform max applies).
  * Central stores take the platform's centralProfitPct on R (default 10).
  * The anchor price follows the server rule: max(stored original, final).
  * Universal 100-Toman Price Rounding.
@@ -95,11 +96,15 @@ export const resolvePricing = (
   let rawFinalPrice = baseCost;
   let activeTier: 'product' | 'niche' | 'category' | 'default' = 'default';
 
-  const effectiveStoreDefault = store?.customStoreMarginOverride !== undefined
-    ? store.customStoreMarginOverride
-    : (store?.profitMarginPercent > 0 ? store.profitMarginPercent : (platformSettings?.defaultMargin || 20));
+  // Final fallback (owner rule): no store-wide default margin — where
+  // neither product, niche nor category percent is set, the maximum
+  // allowed margin applies automatically. The admin manual override
+  // (customStoreMarginOverride) applies ONLY through the flag-gated
+  // admin lock branch below — never as an ungated fallback (backend
+  // parity: legacy seller saves of that field must stay inert).
+  const effectiveDefaultMargin = platformSettings?.maxProfitMargin ?? 35;
 
-  let marginValue = effectiveStoreDefault;
+  let marginValue = effectiveDefaultMargin;
 
   if (store?.ownerType === 'dropshipper') {
     if (store.isMarginLockedByAdmin && store.customStoreMarginOverride !== undefined) {
@@ -130,7 +135,7 @@ export const resolvePricing = (
         rawFinalPrice = baseCost * (1 + marginValue / 100);
       }
 
-      // Priority 4: Default Margin (uses store default or platform default)
+      // Priority 4: nothing set — maximum allowed margin, automatically
       if (activeTier === 'default') {
         rawFinalPrice = baseCost * (1 + marginValue / 100);
       }

@@ -8,6 +8,11 @@ interface ProductVariantSelectorProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   storeCount?: number;
+  // PDP template bridge: 'fashion' restyles the chips with the
+  // Aastin token set (ink selection, hairline borders, square
+  // corners). Default keeps the platform look byte-for-byte, so the
+  // detail modal and every other consumer are untouched.
+  theme?: 'default' | 'fashion';
 }
 
 // FIX 4 (team 04 G2): live product pages offer a variant selector.
@@ -20,8 +25,10 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   selectedId,
   onSelect,
   storeCount = 0,
+  theme = 'default',
 }) => {
   const { toPersianDigits } = useStore();
+  const fashion = theme === 'fashion';
 
   // USER DECISION (Nov 5, 2026 — supersedes FIX 10 live parity): the
   // isDefault variant is a normal selectable option like any other.
@@ -61,11 +68,11 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
     <div data-testid="variant-selector" className="space-y-3">
       {attrKey && attrValue != null ? (
         <p className="flex items-center gap-1.5 text-[11px]">
-          <span className="font-bold text-slate-700">{attrKey}</span>
-          <span className="text-slate-400">: {String(attrValue)}</span>
+          <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-700'}>{attrKey}</span>
+          <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>: {String(attrValue)}</span>
         </p>
       ) : (
-        <p className="text-xs font-bold text-slate-800">{label}</p>
+        <p className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{label}</p>
       )}
       <div className="flex flex-wrap gap-2">
         {visibleVariants.map((variant) => {
@@ -78,14 +85,20 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
               onClick={() => onSelect(variant.id)}
               aria-pressed={selected}
               disabled={unavailable && !selected}
-              className={`min-h-[36px] px-3 rounded-xl border text-[11px] font-bold transition-all ${
+              className={`min-h-[36px] px-3 ${fashion ? 'rounded-none' : 'rounded-xl'} border text-[11px] font-bold transition-all ${
                 selected
-                  ? 'text-white shadow-xs'
+                  ? fashion
+                    ? 'text-white'
+                    : 'text-white shadow-xs'
                   : unavailable
-                    ? 'bg-slate-50 text-slate-400 border-slate-100 opacity-40 cursor-not-allowed'
-                    : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                    ? fashion
+                      ? 'bg-[#f2f2f2] text-[#737373] border-[#e5e0d8] opacity-40 cursor-not-allowed'
+                      : 'bg-slate-50 text-slate-400 border-slate-100 opacity-40 cursor-not-allowed'
+                    : fashion
+                      ? 'bg-white text-[#1c1c1a] border-[#e5e0d8] hover:border-[#1c1c1a]'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
               }`}
-              style={selected ? { backgroundColor: '#5d44f8', borderColor: '#5d44f8' } : undefined}
+              style={selected ? { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' } : undefined}
             >
               <span className="block">{labelOf(variant)}</span>
             </button>

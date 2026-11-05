@@ -18,6 +18,15 @@ import { Footer } from './Footer';
 // PLUS the footer trust row on 404 pages -- the duplication the
 // re-check flagged. TrustFeatures is removed here; Footer keeps its
 // own trust row, exactly like live.
+// Store identity rule: the STORE variant renders WITHOUT the
+// central Header/Footer. Callers frame it with the store's own
+// chrome when there is one (a scoped PDP's mismatched product, a
+// storefront branch), and a suspended/nonexistent store has no
+// chrome of its own to show - painting the platform's header and
+// footer around it would brand another business's dead end as the
+// platform's page. Its only exit stays the back link below (history
+// back, else the caller's onBack). The generic variant keeps the
+// central chrome, byte-identical.
 // Icon identities: Wb (live's icon) is SearchX (magnifier + x, the
 // re-check's description); ld (home button icon) is Home; ns (back
 // link icon) is ArrowRight (RTL "back" direction). All are the only
@@ -38,7 +47,7 @@ export const NotFoundView: React.FC<{
   const isStore = variant === 'store';
   return (
     <div className="flex-1 flex flex-col bg-white min-h-screen">
-      <Header />
+      {!isStore && <Header />}
       <main className={`flex-1 flex flex-col items-center justify-center px-6 py-16 text-center select-none ${isStore ? 'bg-[#FAF9F7]' : 'bg-white'}`}>
         <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-5 ${isStore ? 'bg-stone-200/70' : 'bg-brand/10'}`}>
           <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-brand'}`} strokeWidth={1.5} />
@@ -69,7 +78,7 @@ export const NotFoundView: React.FC<{
           <span>بازگشت به صفحه قبل</span>
         </button>
       </main>
-      <Footer />
+      {!isStore && <Footer />}
     </div>
   );
 };

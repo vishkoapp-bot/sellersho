@@ -189,7 +189,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({ viewerRo
                       type="button"
                       onClick={() => {
                         disputeOrderDelivery(current.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
-                        toastSuccess(`گزارش عدم دریافت کالا ثبت شد و سفارش جهت پیگیری در صف عملیات پلتفرم قرار گرفت.`);
+                        toastSuccess(`گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.`);
                       }}
                       className="py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 flex items-center justify-center gap-1 transition-all"
                     >

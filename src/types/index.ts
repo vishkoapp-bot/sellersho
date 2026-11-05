@@ -220,6 +220,11 @@ export interface Store {
   centralDealsFilter?: 'my_niches' | 'manual' | 'all';
   centralDealsProductIds?: string[];
   builderConfig?: StoreBuilderConfig;
+  // Public widgets-only subset of builderConfig (emitted by the
+  // public store DTO as builderWidgets): the six section toggles
+  // for real visitors. The owner preview uses builderConfig.widgets,
+  // which takes precedence whenever it is present.
+  builderWidgets?: StoreBuilderConfig['widgets'];
   customDomain?: string;
   activePlanId?: 'trial' | 'standard' | 'pro' | 'vip';
   planExpiresAt?: string;

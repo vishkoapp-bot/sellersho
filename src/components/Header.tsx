@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useStore, useStoreManager } from '../context/StoreContext';
+import { useStore, useStoreManager, useActiveStoreCategorySlugs, expandCategorySlugsWithAncestors, activeStoreSlugOf } from '../context/StoreContext';
 import { catalogApi, type ProductDto } from '../services/catalogApi';
 import { storeApi } from '../services/storeApi';
 import { mapBackendProduct } from '../context/ProductContext';
+import { cardPriceOf } from '../utils/cardPrice';
 import { AuthModal } from './auth/AuthModal';
 import { NotificationDrawer } from './common/NotificationDrawer';
 import { Search, ShoppingCart, Truck, User, X, Bell, Package, Heart, LayoutGrid, Menu, ChevronLeft, ArrowLeft } from 'lucide-react';
@@ -22,6 +23,7 @@ const searchPlaceholders = [
 export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   const { 
     currentStore, 
+    routeStoreSlug, 
     setCurrentStore, 
     cartItemsCount, 
     setIsCartOpen, 
@@ -65,6 +67,14 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
     return () => clearInterval(timer);
   }, []);
 
+  // Store scope for search: while the shopper is inside a store
+  // (a store-scoped PDP's routeStoreSlug, or a dropshipper
+  // currentStore), suggestions must come from THAT store's
+  // assortment at that store's prices — the backend scopes both
+  // the list and the detail fetch by storeSlug. No store context
+  // → the requests below stay exactly the central ones.
+  const searchStoreSlug = activeStoreSlugOf({ routeStoreSlug, currentStore });
+
   // Live search effect (bundle: trimmed term, 320ms debounce,
   // GET /products/?search=<term>&limit=10). Empty term closes
   // immediately with no fetch; a failed fetch also closes with
@@ -79,7 +89,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
     let dead = false;
     const timer = setTimeout(async () => {
       try {
-        const res = await catalogApi.getProducts({ search: term });
+        const res = await catalogApi.getProducts({ search: term, ...(searchStoreSlug ? { storeSlug: searchStoreSlug } : {}) });
         const arr = Array.isArray(res) ? res : [];
         if (dead) return;
         setSearchResults(arr.slice(0, 10));
@@ -89,7 +99,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
       }
     }, 320);
     return () => { dead = true; clearTimeout(timer); };
-  }, [searchQuery]);
+  }, [searchQuery, searchStoreSlug]);
 
   // Live dismissal (bundle): while open, document mousedown
   // outside the search wrapper and Escape both close. No blur
@@ -129,7 +139,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   // fallback maps the row DTO.
   const handleSuggestionClick = (row: ProductDto) => {
     setIsSearchDropOpen(false);
-    catalogApi.getProductById(row.id).then(
+    catalogApi.getProductById(row.id, searchStoreSlug ?? undefined).then(
       (full) => { try { openProductDetail(mapBackendProduct(full)); } catch { openProductDetail(mapBackendProduct(row)); } },
       () => { openProductDetail(mapBackendProduct(row)); },
     );
@@ -165,7 +175,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-slate-800">{row.title}</p>
                 {typeof row.price === 'number' && (
-                  <p className="text-xs font-bold text-slate-900">{`${formatPrice(row.price)} تومان`}</p>
+                  <p className="text-xs font-bold text-slate-900">{`${formatPrice(cardPriceOf(row).price)} تومان`}</p>
                 )}
               </div>
             </button>
@@ -516,7 +526,20 @@ const CategoriesMenu: React.FC<{
 }> = ({ open, onClose, toggleButtonRef }) => {
   const { categories, openCatalogCategory, setActiveView } = useStore();
   const panelRef = useRef<HTMLDivElement>(null);
-  const roots = useMemo(() => buildCategoryTree(categories), [categories]);
+  // While a store context is active this menu is the STORE's menu:
+  // it lists only the categories the store actually sells (its
+  // scoped assortment, ancestors included). While that set loads,
+  // the full platform tree must NOT flash — the panel shows a
+  // loading row instead. No store context: the platform tree,
+  // exactly as before.
+  const { storeSlug, categorySlugs } = useActiveStoreCategorySlugs();
+  const visibleCategories = useMemo(() => {
+    if (!storeSlug) return categories;
+    if (!categorySlugs) return null;
+    const included = expandCategorySlugsWithAncestors(categories, categorySlugs);
+    return categories.filter((c) => included.has(c.slug));
+  }, [categories, storeSlug, categorySlugs]);
+  const roots = useMemo(() => buildCategoryTree(visibleCategories ?? []), [visibleCategories]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
 
   useEffect(() => {
@@ -552,7 +575,12 @@ const CategoriesMenu: React.FC<{
 
   return (
     <div ref={panelRef} role="menu" aria-label="همه دسته‌ها" className="hidden lg:block absolute top-full inset-x-0 z-50 bg-white border-b border-slate-200 shadow-xl shadow-slate-900/10">
-      {roots.length === 0 ? (
+      {storeSlug && !visibleCategories ? (
+        <div className="px-8 xl:px-10 2xl:px-12 py-10 flex flex-col items-center gap-3 text-center">
+          <LayoutGrid className="w-10 h-10 text-slate-300"  strokeWidth={1.5}/>
+          <p className="text-sm font-semibold text-slate-600">در حال بارگذاری دسته‌بندی‌های فروشگاه…</p>
+        </div>
+      ) : roots.length === 0 ? (
         <div className="px-8 xl:px-10 2xl:px-12 py-10 flex flex-col items-center gap-3 text-center">
           <LayoutGrid className="w-10 h-10 text-slate-300"  strokeWidth={1.5}/>
           <p className="text-sm font-semibold text-slate-600">دسته‌بندی‌ای ثبت نشده است</p>

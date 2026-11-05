@@ -56,6 +56,7 @@ export const AppContent: React.FC = () => {
     currentStore,
     products,
     openProductDetail,
+    storefrontSlug,
     storefrontLoading,
     storefrontInvalid,
     storefrontSuspended,
@@ -127,8 +128,18 @@ export const AppContent: React.FC = () => {
     if (!product) return;
     adProductOpened.current = true;
     openProductDetail(product);
-    setActiveView('product_detail');
-  }, [products, openProductDetail, setActiveView]);
+    // The ad click landed from a store's campaign: the PDP opens in
+    // THAT store's scope (its prices, its frame, its store-carrying
+    // URL), never the central store's. The landing store is the
+    // storefront the link opened on, else the store being browsed.
+    // The central slug is not a scope (scopes are dropshipper slugs
+    // or none), so a central landing keeps the unscoped open.
+    const landingSlug = storefrontSlug ?? currentStore?.slug ?? null;
+    setActiveView('product_detail', {
+      productId: product.id,
+      storeSlug: landingSlug && landingSlug !== 'central' ? landingSlug : undefined,
+    });
+  }, [products, openProductDetail, setActiveView, storefrontSlug, currentStore]);
 
   if (!isSessionReady) return <div role="status">در حال بررسی نشست…</div>;
   if (currentUser) {
@@ -236,7 +247,7 @@ export const AppContent: React.FC = () => {
           />
         ) : activeView === 'seller_storefront' ? (
           storefrontUnsubscribeSlug ? (
-            <StoreUnsubscribeView slug={storefrontUnsubscribeSlug} onBack={() => setActiveView('customer')} />
+            <StoreUnsubscribeView slug={storefrontUnsubscribeSlug} onBack={() => setActiveView('seller_storefront', { storeSlug: storefrontUnsubscribeSlug })} />
           ) : storefrontLoading ? (
             <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری ویترین فروشگاه…</div>
           ) : storefrontInvalid ? (
@@ -304,29 +315,73 @@ export const AppContent: React.FC = () => {
             <Footer />
           </>
         ) : activeView === 'customer_profile' ? (
-          <>
-            <Header sticky={false} />
-            <CustomerProfileView onBack={() => setActiveView('customer')} />
-            <Footer />
-          </>
+          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+            <>
+              <SellerStorefrontHeader
+                onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
+                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+              />
+              <CustomerProfileView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <SellerStorefrontFooter />
+            </>
+          ) : (
+            <>
+              <Header sticky={false} />
+              <CustomerProfileView onBack={() => setActiveView('customer')} />
+              <Footer />
+            </>
+          )
         ) : activeView === 'customer_orders' ? (
-          <>
-            <Header sticky={false} />
-            <CustomerOrdersView onBack={() => setActiveView('customer')} />
-            <Footer />
-          </>
+          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+            <>
+              <SellerStorefrontHeader
+                onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
+                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+              />
+              <CustomerOrdersView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <SellerStorefrontFooter />
+            </>
+          ) : (
+            <>
+              <Header sticky={false} />
+              <CustomerOrdersView onBack={() => setActiveView('customer')} />
+              <Footer />
+            </>
+          )
         ) : activeView === 'customer_wishlist' ? (
-          <>
-            <Header sticky={false} />
-            <CustomerWishlistView onBack={() => setActiveView('customer')} />
-            <Footer />
-          </>
+          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+            <>
+              <SellerStorefrontHeader
+                onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
+                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+              />
+              <CustomerWishlistView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <SellerStorefrontFooter />
+            </>
+          ) : (
+            <>
+              <Header sticky={false} />
+              <CustomerWishlistView onBack={() => setActiveView('customer')} />
+              <Footer />
+            </>
+          )
         ) : activeView === 'static_page' ? (
-          <>
-            <Header sticky={false} />
-            <StaticPageView onBack={() => setActiveView('customer')} />
-            <Footer />
-          </>
+          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+            <>
+              <SellerStorefrontHeader
+                onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
+                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+              />
+              <StaticPageView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <SellerStorefrontFooter />
+            </>
+          ) : (
+            <>
+              <Header sticky={false} />
+              <StaticPageView onBack={() => setActiveView('customer')} />
+              <Footer />
+            </>
+          )
         ) : activeView === 'supplier_landing' ? (
           <>
             <Header sticky={false} />
@@ -365,7 +420,7 @@ export const AppContent: React.FC = () => {
         <CartDrawer />
         <SellerOnboardingModal />
         <OrderTrackingModal />
-        {activeView === 'seller_storefront' ? <StorefrontBottomNav /> : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
+        {activeView === 'seller_storefront' || (activeView === 'product_detail' && (routeStoreSlug || currentStore?.ownerType === 'dropshipper')) ? <StorefrontBottomNav /> : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
       </div>
     </div>
   );

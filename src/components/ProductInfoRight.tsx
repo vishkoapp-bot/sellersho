@@ -8,18 +8,36 @@ interface ProductInfoRightProps {
 }
 
 export const ProductInfoRight: React.FC<ProductInfoRightProps> = ({ product }) => {
-  const { formatPrice, toPersianDigits, currentStore } = useStore();
-  const isDropshipperStore = currentStore.ownerType === 'dropshipper';
-  const brandLabel = isDropshipperStore ? `فروشگاه: ${currentStore.name}` : `تأمین‌کننده: ${product.supplierName}` ;
+  const { formatPrice, toPersianDigits, currentStore, routeStoreSlug, stores } = useStore();
+  // Seller of record resolves from the ROUTED store (routeStoreSlug),
+  // never the ambient currentStore: a routed dropshipper store sells
+  // under its own name; with no store scope, the supplier name shows
+  // only when the API actually served one (post-gate anonymous
+  // responses carry none, so no line renders rather than a
+  // fabricated name).
+  const routedStore = routeStoreSlug
+    ? currentStore?.slug === routeStoreSlug
+      ? currentStore
+      : stores.find((s) => s.slug === routeStoreSlug)
+    : undefined;
+  const supplierName = (product.supplierName || '').trim();
+  const brandLabel =
+    routedStore?.ownerType === 'dropshipper'
+      ? `فروشگاه: ${routedStore.name}`
+      : supplierName
+        ? `تأمین‌کننده: ${supplierName}`
+        : null;
 
   return (
     <div className="space-y-4">
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-xs font-bold text-blue-600 flex items-center gap-1">
-            <Building2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-            <span>{brandLabel}</span>
-          </span>
+          {brandLabel ? (
+            <span className="text-xs font-bold text-blue-600 flex items-center gap-1">
+              <Building2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
+              <span>{brandLabel}</span>
+            </span>
+          ) : null}
           <div className="flex items-center gap-1 text-xs text-amber-500 font-bold">
             <Star className="w-3.5 h-3.5 fill-current"  strokeWidth={1.5}/>
             <span>{toPersianDigits(product.rating)}</span>

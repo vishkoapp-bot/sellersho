@@ -35,8 +35,7 @@ export const ProductGridSection: React.FC = () => {
     const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
     const matchesSearch = !searchQuery || 
       p.title.includes(searchQuery) || 
-      p.description.includes(searchQuery) ||
-      p.supplierName.includes(searchQuery);
+      p.description.includes(searchQuery);
     const matchesStock = !onlyInStock || (p.stock || 0) > 0;
     const matchesOriginal = !onlyOriginal || p.isOriginal === true;
     

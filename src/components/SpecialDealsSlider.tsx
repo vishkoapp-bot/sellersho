@@ -13,9 +13,15 @@ interface SpecialDealsSliderProps {
   // prices). The central home passes nothing and keeps the context
   // catalogue, exactly as before.
   products?: Product[];
+  // Store branding, passed by a dropshipper storefront's fallback
+  // layout: when present the band speaks in the store's name, and
+  // in the store's accent when one is configured, instead of the
+  // platform's name and purple livery. Absent (central home) the
+  // band renders exactly as before.
+  storeBrand?: { name: string; accentColor?: string };
 }
 
-export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products: productsProp }) => {
+export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products: productsProp, storeBrand }) => {
   const { products: contextProducts, currentStore, openCatalogCategory } = useStore();
   const products = productsProp ?? contextProducts;
 
@@ -31,7 +37,11 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
         overridden at >=1280px by that ID rule, so the band fills the
         1240px main content box exactly like live's (340..1580 @1920).
         Below 1280px the mx values are live's own. */}
-      <div className="absolute inset-0 z-0 bg-gradient-to-l from-[#5d44f8] via-[#4e30d6] to-[#3f1ca3]" />
+      {storeBrand?.accentColor ? (
+        <div className="absolute inset-0 z-0" style={{ backgroundColor: storeBrand.accentColor }} />
+      ) : (
+        <div className="absolute inset-0 z-0 bg-gradient-to-l from-[#5d44f8] via-[#4e30d6] to-[#3f1ca3]" />
+      )}
       <div className="absolute inset-0 z-0 opacity-20">
         <div className="absolute -top-10 -right-10 w-48 h-48 rounded-full bg-white/20 blur-2xl" />
         <div className="absolute -bottom-12 -left-8 w-40 h-40 rounded-full bg-white/10 blur-2xl" />
@@ -43,7 +53,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
         </div>
         <div>
           <h2 className="text-base lg:text-xl font-extrabold text-white tracking-tight">تخفیف‌های امروز</h2>
-          <p className="text-xs lg:text-sm text-white/85 mt-0.5">پیشنهادهای ویژه سلرشو</p>
+          <p className="text-xs lg:text-sm text-white/85 mt-0.5">{storeBrand ? `پیشنهادهای ویژه ${storeBrand.name}` : 'پیشنهادهای ویژه سلرشو'}</p>
         </div>
       </div>
 
@@ -61,7 +71,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
             onClick={() => openCatalogCategory("all")}
             className="w-[110px] h-[120px] self-center shrink-0 bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
           >
-            <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform">
+            <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
               <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
             </div>
             <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
@@ -80,7 +90,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
                   onClick={() => openCatalogCategory("all")}
                   className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
                 >
-                  <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform">
+                  <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
                     <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
                   </div>
                   <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
@@ -98,7 +108,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
                 onClick={() => openCatalogCategory("all")}
                 className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
               >
-                <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform">
+                <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
                   <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
                 </div>
                 <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>

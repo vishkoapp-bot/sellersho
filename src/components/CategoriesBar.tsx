@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { useStore } from '../context/StoreContext';
+import { useStore, useActiveStoreCategorySlugs, expandCategorySlugsWithAncestors } from '../context/StoreContext';
 import { ChevronLeft, Coins, Gem, Home, Plug, Shirt, ShoppingBag, Smartphone, Sparkles } from 'lucide-react';
 
 // Live category-icon map (live bundle A5: Smartphone, Shirt, Sparkles,
@@ -18,6 +18,15 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string; s
 
 export const CategoriesBar: React.FC = () => {
   const { openCatalogCategory, setActiveView, categories, catalogLoading, products, toPersianDigits } = useStore();
+  // While a store context is active this bar is the store's
+  // category bar: only categories the store actually sells are
+  // listed (its scoped assortment, ancestors included), and clicks
+  // already route in-store via openCatalogCategory. Until the
+  // store's set has loaded — and when it is empty — the bar hides
+  // itself (see the guard before the render) instead of flashing
+  // the central category list. No store context: unchanged.
+  const { storeSlug, categorySlugs } = useActiveStoreCategorySlugs();
+  const storeIncluded = storeSlug && categorySlugs ? expandCategorySlugsWithAncestors(categories, categorySlugs) : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef({ active: false, startX: 0, startScrollLeft: 0, moved: false });
   const suppressClickRef = useRef(false);
@@ -92,6 +101,8 @@ export const CategoriesBar: React.FC = () => {
     }
   };
 
+  if (storeSlug && (!storeIncluded || storeIncluded.size === 0)) return null;
+
   return (
     <section id="category" data-testid="category" className="bg-white mb-5">
       {/* Categories Carousel — live bundle _5 + Jm (framed, size lg) */}
@@ -110,7 +121,7 @@ export const CategoriesBar: React.FC = () => {
                   <div className="w-14 h-3 mt-2.5 rounded-full bg-slate-100" />
                 </div>
               ))
-            : categories.filter((cat) => !cat.parentId).map((cat) => {
+            : categories.filter((cat) => !cat.parentId && (!storeIncluded || storeIncluded.has(cat.slug))).map((cat) => {
                 // Live gradient fallback when the DB gradient is empty;
                 // the candidate mapping turns an empty gradient into
                 // 'from-slate-50 to-blue-50', which must map to live's.

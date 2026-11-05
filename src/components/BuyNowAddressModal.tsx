@@ -50,6 +50,12 @@ const mapBackendAddress = (a: BackendAddress): DirectBuyAddress => ({
 const inputClassName =
   'w-full p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm focus:outline-hidden focus:border-brand focus:ring-2 focus:ring-brand/20';
 const labelClassName = 'text-[11px] font-bold text-slate-700 block mb-1';
+// Fashion PDP treatment (Aastin tokens): square inputs on white with
+// hairline borders and an ink focus ring - used only when the PDP
+// passes fashion, so the central direct-buy sheet is unchanged.
+const inputClassNameFashion =
+  'w-full p-2.5 rounded-none bg-white border border-[#e5e0d8] text-sm focus:outline-hidden focus:border-[#1c1c1a] focus:ring-2 focus:ring-[#1c1c1a]/15';
+const labelClassNameFashion = 'text-[11px] font-bold text-[#1c1c1a] block mb-1';
 
 interface NewAddressForm {
   label: string;
@@ -89,8 +95,11 @@ export const BuyNowAddressModal: React.FC<{
   item: BuyNowItemSummary;
   onClose: () => void;
   onConfirm: (address: DirectBuyAddress) => void;
-}> = ({ open, item, onClose, onConfirm }) => {
+  fashion?: boolean;
+}> = ({ open, item, onClose, onConfirm, fashion = false }) => {
   const { customerUser, formatPrice, toPersianDigits } = useStore();
+  const inputCls = fashion ? inputClassNameFashion : inputClassName;
+  const labelCls = fashion ? labelClassNameFashion : labelClassName;
   const { success, error } = useToast();
   const [view, setView] = useState<'auth' | 'list' | 'new'>('auth');
   const [addresses, setAddresses] = useState<DirectBuyAddress[]>([]);
@@ -310,39 +319,39 @@ export const BuyNowAddressModal: React.FC<{
       }}
     >
       <div
-        className="w-full max-w-[504px] bg-white max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl lg:max-w-[560px]"
+        className={fashion ? 'w-full max-w-[504px] bg-[#faf8f5] max-h-[92dvh] overflow-y-auto rounded-none shadow-2xl lg:max-w-[560px]' : 'w-full max-w-[504px] bg-white max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl lg:max-w-[560px]'}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 bg-white z-10 flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <div className={fashion ? 'sticky top-0 bg-[#faf8f5] z-10 flex items-center justify-between border-b border-[#e5e0d8] px-4 py-3' : 'sticky top-0 bg-white z-10 flex items-center justify-between border-b border-slate-100 px-4 py-3'}>
           <div>
-            <h3 className="text-sm font-extrabold text-slate-900">خرید فوری</h3>
-            <span className="text-[11px] text-slate-400 block">
+            <h3 className={fashion ? 'text-sm font-extrabold text-[#1c1c1a]' : 'text-sm font-extrabold text-slate-900'}>خرید فوری</h3>
+            <span className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-400'} block`}>
               {view === 'list' ? 'آدرس تحویل را انتخاب کنید' : 'آدرس جدید'}
             </span>
           </div>
           <button
             onClick={onClose}
             aria-label="بستن"
-            className="w-11 h-11 rounded-full hover:bg-slate-100 text-slate-500 flex items-center justify-center"
+            className={fashion ? 'w-11 h-11 rounded-none hover:bg-[#f2f2f2] text-[#737373] flex items-center justify-center' : 'w-11 h-11 rounded-full hover:bg-slate-100 text-slate-500 flex items-center justify-center'}
           >
             <X className="w-5 h-5" strokeWidth={1.5} />
           </button>
         </div>
 
         <div className="p-4 space-y-4">
-          <div className="bg-slate-50 rounded-2xl p-3 space-y-1">
-            <p className="text-xs font-bold text-slate-800 line-clamp-2">{item.title}</p>
-            {item.variantLabel && <p className="text-[11px] text-slate-500">{item.variantLabel}</p>}
+          <div className={fashion ? 'bg-[#f2f2f2] rounded-none p-3 space-y-1' : 'bg-slate-50 rounded-2xl p-3 space-y-1'}>
+            <p className={fashion ? 'text-xs font-bold text-[#1c1c1a] line-clamp-2' : 'text-xs font-bold text-slate-800 line-clamp-2'}>{item.title}</p>
+            {item.variantLabel && <p className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>{item.variantLabel}</p>}
             <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-500">تعداد: {toPersianDigits(item.qty)}</span>
-              <span className="font-extrabold text-brand-deep">{formatPrice(item.totalPrice)} تومان</span>
+              <span className={fashion ? 'text-[#737373]' : 'text-slate-500'}>تعداد: {toPersianDigits(item.qty)}</span>
+              <span className={fashion ? 'font-extrabold text-[#1c1c1a]' : 'font-extrabold text-brand-deep'}>{formatPrice(item.totalPrice)} تومان</span>
             </div>
           </div>
 
           {view === 'list' && (
             <>
               {loading ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-slate-500 text-xs">
+                <div className={`flex items-center justify-center gap-2 py-8 ${fashion ? 'text-[#737373]' : 'text-slate-500'} text-xs`}>
                   <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
                   <span>در حال بارگذاری آدرس‌ها…</span>
                 </div>
@@ -351,7 +360,7 @@ export const BuyNowAddressModal: React.FC<{
                   <p className="text-xs text-rose-500 font-bold">بارگذاری آدرس‌ها ناموفق بود.</p>
                   <button
                     onClick={() => void loadAddresses()}
-                    className="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold"
+                    className={fashion ? 'px-4 py-2.5 rounded-none bg-[#f2f2f2] text-[#1c1c1a] text-xs font-bold' : 'px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold'}
                   >
                     تلاش مجدد
                   </button>
@@ -359,10 +368,10 @@ export const BuyNowAddressModal: React.FC<{
               ) : addresses.length === 0 ? (
                 <div className="text-center py-6 space-y-3">
                   <MapPin className="w-8 h-8 text-slate-300 mx-auto" strokeWidth={1.5} />
-                  <p className="text-xs text-slate-500">شما هنوز آدرسی ثبت نکرده‌اید.</p>
+                  <p className={`text-xs ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>شما هنوز آدرسی ثبت نکرده‌اید.</p>
                   <button
                     onClick={openNewAddress}
-                    className="px-4 py-3 rounded-xl bg-brand text-white text-xs font-bold"
+                    className={fashion ? 'px-4 py-3 rounded-none bg-[#3a4441] text-[#faf8f5] text-xs font-bold' : 'px-4 py-3 rounded-xl bg-brand text-white text-xs font-bold'}
                   >
                     افزودن آدرس جدید
                   </button>
@@ -376,34 +385,46 @@ export const BuyNowAddressModal: React.FC<{
                         key={address.id}
                         type="button"
                         onClick={() => setSelectedId(address.id)}
-                        className={`w-full text-right p-3 rounded-2xl border transition-colors ${
-                          isSelected ? 'border-brand bg-brand-soft/40' : 'border-slate-200 hover:border-slate-300'
+                        className={`w-full text-right p-3 ${fashion ? 'rounded-none' : 'rounded-2xl'} border transition-colors ${
+                          isSelected
+                            ? fashion
+                              ? 'border-[#1c1c1a] bg-[#f2f2f2]'
+                              : 'border-brand bg-brand-soft/40'
+                            : fashion
+                              ? 'border-[#e5e0d8] bg-white hover:border-[#1c1c1a]'
+                              : 'border-slate-200 hover:border-slate-300'
                         }`}
                       >
                         <div className="flex items-start gap-2.5">
                           <span
                             className={`mt-0.5 w-5 h-5 shrink-0 rounded-full border-2 flex items-center justify-center ${
-                              isSelected ? 'border-brand bg-brand' : 'border-slate-300 bg-white'
+                              isSelected
+                                ? fashion
+                                  ? 'border-[#1c1c1a] bg-[#1c1c1a]'
+                                  : 'border-brand bg-brand'
+                                : fashion
+                                  ? 'border-[#e5e0d8] bg-white'
+                                  : 'border-slate-300 bg-white'
                             }`}
                           >
                             {isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                           </span>
                           <span className="flex-1 min-w-0">
                             <span className="flex items-center gap-2 flex-wrap">
-                              <span className="text-xs font-bold text-slate-800">{address.receiverFullName}</span>
+                              <span className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{address.receiverFullName}</span>
                               {address.isDefault && (
-                                <span className="text-[10px] font-bold bg-brand-soft text-brand-deep px-2 py-0.5 rounded-full">
+                                <span className={fashion ? 'text-[10px] font-bold bg-white text-[#1c1c1a] border border-[#e5e0d8] px-2 py-0.5 rounded-none' : 'text-[10px] font-bold bg-brand-soft text-brand-deep px-2 py-0.5 rounded-full'}>
                                   پیش‌فرض
                                 </span>
                               )}
                             </span>
-                            <span className="text-[11px] text-slate-500 block mt-1">
+                            <span className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-500'} block mt-1`}>
                               {address.provinceName}، {address.cityName}
                             </span>
-                            <span className="text-[11px] text-slate-500 block mt-0.5 line-clamp-2">
+                            <span className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-500'} block mt-0.5 line-clamp-2`}>
                               {address.addressDetail}
                             </span>
-                            <span className="text-[10px] text-slate-400 block mt-1">
+                            <span className={`text-[10px] ${fashion ? 'text-[#737373]' : 'text-slate-400'} block mt-1`}>
                               کد پستی: {toPersianDigits(address.postalCode || '—')}
                             </span>
                           </span>
@@ -414,7 +435,7 @@ export const BuyNowAddressModal: React.FC<{
                   <div className="flex items-center gap-2 pt-1">
                     <button
                       onClick={openNewAddress}
-                      className="flex items-center gap-1.5 px-3 py-3 rounded-2xl bg-white border border-slate-200 text-slate-700 text-xs font-bold"
+                      className={fashion ? 'flex items-center gap-1.5 px-3 py-3 rounded-none bg-white border border-[#e5e0d8] text-[#1c1c1a] text-xs font-bold' : 'flex items-center gap-1.5 px-3 py-3 rounded-2xl bg-white border border-slate-200 text-slate-700 text-xs font-bold'}
                     >
                       <Plus className="w-4 h-4" strokeWidth={1.5} />
                       آدرس جدید
@@ -422,7 +443,7 @@ export const BuyNowAddressModal: React.FC<{
                     <button
                       onClick={handleConfirm}
                       disabled={!selected}
-                      className="flex-1 py-3 rounded-2xl bg-brand hover:bg-brand-deep disabled:opacity-50 text-white text-xs font-extrabold"
+                      className={fashion ? 'flex-1 py-3 rounded-none bg-[#3a4441] hover:bg-[#1c1c1a] disabled:opacity-50 text-[#faf8f5] text-xs font-extrabold' : 'flex-1 py-3 rounded-2xl bg-brand hover:bg-brand-deep disabled:opacity-50 text-white text-xs font-extrabold'}
                     >
                       ادامه و خرید با این آدرس
                     </button>
@@ -434,20 +455,20 @@ export const BuyNowAddressModal: React.FC<{
 
           {view === 'new' && (
             <div className="space-y-3">
-              <button onClick={() => setView('list')} className="text-[11px] text-brand-deep font-bold">
+              <button onClick={() => setView('list')} className={fashion ? 'text-[11px] text-[#1c1c1a] font-bold underline underline-offset-4' : 'text-[11px] text-brand-deep font-bold'}>
                 بازگشت به فهرست آدرس‌ها
               </button>
               <div>
-                <label className={labelClassName}>نام گیرنده *</label>
+                <label className={labelCls}>نام گیرنده *</label>
                 <input
                   value={form.receiverFullName}
                   onChange={(e) => setForm((prev) => ({ ...prev, receiverFullName: e.target.value }))}
                   placeholder="نام و نام خانوادگی تحویل‌گیرنده"
-                  className={inputClassName}
+                  className={inputCls}
                 />
               </div>
               <div>
-                <label className={labelClassName}>شماره موبایل *</label>
+                <label className={labelCls}>شماره موبایل *</label>
                 <input
                   type="tel"
                   dir="ltr"
@@ -459,13 +480,13 @@ export const BuyNowAddressModal: React.FC<{
                     }))
                   }
                   placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-                  className={`${inputClassName} text-right`}
+                  className={`${inputCls} text-right`}
                 />
               </div>
               <div>
-                <label className={labelClassName}>استان *</label>
+                <label className={labelCls}>استان *</label>
                 {hasProvinces ? (
-                  <select value={provinceValue} onChange={(e) => handleProvinceSelect(e.target.value)} className={inputClassName}>
+                  <select value={provinceValue} onChange={(e) => handleProvinceSelect(e.target.value)} className={inputCls}>
                     <option value="">استان را انتخاب کنید</option>
                     {(provinces || []).map((item) => (
                       <option key={JSON.stringify(item.code)} value={JSON.stringify(item.code)}>
@@ -480,17 +501,17 @@ export const BuyNowAddressModal: React.FC<{
                       setForm((prev) => ({ ...prev, provinceName: e.target.value, provinceCode: undefined, cityName: '', cityCode: undefined }))
                     }
                     placeholder="استان"
-                    className={inputClassName}
+                    className={inputCls}
                   />
                 )}
               </div>
               <div>
-                <label className={labelClassName}>شهر *</label>
+                <label className={labelCls}>شهر *</label>
                 {showCitySelect ? (
                   <select
                     value={form.cityCode !== undefined ? JSON.stringify(form.cityCode) : ''}
                     onChange={(e) => handleCitySelect(e.target.value)}
-                    className={inputClassName}
+                    className={inputCls}
                   >
                     <option value="">شهر را انتخاب کنید</option>
                     {(cities || []).map((item) => (
@@ -500,18 +521,18 @@ export const BuyNowAddressModal: React.FC<{
                     ))}
                   </select>
                 ) : showCityLoading ? (
-                  <input disabled placeholder="در حال بارگذاری شهرها…" className={`${inputClassName} opacity-60`} />
+                  <input disabled placeholder="در حال بارگذاری شهرها…" className={`${inputCls} opacity-60`} />
                 ) : (
                   <input
                     value={form.cityName}
                     onChange={(e) => setForm((prev) => ({ ...prev, cityName: e.target.value, cityCode: undefined }))}
                     placeholder="شهر"
-                    className={inputClassName}
+                    className={inputCls}
                   />
                 )}
               </div>
               <div>
-                <label className={labelClassName}>کد پستی ۱۰ رقمی *</label>
+                <label className={labelCls}>کد پستی ۱۰ رقمی *</label>
                 <input
                   dir="ltr"
                   value={form.postalCode}
@@ -522,41 +543,41 @@ export const BuyNowAddressModal: React.FC<{
                     }))
                   }
                   placeholder="بدون خط تیره"
-                  className={`${inputClassName} text-right`}
+                  className={`${inputCls} text-right`}
                 />
               </div>
               <div>
-                <label className={labelClassName}>نشانی دقیق *</label>
+                <label className={labelCls}>نشانی دقیق *</label>
                 <textarea
                   rows={2}
                   value={form.addressDetail}
                   onChange={(e) => setForm((prev) => ({ ...prev, addressDetail: e.target.value }))}
                   placeholder="خیابان، کوچه، پلاک، واحد…"
-                  className={inputClassName}
+                  className={inputCls}
                 />
               </div>
               <div>
-                <label className={labelClassName}>عنوان آدرس (اختیاری)</label>
+                <label className={labelCls}>عنوان آدرس (اختیاری)</label>
                 <input
                   value={form.label}
                   onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))}
                   placeholder="مثل خانه یا محل کار"
-                  className={inputClassName}
+                  className={inputCls}
                 />
               </div>
-              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+              <label className={fashion ? 'flex items-center gap-2 text-xs text-[#1c1c1a] cursor-pointer' : 'flex items-center gap-2 text-xs text-slate-700 cursor-pointer'}>
                 <input
                   type="checkbox"
                   checked={form.isDefault}
                   onChange={(e) => setForm((prev) => ({ ...prev, isDefault: e.target.checked }))}
-                  className="w-4 h-4 accent-[#5d44f8]"
+                  className={fashion ? 'w-4 h-4 accent-[#1c1c1a]' : 'w-4 h-4 accent-[#5d44f8]'}
                 />
                 ثبت به‌عنوان آدرس پیش‌فرض
               </label>
               <button
                 onClick={handleSaveNewAddress}
                 disabled={saving}
-                className="w-full py-3.5 rounded-2xl bg-brand hover:bg-brand-deep disabled:opacity-50 text-white text-xs font-extrabold"
+                className={fashion ? 'w-full py-3.5 rounded-none bg-[#3a4441] hover:bg-[#1c1c1a] disabled:opacity-50 text-[#faf8f5] text-xs font-extrabold' : 'w-full py-3.5 rounded-2xl bg-brand hover:bg-brand-deep disabled:opacity-50 text-white text-xs font-extrabold'}
               >
                 {saving ? 'در حال ذخیره…' : 'ذخیره آدرس و انتخاب آن'}
               </button>

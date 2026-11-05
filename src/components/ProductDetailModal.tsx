@@ -9,9 +9,15 @@ import { X, ShoppingCart } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export const ProductDetailModal: React.FC = () => {
-  const { selectedProduct, setSelectedProduct, addToCart, toPersianDigits, formatPrice, currentStore } = useStore();
+  const { selectedProduct, setSelectedProduct, addToCart, toPersianDigits, formatPrice, currentStore, routeStoreSlug } = useStore();
   const [quantity, setQuantity] = useState(1);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+
+  // Store scope mirrors the PDP derivation (ProductDetailView): a
+  // routed store slug, or a dropshipper current store. In scope the
+  // quick view speaks as the store - the central warehouse is never
+  // named on a store surface.
+  const inStoreScope = routeStoreSlug != null || currentStore?.ownerType === 'dropshipper';
 
   // FIX 4 (team 04 G2): pick the default variant on product change,
   // honouring a ?spnc= deep link when it matches a variant, and reset
@@ -157,7 +163,7 @@ export const ProductDetailModal: React.FC = () => {
           {/* Add to Cart with Installment Info */}
           {(outOfStock) ? (
             <div className="flex-1 py-2.5 px-4 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center">
-              ناموجود در انبار مرکزی
+              {inStoreScope ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
             </div>
           ) : (
             <button

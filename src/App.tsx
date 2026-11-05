@@ -195,8 +195,11 @@ export const AppContent: React.FC = () => {
         Exact Snapp Pay (pl.snapp.ir) Container:
         max-w-[504px] centered mobile/PWA frame on desktop, 100% full width on mobile
       */}
-      {/* FIX 12: live storefront shell is lg:max-w-7xl (wide framed column), not the 504px mobile frame. */}
-      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] lg:max-w-7xl lg:shadow-none lg:border-x-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
+      {/* FIX 12 (superseded Nov 5, 2026 by owner order): the storefront shell
+          was lg:max-w-7xl, leaving pale side voids on wide desktops — the
+          owner rejected the framed column; storefronts now render
+          full-width on desktop like the homepage/static views. */}
+      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
         {currentUser && authorizedPanels.length > 1 && (
           <nav aria-label="Workspace switcher" className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 no-scrollbar">
             {authorizedPanels.map((panel) => {

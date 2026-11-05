@@ -4,6 +4,11 @@
 @theme {
   --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-vazir: 'Vazirmatn', sans-serif;
+  /* Numbers platform-wide: font-mono (200+ usages: prices, percents,
+     amounts) previously fell back to the OS mono stack, whose Persian
+     digits render in a mismatched font. Route mono through Vazirmatn so
+     every number on the platform uses the same proper digit glyphs. */
+  --font-mono: 'Vazirmatn', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* FIX 13: live brand tokens (from live CSS) so bg-brand / text-brand-deep /
      border-brand / bg-brand-soft / border-brand-border compile exactly like live. */
   --color-brand: #5d44f8;
@@ -50,6 +55,10 @@
     accent-color: #4a33d8;
   }
 }
+
+/* Tabular figures wherever the mono/number style is used, so digit
+   columns in prices and tables align instead of jittering. */
+.font-mono { font-variant-numeric: tabular-nums; }
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {

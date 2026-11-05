@@ -365,6 +365,16 @@ export const DealsSection: React.FC<{
   );
 };
 
+// Campaign compare-at wiring: when the API payload for a widget
+// product carries a regular price (originalPrice) above the campaign
+// selling price but no positive discountPercent, derive the percent
+// so ProductCard renders the regular price struck through next to the
+// campaign price. Products already carrying a percent pass untouched.
+const withCampaignCompareAt = (p: Product): Product =>
+  p.originalPrice > p.price && !(p.discountPercent > 0)
+    ? { ...p, discountPercent: Math.round((1 - p.price / p.originalPrice) * 100) }
+    : p;
+
 // --- Timed deals (live timedDeals: public deals widget + countdown) -
 export const TimedDealsSection: React.FC<{
   store: Store;
@@ -381,7 +391,7 @@ export const TimedDealsSection: React.FC<{
     return () => clearInterval(timer);
   }, [endsAt]);
   if (!sectionEnabled(config, 'timedDeals') || !widget) return null;
-  const items = products.filter((p) => (widget.productIds || []).includes(p.id));
+  const items = products.filter((p) => (widget.productIds || []).includes(p.id)).map(withCampaignCompareAt);
   if (items.length === 0) return null;
   // An expired timed offer hides itself (live countdown behaviour).
   if (!Number.isNaN(endsAt) && endsAt <= now) return null;
@@ -589,7 +599,7 @@ export const CampaignSection: React.FC<{
   if (!sectionEnabled(config, 'campaign')) return null;
   const widget = store.sellerDealsWidgetConfig;
   if (!widget) return null;
-  const items = products.filter((p) => (widget.productIds || []).includes(p.id));
+  const items = products.filter((p) => (widget.productIds || []).includes(p.id)).map(withCampaignCompareAt);
   if (items.length === 0) return null;
   return (
     <section data-testid="store-campaign" className="space-y-4">

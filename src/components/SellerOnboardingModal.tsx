@@ -35,7 +35,6 @@ export const SellerOnboardingModal: React.FC = () => {
     ownerName: '',
     phone: '',
     referralCode: '',
-    profitMargin: 15,
     categories: ['digital', 'fashion'],
   });
 
@@ -78,7 +77,7 @@ export const SellerOnboardingModal: React.FC = () => {
         ownerType: 'dropshipper',
         ownerName: formData.ownerName,
         tagline: `ویترین اختصاصی ${formData.storeName} با ضمانت ارسال انبار مرکزی`,
-        profitMarginPercent: Number(formData.profitMargin),
+        profitMarginPercent: 0,
         description: `فروشگاه مستقل ${formData.storeName} تحت بستر یکپارچه دراپ‌شیپینگ.`,
         activeCategories: formData.categories,
         totalSales: 0,
@@ -93,7 +92,6 @@ export const SellerOnboardingModal: React.FC = () => {
             storeName: formData.storeName,
             slug: formData.slug.toLowerCase().trim(),
             ownerName: formData.ownerName,
-            profitMarginPercent: Number(formData.profitMargin),
             referralCode: formData.referralCode?.trim() || undefined,
           });
           await refreshToken();

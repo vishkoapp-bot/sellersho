@@ -1,18 +1,14 @@
 import React from 'react';
-import { useStore } from '../context/StoreContext';
 import { Check } from 'lucide-react';
 
 interface SellerStep2Props {
   formData: {
-    profitMargin: number;
     categories: string[];
   };
   setFormData: React.Dispatch<React.SetStateAction<any>>;
 }
 
 export const SellerStep2: React.FC<SellerStep2Props> = ({ formData, setFormData }) => {
-  const { toPersianDigits } = useStore();
-
   const toggleCategory = (catId: string) => {
     setFormData((prev: any) => ({
       ...prev,
@@ -24,24 +20,6 @@ export const SellerStep2: React.FC<SellerStep2Props> = ({ formData, setFormData 
 
   return (
     <div className="space-y-4">
-      <div>
-        <label className="block text-xs font-bold text-slate-700 mb-1.5">
-          حاشیه سود دلخواه شما روی محصولات: ({toPersianDigits(formData.profitMargin)}٪)
-        </label>
-        <input
-          type="range"
-          min={5}
-          max={35}
-          step={1}
-          value={formData.profitMargin}
-          onChange={(e) => setFormData((prev: any) => ({ ...prev, profitMargin: Number(e.target.value) }))}
-          className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-        />
-        <p className="text-[11px] text-slate-400 mt-1">
-          این درصد به طور خودکار به قیمت محصولات اضافه شده و سود خالص فروشگاه شما خواهد بود.
-        </p>
-      </div>
-
       <div>
         <label className="block text-xs font-bold text-slate-700 mb-2">
           دسته‌بندی‌های فعال در فروشگاه شما:

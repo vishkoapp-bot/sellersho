@@ -433,12 +433,16 @@ func main() {
 	})
 
 	// 4. Products Listing & Single Product Endpoint
-	mux.HandleFunc("/api/v1/products/", func(w http.ResponseWriter, r *http.Request) {
+	// OptionalAuthMiddleware: the routes stay public, but a valid
+	// seller / supplier / admin session unlocks the supplier cost
+	// fields on store views (see canSeeSupplierFields); anonymous
+	// traffic is served exactly as before.
+	mux.HandleFunc("/api/v1/products/", OptionalAuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		ctx := r.Context()
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/products/")
 		if subPath == "" {
-			handleProductsList(w, r, ctx, catalogRepo, storeRepo, pricingRepo)
+			handleProductsList(w, r, ctx, catalogRepo, storeRepo, pricingRepo, supplierRepo)
 			return
 		}
 		if strings.HasSuffix(subPath, "/reviews") && r.Method == http.MethodGet {
@@ -447,12 +451,12 @@ func main() {
 			handlePublicProductReviews(w, r, catalogRepo, productID)
 			return
 		}
-		handleProductDetail(w, r, ctx, catalogRepo, storeRepo, pricingRepo, subPath)
-	})
+		handleProductDetail(w, r, ctx, catalogRepo, storeRepo, pricingRepo, subPath, supplierRepo)
+	}))
 
-	mux.HandleFunc("/api/v1/products", func(w http.ResponseWriter, r *http.Request) {
-		handleProductsList(w, r, r.Context(), catalogRepo, storeRepo, pricingRepo)
-	})
+	mux.HandleFunc("/api/v1/products", OptionalAuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) {
+		handleProductsList(w, r, r.Context(), catalogRepo, storeRepo, pricingRepo, supplierRepo)
+	}))
 
 	// Team 04 live parity (catalog): price bounds (D05), Digikala
 	// facets (D40 decision: build on dk data), review dossier (D61).

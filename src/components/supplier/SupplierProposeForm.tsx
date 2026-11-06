@@ -160,6 +160,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           method: 'POST',
           headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
           body: form,
+          signal: AbortSignal.timeout(60000),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));

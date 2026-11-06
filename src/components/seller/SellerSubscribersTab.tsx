@@ -101,7 +101,7 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
       const token = tokenStore.getToken();
       const response = await fetch(
         `${getApiBase()}/stores/${encodeURIComponent(currentStore.slug)}/subscribers/export`,
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(60000) },
       );
       if (!response.ok) throw new Error('export failed');
       const blob = await response.blob();

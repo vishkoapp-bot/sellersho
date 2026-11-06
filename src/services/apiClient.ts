@@ -43,18 +43,21 @@ export const isMockMode = (): boolean => {
 };
 
 const API_BASE = '/api/v1';
+const DEFAULT_TIMEOUT_MS = 15000;
 
 export const getApiBase = (): string => API_BASE;
 
 export interface RequestOptions extends RequestInit {
   auth?: boolean;
+  /** حداکثر زمان انتظار پاسخ بر حسب میلی‌ثانیه (فقط وقتی signal دستی داده نشده باشد اعمال می‌شود) */
+  timeout?: number;
 }
 
 export async function apiRequest<T>(
   endpoint: string,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { auth = false, headers = {}, ...rest } = options;
+  const { auth = false, headers = {}, timeout = DEFAULT_TIMEOUT_MS, ...rest } = options;
 
   const reqHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -77,8 +80,12 @@ export async function apiRequest<T>(
     response = await fetch(url, {
       ...rest,
       headers: reqHeaders,
+      signal: rest.signal ?? AbortSignal.timeout(timeout),
     });
   } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new ApiError(0, 'پاسخی از سرور دریافت نشد؛ لطفاً دوباره تلاش کنید.');
+    }
     throw new ApiError(0, `خطای ارتباط با سرور: ${err.message || 'شبکه در دسترس نیست'}`);
   }
 

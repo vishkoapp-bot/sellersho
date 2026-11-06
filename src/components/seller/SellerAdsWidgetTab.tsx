@@ -202,7 +202,7 @@ export const SellerAdsWidgetTab: React.FC = () => {
     if (!newCampaignName.trim() || creatingCampaign) { error('اول اسم برنامه تبلیغاتی را بنویس.'); return; }
     setCreatingCampaign(true);
     try {
-      const campaign = await fetch('/api/v1/stores/' + encodeURIComponent(currentStore.slug) + '/campaigns', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('seler_sho_jwt_token') || ''}` }, body: JSON.stringify({ name: newCampaignName.trim(), type: newCampaignType, productIds: selectedDealsProducts, status: 'active' }) }).then(async (response) => { if (!response.ok) throw new Error('ثبت کمپین انجام نشد.'); return response.json(); });
+      const campaign = await fetch('/api/v1/stores/' + encodeURIComponent(currentStore.slug) + '/campaigns', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('seler_sho_jwt_token') || ''}` }, body: JSON.stringify({ name: newCampaignName.trim(), type: newCampaignType, productIds: selectedDealsProducts, status: 'active' }), signal: AbortSignal.timeout(15000) }).then(async (response) => { if (!response.ok) throw new Error('ثبت کمپین انجام نشد.'); return response.json(); });
       setCampaigns((items) => [campaign, ...items]); setNewCampaignName(''); success('برنامه تبلیغاتی ساخته و فعال شد.');
     } catch (cause: any) { error(cause.message || 'ساختن برنامه انجام نشد. دوباره تلاش کن.'); } finally { setCreatingCampaign(false); }
   };

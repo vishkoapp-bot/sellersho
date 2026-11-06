@@ -243,7 +243,7 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }
           )}
           {product.discountPercent > 0 && (
             <span className={fashion ? 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-none' : 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-lg'}>
-              ٪{toPersianDigits(product.discountPercent)} تخفیف
+              {product.campaignName || '٪' + toPersianDigits(product.discountPercent) + ' تخفیف'}
             </span>
           )}
         </div>

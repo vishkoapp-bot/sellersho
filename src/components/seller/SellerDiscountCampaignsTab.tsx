@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi, DiscountCampaign } from '../../services/storeApi';
 import { Percent, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { ProductVariant } from '../../types';
 
 // Live parity (SellerDashboardView-MERGED.js, component Fn, ~bytes 288300-300300;
 // API index-MERGED.js: GET/POST/PATCH/DELETE /stores/:slug/discount-campaigns).
@@ -41,7 +42,9 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'product' | 'variant' | 'niche' | 'store'>('product');
   const [targetId, setTargetId] = useState('');
+  
   const [variantId, setVariantId] = useState('');
+  const [productVariants, setProductVariants] = useState<ProductVariant[]>([]);
   const [mode, setMode] = useState<'percent' | 'fixed'>('percent');
   const [value, setValue] = useState('');
   const [range, setRange] = useState(defaultRange);
@@ -75,15 +78,25 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
   );
 
   useEffect(() => {
+    if (scope !== 'variant' || !targetId) { setProductVariants([]); return; }
+    const local = selectedProduct?.variants || [];
+    if (local.length > 0) { setProductVariants(local); return; }
+    let alive = true;
+    fetch('/api/v1/products/' + targetId + '?storeSlug=' + slug)
+      .then((r) => r.json())
+      .then((p) => { if (alive) setProductVariants(p.variants || []); })
+      .catch(() => { if (alive) setProductVariants([]); });
+    return () => { alive = false; };
+  }, [scope, targetId, slug, selectedProduct]);
+
+  useEffect(() => {
     if (scope !== 'variant') { setVariantId(''); return; }
-    const variants = selectedProduct?.variants || [];
-    if (variants.length > 0 && !variants.some((v) => v.id === variantId)) {
-      setVariantId(variants[0].id);
+    if (productVariants.length > 0 && !productVariants.some((v) => v.id === variantId)) {
+      setVariantId(productVariants[0].id);
     }
-  }, [scope, selectedProduct, variantId]);
+  }, [scope, productVariants, variantId]);
 
   const targetTitle = (c: DiscountCampaign) => {
-    undefined
     if (c.scope === 'variant') {
       for (const p of products) {
         const v = (p.variants || []).find((x) => x.id === c.targetId);
@@ -100,7 +113,7 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
     setFormError(null);
     const numericValue = Number(value);
     if (!name.trim()) { setFormError('نام کمپین را وارد کنید.'); return; }
-    if (!Number.isFinite(numericValue) || numericValue < 0) { setFormError('مقدار حاشیهٔ هدف باید عددی مثبت باشد.'); return; }
+    if (!Number.isFinite(numericValue) || numericValue < 0) { setFormError('مقدار تخفیف باید عددی مثبت باشد.'); return; }
     if (scope !== 'store' && scope !== 'variant' && !targetId) { setFormError('هدف کمپین را انتخاب کنید.'); return; }
     if (scope === 'variant' && !variantId) { setFormError('واریانت کمپین را انتخاب کنید.'); return; }
     const startsAt = new Date(range.startsAt);
@@ -223,7 +236,7 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">واریانت</label>
                 <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
-                  {(selectedProduct?.variants || []).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  {productVariants.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
               </div>
             )}
@@ -238,18 +251,18 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">نوع حاشیهٔ هدف</label>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">نوع تخفیف</label>
               <select value={mode} onChange={(e) => setMode(e.target.value as 'percent' | 'fixed')} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
-                <option value="percent">درصدی از قیمت پایه</option>
+                <option value="percent">درصد تخفیف</option>
                 <option value="fixed">مبلغ ثابت (تومان)</option>
               </select>
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">{mode === 'percent' ? 'حاشیهٔ هدف (درصد)' : 'حاشیهٔ هدف (تومان)'}</label>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">{mode === 'percent' ? 'درصد تخفیف' : 'مبلغ تخفیف (تومان)'}</label>
               <input value={value} onChange={(e) => setValue(e.target.value)} inputMode="decimal" placeholder={mode === 'percent' ? 'مثلاً: ۵' : 'مثلاً: ۵۰۰۰۰'} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs" />
             </div>
           </div>
-          <p className="text-[11px] leading-5 text-slate-500">حاشیهٔ هدف یعنی در مدت کمپین، سود شما روی هر فروش دقیقاً همین مقدار می‌شود؛ می‌تواند تا صفر هم باشد.</p>
+          <p className="text-[11px] leading-5 text-slate-500">در مدت کمپین، درصد یا مبلغ واردشده از قیمت فعلی محصول کم می‌شود و عنوان کمپین روی ویترین نمایش داده می‌شود.</p>
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-[11px] font-bold text-slate-600 mb-1">شروع</label>
@@ -283,7 +296,7 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
                   </span>
                   <div className="flex-1 min-w-0">
                     <p className="text-[11px] font-bold text-slate-800 truncate">{c.name}</p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">{targetTitle(c)} — حاشیهٔ هدف: {c.mode === 'percent' ? `${toPersianDigits(c.value)}٪ از قیمت پایه` : `${formatPrice(c.value)} تومان`}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{targetTitle(c)} — تخفیف: {c.mode === 'percent' ? `${toPersianDigits(c.value)}٪ از قیمت پایه` : `${formatPrice(c.value)} تومان`}</p>
                     <p className="text-[10px] text-slate-400 mt-0.5">از {new Date(c.startsAt).toLocaleString('fa-IR')} تا {new Date(c.endsAt).toLocaleString('fa-IR')}</p>
                   </div>
                   <span className={`text-[9px] font-bold px-2 py-1 rounded-full shrink-0 ${status.tone}`}>{status.label}</span>

@@ -117,10 +117,9 @@ func pickDisplayCampaign(campaigns []domain.SellerDiscountCampaign, p domain.Pro
 // absolute target margin on the line's base cost, floor at the
 // reference cost, rounded to 100, never raising the price), so the
 // displayed price IS the charged price.
-func applyDisplayCampaign(res pricing.ReferenceResolution, c *domain.SellerDiscountCampaign) pricing.ReferenceResolution {
+func applyDisplayCampaign(res pricing.ReferenceResolution, c *domain.SellerDiscountCampaign) pricing.DiscountResult {
 	if c == nil {
-		return res
+		return pricing.DiscountResult{Resolution: res}
 	}
-	out := pricing.ApplyCampaignDiscount(res, pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Mode: c.Mode, Value: c.Value})
-	return out.Resolution
+	return pricing.ApplyCampaignDiscount(res, pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Name: c.Name, Mode: c.Mode, Value: c.Value})
 }

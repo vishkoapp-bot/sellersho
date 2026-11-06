@@ -100,7 +100,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                 data-testid="discount-badge"
                 className="bg-[#fb2c2c] text-white text-[11px] font-bold px-2 py-0.5 rounded-full inline-block leading-none"
               >
-                {toPersianDigits(displayPrice.discountPercent)}٪
+                {product.campaignName || toPersianDigits(displayPrice.discountPercent) + '٪'}
               </span>
               <span
                 data-testid="old-price"

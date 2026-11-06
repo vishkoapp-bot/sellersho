@@ -51,6 +51,7 @@ type VariantPriceResponse struct {
 	Price           int64 `json:"price"`
 	OriginalPrice   int64 `json:"originalPrice"`
 	DiscountPercent int   `json:"discountPercent"`
+	CampaignName    string `json:"campaignName,omitempty"`
 }
 
 // ProductResponse is the FROZEN live list shape (D21): exactly these 19
@@ -73,6 +74,7 @@ type ProductResponse struct {
 	OriginalPrice    int64                           `json:"originalPrice"`
 	DiscountEligible bool                            `json:"discountEligible"`
 	DiscountPercent  int                             `json:"discountPercent"`
+	CampaignName     string                          `json:"campaignName,omitempty"`
 	Price            int64                           `json:"price"`
 	BaseCostB        *int64                          `json:"baseCostB,omitempty"`
 	PlatformFeeF     int64                           `json:"platformFeeF"`
@@ -113,6 +115,7 @@ type ProductDetailResponse struct {
 	Description      string                          `json:"description"`
 	DiscountEligible bool                            `json:"discountEligible"`
 	DiscountPercent  int                             `json:"discountPercent"`
+	CampaignName     string                          `json:"campaignName,omitempty"`
 	ID               string                          `json:"id"`
 	Image            string                          `json:"image"`
 	// Flagged extensions (see type comment above).
@@ -339,13 +342,17 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 		}
 		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(p, cost, v.ID, store, settings, locks, ov)
 		res = applyDealsWidgetDiscountForDisplay(&store, widgetCfg, p.ID, res)
+		vname := ""
 		if camp := pickDisplayCampaign(campaigns, p, v.ID); camp != nil && !displayCampaignLocked(store, locks, p, v.ID) {
-			res = applyDisplayCampaign(res, camp)
+			d := applyDisplayCampaign(res, camp)
+			res = d.Resolution
+			vname = d.CampaignName
 		}
 		out[v.ID] = VariantPriceResponse{
 			Price:           res.FinalPrice,
 			OriginalPrice:   res.OriginalPrice,
 			DiscountPercent: deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
+			CampaignName:    vname,
 		}
 	}
 	return out
@@ -529,11 +536,15 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
+		displayCampaignName := ""
 		if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
-			res = applyDisplayCampaign(res, camp)
+			d := applyDisplayCampaign(res, camp)
+			res = d.Resolution
+			displayCampaignName = d.CampaignName
 		}
 		variants := variantsByProduct[p.ID]
 		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
+		item.CampaignName = displayCampaignName
 		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
 			sid := p.SupplierID
 			item.SupplierID = &sid
@@ -577,11 +588,15 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
 	res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 	res = applyDealsWidgetDiscountForDisplay(store, loadDealsWidgetConfig(store), p.ID, res)
+	pdpCampaignName := ""
 	if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
-		res = applyDisplayCampaign(res, camp)
+		d := applyDisplayCampaign(res, camp)
+		res = d.Resolution
+		pdpCampaignName = d.CampaignName
 	}
 	variants, _ := catalogRepo.GetProductVariants(ctx, p.ID)
 	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
+	base.CampaignName = pdpCampaignName
 	storeCount, _ := catalogRepo.GetProductStoreCount(ctx, p.ID)
 	// FIX 12: live's detail DTO has exactly 20 keys — no images/specs
 	// keys at all (live detail for the bracelet carries only `image`).

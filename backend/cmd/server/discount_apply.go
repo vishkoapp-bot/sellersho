@@ -30,7 +30,7 @@ func applyStoreDiscounts(ctx context.Context, storeRepo *repository.StoreReposit
 	var campaign *pricing.DiscountCampaignInput
 	if storeRepo != nil {
 		if c, err := storeRepo.GetActiveDiscountCampaign(ctx, store.ID, p.ID, p.NicheIDs, variantID); err == nil && c != nil {
-			campaign = &pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Mode: c.Mode, Value: c.Value}
+			campaign = &pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Name: c.Name, Mode: c.Mode, Value: c.Value}
 		}
 	}
 	var codeInput *pricing.DiscountCodeInput

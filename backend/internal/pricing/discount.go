@@ -64,7 +64,8 @@ package pricing
 // layer needs. The repository resolves scope priority and windows.
 type DiscountCampaignInput struct {
 	ID    string
-	Scope string // 'variant' | 'product' | 'niche' | 'store' (bookkeeping)
+	Scope string // 'variant' | 'product' | 'niche' | 'store'
+	Name  string // campaign title shown on the storefront
 	Mode  string // 'percent' | 'fixed'
 	Value float64
 }
@@ -85,6 +86,7 @@ type DiscountResult struct {
 	Resolution     ReferenceResolution
 	DiscountAmount int64
 	CampaignID     string
+	CampaignName   string
 	Code           string
 }
 
@@ -101,23 +103,23 @@ func ApplyCampaignDiscount(res ReferenceResolution, c DiscountCampaignInput) Dis
 	if c.Mode != "percent" && c.Mode != "fixed" {
 		return DiscountResult{Resolution: res}
 	}
-	var targetMargin float64
+	var discount float64
 	if c.Mode == "percent" {
-		// Percent of base cost B, where B = R (reference cost after
-		// the platform percent) in percent-pricing terms.
-		targetMargin = float64(res.BaseCost) * c.Value / 100.0
+		// True percent-off the current final price, so a campaign of 5
+		// shows as 5% on the storefront (user decision, 2026-11-06).
+		discount = float64(res.FinalPrice) * c.Value / 100.0
 	} else {
-		targetMargin = c.Value
+		discount = c.Value
 	}
-	if targetMargin < 0 {
-		targetMargin = 0
+	if discount > float64(res.SellerMargin) {
+		// A discount never eats into the platform share (header note).
+		discount = float64(res.SellerMargin)
 	}
-	if targetMargin > float64(res.SellerMargin) {
-		// A discount never raises the price (see header note).
-		targetMargin = float64(res.SellerMargin)
+	if discount < 0 {
+		discount = 0
 	}
 	originalFinal := res.FinalPrice
-	final := RoundTo100(float64(res.BaseCost) + targetMargin)
+	final := RoundTo100(float64(originalFinal) - discount)
 	if final < res.BaseCost {
 		final = res.BaseCost
 	}
@@ -131,11 +133,11 @@ func ApplyCampaignDiscount(res ReferenceResolution, c DiscountCampaignInput) Dis
 		out.SellerMargin = 0
 	}
 	out.MarginPercent = discountedMarginPercent(out)
-	discount := originalFinal - final
-	if discount < 0 {
-		discount = 0
+	actual := originalFinal - final
+	if actual < 0 {
+		actual = 0
 	}
-	return DiscountResult{Resolution: out, DiscountAmount: discount, CampaignID: c.ID}
+	return DiscountResult{Resolution: out, DiscountAmount: actual, CampaignID: c.ID, CampaignName: c.Name}
 }
 
 // ApplyCodeDiscount subtracts a code discount from the final price,

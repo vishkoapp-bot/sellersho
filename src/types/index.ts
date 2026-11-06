@@ -18,6 +18,7 @@ export interface VariantPrice {
   price: number;
   originalPrice: number;
   discountPercent: number;
+  campaignName?: string;
 }
 
 // FIX 14b: live PDP addon card (see catalogApi ProductAddonDto).
@@ -43,6 +44,7 @@ export interface Product {
   supplierBaseCost: number; // C in proposal (wholesale cost)
   platformMargin: number; // F in proposal (central platform share)
   discountPercent: number;
+  campaignName?: string;
   cashbackPercent: number; // 3% or 7%
   rating: number; // 4.8
   reviewsCount: number;

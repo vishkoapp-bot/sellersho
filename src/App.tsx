@@ -19,7 +19,6 @@ import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartDrawer } from './components/CartDrawer';
 import { SellerOnboardingModal } from './components/SellerOnboardingModal';
 import { OrderTrackingModal } from './components/OrderTrackingModal';
-import { AutoClawConnectPopup } from './components/common/AutoClawConnectPopup';
 import { BottomNav } from './components/BottomNav';
 import { StorefrontBottomNav } from './components/storefront/SellerStorefrontFooter';
 import { storeApi } from './services/storeApi';
@@ -421,8 +420,6 @@ export const AppContent: React.FC = () => {
         <CartDrawer />
         <SellerOnboardingModal />
         <OrderTrackingModal />
-        {/* AutoClaw connectivity test popup: central homepage only. */}
-        {isHomepage && <AutoClawConnectPopup />}
         {activeView === 'seller_storefront' || (activeView === 'product_detail' && (routeStoreSlug || currentStore?.ownerType === 'dropshipper')) ? <StorefrontBottomNav /> : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
       </div>
     </div>

@@ -158,7 +158,7 @@ func (r *StoreRepository) DiscountCampaignCreationBlocked(ctx context.Context, s
 	if marginLocked {
 		return true, nil
 	}
-	if (scope == "product" || scope == "niche") && targetID != "" {
+	if (scope == "product" || scope == "niche" || scope == "variant") && targetID != "" {
 		var n int
 		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_margin_locks WHERE store_id=$1 AND scope=$2 AND scope_id=$3`, storeID, scope, targetID).Scan(&n); err != nil {
 			return false, err
@@ -170,21 +170,21 @@ func (r *StoreRepository) DiscountCampaignCreationBlocked(ctx context.Context, s
 	return false, nil
 }
 
-// GetActiveDiscountCampaign returns the winning campaign for a
-// product: scope product > niche > store, then most recently
-// created. Returns nil when no campaign applies or the store margin
-// is admin-locked.
+// GetActiveDiscountCampaign returns the winning campaign for one
+// priced line: scope variant (only when variantID is set) > product >
+// niche (in the product's niche order) > store, then most recently
+// created. variantID == "" prices the product level, where
+// variant-scoped campaigns never apply. Returns nil when no campaign
+// applies or the store margin is admin-locked.
 //
 // Admin margin lock blocks application in BOTH live-parity lock
 // forms: the legacy boolean stores.is_margin_locked_by_admin, and
 // any row in store_margin_locks (D29, freeze or admin_set) scoped to
-// this product or one of its niches. A store-wide lock row does not
-// exist in the D29 model (scopes are product/niche/variant), so
-// store scope is not consulted here; the legacy boolean covers the
-// store-wide case. On a lock-query error the error is returned and
-// the caller applies no campaign (fail-safe: no discount rather
-// than a discount that bypasses a lock it could not read).
-func (r *StoreRepository) GetActiveDiscountCampaign(ctx context.Context, storeID, productID string, nicheIDs []string) (*domain.SellerDiscountCampaign, error) {
+// this variant (when given), this product, or one of its niches. On
+// a lock-query error the error is returned and the caller applies no
+// campaign (fail-safe: no discount rather than a discount that
+// bypasses a lock it could not read).
+func (r *StoreRepository) GetActiveDiscountCampaign(ctx context.Context, storeID, productID string, nicheIDs []string, variantID string) (*domain.SellerDiscountCampaign, error) {
 	var marginLocked bool
 	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(is_margin_locked_by_admin, FALSE) FROM stores WHERE id=$1`, storeID).Scan(&marginLocked); err != nil {
 		return nil, err
@@ -192,28 +192,60 @@ func (r *StoreRepository) GetActiveDiscountCampaign(ctx context.Context, storeID
 	if marginLocked {
 		return nil, nil
 	}
+	lockQuery := `SELECT COUNT(*) FROM store_margin_locks WHERE store_id=$1 AND ((scope='product' AND scope_id=$2) OR (scope='niche' AND scope_id = ANY($3))`
+	lockArgs := []interface{}{storeID, productID, pq.Array(nicheIDs)}
+	if variantID != "" {
+		lockQuery += ` OR (scope='variant' AND scope_id=$4)`
+		lockArgs = append(lockArgs, variantID)
+	}
+	lockQuery += `)`
 	var lockedCount int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_margin_locks WHERE store_id=$1 AND ((scope='product' AND scope_id=$2) OR (scope='niche' AND scope_id = ANY($3)))`, storeID, productID, pq.Array(nicheIDs)).Scan(&lockedCount); err != nil {
+	if err := r.db.QueryRowContext(ctx, lockQuery, lockArgs...).Scan(&lockedCount); err != nil {
 		return nil, err
 	}
 	if lockedCount > 0 {
 		return nil, nil
 	}
-	// Try product, then each niche, then store, in priority order.
-	candidates := []struct{ scope, target string }{{"product", productID}}
-	for _, n := range nicheIDs {
-		candidates = append(candidates, struct{ scope, target string }{"niche", n})
-	}
-	candidates = append(candidates, struct{ scope, target string }{"store", ""})
-	for _, cand := range candidates {
-		row := r.db.QueryRowContext(ctx, `SELECT `+team05CampaignColumns+` FROM seller_discount_campaigns WHERE store_id=$1 AND scope=$2 AND target_id=$3 AND is_active=TRUE AND starts_at <= NOW() AND ends_at > NOW() ORDER BY created_at DESC LIMIT 1`, storeID, cand.scope, cand.target)
-		c, err := team05ScanCampaignRow(row.Scan)
-		if err == nil {
-			return &c, nil
+	// One query resolves the whole specificity chain (the variant only
+	// when a variant line is priced), then the product's niche order,
+	// then the most recently created.
+	query := `SELECT ` + team05CampaignColumns + ` FROM seller_discount_campaigns
+		WHERE store_id=$1 AND is_active=TRUE AND starts_at <= NOW() AND ends_at > NOW()
+		  AND (($4 <> '' AND scope='variant' AND target_id=$4)
+		    OR (scope='product' AND target_id=$2)
+		    OR (scope='niche' AND target_id = ANY($3))
+		    OR (scope='store' AND target_id=''))
+		ORDER BY CASE scope WHEN 'variant' THEN 0 WHEN 'product' THEN 1 WHEN 'niche' THEN 2 ELSE 3 END,
+		         array_position($3, target_id), created_at DESC
+		LIMIT 1`
+	row := r.db.QueryRowContext(ctx, query, storeID, productID, pq.Array(nicheIDs), variantID)
+	c, err := team05ScanCampaignRow(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
 		}
-		if err != sql.ErrNoRows {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListActiveDiscountCampaignsForStore returns every active, in-window
+// campaign of one store for the display path (list/PDP/variant
+// prices). The caller resolves scope specificity in memory, so one
+// query serves a whole request instead of one query per product.
+func (r *StoreRepository) ListActiveDiscountCampaignsForStore(ctx context.Context, storeID string) ([]domain.SellerDiscountCampaign, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+team05CampaignColumns+` FROM seller_discount_campaigns WHERE store_id=$1 AND is_active=TRUE AND starts_at <= NOW() AND ends_at > NOW()`, storeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.SellerDiscountCampaign{}
+	for rows.Next() {
+		c, err := team05ScanCampaignRow(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
+		out = append(out, c)
 	}
-	return nil, nil
+	return out, rows.Err()
 }

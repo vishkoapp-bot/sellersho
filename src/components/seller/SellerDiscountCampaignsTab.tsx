@@ -39,8 +39,9 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [scope, setScope] = useState<'product' | 'niche' | 'store'>('product');
+  const [scope, setScope] = useState<'product' | 'variant' | 'niche' | 'store'>('product');
   const [targetId, setTargetId] = useState('');
+  const [variantId, setVariantId] = useState('');
   const [mode, setMode] = useState<'percent' | 'fixed'>('percent');
   const [value, setValue] = useState('');
   const [range, setRange] = useState(defaultRange);
@@ -61,16 +62,35 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
   useEffect(reload, [slug]);
 
   useEffect(() => {
-    if (scope === 'product' && showcaseProducts.length > 0 && !showcaseProducts.some((p) => p.id === targetId)) {
+    if ((scope === 'product' || scope === 'variant') && showcaseProducts.length > 0 && !showcaseProducts.some((p) => p.id === targetId)) {
       setTargetId(showcaseProducts[0].id);
     }
     if (scope === 'niche' && niches.length > 0 && !niches.some((n) => n.id === targetId)) {
       setTargetId(niches[0].id);
     }
   }, [scope, showcaseProducts, niches]);
+  const selectedProduct = useMemo(
+    () => showcaseProducts.find((p) => p.id === targetId),
+    [showcaseProducts, targetId],
+  );
+
+  useEffect(() => {
+    if (scope !== 'variant') { setVariantId(''); return; }
+    const variants = selectedProduct?.variants || [];
+    if (variants.length > 0 && !variants.some((v) => v.id === variantId)) {
+      setVariantId(variants[0].id);
+    }
+  }, [scope, selectedProduct, variantId]);
 
   const targetTitle = (c: DiscountCampaign) => {
-    if (c.scope === 'store') return 'کل فروشگاه';
+    undefined
+    if (c.scope === 'variant') {
+      for (const p of products) {
+        const v = (p.variants || []).find((x) => x.id === c.targetId);
+        if (v) return p.title + ' — ' + v.name;
+      }
+      return 'واریانت';
+    }
     if (c.scope === 'product') return products.find((p) => p.id === c.targetId)?.title || 'محصول';
     return niches.find((n) => n.id === c.targetId)?.title || 'نیچ';
   };
@@ -81,7 +101,8 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
     const numericValue = Number(value);
     if (!name.trim()) { setFormError('نام کمپین را وارد کنید.'); return; }
     if (!Number.isFinite(numericValue) || numericValue < 0) { setFormError('مقدار حاشیهٔ هدف باید عددی مثبت باشد.'); return; }
-    if (scope !== 'store' && !targetId) { setFormError('هدف کمپین را انتخاب کنید.'); return; }
+    if (scope !== 'store' && scope !== 'variant' && !targetId) { setFormError('هدف کمپین را انتخاب کنید.'); return; }
+    if (scope === 'variant' && !variantId) { setFormError('واریانت کمپین را انتخاب کنید.'); return; }
     const startsAt = new Date(range.startsAt);
     const endsAt = new Date(range.endsAt);
     if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
@@ -93,7 +114,8 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
       const created = await storeApi.createDiscountCampaign(slug, {
         name: name.trim(),
         scope,
-        targetId: scope === 'store' ? '' : targetId,
+        targetId: scope === 'variant' ? variantId : (scope === 'store' ? '' : targetId),
+        productId: scope === 'variant' ? targetId : undefined,
         mode,
         value: numericValue,
         startsAt: startsAt.toISOString(),
@@ -167,7 +189,7 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
         <h3 className="text-xs font-extrabold text-slate-800 mb-3">کمپین تخفیف چطور کار می‌کند؟</h3>
         <ul className="text-[11px] leading-6 text-slate-500 space-y-1">
           <li>• در بازهٔ کمپین، حاشیهٔ سود شما روی هدف انتخابی به مقداری که تعیین می‌کنید می‌رسد؛ تخفیف فقط از سود خودتان کم می‌شود و قیمت پایه و قیمت تأمین‌کننده تغییر نمی‌کند.</li>
-          <li>• اگر چند کمپین هم‌زمان روی یک محصول باشند، خاص‌ترین هدف برنده است: محصول، بعد نیچ، بعد کل فروشگاه.</li>
+          <li>• اگر چند کمپین هم‌زمان باشند، خاص‌ترین هدف برنده است: واریانت، بعد محصول، بعد نیچ، بعد کل فروشگاه. حاشیهٔ هدف را می‌توانید فقط روی یک واریانت مشخص هم بگذارید.</li>
           <li>• درصد تخفیف فقط وقتی به مشتری نمایش داده می‌شود که برای آن محصول در فروشگاه شما دست‌کم ۳۰ روز سابقهٔ قیمت واقعی ثبت شده باشد و قیمت کمپین از میانگین قیمت ۳۰ روز گذشته کمتر باشد. تا آن زمان قیمت واقعاً کم می‌شود، ولی درصدی نمایش داده نمی‌شود و محصول وارد ریل پیشنهادها نمی‌شود.</li>
         </ul>
       </section>
@@ -182,17 +204,26 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-[11px] font-bold text-slate-600 mb-1">هدف کمپین</label>
-              <select value={scope} onChange={(e) => setScope(e.target.value as 'product' | 'niche' | 'store')} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
+              <select value={scope} onChange={(e) => setScope(e.target.value as 'product' | 'variant' | 'niche' | 'store')} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
                 <option value="product">یک محصول</option>
+                <option value="variant">یک واریانت</option>
                 <option value="niche">یک نیچ</option>
                 <option value="store">کل فروشگاه</option>
               </select>
             </div>
-            {scope === 'product' && (
+            {(scope === 'product' || scope === 'variant') && (
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">محصول</label>
                 <select value={targetId} onChange={(e) => setTargetId(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
                   {showcaseProducts.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+                </select>
+              </div>
+            )}
+            {scope === 'variant' && (
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">واریانت</label>
+                <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
+                  {(selectedProduct?.variants || []).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
               </div>
             )}

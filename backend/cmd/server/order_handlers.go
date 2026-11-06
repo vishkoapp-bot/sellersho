@@ -483,6 +483,7 @@ func handleCreateOrder(
 		}
 
 		var res pricing.ReferenceResolution
+		lineVariantID := ""
 		if chosenVariant != nil {
 			// Fix69 M1: variant price, not product price. Variant
 			// cost wins when set, else the product cost (same rule
@@ -498,6 +499,7 @@ func handleCreateOrder(
 				ov = &oc
 			}
 			res = pricing.ResolveReferencePricingForStoreProductVariantWithCost(*p, cost, chosenVariant.ID, *store, settings, locks, ov)
+			lineVariantID = chosenVariant.ID
 		} else {
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
@@ -510,7 +512,7 @@ func handleCreateOrder(
 		// Dropshipper discounts (campaign, then code) layer on the
 		// percent-engine resolution: wholesale cost and platform fee
 		// in res are untouched, only FinalPrice/SellerMargin shrink.
-		discounted := applyStoreDiscounts(ctx, storeRepo, store, p, res, discountCodeObj)
+		discounted := applyStoreDiscounts(ctx, storeRepo, store, p, lineVariantID, res, discountCodeObj)
 		discounted.DiscountAmount += widgetDiscountAmount
 		// Fix69 follow-up: DiscountResult.Code is set only by
 		// ApplyCodeDiscount, which runs only when the code passed

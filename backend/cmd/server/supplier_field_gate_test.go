@@ -263,11 +263,11 @@ func TestSupplierFieldsGateAssemble(t *testing.T) {
 		PlatformPct: 20, CentralProfitPct: 10,
 		MaxProfitMargin: 35, MinProfitMargin: 5, DefaultMargin: 20,
 	}
-	hidden, err := assembleProductDetail(ctx, catalogRepo, nil, store, settings, *prod, false)
+	hidden, err := assembleProductDetail(ctx, catalogRepo, nil, nil, store, settings, *prod, false)
 	if err != nil {
 		t.Fatalf("assemble hidden: %v", err)
 	}
-	shown, err := assembleProductDetail(ctx, catalogRepo, nil, store, settings, *prod, true)
+	shown, err := assembleProductDetail(ctx, catalogRepo, nil, nil, store, settings, *prod, true)
 	if err != nil {
 		t.Fatalf("assemble shown: %v", err)
 	}

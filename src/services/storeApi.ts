@@ -143,7 +143,7 @@ export interface DiscountCampaign {
   id: string;
   storeId?: string;
   name: string;
-  scope: 'product' | 'niche' | 'store';
+  scope: 'product' | 'variant' | 'niche' | 'store';
   targetId: string;
   mode: 'percent' | 'fixed';
   value: number;
@@ -154,8 +154,10 @@ export interface DiscountCampaign {
 
 export interface DiscountCampaignPayload {
   name: string;
-  scope: 'product' | 'niche' | 'store';
+  scope: 'product' | 'variant' | 'niche' | 'store';
   targetId: string;
+  /** فقط برای scope='variant': محصولِ واریانت (برای نمایش) */
+  productId?: string;
   mode: 'percent' | 'fixed';
   value: number;
   startsAt: string;

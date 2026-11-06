@@ -64,6 +64,7 @@ package pricing
 // layer needs. The repository resolves scope priority and windows.
 type DiscountCampaignInput struct {
 	ID    string
+	Scope string // 'variant' | 'product' | 'niche' | 'store' (bookkeeping)
 	Mode  string // 'percent' | 'fixed'
 	Value float64
 }

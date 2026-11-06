@@ -464,7 +464,7 @@ func team05ValidateCampaign(name, scope, mode string, value float64, starts, end
 	if strings.TrimSpace(name) == "" {
 		return ErrStoreInput
 	}
-	if scope != "product" && scope != "niche" && scope != "store" {
+	if scope != "product" && scope != "variant" && scope != "niche" && scope != "store" {
 		return ErrStoreInput
 	}
 	if mode != "percent" && mode != "fixed" {
@@ -522,7 +522,7 @@ func (r *StoreRepository) GetStoreDiscountCampaign(ctx context.Context, storeID,
 // covers the store-wide case. On a lock-query error the error is
 // returned so the caller can fail safe (no discount) rather than
 // apply a discount past a lock it could not read.
-func (r *StoreRepository) DiscountApplicationLocked(ctx context.Context, storeID, productID string, nicheIDs []string) (bool, error) {
+func (r *StoreRepository) DiscountApplicationLocked(ctx context.Context, storeID, productID string, nicheIDs []string, variantID string) (bool, error) {
 	var marginLocked bool
 	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(is_margin_locked_by_admin, FALSE) FROM stores WHERE id=$1`, storeID).Scan(&marginLocked); err != nil {
 		return false, err
@@ -530,8 +530,15 @@ func (r *StoreRepository) DiscountApplicationLocked(ctx context.Context, storeID
 	if marginLocked {
 		return true, nil
 	}
+	lockQuery := `SELECT COUNT(*) FROM store_margin_locks WHERE store_id=$1 AND ((scope='product' AND scope_id=$2) OR (scope='niche' AND scope_id = ANY($3))`
+	lockArgs := []interface{}{storeID, productID, pq.Array(nicheIDs)}
+	if variantID != "" {
+		lockQuery += ` OR (scope='variant' AND scope_id=$4)`
+		lockArgs = append(lockArgs, variantID)
+	}
+	lockQuery += `)`
 	var lockedCount int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_margin_locks WHERE store_id=$1 AND ((scope='product' AND scope_id=$2) OR (scope='niche' AND scope_id = ANY($3)))`, storeID, productID, pq.Array(nicheIDs)).Scan(&lockedCount); err != nil {
+	if err := r.db.QueryRowContext(ctx, lockQuery, lockArgs...).Scan(&lockedCount); err != nil {
 		return false, err
 	}
 	return lockedCount > 0, nil
@@ -549,6 +556,12 @@ func (r *StoreRepository) CreateStoreDiscountCampaign(ctx context.Context, c dom
 	// and would silently never apply.
 	if c.Scope == "store" {
 		c.TargetID = ""
+	}
+	if c.Scope == "variant" && strings.TrimSpace(c.TargetID) == "" {
+		return nil, ErrStoreInput
+	}
+	if c.Scope == "variant" && strings.TrimSpace(c.TargetID) == "" {
+		return nil, ErrStoreInput
 	}
 	if _, err := r.db.ExecContext(ctx, `INSERT INTO seller_discount_campaigns (id, store_id, name, scope, target_id, mode, value, starts_at, ends_at, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, c.ID, c.StoreID, c.Name, c.Scope, c.TargetID, c.Mode, c.Value, c.StartsAt, c.EndsAt, c.IsActive); err != nil {
 		return nil, err

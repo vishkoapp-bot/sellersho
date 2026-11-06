@@ -23,14 +23,14 @@ import (
 // A code obeys the same admin margin lock as a campaign: when
 // the margin is locked (or the lock cannot be read) the code is
 // dropped, so a locked margin cannot be eroded to zero by a code.
-func applyStoreDiscounts(ctx context.Context, storeRepo *repository.StoreRepository, store *domain.Store, p *domain.Product, res pricing.ReferenceResolution, code *repository.DiscountCode) pricing.DiscountResult {
+func applyStoreDiscounts(ctx context.Context, storeRepo *repository.StoreRepository, store *domain.Store, p *domain.Product, variantID string, res pricing.ReferenceResolution, code *repository.DiscountCode) pricing.DiscountResult {
 	if store == nil || p == nil || store.OwnerType != "dropshipper" {
 		return pricing.DiscountResult{Resolution: res}
 	}
 	var campaign *pricing.DiscountCampaignInput
 	if storeRepo != nil {
-		if c, err := storeRepo.GetActiveDiscountCampaign(ctx, store.ID, p.ID, p.NicheIDs); err == nil && c != nil {
-			campaign = &pricing.DiscountCampaignInput{ID: c.ID, Mode: c.Mode, Value: c.Value}
+		if c, err := storeRepo.GetActiveDiscountCampaign(ctx, store.ID, p.ID, p.NicheIDs, variantID); err == nil && c != nil {
+			campaign = &pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Mode: c.Mode, Value: c.Value}
 		}
 	}
 	var codeInput *pricing.DiscountCodeInput
@@ -40,7 +40,7 @@ func applyStoreDiscounts(ctx context.Context, storeRepo *repository.StoreReposit
 		// GetActiveDiscountCampaign): a locked margin is not eroded
 		// by a code, and a lock-query error drops the code fail-safe,
 		// exactly as a campaign-lookup error drops the campaign above.
-		if locked, err := storeRepo.DiscountApplicationLocked(ctx, store.ID, p.ID, p.NicheIDs); err == nil && !locked {
+		if locked, err := storeRepo.DiscountApplicationLocked(ctx, store.ID, p.ID, p.NicheIDs, variantID); err == nil && !locked {
 			codeInput = &pricing.DiscountCodeInput{Code: code.Code, Mode: code.Mode, Value: code.Value}
 		}
 	}
@@ -178,7 +178,7 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 		// discount amount so the quote's sellerDiscount matches
 		// the order's.
 		res, widgetDiscountAmount := applyDealsWidgetDiscount(store, widgetCfg, p.ID, res)
-		d := applyStoreDiscounts(ctx, storeRepo, store, p, res, code)
+		d := applyStoreDiscounts(ctx, storeRepo, store, p, itemReq.VariantID, res, code)
 		d.DiscountAmount += widgetDiscountAmount
 		if d.Code != "" {
 			codeApplied = true

@@ -346,7 +346,7 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 		OriginalPrice: 110000, SupplierBaseCost: 100000,
 	}
 	settings := &pricing.PlatformPricingSettings{PlatformPct: 0, CentralProfitPct: 10, DefaultMargin: 20}
-	prices := priceVariantsForResponse(p, domainVariants, domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{})
+	prices := priceVariantsForResponse(p, domainVariants, domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{}, nil)
 	if prices["var-gap-1"].Price != 88000 {
 		t.Errorf("variant price = %d, want 88000 (from variant cost 80000, not product cost 100000)", prices["var-gap-1"].Price)
 	}
@@ -364,7 +364,7 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVariantsByProductIDs after clear: %v", err)
 	}
-	prices = priceVariantsForResponse(p, byProduct["prod-gap-1"], domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{})
+	prices = priceVariantsForResponse(p, byProduct["prod-gap-1"], domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{}, nil)
 	if prices["var-gap-1"].Price != 110000 {
 		t.Errorf("variant price after clear = %d, want 110000 (product cost inherited)", prices["var-gap-1"].Price)
 	}

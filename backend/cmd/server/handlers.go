@@ -324,7 +324,7 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 // live widget campaign) is then applied per variant for display.
 // This function never touches pricing internals: it only calls the
 // resolver Team 02 supplies.
-func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride) map[string]VariantPriceResponse {
+func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride, campaigns []domain.SellerDiscountCampaign) map[string]VariantPriceResponse {
 	out := make(map[string]VariantPriceResponse, len(variants))
 	widgetCfg := loadDealsWidgetConfig(&store)
 	for _, v := range variants {
@@ -339,6 +339,9 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 		}
 		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(p, cost, v.ID, store, settings, locks, ov)
 		res = applyDealsWidgetDiscountForDisplay(&store, widgetCfg, p.ID, res)
+		if camp := pickDisplayCampaign(campaigns, p, v.ID); camp != nil && !displayCampaignLocked(store, locks, p, v.ID) {
+			res = applyDisplayCampaign(res, camp)
+		}
 		out[v.ID] = VariantPriceResponse{
 			Price:           res.FinalPrice,
 			OriginalPrice:   res.OriginalPrice,
@@ -499,6 +502,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	} else {
 		overrides = map[string]pricing.StoreVariantOverride{}
 	}
+	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
 
 	// FIX 4 (team 04 G5): a nil slice encodes as JSON null, matching
 	// live empty results. Callers must tolerate null (the candidate
@@ -525,8 +529,11 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
+		if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
+			res = applyDisplayCampaign(res, camp)
+		}
 		variants := variantsByProduct[p.ID]
-		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides))
+		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
 		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
 			sid := p.SupplierID
 			item.SupplierID = &sid
@@ -556,7 +563,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 // the flagged extension). It deliberately does NOT
 // filter on is_active: live returns 200 for an inactive product's
 // detail (D42, live-confirmed-200, not a Team 04 choice).
-func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogRepository, pricingRepo *repository.PricingRepository, store *domain.Store, settings *pricing.PlatformPricingSettings, p domain.Product, showSupplier bool) (ProductDetailResponse, error) {
+func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogRepository, pricingRepo *repository.PricingRepository, storeRepo *repository.StoreRepository, store *domain.Store, settings *pricing.PlatformPricingSettings, p domain.Product, showSupplier bool) (ProductDetailResponse, error) {
 	var storeVal domain.Store
 	var locks []pricing.MarginLock
 	var overrides map[string]pricing.StoreVariantOverride
@@ -567,10 +574,14 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 	} else {
 		overrides = map[string]pricing.StoreVariantOverride{}
 	}
+	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
 	res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 	res = applyDealsWidgetDiscountForDisplay(store, loadDealsWidgetConfig(store), p.ID, res)
+	if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
+		res = applyDisplayCampaign(res, camp)
+	}
 	variants, _ := catalogRepo.GetProductVariants(ctx, p.ID)
-	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides))
+	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
 	storeCount, _ := catalogRepo.GetProductStoreCount(ctx, p.ID)
 	// FIX 12: live's detail DTO has exactly 20 keys — no images/specs
 	// keys at all (live detail for the bracelet carries only `image`).
@@ -731,7 +742,7 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 		}
 	}
 
-	detail, derr := assembleProductDetail(ctx, catalogRepo, pricingRepo, store, settings, *p, showSupplier)
+	detail, derr := assembleProductDetail(ctx, catalogRepo, pricingRepo, storeRepo, store, settings, *p, showSupplier)
 	if derr != nil {
 		http.Error(w, derr.Error(), http.StatusInternalServerError)
 		return

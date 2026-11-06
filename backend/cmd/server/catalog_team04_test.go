@@ -151,7 +151,7 @@ func TestTeam04VariantPricesDiffer(t *testing.T) {
 	}
 	// FIX 4: live keys variantPrices by variant ID (UUID), not spnc,
 	// and serves originalPrice per variant (team 04 G1 / team 02 G6).
-	prices := priceVariantsForResponse(p, variants, domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{})
+	prices := priceVariantsForResponse(p, variants, domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{}, nil)
 	if prices["v-default"].Price != 63800000 || prices["v-default"].DiscountPercent != 12 || prices["v-default"].OriginalPrice != 72500000 {
 		t.Errorf("default variant price = %+v, want 63800000/12/72500000", prices["v-default"])
 	}

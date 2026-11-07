@@ -1,5 +1,4 @@
 import React, { useEffect, useRef } from 'react';
-import { AntigravityModal } from './components/common/AntigravityModal';
 import { PanelsPreview } from './components/PanelsPreview';
 import { AuthProvider } from './context/AuthContext';
 import { ProductProvider } from './context/ProductContext';
@@ -203,7 +202,6 @@ export const AppContent: React.FC = () => {
   const isProductDetail = activeView === 'product_detail';
   return (
     <div className="min-h-screen bg-[#edf2f7] flex justify-center text-slate-800 antialiased font-sans select-none">
-      <AntigravityModal />
       <SeoManager />
       {/*
         Exact Snapp Pay (pl.snapp.ir) Container:

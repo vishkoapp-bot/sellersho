@@ -3,6 +3,7 @@ import { apiRequest } from '../../../services/apiClient';
 import { Product } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
 import { Truck, ShieldCheck, RotateCcw, Star } from 'lucide-react';
+import { CampaignDiscountBadge } from '../../../components/common/CampaignDiscountBadge';
 
 // FIX 13: tabs live INSIDE the info column, directly after the info
 // block and BEFORE the variant selector (live bundle order: info with
@@ -216,6 +217,14 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }
           </span>
         </div>
       </div>
+
+            {product.discountPercent > 0 && (
+        <CampaignDiscountBadge
+          campaignName={product.campaignName || 'جشنواره تخفیف فروشگاه'}
+          discountPercent={product.discountPercent}
+          size="lg"
+        />
+      )}
 
       <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 flex items-center justify-between' : 'bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-center justify-between'}>
         <div>

@@ -5,6 +5,7 @@ import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from '../context/ToastContext';
 import { Package, Plus } from 'lucide-react';
 import { ReturnWindowBadge } from './ReturnWindowBadge';
+import { CampaignDiscountBadge } from './common/CampaignDiscountBadge';
 import { cardPriceOf } from '../utils/cardPrice';
 
 interface ProductCardProps {
@@ -71,6 +72,16 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
             name anywhere (deals, catalog/search, related). */}
 
         {/* Requirement 23: Non-original Authenticity Badge */}
+                {displayPrice.discountPercent > 0 && (
+          <div className="absolute top-2 right-2 z-10">
+            <CampaignDiscountBadge
+              campaignName={product.campaignName}
+              discountPercent={displayPrice.discountPercent}
+              size="sm"
+            />
+          </div>
+        )}
+
         {product.isOriginal === false && (
           <div className="absolute top-2 left-2 z-10 bg-amber-500 text-white font-extrabold text-[9px] px-1.5 py-0.5 rounded shadow-xs">
             غیر اصل

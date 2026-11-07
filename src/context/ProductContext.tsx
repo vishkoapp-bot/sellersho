@@ -48,6 +48,7 @@ export const mapBackendProduct = (product: ProductDto): Product => ({
   brand: product.brand,
   isActive: product.isActive,
   discountEligible: product.discountEligible,
+  campaignName: product.campaignName,
   storeCount: product.storeCount,
   variants: product.variants,
   variantPrices: product.variantPrices,

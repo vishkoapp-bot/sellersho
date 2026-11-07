@@ -98,6 +98,7 @@ export interface ProductDto {
   marginPercent?: number;
   discountPercent?: number;
   discountEligible?: boolean;
+  campaignName?: string;
   isOriginal: boolean;
   stock: number;
   image: string;

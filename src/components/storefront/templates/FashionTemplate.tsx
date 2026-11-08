@@ -831,31 +831,108 @@ const AastinFaq: React.FC<{ config: TemplateConfig }> = ({ config }) => {
 // This is the ONLY card on the page that shows a price. A product
 // without an image keeps a plain tile square with a small
 // «بدون تصویر» note — never a giant placeholder letter.
-const AastinProductCard: React.FC<{ product: Product; onOpen: (p: Product) => void }> = ({ product, onOpen }) => (
-  <button type="button" onClick={() => onOpen(product)} className={`group block w-full cursor-pointer text-right ${FOCUS_RING}`}>
-    <div className="relative aspect-square overflow-hidden rounded-[2px] bg-[#f2f2f2]">
-      {product.image ? (
-        <img
-          src={product.image}
-          alt={product.title}
-          loading="lazy"
-          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
-        />
-      ) : (
-        <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#737373]">
-          بدون تصویر
-        </span>
-      )}
+const AastinProductCard: React.FC<{ product: Product; onOpen: (p: Product) => void }> = ({ product, onOpen }) => {
+  const priceInfo = cardPriceOf(product);
+  const secondImage = product.images && product.images.length > 1 ? product.images[1] : null;
+  const hasDiscount = priceInfo.discountPercent > 0;
+  const variantsCount = product.variants?.length || 0;
+
+  return (
+    <div
+      onClick={() => onOpen(product)}
+      className="group relative flex flex-col w-full text-right cursor-pointer select-none transition-all duration-300"
+    >
+      {/* 1. Image Container with Portrait Aspect Ratio [3/4] standard for fashion */}
+      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-2xl bg-[#f2ede6]/70 border border-[#e5e0d8]/80 transition-all duration-300 group-hover:shadow-xl group-hover:border-[#1c1c1a]/25">
+        {/* Primary Image */}
+        {product.image ? (
+          <img
+            src={product.image}
+            alt={product.title}
+            loading="lazy"
+            className={`absolute inset-0 h-full w-full object-cover transition-all duration-700 ease-out group-hover:scale-105 ${
+              secondImage ? 'group-hover:opacity-0' : ''
+            }`}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#737373]">
+            تصویر کالا
+          </div>
+        )}
+
+        {/* Secondary Image on Hover (Editorial Flip Effect) */}
+        {secondImage ? (
+          <img
+            src={secondImage}
+            alt={`${product.title} - زاویه دیگر`}
+            loading="lazy"
+            className="absolute inset-0 h-full w-full object-cover transition-all duration-700 ease-out opacity-0 scale-100 group-hover:opacity-100 group-hover:scale-105"
+          />
+        ) : null}
+
+        {/* Top Badges (Discount, Campaign, Variants) */}
+        <div className="absolute top-2.5 inset-x-2.5 flex items-center justify-between gap-1 pointer-events-none z-10">
+          <div className="flex flex-col gap-1 items-start">
+            {hasDiscount && (
+              <span className="rounded-lg bg-[#1c1c1a] text-white px-2 py-0.5 text-[10px] font-black tracking-tight shadow-md">
+                ٪{toPersianDigits(priceInfo.discountPercent)}
+              </span>
+            )}
+            {product.campaignName && (
+              <span className="rounded-lg bg-amber-500/95 text-white px-2 py-0.5 text-[9px] font-extrabold shadow-sm truncate max-w-[120px]">
+                {product.campaignName}
+              </span>
+            )}
+          </div>
+          {variantsCount > 1 && (
+            <span className="rounded-lg bg-white/95 backdrop-blur-xs text-[#1c1c1a] border border-[#e5e0d8] px-2 py-0.5 text-[9px] font-bold shadow-2xs">
+              {toPersianDigits(variantsCount)} تنوع
+            </span>
+          )}
+        </div>
+
+        {/* Quick View Floating Pill on Desktop Hover */}
+        <div className="absolute inset-x-3 bottom-3 opacity-0 translate-y-2 transition-all duration-300 group-hover:opacity-100 group-hover:translate-y-0 hidden sm:block z-10">
+          <div className="w-full py-2.5 rounded-xl bg-white/95 backdrop-blur-sm text-[#1c1c1a] border border-[#e5e0d8] text-center text-xs font-bold shadow-md hover:bg-[#1c1c1a] hover:text-white transition-colors">
+            مشاهده سریع
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Product Metadata & Typography */}
+      <div className="pt-3 pb-1 flex flex-col flex-1 justify-between">
+        <div>
+          {product.brand ? (
+            <span className="block text-[10px] font-bold tracking-widest uppercase text-[#737373] mb-1">
+              {product.brand}
+            </span>
+          ) : (
+            <span className="block text-[10px] text-transparent mb-1">•</span>
+          )}
+          <h3 className="line-clamp-2 text-xs lg:text-[13px] font-extrabold leading-5 text-[#1c1c1a] group-hover:text-black transition-colors min-h-[2.5rem]">
+            {product.title}
+          </h3>
+        </div>
+
+        {/* Price Row */}
+        <div className="mt-2 pt-2 border-t border-[#e5e0d8]/60 flex items-baseline justify-between gap-1 flex-wrap">
+          <div className="flex items-baseline gap-1">
+            <span className="text-sm lg:text-base font-black text-[#1c1c1a]">
+              {formatPrice(priceInfo.price)}
+            </span>
+            <span className="text-[10px] font-bold text-[#737373]">تومان</span>
+          </div>
+
+          {hasDiscount && priceInfo.originalPrice > priceInfo.price && (
+            <span className="text-[11px] text-[#737373] line-through font-normal">
+              {formatPrice(priceInfo.originalPrice)}
+            </span>
+          )}
+        </div>
+      </div>
     </div>
-    <p className="mt-3 line-clamp-2 text-sm font-bold leading-6 text-[#1c1c1a]">{product.title}</p>
-    {product.brand ? (
-      <p className="mt-0.5 truncate text-xs leading-5 text-[#737373]">{product.brand}</p>
-    ) : null}
-    <p className="mt-1.5 text-sm font-black text-[#1c1c1a]">
-      {formatPrice(cardPriceOf(product).price)} <span className="text-xs font-bold text-[#737373]">تومان</span>
-    </p>
-  </button>
-);
+  );
+};
 
 // Dark charcoal grey-green newsletter band (#3a4441), full-bleed:
 // title + subtitle on one side, an underline-style mobile input and
@@ -1137,7 +1214,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
         if (floorItems.length === 0 && !searching) return null;
         const count = floorItems.length;
         const gridCls =
-          count === 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-2' : count === 3 ? 'grid-cols-2 lg:grid-cols-3' : 'grid-cols-2 lg:grid-cols-4';
+          count === 1 ? 'grid-cols-1 max-w-sm mx-auto' : count === 2 ? 'grid-cols-2 max-w-2xl mx-auto' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5';
         const wrapCls = count === 1 ? 'mx-auto w-full max-w-[380px]' : count === 2 ? 'mx-auto w-full max-w-[880px]' : '';
         return (
           <Wrap>

@@ -26,7 +26,7 @@ const TEMPLATE_ACCENTS: Record<string, string> = {
 
 interface Props {
   onOpenSearch: () => void;
-  variant?: 'modern' | 'digikala';
+  variant?: 'modern' | 'digikala' | 'fashion';
   searchQuery?: string;
   onSearchChange?: (q: string) => void;
 }
@@ -167,13 +167,94 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
     );
   }
 
+  if (variant === 'fashion') {
+    return (
+      <header className="sticky top-0 z-30 bg-[#faf8f5]/90 backdrop-blur-md border-b border-[#e5e0d8]">
+        <div className="mx-auto w-full max-w-[1440px] px-4 md:px-6 lg:px-10 flex items-center justify-between py-2.5">
+          <div
+            className="flex items-center gap-3 min-w-0 cursor-pointer"
+            onClick={goToStoreHome}
+            title={`خانه ${currentStore.name}`}
+          >
+            {currentStore.logo && !logoFailed ? (
+              <div className="w-10 h-10 rounded-[2px] overflow-hidden border border-[#e5e0d8] bg-white flex items-center justify-center shrink-0">
+                <img
+                  src={currentStore.logo}
+                  alt={currentStore.name}
+                  className="w-full h-full object-cover"
+                  onError={() => setLogoFailed(true)}
+                />
+              </div>
+            ) : (
+              <div className="w-10 h-10 rounded-[2px] bg-[#1c1c1a] text-[#faf8f5] flex items-center justify-center font-black text-base shrink-0 select-none">
+                {initial}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h1 className="font-black text-base lg:text-lg tracking-tight leading-tight truncate text-[#1c1c1a]">
+                {currentStore.name}
+              </h1>
+              {tagline !== '' && (
+                <span className="text-[11px] font-medium text-[#737373] mt-0.5 block line-clamp-1">
+                  {tagline}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={onOpenSearch}
+              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
+              title="جستجو در محصولات"
+              aria-label="جستجو در محصولات"
+            >
+              <Search className="w-5 h-5" strokeWidth={1.5} />
+            </button>
+            <button
+              onClick={() => setActiveView('customer_wishlist')}
+              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
+              title="علاقه‌مندی‌ها"
+              aria-label="علاقه‌مندی‌ها"
+            >
+              <Heart className="w-5 h-5" strokeWidth={1.5} />
+            </button>
+            <button
+              onClick={() => setIsCartOpen(true)}
+              className="relative w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
+              title="سبد خرید"
+              aria-label="سبد خرید"
+            >
+              <ShoppingCart className="w-5 h-5" strokeWidth={1.5} />
+              {cartItemsCount > 0 && (
+                <span
+                  className="absolute top-1.5 right-1.5 text-[#faf8f5] bg-[#1c1c1a] font-bold text-[9px] min-w-4 h-4 px-0.5 rounded-full flex items-center justify-center"
+                  style={{ boxShadow: '0 0 0 2px #faf8f5' }}
+                >
+                  {cartItemsCount > 99 ? '۹۹+' : toPersianDigits(cartItemsCount)}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveView('customer_profile')}
+              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
+              title={(customerUser?.isLoggedIn || customerUser?.mobile) ? 'حساب کاربری' : 'ورود به حساب کاربری'}
+              aria-label={(customerUser?.isLoggedIn || customerUser?.mobile) ? 'حساب کاربری' : 'ورود به حساب کاربری'}
+            >
+              <User className="w-5 h-5" strokeWidth={1.5} />
+            </button>
+          </div>
+        </div>
+      </header>
+    );
+  }
+
   // Modern (live default) header: 4 icon buttons, search via overlay.
   return (
     <header
       className="sticky top-0 z-30 border-b"
       style={{ backgroundColor: '#FAF8F4', borderColor: '#ECE4D6' }}
     >
-      <div className="flex items-center justify-between px-4 py-2.5">
+      <div className="mx-auto w-full max-w-[1440px] px-4 md:px-6 lg:px-10 flex items-center justify-between py-2.5">
         <div className="flex items-center gap-2.5 min-w-0 cursor-pointer" onClick={goToStoreHome} title={`خانه ${currentStore.name}`}>
           <div
             className="w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-base shrink-0 shadow-sm overflow-hidden"

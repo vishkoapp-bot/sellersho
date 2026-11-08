@@ -13,7 +13,11 @@ import { ProductCard } from '../ProductCard';
 // all sizes (live's I4 has no responsive hiding), centred, max 504px.
 const ACCENT = '#0D7377';
 
-export const SellerStorefrontFooter: React.FC = () => {
+interface SellerStorefrontFooterProps {
+  variant?: 'modern' | 'fashion';
+}
+
+export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ variant = 'modern' }) => {
   const { currentStore, openStaticPage, toPersianDigits, products } = useStore();
   // FIX 22: live storefront footer «محصولات» opens an in-page
   // «همه محصولات» modal (no navigation); empty stores show 0 items

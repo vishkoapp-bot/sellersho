@@ -211,7 +211,7 @@ export const AppContent: React.FC = () => {
           was lg:max-w-7xl, leaving pale side voids on wide desktops — the
           owner rejected the framed column; storefronts now render
           full-width on desktop like the homepage/static views. */}
-      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
+      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] md:max-w-none md:shadow-none md:border-x-0 md:pb-0 lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
         {currentUser && authorizedPanels.length > 1 && (
           <nav aria-label="Workspace switcher" className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 no-scrollbar">
             {authorizedPanels.map((panel) => {
@@ -284,13 +284,13 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <ProductDetailView
                 product={currentProductDetail}
                 onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
               />
-              <SellerStorefrontFooter />
+              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
             </>
           ) : (
             <>

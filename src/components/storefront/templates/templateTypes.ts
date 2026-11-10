@@ -398,48 +398,23 @@ function sectionLabel(key: string): string {
 // list are appended in blueprint order so new sections never vanish.
 // Enabled flags come from the saved config when present, else from the
 // blueprint lineup (in lineup = enabled, absent = disabled).
-// Legacy bundled-section expansions, per template. Fashion's saved
-// configs written before the section split carry ONE 'lookbook' key
-// that bundled three blocks (category grid + collections + editorial
-// band). When such a config is resolved for tpl-fashion-1 — and it
-// does not yet carry the split keys — the bundled key expands into
-// the three split keys AT THE LEGACY POSITION, all inheriting the
-// legacy key's enabled flag, so old storefronts keep rendering the
-// three blocks exactly where the seller left the one bundle. Configs
-// that already carry any split key are left untouched.
-const LEGACY_SECTION_EXPANSIONS: Record<string, Record<string, string[]>> = {
-  'tpl-fashion-1': { lookbook: ['categoryGrid', 'collections', 'lookbook'] },
-};
-
 export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig | null): TemplateConfig {
   const blueprint = blueprintFor(templateId);
   const base: TemplateConfig = saved && typeof saved === 'object' ? saved : {};
   if (!blueprint) return base;
   const savedSections = normalizeTemplateSections(base.sections) || [];
   const savedByKey = new Map(savedSections.map((sec) => [canonicalSectionKey(sectionKey(sec)), sec] as const));
-  const expansions = LEGACY_SECTION_EXPANSIONS[templateId] || {};
-  const expandedFrom = new Map<string, string>();
   const orderedKeys: string[] = [];
   for (const sec of savedSections) {
     const k = canonicalSectionKey(sectionKey(sec));
     if (!k) continue;
-    const targets = expansions[k];
-    if (targets && !targets.some((t) => t !== k && savedByKey.has(t))) {
-      for (const t of targets) {
-        if (!orderedKeys.includes(t)) {
-          orderedKeys.push(t);
-          expandedFrom.set(t, k);
-        }
-      }
-    } else if (!orderedKeys.includes(k)) {
-      orderedKeys.push(k);
-    }
+    if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
   for (const k of blueprint.sections) {
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
   const sections: TemplateSection[] = orderedKeys.map((k) => {
-    const savedSec = savedByKey.get(k) || (expandedFrom.has(k) ? savedByKey.get(expandedFrom.get(k) as string) : undefined);
+    const savedSec = savedByKey.get(k);
     return {
       key: k,
       label: sectionLabel(k),

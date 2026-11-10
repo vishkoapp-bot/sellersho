@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { ShoppingCart, Search, Store, Heart, User, Bell, Menu, X, ShoppingBag } from 'lucide-react';
 import { resolveTemplateConfig, sectionEnabled, templateCustom, storefrontProducts } from './templates/templateTypes';
@@ -30,6 +31,7 @@ const TEMPLATE_ACCENTS: Record<string, string> = {
 interface Props {
   onOpenSearch: () => void;
   variant?: 'modern' | 'digikala' | 'fashion';
+  navigationProducts?: Product[];
   searchQuery?: string;
   onSearchChange?: (q: string) => void;
 }
@@ -39,6 +41,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   variant = 'modern',
   searchQuery = '',
   onSearchChange,
+  navigationProducts,
 }) => {
   const { currentStore, cartItemsCount, setIsCartOpen, setActiveView, toPersianDigits, customerUser, activeView, routeStoreSlug, products, categories, setSelectedCategory, clearCatalogBrand, setSearchQuery } = useStore();
   const [logoFailed, setLogoFailed] = useState(false);
@@ -176,7 +179,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   if (variant === 'fashion') {
     const cfg = resolveTemplateConfig('tpl-fashion-1', currentStore.templateConfig);
     const custom = templateCustom(cfg);
-    const groups = groupProductsByCategory(storefrontProducts(currentStore, products), categories, custom.categoryOverrides);
+    const groups = groupProductsByCategory(storefrontProducts(currentStore, navigationProducts ?? products), categories, custom.categoryOverrides);
     const navItems = groups.slice(0, 3).map(g => ({ title: g.title, slug: g.slug }));
     const select = (slug: string) => {
       clearCatalogBrand(); setSearchQuery(''); setSelectedCategory(slug); setFashionMenuOpen(false);

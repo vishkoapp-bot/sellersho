@@ -221,6 +221,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
           <SellerStorefrontHeader
             onOpenSearch={() => setIsSearchOpen(true)}
             variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
+            navigationProducts={templateProducts}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
           />
@@ -268,6 +269,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
         <SellerStorefrontHeader
           onOpenSearch={() => setIsSearchOpen(true)}
           variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
+            navigationProducts={templateProducts}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
         />

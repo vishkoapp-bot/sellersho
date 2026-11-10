@@ -39,7 +39,8 @@ $previousGoOS = $env:GOOS; $previousGoArch = $env:GOARCH; $previousCGO = $env:CG
 Push-Location (Join-Path $stage 'backend')
 try {
     $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    & go build -trimpath -ldflags '-s -w' -o bin/server-linux ./cmd/server
+    # The archive has no .git directory; release.json records its exact commit.
+    & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/server-linux ./cmd/server
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
 } finally {
     Pop-Location

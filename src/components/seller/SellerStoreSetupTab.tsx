@@ -3,6 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { validateStoreSlug } from '../../utils/validators';
 import { storeApi } from '../../services/storeApi';
+import { SellerDomainsPanel } from './SellerDomainsPanel';
 import { isMockMode } from '../../services/apiClient';
 import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, Server, HelpCircle, ChevronDown } from 'lucide-react';
 
@@ -176,6 +177,7 @@ export const SellerStoreSetupTab: React.FC = () => {
 
   return (
     <form onSubmit={handleSave} className="space-y-3.5 pb-24">
+      {!isMockMode() && <SellerDomainsPanel slug={currentStore.slug} storeId={currentStore.id} />}
       <Explainer text="این‌جا اسم، آدرس و توضیح فروشگاهت را عوض می‌کنی. شعار و توضیح همان لحظه ذخیره می‌شوند؛ عوض‌کردن اسم و آدرس اول باید به تأیید مدیر پلتفرم برسد." />
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <h3 className="text-xs font-bold text-slate-800">اسم و آدرس فروشگاهت</h3>
@@ -271,7 +273,7 @@ export const SellerStoreSetupTab: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+      <div hidden={!isMockMode()} className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
         <button
           type="button"
           onClick={() => setDomainOpen((v) => !v)}

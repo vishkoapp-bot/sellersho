@@ -277,6 +277,9 @@ type QCDiscrepancy struct {
 	Attachments      []string   `json:"attachments"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
 	ResolvedAt       *time.Time `json:"resolved_at" db:"resolved_at"`
+	ResponseDueAt    time.Time  `json:"response_due_at"`
+	RespondedAt      *time.Time `json:"responded_at"`
+	EscalatedAt      *time.Time `json:"escalated_at"`
 }
 
 type CampaignStats struct {
@@ -2802,7 +2805,6 @@ func (r *SupplierRepository) ListCartonShipments(ctx context.Context, supplierID
 	return out, rows.Err()
 }
 
-
 // WarehouseShipmentItemDto is one line of a warehouse shipment lookup: the
 // fields live's receive tab renders, plus the stored receive state.
 type WarehouseShipmentItemDto struct {
@@ -3479,9 +3481,9 @@ func (r *SupplierRepository) UpdateVariantPricing(ctx context.Context, supplierI
 
 // SupplierVariantLabel is one row of live's Fl print-label sheet.
 type SupplierVariantLabel struct {
-	SPNC         string `json:"spnc"`
-	VariantName  string `json:"variant_name"`
-	QRCode       string `json:"qr_payload"`
+	SPNC        string `json:"spnc"`
+	VariantName string `json:"variant_name"`
+	QRCode      string `json:"qr_payload"`
 }
 
 // GetProductLabels returns live's getLabels shape {spn, labels}.
@@ -3651,7 +3653,7 @@ func (r *SupplierRepository) GetDiscrepancies(ctx context.Context, supplierID st
 	query := `
 		SELECT qc.id, qc.inbound_id, qc.supplier_id, qc.product_id, COALESCE(p.title, '') AS product_title,
 		       qc.expected_quantity, qc.received_quantity,
-		       qc.defect_count, qc.reason, qc.status, qc.supplier_response, qc.resolution_offer, qc.created_at, qc.resolved_at
+		       qc.defect_count, qc.reason, qc.status, qc.supplier_response, qc.resolution_offer, qc.created_at, qc.resolved_at, qc.response_due_at,qc.responded_at,qc.escalated_at
 		FROM qc_discrepancies qc
 		LEFT JOIN products p ON p.id = qc.product_id
 		WHERE qc.supplier_id = $1 OR $1 = 'all'
@@ -3669,6 +3671,7 @@ func (r *SupplierRepository) GetDiscrepancies(ctx context.Context, supplierID st
 		if err := rows.Scan(
 			&d.ID, &d.InboundID, &d.SupplierID, &d.ProductID, &d.ProductTitle, &d.ExpectedQuantity, &d.ReceivedQuantity,
 			&d.DefectCount, &d.Reason, &d.Status, &d.SupplierResponse, &d.ResolutionOffer, &d.CreatedAt, &d.ResolvedAt,
+			&d.ResponseDueAt, &d.RespondedAt, &d.EscalatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3681,8 +3684,8 @@ func (r *SupplierRepository) GetDiscrepancies(ctx context.Context, supplierID st
 func (r *SupplierRepository) RespondDiscrepancy(ctx context.Context, supplierID, discrepancyID, response, resolutionOffer string) error {
 	query := `
 		UPDATE qc_discrepancies
-		SET supplier_response = $1, resolution_offer = $2, status = 'resolved', resolved_at = NOW()
-		WHERE id = $3 AND supplier_id = $4
+		SET supplier_response = $1, resolution_offer = $2, status = 'resolved', resolved_at = NOW(), responded_at=NOW()
+		WHERE id = $3 AND supplier_id = $4 AND status='open' AND responded_at IS NULL AND response_due_at>NOW() AND escalated_at IS NULL
 	`
 	res, err := r.db.ExecContext(ctx, query, response, resolutionOffer, discrepancyID, supplierID)
 	if err != nil {
@@ -3690,7 +3693,14 @@ func (r *SupplierRepository) RespondDiscrepancy(ctx context.Context, supplierID,
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		return sql.ErrNoRows
+		var expired bool
+		if err := r.db.QueryRowContext(ctx, `SELECT response_due_at<=NOW() OR escalated_at IS NOT NULL FROM qc_discrepancies WHERE id=$1 AND supplier_id=$2`, discrepancyID, supplierID).Scan(&expired); err != nil {
+			return err
+		}
+		if expired {
+			return ErrQCResponseExpired
+		}
+		return ErrStoreInput
 	}
 	return nil
 }
@@ -4181,7 +4191,6 @@ func (r *SupplierRepository) UpdateSupplierWarehouse(ctx context.Context, suppli
 	return &out, nil
 }
 
-
 // SupplierOrderAddon mirrors one row of live's GET /supplier/orders/{id}/addons.
 type SupplierOrderAddon struct {
 	Title        string `json:"title"`
@@ -4453,20 +4462,20 @@ type SupplierCustomerReturnItem struct {
 // Destination fields are nil when the return has no recorded warehouse
 // (live renders the destination line only when a name is present).
 type SupplierCustomerReturn struct {
-	ReturnID               string                       `json:"returnId"`
-	OrderID                string                       `json:"orderId"`
-	OrderNumber            string                       `json:"orderNumber"`
-	Status                 string                       `json:"status"`
-	Reason                 string                       `json:"reason"`
-	ReturnCode             *string                      `json:"returnCode,omitempty"`
-	CreatedAt              time.Time                    `json:"createdAt"`
-	ReturnShippingAmount   *int64                       `json:"returnShippingAmount,omitempty"`
-	ReturnShippingBearer   *string                      `json:"returnShippingBearer,omitempty"`
-	DestinationName        *string                      `json:"destinationName,omitempty"`
-	WarehouseName          *string                      `json:"warehouseName,omitempty"`
-	DestinationType        *string                      `json:"destinationType,omitempty"`
-	WarehouseCity          *string                      `json:"warehouseCity,omitempty"`
-	Items                  []SupplierCustomerReturnItem `json:"items"`
+	ReturnID             string                       `json:"returnId"`
+	OrderID              string                       `json:"orderId"`
+	OrderNumber          string                       `json:"orderNumber"`
+	Status               string                       `json:"status"`
+	Reason               string                       `json:"reason"`
+	ReturnCode           *string                      `json:"returnCode,omitempty"`
+	CreatedAt            time.Time                    `json:"createdAt"`
+	ReturnShippingAmount *int64                       `json:"returnShippingAmount,omitempty"`
+	ReturnShippingBearer *string                      `json:"returnShippingBearer,omitempty"`
+	DestinationName      *string                      `json:"destinationName,omitempty"`
+	WarehouseName        *string                      `json:"warehouseName,omitempty"`
+	DestinationType      *string                      `json:"destinationType,omitempty"`
+	WarehouseCity        *string                      `json:"warehouseCity,omitempty"`
+	Items                []SupplierCustomerReturnItem `json:"items"`
 }
 
 func (r *SupplierRepository) ListSupplierCustomerReturns(ctx context.Context, supplierID string) ([]SupplierCustomerReturn, error) {
@@ -4613,11 +4622,11 @@ func (r *SupplierRepository) ListSupplierCustomerReturns(ctx context.Context, su
 // by return_id. Keys are snake_case because live's component reads
 // return_id (not returnId) when grouping.
 type SupplierReturnShippingCharge struct {
-	ID        string `json:"id"`
-	ReturnID  string `json:"return_id"`
-	Bearer    string `json:"bearer"`
-	Amount    int64  `json:"amount"`
-	Reason    string `json:"reason"`
+	ID        string    `json:"id"`
+	ReturnID  string    `json:"return_id"`
+	Bearer    string    `json:"bearer"`
+	Amount    int64     `json:"amount"`
+	Reason    string    `json:"reason"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -4689,10 +4698,10 @@ func (r *SupplierRepository) ListSupplierReturnClawbacks(ctx context.Context, su
 }
 
 var (
-	ErrSupplierReturnBackActive       = errors.New("an active back request already exists for this item")
-	ErrSupplierReturnBackNotReceived  = errors.New("item has not been received at the warehouse yet")
-	ErrSupplierReturnBackBadQuantity  = errors.New("quantity is out of range for this item")
-	ErrSupplierReturnBackBadState     = errors.New("back request is not in a state that allows this action")
+	ErrSupplierReturnBackActive      = errors.New("an active back request already exists for this item")
+	ErrSupplierReturnBackNotReceived = errors.New("item has not been received at the warehouse yet")
+	ErrSupplierReturnBackBadQuantity = errors.New("quantity is out of range for this item")
+	ErrSupplierReturnBackBadState    = errors.New("back request is not in a state that allows this action")
 )
 
 // CreateSupplierReturnBack inserts a requested back-request for a received
@@ -4924,20 +4933,20 @@ func (r *SupplierRepository) ListSupplierStorageFees(ctx context.Context, suppli
 // SupplierAddon mirrors product_addons owned by one supplier
 // (migration 202610230005) for GET /supplier/addons (D12).
 type SupplierAddon struct {
-	ID             string            `json:"id"`
-	Title          string            `json:"title"`
-	Description    string            `json:"description"`
-	Kind           string            `json:"kind"`
-	PriceMode      string            `json:"priceMode"`
-	PriceValue     float64           `json:"priceValue"`
-	CapToman       int64             `json:"capToman"`
-	ApprovalStatus string            `json:"approvalStatus"`
-	RejectionReason *string          `json:"rejectionReason,omitempty"`
-	IsActive       bool              `json:"isActive"`
-	SortOrder      int               `json:"sortOrder"`
-	LinkedProductID *string          `json:"linkedProductId,omitempty"`
-	Attachments    []AddonAttachment `json:"attachments"`
-	CreatedAt      time.Time         `json:"createdAt"`
+	ID              string            `json:"id"`
+	Title           string            `json:"title"`
+	Description     string            `json:"description"`
+	Kind            string            `json:"kind"`
+	PriceMode       string            `json:"priceMode"`
+	PriceValue      float64           `json:"priceValue"`
+	CapToman        int64             `json:"capToman"`
+	ApprovalStatus  string            `json:"approvalStatus"`
+	RejectionReason *string           `json:"rejectionReason,omitempty"`
+	IsActive        bool              `json:"isActive"`
+	SortOrder       int               `json:"sortOrder"`
+	LinkedProductID *string           `json:"linkedProductId,omitempty"`
+	Attachments     []AddonAttachment `json:"attachments"`
+	CreatedAt       time.Time         `json:"createdAt"`
 }
 
 type AddonAttachment struct {
@@ -5709,14 +5718,14 @@ func (r *SupplierRepository) supplierInsightFootprint(ctx context.Context, suppl
 }
 
 type supplierInsightCandidate struct {
-	term          string
-	searches      int64
-	zeroSearches  int64
-	positiveRows  int64
-	totalRows     int64
-	catalogRows   int64
-	catalogZero   int64
-	catalogKnown  bool
+	term         string
+	searches     int64
+	zeroSearches int64
+	positiveRows int64
+	totalRows    int64
+	catalogRows  int64
+	catalogZero  int64
+	catalogKnown bool
 }
 
 // GetSupplierSearchInsight computes the supplier demand-insight over a

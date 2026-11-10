@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, CheckCircle2, RefreshCw, ScanLine } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
 import { apiRequest } from '../../services/apiClient';
+import { PickingRoutePlanner } from './WarehouseOptimizationTools';
 
 // Live contract (live bundles, read-only):
 // - GET /warehouse/orders/ready-to-pick -> { orders } (ReturnWindowBadge-MERGED.js, getReadyToPick)
@@ -88,6 +89,7 @@ export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
 
   return (
     <div className="space-y-3.5 pb-6">
+      <PickingRoutePlanner orderIds={orders.map((order) => order.id)} />
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-bold text-slate-800">برگه جمع‌آوری سفارش‌ها</h3>

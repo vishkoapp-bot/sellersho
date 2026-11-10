@@ -49,6 +49,9 @@ export interface SupplierInboundDto {
 }
 
 export interface SupplierDiscrepancyDto {
+  response_due_at: string;
+  responded_at?: string;
+  escalated_at?: string;
   id: string;
   inbound_id: string;
   supplier_id: string;

@@ -9,6 +9,9 @@ import (
 )
 
 type WarehouseBin struct {
+	PositionX       *float64  `json:"positionX,omitempty"`
+	PositionY       *float64  `json:"positionY,omitempty"`
+	PositionZ       *float64  `json:"positionZ,omitempty"`
 	BinCode         string    `json:"binCode" db:"bin_code"`
 	HallName        string    `json:"hallName" db:"hall_name"`
 	Aisle           string    `json:"aisle" db:"aisle"`
@@ -101,7 +104,7 @@ func (r *WMSRepository) GetBins(ctx context.Context) ([]WarehouseBin, error) {
 		       COALESCE(b.occupied_volume_cm3,0), COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0),
 		       COALESCE(b.capacity_volume_cm3,0)-COALESCE(b.occupied_volume_cm3,0)-COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0),
 		       b.max_weight_grams, COALESCE(b.occupied_weight_grams,0), b.capacity_status,
-		       CASE WHEN b.capacity_status <> 'verified' THEN 'ظرفیت فیزیکی تأیید نشده' WHEN COALESCE(b.capacity_volume_cm3,0)-COALESCE(b.occupied_volume_cm3,0)-COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0) <= 0 THEN 'ظرفیت باقی‌مانده کافی نیست' ELSE '' END
+		       CASE WHEN b.capacity_status <> 'verified' THEN 'ظرفیت فیزیکی تأیید نشده' WHEN COALESCE(b.capacity_volume_cm3,0)-COALESCE(b.occupied_volume_cm3,0)-COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0) <= 0 THEN 'ظرفیت باقی‌مانده کافی نیست' ELSE '' END, b.position_x,b.position_y,b.position_z
 		FROM warehouse_bins b
 		LEFT JOIN products p ON b.product_id = p.id
 		ORDER BY b.bin_code ASC
@@ -118,6 +121,7 @@ func (r *WMSRepository) GetBins(ctx context.Context) ([]WarehouseBin, error) {
 		if err := rows.Scan(
 			&b.BinCode, &b.HallName, &b.Aisle, &b.Shelf, &b.CapacityPercent,
 			&b.ProductID, &b.ProductTitle, &b.Quantity, &b.UpdatedAt, &b.WarehouseName, &b.CapacityVolume, &b.OccupiedVolume, &b.ReservedVolume, &b.RemainingVolume, &b.MaxWeightGrams, &b.OccupiedWeight, &b.CapacityStatus, &b.UnavailableWhy,
+			&b.PositionX, &b.PositionY, &b.PositionZ,
 		); err != nil {
 			return nil, err
 		}

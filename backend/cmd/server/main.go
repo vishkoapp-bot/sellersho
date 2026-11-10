@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/accesspolicy"
+	"github.com/drup/platform/internal/adguard"
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/config"
 	"github.com/drup/platform/internal/database/seeder"
@@ -236,6 +237,7 @@ func main() {
 		shipmentRepo = repository.NewSupplierShipmentRepository(db.DB)
 		backgroundWorker = worker.NewBackgroundWorker(db.DB)
 		backgroundWorker.SetOrderRepository(orderRepo)
+		backgroundWorker.SetRedisClient(redisClient)
 		backgroundWorker.SetFinanceRepository(finRepo)
 		backgroundWorker.Start()
 
@@ -249,6 +251,14 @@ func main() {
 	).WithPricingRepository(pricingRepo).WithTapinRepository(repository.NewTapinRepository(db.DB))
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/domains/allow", func(w http.ResponseWriter, r *http.Request) { handleDomainPermission(w, r, storeRepo) })
+	mux.HandleFunc("/api/v1/domain-store", func(w http.ResponseWriter, r *http.Request) { handleDomainStore(w, r, storeRepo) })
+	mux.HandleFunc("/api/v1/seller/domains", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomains(w, r, storeRepo) }))
+	mux.HandleFunc("/api/v1/seller/domains/", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomainAction(w, r, storeRepo) }))
+	adGuard := adguard.New(cfg.JWTSecret)
+	mux.HandleFunc("/api/v1/admin/operations", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleOperationsOverview(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/operations/qc/", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleResolveOverdueQC(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/ads/challenge", func(w http.ResponseWriter, r *http.Request) { handleAdChallenge(w, r, adGuard, storeRepo) })
 	mux.HandleFunc("/api/v1/admin/ippanel/settings", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelSettings(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/ippanel/test", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelTest(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/sms/credit", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelCredit(w, r, smsClient) }))
@@ -705,30 +715,9 @@ func main() {
 	})
 
 	// 5. Ad Click Token Anti-fraud Validation (Redis)
-	mux.HandleFunc("/api/v1/ads/events", func(w http.ResponseWriter, r *http.Request) { handleSellerAdEvent(w, r, storeRepo) })
+	mux.HandleFunc("/api/v1/ads/events", func(w http.ResponseWriter, r *http.Request) { handleSellerAdEvent(w, r, storeRepo, adGuard) })
 	mux.HandleFunc("/api/v1/ads/click", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		token := r.URL.Query().Get("ad_token")
-		if token == "" {
-			http.Error(w, `{"error":"Missing ad_token"}`, http.StatusBadRequest)
-			return
-		}
-
-		if redisClient != nil {
-			isNew, err := redisClient.SetAdToken(r.Context(), token, 24*time.Hour)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"accepted": isNew,
-				"adToken":  token,
-				"reason":   map[bool]string{true: "Valid unique click", false: "Duplicate click within 24h"}[isNew],
-			})
-			return
-		}
-
-		json.NewEncoder(w).Encode(map[string]interface{}{"accepted": true, "adToken": token})
+		http.Error(w, `{"error":"Use POST /api/v1/ads/events with a verified browser challenge"}`, http.StatusGone)
 	})
 
 	// 6. Orders Placement, Tracking, Delivery Confirmation
@@ -868,6 +857,10 @@ func main() {
 		handleReviewHistoricalInventory(w, r, r.Context(), supplierRepo, adminRepo)
 	}))
 	mux.HandleFunc("/api/v1/warehouse/bins/", RequireRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/position") {
+			handleBinPosition(w, r, warehouseRepo)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/capacity") && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
 			binCode := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/bins/"), "/capacity")
 			handleUpdateBinCapacity(w, r, r.Context(), binCode, wmsRepo)
@@ -959,6 +952,10 @@ func main() {
 	}))
 	mux.HandleFunc("/api/v1/warehouse/putaway/tasks/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/putaway/tasks/")
+		if strings.HasSuffix(sub, "/suggestions") {
+			handleBinSuggestions(w, r, warehouseRepo, strings.TrimSuffix(sub, "/suggestions"))
+			return
+		}
 		if strings.HasSuffix(sub, "/assign") && r.Method == http.MethodPost {
 			handleAssignPutawayTask(w, r, r.Context(), strings.TrimSuffix(sub, "/assign"), warehouseRepo)
 			return
@@ -1730,6 +1727,8 @@ func main() {
 	mux.HandleFunc("/api/v1/supplier/discrepancies", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		supplierHandlers.HandleGetDiscrepancies(w, r)
 	}))
+	mux.HandleFunc("/api/v1/supplier/shipping-sla", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) { handleSupplierSLA(w, r, db.DB, supplierRepo) }))
+	mux.HandleFunc("/api/v1/warehouse/picking-route", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handlePickingRoute(w, r, warehouseRepo) }))
 
 	mux.HandleFunc("/api/v1/supplier/discrepancies/", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/supplier/discrepancies/")

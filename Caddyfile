@@ -1,0 +1,26 @@
+{
+	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://backend:8080/internal/domains/allow
+	}
+}
+
+:443 {
+	tls {
+		on_demand
+	}
+	@internal path /internal/*
+	respond @internal 404
+	forward_auth backend:8080 {
+		uri /internal/domains/allow?domain={host}
+	}
+	reverse_proxy frontend:80 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+:80 {
+	@internal path /internal/*
+	respond @internal 404
+	redir https://{host}{uri} 308
+}

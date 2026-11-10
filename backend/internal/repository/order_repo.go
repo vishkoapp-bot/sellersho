@@ -727,6 +727,16 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		return nil, err
 	}
 	defer dbTx.Rollback()
+	// Lock the order BEFORE the payment, matching the expiry job. A callback
+	// may never resurrect an order that the two-minute sweep cancelled.
+	var lockedOrderID, orderStatus, orderPayment string
+	var deadline *time.Time
+	if err := dbTx.QueryRowContext(ctx, `SELECT o.id,o.status,o.payment_status,o.payment_expires_at FROM orders o JOIN payment_transactions p ON p.order_id=o.id WHERE p.gateway_token=$1 FOR UPDATE OF o`, gatewayToken).Scan(&lockedOrderID, &orderStatus, &orderPayment, &deadline); err != nil {
+		return nil, err
+	}
+	if orderPayment != "paid" && (orderStatus == "cancelled" || orderPayment != "pending" || (deadline != nil && !time.Now().Before(*deadline))) {
+		return nil, ErrPaymentExpired
+	}
 
 	var payment PaymentTransaction
 	err = dbTx.QueryRowContext(ctx, `
@@ -744,6 +754,9 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	}
 	if payment.Status == "paid" {
 		return &payment, nil
+	}
+	if payment.Status != "pending" {
+		return nil, ErrPaymentExpired
 	}
 
 	itemRows, err := dbTx.QueryContext(ctx, `
@@ -1006,13 +1019,13 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	var q string
 	var args []interface{}
 	if isAdmin {
-		q = `SELECT id, status, inventory_captured FROM orders WHERE id = $1 OR order_number = $1`
+		q = `SELECT id, status, inventory_captured FROM orders WHERE id = $1 OR order_number = $1 FOR UPDATE`
 		args = []interface{}{idOrNumber}
 	} else {
 		if strings.TrimSpace(customerUserID) == "" {
 			return fmt.Errorf("customerUserID is required for order cancellation (fail-closed): %w", sql.ErrNoRows)
 		}
-		q = `SELECT id, status, inventory_captured FROM orders WHERE (id = $1 OR order_number = $1) AND customer_user_id = $2::uuid`
+		q = `SELECT id, status, inventory_captured FROM orders WHERE (id = $1 OR order_number = $1) AND customer_user_id = $2::uuid FOR UPDATE`
 		args = []interface{}{idOrNumber, customerUserID}
 	}
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&orderID, &status, &captured); err != nil {

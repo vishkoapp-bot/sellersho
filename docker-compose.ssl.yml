@@ -1,0 +1,28 @@
+# Apply alongside docker-compose.prod.yml after configuring DNS and ACME_EMAIL.
+services:
+  backend:
+    environment:
+      DOMAIN_EDGE_HOST: "${DOMAIN_EDGE_HOST:?Set the public edge hostname or IP}"
+      PLATFORM_DOMAINS: "${PLATFORM_DOMAINS:?Comma-separated primary platform hostnames}"
+      TRUSTED_PROXY_CIDRS: "172.16.0.0/12,10.0.0.0/8"
+  frontend:
+    ports: !reset []
+  edge:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL:?Set the certificate operations email}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+volumes:
+  caddy_data:
+  caddy_config:

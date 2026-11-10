@@ -68,11 +68,14 @@ import (
 //     catalog:*, jwt:revoked:* and sms:bulk:* are neither renamed
 //     nor flushed anywhere in this change.
 type BackgroundWorker struct {
-	db        *sql.DB
-	stopCh    chan struct{}
-	orderRepo *repository.OrderRepository
-	finRepo   *repository.FinanceRepository
+	db          *sql.DB
+	stopCh      chan struct{}
+	orderRepo   *repository.OrderRepository
+	finRepo     *repository.FinanceRepository
+	redisClient *repository.RedisClient
 }
+
+func (w *BackgroundWorker) SetRedisClient(r *repository.RedisClient) { w.redisClient = r }
 
 func NewBackgroundWorker(db *sql.DB) *BackgroundWorker {
 	return &BackgroundWorker{
@@ -102,11 +105,13 @@ func (w *BackgroundWorker) SetFinanceRepository(r *repository.FinanceRepository)
 func (w *BackgroundWorker) Start() {
 	ticker := time.NewTicker(60 * time.Second)
 	rollupTicker := time.NewTicker(time.Hour)
+	operationsTicker := time.NewTicker(2 * time.Minute)
 	go func() {
 		log.Println("[INFO] Background Worker started (delivery-lock-releaser every 60s, search rollup hourly)")
 		// Run once on startup
 		w.runDeliveryLockReleaserCycle()
 		w.RunMonthlySettlementIfDue()
+		w.RunOperationsCycle()
 
 		for {
 			select {
@@ -116,9 +121,12 @@ func (w *BackgroundWorker) Start() {
 			case <-rollupTicker.C:
 				// TODO(U73): hourly search rollup; see runSearchRollup.
 				w.runSearchRollup()
+			case <-operationsTicker.C:
+				w.RunOperationsCycle()
 			case <-w.stopCh:
 				ticker.Stop()
 				rollupTicker.Stop()
+				operationsTicker.Stop()
 				return
 			}
 		}

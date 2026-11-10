@@ -938,6 +938,14 @@ func (h *SupplierHandlers) HandleRespondDiscrepancy(w http.ResponseWriter, r *ht
 	}
 	err := h.supplierRepo.RespondDiscrepancy(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), discrepancyID, req.Response, req.ResolutionOffer)
 	if err != nil {
+		if errors.Is(err, repository.ErrQCResponseExpired) || errors.Is(err, repository.ErrStoreInput) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}

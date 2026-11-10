@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drup/platform/internal/warehouseopt"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -855,8 +856,8 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	defer tx.Rollback()
 	var productID string
 	var quantity, lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus, status string
-	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),COALESCE(p.measurement_status,'unverified') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE`, taskID).Scan(&productID, &quantity, &status, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
+	var measurementStatus, status, sourceWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),COALESCE(p.measurement_status,'unverified'),COALESCE((SELECT warehouse_name FROM inbound_shipments WHERE id=pt.inbound_id),p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE`, taskID).Scan(&productID, &quantity, &status, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
 		return err
 	}
 	if status == "completed" {
@@ -865,29 +866,35 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	if quantity <= 0 || measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
 		return fmt.Errorf("task measurements are not verified")
 	}
-	volume := int64(lengthMM) * int64(widthMM) * int64(heightMM) * int64(quantity)
+	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	if err != nil {
+		return err
+	}
 	var capacity, occupied, maxWeight, occupiedWeight int64
-	var capacityStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus); err != nil {
+	var capacityStatus, binWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status,COALESCE(warehouse_name,'') FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus, &binWarehouse); err != nil {
 		return err
 	}
 	if capacityStatus != "verified" || capacity <= 0 {
 		return fmt.Errorf("bin capacity is not verified")
 	}
-	var reserved int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active' AND task_id<>$2`, binLocation, taskID).Scan(&reserved); err != nil {
+	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
+		return fmt.Errorf("قفسه باید در انبار همان محموله باشد")
+	}
+	var reserved, reservedWeight int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active' AND task_id<>$2`, binLocation, taskID).Scan(&reserved, &reservedWeight); err != nil {
 		return err
 	}
 	if occupied+reserved+volume > capacity {
 		return fmt.Errorf("insufficient bin volume capacity")
 	}
-	if maxWeight > 0 && occupiedWeight+int64(weightGrams*quantity) > maxWeight {
+	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
 		return fmt.Errorf("bin weight capacity exceeded")
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE putaway_tasks SET bin_location=$1,status='assigned',assigned_to=$2 WHERE id=$3 AND status IN ('pending','assigned')`, binLocation, staffUserID, taskID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active'`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, int64(weightGrams*quantity), "putaway:"+taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active'`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -904,33 +911,43 @@ func (r *WarehouseRepository) AssignPutaway(ctx context.Context, productID, binL
 	}
 	defer tx.Rollback()
 	var lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(length_mm,0),COALESCE(width_mm,0),COALESCE(height_mm,0),COALESCE(weight_grams,0),measurement_status FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
+	var measurementStatus, sourceWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(length_mm,0),COALESCE(width_mm,0),COALESCE(height_mm,0),COALESCE(weight_grams,0),measurement_status,COALESCE(warehouse_name,'') FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
 		return "", err
 	}
 	if measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
 		return "", fmt.Errorf("product measurements are not verified")
 	}
-	volume := int64(lengthMM) * int64(widthMM) * int64(heightMM) * int64(quantity)
+	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	if err != nil {
+		return "", err
+	}
 	taskID := "PUT-TSK-" + uuid.NewString()
 	var capacity, occupied, maxWeight, occupiedWeight int64
-	var capacityStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus); err != nil {
+	var capacityStatus, binWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status,COALESCE(warehouse_name,'') FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus, &binWarehouse); err != nil {
 		return "", err
 	}
 	if capacityStatus != "verified" || capacity <= 0 {
 		return "", fmt.Errorf("bin capacity is not verified")
 	}
-	if occupied+volume > capacity {
+	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
+		return "", fmt.Errorf("قفسه باید در انبار همان کالا باشد")
+	}
+	var reserved, reservedWeight int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active'`, binLocation).Scan(&reserved, &reservedWeight); err != nil {
+		return "", err
+	}
+	if occupied+reserved+volume > capacity {
 		return "", fmt.Errorf("insufficient bin volume capacity")
 	}
-	if maxWeight > 0 && occupiedWeight+int64(weightGrams*quantity) > maxWeight {
+	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
 		return "", fmt.Errorf("bin weight capacity exceeded")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,bin_location,quantity,status,assigned_to,created_at) VALUES ($1,$2,$3,$4,'assigned',$5,NOW())`, taskID, productID, binLocation, quantity, staffUserID); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6)`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, int64(weightGrams*quantity), "putaway:"+taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6)`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
 		return "", err
 	}
 	return taskID, tx.Commit()
@@ -949,6 +966,8 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	var productID, supplierID, inboundID string
 	var quantity int
 	var volume, weight int64
+	var lengthMM, widthMM, heightMM, weightGrams int64
+	var measurementStatus string
 	var taskStatus string
 	if err = tx.QueryRowContext(ctx, `SELECT status FROM putaway_tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&taskStatus); err != nil {
 		return err
@@ -959,8 +978,15 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if err = tx.QueryRowContext(ctx, `SELECT bin_code,volume_cm3,weight_grams FROM putaway_capacity_reservations WHERE task_id=$1 AND status='active' FOR UPDATE`, taskID).Scan(&binCode, &volume, &weight); err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),p.measurement_status FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
 		return err
+	}
+	currentVolume, currentWeight, err := warehouseopt.Capacity(lengthMM, widthMM, heightMM, weightGrams, int64(quantity))
+	if err != nil {
+		return err
+	}
+	if measurementStatus != "verified" || currentVolume != volume || currentWeight != weight {
+		return fmt.Errorf("ابعاد یا وزن کالا تغییر کرده است؛ تخصیص قفسه را دوباره انجام دهید")
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT occupied_volume_cm3,occupied_weight_grams FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binCode); err != nil {
 		return err

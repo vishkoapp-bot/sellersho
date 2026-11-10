@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
+import { SupplierSLACard } from './SupplierSLACard';
 
 import { useToast } from "../../context/ToastContext";import { authApi } from '../../services/authApi';
 import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Warehouse, Truck, User, Info, Plus, Pencil, CheckCircle2, Clock, XCircle, Send, FileText } from 'lucide-react';
@@ -828,6 +829,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
   return (
     <div className="space-y-3 pb-6">
       <h2 className="text-sm font-bold">روش‌های ارسال</h2>
+      <SupplierSLACard />
       <div className="flex items-start gap-2.5 rounded-2xl border border-brand-border bg-brand-bg p-3.5">
         <Info className="h-4 w-4 shrink-0 mt-0.5 text-brand-deep"  strokeWidth={1.5}/>
         <p className="text-[11px] leading-6 text-slate-600">

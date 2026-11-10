@@ -65,6 +65,7 @@ import { AdminSettlementSettingsTab } from './AdminSettlementSettingsTab';
 import { AdminStorageFeeSettingsTab } from './AdminStorageFeeSettingsTab';
 import { AdminPlaceholderTab, AdminSupportReturnsTab } from './AdminNewTabs';
 import { AdminAuditLogTab } from './AdminAuditLogTab';
+import { AdminOperationsTab } from './AdminOperationsTab';
 
 interface Props {
   onBackToCustomerSite: () => void;
@@ -142,6 +143,7 @@ const ADMIN_NAV_SECTIONS: AdminNavSection[] = [
     { id: 'staff', label: 'کارکنان انبار', icon: Users, allowedRoles: ['super_admin'] },
     { id: 'sms', label: 'پیامک و اعتبار', icon: MessageSquare, allowedRoles: ['super_admin', 'admin'] },
     { id: 'jobs-queue', label: 'صف کارها', icon: Cpu, allowedRoles: ['super_admin', 'admin'] },
+    { id: 'operations', label: 'پایش عملیات خودکار', icon: Activity, allowedRoles: ['super_admin', 'admin', 'logistics_specialist'] },
     { id: 'audit-logs', label: 'گزارش حسابرسی', icon: ShieldCheck, allowedRoles: ['super_admin', 'admin'] },
   ] },
 ];
@@ -402,6 +404,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'banners' && <AdminPlaceholderTab title="بنرها" description="مدیریت بنرهای صفحه اصلی؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
               {activeTab === 'site-content' && <AdminPlaceholderTab title="محتوای سایت و صفحات" description="مدیریت محتوای سایت و صفحات ثابت؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
               {activeTab === 'finance-pending-payments' && <FinancePendingPaymentsTab />}
+              {activeTab === 'operations' && <AdminOperationsTab />}
               {activeTab === 'finance-callback-retries' && <AdminPlaceholderTab title="پرداخت‌های ناموفق" description="تلاش‌های مجدد بازگشت از درگاه؛ محتوای آن پس از ورود به حساب نمایش داده می‌شود." />}
               {activeTab === 'newsletter' && <AdminPlaceholderTab title="مشترکان خبرنامه" description="فهرست مشترکان خبرنامه؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
               {activeTab === 'reviews' && <AdminPlaceholderTab title="نظرات مشتریان" description="نظرات ثبت‌شده مشتریان؛ محتوای آن پس از ورود به حساب نمایش داده می‌شود." />}

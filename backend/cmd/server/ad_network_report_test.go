@@ -171,3 +171,38 @@ INSERT INTO ad_event_rejections(campaign_id,event_type,reason,occurred_at) VALUE
 		previous = id
 	}
 }
+
+// Production predates the reconstruction migration: both rejection IDs and
+// campaign IDs are UUIDs there, while a fresh install uses BIGSERIAL/TEXT.
+func TestAdNetworkReportUUIDRejectionSchema(t *testing.T) {
+	db := adReportDB(t)
+	_, err := db.Exec(`ALTER TABLE ad_event_rejections ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE ad_event_rejections ALTER COLUMN id TYPE UUID USING gen_random_uuid();
+ALTER TABLE ad_event_rejections ALTER COLUMN campaign_id TYPE UUID USING campaign_id::uuid;
+INSERT INTO stores VALUES('uuid-report-store','UUID store');
+INSERT INTO seller_campaigns VALUES('20000000-0000-0000-0000-000000000001','uuid-report-store','UUID campaign');
+INSERT INTO ad_event_rejections(id,campaign_id,event_type,reason) VALUES
+('30000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','click','bot_detected'),
+('30000000-0000-0000-0000-000000000002','20000000-0000-0000-0000-000000000099','challenge','bot_detected');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := decodeAdReport(t, adReportRequest(t, db, "?days=7", "admin"))
+	if r.Summary.TotalRejectedEvents != 2 || len(r.Incidents) != 2 {
+		t.Fatalf("wrong UUID report %+v", r)
+	}
+	known, orphan := false, false
+	for _, item := range r.Incidents {
+		if item.CampaignName != nil {
+			known = true
+			if *item.CampaignName != "UUID campaign" || item.StoreName == nil || *item.StoreName != "UUID store" {
+				t.Fatal("lost UUID relationship")
+			}
+		} else {
+			orphan = true
+		}
+	}
+	if !known || !orphan {
+		t.Fatal("UUID joins must keep both known and unknown campaigns")
+	}
+}

@@ -83,7 +83,7 @@ func (r *StoreRepository) GetAdNetworkReport(ctx context.Context, days int) (*Ad
 	}
 	// Compare text to text: rejected challenges may refer to unknown or deleted
 	// campaigns, and legacy identifiers need not parse as UUIDs.
-	rows, err = tx.QueryContext(ctx, `SELECT r.id::text,r.campaign_id,c.name,s.name,r.event_type,r.reason,r.occurred_at FROM ad_event_rejections r LEFT JOIN seller_campaigns c ON c.id::text=r.campaign_id LEFT JOIN stores s ON s.id=c.store_id WHERE r.occurred_at>=$1 AND r.occurred_at<=$2 ORDER BY r.occurred_at DESC,r.id DESC LIMIT $3`, out.From, out.To, out.Limit)
+	rows, err = tx.QueryContext(ctx, `SELECT r.id::text,r.campaign_id::text,c.name,s.name,r.event_type,r.reason,r.occurred_at FROM ad_event_rejections r LEFT JOIN seller_campaigns c ON c.id::text=r.campaign_id::text LEFT JOIN stores s ON s.id=c.store_id WHERE r.occurred_at>=$1 AND r.occurred_at<=$2 ORDER BY r.occurred_at DESC,r.id DESC LIMIT $3`, out.From, out.To, out.Limit)
 	if err != nil {
 		return nil, err
 	}

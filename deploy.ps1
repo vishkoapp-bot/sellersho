@@ -15,7 +15,9 @@ function Run-Git([string[]]$GitArgs) {
     return $result
 }
 function Remote([string]$Script) {
-    ($Script.Replace("`r", '') + "`n") | & ssh -o BatchMode=yes -o ConnectTimeout=20 $SshHost bash -se
+    # Windows PowerShell adds CRLF after pipeline input. Exit before that
+    # trailing record reaches the Linux shell; internal script lines use LF.
+    ($Script.Replace("`r", '') + "`nexit 0`n") | & ssh -o BatchMode=yes -o ConnectTimeout=20 $SshHost bash -se
     if ($LASTEXITCODE -ne 0) { throw 'Remote deployment failed; review the rollback result above.' }
 }
 $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()

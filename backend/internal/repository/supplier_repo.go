@@ -1361,6 +1361,10 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		}
 	}
 
+	if !existedBefore {
+        if err := approveRequestedAttributes(ctx, tx, data, categorySlug, productID); err != nil { return "", err }
+    }
+
 	// --- Gap 9b: create the proposal's variants. ---
 	// Approval used to drop variants[] entirely (only specs persisted),
 	// forcing the supplier to re-create variants post-approval with

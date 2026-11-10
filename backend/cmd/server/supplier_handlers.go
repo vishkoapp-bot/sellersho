@@ -262,6 +262,30 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if raw, exists := payload["variants"]; exists {
+		list, ok := raw.([]interface{})
+		if !ok || len(list) == 0 || len(list) > 24 {
+			http.Error(w, `{"error":"Invalid variants"}`, http.StatusBadRequest)
+			return
+		}
+		seen := map[string]bool{}
+		for _, item := range list {
+			v, ok := item.(map[string]interface{})
+			if !ok {
+				http.Error(w, `{"error":"Invalid variant"}`, 400)
+				return
+			}
+			name, _ := v["variant_name"].(string)
+			price, pok := v["supplier_base_cost"].(float64)
+			stock, sok := v["stock"].(float64)
+			if strings.TrimSpace(name) == "" || seen[strings.TrimSpace(name)] || !pok || price <= 0 || price != float64(int64(price)) || !sok || stock < 0 || stock != float64(int64(stock)) {
+				http.Error(w, `{"error":"Each variant requires a unique name, positive integer price and nonnegative integer stock"}`, 400)
+				return
+			}
+			seen[strings.TrimSpace(name)] = true
+		}
+	}
+
 	payload["supplierId"] = supplierID
 	payload["supplier_id"] = supplierID
 

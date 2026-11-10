@@ -109,6 +109,11 @@ export const SupplierCategoryPicker: React.FC<{ value: CategorySelection | null;
   const activeId = open && shown.length > 0 ? `category-picker-option-${shown[Math.min(activeIndex, shown.length - 1)].key}` : undefined;
 
   const pick = (opt: PickerOption) => {
+    const children = [...allById.values()].filter(c => c.parentId === opt.path[opt.path.length - 1]?.id);
+    if (children.length) {
+      setRoots(children.map(c => ({ ...buildPath(c, allById), key: `child-${c.slug}` })));
+      setText(''); setResults([]); setActiveIndex(0); setOpen(true); return;
+    }
     onSelect({ slug: opt.slug, title: opt.title, path: opt.path, pathDisplay: opt.pathDisplay });
     setText(opt.title);
     setOpen(false);

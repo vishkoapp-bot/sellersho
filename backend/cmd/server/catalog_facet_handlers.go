@@ -109,12 +109,7 @@ func handleCategoryFacets(w http.ResponseWriter, r *http.Request, catalogRepo *r
 		// inherited flag (attributes gathered from subcategories when the
 		// category itself has none).
 		inherited := false
-		if len(attrs) == 0 {
-			if sub, subErr := catalogRepo.GetCategoryAttributesInherited(r.Context(), slug); subErr == nil && len(sub) > 0 {
-				attrs = sub
-				inherited = true
-			}
-		}
+
 		colors, _ := catalogRepo.GetCategoryColorsBySlug(r.Context(), slug)
 		brands, _ := catalogRepo.GetCategoryBrandsBySlug(r.Context(), slug)
 		if colors == nil {

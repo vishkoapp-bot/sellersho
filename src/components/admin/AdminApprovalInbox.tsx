@@ -230,7 +230,7 @@ export const AdminApprovalInbox: React.FC = () => {
                 <div key={k} className="p-2 bg-slate-50 rounded-xl flex justify-between">
                   <span className="text-slate-400">{k}:</span>
                   <span className="font-bold text-slate-800 text-[11px]">
-                    {Array.isArray(v) ? v.join(', ') : String(v)}
+                    {typeof v === 'object' && v !== null ? <pre className="whitespace-pre-wrap break-words max-h-64 overflow-auto" dir="auto">{JSON.stringify(v, null, 2)}</pre> : String(v)}
                   </span>
                 </div>
               ))}

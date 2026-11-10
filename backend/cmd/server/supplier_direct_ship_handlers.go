@@ -152,6 +152,10 @@ func handleMarkShipmentShipped(
 
 	err = shipmentRepo.SubmitShipping(ctx, supplierID, shipmentID, req.Carrier, req.TrackingNumber, claims.UserID)
 	if err != nil {
+		if errors.Is(err, repository.ErrTrackingNumberInUse) {
+			http.Error(w, `{"error":"کد رهگیری قبلاً برای مرسولهٔ دیگری ثبت شده است"}`, http.StatusConflict)
+			return
+		}
 		if errors.Is(err, repository.ErrShipmentState) {
 			http.Error(w, `{"error":"Shipment is not ready for shipping"}`, http.StatusConflict)
 			return
@@ -544,6 +548,10 @@ func handleSupplierSubmitShipping(
 		return
 	}
 	if err := shipmentRepo.SubmitShipping(ctx, supplierID, orderID, strings.TrimSpace(req.Carrier), strings.TrimSpace(req.TrackingNumber), claims.UserID); err != nil {
+		if errors.Is(err, repository.ErrTrackingNumberInUse) {
+			http.Error(w, `{"error":"کد رهگیری قبلاً برای مرسولهٔ دیگری ثبت شده است"}`, http.StatusConflict)
+			return
+		}
 		if repository.IsMissingShipment(err) {
 			http.NotFound(w, r)
 			return

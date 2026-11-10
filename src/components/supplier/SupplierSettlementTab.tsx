@@ -109,8 +109,8 @@ export const SupplierSettlementTab: React.FC = () => {
               </div>
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-[11px] font-bold text-slate-100">پرداخت‌شده</p>
-                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">مجموع مبالغی که از درخواست‌های برداشتت تأیید و به حسابت واریز شده است.</p>
+                  <p className="text-[11px] font-bold text-slate-100">تسویه‌های تأییدشده</p>
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">شامل تسویه‌های تأییدشده، در حال انتقال و واریزشده است؛ تأیید درخواست به‌تنهایی به معنی واریز قطعی نیست. وضعیت هر درخواست را در سوابق ببین.</p>
                 </div>
                 <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.paid || 0)} تومان</span>
               </div>

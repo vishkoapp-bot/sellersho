@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { apiRequest, isMockMode } from '../services/apiClient';
+import { useAuth } from './AuthContext';
 import { 
   PlatformSettings, 
   PayoutRequest, 
@@ -222,6 +223,9 @@ const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
 ];
 
 export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { currentUser, authToken } = useAuth();
+  const pricingCapabilities = currentUser?.capabilities ?? (currentUser ? [currentUser.role] : []);
+  const canReadSellerPricing = pricingCapabilities.some((capability) => ['seller', 'admin', 'super_admin'].includes(capability));
   const [balance, setBalance] = useState<number>(0);
   const [payoutRequests, setPayoutRequests] = useState<PayoutRequest[]>(INITIAL_PAYOUT_REQUESTS);
   const [adjustmentRecords, setAdjustmentRecords] = useState<AdjustmentRecord[]>(INITIAL_ADJUSTMENTS);
@@ -247,12 +251,13 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       .catch(() => {});
   }, []);
   // Seller pricing rules come from the server (GET /seller/pricing-settings);
-  // the INITIAL values are only a fallback when the request fails (guests
-  // and non-sellers get 403 here, which is expected and silent). Without
+  // Fetch only after an authorized session is ready. Supplier-only users
+  // and guests must not send requests to a seller-restricted endpoint. Without
   // this, the seller modal/tab would simulate against stale mock settings.
   useEffect(() => {
-    if (isMockMode()) return;
-    apiRequest<{ platformPct?: number; centralProfitPct?: number; minProfitMargin?: number; maxProfitMargin?: number; defaultMargin?: number }>('/seller/pricing-settings', { method: 'GET', auth: true })
+    if (isMockMode() || !authToken || !canReadSellerPricing) return;
+    const controller = new AbortController();
+    apiRequest<{ platformPct?: number; centralProfitPct?: number; minProfitMargin?: number; maxProfitMargin?: number; defaultMargin?: number }>('/seller/pricing-settings', { method: 'GET', auth: true, signal: controller.signal })
       .then((s) => setPlatformSettings((prev) => ({
         ...prev,
         ...(typeof s.platformPct === 'number' ? { platformPct: s.platformPct } : {}),
@@ -262,7 +267,8 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         ...(typeof s.defaultMargin === 'number' ? { defaultMargin: s.defaultMargin } : {}),
       })))
       .catch(() => {});
-  }, []);
+    return () => controller.abort();
+  }, [authToken, canReadSellerPricing]);
   const [unifiedPendingApprovals, setUnifiedPendingApprovals] = useState<PendingApprovalItem[]>([]);
 
   const requestPayout = (storeId: string, amount: number, shaba: string, bankName: string): boolean => {

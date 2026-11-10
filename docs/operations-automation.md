@@ -84,4 +84,6 @@ go vet ./...
 
 The test database contains synthetic fixtures only. Do not point this variable at production. Existing unrelated integration suites use other environment variables and some contain hardcoded local addresses; they are not prerequisites for running this isolated suite.
 
+Supplier-flow regressions also opt in with `SUPPLIER_FLOW_TEST_DATABASE_URL`; the database must be disposable, fully migrated, and named **`supplier_flow_test`**. Run `go test ./cmd/server -run TestSupplierFlow -count=1`. These tests cover the supplier-team permission matrix, cross-supplier isolation, blocked accounts, optional QC references, scheduled inbound transitions, invalid inbound requests, and tracking-conflict rollback. Legacy suites with hardcoded localhost connections must run inside an isolated container network, never against a developer's existing database.
+
 Validation also includes the complete fresh migration chain, `npm run build`, Caddy configuration validation, and Compose overlay validation. The new panels were rendered with synthetic API responses at widths 390 and 1280 pixels; picking and suggestion interactions completed with no JavaScript errors or horizontal overflow. This UI check does not substitute for live DNS/ACME issuance.

@@ -48,13 +48,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const [activeTab, setActiveTab] = useState('overview');
   const [contractChecked, setContractChecked] = useState(false);
   const latestContractVersion = platformSettings.contracts?.supplierContractVersion || 0;
-  const signedContractVersion = supplierSession?.signedContractVersion || 1;
+  const signedContractVersion = supplierSession?.signedContractVersion ?? 0;
+  const canAcceptContract = supplierSession?.permissions?.includes('supplier.manage') ?? false;
   // Live parity (SupplierDashboardView-MERGED.js header, both occurrences): the header shows
   // نامشخص only when warehouseCityConfirmed is explicitly false, otherwise the city.
   // Cast: the flag rides on the session object at runtime (see AuthContext) but is not yet
   // declared on the SupplierSession type; drop the cast once the type field lands.
   const warehouseCityConfirmed = (supplierSession as typeof supplierSession & { warehouseCityConfirmed?: boolean })?.warehouseCityConfirmed;
-  const showContractModal = !!supplierSession && latestContractVersion > 0 && signedContractVersion < latestContractVersion;
+  const showContractModal = !!supplierSession && canAcceptContract && latestContractVersion > 0 && signedContractVersion < latestContractVersion;
   const acceptContract = async () => {
     if (!contractChecked || !supplierSession) return;
     try {

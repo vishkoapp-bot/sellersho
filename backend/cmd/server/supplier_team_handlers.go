@@ -22,11 +22,11 @@ func supplierPermissionForPath(path string) string {
 		return "finance.manage"
 	case strings.Contains(path, "/campaigns"):
 		return "marketing.manage"
-	case strings.Contains(path, "/orders"), strings.Contains(path, "/shipments"), strings.Contains(path, "/warehouse-orders"):
+	case strings.Contains(path, "/orders"), strings.Contains(path, "/shipments"), strings.Contains(path, "/warehouse-orders"), strings.Contains(path, "/customer-returns"), strings.Contains(path, "/return-shipping-charges"), strings.Contains(path, "/shipping-methods"), strings.Contains(path, "/shipping-sla"), strings.HasSuffix(path, "/tapin/boxes"):
 		return "orders.manage"
-	case strings.Contains(path, "/inbounds"), strings.Contains(path, "/discrepancies"), strings.HasSuffix(path, "/stock"):
+	case strings.Contains(path, "/inbounds"), strings.Contains(path, "/discrepancies"), strings.Contains(path, "/inventory"), strings.Contains(path, "/returns"), strings.Contains(path, "/warehouses"), strings.HasSuffix(path, "/stock-share"), strings.HasSuffix(path, "/stock"):
 		return "inventory.manage"
-	case strings.Contains(path, "/products"), strings.Contains(path, "/upload/"):
+	case strings.Contains(path, "/products"), strings.Contains(path, "/upload/"), strings.Contains(path, "/addons"), strings.Contains(path, "/catalog/review"), strings.Contains(path, "/price-increases"), strings.Contains(path, "/warranties"), strings.Contains(path, "/exclusivity-challenges"):
 		return "products.manage"
 	case strings.HasSuffix(path, "/profile"):
 		return "profile.view"
@@ -57,6 +57,11 @@ func RequireSupplierAccess(jwtService *auth.JWTService, repo *repository.Supplie
 				return
 			}
 			permission := supplierPermissionForPath(r.URL.Path)
+			// Dispatchers need connection metadata, never permission to replace
+			// the business's write-only carrier credential.
+			if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/api/v1/supplier/tapin/settings" {
+				permission = "orders.manage"
+			}
 			supplierID, ok := supplierAccess(r, repo, permission)
 			if !ok && r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/api/v1/supplier/products" {
 				for _, readPermission := range []string{"inventory.manage", "marketing.manage"} {

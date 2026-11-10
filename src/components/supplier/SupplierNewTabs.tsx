@@ -798,6 +798,7 @@ export const SupplierTapinCard: React.FC = () => {
 };
 
 export const SupplierShippingMethodsTab: React.FC = () => {
+  const { supplierSession } = useStore();
   const { success, error } = useToast();
   const [methods, setMethods] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -889,7 +890,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
           </section>
         );
       })}
-      <SupplierTapinCard />
+      {supplierSession?.permissions?.includes('supplier.manage') && <SupplierTapinCard />}
     </div>
   );
 };

@@ -230,6 +230,11 @@ func NewSupplierRepository(db *sql.DB) *SupplierRepository {
 }
 
 func (r *SupplierRepository) OwnsSupplierResource(ctx context.Context, supplierID, path string) bool {
+	// This exact collection route has no product identifier. Its handler
+	// reads only the supplier scope already established by the middleware.
+	if path == "/api/v1/supplier/products/implicit-agreements" {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/v1/supplier/orders/") {
 		id := strings.Split(strings.TrimPrefix(path, "/api/v1/supplier/orders/"), "/")[0]
 		var owned bool
@@ -2452,6 +2457,9 @@ func (r *SupplierRepository) CreatePriceIncreaseExceptionTicket(ctx context.Cont
 	return id, nil
 }
 
+var ErrInboundInput = errors.New("اطلاعات محموله معتبر نیست")
+var ErrInboundProductForbidden = errors.New("این کالا متعلق به تأمین‌کننده شما نیست")
+
 // CreateInbound registers a new ASN shipment to the warehouse
 func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID string, data map[string]interface{}) (string, error) {
 	inboundID := "INB-" + uuid.NewString()
@@ -2476,27 +2484,27 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 				c, cOK := m["carton_count"].(float64)
 				productID, _ := m["product_id"].(string)
 				if !qOK || !cOK || q < 1 || c < 1 || q > 1000000 || c > 1000000 || q != math.Trunc(q) || c != math.Trunc(c) || productID == "" {
-					return "", fmt.Errorf("قلم ورودی نامعتبر است")
+					return "", fmt.Errorf("%w: قلم ورودی نامعتبر است", ErrInboundInput)
 				}
 				var owned bool
 				if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1 AND supplier_id = $2)`, productID, supplierID).Scan(&owned); err != nil {
 					return "", err
 				}
 				if !owned {
-					return "", fmt.Errorf("این کالا متعلق به تأمین‌کننده شما نیست")
+					return "", ErrInboundProductForbidden
 				}
 				itemsCount += int(q)
 				cartonsCount += int(c)
 			} else {
-				return "", fmt.Errorf("قلم ورودی نامعتبر است")
+				return "", fmt.Errorf("%w: قلم ورودی نامعتبر است", ErrInboundInput)
 			}
 		}
 	}
 	if itemsCount == 0 {
-		return "", fmt.Errorf("ثبت محموله نیازمند حداقل یک قلم ورودی معتبر است")
+		return "", fmt.Errorf("%w: ثبت محموله نیازمند حداقل یک قلم ورودی معتبر است", ErrInboundInput)
 	}
 	if cartonsCount == 0 {
-		return "", fmt.Errorf("تعداد کارتن الزامی است")
+		return "", fmt.Errorf("%w: تعداد کارتن الزامی است", ErrInboundInput)
 	}
 
 	itemsBytes, _ := json.Marshal(itemsList)
@@ -2520,9 +2528,11 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 	}
 	warehouseName := "انبار مرکزی تهران"
 	if warehouseID != "" {
-		var wn string
-		if qerr := r.db.QueryRowContext(ctx, `SELECT name FROM warehouses WHERE id = $1`, warehouseID).Scan(&wn); qerr == nil && wn != "" {
-			warehouseName = wn
+		if qerr := r.db.QueryRowContext(ctx, `SELECT name FROM warehouses WHERE id = $1 AND is_active=TRUE`, warehouseID).Scan(&warehouseName); qerr != nil {
+			if errors.Is(qerr, sql.ErrNoRows) {
+				return "", fmt.Errorf("%w: انبار مرکزی انتخاب‌شده موجود یا فعال نیست", ErrInboundInput)
+			}
+			return "", qerr
 		}
 	}
 	dispatchStr, _ := data["dispatchAt"].(string)
@@ -2535,6 +2545,8 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 			dispatchAt = sql.NullTime{Time: t, Valid: true}
 		} else if t, perr := time.Parse(time.RFC3339, dispatchStr); perr == nil {
 			dispatchAt = sql.NullTime{Time: t, Valid: true}
+		} else {
+			return "", fmt.Errorf("%w: زمان ارسال معتبر نیست", ErrInboundInput)
 		}
 	}
 	query := `
@@ -3651,7 +3663,7 @@ func (r *SupplierRepository) GetSalesReport(ctx context.Context, supplierID, sta
 // GetDiscrepancies returns QC issues for supplier
 func (r *SupplierRepository) GetDiscrepancies(ctx context.Context, supplierID string) ([]QCDiscrepancy, error) {
 	query := `
-		SELECT qc.id, qc.inbound_id, qc.supplier_id, qc.product_id, COALESCE(p.title, '') AS product_title,
+		SELECT qc.id, COALESCE(qc.inbound_id,''), COALESCE(qc.supplier_id,''), COALESCE(qc.product_id,''), COALESCE(p.title, '') AS product_title,
 		       qc.expected_quantity, qc.received_quantity,
 		       qc.defect_count, qc.reason, qc.status, qc.supplier_response, qc.resolution_offer, qc.created_at, qc.resolved_at, qc.response_due_at,qc.responded_at,qc.escalated_at
 		FROM qc_discrepancies qc

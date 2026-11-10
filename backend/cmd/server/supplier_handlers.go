@@ -737,7 +737,15 @@ func (h *SupplierHandlers) HandleCreateInbound(w http.ResponseWriter, r *http.Re
 
 	inboundID, err := h.supplierRepo.CreateInbound(r.Context(), supplierID, payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		if errors.Is(err, repository.ErrInboundProductForbidden) {
+			t01WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, repository.ErrInboundInput) {
+			t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeInternalError(w, err)
 		return
 	}
 

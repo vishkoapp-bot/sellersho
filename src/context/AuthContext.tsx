@@ -240,7 +240,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         warehouseCityConfirmed: profile.warehouse_city_confirmed !== false,
         permissions: profile.permissions || [],
         loginAt: new Date().toISOString(),
-        signedContractVersion: profile.signedContractVersion,
+        signedContractVersion: profile.signedContractVersion ?? 0,
       })).catch((error: Error) => setPanelSessionError(error.message || 'بارگذاری پروفایل تأمین‌کننده ناموفق بود.'));
     }
     if (currentUser.capabilities?.includes('seller') && !sellerSession) {

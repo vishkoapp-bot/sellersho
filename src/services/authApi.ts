@@ -88,7 +88,7 @@ export const authApi = {
     });
   },
 
-  getSupplierProfile: async (): Promise<{ id: string; company_name: string; warehouse_city: string; permissions: string[]; signedContractVersion?: number; warehouse_city_confirmed?: boolean }> => {
-    return apiRequest<{ id: string; company_name: string; warehouse_city: string; permissions: string[]; signedContractVersion?: number; warehouse_city_confirmed?: boolean }>('/supplier/profile', { method: 'GET', auth: true });
+  getSupplierProfile: async (): Promise<{ id: string; company_name: string; warehouse_city: string; permissions: string[]; signedContractVersion?: number | null; warehouse_city_confirmed?: boolean }> => {
+    return apiRequest<{ id: string; company_name: string; warehouse_city: string; permissions: string[]; signedContractVersion?: number | null; warehouse_city_confirmed?: boolean }>('/supplier/profile', { method: 'GET', auth: true });
   },
 };

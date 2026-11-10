@@ -129,7 +129,7 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
         warehouseCityConfirmed: profile.warehouse_city_confirmed !== false,
         permissions: profile.permissions || [],
         loginAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-        signedContractVersion: profile.signedContractVersion || platformSettings.contracts?.supplierContractVersion || 2,
+        signedContractVersion: profile.signedContractVersion ?? 0,
       });
       setIsSubmitting(false);
       success(`ورود با حساب «${profile.company_name}» انجام شد.`);

@@ -286,6 +286,17 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	niches, ok := payload["nicheIds"].([]interface{})
+	if !ok || len(niches) != 1 {
+		http.Error(w, `{"error":"Exactly one product niche is required"}`, http.StatusBadRequest)
+		return
+	}
+	niche, ok := niches[0].(string)
+	if !ok || strings.TrimSpace(niche) == "" {
+		http.Error(w, `{"error":"Invalid product niche"}`, http.StatusBadRequest)
+		return
+	}
+
 	payload["supplierId"] = supplierID
 	payload["supplier_id"] = supplierID
 

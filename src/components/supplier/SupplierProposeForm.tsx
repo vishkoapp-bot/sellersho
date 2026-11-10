@@ -127,13 +127,13 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     if (visibleNiches.length === 0) return;
     setSelectedNicheIds((prev) => {
       const kept = prev.filter((id) => visibleNiches.some((n) => n.id === id));
-      return kept.length > 0 ? kept : [visibleNiches[0].id];
+      return kept.length > 0 ? [kept[0]] : [visibleNiches[0].id];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topSlug]);
 
   const toggleNiche = (id: string) =>
-    setSelectedNicheIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+    setSelectedNicheIds([id]);
 
   const uploadImages = async (files: File[]) => {
     if (images.length + files.length > 8) {
@@ -204,7 +204,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     if (!noBrand && !brand.trim()) { error('برند کالا را وارد کنید یا گزینه «بدون برند» را انتخاب کنید.'); return; }
     const costNum = Number(cost);
     if (!Number.isSafeInteger(costNum) || costNum <= 0 || !Number.isSafeInteger(Number(stock)) || Number(stock) < 0) { error('قیمت عمده و موجودی را درست وارد کن.'); return; }
-    if (selectedNicheIds.length === 0) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
+    if (selectedNicheIds.length !== 1) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
     const posInt = (raw: string): number | undefined => {
       const n = Number(raw);
       return raw.trim() !== '' && Number.isSafeInteger(n) && n > 0 ? n : undefined;
@@ -472,18 +472,20 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           />
         </div>
         <div>
-          <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — حداقل یکی را انتخاب کن:</label>
+          <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — فقط یک موضوع انتخاب کن:</label>
           <span className="text-[9px] text-slate-400 block mb-1 leading-4">نیچ یعنی موضوع و دسته تخصصی کالا. فروشگاه‌ها کالاها را بر اساس همین موضوع‌ها پیدا و انتخاب می‌کنند.</span>
           {showNoMappingNote && (
             <p className="text-[10px] leading-5 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl px-2.5 py-2 mb-1.5">برای این دسته نیچ تخصصی ثبت نشده است؛ همهٔ موضوع‌ها نمایش داده می‌شوند — یکی را انتخاب کن.</p>
           )}
-          <div className="flex flex-wrap gap-1.5 pt-0.5">
+          <div role="radiogroup" aria-label="موضوع کالا" className="flex flex-wrap gap-1.5 pt-0.5">
             {visibleNiches.map((niche) => {
               const isSelected = selectedNicheIds.includes(niche.id);
               return (
                 <button
                   key={niche.id}
                   type="button"
+                  role="radio"
+                  aria-checked={isSelected}
                   onClick={() => toggleNiche(niche.id)}
                   className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${isSelected ? 'bg-brand-deep text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                 >

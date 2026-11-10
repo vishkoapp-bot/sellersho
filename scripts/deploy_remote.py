@@ -51,7 +51,10 @@ applied = set(run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin',
                   'SELECT version FROM schema_migrations', capture=True).splitlines())
 pending = [p for p in sorted((release / 'backend/migrations').glob('*.up.sql')) if p.name not in applied]
 print('Pending migrations:', [p.name for p in pending], flush=True)
-if any(p.name < '202611090001_operations_automation.up.sql' for p in pending):
+# Reviewed live gap: attribution table is absent; its idempotent backfill
+# derives customer/store links without changing users, orders or balances.
+reviewed_historical = {'202611050001_customer_store_links.up.sql'}
+if any(p.name < '202611090001_operations_automation.up.sql' and p.name not in reviewed_historical for p in pending):
     raise SystemExit('Unexpected historical pending migration; review before deployment')
 
 runtime_file = root / '.env.deploy.runtime.json'

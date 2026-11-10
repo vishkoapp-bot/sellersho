@@ -57,7 +57,25 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
 
   return (
     <>
-    <footer className="rounded-t-[32px] mt-2" style={{ backgroundColor: '#1C1917' }}>
+    {variant === 'fashion' ? <footer id="fashion-contact" className="fashion-footer">
+      <div className="fashion-footer-inner">
+        <div className="fashion-footer-brand"><h2>{currentStore.name}</h2>
+          {currentStore.footerText && <p>{currentStore.footerText}</p>}
+          <p>© {toPersianDigits(year)} {currentStore.name}</p>
+        </div>
+        <nav className="fashion-footer-links" aria-label="راهنمای فروشگاه">
+          <button onClick={goToStoreAbout}>درباره ما</button>
+          <a href="#products">همه کالاها</a>
+          <button onClick={() => openStaticPage('terms')}>قوانین و مقررات</button>
+          <button onClick={() => openStaticPage('privacy')}>حریم خصوصی</button>
+          <button onClick={() => openStaticPage('faq')}>سوالات متداول</button>
+        </nav>
+        {(phone || instagram) && <div className="fashion-footer-social">
+          {phone && <a href={`tel:${phone}`} className="fashion-icon-button" aria-label="تماس با فروشگاه"><Phone size={20} strokeWidth={1.5} /></a>}
+          {instagram && <a href={`https://instagram.com/${instagramHandle}`} target="_blank" rel="noreferrer" className="fashion-icon-button" aria-label="اینستاگرام فروشگاه"><Instagram size={20} strokeWidth={1.5} /></a>}
+        </div>}
+      </div>
+    </footer> : <footer className="rounded-t-[32px] mt-2" style={{ backgroundColor: '#1C1917' }}>
       <div className="px-6 pt-8 pb-[84px]">
         <div className="flex items-center gap-2.5">
           <div
@@ -128,7 +146,7 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
           </p>
         </div>
       </div>
-    </footer>
+    </footer>}
     {allProductsOpen && (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none" onClick={() => setAllProductsOpen(false)}>
         <div className="bg-white rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -166,6 +184,7 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
 // there, so it is hidden at lg and up.
 export const StorefrontBottomNav: React.FC = () => {
   const { setActiveView, currentStore } = useStore();
+  const fashion = currentStore.templateId === 'tpl-fashion-1';
   const [active, setActive] = React.useState<'home' | 'categories' | 'account' | 'contact'>('home');
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -197,10 +216,10 @@ export const StorefrontBottomNav: React.FC = () => {
         marginLeft: 'auto',
         marginRight: 'auto',
         width: '100%',
-        maxWidth: 504,
-        backgroundColor: '#ffffff',
-        borderColor: '#ECE4D6',
-        boxShadow: '0 -6px 24px rgba(28, 25, 23, 0.08)',
+        maxWidth: fashion ? undefined : 504,
+        backgroundColor: fashion ? '#faf8f5' : '#ffffff',
+        borderColor: fashion ? '#dedbd5' : '#ECE4D6',
+        boxShadow: fashion ? 'none' : '0 -6px 24px rgba(28, 25, 23, 0.08)',
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
@@ -213,8 +232,8 @@ export const StorefrontBottomNav: React.FC = () => {
               onClick={() => go(id)}
               className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 px-1 py-2 rounded-2xl transition-all duration-200 ease-out active:scale-95"
               style={{
-                backgroundColor: isActive ? `${ACCENT}16` : 'transparent',
-                color: isActive ? ACCENT : '#A8A29E',
+                backgroundColor: fashion ? 'transparent' : isActive ? `${ACCENT}16` : 'transparent',
+                color: isActive ? (fashion ? '#1c1c1a' : ACCENT) : '#8a857d',
               }}
             >
               <Icon className="w-[22px] h-[22px]" strokeWidth={isActive ? 2 : 1.5} />

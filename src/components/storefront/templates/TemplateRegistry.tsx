@@ -26,7 +26,7 @@ export type StoreTemplateId = (typeof STORE_TEMPLATE_IDS)[number];
 
 export const TEMPLATE_ACCENTS: Partial<Record<StoreTemplateId, string>> = {
   'tpl-electronic-1': '#f97847',
-  'tpl-fashion-1': '#FF3B30',
+  'tpl-fashion-1': '#793f3c',
   'tpl-digikala-1': '#ef4056',
   'tpl-modern-1': '#0D7377',
   // TODO: tpl-tech-1 accent is not in the recovered live Ue map; do not

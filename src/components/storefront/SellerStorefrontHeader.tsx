@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { ShoppingCart, Search, Store, Heart, User, Bell } from 'lucide-react';
+import { ShoppingCart, Search, Store, Heart, User, Bell, Menu, X, ShoppingBag } from 'lucide-react';
+import { resolveTemplateConfig, sectionEnabled, templateCustom, storefrontProducts } from './templates/templateTypes';
+import { groupProductsByCategory } from './templates/StoreSections';
+import './templates/fashion.css';
 import { NotificationDrawer } from '../common/NotificationDrawer';
 
 // FIX 13: live's storefront header (bundle component Db). Beige #FAF8F4
@@ -19,7 +22,7 @@ import { NotificationDrawer } from '../common/NotificationDrawer';
 // variant="digikala".
 const TEMPLATE_ACCENTS: Record<string, string> = {
   'tpl-electronic-1': '#f97847',
-  'tpl-fashion-1': '#FF3B30',
+  'tpl-fashion-1': '#793f3c',
   'tpl-digikala-1': '#ef4056',
   'tpl-modern-1': '#0D7377',
 };
@@ -37,8 +40,11 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   searchQuery = '',
   onSearchChange,
 }) => {
-  const { currentStore, cartItemsCount, setIsCartOpen, setActiveView, toPersianDigits, customerUser, activeView, routeStoreSlug } = useStore();
+  const { currentStore, cartItemsCount, setIsCartOpen, setActiveView, toPersianDigits, customerUser, activeView, routeStoreSlug, products, categories, setSelectedCategory, clearCatalogBrand, setSearchQuery } = useStore();
   const [logoFailed, setLogoFailed] = useState(false);
+  const [fashionMenuOpen, setFashionMenuOpen] = useState(false);
+  const fashionMenuId = React.useId();
+  useEffect(() => { setFashionMenuOpen(false); }, [currentStore.id]);
   // ISO-E: a failed logo for store A must not suppress store B's
   // valid logo (same component instance across SPA navigation).
   useEffect(() => { setLogoFailed(false); }, [currentStore.id, currentStore.logo]);
@@ -168,84 +174,48 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   }
 
   if (variant === 'fashion') {
-    return (
-      <header className="sticky top-0 z-30 bg-[#faf8f5]/90 backdrop-blur-md border-b border-[#e5e0d8]">
-        <div className="mx-auto w-full max-w-[1440px] px-4 md:px-6 lg:px-10 flex items-center justify-between py-2.5">
-          <div
-            className="flex items-center gap-3 min-w-0 cursor-pointer"
-            onClick={goToStoreHome}
-            title={`خانه ${currentStore.name}`}
-          >
-            {currentStore.logo && !logoFailed ? (
-              <div className="w-10 h-10 rounded-[2px] overflow-hidden border border-[#e5e0d8] bg-white flex items-center justify-center shrink-0">
-                <img
-                  src={currentStore.logo}
-                  alt={currentStore.name}
-                  className="w-full h-full object-cover"
-                  onError={() => setLogoFailed(true)}
-                />
-              </div>
-            ) : (
-              <div className="w-10 h-10 rounded-[2px] bg-[#1c1c1a] text-[#faf8f5] flex items-center justify-center font-black text-base shrink-0 select-none">
-                {initial}
-              </div>
-            )}
-            <div className="min-w-0">
-              <h1 className="font-black text-base lg:text-lg tracking-tight leading-tight truncate text-[#1c1c1a]">
-                {currentStore.name}
-              </h1>
-              {tagline !== '' && (
-                <span className="text-[11px] font-medium text-[#737373] mt-0.5 block line-clamp-1">
-                  {tagline}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={onOpenSearch}
-              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
-              title="جستجو در محصولات"
-              aria-label="جستجو در محصولات"
-            >
-              <Search className="w-5 h-5" strokeWidth={1.5} />
-            </button>
-            <button
-              onClick={() => setActiveView('customer_wishlist')}
-              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
-              title="علاقه‌مندی‌ها"
-              aria-label="علاقه‌مندی‌ها"
-            >
-              <Heart className="w-5 h-5" strokeWidth={1.5} />
-            </button>
-            <button
-              onClick={() => setIsCartOpen(true)}
-              className="relative w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
-              title="سبد خرید"
-              aria-label="سبد خرید"
-            >
-              <ShoppingCart className="w-5 h-5" strokeWidth={1.5} />
-              {cartItemsCount > 0 && (
-                <span
-                  className="absolute top-1.5 right-1.5 text-[#faf8f5] bg-[#1c1c1a] font-bold text-[9px] min-w-4 h-4 px-0.5 rounded-full flex items-center justify-center"
-                  style={{ boxShadow: '0 0 0 2px #faf8f5' }}
-                >
-                  {cartItemsCount > 99 ? '۹۹+' : toPersianDigits(cartItemsCount)}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setActiveView('customer_profile')}
-              className="w-11 h-11 flex items-center justify-center rounded-[2px] text-[#1c1c1a] hover:bg-[#efeae3]/80 transition-colors"
-              title={(customerUser?.isLoggedIn || customerUser?.mobile) ? 'حساب کاربری' : 'ورود به حساب کاربری'}
-              aria-label={(customerUser?.isLoggedIn || customerUser?.mobile) ? 'حساب کاربری' : 'ورود به حساب کاربری'}
-            >
-              <User className="w-5 h-5" strokeWidth={1.5} />
-            </button>
-          </div>
+    const cfg = resolveTemplateConfig('tpl-fashion-1', currentStore.templateConfig);
+    const custom = templateCustom(cfg);
+    const groups = groupProductsByCategory(storefrontProducts(currentStore, products), categories, custom.categoryOverrides);
+    const navItems = groups.slice(0, 3).map(g => ({ title: g.title, slug: g.slug }));
+    const select = (slug: string) => {
+      clearCatalogBrand(); setSearchQuery(''); setSelectedCategory(slug); setFashionMenuOpen(false);
+      if (activeView !== 'seller_storefront') goToStoreHome();
+    };
+    return <header className="fashion-header">
+      {sectionEnabled(cfg, 'announcement') && custom.announcementText && <div className="fashion-announcement" data-testid="store-announcement">
+        {custom.announcementLink ? <a href={custom.announcementLink} {...(/^https?:\/\//i.test(custom.announcementLink) ? { target: '_blank', rel: 'noreferrer' } : {})}>{custom.announcementText}</a> : custom.announcementText}
+      </div>}
+      <div className="fashion-header-row">
+        <button type="button" className="fashion-icon-button fashion-mobile-toggle" onClick={() => setFashionMenuOpen(v => !v)} aria-label={fashionMenuOpen ? 'بستن منو' : 'باز کردن منو'} aria-expanded={fashionMenuOpen} aria-controls={fashionMenuId}>
+          {fashionMenuOpen ? <X size={22} strokeWidth={1.5} /> : <Menu size={22} strokeWidth={1.5} />}
+        </button>
+        <button type="button" className="fashion-wordmark" onClick={goToStoreHome} aria-label={`خانه ${currentStore.name}`}>
+          {currentStore.logo && !logoFailed && <img src={currentStore.logo} alt="" onError={() => setLogoFailed(true)} />}
+          <span>{currentStore.name}</span>
+        </button>
+        <nav className="fashion-header-nav" aria-label="منوی فروشگاه">
+          {navItems.map(item => <a key={item.slug} href="#products" onClick={() => select(item.slug)}>{item.title}</a>)}
+          <a href="#products" onClick={() => select('all')}>تازه‌ها</a>
+          <a href="#fashion-contact">تماس با ما</a>
+        </nav>
+        <div className="fashion-header-actions">
+          <button type="button" onClick={onOpenSearch} className="fashion-icon-button" aria-label="جستجو در محصولات"><Search size={21} strokeWidth={1.5} /></button>
+          <button type="button" onClick={() => setActiveView('customer_wishlist')} className="fashion-icon-button fashion-desktop-action" aria-label="علاقه‌مندی‌ها"><Heart size={21} strokeWidth={1.5} /></button>
+          <button type="button" onClick={() => setActiveView('customer_profile')} className="fashion-icon-button fashion-desktop-action" aria-label="حساب کاربری"><User size={21} strokeWidth={1.5} /></button>
+          <button type="button" onClick={() => setIsCartOpen(true)} className="fashion-icon-button" aria-label="سبد خرید">
+            <ShoppingBag size={21} strokeWidth={1.5} />
+            {cartItemsCount > 0 && <span className="absolute top-0 right-0 min-w-4 h-4 bg-[#1c1c1a] text-white text-[9px] flex items-center justify-center rounded-full">{cartItemsCount > 99 ? '۹۹+' : toPersianDigits(cartItemsCount)}</span>}
+          </button>
         </div>
-      </header>
-    );
+      </div>
+      {fashionMenuOpen && <nav id={fashionMenuId} className="fashion-header-menu" aria-label="منوی موبایل">
+        {navItems.map(item => <a key={item.slug} href="#products" onClick={() => select(item.slug)}>{item.title}</a>)}
+        <a href="#products" onClick={() => select('all')}>همه کالاها</a>
+        <a href="#fashion-contact" onClick={() => setFashionMenuOpen(false)}>تماس با ما</a>
+        <a href="#" onClick={e => { e.preventDefault(); setFashionMenuOpen(false); setActiveView('customer_profile'); }}>حساب کاربری</a>
+      </nav>}
+    </header>;
   }
 
   // Modern (live default) header: 4 icon buttons, search via overlay.

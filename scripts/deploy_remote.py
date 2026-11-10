@@ -63,6 +63,11 @@ runtime_env = {k: v for k, v in old_env.items() if k != 'PATH'}
 runtime_env.setdefault('DOMAIN_EDGE_HOST', '46.249.98.190')
 runtime_env.setdefault('TRUSTED_PROXY_CIDRS', '172.18.0.0/16')
 runtime_env.setdefault('PLATFORM_DOMAINS', '46.249.98.190')
+# Compose resolves ${...} before merging service environments. Supply the
+# public edge settings to that interpolation as well as the backend process.
+for key in ['DOMAIN_EDGE_HOST', 'PLATFORM_DOMAINS']:
+    os.environ[key] = runtime_env[key]
+os.environ.setdefault('PLATFORM_HTTP_HOST', '46.249.98.190')
 runtime = {'services': {'backend': {'environment': runtime_env}}}
 if ssl:
     edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190'}

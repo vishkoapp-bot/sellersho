@@ -286,6 +286,7 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 		}
 	}
 
+    if err := repository.ValidateProductVariationProposal(payload); err != nil { http.Error(w, `{"error":"Invalid product variation configuration: `+err.Error()+`"}`, http.StatusBadRequest); return }
 	niches, ok := payload["nicheIds"].([]interface{})
 	if !ok || len(niches) != 1 {
 		http.Error(w, `{"error":"Exactly one product niche is required"}`, http.StatusBadRequest)

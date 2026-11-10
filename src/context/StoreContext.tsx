@@ -1396,6 +1396,9 @@ export const useStore = (): StoreContextType => {
     cart: cart.cart,
     addToCart: (p: Product, q?: number, c?: string, variantId?: string, addonIds?: string[]) => {
       if (!store.currentStore) return;
+      if (!variantId && p.variants?.length && !p.variants.some(v => v.isDefault)) {
+        prod.openProductDetail(p); return;
+      }
       cart.addToCart(p, q, c, store.currentStore, variantId, addonIds);
     },
     removeFromCart: cart.removeFromCart,

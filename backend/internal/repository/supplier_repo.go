@@ -1095,6 +1095,8 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 
 	var data map[string]interface{}
 	_ = json.Unmarshal(rawData, &data)
+    if err := ValidateProductVariationProposal(data); err != nil { return "", err }
+
 
 	productID := fmt.Sprintf("prod-%d", time.Now().UnixNano()/1e6)
 	if pID, ok := data["product_id"].(string); ok && pID != "" {
@@ -1405,7 +1407,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO product_variants (product_id, spnc, variant_name, attributes, is_default, stock, supplier_base_cost)
 				VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
-				productID, spnc, pv.Name, string(attrJSON), createdVariants == 0, pv.Stock, variantCost); err != nil {
+				productID, spnc, pv.Name, string(attrJSON), createdVariants == 0 && data["productType"] != "variable", pv.Stock, variantCost); err != nil {
 				return "", fmt.Errorf("failed to create proposed variant %q: %w", pv.Name, err)
 			}
 			createdVariants++

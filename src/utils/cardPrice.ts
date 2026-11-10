@@ -42,7 +42,7 @@ export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
     originalPrice: product.originalPrice,
     discountPercent: product.discountPercent ?? 0,
   };
-  const defaultVariant = product.variants?.find((v) => v.isDefault);
+  const defaultVariant = product.variants?.find((v) => v.isDefault) ?? product.variants?.[0];
   if (!defaultVariant) return fallback;
   const variantPrice = product.variantPrices?.[defaultVariant.id];
   if (!variantPrice || variantPrice.price == null) return fallback;

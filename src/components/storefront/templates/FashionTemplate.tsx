@@ -129,13 +129,14 @@ const FashionMacroCategories: React.FC<{
   groups: CategoryGroup[];
   ledger: MediaLedger;
   banners: TemplateBanner[];
+  limit: number;
   onSelect: (slug: string) => void;
-}> = ({ groups, ledger, banners, onSelect }) => {
-  const entries = groups.length ? groups.slice(0, 3).map((group, i) => ({
-    title: group.title, image: group.image || banners[i]?.image || group.products[0]?.image,
+}> = ({ groups, ledger, banners, limit, onSelect }) => {
+  const entries = groups.length ? groups.slice(0, limit).map((group, i) => ({
+    title: group.title, image: banners[i]?.image || group.image || group.products[0]?.image,
     link: banners[i]?.link || '#products', slug: !banners[i]?.link || banners[i]?.link === '#products' ? group.slug : '',
-  })) : banners.slice(0, 3).map(b => ({ title: b.title || 'مشاهده مجموعه', image: b.image, link: b.link || '#products', slug: '' }));
-  groups.slice(0, 3).forEach(g => ledger.macroTaken.add(g.slug));
+  })) : banners.slice(0, limit).map(b => ({ title: b.title || 'مشاهده مجموعه', image: b.image, link: b.link || '#products', slug: '' }));
+  groups.slice(0, limit).forEach(g => ledger.macroTaken.add(g.slug));
   if (!entries.length) return null;
   return <section data-testid="store-category-macro" aria-label="دسته‌بندی‌ها" className="fashion-category-section">
     <div className="fashion-category-grid" style={{ gridTemplateColumns: `repeat(${entries.length}, minmax(0, 1fr))` }}>
@@ -149,7 +150,7 @@ const FashionMacroCategories: React.FC<{
         <span>{entry.title}<ArrowLeft size={16} strokeWidth={1.5} /></span>
       </a>)}
     </div>
-    {groups.length > 3 && <div className="fashion-category-links">{groups.slice(3).map(g => <a key={g.slug} href="#products" onClick={() => onSelect(g.slug)}>{g.title}</a>)}</div>}
+    {groups.length > limit && <div className="fashion-category-links">{groups.slice(limit).map(g => <a key={g.slug} href="#products" onClick={() => onSelect(g.slug)}>{g.title}</a>)}</div>}
   </section>;
 };
 
@@ -700,7 +701,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
       case 'categoryRail':
         return (
           <Wrap>
-            <FashionMacroCategories groups={categoryGroups} ledger={ledger} onSelect={selectCategory} banners={banners} />
+            <FashionMacroCategories groups={categoryGroups} ledger={ledger} onSelect={selectCategory} banners={banners} limit={Math.min(customCount(cfg, 'categoriesCount', 3), 3)} />
           </Wrap>
         );
       case 'about': {

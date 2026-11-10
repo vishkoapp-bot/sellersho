@@ -507,7 +507,7 @@ export const SellerTemplateTab: React.FC = () => {
           <>
             <TextField label="تیتر دسته‌بندی‌ها" value={str(custom.categoriesTitle)} onChange={(v) => setCustom({ categoriesTitle: v })} />
             <NumberField label="تعداد دسته‌ها" value={custom.categoriesCount} min={1} max={12} onChange={(v) => setCustom({ categoriesCount: v })} />
-            {selectedId === 'tpl-fashion-1' && <div><p className={labelCls}>تصاویر ورودی مجموعه‌ها</p><p className="text-xs text-slate-500 leading-6 mb-3">سه بنر اول برای ورودی‌های زیر بنر اصلی استفاده می‌شوند. تصویر، عنوان و پیوند هر بنر قابل تغییر است.</p>{bannersEditor}</div>}
+            {selectedId === 'tpl-fashion-1' && <div><p className={labelCls}>تصاویر ورودی مجموعه‌ها</p><p className="text-xs text-slate-500 leading-6 mb-3">سه بنر اول برای ورودی‌های زیر بنر اصلی استفاده می‌شوند. تصویر و پیوند هر بنر قابل تغییر است. در فروشگاه دارای کالا، عنوان‌ها از دسته‌بندی کالاها نمایش داده می‌شوند.</p>{bannersEditor}</div>}
           </>
         );
       case 'deals':

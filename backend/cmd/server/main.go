@@ -251,6 +251,7 @@ func main() {
 	).WithPricingRepository(pricingRepo).WithTapinRepository(repository.NewTapinRepository(db.DB))
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/ad-network/report", RequireRoles(jwtService, "admin", "support_specialist")(func(w http.ResponseWriter, r *http.Request) { handleAdNetworkReport(w, r, storeRepo) }))
 	mux.HandleFunc("/internal/domains/allow", func(w http.ResponseWriter, r *http.Request) { handleDomainPermission(w, r, storeRepo) })
 	mux.HandleFunc("/api/v1/domain-store", func(w http.ResponseWriter, r *http.Request) { handleDomainStore(w, r, storeRepo) })
 	mux.HandleFunc("/api/v1/seller/domains", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomains(w, r, storeRepo) }))

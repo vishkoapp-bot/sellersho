@@ -48,6 +48,8 @@ IP and fingerprint each permit at most one accepted event of a given type per ca
 
 These checks detect ordinary automation and replay; browser signals can be spoofed by a determined client. They are not a proof that a visitor is human. Rejected events do not enter the accepted-event counters.
 
+The admin **Advertising and anti-fraud** panel reads `/api/v1/admin/ad-network/report?days=7` (also 30 or 90). Admin, super-admin and support capabilities can read it. The API calculates accepted clicks/impressions, rejected clicks/impressions/browser challenges, rejection reasons, and the latest 50 rejections in one read-only database snapshot. Unknown/deleted campaigns retain their incident records. No raw IP, fingerprint, or advertising token is returned. The page shows loading, empty and failure states explicitly; database failures never become successful zero totals. Rejected attempts are not labelled proven fraud or an asserted financial charge.
+
 ## QC response deadlines
 
 The database assigns a 48-hour response deadline when a discrepancy is created. Suppliers can respond only to their own open, unexpired discrepancy and cannot overwrite a recorded response. The server rejects late responses even before the next scheduled sweep.

@@ -90,7 +90,7 @@ export const SupplierCategoryAttributes: React.FC<{
                 <div key={attr.id} className="space-y-1">
                   <p className="text-[10px] font-bold text-slate-700">{attr.title}</p>
                   <select aria-label={attr.title} value={selected ?? ''} onChange={e => toggleAttribute(attr.id, Number(e.target.value))} className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs">
-                    <option value=""></option>
+                    <option value="">انتخاب مقدار</option>
                     {attr.values.map(v => <option key={v.id} value={v.id}>{v.titleFa}</option>)}
                   </select>
                 </div>
@@ -101,14 +101,14 @@ export const SupplierCategoryAttributes: React.FC<{
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-700">رنگ:</p>
               <select aria-label="Color" value={value.colorId ?? ''} onChange={e => onChange({ ...value, colorId: e.target.value ? Number(e.target.value) : null })} className="w-full rounded-xl border border-slate-200 p-2.5 text-xs">
-                <option value=""></option>
+                <option value="">انتخاب رنگ</option>
                 {facets.colors.map(color => <option key={color.id} value={color.id}>{color.title}</option>)}
               </select>
             </div>
           )}
           {facets.brands.length > 0 && (
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-700 block">پیشنهاد برند از فهرست دسته:</label>
+              <label className="text-[10px] font-bold text-slate-700 block">برندهای مرتبط با این دسته:</label>
               <select
                 value={value.brandId ?? ''}
                 onChange={(event) => {

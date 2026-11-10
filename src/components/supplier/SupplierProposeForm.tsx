@@ -56,7 +56,7 @@ interface VariantDraft {
   cost: string;
 }
 
-const EMPTY_VARIANT = (): VariantDraft => ({ name: '', color: '', size: '', custom: [], stock: '', cost: '' });
+const EMPTY_VARIANT = (): VariantDraft => ({ name: 'مدل اصلی', color: '', size: '', custom: [], stock: '', cost: '' });
 
 export interface ProposeFormProps {
   warranties: { id: string; name: string }[];
@@ -89,6 +89,24 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   const [prepDays, setPrepDays] = useState('1');
   const [fulfillment, setFulfillment] = useState('warehouse');
   const [warehouseId, setWarehouseId] = useState('');
+  const [variantAxes, setVariantAxes] = useState<{ key: string; values: string[] }[]>([]);
+  const [variantAxesError, setVariantAxesError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setVariantAxes([]); setVariantAxesError(false);
+    setVariants([EMPTY_VARIANT()]);
+    if (category?.slug) catalogApi.getCategoryAttributes(category.slug).then(f => {
+      if (!active) return;
+      setVariantAxes([
+        ...(f.colors.length ? [{ key: 'رنگ', values: f.colors.map(c => c.title) }] : []),
+        ...f.attributes.map(a => ({ key: a.title, values: a.values.map(v => v.titleFa) })),
+      ].filter((a, i, all) => all.findIndex(b => b.key === a.key) === i));
+    }).catch(() => { if (active) setVariantAxesError(true); });
+    return () => { active = false; };
+  }, [category?.slug]);
+  const updateVariantAttributes = (index: number, custom: {key: string; value: string}[]) => {
+    setVariants(prev => prev.map((v, i) => i === index ? { ...v, custom, name: custom.length ? custom.filter(a => a.value).sort((a, b) => a.key.localeCompare(b.key)).map(a => `${a.key}: ${a.value}`).join(' / ') : 'مدل اصلی' } : v));
+  };
   const [variants, setVariants] = useState<VariantDraft[]>([EMPTY_VARIANT()]);
   const [weightGrams, setWeightGrams] = useState('');
   const [lengthCm, setLengthCm] = useState('');
@@ -221,6 +239,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     const packWid = packFilled === 3 ? posInt(packWidthCm) : undefined;
     const packHei = packFilled === 3 ? posInt(packHeightCm) : undefined;
     if (packFilled === 3 && (packLen === undefined || packWid === undefined || packHei === undefined)) { error('ابعاد بسته‌بندی باید عددهای صحیح مثبت باشند (سانتی‌متر).'); return; }
+    if (variants.some(v => v.custom.some(a => !a.key || !a.value))) { error('ویژگی و مقدار هر تنوع را انتخاب کنید.'); return; }
     const filledVariants = variants.filter((v) => v.name.trim() !== '');
     if (filledVariants.length !== variants.length || !filledVariants.length || filledVariants.some(v => !v.cost.trim() || !v.stock.trim())) { error('برای هر تنوع نام، قیمت و موجودی را وارد کنید. حداقل یک تنوع الزامی است.'); return; }
     const seenNames = new Set<string>();
@@ -565,32 +584,38 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       )}
       <div className="space-y-2 pt-1 border-t border-slate-100">
         <label className="text-[10px] font-bold text-slate-700 block">تنوع‌های کالا — نام، قیمت و موجودی الزامی؛ همراه محصول بازبینی می‌شوند</label>
-        <p className="text-[10px] text-slate-500 leading-5">حتی برای کالای بدون رنگ و سایز، یک تنوع با نام «مدل اصلی» ثبت کنید. قیمت و موجودی هر تنوع را جدا وارد کنید؛ محصول و تمام تنوع‌ها با هم بررسی و پس از تأیید با کد SPNC منتشر می‌شوند.</p>
+        <p className="text-[10px] text-slate-500 leading-5">«انتخاب ویژگی تنوع» را بزنید؛ مثلاً رنگ را انتخاب کنید و سپس رنگ موجود در فهرست را مشخص کنید. نام تنوع خودکار ساخته می‌شود. کالای بدون تنوع با نام «مدل اصلی» ثبت می‌شود. قیمت و موجودی هر تنوع را جدا وارد کنید.</p>
         {variants.map((variant, index) => (
           <div key={index} className="rounded-xl border border-slate-200 bg-white p-2.5 space-y-2">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-black text-slate-400 shrink-0">{toPersianDigits(index + 1)}</span>
-              <input value={variant.name} onChange={(e) => { const next = [...variants]; next[index].name = e.target.value; setVariants(next); }} placeholder="نام تنوع (مثلاً: آبی / سایز ۴۲)" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
+              <span className="flex-1 text-xs font-bold">{variant.name || 'انتخاب ویژگی تنوع'}</span>
               <button type="button" onClick={() => setVariants(variants.filter((_, i) => i !== index))} className="p-2 rounded-lg bg-rose-50 text-rose-600 shrink-0" aria-label="حذف تنوع">
                 <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
               </button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <input value={variant.color} onChange={(e) => { const next = [...variants]; next[index].color = e.target.value; setVariants(next); }} placeholder="رنگ" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input value={variant.size} onChange={(e) => { const next = [...variants]; next[index].size = e.target.value; setVariants(next); }} placeholder="سایز" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
               <input type="text" inputMode="numeric" value={formatSep(variant.stock)} onChange={(e) => { const next = [...variants]; next[index].stock = parseSep(e.target.value); setVariants(next); }} placeholder="موجودی" min="0" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input type="text" inputMode="numeric" value={formatSep(variant.cost)} onChange={(e) => { const next = [...variants]; next[index].cost = parseSep(e.target.value); setVariants(next); }} placeholder="قیمت عمده این تنوع (تومان، اختیاری)" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
+              <input type="text" inputMode="numeric" value={formatSep(variant.cost)} onChange={(e) => { const next = [...variants]; next[index].cost = parseSep(e.target.value); setVariants(next); }} placeholder="قیمت عمده این تنوع (تومان، الزامی)" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
             </div>
             {variant.custom.map((attr, attrIndex) => (
               <div key={attrIndex} className="flex items-center gap-2">
-                <input value={attr.key} onChange={(e) => { const next = [...variants]; next[index].custom[attrIndex].key = e.target.value; setVariants(next); }} placeholder="ویژگی (مثلاً جنس)" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-                <input value={attr.value} onChange={(e) => { const next = [...variants]; next[index].custom[attrIndex].value = e.target.value; setVariants(next); }} placeholder="مقدار" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-                <button type="button" onClick={() => { const next = [...variants]; next[index].custom = next[index].custom.filter((_, i) => i !== attrIndex); setVariants(next); }} className="p-2 rounded-lg bg-rose-50 text-rose-600" aria-label="حذف ویژگی">
+                <select aria-label="نوع ویژگی" value={attr.key} onChange={e => updateVariantAttributes(index, variant.custom.map((a, i) => i === attrIndex ? { key: e.target.value, value: '' } : a))} className="min-w-0 flex-1 rounded-xl border p-2.5 text-xs">
+                  <option value="">انتخاب ویژگی</option>
+                  {variantAxes.filter(a => a.key === attr.key || !variant.custom.some(c => c.key === a.key)).map(a => <option key={a.key} value={a.key}>{a.key}</option>)}
+                </select>
+                <select aria-label="مقدار ویژگی" disabled={!attr.key} value={attr.value} onChange={e => updateVariantAttributes(index, variant.custom.map((a, i) => i === attrIndex ? { ...a, value: e.target.value } : a))} className="min-w-0 flex-1 rounded-xl border p-2.5 text-xs">
+                  <option value="">انتخاب مقدار</option>
+                  {variantAxes.find(a => a.key === attr.key)?.values.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <button type="button" onClick={() => updateVariantAttributes(index, variant.custom.filter((_, i) => i !== attrIndex))} className="p-2 rounded-lg bg-rose-50 text-rose-600" aria-label="حذف ویژگی">
                   <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                 </button>
               </div>
             ))}
-            <button type="button" onClick={() => { const next = [...variants]; next[index].custom = [...next[index].custom, { key: '', value: '' }]; setVariants(next); }} className="text-[11px] font-bold text-brand-deep hover:underline">+ افزودن ویژگی دلخواه</button>
+            <button type="button" disabled={!variantAxes.length || variant.custom.length >= variantAxes.length} onClick={() => updateVariantAttributes(index, [...variant.custom, { key: '', value: '' }])} className="text-[11px] font-bold text-brand-deep hover:underline disabled:opacity-40">+ انتخاب ویژگی تنوع</button>
+            {variantAxesError && <p className="text-xs text-rose-600">بارگذاری ویژگی‌ها ناموفق بود؛ دسته را دوباره انتخاب کنید.</p>}
+            {!variantAxes.length && !variantAxesError && <p className="text-xs text-slate-500">ابتدا دستهٔ تخصصی را انتخاب کنید. اگر ویژگی موردنظر موجود نیست، درخواست ویژگی جدید را همراه محصول ثبت کنید.</p>}
           </div>
         ))}
         <button type="button" disabled={variants.length >= 24} onClick={() => setVariants([...variants, EMPTY_VARIANT()])} className="w-full py-2 rounded-xl border border-dashed border-brand-border text-brand-deep text-[11px] font-bold disabled:opacity-40">

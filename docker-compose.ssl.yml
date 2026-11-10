@@ -11,7 +11,8 @@ services:
     image: caddy:2-alpine
     restart: unless-stopped
     environment:
-      ACME_EMAIL: "${ACME_EMAIL:?Set the certificate operations email}"
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+      PLATFORM_HTTP_HOST: "${PLATFORM_HTTP_HOST:-localhost}"
     ports:
       - "80:80"
       - "443:443"

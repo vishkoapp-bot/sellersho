@@ -16,6 +16,8 @@ DOMAIN_EDGE_HOST=edge.example.com
 PLATFORM_DOMAINS=example.com,www.example.com
 ```
 
+`ACME_EMAIL` is recommended but optional. `PLATFORM_HTTP_HOST` optionally preserves an existing IP-based HTTP entry point; other HTTP hosts redirect to HTTPS. The existing IP-based TLS listener on port 9443 is independent of Caddy.
+
 Load these into the shell or Compose environment, then apply the overlay:
 
 ```powershell
@@ -23,6 +25,8 @@ docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --buil
 ```
 
 The overlay moves public listeners from Nginx to Caddy. Use a recent Docker Compose supporting `!reset`. The existing Nginx application routing and redirects are retained. Trusted proxy CIDRs must match the actual internal deployment network; the overlay sets the common Docker private networks. The backend trusts `X-Real-IP` only from those configured peers, and Nginx resolves the real client through Caddy's forwarded chain.
+
+For the existing production installation, use `./deploy.ps1 -EnableSSL`. It builds Linux backend and frontend artifacts from the pushed commit, uploads a checksum-verified release, preserves runtime secrets, backs up PostgreSQL and current code on the server, deploys with health checks, and restores the previous code if checks fail. Existing SSL edge configuration is preserved on subsequent ordinary `./deploy.ps1` runs. It never restores a database backup over new orders. The explicitly authorized one-time Xray port change uses `-EnableSSL -MoveXray443`, moving its 443 inbound to 24443; Xray clients using that inbound must update their port. Release metadata is recorded in `/opt/drup/.deployed-commit`, and full source/artifacts remain under `/opt/drup/releases/<commit>`.
 
 The `/api/v1/domain-store` endpoint resolves the verified request Host to its store slug. The SPA scopes domain root and product entries to that store. DNS validation and Caddy configuration can be tested locally; a publicly trusted certificate requires a real controlled domain pointing at the deployed edge. The source implementation does not deploy or issue a public certificate merely by building.
 

@@ -946,6 +946,8 @@ func (r *SupplierRepository) CreateExclusivityChallenge(ctx context.Context, sup
 }
 
 func (r *SupplierRepository) ProposeProduct(ctx context.Context, supplierID string, data map[string]interface{}) (string, error) {
+    delete(data,"product_id")
+    if err:=NormalizeReviewAliases(data);err!=nil{return "",err}
 	data["supplierId"], data["supplier_id"] = supplierID, supplierID
 	proposalID := fmt.Sprintf("prop-%d", time.Now().UnixNano()/1e6)
 	title, _ := data["title"].(string)
@@ -1084,7 +1086,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	querySelect := `
 		SELECT title, requested_data, requested_by
 		FROM pending_approvals
-		WHERE id = $1 AND entity_type = 'proposed_product'
+		WHERE id = $1 AND entity_type = 'proposed_product' FOR UPDATE
 	`
 	var title, requestedBy string
 	var rawData []byte
@@ -1095,6 +1097,8 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 
 	var data map[string]interface{}
 	_ = json.Unmarshal(rawData, &data)
+    if err := requireReviewed(ctx, tx, proposalID, data); err != nil { return "", err }
+    if err:=NormalizeReviewAliases(data);err!=nil{return "",err}
     if err := ValidateProductVariationProposal(data); err != nil { return "", err }
 
 
@@ -1146,16 +1150,14 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 
 	imgURL := ""
 	var gallery []string
-	if imgs, ok := data["images"].([]interface{}); ok {
+	if imgs, ok := data["imageUrls"].([]interface{}); ok {
 		for _, im := range imgs {
 			if u, ok := im.(string); ok && strings.TrimSpace(u) != "" {
 				gallery = append(gallery, strings.TrimSpace(u))
 			}
 		}
 	}
-	if len(gallery) > 0 {
-		imgURL = gallery[0]
-	}
+    if primary,ok:=data["imageUrl"].(string);ok&&strings.TrimSpace(primary)!=""{imgURL=strings.TrimSpace(primary)}else if len(gallery)>0{imgURL=gallery[0]}
 	if imgURL == "" {
 		if u, ok := data["imageUrl"].(string); ok && u != "" {
 			imgURL = u
@@ -1246,6 +1248,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&existedBefore); err != nil {
 		return "", fmt.Errorf("failed to check product existence: %w", err)
 	}
+    if existedBefore { var owner string; if err:=tx.QueryRowContext(ctx,`SELECT COALESCE(supplier_id,'') FROM products WHERE id=$1`,productID).Scan(&owner);err!=nil{return "",err};if owner!=requestedBy{return "",fmt.Errorf("product belongs to another supplier")} }
 	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight)
 	if err != nil {
 		return "", fmt.Errorf("failed to insert product: %w", err)
@@ -5388,19 +5391,19 @@ func (r *SupplierRepository) GetCatalogReviewDetail(ctx context.Context, supplie
 	if reviewedAt != nil {
 		parsed["reviewed_at"] = *reviewedAt
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT field_key, decision, reason FROM proposal_field_reviews WHERE proposal_id = $1 ORDER BY field_key ASC`, proposalID)
+	rows, err := r.db.QueryContext(ctx, `SELECT field_key, decision, reason, COALESCE(value_hash,'') FROM proposal_field_reviews WHERE proposal_id = $1 ORDER BY field_key ASC`, proposalID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	fields := []map[string]interface{}{}
 	for rows.Next() {
-		var key, decision string
+		var key, decision, valueHash string
 		var reason sql.NullString
-		if err := rows.Scan(&key, &decision, &reason); err != nil {
+		if err := rows.Scan(&key, &decision, &reason, &valueHash); err != nil {
 			rows.Close()
 			return nil, nil, nil, err
 		}
-		f := map[string]interface{}{"field_key": key, "decision": decision}
+		f := map[string]interface{}{"field_key": key, "decision": decision, "value_hash": valueHash}
 		if reason.Valid {
 			f["reason"] = reason.String
 		}
@@ -5443,12 +5446,19 @@ func (r *SupplierRepository) GetCatalogReviewDetail(ctx context.Context, supplie
 // records one 'resubmitted' history row, and reopens the proposal.
 // Keys that are not currently rejected are ignored.
 func (r *SupplierRepository) ResubmitCatalogReview(ctx context.Context, supplierID, proposalID string, data map[string]interface{}) error {
+    for key := range data { if strings.HasPrefix(key,"/") { return r.ResubmitGranularReview(ctx,supplierID,proposalID,data) } }
+    tx, err := r.db.BeginTx(ctx,nil); if err!=nil{return err}; defer tx.Rollback()
+    var currentStatus string
 	var rawData []byte
-	err := r.db.QueryRowContext(ctx, `SELECT requested_data FROM pending_approvals WHERE id = $1 AND requested_by = $2`, proposalID, supplierID).Scan(&rawData)
+	err = tx.QueryRowContext(ctx, `SELECT requested_data,status FROM pending_approvals WHERE id = $1 AND requested_by = $2 FOR UPDATE`, proposalID, supplierID).Scan(&rawData,&currentStatus)
 	if err != nil {
 		return err
 	}
-	rejRows, err := r.db.QueryContext(ctx, `SELECT field_key FROM proposal_field_reviews WHERE proposal_id = $1 AND decision = 'rejected'`, proposalID)
+    if currentStatus=="approved" {return fmt.Errorf("already published")}
+    var granular bool
+    if err=tx.QueryRowContext(ctx,`SELECT EXISTS(SELECT 1 FROM proposal_field_reviews WHERE proposal_id=$1 AND field_key LIKE '/%')`,proposalID).Scan(&granular);err!=nil{return err}
+    if granular {return fmt.Errorf("use granular correction fields")}
+	rejRows, err := tx.QueryContext(ctx, `SELECT field_key FROM proposal_field_reviews WHERE proposal_id = $1 AND decision = 'rejected'`, proposalID)
 	if err != nil {
 		return err
 	}
@@ -5512,11 +5522,6 @@ func (r *SupplierRepository) ResubmitCatalogReview(ctx context.Context, supplier
 	if err != nil {
 		return err
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `UPDATE pending_approvals SET requested_data = $1::jsonb, status = 'pending' WHERE id = $2 AND requested_by = $3`, string(merged), proposalID, supplierID); err != nil {
 		return err
 	}

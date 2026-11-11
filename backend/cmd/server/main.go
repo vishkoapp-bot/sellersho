@@ -487,6 +487,7 @@ func main() {
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/categories/")
 		handleCategoryFacets(w, r, catalogRepo, subPath)
 	})
+    mux.HandleFunc("/api/v1/admin/product-field-reviews/", RequireRoles(jwtService,"admin")(func(w http.ResponseWriter,r *http.Request){ handleProductFieldReview(w,r,supplierRepo) }))
 	mux.HandleFunc("/api/v1/admin/catalog/review/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/catalog/review/")
 		handleCatalogReviewDossier(w, r, catalogRepo, id)

@@ -1,3 +1,4 @@
+import { SupplierGranularFeedback } from '../admin/ProductFieldReview';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -251,6 +252,8 @@ export const SupplierFeedbackModal: React.FC<{
       </div>
     );
   }
+
+  if (fields.some(f => String(f.field_key).startsWith('/'))) return <SupplierGranularFeedback proposal={proposal} fields={fields} onClose={onClose} onResubmitted={onResubmitted}/>;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-stretch justify-center" dir="rtl">

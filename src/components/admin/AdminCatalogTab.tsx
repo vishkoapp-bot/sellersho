@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { ProductFieldReview } from './ProductFieldReview';
 import { apiRequest, isMockMode } from '../../services/apiClient';
 import { adminApi } from '../../services/adminApi';
 import { mapAdminProposal, AdminProposal } from '../../services/adminProposal';
@@ -77,7 +78,7 @@ export const AdminCatalogTab: React.FC = () => {
     } catch(e) { error(e instanceof Error ? e.message : 'ثبت نتیجه ناموفق بود.'); }
     finally {setReviewing(false);}
   };
-  const handleApprove = (item: any) => review(item,true);
+  const handleApprove = (item: any) => { setInspectingItem(item); };
   const handleConfirmReject = () => {if(rejectingItem) void review(rejectingItem,false);};
 
   return (
@@ -184,10 +185,10 @@ export const AdminCatalogTab: React.FC = () => {
                       className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded-lg flex items-center justify-center gap-1"
                     >
                       <Check className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                      <span>تأیید و ادغام در کاتالوگ</span>
+                      <span>بازبینی فیلدها</span>
                     </button>
                     <button
-                      onClick={() => setRejectingItem(item)}
+                      onClick={() => setInspectingItem(item)}
                       className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[10px] rounded-lg flex items-center justify-center gap-1"
                     >
                       <X className="w-3.5 h-3.5"  strokeWidth={1.5}/>
@@ -244,56 +245,7 @@ export const AdminCatalogTab: React.FC = () => {
       </div>
 
       {/* Requirement 16: Proposed Product Details Modal */}
-      {inspectingItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-4 shadow-2xl space-y-3 text-xs max-h-[90vh] overflow-auto">
-            <div className="flex items-center justify-between border-b pb-2">
-              <h4 className="font-bold text-slate-900">مشخصات فنی کالای پیشنهادی</h4>
-              <button onClick={() => setInspectingItem(null)}><X className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/></button>
-            </div>
-            <div className="flex gap-2.5 items-center">
-              <img
-                src={inspectingItem.imageUrl || inspectingItem.image || '/placeholder.svg'}
-                alt={inspectingItem.title}
-                className="w-16 h-16 rounded-xl object-cover border shrink-0"
-              />
-              <div>
-                <h5 className="font-bold text-slate-900 text-xs">{inspectingItem.title}</h5>
-                <span className="text-[10px] text-slate-400 block mt-0.5">تأمین‌کننده: {inspectingItem.supplierName}</span>
-                <span className="text-[10px] font-mono text-blue-600 block mt-0.5" dir="ltr">بارکد: {inspectingItem.barcode}</span>
-              </div>
-            </div>
-            <div className="bg-slate-50 p-2.5 rounded-xl space-y-1 text-[11px]">
-              <div className="flex justify-between">
-                <span>قیمت عمده پیشنهادی (C):</span>
-                <strong className="text-slate-900 font-mono">{formatPrice(inspectingItem.proposedCost)} ت</strong>
-              </div>
-              <div className="flex justify-between">
-                <span>گارانتی:</span>
-                <span>{inspectingItem.warranty || 'ضمانت سلامت فیزیکی'}</span>
-              </div>
-            </div>
-            <pre className="whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-xs" dir="auto">{JSON.stringify({specs:inspectingItem.specs,variants:inspectingItem.variants,requestedAttributes:inspectingItem.requestedAttributes},null,2)}</pre>
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t">
-              <button
-                disabled={reviewing} onClick={() => handleApprove(inspectingItem)}
-                className="py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl"
-              >
-                تأیید و افزودن
-              </button>
-              <button
-                onClick={() => {
-                  setRejectingItem(inspectingItem);
-                  setInspectingItem(null);
-                }}
-                className="py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl"
-              >
-                رد کالا
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {inspectingItem && <ProductFieldReview id={inspectingItem.id} onClose={()=>setInspectingItem(null)} onUpdated={()=>{void refreshProposals();void fetchProducts().catch(()=>{});}} />}
 
       <ConfirmDialog
         isOpen={!!rejectingItem}

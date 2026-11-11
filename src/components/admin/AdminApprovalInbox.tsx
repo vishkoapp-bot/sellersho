@@ -1,3 +1,4 @@
+import { ProductFieldReview } from './ProductFieldReview';
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -81,7 +82,7 @@ export const AdminApprovalInbox: React.FC = () => {
       proposed_product: { text: 'کالای پیشنهادی تأمین', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
       payout: { text: 'تسویه حساب پایا', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
     };
-    const b = labels[type];
+    const b = labels[type] || {text: String(type), cls: 'bg-slate-50 text-slate-700'};
     return (
       <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${b.cls}`}>
         {b.text}
@@ -90,6 +91,7 @@ export const AdminApprovalInbox: React.FC = () => {
   };
 
   const handleApprove = async (item: PendingApprovalItem) => {
+    if(item.entityType === "proposed_product") {setInspectingItem(item);return;}
     if (!isMockMode() && serverApprovals.some((s) => s.id === item.id)) {
       try {
         await adminApi.reviewApproval(item.id, { status: 'approved' });
@@ -104,6 +106,7 @@ export const AdminApprovalInbox: React.FC = () => {
   };
 
   const handleReject = async (item: PendingApprovalItem) => {
+    if(item.entityType === "proposed_product") {setInspectingItem(item);return;}
     if (!isMockMode() && serverApprovals.some((s) => s.id === item.id)) {
       try {
         await adminApi.reviewApproval(item.id, {
@@ -218,7 +221,8 @@ export const AdminApprovalInbox: React.FC = () => {
         )}
       </div>
 
-      {inspectingItem && (
+      {inspectingItem?.entityType === "proposed_product" && <ProductFieldReview id={inspectingItem.id} onClose={()=>setInspectingItem(null)} onUpdated={fetchApprovals}/> }
+      {inspectingItem && inspectingItem.entityType !== "proposed_product" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
           <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl space-y-3 text-xs">
             <div className="flex items-center justify-between border-b pb-2">

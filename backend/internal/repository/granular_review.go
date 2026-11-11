@@ -64,6 +64,9 @@ func syncReviewAliasCorrections(data, edits map[string]interface{}) error {
 	return nil
 }
 func ReviewLeaves(data map[string]interface{}) map[string]interface{} {
+	if isV2Review(data) {
+		return reviewV2Leaves(data)
+	}
 	out := map[string]interface{}{}
 	var walk func(string, interface{})
 	walk = func(path string, v interface{}) {
@@ -116,6 +119,9 @@ func ValidateReviewDecision(decision, reason string) error {
 	return nil
 }
 func ApplyReviewCorrections(data map[string]interface{}, edits map[string]interface{}, rejected map[string]bool) error {
+	if isV2Review(data) {
+		return applyV2Corrections(data, edits, rejected)
+	}
 	leaves := ReviewLeaves(data)
 	for key := range edits {
 		if _, ok := leaves[key]; !ok || !rejected[key] {
@@ -346,7 +352,10 @@ func (r *SupplierRepository) ResubmitGranularReview(ctx context.Context, supplie
 	if e = validateCorrectionValues(data); e != nil {
 		return e
 	}
-	if e = ValidateProductVariationProposal(data); e != nil {
+	if e = ValidateProductProposalTx(ctx, tx, data, id); e != nil {
+		return e
+	}
+	if e = SyncProductDraftSKUsTx(ctx, tx, id, data); e != nil {
 		return e
 	}
 	merged, _ := json.Marshal(data)
@@ -377,6 +386,10 @@ func (r *SupplierRepository) ResubmitGranularReview(ctx context.Context, supplie
 func validateCorrectionValues(data map[string]interface{}) error {
 	for k, v := range ReviewLeaves(data) {
 		isSKU := strings.HasPrefix(k, "/variants/") && len(strings.Split(k, "/")) == 4
+		// The typed validator checks active prices and permits zero on excluded combinations.
+		if IsProductV2(data) && isSKU {
+			continue
+		}
 		switch {
 		case k == "/stock", isSKU && (strings.HasSuffix(k, "/stock") || strings.HasSuffix(k, "/supplier_base_cost")), k == "/supplierBaseCost", strings.Count(k, "/") == 1 && (strings.HasSuffix(k, "Grams") || strings.HasSuffix(k, "Mm") || k == "/preparationDays"):
 			if v == nil && strings.HasPrefix(k, "/packaging") {

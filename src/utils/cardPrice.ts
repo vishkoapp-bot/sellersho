@@ -32,7 +32,7 @@ interface CardPriceSource {
   price: number;
   originalPrice: number;
   discountPercent?: number;
-  variants?: { id: string; isDefault?: boolean }[];
+  variants?: { id: string; isDefault?: boolean; isActive?: boolean }[];
   variantPrices?: Record<string, { price: number; originalPrice: number; discountPercent: number }>;
 }
 
@@ -42,7 +42,8 @@ export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
     originalPrice: product.originalPrice,
     discountPercent: product.discountPercent ?? 0,
   };
-  const defaultVariant = product.variants?.find((v) => v.isDefault) ?? product.variants?.[0];
+  const active = product.variants?.filter((variant) => variant.isActive !== false);
+  const defaultVariant = active?.find((v) => v.isDefault) ?? active?.[0];
   if (!defaultVariant) return fallback;
   const variantPrice = product.variantPrices?.[defaultVariant.id];
   if (!variantPrice || variantPrice.price == null) return fallback;

@@ -411,8 +411,12 @@ func (r *TapinRepository) RecordTapinRegistration(ctx context.Context, shipmentI
 // SupplierOrderLine is one of the caller's own order lines, with the
 // catalog facts the registration payload needs.
 type SupplierOrderLine struct {
+	OrderItemID       string
 	ProductID         string
 	Title             string
+	VariantID         string
+	VariantName       string
+	VariantSPNC       string
 	Quantity          int
 	FinalUnitPrice    int64 // Toman, as charged on the order
 	WeightGrams       int   // 0 = unrecorded; caller applies the 500g fallback
@@ -424,7 +428,8 @@ type SupplierOrderLine struct {
 func (r *TapinRepository) ListSupplierOrderLines(ctx context.Context, orderID, supplierID string) ([]SupplierOrderLine, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT oi.product_id, COALESCE(p.title, ''), oi.quantity, oi.final_unit_price,
-		       COALESCE(p.weight_grams, 0), COALESCE(p.origin_supplier_warehouse_id, '')
+		       COALESCE(p.weight_grams, 0), COALESCE(p.origin_supplier_warehouse_id, ''),
+		       oi.id::text, COALESCE(oi.variant_id::text,''), COALESCE(oi.variant_name,''), COALESCE(oi.variant_spnc,'')
 		FROM order_items oi
 		JOIN products p ON p.id = oi.product_id
 		WHERE oi.order_id = $1 AND p.supplier_id = $2
@@ -436,7 +441,7 @@ func (r *TapinRepository) ListSupplierOrderLines(ctx context.Context, orderID, s
 	out := []SupplierOrderLine{}
 	for rows.Next() {
 		var l SupplierOrderLine
-		if err := rows.Scan(&l.ProductID, &l.Title, &l.Quantity, &l.FinalUnitPrice, &l.WeightGrams, &l.OriginWarehouseID); err != nil {
+		if err := rows.Scan(&l.ProductID, &l.Title, &l.Quantity, &l.FinalUnitPrice, &l.WeightGrams, &l.OriginWarehouseID, &l.OrderItemID, &l.VariantID, &l.VariantName, &l.VariantSPNC); err != nil {
 			return nil, fmt.Errorf("scan supplier order line: %w", err)
 		}
 		out = append(out, l)

@@ -45,6 +45,9 @@ type QCQueueItem struct {
 type PutawayQueueItem struct {
 	ID                string    `json:"id"`
 	ProductID         string    `json:"productId"`
+	VariantID         string    `json:"variantId,omitempty"`
+	VariantName       string    `json:"variantName,omitempty"`
+	VariantSPNC       string    `json:"variantSpnc,omitempty"`
 	Title             string    `json:"title"`
 	InboundID         string    `json:"inboundId"`
 	BinLocation       string    `json:"binLocation"`
@@ -383,7 +386,7 @@ func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, produc
 	err := tx.QueryRowContext(ctx, `
 		WITH prev AS (
 			SELECT quantity AS old_qty FROM inventory_balances
-			WHERE product_id = $2 AND status = 'sellable'
+			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
 			  AND owner_type = 'supplier' AND location_type = 'supplier'
 			  AND location_key = $3
 			FOR UPDATE
@@ -391,7 +394,7 @@ func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, produc
 		upd AS (
 			UPDATE inventory_balances
 			SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW()
-			WHERE product_id = $2 AND status = 'sellable'
+			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
 			  AND owner_type = 'supplier' AND location_type = 'supplier'
 			  AND location_key = $3
 			RETURNING quantity AS new_qty
@@ -700,7 +703,7 @@ func ensureCanonicalCoverageTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
 		VALUES ($1,$2,$3,'supplier','warehouse','warehouse:legacy_migration','sellable',$4,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO NOTHING`,
+		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
 		"INV-"+uuid.NewString(), productID, supplierID, legacyStock)
 	return err
 }
@@ -709,7 +712,7 @@ func ensureInboundSourceBalanceTx(ctx context.Context, tx *sql.Tx, productID, su
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
 		VALUES ($1,$2,$3,'supplier','in_transit',$4,'in_transit',$5,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO NOTHING`,
+		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
 		"INV-"+uuid.NewString(), productID, supplierID, "inbound:"+inboundID, quantity)
 	return err
 }
@@ -727,7 +730,7 @@ func upsertInventoryMovementTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	if err != nil || inserted == 0 {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	return err
 }
 
@@ -745,7 +748,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 		return err
 	}
 	var sourceID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND location_key=$3 AND status=$4 FOR UPDATE`, productID, supplierID, fromLocation, fromStatus).Scan(&sourceID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND variant_id IS NULL AND location_key=$3 AND status=$4 FOR UPDATE`, productID, supplierID, fromLocation, fromStatus).Scan(&sourceID); err != nil {
 		return fmt.Errorf("canonical source balance unavailable: %w", err)
 	}
 	result, err = tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE id=$2 AND quantity >= $1`, quantity, sourceID)
@@ -756,7 +759,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 	if err != nil || changed != 1 {
 		return fmt.Errorf("insufficient canonical source balance")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	if err != nil {
 		return err
 	}
@@ -819,9 +822,11 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 	query := `
 		SELECT pt.id, pt.product_id, COALESCE(p.title, 'کالای بدون عنوان'),
 		       COALESCE(pt.inbound_id, ''), COALESCE(pt.bin_location, ''),
-		       pt.quantity, pt.status, pt.created_at, COALESCE(p.length_mm,0), COALESCE(p.width_mm,0), COALESCE(p.height_mm,0), COALESCE(p.weight_grams,0), COALESCE(p.measurement_status,'unverified')
+		       pt.quantity, pt.status, pt.created_at, COALESCE(p.length_mm,0), COALESCE(p.width_mm,0), COALESCE(p.height_mm,0), COALESCE(p.weight_grams,0), COALESCE(p.measurement_status,'unverified'),
+		       COALESCE(pt.variant_id::text,''), COALESCE(pv.variant_name,''), COALESCE(pv.spnc,'')
 		FROM putaway_tasks pt
 		LEFT JOIN products p ON pt.product_id = p.id
+		LEFT JOIN product_variants pv ON pv.id=pt.variant_id
 		WHERE pt.status IN ('pending', 'assigned')
 		ORDER BY pt.created_at DESC
 	`
@@ -837,6 +842,7 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 		if err := rows.Scan(
 			&item.ID, &item.ProductID, &item.Title,
 			&item.InboundID, &item.BinLocation, &item.Quantity, &item.Status, &item.CreatedAt, &item.LengthMM, &item.WidthMM, &item.HeightMM, &item.WeightGrams, &item.MeasurementStatus,
+			&item.VariantID, &item.VariantName, &item.VariantSPNC,
 		); err != nil {
 			return nil, err
 		}
@@ -963,7 +969,7 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 
 	now := time.Now()
 	var binCode string
-	var productID, supplierID, inboundID string
+	var productID, supplierID, inboundID, variantID, sourceLocation string
 	var quantity int
 	var volume, weight int64
 	var lengthMM, widthMM, heightMM, weightGrams int64
@@ -978,7 +984,7 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if err = tx.QueryRowContext(ctx, `SELECT bin_code,volume_cm3,weight_grams FROM putaway_capacity_reservations WHERE task_id=$1 AND status='active' FOR UPDATE`, taskID).Scan(&binCode, &volume, &weight); err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),p.measurement_status FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),p.measurement_status,COALESCE(pt.variant_id::text,''),COALESCE(pt.inventory_source_location_key,'warehouse:'||pt.inbound_id) FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &variantID, &sourceLocation); err != nil {
 		return err
 	}
 	currentVolume, currentWeight, err := warehouseopt.Capacity(lengthMM, widthMM, heightMM, weightGrams, int64(quantity))
@@ -1000,7 +1006,11 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if _, err = tx.ExecContext(ctx, `UPDATE putaway_capacity_reservations SET status='consumed',released_at=$1 WHERE task_id=$2 AND status='active'`, now, taskID); err != nil {
 		return err
 	}
-	if err := moveInventoryTx(ctx, tx, productID, supplierID, quantity, "sellable", "sellable", "warehouse:"+inboundID, "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor, `{}`); err != nil {
+	if variantID != "" {
+		if err := putawayTrackedSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, sourceLocation, binCode, taskID, actor); err != nil {
+			return err
+		}
+	} else if err := moveInventoryTx(ctx, tx, productID, supplierID, quantity, "sellable", "sellable", "warehouse:"+inboundID, "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor, `{}`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1048,19 +1058,31 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 		FROM orders o
 		LEFT JOIN LATERAL (
 			SELECT jsonb_agg(jsonb_build_object(
+			           'orderItemId', oi.id,
 			           'productId', oi.product_id,
 			           'productTitle', p.title,
+			           'variantId', oi.variant_id,
+			           'variantName', oi.variant_name,
+			           'variantSpnc', oi.variant_spnc,
 			           'quantity', oi.quantity,
 			           'unitPrice', oi.final_unit_price,
 			           'fulfillmentMethod', r.routing,
-			           'binLocation', (
+			           'binLocation', CASE WHEN COALESCE(pv.inventory_mode,'legacy')='tracked' THEN (
+			               SELECT substring(ib.location_key FROM 5)
+			               FROM order_inventory_captures ic
+			               CROSS JOIN LATERAL jsonb_array_elements(ic.allocations) a
+			               JOIN inventory_balances ib ON ib.id=a->>'balanceId'
+			               WHERE ic.order_item_id=oi.id::text AND ib.variant_id=oi.variant_id AND ib.location_type='bin'
+			               ORDER BY ib.id LIMIT 1
+			           ) ELSE (
 			               SELECT wb.bin_code FROM warehouse_bins wb
 			               WHERE wb.product_id = oi.product_id
 			               ORDER BY wb.updated_at DESC LIMIT 1
-			           )
+			           ) END
 			       )) FILTER (WHERE r.routing = 'warehouse') AS items
 			FROM order_items oi
 			LEFT JOIN products p ON p.id = oi.product_id
+			LEFT JOIN product_variants pv ON pv.id=oi.variant_id
 			LEFT JOIN LATERAL (
 				SELECT origin_type FROM order_item_origins
 				WHERE order_item_id = oi.id

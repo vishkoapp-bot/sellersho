@@ -6,6 +6,8 @@ import { useToast } from "../context/ToastContext";
 import { Package, Plus } from "lucide-react";
 import { cardPriceOf } from "../utils/cardPrice";
 
+import { activeProductVariants, cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
+
 interface DealProductCardProps {
   product: Product;
 }
@@ -20,31 +22,23 @@ interface DealProductCardProps {
 // at stock <= 0, so the failed path is unreachable here and only the
 // success toast is reachable, matching live in every reachable state.
 export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => {
-  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore } = useStore();
+  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, cart } = useStore();
   const published = isProductPublishedInStore(currentStore, product.id);
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
 
-  // Quick-add must put in the cart exactly what the card displays:
-  // when a priced default variant exists (the one cardPriceOf used),
-  // add it the way the PDP does — the price-swapped snapshot plus the
-  // variant id — so the quick-add line carries the default variant's
-  // price and merges with a PDP default add (same cart key). When
-  // cardPriceOf fell back to the product triple there is no such
-  // variant and the call stays the historical addToCart(product, 1).
-  const defaultVariant = product.variants?.find((v) => v.isDefault);
-  const defaultVariantPrice = defaultVariant ? product.variantPrices?.[defaultVariant.id] : undefined;
+  const available = product.variants?.length
+    ? activeProductVariants(product).some((variant) => !!resolvePurchase(product, variant.id))
+    : !!resolvePurchase(product);
   const handleQuickAdd = () => {
-    if (defaultVariant && defaultVariantPrice && defaultVariantPrice.price != null) {
-      addToCart(
-        { ...product, price: displayPrice.price, originalPrice: displayPrice.originalPrice, discountPercent: displayPrice.discountPercent },
-        1,
-        undefined,
-        defaultVariant.id,
-      );
-    } else {
-      addToCart(product, 1);
+    if (product.productType === 'variable' || (product.variants?.length && !resolvePurchase(product))) {
+      openProductDetail(product);
+      return false;
     }
+    const purchase = resolvePurchase(product);
+    if (!purchase || !cartQuantityAllowed(cart, purchase, purchase.minQty)) return false;
+    addToCart(purchase.product, purchase.minQty, undefined, purchase.variant?.id);
+    return true;
   };
   const { success } = useToast();
   const [imageFailed, setImageFailed] = useState(false);
@@ -125,12 +119,11 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                if ((product.stock || 0) <= 0 || !published) return;
-                handleQuickAdd();
-                success("«" + product.title + "» به سبد خرید اضافه شد.");
+                if (!available || !published) return;
+                if (handleQuickAdd()) success("«" + product.title + "» به سبد خرید اضافه شد.");
               }}
-              disabled={(product.stock || 0) <= 0 || !published}
-              title={!published ? "در این فروشگاه عرضه نمی‌شود" : (product.stock || 0) > 0 ? "افزودن به سبد خرید" : "ناموجود"}
+              disabled={!available || !published}
+              title={!published ? "در این فروشگاه عرضه نمی‌شود" : available ? "افزودن به سبد خرید" : "ناموجود"}
               className="relative w-10 h-10 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
             >
               <span aria-hidden="true" className="absolute -inset-[2px]" />

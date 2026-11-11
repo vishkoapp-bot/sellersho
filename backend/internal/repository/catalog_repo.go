@@ -186,6 +186,7 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 		       COALESCE(p.supply_option, '1day'),
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
+		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
 		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
@@ -227,6 +228,7 @@ func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string)
 		       COALESCE(p.supply_option, '1day'),
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
+		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
 		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
@@ -384,7 +386,8 @@ type productRowScanner interface {
 // is_active, brand, spn_number, specs, dimensions, then niche_ids.
 // Specs arrive as raw JSONB and are decoded by the caller.
 func scanProductRow(scanner productRowScanner, p *domain.Product, nicheIDs *pq.StringArray, specsRaw *[]byte) error {
-	return scanner.Scan(
+	var schemaRaw []byte
+	err := scanner.Scan(
 		&p.ID, &p.Title, &p.Slug, &p.CategorySlug, &p.SupplierID, &p.OriginalPrice,
 		&p.SupplierBaseCost, &p.PlatformMargin, &p.IsOriginal, &p.Stock,
 		&p.ImageURL, &p.Description, &p.WarehouseName,
@@ -392,8 +395,18 @@ func scanProductRow(scanner productRowScanner, p *domain.Product, nicheIDs *pq.S
 		&p.FulfillmentMethod, &p.SupplyOption,
 		&p.IsActive, &p.Brand, &p.SpnNumber, specsRaw,
 		&p.LengthMM, &p.WidthMM, &p.HeightMM, &p.WeightGrams,
+		&p.ProductType, &p.SchemaVersion, &schemaRaw,
 		nicheIDs,
 	)
+	if err != nil {
+		return err
+	}
+	if len(schemaRaw) > 0 && string(schemaRaw) != "null" {
+		if err = json.Unmarshal(schemaRaw, &p.ProductSchema); err != nil {
+			return fmt.Errorf("invalid persisted product schema: %w", err)
+		}
+	}
+	return nil
 }
 
 // parseProductSpecs decodes a specs JSONB value; a NULL, empty, or
@@ -422,7 +435,9 @@ func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, product
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT v.id, v.product_id, v.spnc, v.spnc_number, v.variant_name,
-		       v.attributes, v.is_default, v.stock, v.supplier_base_cost
+		       v.attributes, v.is_default, v.stock, v.supplier_base_cost,
+		       COALESCE(to_jsonb(v)->'selection','{}'::jsonb), COALESCE(to_jsonb(v)->>'inventory_mode','legacy'), COALESCE((to_jsonb(v)->>'is_active')::boolean,TRUE), COALESCE(to_jsonb(v)->>'combination_key',''),
+		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int
 		FROM product_variants v
 		WHERE v.product_id = ANY($1)
 		ORDER BY v.product_id, v.is_default DESC, v.created_at ASC, v.id ASC
@@ -433,10 +448,11 @@ func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, product
 	defer rows.Close()
 	for rows.Next() {
 		var v domain.ProductVariant
-		var attrsRaw []byte
+		var attrsRaw, selectionRaw []byte
+		var maxQty sql.NullInt32
 		var spncNumber sql.NullInt32
 		var cost sql.NullInt64
-		if err := rows.Scan(&v.ID, &v.ProductID, &v.Spnc, &spncNumber, &v.Name, &attrsRaw, &v.IsDefault, &v.Stock, &cost); err != nil {
+		if err := rows.Scan(&v.ID, &v.ProductID, &v.Spnc, &spncNumber, &v.Name, &attrsRaw, &v.IsDefault, &v.Stock, &cost, &selectionRaw, &v.InventoryMode, &v.IsActive, &v.CombinationKey, &v.MinCartQty, &maxQty); err != nil {
 			return nil, err
 		}
 		if spncNumber.Valid {
@@ -446,6 +462,14 @@ func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, product
 		if cost.Valid {
 			c := cost.Int64
 			v.SupplierBaseCost = &c
+		}
+		v.Selection = map[string]string{}
+		if err = json.Unmarshal(selectionRaw, &v.Selection); err != nil {
+			return nil, err
+		}
+		if maxQty.Valid {
+			n := int(maxQty.Int32)
+			v.MaxCartQty = &n
 		}
 		v.Attributes = parseProductSpecs(attrsRaw)
 		out[v.ProductID] = append(out[v.ProductID], v)
@@ -480,6 +504,7 @@ func (r *CatalogRepository) GetProductBySpn(ctx context.Context, spn int64) (*do
 		       COALESCE(p.supply_option, '1day'),
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
+		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
 		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
@@ -736,7 +761,6 @@ type DkCategoryColor struct {
 	Title   string `json:"title"`
 	HexCode string `json:"hexCode"`
 }
-
 
 func (r *CatalogRepository) GetCategoryColorsBySlug(ctx context.Context, slugOrID string) ([]DkCategoryColor, error) {
 	rows, err := r.db.QueryContext(ctx, `

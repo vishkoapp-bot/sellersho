@@ -4,6 +4,8 @@ import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
+import { supplierInventoryLabel, supplierReturnAttemptScope, supplierReturnQuantity } from '../../utils/supplierSkuInventory';
 
 // FIX 42: rebuilt to the live bundle SupplierDashboardView-MERGED.js (Zl component).
 // Divergences fixed vs the previous candidate tab: wrong h2 (it even said
@@ -47,11 +49,16 @@ export const SupplierInventoryTab: React.FC = () => {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<SupplierProductDto | null>(null);
   const [stock, setStock] = useState('');
+  const [stockVariantId, setStockVariantId] = useState('');
   const [saving, setSaving] = useState(false);
   const [returns, setReturns] = useState<SupplierReturnRequestDto[]>([]);
   const [locations, setLocations] = useState<SupplierInventoryLocationDto[]>([]);
   const [returning, setReturning] = useState<SupplierProductDto | null>(null);
   const [returnQuantity, setReturnQuantity] = useState('');
+  const [returnVariantId, setReturnVariantId] = useState('');
+  const [returnSaving, setReturnSaving] = useState(false);
+  const stockVariants = useSupplierVariants(editing);
+  const returnVariants = useSupplierVariants(returning);
   const [returnMethod, setReturnMethod] = useState<'supplier_collect' | 'postal'>('supplier_collect');
   const [returnReason, setReturnReason] = useState('');
   const [returnIdempotencyKeys, setReturnIdempotencyKeys] = useState<Record<string, string>>({});
@@ -96,12 +103,17 @@ export const SupplierInventoryTab: React.FC = () => {
       error('موجودی را با عدد وارد کن (نمی‌تواند منفی باشد).');
       return;
     }
+    if (editing.schemaVersion === 2 && (!stockVariantId || !stockVariants.rows.some(row => row.id === stockVariantId))) {
+      error('تنوع دقیق کالا را انتخاب کنید.');
+      return;
+    }
     setSaving(true);
     try {
-      await supplierApi.updateStock(editing.id, value);
+      await supplierApi.updateStock(editing.id, value, undefined, editing.schemaVersion === 2 ? stockVariantId : undefined);
       setEditing(null);
       success('موجودی ذخیره شد.');
       await resource.reload();
+      supplierApi.getInventoryLocations().then(data => setLocations(data.inventory || [])).catch(() => {});
     } catch (cause: unknown) {
       error(cause instanceof Error ? cause.message : 'ذخیره انجام نشد.');
     } finally {
@@ -114,7 +126,7 @@ export const SupplierInventoryTab: React.FC = () => {
     (groups[location.productId] ||= []).push(location);
     return groups;
   }, {});
-  const canonicalSellable = (productId: string) => (grouped[productId] || []).filter((location) => location.status === 'sellable').reduce((sum, location) => sum + location.quantity, 0);
+  const canonicalSellable = (productId: string, variantId?: string, requiresSKU = false) => supplierReturnQuantity(locations, productId, variantId, requiresSKU);
 
 // crypto.randomUUID exists only in secure contexts (HTTPS/localhost); the live and preview origins are plain HTTP, so fall back instead of throwing. Uniqueness is all the call sites need.
 const newUuid = (): string => {
@@ -127,33 +139,39 @@ const newUuid = (): string => {
   const openReturnForm = (item: SupplierProductDto) => {
     setReturning(item);
     setReturnQuantity('1');
-    setReturnIdempotencyKeys((current) => current[item.id] ? current : { ...current, [item.id]: `return-${item.id}-${newUuid()}` });
+    setReturnVariantId('');
+    setReturnReason('');
   };
 
   const submitReturn = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!returning) return;
+    if (!returning || returnSaving) return;
     const quantity = Number(returnQuantity);
-    const max = canonicalSellable(returning.id);
+    const requiresSKU = returning.schemaVersion === 2;
+    if (requiresSKU && (!returnVariantId || !returnVariants.rows.some(row => row.id === returnVariantId))) { error('تنوع دقیق کالای برگشتی را انتخاب کنید.'); return; }
+    const selectedVariantId = requiresSKU ? returnVariantId : undefined;
+    const max = canonicalSellable(returning.id, selectedVariantId, requiresSKU);
     if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > max || !returnReason.trim()) {
       error('تعداد را درست وارد کن (از موجودی آماده فروش بیشتر نباشد) و علت برگرداندن را بنویس.');
       return;
     }
-    const idempotencyKey = returnIdempotencyKeys[returning.id];
-    if (!idempotencyKey) {
-      error('فرم را ببند و دوباره باز کن.');
-      return;
-    }
+    const scope = supplierReturnAttemptScope(returning.id, selectedVariantId, quantity, returnMethod, returnReason);
+    const idempotencyKey = returnIdempotencyKeys[scope] || `return-${returning.id}-${selectedVariantId || 'unallocated'}-${newUuid()}`;
+    setReturnIdempotencyKeys(current => ({ ...current, [scope]: idempotencyKey }));
+    setReturnSaving(true);
     try {
-      const created = await supplierApi.requestReturn(returning.id, quantity, returnMethod, returnReason, idempotencyKey);
-      setReturns([created, ...returns.filter((item) => item.id !== created.id)]);
+      const created = await supplierApi.requestReturn(returning.id, quantity, returnMethod, returnReason.trim(), idempotencyKey, selectedVariantId);
+      setReturns(current => [created, ...current.filter((item) => item.id !== created.id)]);
+      setReturnIdempotencyKeys(current => { const next = { ...current }; delete next[scope]; return next; });
+      supplierApi.getInventoryLocations().then(data => setLocations(data.inventory || [])).catch(() => {});
+      void resource.reload();
       setReturning(null);
       setReturnQuantity('');
       setReturnReason('');
       success('درخواست برگرداندن کالا ثبت شد.');
     } catch (cause) {
       error(cause instanceof Error ? cause.message : 'ثبت درخواست انجام نشد.');
-    }
+    } finally { setReturnSaving(false); }
   };
 
   return (
@@ -206,15 +224,15 @@ const newUuid = (): string => {
               <span>هنوز شمرده نشده: <b>{itemLocations.filter(location => !location.reconciled).reduce((sum, location) => sum + location.quantity, 0)}</b></span>
             </div>
             {itemLocations.map(location => (
-              <p key={`${location.locationKey}-${location.status}`} className="text-[10px] text-slate-500">
-                {location.locationKey} · {STATUS_LABELS[location.status] || location.status} · {toPersianDigits(location.quantity)} عدد {location.reconciled ? '' : '· انبار هنوز ثبت نکرده'}
+              <p key={`${location.locationKey}-${location.status}-${location.variantId || 'unallocated'}`} className="text-[10px] text-slate-500">
+                {supplierInventoryLabel(location)} · {location.locationKey} · {STATUS_LABELS[location.status] || location.status} · {toPersianDigits(location.quantity)} عدد {location.reconciled ? '' : '· انبار هنوز ثبت نکرده'}
               </p>
             ))}
             <div className="flex gap-2">
               <button
                 type="button"
                 disabled={saving}
-                onClick={() => { setEditing(item); setStock(String(item.stock)); }}
+                onClick={() => { setEditing(item); setStockVariantId(''); setStock(item.schemaVersion === 2 ? '' : String(item.stock)); }}
                 className="rounded-lg bg-brand-soft px-3 py-2 min-h-[40px] text-xs font-bold text-brand-deep"
               >
                 عوض‌کردن موجودی
@@ -228,7 +246,10 @@ const newUuid = (): string => {
               </button>
             </div>
             {editing?.id === item.id && (
-              <form onSubmit={save} className="flex items-end gap-2 rounded-xl bg-brand-soft/60 border border-brand-border p-2">
+              <form onSubmit={save} className="flex flex-wrap items-end gap-2 rounded-xl bg-brand-soft/60 border border-brand-border p-2">
+                {editing.schemaVersion === 2 && <SupplierSKUSelect product={editing} rows={stockVariants.rows} selectedId={stockVariantId}
+                  label="تنوع برای اصلاح موجودی" loading={stockVariants.loading} error={stockVariants.error} retry={stockVariants.reload} disabled={saving}
+                  onSelect={id => { setStockVariantId(id); const variant = stockVariants.rows.find(row => row.id === id); setStock(variant ? String(variant.stock) : ''); }} /> }
                 <label className="flex-1 text-[10px] font-bold text-slate-600">
                   موجودی جدید (عدد)
                   <input
@@ -242,7 +263,7 @@ const newUuid = (): string => {
                   />
                 </label>
                 <button
-                  disabled={saving}
+                  disabled={saving || (editing.schemaVersion === 2 && (!stockVariantId || stockVariants.loading || !!stockVariants.error))}
                   className="rounded-lg bg-brand-deep px-3 py-2 min-h-[40px] text-xs font-bold text-white shrink-0"
                 >
                   {saving ? 'ذخیره…' : 'ذخیره موجودی'}
@@ -264,7 +285,7 @@ const newUuid = (): string => {
           <h3 className="text-xs font-bold">برگرداندن‌هایی که خواسته‌ای</h3>
           {returns.map(item => (
             <p key={item.id} className="text-[10px] text-slate-600">
-              {toPersianDigits(item.requestedQuantity)} عدد · {RETURN_STATUS_LABELS[item.status] || item.status}
+              {item.variantId && <span>{supplierInventoryLabel(item)} · </span>}{toPersianDigits(item.requestedQuantity)} عدد · {RETURN_STATUS_LABELS[item.status] || item.status}
             </p>
           ))}
         </section>
@@ -273,6 +294,10 @@ const newUuid = (): string => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3">
           <form onSubmit={submitReturn} className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4">
             <h3 className="text-sm font-bold">برگرداندن کالا: {returning.title}</h3>
+            {returning.schemaVersion === 2 && <SupplierSKUSelect product={returning} rows={returnVariants.rows} selectedId={returnVariantId}
+              label="تنوع کالای برگشتی" loading={returnVariants.loading} error={returnVariants.error} retry={returnVariants.reload} disabled={returnSaving}
+              available={id => canonicalSellable(returning.id, id, true)} onSelect={id => setReturnVariantId(id)} />}
+            <p className="text-xs text-slate-500">آماده برگشت: {toPersianDigits(canonicalSellable(returning.id, returnVariantId || undefined, returning.schemaVersion === 2))} عدد</p>
             <label className="block text-[11px] font-bold text-slate-600">
               چند عدد برمی‌گردد؟
               <input
@@ -280,7 +305,7 @@ const newUuid = (): string => {
                 type="text"
                 inputMode="numeric"
                 min="1"
-                max={canonicalSellable(returning.id)}
+                max={canonicalSellable(returning.id, returnVariantId || undefined, returning.schemaVersion === 2)}
                 value={formatNumber(returnQuantity)}
                 onChange={event => setReturnQuantity(parseDigits(event.target.value))}
                 className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal"
@@ -308,8 +333,8 @@ const newUuid = (): string => {
               />
             </label>
             <div className="flex gap-2">
-              <button className="flex-1 rounded-lg bg-amber-600 p-2 min-h-[44px] text-xs font-bold text-white">ثبت برگرداندن</button>
-              <button type="button" onClick={() => setReturning(null)} className="flex-1 rounded-lg border p-2 min-h-[44px] text-xs">انصراف</button>
+              <button disabled={returnSaving || (returning.schemaVersion === 2 && (!returnVariantId || returnVariants.loading || !!returnVariants.error))} className="flex-1 rounded-lg bg-amber-600 p-2 min-h-[44px] text-xs font-bold text-white disabled:opacity-40">{returnSaving ? 'در حال ثبت…' : 'ثبت برگرداندن'}</button>
+              <button type="button" disabled={returnSaving} onClick={() => setReturning(null)} className="flex-1 rounded-lg border p-2 min-h-[44px] text-xs">انصراف</button>
             </div>
           </form>
         </div>

@@ -1,7 +1,13 @@
+import type { ProductSchema } from './productSchema';
+export type { ProductSchema, ProductAttribute, ProductOption, CatalogProductAttribute } from './productSchema';
 // FIX 4 (team 04 G1/G2): live variant shape, carried through the
 // product model so the detail view can offer a variant selector and
 // price/stock overrides exactly like live (variantPrices keyed by id).
 export interface ProductVariant {
+  selection?: Record<string,string>;
+  combinationKey?: string;
+  inventoryMode?: 'legacy' | 'tracked';
+  isActive?: boolean;
   id: string;
   spnc: string;
   name: string;
@@ -31,6 +37,9 @@ export interface ProductAddon {
 }
 
 export interface Product {
+  productType?: 'legacy' | 'simple' | 'variable';
+  schemaVersion?: number;
+  productSchema?: ProductSchema;
   id: string;
   title: string;
   slug: string;

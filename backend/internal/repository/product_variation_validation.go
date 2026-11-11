@@ -9,6 +9,12 @@ import (
 
 // Legacy proposals retain their existing contract; typed proposals are atomic.
 func ValidateProductVariationProposal(data map[string]interface{}) error {
+	if _, exists := data["schemaVersion"]; exists {
+		return validateProductV2(data)
+	}
+	if _, exists := data["productSchema"]; exists {
+		return fmt.Errorf("product schema version is required")
+	}
 	kind, _ := data["productType"].(string)
 	if kind == "" {
 		return nil

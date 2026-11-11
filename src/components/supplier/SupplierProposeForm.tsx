@@ -5,7 +5,9 @@ import { getApiBase, ApiError } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { SupplierCategoryPicker, CategorySelection } from './SupplierCategoryPicker';
-import { SupplierCategoryAttributes, CategoryAttributesValue, EMPTY_CATEGORY_ATTRIBUTES, isEmptyCategoryAttributes } from './SupplierCategoryAttributes';
+import { SupplierProductDefinitionEditor } from './SupplierProductDefinitionEditor';
+import type { ProductSchema } from '../../types/productSchema';
+import { buildProductMatrix, serializeProductDraft, DraftProductSKU } from '../../services/productModel';
 import { Plus, Trash2, Loader2, ImagePlus, ExternalLink, AlertTriangle } from 'lucide-react';
 
 // Live propose form (Jl form block): supplier's new-product proposal.
@@ -47,17 +49,6 @@ const DEFAULT_CATEGORY: CategorySelection = {
   pathDisplay: 'کالای دیجیتال',
 };
 
-interface VariantDraft {
-  name: string;
-  color: string;
-  size: string;
-  custom: { key: string; value: string }[];
-  stock: string;
-  cost: string;
-}
-
-const EMPTY_VARIANT = (): VariantDraft => ({ name: 'مدل اصلی', color: '', size: '', custom: [], stock: '', cost: '' });
-
 export interface ProposeFormProps {
   warranties: { id: string; name: string }[];
   myWarehouses: { id: string; name: string; cityName?: string; isActive?: boolean }[];
@@ -80,47 +71,17 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   const [requestingWarranty, setRequestingWarranty] = useState(false);
   const [warrantyRequestName, setWarrantyRequestName] = useState('');
   const [category, setCategory] = useState<CategorySelection | null>(null);
-  const [categoryAttributes, setCategoryAttributes] = useState<CategoryAttributesValue>(EMPTY_CATEGORY_ATTRIBUTES);
   const [allNiches, setAllNiches] = useState<NicheDto[]>([]);
   const [selectedNicheIds, setSelectedNicheIds] = useState<string[]>(['niche-smartwatch']);
   const [description, setDescription] = useState('');
-  const [specs, setSpecs] = useState<{ key: string; value: string }[]>([]);
   const [stock, setStock] = useState('100');
   const [prepDays, setPrepDays] = useState('1');
   const [fulfillment, setFulfillment] = useState('warehouse');
   const [warehouseId, setWarehouseId] = useState('');
   const [productType, setProductType] = useState<'simple' | 'variable'>('simple');
-  const [axisPicks, setAxisPicks] = useState<Record<string, string[]>>({});
-  const [variantAxes, setVariantAxes] = useState<{ key: string; values: string[] }[]>([]);
-  const [variantAxesError, setVariantAxesError] = useState(false);
-  useEffect(() => {
-    let active = true;
-    setVariantAxes([]); setVariantAxesError(false);
-    setAxisPicks({}); setVariants(productType === 'simple' ? [EMPTY_VARIANT()] : []);
-    if (category?.slug && category.isLeaf !== false) catalogApi.getCategoryAttributes(category.slug).then(f => {
-      if (!active) return;
-      setVariantAxes([
-        ...(f.colors.length ? [{ key: 'رنگ', values: f.colors.map(c => c.title) }] : []),
-        ...f.attributes.map(a => ({ key: a.title, values: a.values.map(v => v.titleFa) })),
-      ].filter((a, i, all) => all.findIndex(b => b.key === a.key) === i));
-    }).catch(() => { if (active) setVariantAxesError(true); });
-    return () => { active = false; };
-  }, [category?.slug, category?.isLeaf, productType]);
-  const updateVariantAttributes = (index: number, custom: {key: string; value: string}[]) => {
-    setVariants(prev => prev.map((v, i) => i === index ? { ...v, custom, name: custom.length ? custom.filter(a => a.value).sort((a, b) => a.key.localeCompare(b.key)).map(a => `${a.key}: ${a.value}`).join(' / ') : 'مدل اصلی' } : v));
-  };
-  const generateVariants = () => {
-    const axes = Object.entries(axisPicks).filter(([, values]) => values.length);
-    if (!axes.length) { error('حداقل یک ویژگی و مقدارهای آن را انتخاب کنید.'); return; }
-    if (axes.reduce((n, [, values]) => n * values.length, 1) > 24) { error('حداکثر ۲۴ ترکیب تنوع مجاز است.'); return; }
-    let combinations: {key: string; value: string}[][] = [[]];
-    axes.sort(([a], [b]) => a.localeCompare(b)).forEach(([key, values]) => { combinations = combinations.flatMap(c => values.map(value => [...c, {key, value}])); });
-    setVariants(previous => combinations.map(custom => {
-      const name = custom.map(a => `${a.key}: ${a.value}`).join(' / ');
-      return { ...(previous.find(v => v.name === name) ?? EMPTY_VARIANT()), name, custom };
-    }));
-  };
-  const [variants, setVariants] = useState<VariantDraft[]>([EMPTY_VARIANT()]);
+  const [productSchema,setProductSchema]=useState<ProductSchema>({version:2,type:'simple',attributes:[]});
+  const [variants,setVariants]=useState<DraftProductSKU[]>(()=>buildProductMatrix({version:2,type:'simple',attributes:[]},[]));
+  useEffect(()=>{const schema:ProductSchema={version:2,type:productType,attributes:[]};setProductSchema(schema);setVariants(productType==='simple'?buildProductMatrix(schema,[]):[]);},[category?.slug,productType]);
   const [weightGrams, setWeightGrams] = useState('');
   const [lengthCm, setLengthCm] = useState('');
   const [widthCm, setWidthCm] = useState('');
@@ -233,8 +194,9 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     if (!category || category.isLeaf === false) { error('دسته‌بندی کالا را انتخاب کنید.'); return; }
     if (Array.from(description.trim()).length < 30) { error('توضیحات محصول باید حداقل ۳۰ نویسه باشد.'); return; }
     if (!noBrand && !brand.trim()) { error('برند کالا را وارد کنید یا گزینه «بدون برند» را انتخاب کنید.'); return; }
-    const costNum = Math.min(...variants.map(v => Number(v.cost)));
-    if (!Number.isSafeInteger(costNum) || costNum <= 0 || !Number.isSafeInteger(Number(stock)) || Number(stock) < 0) { error('قیمت عمده و موجودی را درست وارد کن.'); return; }
+    let productDraft:ReturnType<typeof serializeProductDraft>;
+    try{productDraft=serializeProductDraft(productSchema,variants)}catch(cause){error(cause instanceof Error?cause.message:'ساختار محصول را کامل کنید.');return;}
+    const costNum=productDraft.supplierBaseCost;
     if (selectedNicheIds.length !== 1) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
     const posInt = (raw: string): number | undefined => {
       const n = Number(raw);
@@ -252,52 +214,16 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     const packWid = packFilled === 3 ? posInt(packWidthCm) : undefined;
     const packHei = packFilled === 3 ? posInt(packHeightCm) : undefined;
     if (packFilled === 3 && (packLen === undefined || packWid === undefined || packHei === undefined)) { error('ابعاد بسته‌بندی باید عددهای صحیح مثبت باشند (سانتی‌متر).'); return; }
-    if (variants.some(v => v.custom.some(a => !a.key || !a.value))) { error('ویژگی و مقدار هر تنوع را انتخاب کنید.'); return; }
-    if (productType === 'variable') {
-      const axes = Object.entries(axisPicks).filter(([, values]) => values.length);
-      const expected = axes.reduce((count, [, values]) => count * values.length, 1);
-      if (!axes.length || variants.length !== expected || variants.some(v => v.custom.length !== axes.length || v.custom.some(a => !axisPicks[a.key]?.includes(a.value)))) {
-        error('پس از انتخاب ویژگی‌ها، تنوع‌ها را بسازید یا به‌روزرسانی کنید.'); return;
-      }
-    }
-    const filledVariants = variants.filter((v) => v.name.trim() !== '');
-    if (filledVariants.length !== variants.length || !filledVariants.length || filledVariants.some(v => !v.cost.trim() || !v.stock.trim())) { error('برای هر تنوع نام، قیمت و موجودی را وارد کنید. حداقل یک تنوع الزامی است.'); return; }
-    const seenNames = new Set<string>();
-    for (const v of filledVariants) {
-      const name = v.name.trim();
-      if (seenNames.has(name)) { error(`نام تنوع «${name}» در همین فهرست تکرار شده است.`); return; }
-      seenNames.add(name);
-      const vStock = v.stock.trim() === '' ? 0 : Number(v.stock);
-      if (!Number.isSafeInteger(vStock) || vStock < 0) { error(`موجودی تنوع «${name}» را درست وارد کن.`); return; }
-      if (v.cost.trim() !== '') {
-        const vCost = Number(v.cost);
-        if (!Number.isSafeInteger(vCost) || vCost <= 0) { error(`قیمت عمده تنوع «${name}» را درست وارد کن (عدد مثبت به تومان).`); return; }
-      }
-    }
-    const specsObject: Record<string, string> = {};
-    specs.forEach((spec) => { if (spec.key.trim() && spec.value.trim()) specsObject[spec.key.trim()] = spec.value.trim(); });
-    const variantPayload = filledVariants.map((v) => {
-      const attrs: Record<string, string> = {};
-      if (v.color.trim()) attrs['رنگ'] = v.color.trim();
-      if (v.size.trim()) attrs['سایز'] = v.size.trim();
-      v.custom.forEach((c) => { if (c.key.trim() && c.value.trim()) attrs[c.key.trim()] = c.value.trim(); });
-      const parsedCost = v.cost.trim() === '' ? 0 : parseInt(parseSep(v.cost), 10);
-      return {
-        variant_name: v.name.trim(),
-        attributes: attrs,
-        stock: Number(v.stock) || 0,
-        ...(parsedCost > 0 ? { supplier_base_cost: parsedCost } : {}),
-      };
-    });
-    const variantStockSum = variantPayload.reduce((sum, v) => sum + v.stock, 0);
+    const specsObject=Object.fromEntries(productSchema.attributes.filter(a=>a.role==='fixed').map(a=>[a.name,a.values[0]?.label??'']));
+    const variantPayload=productDraft.variants;
+    const variantStockSum=productDraft.stock;
     const payload: Record<string, unknown> = {
-      productType,
+      ...productDraft,
       title: title.trim(),
       brand: noBrand ? '' : brand.trim(),
       noBrand,
       supplierBaseCost: costNum,
       categorySlug: category.slug,
-      ...(!isEmptyCategoryAttributes(categoryAttributes) ? { categoryAttributes } : {}),
       nicheIds: selectedNicheIds,
       barcode: '',
       warranty,
@@ -305,7 +231,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       imageUrls: images.length > 0 ? images : imageLink.trim() ? [imageLink.trim()] : [],
       description: description.trim(),
       specs: specsObject,
-      requestedAttributes: specsObject,
       stock: variantPayload.length > 0 ? variantStockSum : Number(stock) || 0,
       ...(variantPayload.length > 0 ? { variants: variantPayload } : {}),
       fulfillmentMethod: fulfillment,
@@ -332,14 +257,12 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       setCost('');
       setWarranty('۱۸ ماه گارانتی شرکتی');
       setCategory(null);
-      setCategoryAttributes(EMPTY_CATEGORY_ATTRIBUTES);
       setDescription('');
-      setSpecs([]);
       setStock('100');
       setPrepDays('1');
       setFulfillment('warehouse');
       setWarehouseId('');
-      setAxisPicks({}); setVariants(productType === 'simple' ? [EMPTY_VARIANT()] : []);
+      setProductSchema({version:2,type:'simple',attributes:[]});setVariants(buildProductMatrix({version:2,type:'simple',attributes:[]},[]));
       setWeightGrams('');
       setLengthCm('');
       setWidthCm('');
@@ -484,13 +407,9 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       <div className="space-y-2 pt-1 border-t border-slate-100">
         <div>
           <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
-          <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat); setCategoryAttributes(EMPTY_CATEGORY_ATTRIBUTES); setBrand(''); setSpecs([]); }} />
-          <SupplierCategoryAttributes
-            categorySlug={category?.isLeaf === false ? null : category?.slug ?? null}
-            value={categoryAttributes}
-            onChange={setCategoryAttributes}
-            onBrandSuggest={(titleFa) => { setBrand(titleFa); setNoBrand(false); }}
-          />
+          <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat);setBrand(''); }} />
+          <SupplierProductDefinitionEditor categorySlug={category?.isLeaf===false?null:category?.slug??null} productType={productType} schema={productSchema} onSchema={setProductSchema} rows={variants} onRows={setVariants} brand={brand} noBrand={noBrand} onBrand={value=>{setBrand(value);setNoBrand(false)}} onNoBrand={setNoBrand}/>
+
         </div>
         <div>
           <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — فقط یک موضوع انتخاب کن:</label>
@@ -517,15 +436,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           </div>
         </div>
       </div>
-      <div>
-        <label className="text-[10px] text-slate-600 block mb-1">برند محصول</label>
-        <p className="text-xs text-slate-600">{noBrand ? 'بدون برند' : brand || 'پس از انتخاب دستهٔ تخصصی، برند را از فهرست همان دسته انتخاب کنید.'}</p>
-        <label className="flex items-center gap-1.5 mt-1.5 cursor-pointer">
-          <input type="checkbox" checked={noBrand} onChange={(e) => setNoBrand(e.target.checked)} className="w-4 h-4 rounded accent-brand-deep" />
-          <span className="text-[10px] text-slate-600 font-bold">بدون برند</span>
-        </label>
-        <span className="text-[9px] text-slate-400 block mt-1">برند در صفحه‌ی محصول و فیلترهای فروشگاه نمایش داده می‌شود؛ اگر کالا برند ندارد، «بدون برند» را بزنید.</span>
-      </div>
       <div className="grid grid-cols-2 gap-2">
 
         <div>
@@ -541,30 +451,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         <label className="text-[10px] font-bold text-slate-700 block mb-1">توضیحات کامل محصول: ({toPersianDigits(Array.from(description.trim()).length)} از حداقل ۳۰ نویسه)</label>
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="توضیحات کامل درباره محصول، ویژگی‌ها، کاربردها و مزایای آن…" rows={3} className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none resize-none" />
         <span className="text-[9px] text-slate-400 block mt-1">توضیح حداقل ۳۰ نویسه الزامی است — توضیح نازک در صفحه‌ی محصول اعتماد خریدار را کم می‌کند.</span>
-      </div>
-      <div className="space-y-2">
-        <label className="text-[10px] font-bold text-slate-700 block">درخواست ویژگی جدید همراه محصول</label>
-        <p className="text-xs text-slate-500">نام ویژگی و مقدار آن را بنویسید. نیازی به انتظار نیست؛ بازبین همراه همین محصول بررسی می‌کند و پس از تأیید در فهرست دسته قابل انتخاب خواهد بود.</p>
-        {specs.map((spec, index) => (
-          <div key={index} className="grid grid-cols-2 gap-2">
-            <input type="text" value={spec.key} onChange={(e) => { const next = [...specs]; next[index].key = e.target.value; setSpecs(next); }} placeholder="نام ویژگی (مثلاً: رنگ)" className="text-xs p-2 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
-            <div className="flex gap-1">
-              <input type="text" value={spec.value} onChange={(e) => { const next = [...specs]; next[index].value = e.target.value; setSpecs(next); }} placeholder="مقدار (مثلاً: مشکی)" className="text-xs p-2 rounded-xl bg-slate-50 border border-slate-200 outline-none flex-1" />
-              {specs.length > 1 && (
-                <button type="button" onClick={() => setSpecs(specs.filter((_, i) => i !== index))} className="px-2 py-1 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100 transition-colors" title="حذف این ویژگی">
-                  <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        <button type="button" onClick={() => setSpecs([...specs, { key: '', value: '' }])} className="text-[10px] text-brand-deep font-bold hover:underline flex items-center gap-1">
-          <Plus className="w-3 h-3"  strokeWidth={1.5}/>
-          درخواست ویژگی جدید
-        </button>
-        {topSlug === 'digital' && !specs.some((s) => s.key.trim() && s.value.trim()) && (
-          <p className="text-[10px] leading-5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-2.5 py-2">کالای دیجیتال بدون مشخصات فنی، کمتر فروخته می‌شود؛ دست‌کم چند ویژگی کلیدی (مدل، حافظه، گارانتی…) را بنویسید.</p>
-        )}
       </div>
       <div className="grid grid-cols-3 gap-2">
         <div>
@@ -604,48 +490,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           )}
         </div>
       )}
-      <div className="space-y-2 pt-1 border-t border-slate-100">
-        <label className="text-[10px] font-bold text-slate-700 block">تنوع‌های کالا — نام، قیمت و موجودی الزامی؛ همراه محصول بازبینی می‌شوند</label>
-        <p className="text-[10px] text-slate-500 leading-5">«انتخاب ویژگی تنوع» را بزنید؛ مثلاً رنگ را انتخاب کنید و سپس رنگ موجود در فهرست را مشخص کنید. نام تنوع خودکار ساخته می‌شود. کالای بدون تنوع با نام «مدل اصلی» ثبت می‌شود. قیمت و موجودی هر تنوع را جدا وارد کنید.</p>
-        {productType === 'variable' && <div className="rounded-xl border bg-slate-50 p-3 space-y-3">
-          <p className="text-xs">ویژگی متغیر و مقدارهای آن را انتخاب کنید؛ هر ترکیب یک تنوع مستقل می‌سازد.</p>
-          <select aria-label="ویژگی متغیر" value="" onChange={e => { if (e.target.value) setAxisPicks(p => ({...p, [e.target.value]: []})); }} className={inputClass}>
-            <option value="">انتخاب ویژگی مثل رنگ یا سایز</option>
-            {variantAxes.filter(a => !(a.key in axisPicks)).map(a => <option key={a.key} value={a.key}>{a.key}</option>)}
-          </select>
-          {Object.entries(axisPicks).map(([key, values]) => <fieldset key={key} className="rounded-xl border p-2">
-            <legend className="text-xs font-bold">{key}</legend>
-            <div className="flex flex-wrap gap-2 max-h-48 overflow-auto">
-              {variantAxes.find(a => a.key === key)?.values.map(value => <label key={value} className="text-xs flex gap-1 p-2 bg-white rounded-lg"><input type="checkbox" checked={values.includes(value)} onChange={() => setAxisPicks(p => ({...p, [key]: values.includes(value) ? values.filter(v => v !== value) : [...values,value]}))} />{value}</label>)}
-            </div>
-            <button type="button" className="text-xs text-rose-600" onClick={() => setAxisPicks(p => Object.fromEntries(Object.entries(p).filter(([k]) => k !== key)))}>حذف محور</button>
-          </fieldset>)}
-          <button type="button" onClick={generateVariants} className="rounded-xl bg-brand-deep text-white p-3 text-xs">ساخت / به‌روزرسانی تنوع‌ها</button>
-        </div>}
-        {variants.map((variant, index) => (
-          <div key={index} className="rounded-xl border border-slate-200 bg-white p-2.5 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black text-slate-400 shrink-0">{toPersianDigits(index + 1)}</span>
-              <span className="flex-1 text-xs font-bold">{variant.name || 'انتخاب ویژگی تنوع'}</span>
-              <button type="button" onClick={() => setVariants(variants.filter((_, i) => i !== index))} className="p-2 rounded-lg bg-rose-50 text-rose-600 shrink-0" aria-label="حذف تنوع">
-                <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input type="text" inputMode="numeric" value={formatSep(variant.stock)} onChange={(e) => { const next = [...variants]; next[index].stock = parseSep(e.target.value); setVariants(next); }} placeholder="موجودی" min="0" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input type="text" inputMode="numeric" value={formatSep(variant.cost)} onChange={(e) => { const next = [...variants]; next[index].cost = parseSep(e.target.value); setVariants(next); }} placeholder="قیمت عمده این تنوع (تومان، الزامی)" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-            </div>
-            {productType === 'variable' && variantAxesError && <p className="text-xs text-rose-600">بارگذاری ویژگی‌ها ناموفق بود؛ دسته را دوباره انتخاب کنید.</p>}
-            {productType === 'variable' && !variantAxes.length && !variantAxesError && <p className="text-xs text-slate-500">ابتدا دستهٔ تخصصی را انتخاب کنید. اگر ویژگی موردنظر موجود نیست، درخواست ویژگی جدید را همراه محصول ثبت کنید.</p>}
-          </div>
-        ))}
-        <button hidden type="button" disabled={variants.length >= 24} onClick={() => setVariants([...variants, EMPTY_VARIANT()])} className="w-full py-2 rounded-xl border border-dashed border-brand-border text-brand-deep text-[11px] font-bold disabled:opacity-40">
-          + افزودن تنوع ({toPersianDigits(variants.length)} از {toPersianDigits(24)})
-        </button>
-        {filledVariantCount > 0 && (
-          <p className="text-[10px] leading-5 bg-brand-soft/50 border border-brand-border text-brand-deep rounded-xl px-2.5 py-2">{toPersianDigits(filledVariantCount)} تنوع با مجموع موجودی {toPersianDigits(filledVariantStock)} عدد — همین مجموع به‌عنوان موجودی کل کالا ثبت می‌شود.</p>
-        )}
-      </div>
       <div className="space-y-1.5 pt-1 border-t border-slate-100">
         <label className="text-[10px] font-bold text-slate-700 block">ابعاد و وزن کالا (الزامی):</label>
         <div className="grid grid-cols-4 gap-2">

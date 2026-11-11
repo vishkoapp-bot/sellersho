@@ -759,64 +759,70 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		return nil, ErrPaymentExpired
 	}
 
-	itemRows, err := dbTx.QueryContext(ctx, `
+	handledCapture, err := captureOrderInventoryTx(ctx, dbTx, payment.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	if !handledCapture {
+		itemRows, err := dbTx.QueryContext(ctx, `
 		SELECT product_id, quantity, variant_id
 		FROM order_items
 		WHERE order_id = $1
 	`, payment.OrderID)
-	if err != nil {
-		return nil, err
-	}
-	defer itemRows.Close()
-
-	type inventoryItem struct {
-		productID string
-		quantity  int
-		variantID sql.NullString
-	}
-	var items []inventoryItem
-	for itemRows.Next() {
-		var item inventoryItem
-		if err := itemRows.Scan(&item.productID, &item.quantity, &item.variantID); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		items = append(items, item)
-	}
-	if err := itemRows.Err(); err != nil {
-		return nil, err
-	}
-	if err := itemRows.Close(); err != nil {
-		return nil, err
-	}
-	for _, item := range items {
-		result, err := dbTx.ExecContext(ctx, `
+		defer itemRows.Close()
+
+		type inventoryItem struct {
+			productID string
+			quantity  int
+			variantID sql.NullString
+		}
+		var items []inventoryItem
+		for itemRows.Next() {
+			var item inventoryItem
+			if err := itemRows.Scan(&item.productID, &item.quantity, &item.variantID); err != nil {
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		if err := itemRows.Err(); err != nil {
+			return nil, err
+		}
+		if err := itemRows.Close(); err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			result, err := dbTx.ExecContext(ctx, `
 			UPDATE products
 			SET stock = stock - $2
 			WHERE id = $1 AND stock >= $2
 		`, item.productID, item.quantity)
-		if err != nil {
-			return nil, err
-		}
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if rows != 1 {
-			return nil, ErrInsufficientInventory
-		}
-		// Fix69 O4: decrement the variant stock alongside the product
-		// stock. Guarded by stock >= qty and deliberately NOT fatal
-		// on zero rows: a 0-stock variant is untracked (see the
-		// create-time gate in handleCreateOrder), so it must not
-		// fail a payment whose product stock was sufficient.
-		// Product stock stays the authoritative accounting.
-		if item.variantID.Valid && item.variantID.String != "" {
-			if _, err := dbTx.ExecContext(ctx, `
+			if err != nil {
+				return nil, err
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				return nil, err
+			}
+			if rows != 1 {
+				return nil, ErrInsufficientInventory
+			}
+			// Fix69 O4: decrement the variant stock alongside the product
+			// stock. Guarded by stock >= qty and deliberately NOT fatal
+			// on zero rows: a 0-stock variant is untracked (see the
+			// create-time gate in handleCreateOrder), so it must not
+			// fail a payment whose product stock was sufficient.
+			// Product stock stays the authoritative accounting.
+			if item.variantID.Valid && item.variantID.String != "" {
+				if _, err := dbTx.ExecContext(ctx, `
 				UPDATE product_variants
 				SET stock = stock - $2
 				WHERE id = $1 AND stock >= $2
 			`, item.variantID.String, item.quantity); err != nil {
-				return nil, err
+					return nil, err
+				}
 			}
 		}
 	}
@@ -1040,39 +1046,67 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 		return err
 	}
 	if captured {
-		itemRows, err := tx.QueryContext(ctx, `SELECT product_id, quantity, variant_id FROM order_items WHERE order_id = $1`, orderID)
+		handledRestore, err := restoreOrderInventoryTx(ctx, tx, orderID)
 		if err != nil {
 			return err
 		}
-		type stockItem struct {
-			productID string
-			qty       int
-			variantID sql.NullString
-		}
-		var items []stockItem
-		for itemRows.Next() {
-			var it stockItem
-			if err := itemRows.Scan(&it.productID, &it.qty, &it.variantID); err != nil {
-				itemRows.Close()
+		if !handledRestore {
+			skuAccounting, err := hasSKUInventoryTx(ctx, tx)
+			if err != nil {
 				return err
 			}
-			items = append(items, it)
-		}
-		itemRows.Close()
-		if err := itemRows.Err(); err != nil {
-			return err
-		}
-		for _, it := range items {
-			if _, err := tx.ExecContext(ctx, `UPDATE products SET stock = stock + $2 WHERE id = $1`, it.productID, it.qty); err != nil {
+			itemRows, err := tx.QueryContext(ctx, `SELECT id::text, product_id, quantity, variant_id FROM order_items WHERE order_id = $1`, orderID)
+			if err != nil {
 				return err
 			}
-			// Fix69 O4: restore the variant stock alongside the
-			// product stock, inside the same inventory_captured
-			// gate. See the create-time note: this mirrors the
-			// product restore exactly, including its gate.
-			if it.variantID.Valid && it.variantID.String != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
+			type stockItem struct {
+				itemID    string
+				productID string
+				qty       int
+				variantID sql.NullString
+			}
+			var items []stockItem
+			for itemRows.Next() {
+				var it stockItem
+				if err := itemRows.Scan(&it.itemID, &it.productID, &it.qty, &it.variantID); err != nil {
+					itemRows.Close()
 					return err
+				}
+				items = append(items, it)
+			}
+			itemRows.Close()
+			if err := itemRows.Err(); err != nil {
+				return err
+			}
+			for _, it := range items {
+				covered := false
+				if skuAccounting {
+					covered, err = canonicalCoveredTx(ctx, tx, it.productID)
+					if err != nil {
+						return err
+					}
+				}
+				if covered {
+					var supplierID string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id=$1 FOR UPDATE`, it.productID).Scan(&supplierID); err != nil {
+						return err
+					}
+					// Historical capture proved product quantity, not the SKU or
+					// original lot. Restore to an explicit unallocated holding lot.
+					if err := upsertInventoryMovementTx(ctx, tx, it.productID, supplierID, it.qty, "sold", "sellable", "customer", "legacy-cancel:"+orderID, "order_cancel", orderID, "legacy-cancel:"+it.itemID, customerUserID, `{}`); err != nil {
+						return err
+					}
+				} else if _, err := tx.ExecContext(ctx, `UPDATE products SET stock = stock + $2 WHERE id = $1`, it.productID, it.qty); err != nil {
+					return err
+				}
+				// Fix69 O4: restore the variant stock alongside the
+				// product stock, inside the same inventory_captured
+				// gate. See the create-time note: this mirrors the
+				// product restore exactly, including its gate.
+				if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
+					if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -2118,7 +2152,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		destination = "warehouse:" + destWarehouseID.String
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT ri.id::text, ri.qty, ri.qc_status, ri.variant_id, oi.product_id, COALESCE(p.supplier_id, ''),
+		SELECT ri.id::text, ri.order_item_id, ri.qty, ri.qc_status, ri.variant_id, oi.product_id, COALESCE(p.supplier_id, ''),
 			COALESCE((SELECT oio.origin_label FROM order_item_origins oio WHERE oio.order_item_id::text = ri.order_item_id LIMIT 1), '')
 		FROM return_items ri
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
@@ -2130,6 +2164,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 	}
 	type receivedItem struct {
 		id          string
+		orderItemID string
 		qty         int
 		qcStatus    string
 		variantID   sql.NullString
@@ -2140,7 +2175,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 	var items []receivedItem
 	for rows.Next() {
 		var it receivedItem
-		if err := rows.Scan(&it.id, &it.qty, &it.qcStatus, &it.variantID, &it.productID, &it.supplierID, &it.originLabel); err != nil {
+		if err := rows.Scan(&it.id, &it.orderItemID, &it.qty, &it.qcStatus, &it.variantID, &it.productID, &it.supplierID, &it.originLabel); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2151,7 +2186,18 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		return err
 	}
 	rows.Close()
+	skuAccounting, err := hasSKUInventoryTx(ctx, tx)
+	if err != nil {
+		return err
+	}
 	for _, it := range items {
+		handled, err := restoreCapturedReturnTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID)
+		if err != nil {
+			return err
+		}
+		if handled {
+			continue
+		}
 		toStatus, suffix := "sellable", "sellable"
 		if it.qcStatus == "defective" {
 			toStatus, suffix = "quarantine", "quarantine"
@@ -2179,7 +2225,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 			if err := syncProductStockTx(ctx, tx, it.productID); err != nil {
 				return err
 			}
-			if it.variantID.Valid && it.variantID.String != "" {
+			if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
 				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
 					return err
 				}

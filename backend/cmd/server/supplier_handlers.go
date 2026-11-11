@@ -262,31 +262,20 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if raw, exists := payload["variants"]; exists {
-		list, ok := raw.([]interface{})
-		if !ok || len(list) == 0 || len(list) > 24 {
-			http.Error(w, `{"error":"Invalid variants"}`, http.StatusBadRequest)
-			return
-		}
-		seen := map[string]bool{}
-		for _, item := range list {
-			v, ok := item.(map[string]interface{})
-			if !ok {
-				http.Error(w, `{"error":"Invalid variant"}`, 400)
-				return
-			}
-			name, _ := v["variant_name"].(string)
-			price, pok := v["supplier_base_cost"].(float64)
-			stock, sok := v["stock"].(float64)
-			if strings.TrimSpace(name) == "" || seen[strings.TrimSpace(name)] || !pok || price <= 0 || price != float64(int64(price)) || !sok || stock < 0 || stock != float64(int64(stock)) {
-				http.Error(w, `{"error":"Each variant requires a unique name, positive integer price and nonnegative integer stock"}`, 400)
-				return
-			}
-			seen[strings.TrimSpace(name)] = true
-		}
+	version, _ := payload["schemaVersion"].(float64)
+	if version != 2 {
+		http.Error(w, `{"error":"Product schema version 2 is required"}`, http.StatusBadRequest)
+		return
 	}
-
-    if err := repository.ValidateProductVariationProposal(payload); err != nil { http.Error(w, `{"error":"Invalid product variation configuration: `+err.Error()+`"}`, http.StatusBadRequest); return }
+	if payload["productType"] != "simple" && payload["productType"] != "variable" {
+		http.Error(w, `{"error":"Product type is required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := repository.ValidateProductVariationProposal(payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	niches, ok := payload["nicheIds"].([]interface{})
 	if !ok || len(niches) != 1 {
 		http.Error(w, `{"error":"Exactly one product niche is required"}`, http.StatusBadRequest)
@@ -383,7 +372,9 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	payload["product_id"] = prodID
 	proposalID, err := h.supplierRepo.ProposeProduct(r.Context(), supplierID, payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -571,6 +562,7 @@ func (h *SupplierHandlers) HandleGetReturns(w http.ResponseWriter, r *http.Reque
 func (h *SupplierHandlers) HandleCreateReturn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	var req struct {
+		VariantID        string `json:"variantId"`
 		ProductID        string `json:"productId"`
 		Quantity         int    `json:"quantity"`
 		CollectionMethod string `json:"collectionMethod"`
@@ -580,7 +572,7 @@ func (h *SupplierHandlers) HandleCreateReturn(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"Invalid payload"}`, 400)
 		return
 	}
-	item, err := h.supplierRepo.CreateReturnRequestWithIdempotency(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), req.ProductID, req.Quantity, req.CollectionMethod, req.Reason, r.Header.Get("Idempotency-Key"), callerUserID(r))
+	item, err := h.supplierRepo.CreateReturnRequestForVariantWithIdempotency(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), req.ProductID, req.VariantID, req.Quantity, req.CollectionMethod, req.Reason, r.Header.Get("Idempotency-Key"), callerUserID(r))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 		return
@@ -646,15 +638,16 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 	productID := parts[len(parts)-1]
 
 	var req struct {
-		NewStock int    `json:"new_stock"`
-		Reason   string `json:"reason"`
+		VariantID string `json:"variantId"`
+		NewStock  int    `json:"new_stock"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
 
-	err := h.supplierRepo.UpdateProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.NewStock, req.Reason)
+	err := h.supplierRepo.UpdateProductStockForVariant(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return

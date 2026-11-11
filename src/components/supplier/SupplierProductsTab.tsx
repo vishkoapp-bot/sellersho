@@ -11,6 +11,7 @@ import { SupplierReviewsModal } from './SupplierReviewsModal';
 import { SupplierFeedbackModal } from './SupplierFeedbackModal';
 import { SupplierAddonsWidget } from './SupplierAddonsWidget';
 import { SupplierProposeForm } from './SupplierProposeForm';
+import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
 
 export const SupplierProductsTab: React.FC = () => {
   const {
@@ -53,6 +54,8 @@ export const SupplierProductsTab: React.FC = () => {
   // state های جدید برای ویرایش موجودی و همگام‌سازی لحظه‌ای
   const [editingStockProduct, setEditingStockProduct] = useState<SupplierProductDto | null>(null);
   const [editedStock, setEditedStock] = useState('');
+  const [stockVariantId, setStockVariantId] = useState('');
+  const stockVariants = useSupplierVariants(editingStockProduct);
   const [editingSupplyProduct, setEditingSupplyProduct] = useState<SupplierProductDto | null>(null);
   const [editedSupplyOption, setEditedSupplyOption] = useState<'3hour_local' | '1day' | '3day'>('1day');
   const supplierProducts = productsResource.error ? [] : productsResource.data || [];
@@ -307,9 +310,12 @@ export const SupplierProductsTab: React.FC = () => {
 
               {/* بخش ویرایش موجودی */}
               {canManageStock && (editingStockProduct?.id === product.id ? (
-                <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+                <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                  {product.schemaVersion === 2 && <SupplierSKUSelect product={product} rows={stockVariants.rows} selectedId={stockVariantId}
+                    label="تنوع برای اصلاح موجودی" loading={stockVariants.loading} error={stockVariants.error} retry={stockVariants.reload} disabled={saving}
+                    onSelect={id => { setStockVariantId(id); const variant = stockVariants.rows.find(row => row.id === id); setEditedStock(variant ? String(variant.stock) : ''); }} />}
                   <input
-                    type="text" inputMode="numeric"
+                    aria-label="موجودی جدید کالا" type="text" inputMode="numeric"
                     value={editedStock}
                     onChange={(e) => setEditedStock(e.target.value)}
                     placeholder="موجودی جدید"
@@ -319,7 +325,8 @@ export const SupplierProductsTab: React.FC = () => {
                     type="button"
                     disabled={saving}
                     onClick={async () => {
-                      const newStock = Number(editedStock);
+                      const newStock = Number(editedStock.replace(/[۰-۹]/g, digit => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit))));
+                      if (product.schemaVersion === 2 && (!stockVariantId || !stockVariants.rows.some(row => row.id === stockVariantId))) { error('تنوع دقیق کالا را انتخاب کنید.'); return; }
                       if (editedStock.trim() === '' || !Number.isSafeInteger(newStock) || newStock < 0) {
                         error('موجودی باید عدد مثبت باشد.');
                         return;
@@ -327,7 +334,7 @@ export const SupplierProductsTab: React.FC = () => {
 
                       if (saving) return;
                       setSaving(true);
-                      try { await supplierApi.updateStock(product.id, newStock); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setEditedStock(''); await productsResource.reload(); }
+                      try { await supplierApi.updateStock(product.id, newStock, undefined, product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setEditedStock(''); await productsResource.reload(); }
                       catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'ذخیره موجودی انجام نشد.'); }
                       finally { setSaving(false); }
                     }}
@@ -355,7 +362,8 @@ export const SupplierProductsTab: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setEditingStockProduct(product);
-                      setEditedStock(effectiveStock.toString());
+                      setStockVariantId('');
+                      setEditedStock(product.schemaVersion === 2 ? '' : effectiveStock.toString());
                     }}
                     className="text-green-600 hover:text-green-800 font-bold flex items-center gap-1 bg-green-50 px-2 py-0.5 rounded-md text-[10px]"
                   >

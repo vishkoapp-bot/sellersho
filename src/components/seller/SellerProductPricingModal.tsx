@@ -3,6 +3,9 @@ import { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
+import { catalogApi } from '../../services/catalogApi';
+import { mapBackendProduct } from '../../context/ProductContext';
+import { activeProductVariants, sellerVariantPreview } from '../../utils/productPurchase';
 import { isMockMode } from '../../services/apiClient';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { roundTo100, resolveBaseCostR, resolvePlatformPct, resolvePricing } from '../../utils/pricingEngine';
@@ -33,15 +36,26 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   const { success, error } = useToast();
 
   const [showNicheConfirmModal, setShowNicheConfirmModal] = useState(false);
+  const [scopedPricingProduct, setScopedPricingProduct] = useState<Product | null>(null);
+  const pricingProduct = scopedPricingProduct ?? product;
+  const pricingVariants = activeProductVariants(pricingProduct);
+  useEffect(() => {
+    if (isMockMode() || !currentStore?.slug) return;
+    let cancelled = false;
+    catalogApi.getProductById(product.id, currentStore.slug)
+      .then((dto) => { if (!cancelled) setScopedPricingProduct(mapBackendProduct(dto)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [product.id, currentStore?.slug]);
 
   // Percent base price R = C x (1+pct/100) (server percent engine).
-  const baseCostR = resolveBaseCostR(product, platformSettings);
-  const productPct = resolvePlatformPct(product, platformSettings);
+  const baseCostR = resolveBaseCostR(pricingProduct, platformSettings);
+  const productPct = resolvePlatformPct(pricingProduct, platformSettings);
 
   // Live: store-level admin margin lock (candidate context carries only the
   // store flag; live also has per-product / per-niche locks — see report).
   const isLocked = !!currentStore.isMarginLockedByAdmin;
-  const variantCount = product.variants?.length ?? 0;
+  const variantCount = pricingVariants.length;
   const baseUnknown = !isFinite(baseCostR) || baseCostR <= 0;
 
   // Identify product niche
@@ -101,7 +115,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
     ...currentStore,
     productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: fallbackPct },
   };
-  const simulatedPricing = resolvePricing(product, simulatedStore as any, platformSettings);
+  const simulatedPricing = resolvePricing(pricingProduct, simulatedStore as any, platformSettings);
   const finalPriceP = previewValid ? simulatedPricing.finalPrice : roundTo100(baseCostR);
   const netProfitToman = finalPriceP - baseCostR;
   // Displayed margin is the applied input margin (server definition), not
@@ -208,13 +222,13 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   const handleSaveVariantMargins = async () => {
     if (isLocked || variantSaving) return;
-    const variants = product.variants || [];
+    const variants = pricingVariants;
     for (const v of variants) {
       const raw = variantInputs[v.id];
       if (raw === undefined || raw === '') continue;
       const n = Number(raw);
-      if (isNaN(n) || n < 0) {
-        error(`درصد سود تنوع «${v.variantName || v.name}» باید عددی بزرگ‌تر یا مساوی صفر باشد.`);
+      if (!Number.isFinite(n) || (n !== 0 && (n < minAllowed || n > maxAllowed))) {
+        error(`درصد سود تنوع «${v.variantName || v.name}» باید در بازه مجاز پلتفرم باشد (صفر برای حذف سود سفارشی).`);
         return;
       }
     }
@@ -254,24 +268,18 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // the same numbers the backend charges with (variant override wins).
   const variantSummary = (() => {
     if (variantCount === 0) return null;
-    const rowsV = (product.variants || []).map((v) => {
-      const costV = v.supplierBaseCost ?? product.supplierBaseCost;
-      const baseV = roundTo100(costV * (1 + productPct / 100));
+    const rowsV = pricingVariants.map((v) => {
       const typed = variantInputs[v.id] ?? '';
-      // Inputs initialize from the saved overrides on open, so `typed`
-      // already carries them; a cleared input means "delete on save" and
-      // previews the fallback (product percent, else auto max) — exactly
-      // like the per-variant rows above.
-      const eff = typed !== '' && !isNaN(Number(typed)) ? Number(typed)
-        : maxAllowed;
-      const finalV = roundTo100(baseV * (1 + eff / 100));
-      return { baseV, eff, finalV, profitV: finalV - baseV };
-    }).filter((r) => r.baseV > 0);
+      const eff = typed !== '' && Number.isFinite(Number(typed)) && Number(typed) > 0 ? Number(typed) : maxAllowed;
+      const preview = sellerVariantPreview(pricingProduct, v, productPct, eff);
+      return { ...preview, eff };
+    }).filter((row) => row.finalPrice != null && row.finalPrice > 0);
     if (rowsV.length === 0) return null;
     const pcts = rowsV.map((r) => r.eff);
-    const finals = rowsV.map((r) => r.finalV);
-    const profits = rowsV.map((r) => r.profitV);
+    const finals = rowsV.map((r) => r.finalPrice!);
+    const profits = rowsV.map((r) => r.profit ?? 0);
     return {
+      hasCosts: rowsV.every((row) => row.baseCost != null),
       minPct: Math.min(...pcts), maxPct: Math.max(...pcts),
       minFinal: Math.min(...finals), maxFinal: Math.max(...finals),
       minProfit: Math.min(...profits), maxProfit: Math.max(...profits),
@@ -328,12 +336,12 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
               <p className="text-[10px] leading-5 text-slate-500">
                 بازه مجاز سود برای هر تنوع هم همان بازه پلتفرم است: {rangeText}
               </p>
-              {(product.variants || []).map((v) => {
-                const costV = v.supplierBaseCost ?? product.supplierBaseCost;
-                const baseV = roundTo100(costV * (1 + productPct / 100));
+              {pricingVariants.map((v) => {
                 const typed = variantInputs[v.id] ?? '';
-                const marginV = typed !== '' && !isNaN(Number(typed)) ? Number(typed) : maxAllowed;
-                const finalV = roundTo100(baseV * (1 + marginV / 100));
+                const marginV = typed !== '' && Number.isFinite(Number(typed)) && Number(typed) > 0 ? Number(typed) : maxAllowed;
+                const preview = sellerVariantPreview(pricingProduct, v, productPct, marginV);
+                const baseV = preview.baseCost;
+                const finalV = preview.finalPrice;
                 return (
                   <div key={v.id} className="space-y-2 bg-white border border-slate-200 rounded-xl p-2.5">
                     <div className="flex items-center gap-2">
@@ -350,13 +358,15 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                       />
                       <span className="shrink-0 text-[10px] font-bold text-slate-400">٪</span>
                     </div>
-                    {baseV > 0 ? (
+                    {baseV != null && finalV != null ? (
                       <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
                         <span className="whitespace-nowrap">پایه: <span className="font-mono font-bold text-slate-700">{formatPrice(baseV)} ت</span></span>
                         <span className="whitespace-nowrap">نهایی: <span className="font-mono font-bold text-slate-700">{formatPrice(finalV)} ت</span></span>
                       </div>
                     ) : (
-                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">قیمت تنوع هنوز اعلام نشده است.</p>
+                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
+                        {finalV != null ? `قیمت فعلی فروشگاه: ${formatPrice(finalV)} تومان. پیش‌نمایش سود پس از دریافت مبنای مجاز نمایش داده می‌شود.` : 'قیمت تنوع هنوز اعلام نشده است.'}
+                      </p>
                     )}
                   </div>
                 );
@@ -446,18 +456,20 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           {variantCount > 0 && variantSummary ? (
             <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-emerald-800 font-bold">قیمت نهایی تنوع‌ها (رند ۱۰۰ ت):</span>
+                <span className="text-[10px] text-emerald-800 font-bold">{variantSummary.hasCosts ? 'قیمت نهایی تنوع‌ها (رند ۱۰۰ ت):' : 'قیمت فعلی تنوع‌ها در فروشگاه:'}</span>
                 <span className="text-base font-black text-emerald-800 font-mono">
                   {variantSummary.minFinal === variantSummary.maxFinal
                     ? `${formatPrice(variantSummary.minFinal)} تومان`
                     : `از ${formatPrice(variantSummary.minFinal)} تومان`}
                 </span>
               </div>
-              <div className="flex items-center justify-between text-[10px] text-emerald-700 pt-1 border-t border-emerald-200/60">
+              {variantSummary.hasCosts && <div className="flex items-center justify-between text-[10px] text-emerald-700 pt-1 border-t border-emerald-200/60">
                 <span>سود شما در هر فروش: <strong className="font-mono">+{formatPrice(variantSummary.minProfit)} ت{variantSummary.maxProfit !== variantSummary.minProfit ? ' به بالا' : ''}</strong></span>
                 <span>حاشیه سود: {variantSummary.minPct === variantSummary.maxPct ? `٪${toPersianDigits(variantSummary.minPct)}` : `٪${toPersianDigits(variantSummary.minPct)} تا ٪${toPersianDigits(variantSummary.maxPct)}`}</span>
-              </div>
+              </div>}
             </div>
+          ) : variantCount > 0 ? (
+            <p className="text-xs text-slate-500">قیمت تنوع‌ها هنوز اعلام نشده است.</p>
           ) : baseUnknown ? (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
               {previewValid ? (

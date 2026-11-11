@@ -376,6 +376,11 @@ func handleCreateOrder(
 	}
 	directSupplierIDs := make(map[string]struct{})
 	hasWarehouseItems := false
+	productQuantities, skuQuantities, quantityErr := aggregateOrderQuantities(req.Items)
+	if quantityErr != nil {
+		http.Error(w, `{"error":"Invalid order quantities"}`, http.StatusBadRequest)
+		return
+	}
 
 	for _, itemReq := range req.Items {
 		qty := itemReq.Quantity
@@ -389,7 +394,7 @@ func handleCreateOrder(
 			http.Error(w, fmt.Sprintf(`{"error":"Product %s not found"}`, itemReq.ProductID), http.StatusBadRequest)
 			return
 		}
-		if p.Stock < qty {
+		if p.Stock < productQuantities[p.ID] {
 			http.Error(w, fmt.Sprintf(`{"error":"Insufficient stock for product %s"}`, itemReq.ProductID), http.StatusBadRequest)
 			return
 		}
@@ -405,23 +410,12 @@ func handleCreateOrder(
 			}
 		}
 
-		// Fix69 M1+O4: resolve the chosen variant BEFORE pricing.
-		// M1: the order line is priced with the variant resolver
-		// (ResolveReferencePricingForStoreProductVariantWithCost),
-		// the same resolver the storefront variant-price response
-		// uses, so the charged price matches the displayed variant
-		// price instead of the product-level price.
-		// O4: variant min/max/stock gate the order here, before any
-		// persistence. domain.ProductVariant carries no min/max, so
-		// they are read from product_variants directly. Variant
-		// stock 0 is treated as untracked, NOT as out of stock:
-		// supplier variant creation seeds stock 0 (supplier_repo
-		// AddVariant/CreateProductVariantsBulk) and no order,
-		// warehouse, or proposal path ever raises variant stock,
-		// so a hard gate on 0-stock variants would make those
-		// products unorderable. Only a positive variant stock is
-		// enforced as an allocation cap. Product-level stock
-		// (checked above) stays the authoritative gate.
+		if err := repository.ValidateProductSKUSelection(p.SchemaVersion, p.ProductType, itemReq.VariantID); err != nil {
+			http.Error(w, `{"error":"A product SKU must be selected"}`, http.StatusBadRequest)
+			return
+		}
+		// Resolve the selected real SKU before pricing. Tracked inventory has
+		// no untracked-zero fallback, and repeated addon lines share one cap.
 		var chosenVariant *domain.ProductVariant
 		if strings.TrimSpace(itemReq.VariantID) != "" {
 			variants, verr := catalogRepo.GetProductVariants(ctx, p.ID)
@@ -441,21 +435,24 @@ func handleCreateOrder(
 				return
 			}
 			var vstock, vmin int
+			var inventoryMode string
+			var active bool
 			var vmax sql.NullInt32
-			if qerr := db.QueryRowContext(ctx, `SELECT stock, min_cart_qty, max_cart_qty FROM product_variants WHERE id = $1`, itemReq.VariantID).Scan(&vstock, &vmin, &vmax); qerr != nil {
+			if qerr := db.QueryRowContext(ctx, `SELECT stock, COALESCE(min_cart_qty,1), max_cart_qty, inventory_mode, is_active FROM product_variants WHERE id = $1 AND product_id=$2`, itemReq.VariantID, p.ID).Scan(&vstock, &vmin, &vmax, &inventoryMode, &active); qerr != nil {
 				http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
 				return
 			}
-			if qty < vmin {
-				http.Error(w, fmt.Sprintf(`{"error":"Quantity below minimum for variant %s"}`, itemReq.VariantID), http.StatusBadRequest)
+			var maxQuantity *int
+			if p.SchemaVersion >= 2 && inventoryMode != "tracked" {
+				http.Error(w, `{"error":"Typed products require tracked SKU inventory"}`, http.StatusBadRequest)
 				return
 			}
-			if vmax.Valid && qty > int(vmax.Int32) {
-				http.Error(w, fmt.Sprintf(`{"error":"Quantity exceeds maximum for variant %s"}`, itemReq.VariantID), http.StatusBadRequest)
-				return
+			if vmax.Valid {
+				q := int(vmax.Int32)
+				maxQuantity = &q
 			}
-			if vstock > 0 && qty > vstock {
-				http.Error(w, fmt.Sprintf(`{"error":"Insufficient stock for variant %s"}`, itemReq.VariantID), http.StatusBadRequest)
+			if qerr := repository.ValidateSKUQuantity(inventoryMode, active, vstock, vmin, maxQuantity, skuQuantities[p.ID+"/"+itemReq.VariantID]); qerr != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"Invalid quantity or unavailable SKU %s"}`, itemReq.VariantID), http.StatusBadRequest)
 				return
 			}
 		}

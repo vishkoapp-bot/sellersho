@@ -24,8 +24,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/repository"
 )
 
 // handleBrandsList serves GET /api/v1/brands: every distinct Digikala
@@ -92,6 +92,18 @@ func handleCategoryFacets(w http.ResponseWriter, r *http.Request, catalogRepo *r
 	}
 	slug, action := parts[0], parts[1]
 	switch action {
+	case "product-attributes":
+		attributes, err := catalogRepo.GetCategoryProductAttributes(r.Context(), slug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		brands, err := catalogRepo.GetCategoryBrandsBySlug(r.Context(), slug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"attributes": attributes, "brands": brands})
 	case "brands":
 		brands, err := catalogRepo.GetCategoryBrandsBySlug(r.Context(), slug)
 		if err != nil {

@@ -94,9 +94,13 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 		}
 		seen[o.ID] = true
 		var items []struct {
-			ProductID string `json:"productId"`
-			Quantity  int    `json:"quantity"`
-			Bin       string `json:"binLocation"`
+			OrderItemID string `json:"orderItemId"`
+			ProductID   string `json:"productId"`
+			VariantID   string `json:"variantId"`
+			VariantName string `json:"variantName"`
+			VariantSPNC string `json:"variantSpnc"`
+			Quantity    int    `json:"quantity"`
+			Bin         string `json:"binLocation"`
 		}
 		if err = json.Unmarshal(o.Items, &items); err != nil {
 			return out, err
@@ -104,21 +108,35 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 		for _, it := range items {
 			// Allocate the actual quantity across canonical lots, never just the
 			// last bin label. Shared stock cannot be planned twice in one batch.
-			rows, e := r.db.QueryContext(ctx, `WITH lots AS (SELECT bin_code,SUM(quantity)::int AS quantity FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND quantity>0 GROUP BY bin_code)
-			 SELECT b.bin_code,b.position_x,b.position_y,b.position_z,COALESCE(l.quantity,CASE WHEN b.product_id=$1 AND NOT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1) THEN b.quantity ELSE 0 END)
-			 FROM warehouse_bins b LEFT JOIN lots l ON l.bin_code=b.bin_code WHERE b.warehouse_name=$2 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND (l.quantity>0 OR b.product_id=$1)`, it.ProductID, warehouse)
+			rows, e := r.db.QueryContext(ctx, `WITH captured AS (
+			 SELECT allocations FROM order_inventory_captures WHERE order_item_id=$4 AND product_id=$1
+			 AND jsonb_typeof(allocations)='array' AND jsonb_array_length(allocations)>0
+			), lots AS (
+			 SELECT COALESCE(ib.bin_code,CASE WHEN ib.location_type='bin' THEN substring(ib.location_key FROM 5) END) bin_code,SUM((a->>'quantity')::int)::int quantity
+			 FROM captured c CROSS JOIN LATERAL jsonb_array_elements(c.allocations) a JOIN inventory_balances ib ON ib.id=a->>'balanceId'
+			 GROUP BY 1
+			 UNION ALL
+			 SELECT bin_code,SUM(quantity)::int FROM inventory_balances WHERE product_id=$1 AND variant_id IS NULL AND status='sellable' AND quantity>0
+			 AND NOT EXISTS(SELECT 1 FROM captured)
+			 AND ($3='' OR EXISTS(SELECT 1 FROM product_variants WHERE id=NULLIF($3,'')::uuid AND inventory_mode='legacy')) GROUP BY bin_code
+			)
+			 SELECT b.bin_code,b.position_x,b.position_y,b.position_z,COALESCE(l.quantity,
+			 CASE WHEN b.product_id=$1 AND NOT EXISTS(SELECT 1 FROM captured) AND NOT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1)
+			 AND ($3='' OR EXISTS(SELECT 1 FROM product_variants WHERE id=NULLIF($3,'')::uuid AND inventory_mode='legacy')) THEN b.quantity ELSE 0 END),EXISTS(SELECT 1 FROM captured)
+			 FROM warehouse_bins b LEFT JOIN lots l ON l.bin_code=b.bin_code WHERE b.warehouse_name=$2 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND (l.quantity>0 OR b.product_id=$1)`, it.ProductID, warehouse, it.VariantID, it.OrderItemID)
 			if e != nil {
 				return out, e
 			}
 			type lot struct {
-				bin string
-				p   warehouseopt.Point
-				q   int
+				bin   string
+				p     warehouseopt.Point
+				q     int
+				exact bool
 			}
 			lots := []lot{}
 			for rows.Next() {
 				var l lot
-				if e = rows.Scan(&l.bin, &l.p.X, &l.p.Y, &l.p.Z, &l.q); e != nil {
+				if e = rows.Scan(&l.bin, &l.p.X, &l.p.Y, &l.p.Z, &l.q, &l.exact); e != nil {
 					rows.Close()
 					return out, e
 				}
@@ -138,7 +156,10 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 			})
 			remaining := it.Quantity
 			for _, l := range lots {
-				key := it.ProductID + "/" + l.bin
+				key := it.ProductID + "/" + it.VariantID + "/" + l.bin
+				if l.exact {
+					key = it.OrderItemID + "/" + l.bin
+				}
 				available := l.q - allocated[key]
 				if available <= 0 {
 					continue
@@ -155,7 +176,14 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 				if _, ok := stops[l.bin]; !ok {
 					stops[l.bin] = &warehouseopt.Stop{ID: l.bin, Point: l.p, Items: []string{}}
 				}
-				stops[l.bin].Items = append(stops[l.bin].Items, fmt.Sprintf("%s / %s × %d", o.OrderNumber, it.ProductID, take))
+				label := it.ProductID
+				if it.VariantName != "" {
+					label += " / " + it.VariantName
+				}
+				if it.VariantSPNC != "" {
+					label += " [" + it.VariantSPNC + "]"
+				}
+				stops[l.bin].Items = append(stops[l.bin].Items, fmt.Sprintf("%s / %s × %d", o.OrderNumber, label, take))
 				if remaining == 0 {
 					break
 				}

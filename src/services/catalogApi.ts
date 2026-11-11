@@ -1,3 +1,4 @@
+import type { ProductSchema, CatalogProductAttribute } from '../types/productSchema';
 import { apiRequest } from './apiClient';
 
 export interface CategoryDto {
@@ -17,6 +18,11 @@ export interface CategoryDto {
 // serves it: variants carry id + variantName, variantPrices is keyed
 // by variant id and carries originalPrice per variant.
 export interface ProductVariantDto {
+  selection?: Record<string,string>;
+  combinationKey?: string;
+  inventoryMode?: 'legacy' | 'tracked';
+  isActive?: boolean;
+  supplierBaseCost?: number;
   // FIX 14b: field order is live's (id, name, variantName, spnc,
   // attributes, isDefault, stock, minCartQty, maxCartQty).
   id: string;
@@ -82,6 +88,9 @@ export interface NicheDto {
 }
 
 export interface ProductDto {
+  productType?: 'legacy' | 'simple' | 'variable';
+  schemaVersion?: number;
+  productSchema?: ProductSchema;
   id: string;
   title: string;
   slug: string;
@@ -131,6 +140,7 @@ export interface ProductFilterParams {
 }
 
 export const catalogApi = {
+  getProductAttributes: (slug: string) => apiRequest<{attributes: CatalogProductAttribute[]; brands: FacetBrand[]}>(`/categories/${encodeURIComponent(slug)}/product-attributes`, {method:'GET'}),
   getCategories: async (): Promise<CategoryDto[]> => {
     return apiRequest<CategoryDto[]>('/categories', { method: 'GET' });
   },

@@ -19,9 +19,11 @@ import {
   Printer
 } from 'lucide-react';
 import { supplierApi, TapinBoxDto } from '../../services/supplierApi';
-import type { SupplierWarehouseOrderDto } from '../../services/supplierApi';
+import type { SupplierWarehouseOrderDto, SupplierOrderItemDto } from '../../services/supplierApi';
+import { SupplierOrderItemIdentity, SupplierOrderLines } from './SupplierOrderItemIdentity';
 
 interface SupplierOrder {
+  items?: SupplierOrderItemDto[];
   id: string;
   orderId: string;
   orderNumber: string;
@@ -363,9 +365,9 @@ export const SupplierOrdersTab: React.FC = () => {
                     </div>
 
                     <div className="space-y-1.5">
-                      {ord.items.map((item) => (
-                        <div key={item.productId} className="flex items-center justify-between text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg">
-                          <span className="truncate">{item.productTitle}</span>
+                      {ord.items.map((item, index) => (
+                        <div key={item.orderItemId || `${item.productId}:${item.variantId || ''}:${index}`} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg">
+                          <SupplierOrderItemIdentity item={item} showQuantity={false} />
                           <span className="font-bold text-slate-700 shrink-0 mr-2">{toPersianDigits(item.wholesaleCost.toLocaleString())} × {toPersianDigits(item.quantity)} = {toPersianDigits(item.lineTotal.toLocaleString())} تومان</span>
                         </div>
                       ))}
@@ -546,6 +548,8 @@ export const SupplierOrdersTab: React.FC = () => {
                   </div>
                 </div>
 
+                <SupplierOrderLines items={ord.items} />
+
                 {ord.trackingNumber && (
                   <div className="flex items-center justify-between text-[10px] bg-brand-soft/70 p-2 rounded-xl text-brand-deep font-mono" dir="ltr">
                     <span>شرکت حمل: {ord.carrier || 'پست پیشتاز'}</span>
@@ -640,6 +644,8 @@ export const SupplierOrdersTab: React.FC = () => {
                 <X className="w-4 h-4"  strokeWidth={1.5}/>
               </button>
             </div>
+
+            <SupplierOrderLines items={selectedOrder.items} />
 
             <form onSubmit={handleConfirmShipping} className="space-y-3">
               {tapinConnected ? (

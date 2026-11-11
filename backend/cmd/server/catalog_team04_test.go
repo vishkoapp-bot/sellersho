@@ -116,7 +116,7 @@ func TestTeam04ProductResponseFrozenKeys(t *testing.T) {
 	res := pricing.ReferenceResolution{OriginalPrice: 72500000, FinalPrice: 63800000, PlatformFee: 0}
 	resp := buildProductResponse(p, res, []domain.ProductVariant{{ID: "v1", Spnc: "FE16A2E1", Name: "default", Stock: 5, IsDefault: true}}, map[string]VariantPriceResponse{})
 	got := keysOf(t, resp)
-	want := []string{"id", "title", "slug", "category", "originalPrice", "discountEligible", "discountPercent", "price", "platformFeeF", "isOriginal", "stock", "image", "description", "warehouse", "nicheIds", "isActive", "brand", "variants", "variantPrices"}
+	want := []string{"productType", "schemaVersion", "id", "title", "slug", "category", "originalPrice", "discountEligible", "discountPercent", "price", "platformFeeF", "isOriginal", "stock", "image", "description", "warehouse", "nicheIds", "isActive", "brand", "variants", "variantPrices"}
 	if len(got) != len(want) {
 		t.Fatalf("list keys = %v, want exactly %d keys", got, len(want))
 	}
@@ -180,7 +180,7 @@ func TestTeam04DetailResponseKeys(t *testing.T) {
 	// production shape — assembleProductDetail leaves them nil, so the
 	// spn route renders exactly like the prod route), present only
 	// when data exists. spnNumber stays as the flagged extension.
-	live := []string{"id", "title", "slug", "category", "originalPrice", "discountEligible", "discountPercent", "price", "platformFeeF", "isOriginal", "stock", "image", "description", "warehouse", "supplierWarranty", "nicheIds", "isActive", "storeCount", "variants", "variantPrices"}
+	live := []string{"productType", "schemaVersion", "id", "title", "slug", "category", "originalPrice", "discountEligible", "discountPercent", "price", "platformFeeF", "isOriginal", "stock", "image", "description", "warehouse", "supplierWarranty", "nicheIds", "isActive", "storeCount", "variants", "variantPrices"}
 	spn := int64(10009705)
 	d := ProductDetailResponse{SpnNumber: &spn}
 	got := keysOf(t, d)

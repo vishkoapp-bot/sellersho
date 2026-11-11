@@ -1,8 +1,10 @@
 import React from 'react';
-import { ProductVariant, VariantPrice } from '../types';
-import { useStore } from '../context/StoreContext';
+import { Product, ProductVariant, VariantPrice } from '../types';
+import { toPersianDigits } from '../utils/formatters';
+import { activeProductVariants, axisOptionVariant, purchaseLimits } from '../utils/productPurchase';
 
 interface ProductVariantSelectorProps {
+  product?: Product;
   variants: ProductVariant[];
   variantPrices?: Record<string, VariantPrice>;
   selectedId: string | null;
@@ -20,6 +22,7 @@ interface ProductVariantSelectorProps {
 // discountPercent/stock from variantPrices[variant.id] (live bundle
 // behaviour), exactly like the candidate's detail modal now does.
 export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
+  product,
   variants,
   variantPrices,
   selectedId,
@@ -27,7 +30,6 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   storeCount = 0,
   theme = 'default',
 }) => {
-  const { toPersianDigits } = useStore();
   const fashion = theme === 'fashion';
 
   // USER DECISION (Nov 5, 2026 — supersedes FIX 10 live parity): the
@@ -36,7 +38,30 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   // «پیش‌فرض» has stock 5 and its own 15% margin), so hiding it made
   // that stock unpurchasable. The selector shows whenever a real
   // choice exists (2+ variants), with every variant as a chip.
-  const visibleVariants = variants;
+  const visibleVariants = variants.filter((variant) => variant.isActive !== false);
+  const axes = product?.schemaVersion === 2 && product.productType === 'variable'
+    ? product.productSchema?.attributes.filter((attribute) => attribute.role === 'axis') ?? [] : [];
+  const chipClass = (selected: boolean, unavailable: boolean) => `min-h-[36px] px-3 ${fashion ? 'rounded-none' : 'rounded-xl'} border text-[11px] font-bold transition-all ${selected ? 'text-white' : unavailable ? 'bg-slate-50 text-slate-400 border-slate-100 opacity-40 cursor-not-allowed' : fashion ? 'bg-white text-[#1c1c1a] border-[#e5e0d8] hover:border-[#1c1c1a]' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'}`;
+  const selectedStyle = { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' };
+  if (product && axes.length > 0) {
+    const selection = activeProductVariants(product).find((variant) => variant.id === selectedId)?.selection ?? {};
+    return <div data-testid="variant-selector" className="space-y-4">
+      {axes.map((axis) => <fieldset key={axis.id} className="space-y-2" data-axis-id={axis.id}>
+        <legend className={`text-xs font-bold ${fashion ? 'text-[#1c1c1a]' : 'text-slate-800'}`}>{axis.name}</legend>
+        <div className="flex flex-wrap gap-2">
+          {axis.values.map((value) => {
+            const target = axisOptionVariant(product, selectedId, axis.id, value.id);
+            const selected = selection[axis.id] === value.id;
+            return <button key={value.id} type="button" aria-pressed={selected}
+              disabled={!target} onClick={() => target && onSelect(target.id)}
+              className={chipClass(selected, !target)} style={selected ? selectedStyle : undefined}>
+              {value.label}
+            </button>;
+          })}
+        </div>
+      </fieldset>)}
+    </div>;
+  }
   if (visibleVariants.length < 2) return null;
 
   const labelOf = (variant: ProductVariant): string => {
@@ -77,7 +102,7 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
       <div className="flex flex-wrap gap-2">
         {visibleVariants.map((variant) => {
           const selected = variant.id === selectedId;
-          const unavailable = (variant.stock || 0) <= 0;
+          const unavailable = variant.isActive === false || (product ? purchaseLimits(product, variant).maxQty < purchaseLimits(product, variant).minQty : variant.inventoryMode === 'tracked' && variant.stock <= 0);
           return (
             <button
               key={variant.id}

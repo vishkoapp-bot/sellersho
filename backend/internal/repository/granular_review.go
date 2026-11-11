@@ -264,6 +264,10 @@ func (r *SupplierRepository) SaveFieldReview(ctx context.Context, id, actor stri
 	if len(decisions) == 0 {
 		return fmt.Errorf("no decisions")
 	}
+	previous, err := reviewRows(ctx, tx, id)
+	if err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, f := range decisions {
 		value, ok := leaves[f.Key]
@@ -276,6 +280,9 @@ func (r *SupplierRepository) SaveFieldReview(ctx context.Context, id, actor stri
 		}
 		if f.ValueHash != ReviewValueHash(value) {
 			return fmt.Errorf("field changed; reload review")
+		}
+		if old, ok := previous[f.Key]; ok && old.Decision == f.Decision && old.Reason == strings.TrimSpace(f.Reason) && old.ValueHash == f.ValueHash {
+			continue
 		}
 		if _, e = tx.ExecContext(ctx, `INSERT INTO proposal_field_reviews(proposal_id,field_key,decision,reason,reviewer_id,value_hash,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT(proposal_id,field_key) DO UPDATE SET decision=EXCLUDED.decision,reason=EXCLUDED.reason,reviewer_id=EXCLUDED.reviewer_id,value_hash=EXCLUDED.value_hash,reviewed_at=NOW()`, id, f.Key, f.Decision, strings.TrimSpace(f.Reason), actor, f.ValueHash); e != nil {
 			return e
@@ -347,9 +354,7 @@ func (r *SupplierRepository) ResubmitGranularReview(ctx context.Context, supplie
 		return e
 	}
 	for key, value := range ReviewLeaves(data) {
-		_, categoryChanged := edits["/categorySlug"]
-		_, typeChanged := edits["/productType"]
-		if f, ok := reviews[key]; ok && (categoryChanged || typeChanged || f.ValueHash != ReviewValueHash(value) || edits[key] != nil) {
+		if f, ok := reviews[key]; ok && (f.ValueHash != ReviewValueHash(value) || edits[key] != nil) {
 			if _, e = tx.ExecContext(ctx, `UPDATE proposal_field_reviews SET decision='pending',reason=NULL,value_hash=NULL WHERE proposal_id=$1 AND field_key=$2`, id, key); e != nil {
 				return e
 			}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGranularReviewDatabaseLifecycle(t *testing.T) {
@@ -32,7 +33,7 @@ func TestGranularReviewDatabaseLifecycle(t *testing.T) {
 	}
 	ctx := context.Background()
 	r := NewSupplierRepository(db)
-	data := map[string]interface{}{"title": "shirt", "productType": "variable", "supplierBaseCost": float64(200), "stock": float64(3), "variants": []interface{}{map[string]interface{}{"variant_name": "color: blue", "stock": float64(3), "supplier_base_cost": float64(200), "attributes": map[string]interface{}{"color": "blue"}}}}
+	data := map[string]interface{}{"title": "shirt", "categorySlug": "digital", "productType": "variable", "supplierBaseCost": float64(200), "stock": float64(3), "variants": []interface{}{map[string]interface{}{"variant_name": "color: blue", "stock": float64(3), "supplier_base_cost": float64(200), "attributes": map[string]interface{}{"color": "blue"}}}}
 	raw, _ := json.Marshal(data)
 	_, e = db.Exec(`INSERT INTO pending_approvals(id,entity_type,target_id,title,requested_data,requested_by,status) VALUES('review-test','proposed_product','review-test','shirt',$1,'owner','pending')`, string(raw))
 	if e != nil {
@@ -61,6 +62,16 @@ func TestGranularReviewDatabaseLifecycle(t *testing.T) {
 	if e = r.SaveFieldReview(ctx, "review-test", "admin", decisions); e != nil {
 		t.Fatal(e)
 	}
+	var reviewedAt, beforeReplay time.Time
+	if err := db.QueryRow(`SELECT reviewed_at FROM proposal_field_reviews WHERE proposal_id='review-test' AND field_key='/title'`).Scan(&reviewedAt); err != nil {
+		t.Fatal(err)
+	}
+	if e = r.SaveFieldReview(ctx, "review-test", "different-admin", decisions); e != nil {
+		t.Fatal(e)
+	}
+	if err := db.QueryRow(`SELECT reviewed_at FROM proposal_field_reviews WHERE proposal_id='review-test' AND field_key='/title'`).Scan(&beforeReplay); err != nil || !beforeReplay.Equal(reviewedAt) {
+		t.Fatal("unchanged approval rewritten by repeated save", err)
+	}
 	db.Exec(`INSERT INTO proposal_field_reviews(proposal_id,field_key,decision,reason) VALUES('review-test','price_c','rejected','old reason')`)
 	if r.ResubmitCatalogReview(ctx, "owner", "review-test", map[string]interface{}{"supplierBaseCost": float64(999)}) == nil {
 		t.Fatal("legacy path bypassed granular review")
@@ -74,6 +85,18 @@ func TestGranularReviewDatabaseLifecycle(t *testing.T) {
 	}
 	if e = r.ResubmitGranularReview(ctx, "owner", "review-test", map[string]interface{}{"/title": "hacked"}); e == nil {
 		t.Fatal("approved field correction")
+	}
+	if e = r.SaveFieldReview(ctx, "review-test", "admin", []FieldDecision{{Key: "/categorySlug", Decision: "rejected", Reason: "correct category", ValueHash: ReviewValueHash("digital")}}); e != nil {
+		t.Fatal(e)
+	}
+	if e = r.ResubmitGranularReview(ctx, "owner", "review-test", map[string]interface{}{"/categorySlug": "fashion"}); e != nil {
+		t.Fatal(e)
+	}
+	var titleDecision, stockDecision string
+	db.QueryRow(`SELECT decision FROM proposal_field_reviews WHERE proposal_id='review-test' AND field_key='/title'`).Scan(&titleDecision)
+	db.QueryRow(`SELECT decision FROM proposal_field_reviews WHERE proposal_id='review-test' AND field_key='/variants/0/stock'`).Scan(&stockDecision)
+	if titleDecision != "approved" || stockDecision != "rejected" {
+		t.Fatal("unrelated decisions were reset", titleDecision, stockDecision)
 	}
 	if e = r.ResubmitGranularReview(ctx, "owner", "review-test", map[string]interface{}{"/variants/0/stock": float64(7)}); e != nil {
 		t.Fatal(e)

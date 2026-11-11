@@ -2,7 +2,8 @@ param(
     [string]$SshHost = 'parspack-sellersho',
     [string]$Target = '/opt/drup',
     [switch]$EnableSSL,
-    [switch]$MoveXray443
+    [switch]$MoveXray443,
+    [switch]$BuildOnServer
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -24,6 +25,30 @@ $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
+# Slow/unreliable client uploads can use the server's authenticated Git origin.
+# Both applications still build from the exact pushed commit in an isolated release.
+if ($BuildOnServer) {
+    if ($branch -notmatch '^[A-Za-z0-9_./-]+$') { throw 'Unsupported deployment branch name.' }
+    $sslArg = if ($EnableSSL) { '1' } else { '0' }
+    $xrayArg = if ($MoveXray443) { '1' } else { '0' }
+    Remote @"
+set -eu
+GIT_TERMINAL_PROMPT=0 git -C '$Target' fetch origin '$branch'
+test "`$(git -C '$Target' rev-parse FETCH_HEAD)" = '$commit'
+release='$Target/releases/$commit'
+test ! -e "`$release"
+mkdir -p "`$release"
+git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
+test ! -e "`$release/docs/fa"
+test ! -e "`$release/backend/internal/networkreward"
+docker run --rm -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:20-alpine sh -c 'npm ci --no-audit --no-fund && npm run build'
+docker run --rm -e CGO_ENABLED=0 -v "`$release/backend:/app" -v sellersho-go-build-cache:/root/.cache/go-build -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server'
+python3 -c 'import json,datetime,pathlib; pathlib.Path("`$release/release.json").write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))'
+python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
+"@
+    Write-Host "Deployed commit $commit (built on server)"
+    return
+}
 # Only committed source enters a release; local documents, credentials and
 # the paused network-reward files are excluded by git archive.
 $stage = Join-Path $root "releases\$commit"

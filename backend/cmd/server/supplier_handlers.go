@@ -467,7 +467,15 @@ func (h *SupplierHandlers) HandleGetProposals(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
-	proposals, err := h.supplierRepo.GetSupplierProposals(r.Context(), supplierID)
+	var proposals []map[string]interface{}
+	var err error
+	// This exact admin route is protected by RequireRoles in main.go.
+	// Admins have no supplier scope; applying that filter hides all submissions.
+	if r.URL.Path == "/api/v1/admin/products/proposals" {
+		proposals, err = h.supplierRepo.GetAllProposals(r.Context())
+	} else {
+		proposals, err = h.supplierRepo.GetSupplierProposals(r.Context(), supplierID)
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return

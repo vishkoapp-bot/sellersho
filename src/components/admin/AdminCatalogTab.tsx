@@ -1,20 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { apiRequest, isMockMode } from '../../services/apiClient';
+import { adminApi } from '../../services/adminApi';
+import { mapAdminProposal, AdminProposal } from '../../services/adminProposal';
+import { useAuth } from '../../context/AuthContext';
+import { useProducts } from '../../context/ProductContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Package, Check, X, ShieldCheck, Tag, Search, Filter, Eye, AlertTriangle } from 'lucide-react';
 
 export const AdminCatalogTab: React.FC = () => {
   const {
     products,
-    proposedProducts,
+    proposedProducts: localProposals,
     approveAndMergeProduct,
     rejectProposedProduct,
     toggleProductOriginality,
     formatPrice,
     toPersianDigits,
   } = useStore();
-  const { success, warning } = useToast();
+  const { success, warning, error } = useToast();
+  const {authToken} = useAuth();
+  const {fetchProducts} = useProducts();
+  const [serverProposals,setServerProposals] = useState<AdminProposal[]>([]);
+  const [loading,setLoading] = useState(false);
+  const [loadError,setLoadError] = useState('');
+  const [reviewing,setReviewing] = useState(false);
+  const refreshProposals = async () => {
+    if (isMockMode() || !authToken) return;
+    setLoading(true);setLoadError('');
+    try { const rows = await apiRequest<Record<string,any>[]>('/admin/products/proposals',{method:'GET',auth:true});setServerProposals(rows.map(mapAdminProposal)); }
+    catch(e) {setLoadError(e instanceof Error ? e.message : 'Unable to load proposals');}
+    finally {setLoading(false);}
+  };
+  useEffect(()=>{
+    void refreshProposals();
+    const onFocus=()=>{void refreshProposals();};
+    window.addEventListener('focus',onFocus);
+    const timer=window.setInterval(onFocus,30000);
+    return ()=>{window.removeEventListener('focus',onFocus);window.clearInterval(timer);};
+  },[authToken]);
+  const proposedProducts = isMockMode() ? localProposals : serverProposals;
+
   const [approvedIds, setApprovedIds] = useState<{ [key: string]: boolean }>({});
   const [rejectingItem, setRejectingItem] = useState<any | null>(null);
   const [inspectingItem, setInspectingItem] = useState<any | null>(null);
@@ -22,7 +49,7 @@ export const AdminCatalogTab: React.FC = () => {
   // Requirement 16: Multi-Filter Search Bar
   const [searchQuery, setSearchQuery] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved'>('pending');
 
   const pendingApprovals = proposedProducts.filter((p) => {
     if (statusFilter === 'pending' && p.status !== 'pending') return false;
@@ -35,21 +62,31 @@ export const AdminCatalogTab: React.FC = () => {
     return true;
   });
 
-  const handleApprove = async (item: any) => {
-    setApprovedIds(prev => ({ ...prev, [item.id]: true }));
-    await approveAndMergeProduct(item);
-    success(`کالای "${item.title}" تأیید و به کاتالوگ مرکزی اضافه شد.`);
+  const review = async (item: any, approved: boolean) => {
+    if (reviewing) return;
+    setReviewing(true);
+    try {
+      if (isMockMode()) { if (approved) await approveAndMergeProduct(item); else rejectProposedProduct(item, 'Rejected'); }
+      else {
+        await adminApi.reviewApproval(item.id, {status: approved ? 'approved' : 'rejected', ...(!approved ? {rejectionReason: 'عدم انطباق مشخصات فنی'} : {})});
+        await refreshProposals(); if (approved) await fetchProducts().catch(()=>{});
+      }
+      if (approved) setApprovedIds(p=>({...p,[item.id]:true}));
+      setInspectingItem(null);setRejectingItem(null);
+      success(approved ? 'کالا تأیید شد.' : 'کالا رد شد.');
+    } catch(e) { error(e instanceof Error ? e.message : 'ثبت نتیجه ناموفق بود.'); }
+    finally {setReviewing(false);}
   };
-
-  const handleConfirmReject = () => {
-    if (!rejectingItem) return;
-    rejectProposedProduct(rejectingItem, 'عدم انطباق کیفی مشخصات فنی');
-    warning(`کالای "${rejectingItem.title}" به دلیل عدم انطباق کیفی به تأمین‌کننده عودت شد.`);
-    setRejectingItem(null);
-  };
+  const handleApprove = (item: any) => review(item,true);
+  const handleConfirmReject = () => {if(rejectingItem) void review(rejectingItem,false);};
 
   return (
-    <div className="space-y-3.5 pb-6">
+    <div className="space-y-3.5 pb-6" aria-busy={loading || reviewing}>
+      <button type="button" onClick={()=>void refreshProposals()} disabled={loading} className="rounded-xl border p-2 text-xs">به‌روزرسانی صف بازبینی</button>
+      {loading && <p role="status" className="text-xs">در حال دریافت درخواست‌ها…</p>}
+      {loadError && <p role="alert" className="text-xs text-rose-700">{loadError}</p>}
+      {!loading && !loadError && pendingApprovals.length===0 && <p className="text-xs">درخواستی با این فیلترها وجود ندارد.</p>}
+
       {/* Requirement 16: Multi-Filter Search Bar */}
       <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2">
         <div className="flex items-center justify-between">
@@ -114,7 +151,7 @@ export const AdminCatalogTab: React.FC = () => {
 
         <div className="space-y-2 pt-1">
           {pendingApprovals.map((item) => {
-            const isApproved = approvedIds[item.id];
+            const isApproved = approvedIds[item.id] || item.status === 'approved';
             return (
               <div
                 key={item.id}
@@ -143,7 +180,7 @@ export const AdminCatalogTab: React.FC = () => {
                 ) : (
                   <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200" onClick={(e) => e.stopPropagation()}>
                     <button
-                      onClick={() => handleApprove(item)}
+                      disabled={reviewing} onClick={() => handleApprove(item)}
                       className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded-lg flex items-center justify-center gap-1"
                     >
                       <Check className="w-3.5 h-3.5"  strokeWidth={1.5}/>
@@ -209,14 +246,14 @@ export const AdminCatalogTab: React.FC = () => {
       {/* Requirement 16: Proposed Product Details Modal */}
       {inspectingItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl space-y-3 text-xs">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-4 shadow-2xl space-y-3 text-xs max-h-[90vh] overflow-auto">
             <div className="flex items-center justify-between border-b pb-2">
               <h4 className="font-bold text-slate-900">مشخصات فنی کالای پیشنهادی</h4>
               <button onClick={() => setInspectingItem(null)}><X className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/></button>
             </div>
             <div className="flex gap-2.5 items-center">
               <img
-                src={inspectingItem.image || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=200'}
+                src={inspectingItem.imageUrl || inspectingItem.image || '/placeholder.svg'}
                 alt={inspectingItem.title}
                 className="w-16 h-16 rounded-xl object-cover border shrink-0"
               />
@@ -236,9 +273,10 @@ export const AdminCatalogTab: React.FC = () => {
                 <span>{inspectingItem.warranty || 'ضمانت سلامت فیزیکی'}</span>
               </div>
             </div>
+            <pre className="whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-xs" dir="auto">{JSON.stringify({specs:inspectingItem.specs,variants:inspectingItem.variants,requestedAttributes:inspectingItem.requestedAttributes},null,2)}</pre>
             <div className="grid grid-cols-2 gap-2 pt-2 border-t">
               <button
-                onClick={() => handleApprove(inspectingItem)}
+                disabled={reviewing} onClick={() => handleApprove(inspectingItem)}
                 className="py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl"
               >
                 تأیید و افزودن

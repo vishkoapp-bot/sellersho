@@ -43,7 +43,7 @@ test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
 docker run --rm -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:20-alpine sh -c 'npm ci --no-audit --no-fund && npm run build'
 docker run --rm -e CGO_ENABLED=0 -v "`$release/backend:/app" -v sellersho-go-build-cache:/root/.cache/go-build -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server'
-python3 -c 'import json,datetime,pathlib; pathlib.Path("`$release/release.json").write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))'
+python3 -c 'import json,datetime,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))' "`$release/release.json"
 python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
 "@
     Write-Host "Deployed commit $commit (built on server)"

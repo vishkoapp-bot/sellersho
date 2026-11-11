@@ -3,7 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
 import { useToast } from '../../context/ToastContext';
 import { Product } from '../../types';
-import { ProductCard } from '../ProductCard';
+import { ProductDetailRelated } from './product/ProductDetailRelated';
 import { ProductDetailGallery } from './product/ProductDetailGallery';
 import { ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
 import { catalogApi } from '../../services/catalogApi';
@@ -13,7 +13,7 @@ import { storefrontProducts } from '../storefront/templates/templateTypes';
 import { resolvePdpTheme } from './product/pdpTheme';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { ProductVariantSelector } from '../ProductVariantSelector';
-import { ArrowRight, Share2, Heart, ShoppingCart, Sparkles } from 'lucide-react';
+import { ArrowRight, Share2, Heart, ShoppingCart } from 'lucide-react';
 import { ReturnWindowBadge } from '../ReturnWindowBadge';
 import { BuyNowAddressModal } from '../BuyNowAddressModal';
 
@@ -35,6 +35,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     cartItemsCount,
     cart,
     products,
+    openProductDetail,
     routeStoreSlug,
     stores,
   } = useStore();
@@ -431,21 +432,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         )}
 
       </div>
-      {related.length > 0 && (
-        <div className="px-3.5 -mt-3.5 pb-3.5 lg:px-0 lg:pb-0 lg:mt-0 lg:col-span-2">
-          <div className={fashion ? 'pt-3 border-t border-[#e5e0d8] space-y-2' : 'pt-3 border-t border-slate-100 space-y-2'}>
-          <h3 className={fashion ? 'text-base lg:text-lg xl:text-xl font-bold text-[#1c1c1a] flex items-center gap-1' : 'text-base lg:text-lg xl:text-xl font-bold text-slate-800 flex items-center gap-1'}>
-            <Sparkles className={fashion ? 'w-3.5 h-3.5 text-[#1c1c1a]' : 'w-3.5 h-3.5 text-brand-deep'}  strokeWidth={1.5}/>
-            <span>کالاهای مرتبط و مشابه</span>
-          </h3>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {related.map((p) => (
-              <ProductCard key={p.id} product={p} />
-            ))}
-          </div>
-          </div>
-        </div>
-      )}
+      <ProductDetailRelated products={related} fashion={fashion} onOpen={openProductDetail} />
       </div>
 
     </div>

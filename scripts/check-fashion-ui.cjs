@@ -38,6 +38,7 @@ async function main() {
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Page overflows at ${width}px`);
       const count = await page.$$('.fashion-product');
       assert.equal(count.length, 4);
+      assert(await page.$$eval('.fashion-product-image > img', images => images.every(image => getComputedStyle(image).objectFit === 'cover' && getComputedStyle(image).padding === '0px')), 'Storefront images must fill their card frames');
       console.log(`PASS responsive layout at ${width}px`);
     }
     await page.setViewport({ width: 1440, height: 1000 });
@@ -136,6 +137,36 @@ async function main() {
     assert((await page.$eval('#products', e => e.textContent)).includes('یافت نشد'));
     assert.deepEqual(errors, []);
     console.log('PASS empty search and no browser exceptions');
+
+    const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}/scripts/fixtures/fashion/index.html`;
+    await page.setViewport({ width: 1440, height: 1000 });
+    await page.goto(`${baseUrl}?surface=related`, { waitUntil: 'networkidle0' });
+    await page.waitForSelector('[data-testid="product-related"] .fashion-product');
+    assert.equal((await page.$$('.cv-card')).length, 0, 'Fashion related products leaked central cards');
+    assert.equal((await page.$$('.fashion-product')).length, 4);
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewport({ width, height: 900 });
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Related cards overflow at ${width}px`);
+      const media = await page.$$eval('.fashion-product-image > img', images => images.map(image => ({ fit: getComputedStyle(image).objectFit, padding: getComputedStyle(image).padding })));
+      assert(media.length > 0);
+      assert(media.every(image => image.fit === 'cover' && image.padding === '0px'), 'Product images must fill their frames');
+      const frames = await page.$$eval('.fashion-product-image', elements => elements.map(element => ({ width: element.clientWidth, height: element.clientHeight })));
+      assert(frames.every(frame => Math.abs(frame.width - frames[0].width) <= 1 && Math.abs(frame.height - frames[0].height) <= 1));
+    }
+    await page.$eval('.fashion-product', e => e.focus());
+    await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(() => window.lastAction.name), 'product');
+    console.log('PASS fashion related cards share covered frames and keyboard navigation');
+
+    await page.goto(`${baseUrl}?surface=related&theme=central`, { waitUntil: 'networkidle0' });
+    await page.waitForSelector('[data-testid="product-related"] .cv-card');
+    assert.equal((await page.$$('.fashion-product')).length, 0);
+    assert.equal((await page.$$('.cv-card')).length, 4);
+    await page.click('.cv-card button');
+    assert.equal(await page.evaluate(() => window.lastAction.name), 'cart-add');
+    console.log('PASS central related cards retain their own style and quick-add');
+    assert.deepEqual(errors, []);
+
   } finally {
     if (browser) await browser.close();
     await server.close();

@@ -29,7 +29,7 @@ export function PreviewProvider({ children }: { children: React.ReactNode }) {
     clearCatalogBrand: () => setBrand(null), openCatalogBrand: (brand: string) => setBrand({ brand }),
     currentStore: { ...store, templateConfig: config }, products, categories: fixtureCategories,
     cartItemsCount: 2, customerUser: {}, activeView: 'seller_storefront', formatPrice, toPersianDigits,
-    openProductDetail: action('product'), setIsCartOpen: action('cart'), setActiveView: action('navigate'), openStaticPage: action('page'),
+    openProductDetail: action('product'), addToCart: action('cart-add'), setIsCartOpen: action('cart'), setActiveView: action('navigate'), openStaticPage: action('page'),
   };
   (window as any).preview = { setConfig, setProducts, setSearchQuery, setSelectedCategory, setBrand, fixtureProducts };
   return <Context.Provider value={context}>{children}</Context.Provider>;

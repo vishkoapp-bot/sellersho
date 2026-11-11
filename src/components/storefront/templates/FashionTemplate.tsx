@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, ImageOff } from 'lucide-react';
 import './fashion.css';
 import React, { useEffect, useMemo, useState } from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
@@ -80,7 +80,8 @@ const FashionHero: React.FC<{
   subtitle: string;
   ctaText: string;
   ctaLink: string;
-}> = ({ slides, autoplay, title, subtitle, ctaText, ctaLink }) => {
+  label: string;
+}> = ({ slides, autoplay, title, subtitle, ctaText, ctaLink, label }) => {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -116,7 +117,7 @@ const FashionHero: React.FC<{
         </div>}
       </div>
       <div className="fashion-hero-copy">
-        <span className="fashion-eyebrow">استایل روزمره، انتخاب‌های ماندگار</span>
+        <span className="fashion-eyebrow">{label}</span>
         <h1>{heading}</h1>
         {(active.subtitle || subtitle) && <p>{active.subtitle || subtitle}</p>}
         <a href={link} {...externalLinkProps(link)} className={`fashion-button ${FOCUS_RING}`}>{ctaText}<ArrowLeft size={18} strokeWidth={1.5} /></a>
@@ -138,7 +139,7 @@ const FashionMacroCategories: React.FC<{
   })) : banners.slice(0, limit).map(b => ({ title: b.title || 'مشاهده مجموعه', image: b.image, link: b.link || '#products', slug: '' }));
   groups.slice(0, limit).forEach(g => ledger.macroTaken.add(g.slug));
   if (!entries.length) return null;
-  return <section data-testid="store-category-macro" aria-label="دسته‌بندی‌ها" className="fashion-category-section">
+  return <section id="fashion-categories" data-testid="store-category-macro" aria-label="دسته‌بندی‌ها" className="fashion-category-section">
     <div className="fashion-category-grid" style={{ gridTemplateColumns: `repeat(${entries.length}, minmax(0, 1fr))` }}>
       {entries.map((entry, i) => <a key={entry.slug || i} href={entry.link} {...externalLinkProps(entry.link)}
         onClick={() => { if (entry.slug) onSelect(entry.slug); }} className={`fashion-category ${FOCUS_RING}`}>
@@ -523,11 +524,25 @@ const FashionFaq: React.FC<{ config: TemplateConfig }> = ({ config }) => {
 
 const FashionProductCard: React.FC<{ product: Product; onOpen: (p: Product) => void }> = ({ product, onOpen }) => {
   const price = cardPriceOf(product);
-  const secondImage = product.images?.find(image => image && image !== product.image);
-  return <button type="button" onClick={() => onOpen(product)} className={`fashion-product group ${FOCUS_RING}`} aria-label={`مشاهده ${product.title}`}>
-    <div className="fashion-product-image">
-      {product.image ? <img src={product.image} alt={product.title} loading="lazy" className={secondImage ? 'fashion-primary-image' : ''} /> : <span className="fashion-no-image">تصویر کالا</span>}
-      {secondImage && <img src={secondImage} alt="" loading="lazy" className="fashion-secondary-image" />}
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const [readyPreview, setReadyPreview] = useState('');
+  const [failedSources, setFailedSources] = useState<string[]>([]);
+  const availableImages = Array.from(new Set([product.image, ...(product.images || [])]))
+    .filter((src): src is string => Boolean(src) && !failedSources.includes(src));
+  const [primaryImage, secondImage] = availableImages;
+  const secondaryReady = Boolean(previewRequested && secondImage && readyPreview === secondImage);
+  const markFailed = (src: string) => setFailedSources(previous => previous.includes(src) ? previous : [...previous, src]);
+
+  return <button type="button" onClick={() => onOpen(product)}
+    onPointerEnter={event => { if (event.pointerType === 'mouse') setPreviewRequested(true); }}
+    onFocus={() => setPreviewRequested(true)}
+    className={`fashion-product group ${FOCUS_RING}`} aria-label={`مشاهده ${product.title}`}>
+    <div className="fashion-product-image" data-secondary-ready={secondaryReady}>
+      {primaryImage ? <img src={primaryImage} alt={product.title} loading="lazy" decoding="async"
+        onError={() => markFailed(primaryImage)} className={secondaryReady ? 'fashion-primary-image' : ''} />
+        : <div className="fashion-no-image" role="img" aria-label="تصویر محصول موجود نیست"><ImageOff size={28} strokeWidth={1} /><span>تصویر محصول موجود نیست</span></div>}
+      {previewRequested && secondImage && <img src={secondImage} alt="" loading="lazy" decoding="async"
+        onLoad={() => setReadyPreview(secondImage)} onError={() => markFailed(secondImage)} className="fashion-secondary-image" />}
       {price.discountPercent > 0 && <span className="fashion-discount">٪{toPersianDigits(price.discountPercent)}</span>}
       <span className="fashion-product-quick">مشاهده محصول<ArrowLeft size={16} /></span>
     </div>
@@ -692,6 +707,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
           <FashionHero
             slides={slides}
             autoplay={custom.heroAutoplay}
+            label={store.name}
             title={heroTitle}
             subtitle={heroSubtitle}
             ctaText={heroCtaText}
@@ -811,8 +827,8 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
         return (
           <Wrap>
             <section id="products" data-testid="store-products" className="fashion-catalogue space-y-6 lg:space-y-8">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dedbd5] pb-4">
-                <div><FashionSectionHeader title={floorTitle} /><span className="mt-1 block text-xs text-[#737373]">{toPersianDigits(floorItems.length)} کالا</span></div>
+              <div className="fashion-catalogue-heading">
+                <div className="fashion-catalogue-title"><FashionSectionHeader title={floorTitle} /><span className="fashion-result-count">{toPersianDigits(floorItems.length)} کالا</span></div>
                 {brandFilter || selectedGroup || searching ? (
                   <button
                     type="button"
@@ -823,6 +839,11 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
                   </button>
                 ) : null}
               </div>
+              {categoryGroups.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
+                <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
+                {categoryGroups.map(group => <button key={group.slug} type="button" aria-pressed={selectedGroup?.slug === group.slug && !brandFilter}
+                  onClick={() => selectCategory(group.slug)}>{group.title}</button>)}
+              </nav>}
               {floorItems.length === 0 ? (
                 <p className="py-6 text-center text-xs font-bold text-[#737373]">کالایی با این مشخصات یافت نشد.</p>
               ) : (
@@ -865,7 +886,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
 
   return (
     <div
-      className={`fashion-storefront flex-1 bg-[#faf8f5] text-[#1c1c1a] ${lastKey === 'newsletter' ? '' : 'pb-14 lg:pb-24'}`}
+      className={`fashion-storefront flex-1 bg-[#faf8f5] text-[#1c1c1a] ${lastKey === 'newsletter' ? '' : 'pb-10 lg:pb-14'}`}
       style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}
     >
       <div className="fashion-section-stack">{nodes}</div>

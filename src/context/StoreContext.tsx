@@ -21,6 +21,7 @@ import {
   DirectBuyStore
 } from './storeContextTypes';
 import { formatPrice, toPersianDigits } from '../utils/formatters';
+import { cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
 import { isMockMode } from '../services/apiClient';
 import { storeApi } from '../services/storeApi';
 import { catalogApi } from '../services/catalogApi';
@@ -441,7 +442,11 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   // Worker A (buy-now): live direct-buy state; cleared as a pair.
   const [directBuy, setDirectBuy] = useState<DirectBuy | null>(null);
   const [directBuyAddress, setDirectBuyAddress] = useState<DirectBuyAddress | null>(null);
-  const startDirectBuy = (next: DirectBuy) => setDirectBuy(next);
+  const startDirectBuy = (next: DirectBuy) => {
+    const purchase = resolvePurchase(next.product, next.variantId);
+    if (!purchase || !cartQuantityAllowed([], purchase, next.qty)) return;
+    setDirectBuy({ ...next, product: purchase.product, variantId: purchase.variant?.id, variantLabel: purchase.variant?.name ?? next.variantLabel });
+  };
   const clearDirectBuy = () => {
     setDirectBuy(null);
     setDirectBuyAddress(null);
@@ -1396,6 +1401,9 @@ export const useStore = (): StoreContextType => {
     cart: cart.cart,
     addToCart: (p: Product, q?: number, c?: string, variantId?: string, addonIds?: string[]) => {
       if (!store.currentStore) return;
+      if (!variantId && (p.productType === 'variable' || (p.variants?.length && !resolvePurchase(p)))) {
+        prod.openProductDetail(p); return;
+      }
       cart.addToCart(p, q, c, store.currentStore, variantId, addonIds);
     },
     removeFromCart: cart.removeFromCart,

@@ -1,6 +1,9 @@
 import { apiRequest } from './apiClient';
 
 export interface WarehouseBinDto {
+  positionX?: number;
+  positionY?: number;
+  positionZ?: number;
   binCode: string;
   hallName: string;
   aisle: string;

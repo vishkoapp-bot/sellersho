@@ -220,7 +220,8 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
         <div className="flex-1 flex flex-col bg-white">
           <SellerStorefrontHeader
             onOpenSearch={() => setIsSearchOpen(true)}
-            variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+            variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
+            navigationProducts={templateProducts}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
           />
@@ -249,14 +250,14 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
               level/size and no icon -- the re-check's heading-level
               difference. Accent is live's teal default: live strips
               templateConfig, so all observed stores render it. */}
-          <div className="flex flex-col items-center justify-center px-8 py-20 text-center">
+          <div id={resolvedTemplateId === 'tpl-fashion-1' ? 'products' : undefined} className="flex flex-col items-center justify-center px-8 py-20 text-center">
             <div className="w-20 h-20 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: '#0D737714' }}>
               <Package className="w-9 h-9" strokeWidth={1.5} style={{ color: '#0D7377' }} />
             </div>
             <h3 className="text-lg font-black text-[#1C1917]">به‌زودی محصولات جدید می‌رسند</h3>
             <p className="text-sm text-stone-500 mt-2 leading-6 max-w-[280px]">صاحب فروشگاه به‌زودی کالاهای تازه را به این ویترین اضافه می‌کند. کمی بعد دوباره سر بزنید.</p>
           </div>
-          <SellerStorefrontFooter />
+          <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
         </div>
       );
     }
@@ -267,7 +268,8 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
             empty path above always uses the Modern header. */}
         <SellerStorefrontHeader
           onOpenSearch={() => setIsSearchOpen(true)}
-          variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+          variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
+            navigationProducts={templateProducts}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
         />
@@ -284,7 +286,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
         ) : (
           <TemplateFallback templateId={resolvedTemplateId} />
         )}
-        <SellerStorefrontFooter />
+        <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
       </div>
     );
   }

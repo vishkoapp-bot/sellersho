@@ -52,6 +52,15 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 	orderID = orderRecord.ID
+	var expiresAt *time.Time
+	if err := orderRepo.PaymentDeadline(ctx, orderID).Scan(&expiresAt); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if orderRecord.PaymentStatus != "paid" && (orderRecord.Status == "cancelled" || (expiresAt != nil && !time.Now().Before(*expiresAt))) {
+		writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
+		return
+	}
 	existing, existingErr := orderRepo.GetPaymentTransactionByOrderID(ctx, orderID)
 	if existingErr != nil {
 		http.Error(w, existingErr.Error(), http.StatusInternalServerError)
@@ -228,6 +237,10 @@ func handleShaparakCallback(
 		paymentOrderID := existing.OrderID
 		existing, err = orderRepo.MarkPaymentPaid(ctx, req.Token, rrn, cardMask)
 		if err != nil {
+			if errors.Is(err, repository.ErrPaymentExpired) {
+				writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
+				return
+			}
 			if errors.Is(err, repository.ErrInsufficientInventory) {
 				_ = redisClient.ReleaseOrderInventory(ctx, paymentOrderID, productIDs...)
 				writePaymentError(w, http.StatusConflict, "insufficient_stock", "موجودی کالا پیش از تکمیل پرداخت مصرف شده است")
@@ -267,7 +280,7 @@ func reserveOrderInventory(ctx context.Context, order *domain.Order, catalogRepo
 			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
 			return nil, fmt.Errorf("%w: محصول %s دیگر موجود نیست", repository.ErrInsufficientInventory, productID)
 		}
-		if err := redisClient.HoldInventory(ctx, order.ID, productID, qty, product.Stock, 10*time.Minute); err != nil {
+		if err := redisClient.HoldInventory(ctx, order.ID, productID, qty, product.Stock, 15*time.Minute); err != nil {
 			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
 			if errors.Is(err, repository.ErrInsufficientInventory) {
 				return nil, fmt.Errorf("%w: موجودی محصول %s برای پرداخت کافی نیست", repository.ErrInsufficientInventory, productID)

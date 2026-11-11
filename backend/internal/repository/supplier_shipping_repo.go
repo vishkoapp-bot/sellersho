@@ -7,11 +7,13 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var ErrShipmentState = errors.New("shipment is not ready for shipping")
 
 var ErrShipmentNotPending = errors.New("shipment is not pending")
+var ErrTrackingNumberInUse = errors.New("tracking number is already used by another shipment")
 
 // SubmitShipping updates only the caller's shipment, and advances the whole
 // order only when every direct shipment is sent and there are no warehouse items.
@@ -40,6 +42,10 @@ func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplie
 		return ErrShipmentState
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status = 'shipped', carrier = $1, tracking_number = $2, shipped_at = NOW(), updated_at = NOW() WHERE id = $3 AND supplier_id = $4`, carrier, tracking, shipmentID, supplierID); err != nil {
+		var pgErr *pq.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.Constraint == "idx_supplier_shipments_tracking" {
+			return ErrTrackingNumberInUse
+		}
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipment_audit_logs (id, shipment_id, actor_user_id, action, timestamp) VALUES ($1, $2, $3, 'marked_shipped', NOW())`, uuid.NewString(), shipmentID, actor); err != nil {

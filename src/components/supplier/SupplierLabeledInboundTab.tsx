@@ -112,7 +112,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       )}
       <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
-        <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. بار ساده بدون کد روی کارتن؟ راه «بار معمولی — بدون برچسب» را از بالای همین صفحه انتخاب کن.</p>
+        <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
         <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] text-xs bg-white focus:border-brand-deep outline-none">
           <option value="">{productsLoading ? "صبر کن… کالاها می‌آیند" : "انتخاب کالا"}</option>
           {products.map((p: any) => (<option key={p.id} value={p.id}>{p.title}</option>))}

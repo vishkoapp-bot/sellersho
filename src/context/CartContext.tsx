@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Product, CartItem } from '../types';
-import { cartItemKey, cartKeyOf } from '../utils/cartKey';
+import { cartItemKey } from '../utils/cartKey';
+import { cartQuantityAllowed, mergeCartPurchase, resolvePurchase } from '../utils/productPurchase';
 
 
 export interface CartContextType {
@@ -81,7 +82,8 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     variantId?: string,
     addonIds?: string[]
   ) => {
-    if ((product.stock || 0) <= 0) return;
+    const purchase = resolvePurchase(product, variantId);
+    if (!purchase || !Number.isSafeInteger(quantity) || quantity <= 0) return;
 
     // Live parity: the item joins its own store's cart, and that
     // store becomes the visible cart. No conflict modal, no replace:
@@ -99,32 +101,11 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       )?.storeName ||
       (storeId === 'store-central' ? 'فروشگاه مرکزی' : 'فروشگاه');
 
-    // FIX 5: key by product::variant, so two variants of one
-    // product are two lines instead of merging into one.
-    // FIX 14b: live's key adds the sorted addon-ids suffix.
-    const key = cartKeyOf(product.id, variantId, addonIds);
     setActiveStoreId(storeId);
     setCarts((prev) => {
       const storeCart = prev[storeId] ?? [];
-      const existing = storeCart.find((item) => cartItemKey(item) === key);
-      const nextStoreCart = existing
-        ? storeCart.map((item) =>
-            cartItemKey(item) === key
-              ? { ...item, quantity: item.quantity + quantity }
-              : item
-          )
-        : [
-            ...storeCart,
-            {
-              product,
-              quantity,
-              selectedColor: color,
-              selectedVariantId: variantId,
-              selectedAddonIds: addonIds,
-              storeId,
-              storeName,
-            },
-          ];
+      const nextStoreCart = mergeCartPurchase(storeCart, purchase, quantity, { selectedColor: color, selectedAddonIds: addonIds, storeId, storeName });
+      if (nextStoreCart === storeCart) return prev;
       return { ...prev, [storeId]: nextStoreCart };
     });
     setIsCartOpen(true);
@@ -147,12 +128,14 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       removeFromCart(key);
       return;
     }
-    setCarts((prev) => ({
-      ...prev,
-      [activeStoreId]: (prev[activeStoreId] ?? []).map((item) =>
-        matchesKey(item, key) ? { ...item, quantity } : item
-      ),
-    }));
+    setCarts((prev) => {
+      const storeCart = prev[activeStoreId] ?? [];
+      const target = storeCart.find((item) => matchesKey(item, key));
+      if (!target) return prev;
+      const purchase = resolvePurchase(target.product, target.selectedVariantId);
+      if (!purchase || !cartQuantityAllowed(storeCart.filter((item) => item !== target), purchase, quantity)) return prev;
+      return { ...prev, [activeStoreId]: storeCart.map((item) => item === target ? { ...item, quantity } : item) };
+    });
   };
 
   const clearCart = () => {

@@ -152,6 +152,10 @@ func handleMarkShipmentShipped(
 
 	err = shipmentRepo.SubmitShipping(ctx, supplierID, shipmentID, req.Carrier, req.TrackingNumber, claims.UserID)
 	if err != nil {
+		if errors.Is(err, repository.ErrTrackingNumberInUse) {
+			http.Error(w, `{"error":"کد رهگیری قبلاً برای مرسولهٔ دیگری ثبت شده است"}`, http.StatusConflict)
+			return
+		}
 		if errors.Is(err, repository.ErrShipmentState) {
 			http.Error(w, `{"error":"Shipment is not ready for shipping"}`, http.StatusConflict)
 			return
@@ -418,18 +422,19 @@ func handleGetSupplierOrders(
 	}
 
 	type OrderItemView struct {
-		ID             string `json:"id"`
-		OrderID        string `json:"orderId"`
-		OrderNumber    string `json:"orderNumber"`
-		CustomerName   string `json:"customerName"`
-		CustomerPhone  string `json:"customerPhone"`
-		Status         string `json:"status"`
-		StatusText     string `json:"statusText"`
-		Carrier        string `json:"carrier,omitempty"`
-		TrackingNumber string `json:"trackingNumber,omitempty"`
-		ShippedAt      string `json:"shippedAt,omitempty"`
-		CreatedAt      string `json:"createdAt"`
-		ItemCount      int    `json:"itemCount"`
+		ID             string                               `json:"id"`
+		OrderID        string                               `json:"orderId"`
+		OrderNumber    string                               `json:"orderNumber"`
+		CustomerName   string                               `json:"customerName"`
+		CustomerPhone  string                               `json:"customerPhone"`
+		Status         string                               `json:"status"`
+		StatusText     string                               `json:"statusText"`
+		Carrier        string                               `json:"carrier,omitempty"`
+		TrackingNumber string                               `json:"trackingNumber,omitempty"`
+		ShippedAt      string                               `json:"shippedAt,omitempty"`
+		CreatedAt      string                               `json:"createdAt"`
+		ItemCount      int                                  `json:"itemCount"`
+		Items          []repository.SupplierFulfillmentLine `json:"items"`
 	}
 
 	ordersView := make([]OrderItemView, 0)
@@ -457,6 +462,11 @@ func handleGetSupplierOrders(
 			writeInternalError(w, err)
 			return
 		}
+		lines, err := shipmentRepo.ListSupplierFulfillmentLines(ctx, s.SupplierID, s.OrderID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 		ordersView = append(ordersView, OrderItemView{
 			ID:             s.ID,
 			OrderID:        s.OrderID,
@@ -470,6 +480,7 @@ func handleGetSupplierOrders(
 			ShippedAt:      shippedAtStr,
 			CreatedAt:      s.CreatedAt.Format("2006/01/02 15:04"),
 			ItemCount:      itemCount,
+			Items:          lines,
 		})
 	}
 
@@ -544,6 +555,10 @@ func handleSupplierSubmitShipping(
 		return
 	}
 	if err := shipmentRepo.SubmitShipping(ctx, supplierID, orderID, strings.TrimSpace(req.Carrier), strings.TrimSpace(req.TrackingNumber), claims.UserID); err != nil {
+		if errors.Is(err, repository.ErrTrackingNumberInUse) {
+			http.Error(w, `{"error":"کد رهگیری قبلاً برای مرسولهٔ دیگری ثبت شده است"}`, http.StatusConflict)
+			return
+		}
 		if repository.IsMissingShipment(err) {
 			http.NotFound(w, r)
 			return

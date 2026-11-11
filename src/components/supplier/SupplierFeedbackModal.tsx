@@ -1,3 +1,4 @@
+import { SupplierGranularFeedback } from '../admin/ProductFieldReview';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -252,6 +253,8 @@ export const SupplierFeedbackModal: React.FC<{
     );
   }
 
+  if (fields.some(f => String(f.field_key).startsWith('/'))) return <SupplierGranularFeedback proposal={proposal} fields={fields} onClose={onClose} onResubmitted={onResubmitted}/>;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-stretch justify-center" dir="rtl">
       <div className="bg-white w-full max-w-2xl my-0 md:my-6 rounded-none md:rounded-2xl overflow-hidden flex flex-col">
@@ -275,7 +278,7 @@ export const SupplierFeedbackModal: React.FC<{
           )}
         </div>
         <div className="flex-1 overflow-y-auto divide-y">
-          {FIELDS.map((field) => {
+          {FIELDS.slice().sort((a,b)=>Number(fieldByKey[b.key]?.decision==='rejected')-Number(fieldByKey[a.key]?.decision==='rejected')).map((field) => {
             const f = fieldByKey[field.key];
             const decision = f?.decision || 'pending';
             return (
@@ -301,6 +304,7 @@ export const SupplierFeedbackModal: React.FC<{
                     </span>
                   )}
                 </div>
+                <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 my-2"><p className="text-xs text-slate-500 mb-1">مقدار فعلی</p><p className="text-sm whitespace-pre-wrap break-words leading-7">{proposalValue(proposal,field.key)||'ثبت نشده'}</p></div>
                 {decision === 'rejected' && f?.reason && (
                   <div className="mt-2 text-sm bg-white border border-red-200 rounded-xl px-3 py-2">
                     <p className="text-xs font-bold text-red-600 mb-1">دلیل مدیر:</p>

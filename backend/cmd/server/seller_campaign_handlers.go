@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/drup/platform/internal/adguard"
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -46,7 +49,61 @@ func handlePublicSellerCampaigns(w http.ResponseWriter, r *http.Request, repo *r
 	json.NewEncoder(w).Encode(list)
 }
 
-func handleSellerAdEvent(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository) {
+func adClientIP(r *http.Request) string {
+	ip, _, e := net.SplitHostPort(r.RemoteAddr)
+	if e != nil {
+		ip = r.RemoteAddr
+	}
+	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXY_CIDRS"), ",") {
+		_, network, e := net.ParseCIDR(strings.TrimSpace(raw))
+		if e == nil && network.Contains(net.ParseIP(ip)) {
+			if forwarded := net.ParseIP(r.Header.Get("X-Real-IP")); forwarded != nil {
+				return forwarded.String()
+			}
+		}
+	}
+	return ip
+}
+
+func handleAdChallenge(w http.ResponseWriter, r *http.Request, guard *adguard.Service, repo *repository.StoreRepository) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var p struct {
+		CampaignID string `json:"campaignId"`
+		adguard.Signals
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&p) != nil {
+		http.Error(w, "Invalid challenge", 400)
+		return
+	}
+	if _, e := uuid.Parse(p.CampaignID); e != nil {
+		http.Error(w, "Invalid campaign", 400)
+		return
+	}
+	allowed, limitErr := repo.AllowAdChallenge(r.Context(), guard.Hash(adClientIP(r)))
+	if limitErr != nil {
+		writeInternalError(w, limitErr)
+		return
+	}
+	if !allowed {
+		http.Error(w, "Ad challenge rate limit", http.StatusTooManyRequests)
+		return
+	}
+	token, e := guard.Issue(p.CampaignID, adClientIP(r), r.UserAgent(), p.Signals)
+	if e != nil {
+		if e = repo.RejectAdEvent(r.Context(), p.CampaignID, "challenge", "", e.Error(), guard.Hash(adClientIP(r))); e != nil {
+			writeInternalError(w, e)
+			return
+		}
+		http.Error(w, "درخواست تبلیغ نامعتبر است", 403)
+		return
+	}
+	t01WriteJSON(w, 200, map[string]string{"challenge": token})
+}
+
+func handleSellerAdEvent(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository, guard *adguard.Service) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w)
 		return
@@ -56,6 +113,7 @@ func handleSellerAdEvent(w http.ResponseWriter, r *http.Request, repo *repositor
 		Type       string `json:"type"`
 		Token      string `json:"token"`
 		ProductID  string `json:"productId"`
+		adguard.Proof
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&p) != nil {
 		campaignError(w, repository.ErrCampaignInput)
@@ -69,10 +127,25 @@ func handleSellerAdEvent(w http.ResponseWriter, r *http.Request, repo *repositor
 		campaignError(w, repository.ErrCampaignInput)
 		return
 	}
-	accepted, err := repo.RecordSellerCampaignEvent(r.Context(), p.CampaignID, p.Type, p.Token, p.ProductID)
+	evidence, err := guard.Verify(p.CampaignID, p.Type, adClientIP(r), r.UserAgent(), p.Proof)
+	if err != nil {
+		if e := repo.RejectAdEvent(r.Context(), p.CampaignID, p.Type, p.Token, err.Error(), guard.Hash(adClientIP(r))); e != nil {
+			writeInternalError(w, e)
+			return
+		}
+		t01WriteJSON(w, 200, map[string]interface{}{"accepted": false, "reason": err.Error()})
+		return
+	}
+	accepted, err := repo.RecordSellerCampaignEvent(r.Context(), p.CampaignID, p.Type, p.Token, p.ProductID, evidence)
 	if err != nil {
 		campaignError(w, err)
 		return
+	}
+	if !accepted {
+		if e := repo.RejectAdEvent(r.Context(), p.CampaignID, p.Type, p.Token, "duplicate_click", evidence.IPHash); e != nil {
+			writeInternalError(w, e)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"accepted": accepted})

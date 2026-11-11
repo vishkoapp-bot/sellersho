@@ -39,12 +39,22 @@ const NotifKindOrderStatus = "order_status"
 // directly-entered products.stock (see migration 202610170001 and the
 // syncProductStockTx comments at its call sites).
 func syncProductStockTx(ctx context.Context, tx *sql.Tx, productID string) error {
-	_, err := tx.ExecContext(ctx, `
+	skuAccounting, err := hasSKUInventoryTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !skuAccounting {
+		_, err := tx.ExecContext(ctx, `UPDATE products p SET stock=s.sellable,updated_at=NOW() FROM (SELECT COALESCE(SUM(quantity),0)::int sellable FROM inventory_balances WHERE product_id=$1 AND status='sellable') s WHERE p.id=$1 AND EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1)`, productID)
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 		UPDATE products p
 		SET stock = s.sellable, updated_at = NOW()
-		FROM (SELECT COALESCE(SUM(quantity), 0)::int AS sellable
-		      FROM inventory_balances
-		      WHERE product_id = $1 AND status = 'sellable') s
+		FROM (SELECT COALESCE(SUM(ib.quantity), 0)::int AS sellable
+		      FROM inventory_balances ib
+		      LEFT JOIN product_variants pv ON pv.id=ib.variant_id
+		      WHERE ib.product_id = $1 AND ib.status = 'sellable'
+		        AND ((ib.variant_id IS NULL AND NOT EXISTS(SELECT 1 FROM products WHERE id=$1 AND schema_version>=2)) OR pv.is_active)) s
 		WHERE p.id = $1
 		  AND EXISTS (SELECT 1 FROM inventory_balances WHERE product_id = $1)`,
 		productID)

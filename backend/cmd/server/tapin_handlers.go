@@ -340,7 +340,7 @@ func submitShippingViaTapin(
 		}
 		goodsWeight += int64(w) * int64(l.Quantity)
 		products = append(products, tapin.TipaxProduct{
-			Title:            l.Title,
+			Title:            strings.TrimSpace(l.Title + " " + l.VariantName + " " + l.VariantSPNC),
 			AmountPerCount:   l.FinalUnitPrice * 10, // Toman -> Rial
 			DiscountPerCount: 0,
 			WeightPerCount:   w,

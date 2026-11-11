@@ -5,7 +5,9 @@ import { getApiBase, ApiError } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { SupplierCategoryPicker, CategorySelection } from './SupplierCategoryPicker';
-import { SupplierCategoryAttributes, CategoryAttributesValue, EMPTY_CATEGORY_ATTRIBUTES, isEmptyCategoryAttributes } from './SupplierCategoryAttributes';
+import { SupplierProductDefinitionEditor } from './SupplierProductDefinitionEditor';
+import type { ProductSchema } from '../../types/productSchema';
+import { buildProductMatrix, serializeProductDraft, DraftProductSKU } from '../../services/productModel';
 import { Plus, Trash2, Loader2, ImagePlus, ExternalLink, AlertTriangle } from 'lucide-react';
 
 // Live propose form (Jl form block): supplier's new-product proposal.
@@ -47,17 +49,6 @@ const DEFAULT_CATEGORY: CategorySelection = {
   pathDisplay: 'کالای دیجیتال',
 };
 
-interface VariantDraft {
-  name: string;
-  color: string;
-  size: string;
-  custom: { key: string; value: string }[];
-  stock: string;
-  cost: string;
-}
-
-const EMPTY_VARIANT = (): VariantDraft => ({ name: '', color: '', size: '', custom: [], stock: '', cost: '' });
-
 export interface ProposeFormProps {
   warranties: { id: string; name: string }[];
   myWarehouses: { id: string; name: string; cityName?: string; isActive?: boolean }[];
@@ -79,17 +70,18 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   const [warranty, setWarranty] = useState('۱۸ ماه گارانتی شرکتی');
   const [requestingWarranty, setRequestingWarranty] = useState(false);
   const [warrantyRequestName, setWarrantyRequestName] = useState('');
-  const [category, setCategory] = useState<CategorySelection | null>(DEFAULT_CATEGORY);
-  const [categoryAttributes, setCategoryAttributes] = useState<CategoryAttributesValue>(EMPTY_CATEGORY_ATTRIBUTES);
+  const [category, setCategory] = useState<CategorySelection | null>(null);
   const [allNiches, setAllNiches] = useState<NicheDto[]>([]);
   const [selectedNicheIds, setSelectedNicheIds] = useState<string[]>(['niche-smartwatch']);
   const [description, setDescription] = useState('');
-  const [specs, setSpecs] = useState<{ key: string; value: string }[]>([{ key: 'مدل', value: '' }]);
   const [stock, setStock] = useState('100');
   const [prepDays, setPrepDays] = useState('1');
   const [fulfillment, setFulfillment] = useState('warehouse');
   const [warehouseId, setWarehouseId] = useState('');
-  const [variants, setVariants] = useState<VariantDraft[]>([]);
+  const [productType, setProductType] = useState<'simple' | 'variable'>('simple');
+  const [productSchema,setProductSchema]=useState<ProductSchema>({version:2,type:'simple',attributes:[]});
+  const [variants,setVariants]=useState<DraftProductSKU[]>(()=>buildProductMatrix({version:2,type:'simple',attributes:[]},[]));
+  useEffect(()=>{const schema:ProductSchema={version:2,type:productType,attributes:[]};setProductSchema(schema);setVariants(productType==='simple'?buildProductMatrix(schema,[]):[]);},[category?.slug,productType]);
   const [weightGrams, setWeightGrams] = useState('');
   const [lengthCm, setLengthCm] = useState('');
   const [widthCm, setWidthCm] = useState('');
@@ -127,13 +119,13 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     if (visibleNiches.length === 0) return;
     setSelectedNicheIds((prev) => {
       const kept = prev.filter((id) => visibleNiches.some((n) => n.id === id));
-      return kept.length > 0 ? kept : [visibleNiches[0].id];
+      return kept.length > 0 ? [kept[0]] : [visibleNiches[0].id];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topSlug]);
 
   const toggleNiche = (id: string) =>
-    setSelectedNicheIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+    setSelectedNicheIds([id]);
 
   const uploadImages = async (files: File[]) => {
     if (images.length + files.length > 8) {
@@ -197,14 +189,15 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
 
   const submit = async () => {
     if (saving || uploading) return;
-    if (!title.trim()) { error('لطفاً عنوان یا بارکد کالا را وارد کنید.'); return; }
+    if (!title.trim()) { error('لطفاً نام کالا را وارد کنید.'); return; }
     if (brand.trim().length > 100) { error('نام برند نمی‌تواند بیشتر از ۱۰۰ نویسه باشد.'); return; }
-    if (!category) { error('دسته‌بندی کالا را انتخاب کنید.'); return; }
+    if (!category || category.isLeaf === false) { error('دسته‌بندی کالا را انتخاب کنید.'); return; }
     if (Array.from(description.trim()).length < 30) { error('توضیحات محصول باید حداقل ۳۰ نویسه باشد.'); return; }
     if (!noBrand && !brand.trim()) { error('برند کالا را وارد کنید یا گزینه «بدون برند» را انتخاب کنید.'); return; }
-    const costNum = Number(cost);
-    if (!Number.isSafeInteger(costNum) || costNum <= 0 || !Number.isSafeInteger(Number(stock)) || Number(stock) < 0) { error('قیمت عمده و موجودی را درست وارد کن.'); return; }
-    if (selectedNicheIds.length === 0) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
+    let productDraft:ReturnType<typeof serializeProductDraft>;
+    try{productDraft=serializeProductDraft(productSchema,variants)}catch(cause){error(cause instanceof Error?cause.message:'ساختار محصول را کامل کنید.');return;}
+    const costNum=productDraft.supplierBaseCost;
+    if (selectedNicheIds.length !== 1) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
     const posInt = (raw: string): number | undefined => {
       const n = Number(raw);
       return raw.trim() !== '' && Number.isSafeInteger(n) && n > 0 ? n : undefined;
@@ -221,42 +214,16 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     const packWid = packFilled === 3 ? posInt(packWidthCm) : undefined;
     const packHei = packFilled === 3 ? posInt(packHeightCm) : undefined;
     if (packFilled === 3 && (packLen === undefined || packWid === undefined || packHei === undefined)) { error('ابعاد بسته‌بندی باید عددهای صحیح مثبت باشند (سانتی‌متر).'); return; }
-    const filledVariants = variants.filter((v) => v.name.trim() !== '');
-    const seenNames = new Set<string>();
-    for (const v of filledVariants) {
-      const name = v.name.trim();
-      if (seenNames.has(name)) { error(`نام تنوع «${name}» در همین فهرست تکرار شده است.`); return; }
-      seenNames.add(name);
-      const vStock = v.stock.trim() === '' ? 0 : Number(v.stock);
-      if (!Number.isSafeInteger(vStock) || vStock < 0) { error(`موجودی تنوع «${name}» را درست وارد کن.`); return; }
-      if (v.cost.trim() !== '') {
-        const vCost = Number(v.cost);
-        if (!Number.isSafeInteger(vCost) || vCost <= 0) { error(`قیمت عمده تنوع «${name}» را درست وارد کن (عدد مثبت به تومان).`); return; }
-      }
-    }
-    const specsObject: Record<string, string> = {};
-    specs.forEach((spec) => { if (spec.key.trim() && spec.value.trim()) specsObject[spec.key.trim()] = spec.value.trim(); });
-    const variantPayload = filledVariants.map((v) => {
-      const attrs: Record<string, string> = {};
-      if (v.color.trim()) attrs['رنگ'] = v.color.trim();
-      if (v.size.trim()) attrs['سایز'] = v.size.trim();
-      v.custom.forEach((c) => { if (c.key.trim() && c.value.trim()) attrs[c.key.trim()] = c.value.trim(); });
-      const parsedCost = v.cost.trim() === '' ? 0 : parseInt(parseSep(v.cost), 10);
-      return {
-        variant_name: v.name.trim(),
-        attributes: attrs,
-        stock: Number(v.stock) || 0,
-        ...(parsedCost > 0 ? { supplier_base_cost: parsedCost } : {}),
-      };
-    });
-    const variantStockSum = variantPayload.reduce((sum, v) => sum + v.stock, 0);
+    const specsObject=Object.fromEntries(productSchema.attributes.filter(a=>a.role==='fixed').map(a=>[a.name,a.values[0]?.label??'']));
+    const variantPayload=productDraft.variants;
+    const variantStockSum=productDraft.stock;
     const payload: Record<string, unknown> = {
+      ...productDraft,
       title: title.trim(),
       brand: noBrand ? '' : brand.trim(),
       noBrand,
       supplierBaseCost: costNum,
       categorySlug: category.slug,
-      ...(!isEmptyCategoryAttributes(categoryAttributes) ? { categoryAttributes } : {}),
       nicheIds: selectedNicheIds,
       barcode: '',
       warranty,
@@ -289,15 +256,13 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       setNoBrand(false);
       setCost('');
       setWarranty('۱۸ ماه گارانتی شرکتی');
-      setCategory(DEFAULT_CATEGORY);
-      setCategoryAttributes(EMPTY_CATEGORY_ATTRIBUTES);
+      setCategory(null);
       setDescription('');
-      setSpecs([{ key: 'مدل', value: '' }]);
       setStock('100');
       setPrepDays('1');
       setFulfillment('warehouse');
       setWarehouseId('');
-      setVariants([]);
+      setProductSchema({version:2,type:'simple',attributes:[]});setVariants(buildProductMatrix({version:2,type:'simple',attributes:[]},[]));
       setWeightGrams('');
       setLengthCm('');
       setWidthCm('');
@@ -430,58 +395,37 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       )}
     <div className="bg-white rounded-2xl p-3.5 border border-brand-border shadow-sm space-y-3">
       <h4 className="text-xs font-bold text-slate-800">پیشنهاد کالای جدید</h4>
+      <fieldset className="rounded-xl border p-3 space-y-2">
+        <legend className="text-xs font-bold">نوع محصول</legend>
+        <label className="inline-flex items-center gap-2 ml-4 text-xs"><input type="radio" name="productType" checked={productType === 'simple'} onChange={() => setProductType('simple')} />محصول تکی — یک قیمت و موجودی</label>
+        <label className="inline-flex items-center gap-2 text-xs"><input type="radio" name="productType" checked={productType === 'variable'} onChange={() => setProductType('variable')} />محصول متغیر — قیمت و موجودی برای هر تنوع</label>
+      </fieldset>
       <div>
-        <label className="text-[10px] text-slate-600 block mb-1">نام یا بارکد کالا</label>
+        <label className="text-[10px] text-slate-600 block mb-1">نام کالا</label>
         <input type="text" placeholder="مثال: ساعت هوشمند اولترا ۴…" value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
-      </div>
-      <div>
-        <label className="text-[10px] text-slate-600 block mb-1">برند محصول</label>
-        <input type="text" placeholder="مثال: سامسونگ، نایکی، چرم مشهد…" value={brand} onChange={(e) => setBrand(e.target.value)} maxLength={100} disabled={noBrand} className={`${inputClass} disabled:opacity-50`} />
-        <label className="flex items-center gap-1.5 mt-1.5 cursor-pointer">
-          <input type="checkbox" checked={noBrand} onChange={(e) => setNoBrand(e.target.checked)} className="w-4 h-4 rounded accent-brand-deep" />
-          <span className="text-[10px] text-slate-600 font-bold">بدون برند</span>
-        </label>
-        <span className="text-[9px] text-slate-400 block mt-1">برند در صفحه‌ی محصول و فیلترهای فروشگاه نمایش داده می‌شود؛ اگر کالا برند ندارد، «بدون برند» را بزنید.</span>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-[10px] text-slate-600 block mb-1">قیمت عمده تو (تومان)</label>
-          <span className="text-[9px] text-slate-400 block mb-1 leading-4">پولی که پلتفرم برای هر دانه از این کالا به تو می‌دهد. قیمت فروش به مشتری را پلتفرم جدا حساب می‌کند. مثال: می‌نویسی ۱۰۰ هزار تومان؛ هر فروش، ۱۰۰ هزار تومان برای توست.</span>
-          <input type="text" inputMode="numeric" placeholder="۲٬۵۰۰٬۰۰۰" value={formatSep(cost)} onChange={(e) => setCost(parseSep(e.target.value))} className={`${inputClass} font-bold`} />
-        </div>
-        <div>
-          <label className="text-[10px] text-slate-600 block mb-1">شرایط گارانتی</label>
-          <select value={warranty} onChange={(e) => { if (e.target.value !== '__request__') setWarranty(e.target.value); else setRequestingWarranty(true); }} className={inputClass}>
-            <option value={warranty}>{warranty}</option>
-            {warranties.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
-            <option value="__request__">گارانتی من در لیست نیست</option>
-          </select>
-        </div>
       </div>
       <div className="space-y-2 pt-1 border-t border-slate-100">
         <div>
           <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
-          <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat); setCategoryAttributes(EMPTY_CATEGORY_ATTRIBUTES); }} />
-          <SupplierCategoryAttributes
-            categorySlug={category?.slug ?? null}
-            value={categoryAttributes}
-            onChange={setCategoryAttributes}
-            onBrandSuggest={(titleFa) => { setBrand(titleFa); setNoBrand(false); }}
-          />
+          <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat);setBrand(''); }} />
+          <SupplierProductDefinitionEditor categorySlug={category?.isLeaf===false?null:category?.slug??null} productType={productType} schema={productSchema} onSchema={setProductSchema} rows={variants} onRows={setVariants} brand={brand} noBrand={noBrand} onBrand={value=>{setBrand(value);setNoBrand(false)}} onNoBrand={setNoBrand}/>
+
         </div>
         <div>
-          <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — حداقل یکی را انتخاب کن:</label>
+          <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — فقط یک موضوع انتخاب کن:</label>
           <span className="text-[9px] text-slate-400 block mb-1 leading-4">نیچ یعنی موضوع و دسته تخصصی کالا. فروشگاه‌ها کالاها را بر اساس همین موضوع‌ها پیدا و انتخاب می‌کنند.</span>
           {showNoMappingNote && (
             <p className="text-[10px] leading-5 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl px-2.5 py-2 mb-1.5">برای این دسته نیچ تخصصی ثبت نشده است؛ همهٔ موضوع‌ها نمایش داده می‌شوند — یکی را انتخاب کن.</p>
           )}
-          <div className="flex flex-wrap gap-1.5 pt-0.5">
+          <div role="radiogroup" aria-label="موضوع کالا" className="flex flex-wrap gap-1.5 pt-0.5">
             {visibleNiches.map((niche) => {
               const isSelected = selectedNicheIds.includes(niche.id);
               return (
                 <button
                   key={niche.id}
                   type="button"
+                  role="radio"
+                  aria-checked={isSelected}
                   onClick={() => toggleNiche(niche.id)}
                   className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${isSelected ? 'bg-brand-deep text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                 >
@@ -492,38 +436,26 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           </div>
         </div>
       </div>
+      <div className="grid grid-cols-2 gap-2">
+
+        <div>
+          <label className="text-[10px] text-slate-600 block mb-1">شرایط گارانتی</label>
+          <select value={warranty} onChange={(e) => { if (e.target.value !== '__request__') setWarranty(e.target.value); else setRequestingWarranty(true); }} className={inputClass}>
+            <option value={warranty}>{warranty}</option>
+            {warranties.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
+            <option value="__request__">گارانتی من در لیست نیست</option>
+          </select>
+        </div>
+      </div>
       <div className="pt-2 border-t border-slate-100">
         <label className="text-[10px] font-bold text-slate-700 block mb-1">توضیحات کامل محصول: ({toPersianDigits(Array.from(description.trim()).length)} از حداقل ۳۰ نویسه)</label>
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="توضیحات کامل درباره محصول، ویژگی‌ها، کاربردها و مزایای آن…" rows={3} className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none resize-none" />
         <span className="text-[9px] text-slate-400 block mt-1">توضیح حداقل ۳۰ نویسه الزامی است — توضیح نازک در صفحه‌ی محصول اعتماد خریدار را کم می‌کند.</span>
       </div>
-      <div className="space-y-2">
-        <label className="text-[10px] font-bold text-slate-700 block">مشخصات فنی محصول:</label>
-        {specs.map((spec, index) => (
-          <div key={index} className="grid grid-cols-2 gap-2">
-            <input type="text" value={spec.key} onChange={(e) => { const next = [...specs]; next[index].key = e.target.value; setSpecs(next); }} placeholder="نام ویژگی (مثلاً: رنگ)" className="text-xs p-2 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
-            <div className="flex gap-1">
-              <input type="text" value={spec.value} onChange={(e) => { const next = [...specs]; next[index].value = e.target.value; setSpecs(next); }} placeholder="مقدار (مثلاً: مشکی)" className="text-xs p-2 rounded-xl bg-slate-50 border border-slate-200 outline-none flex-1" />
-              {specs.length > 1 && (
-                <button type="button" onClick={() => setSpecs(specs.filter((_, i) => i !== index))} className="px-2 py-1 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100 transition-colors" title="حذف این ویژگی">
-                  <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        <button type="button" onClick={() => setSpecs([...specs, { key: '', value: '' }])} className="text-[10px] text-brand-deep font-bold hover:underline flex items-center gap-1">
-          <Plus className="w-3 h-3"  strokeWidth={1.5}/>
-          افزودن ویژگی جدید
-        </button>
-        {topSlug === 'digital' && !specs.some((s) => s.key.trim() && s.value.trim()) && (
-          <p className="text-[10px] leading-5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-2.5 py-2">کالای دیجیتال بدون مشخصات فنی، کمتر فروخته می‌شود؛ دست‌کم چند ویژگی کلیدی (مدل، حافظه، گارانتی…) را بنویسید.</p>
-        )}
-      </div>
       <div className="grid grid-cols-3 gap-2">
         <div>
           <label className="text-[10px] text-slate-600 block mb-1">موجودی انبار:</label>
-          <input type="text" inputMode="numeric" value={formatSep(stock)} onChange={(e) => setStock(parseSep(e.target.value))} placeholder="۱۰۰" min="0" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
+          <p className="text-xs p-2.5">{toPersianDigits(filledVariantStock)} (مجموع موجودی ردیف‌ها)</p>
         </div>
         <div>
           <label className="text-[10px] text-slate-600 block mb-1">آماده‌سازی (روز):</label>
@@ -558,43 +490,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           )}
         </div>
       )}
-      <div className="space-y-2 pt-1 border-t border-slate-100">
-        <label className="text-[10px] font-bold text-slate-700 block">تنوع‌های کالا (اختیاری — همراه پیشنهاد برای بررسی مدیر):</label>
-        <p className="text-[10px] text-slate-500 leading-5">اگر این کالا رنگ، سایز یا مدل‌های مختلف دارد، همین‌جا تنوع‌هایش را بنویس؛ پس از تأیید مدیر، هر تنوع با کد SPNC ساخته می‌شود. موجودی هر تنوع را جدا بنویس؛ مجموع موجودی تنوع‌ها، موجودی کل کالا می‌شود. اگر قیمت عمده یک تنوع فرق می‌کند (مثلاً مشکی گران‌تر است)، قیمت همان تنوع را بنویس؛ خالی بماند یعنی همان «قیمت عمده تو» برایش حساب می‌شود.</p>
-        {variants.map((variant, index) => (
-          <div key={index} className="rounded-xl border border-slate-200 bg-white p-2.5 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black text-slate-400 shrink-0">{toPersianDigits(index + 1)}</span>
-              <input value={variant.name} onChange={(e) => { const next = [...variants]; next[index].name = e.target.value; setVariants(next); }} placeholder="نام تنوع (مثلاً: آبی / سایز ۴۲)" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <button type="button" onClick={() => setVariants(variants.filter((_, i) => i !== index))} className="p-2 rounded-lg bg-rose-50 text-rose-600 shrink-0" aria-label="حذف تنوع">
-                <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input value={variant.color} onChange={(e) => { const next = [...variants]; next[index].color = e.target.value; setVariants(next); }} placeholder="رنگ" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input value={variant.size} onChange={(e) => { const next = [...variants]; next[index].size = e.target.value; setVariants(next); }} placeholder="سایز" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input type="text" inputMode="numeric" value={formatSep(variant.stock)} onChange={(e) => { const next = [...variants]; next[index].stock = parseSep(e.target.value); setVariants(next); }} placeholder="موجودی" min="0" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-              <input type="text" inputMode="numeric" value={formatSep(variant.cost)} onChange={(e) => { const next = [...variants]; next[index].cost = parseSep(e.target.value); setVariants(next); }} placeholder="قیمت عمده این تنوع (تومان، اختیاری)" className="rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-            </div>
-            {variant.custom.map((attr, attrIndex) => (
-              <div key={attrIndex} className="flex items-center gap-2">
-                <input value={attr.key} onChange={(e) => { const next = [...variants]; next[index].custom[attrIndex].key = e.target.value; setVariants(next); }} placeholder="ویژگی (مثلاً جنس)" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-                <input value={attr.value} onChange={(e) => { const next = [...variants]; next[index].custom[attrIndex].value = e.target.value; setVariants(next); }} placeholder="مقدار" className="flex-1 rounded-xl border border-slate-200 p-2.5 text-xs bg-white focus:border-brand-deep outline-none" />
-                <button type="button" onClick={() => { const next = [...variants]; next[index].custom = next[index].custom.filter((_, i) => i !== attrIndex); setVariants(next); }} className="p-2 rounded-lg bg-rose-50 text-rose-600" aria-label="حذف ویژگی">
-                  <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                </button>
-              </div>
-            ))}
-            <button type="button" onClick={() => { const next = [...variants]; next[index].custom = [...next[index].custom, { key: '', value: '' }]; setVariants(next); }} className="text-[11px] font-bold text-brand-deep hover:underline">+ افزودن ویژگی دلخواه</button>
-          </div>
-        ))}
-        <button type="button" disabled={variants.length >= 24} onClick={() => setVariants([...variants, EMPTY_VARIANT()])} className="w-full py-2 rounded-xl border border-dashed border-brand-border text-brand-deep text-[11px] font-bold disabled:opacity-40">
-          + افزودن تنوع ({toPersianDigits(variants.length)} از {toPersianDigits(24)})
-        </button>
-        {filledVariantCount > 0 && (
-          <p className="text-[10px] leading-5 bg-brand-soft/50 border border-brand-border text-brand-deep rounded-xl px-2.5 py-2">{toPersianDigits(filledVariantCount)} تنوع با مجموع موجودی {toPersianDigits(filledVariantStock)} عدد — همین مجموع به‌عنوان موجودی کل کالا ثبت می‌شود.</p>
-        )}
-      </div>
       <div className="space-y-1.5 pt-1 border-t border-slate-100">
         <label className="text-[10px] font-bold text-slate-700 block">ابعاد و وزن کالا (الزامی):</label>
         <div className="grid grid-cols-4 gap-2">

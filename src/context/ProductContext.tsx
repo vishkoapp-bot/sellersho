@@ -23,6 +23,9 @@ const mapBackendSpecs = (specs: ProductDto['specs']): { [key: string]: string } 
 
 export const mapBackendProduct = (product: ProductDto): Product => ({
   id: product.id,
+  productType: product.productType,
+  schemaVersion: product.schemaVersion,
+  productSchema: product.productSchema,
   title: product.title,
   slug: product.slug,
   spnNumber: product.spnNumber,

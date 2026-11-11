@@ -2,97 +2,20 @@ import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { PreMadeWidget } from '../../types';
-import { Megaphone, ShieldAlert, CheckCircle2, ShieldCheck, UserX, Code2, Plus, Check, Edit2, X } from 'lucide-react';
+import { AdminAdFraudReport } from './AdminAdFraudReport';
+import { Code2, Plus, Edit2, X } from 'lucide-react';
 
 export const AdminAdNetworkTab: React.FC = () => {
-  const { preMadeWidgets, createPreMadeWidget, updatePreMadeWidget, formatPrice, toPersianDigits } = useStore();
+  const { preMadeWidgets, createPreMadeWidget, updatePreMadeWidget } = useStore();
   const { success } = useToast();
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingWidget, setEditingWidget] = useState<PreMadeWidget | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [newSnippet, setNewSnippet] = useState('');
 
-  const totalClicksLogged = 1840;
-  const validClicksPassed = 1720;
-  const fraudClicksBlocked = 120; // 6.5% invalid clicks detected and filtered out
-
-  const fraudIncidents = [
-    {
-      id: 'FRD-102',
-      reason: 'کلیک مکرر غیرعادی از یک IP در کمتر از ۳ ثانیه',
-      storeName: 'فروشگاه تستی ۹۲',
-      action: 'کلیک ابطال شد • عدم کسر از بودجه تأمین‌کننده',
-      time: 'امروز - ۱۰:۱۵',
-    },
-    {
-      id: 'FRD-101',
-      reason: 'شناسایی User-Agent ربات وب‌کراولر در محیط ویترین',
-      storeName: 'تک‌هاب پلاس',
-      action: 'مسدودسازی خودکار درخواست',
-      time: 'دیروز - ۱۸:۳۰',
-    },
-  ];
-
   return (
     <div className="space-y-3.5 pb-6">
-      {/* 1. Network Fraud Overview */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-blue-600">
-            <Megaphone className="w-4 h-4"  strokeWidth={1.5}/>
-            <h3 className="text-xs font-bold text-slate-800">مانیتورینگ شبکه مزایده و اعتبارسنجی تبلیغات</h3>
-          </div>
-          <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-            ضدتقلب فعال
-          </span>
-        </div>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          کلیک‌های صاحب ویترین، ربات و تکرار غیرعادی قبل از کسر از شارژ تأمین‌کننده فیلتر می‌شوند (بخش ۱۸ پروپوزال).
-        </p>
-
-        {/* 3 Metric Cards */}
-        <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
-          <div className="p-2 bg-slate-50 rounded-xl">
-            <span className="text-slate-400 block text-[9px]">کل درخواست‌ها</span>
-            <span className="font-extrabold text-xs text-slate-800">{toPersianDigits(totalClicksLogged)}</span>
-          </div>
-
-          <div className="p-2 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-800">
-            <span className="text-emerald-600 block text-[9px]">کلیک‌های معتبر</span>
-            <span className="font-extrabold text-xs">{toPersianDigits(validClicksPassed)}</span>
-          </div>
-
-          <div className="p-2 bg-rose-50 rounded-xl border border-rose-100 text-rose-800">
-            <span className="text-rose-600 block text-[9px]">کلیک‌های مسدود</span>
-            <span className="font-extrabold text-xs">{toPersianDigits(fraudClicksBlocked)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. Fraud Incident Log (Section 18) */}
-      <div className="space-y-2.5">
-        <div className="flex items-center gap-1.5 text-rose-600">
-          <ShieldAlert className="w-4 h-4"  strokeWidth={1.5}/>
-          <h4 className="text-xs font-bold text-slate-800">گزارش لاگ‌های اخیر تشخیص تقلب</h4>
-        </div>
-
-        {fraudIncidents.map((inc) => (
-          <div
-            key={inc.id}
-            className="p-3 bg-white rounded-2xl border border-rose-100 shadow-2xs space-y-1.5 text-xs"
-          >
-            <div className="flex items-center justify-between">
-              <span className="font-black text-rose-700 font-mono text-[11px]">{inc.id}</span>
-              <span className="text-[9px] text-slate-400">{inc.time}</span>
-            </div>
-            <p className="text-[11px] font-bold text-slate-800">{inc.reason}</p>
-            <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-100">
-              <span>ویترین: {inc.storeName}</span>
-              <span className="text-emerald-700 font-bold">{inc.action}</span>
-            </div>
-          </div>
-        ))}
-      </div>
+      <AdminAdFraudReport />
 
       {/* 3. Pre-made Widgets & HTML Banners for Sellers (Section 4.2 & 4.6) */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">

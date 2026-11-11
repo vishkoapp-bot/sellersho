@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drup/platform/internal/warehouseopt"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -44,6 +45,9 @@ type QCQueueItem struct {
 type PutawayQueueItem struct {
 	ID                string    `json:"id"`
 	ProductID         string    `json:"productId"`
+	VariantID         string    `json:"variantId,omitempty"`
+	VariantName       string    `json:"variantName,omitempty"`
+	VariantSPNC       string    `json:"variantSpnc,omitempty"`
 	Title             string    `json:"title"`
 	InboundID         string    `json:"inboundId"`
 	BinLocation       string    `json:"binLocation"`
@@ -382,7 +386,7 @@ func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, produc
 	err := tx.QueryRowContext(ctx, `
 		WITH prev AS (
 			SELECT quantity AS old_qty FROM inventory_balances
-			WHERE product_id = $2 AND status = 'sellable'
+			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
 			  AND owner_type = 'supplier' AND location_type = 'supplier'
 			  AND location_key = $3
 			FOR UPDATE
@@ -390,7 +394,7 @@ func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, produc
 		upd AS (
 			UPDATE inventory_balances
 			SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW()
-			WHERE product_id = $2 AND status = 'sellable'
+			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
 			  AND owner_type = 'supplier' AND location_type = 'supplier'
 			  AND location_key = $3
 			RETURNING quantity AS new_qty
@@ -699,7 +703,7 @@ func ensureCanonicalCoverageTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
 		VALUES ($1,$2,$3,'supplier','warehouse','warehouse:legacy_migration','sellable',$4,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO NOTHING`,
+		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
 		"INV-"+uuid.NewString(), productID, supplierID, legacyStock)
 	return err
 }
@@ -708,7 +712,7 @@ func ensureInboundSourceBalanceTx(ctx context.Context, tx *sql.Tx, productID, su
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
 		VALUES ($1,$2,$3,'supplier','in_transit',$4,'in_transit',$5,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO NOTHING`,
+		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
 		"INV-"+uuid.NewString(), productID, supplierID, "inbound:"+inboundID, quantity)
 	return err
 }
@@ -726,7 +730,7 @@ func upsertInventoryMovementTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	if err != nil || inserted == 0 {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	return err
 }
 
@@ -744,7 +748,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 		return err
 	}
 	var sourceID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND location_key=$3 AND status=$4 FOR UPDATE`, productID, supplierID, fromLocation, fromStatus).Scan(&sourceID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND variant_id IS NULL AND location_key=$3 AND status=$4 FOR UPDATE`, productID, supplierID, fromLocation, fromStatus).Scan(&sourceID); err != nil {
 		return fmt.Errorf("canonical source balance unavailable: %w", err)
 	}
 	result, err = tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE id=$2 AND quantity >= $1`, quantity, sourceID)
@@ -755,7 +759,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 	if err != nil || changed != 1 {
 		return fmt.Errorf("insufficient canonical source balance")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	if err != nil {
 		return err
 	}
@@ -818,9 +822,11 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 	query := `
 		SELECT pt.id, pt.product_id, COALESCE(p.title, 'کالای بدون عنوان'),
 		       COALESCE(pt.inbound_id, ''), COALESCE(pt.bin_location, ''),
-		       pt.quantity, pt.status, pt.created_at, COALESCE(p.length_mm,0), COALESCE(p.width_mm,0), COALESCE(p.height_mm,0), COALESCE(p.weight_grams,0), COALESCE(p.measurement_status,'unverified')
+		       pt.quantity, pt.status, pt.created_at, COALESCE(p.length_mm,0), COALESCE(p.width_mm,0), COALESCE(p.height_mm,0), COALESCE(p.weight_grams,0), COALESCE(p.measurement_status,'unverified'),
+		       COALESCE(pt.variant_id::text,''), COALESCE(pv.variant_name,''), COALESCE(pv.spnc,'')
 		FROM putaway_tasks pt
 		LEFT JOIN products p ON pt.product_id = p.id
+		LEFT JOIN product_variants pv ON pv.id=pt.variant_id
 		WHERE pt.status IN ('pending', 'assigned')
 		ORDER BY pt.created_at DESC
 	`
@@ -836,6 +842,7 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 		if err := rows.Scan(
 			&item.ID, &item.ProductID, &item.Title,
 			&item.InboundID, &item.BinLocation, &item.Quantity, &item.Status, &item.CreatedAt, &item.LengthMM, &item.WidthMM, &item.HeightMM, &item.WeightGrams, &item.MeasurementStatus,
+			&item.VariantID, &item.VariantName, &item.VariantSPNC,
 		); err != nil {
 			return nil, err
 		}
@@ -855,8 +862,8 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	defer tx.Rollback()
 	var productID string
 	var quantity, lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus, status string
-	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),COALESCE(p.measurement_status,'unverified') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE`, taskID).Scan(&productID, &quantity, &status, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
+	var measurementStatus, status, sourceWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),COALESCE(p.measurement_status,'unverified'),COALESCE((SELECT warehouse_name FROM inbound_shipments WHERE id=pt.inbound_id),p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE`, taskID).Scan(&productID, &quantity, &status, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
 		return err
 	}
 	if status == "completed" {
@@ -865,29 +872,35 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	if quantity <= 0 || measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
 		return fmt.Errorf("task measurements are not verified")
 	}
-	volume := int64(lengthMM) * int64(widthMM) * int64(heightMM) * int64(quantity)
+	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	if err != nil {
+		return err
+	}
 	var capacity, occupied, maxWeight, occupiedWeight int64
-	var capacityStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus); err != nil {
+	var capacityStatus, binWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status,COALESCE(warehouse_name,'') FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus, &binWarehouse); err != nil {
 		return err
 	}
 	if capacityStatus != "verified" || capacity <= 0 {
 		return fmt.Errorf("bin capacity is not verified")
 	}
-	var reserved int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active' AND task_id<>$2`, binLocation, taskID).Scan(&reserved); err != nil {
+	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
+		return fmt.Errorf("قفسه باید در انبار همان محموله باشد")
+	}
+	var reserved, reservedWeight int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active' AND task_id<>$2`, binLocation, taskID).Scan(&reserved, &reservedWeight); err != nil {
 		return err
 	}
 	if occupied+reserved+volume > capacity {
 		return fmt.Errorf("insufficient bin volume capacity")
 	}
-	if maxWeight > 0 && occupiedWeight+int64(weightGrams*quantity) > maxWeight {
+	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
 		return fmt.Errorf("bin weight capacity exceeded")
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE putaway_tasks SET bin_location=$1,status='assigned',assigned_to=$2 WHERE id=$3 AND status IN ('pending','assigned')`, binLocation, staffUserID, taskID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active'`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, int64(weightGrams*quantity), "putaway:"+taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active'`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -904,33 +917,43 @@ func (r *WarehouseRepository) AssignPutaway(ctx context.Context, productID, binL
 	}
 	defer tx.Rollback()
 	var lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(length_mm,0),COALESCE(width_mm,0),COALESCE(height_mm,0),COALESCE(weight_grams,0),measurement_status FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus); err != nil {
+	var measurementStatus, sourceWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(length_mm,0),COALESCE(width_mm,0),COALESCE(height_mm,0),COALESCE(weight_grams,0),measurement_status,COALESCE(warehouse_name,'') FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
 		return "", err
 	}
 	if measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
 		return "", fmt.Errorf("product measurements are not verified")
 	}
-	volume := int64(lengthMM) * int64(widthMM) * int64(heightMM) * int64(quantity)
+	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	if err != nil {
+		return "", err
+	}
 	taskID := "PUT-TSK-" + uuid.NewString()
 	var capacity, occupied, maxWeight, occupiedWeight int64
-	var capacityStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus); err != nil {
+	var capacityStatus, binWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status,COALESCE(warehouse_name,'') FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus, &binWarehouse); err != nil {
 		return "", err
 	}
 	if capacityStatus != "verified" || capacity <= 0 {
 		return "", fmt.Errorf("bin capacity is not verified")
 	}
-	if occupied+volume > capacity {
+	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
+		return "", fmt.Errorf("قفسه باید در انبار همان کالا باشد")
+	}
+	var reserved, reservedWeight int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active'`, binLocation).Scan(&reserved, &reservedWeight); err != nil {
+		return "", err
+	}
+	if occupied+reserved+volume > capacity {
 		return "", fmt.Errorf("insufficient bin volume capacity")
 	}
-	if maxWeight > 0 && occupiedWeight+int64(weightGrams*quantity) > maxWeight {
+	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
 		return "", fmt.Errorf("bin weight capacity exceeded")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,bin_location,quantity,status,assigned_to,created_at) VALUES ($1,$2,$3,$4,'assigned',$5,NOW())`, taskID, productID, binLocation, quantity, staffUserID); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6)`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, int64(weightGrams*quantity), "putaway:"+taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6)`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
 		return "", err
 	}
 	return taskID, tx.Commit()
@@ -946,9 +969,11 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 
 	now := time.Now()
 	var binCode string
-	var productID, supplierID, inboundID string
+	var productID, supplierID, inboundID, variantID, sourceLocation string
 	var quantity int
 	var volume, weight int64
+	var lengthMM, widthMM, heightMM, weightGrams int64
+	var measurementStatus string
 	var taskStatus string
 	if err = tx.QueryRowContext(ctx, `SELECT status FROM putaway_tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&taskStatus); err != nil {
 		return err
@@ -959,8 +984,15 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if err = tx.QueryRowContext(ctx, `SELECT bin_code,volume_cm3,weight_grams FROM putaway_capacity_reservations WHERE task_id=$1 AND status='active' FOR UPDATE`, taskID).Scan(&binCode, &volume, &weight); err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),p.measurement_status,COALESCE(pt.variant_id::text,''),COALESCE(pt.inventory_source_location_key,'warehouse:'||pt.inbound_id) FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &variantID, &sourceLocation); err != nil {
 		return err
+	}
+	currentVolume, currentWeight, err := warehouseopt.Capacity(lengthMM, widthMM, heightMM, weightGrams, int64(quantity))
+	if err != nil {
+		return err
+	}
+	if measurementStatus != "verified" || currentVolume != volume || currentWeight != weight {
+		return fmt.Errorf("ابعاد یا وزن کالا تغییر کرده است؛ تخصیص قفسه را دوباره انجام دهید")
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT occupied_volume_cm3,occupied_weight_grams FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binCode); err != nil {
 		return err
@@ -974,7 +1006,11 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if _, err = tx.ExecContext(ctx, `UPDATE putaway_capacity_reservations SET status='consumed',released_at=$1 WHERE task_id=$2 AND status='active'`, now, taskID); err != nil {
 		return err
 	}
-	if err := moveInventoryTx(ctx, tx, productID, supplierID, quantity, "sellable", "sellable", "warehouse:"+inboundID, "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor, `{}`); err != nil {
+	if variantID != "" {
+		if err := putawayTrackedSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, sourceLocation, binCode, taskID, actor); err != nil {
+			return err
+		}
+	} else if err := moveInventoryTx(ctx, tx, productID, supplierID, quantity, "sellable", "sellable", "warehouse:"+inboundID, "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor, `{}`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1022,19 +1058,31 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 		FROM orders o
 		LEFT JOIN LATERAL (
 			SELECT jsonb_agg(jsonb_build_object(
+			           'orderItemId', oi.id,
 			           'productId', oi.product_id,
 			           'productTitle', p.title,
+			           'variantId', oi.variant_id,
+			           'variantName', oi.variant_name,
+			           'variantSpnc', oi.variant_spnc,
 			           'quantity', oi.quantity,
 			           'unitPrice', oi.final_unit_price,
 			           'fulfillmentMethod', r.routing,
-			           'binLocation', (
+			           'binLocation', CASE WHEN COALESCE(pv.inventory_mode,'legacy')='tracked' THEN (
+			               SELECT substring(ib.location_key FROM 5)
+			               FROM order_inventory_captures ic
+			               CROSS JOIN LATERAL jsonb_array_elements(ic.allocations) a
+			               JOIN inventory_balances ib ON ib.id=a->>'balanceId'
+			               WHERE ic.order_item_id=oi.id::text AND ib.variant_id=oi.variant_id AND ib.location_type='bin'
+			               ORDER BY ib.id LIMIT 1
+			           ) ELSE (
 			               SELECT wb.bin_code FROM warehouse_bins wb
 			               WHERE wb.product_id = oi.product_id
 			               ORDER BY wb.updated_at DESC LIMIT 1
-			           )
+			           ) END
 			       )) FILTER (WHERE r.routing = 'warehouse') AS items
 			FROM order_items oi
 			LEFT JOIN products p ON p.id = oi.product_id
+			LEFT JOIN product_variants pv ON pv.id=oi.variant_id
 			LEFT JOIN LATERAL (
 				SELECT origin_type FROM order_item_origins
 				WHERE order_item_id = oi.id

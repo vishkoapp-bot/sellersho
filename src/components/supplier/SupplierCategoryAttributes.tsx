@@ -36,6 +36,7 @@ export const SupplierCategoryAttributes: React.FC<{
   const seqRef = useRef(0);
 
   useEffect(() => {
+    ++seqRef.current;
     if (!categorySlug) {
       setFacets(null);
       setError(null);
@@ -43,6 +44,7 @@ export const SupplierCategoryAttributes: React.FC<{
       return;
     }
     const seq = ++seqRef.current;
+    setFacets(null);
     setLoading(true);
     setError(null);
     catalogApi.getCategoryAttributes(categorySlug)
@@ -55,7 +57,7 @@ export const SupplierCategoryAttributes: React.FC<{
   const toggleAttribute = (attrId: number, valueId: number) => {
     const key = String(attrId);
     const current = value.attributes[key] ?? [];
-    const next = current.length === 1 && current[0] === valueId ? [] : [valueId];
+    const next = !valueId || (current.length === 1 && current[0] === valueId) ? [] : [valueId];
     onChange({ ...value, attributes: { ...value.attributes, [key]: next } });
   };
 
@@ -87,17 +89,10 @@ export const SupplierCategoryAttributes: React.FC<{
               return (
                 <div key={attr.id} className="space-y-1">
                   <p className="text-[10px] font-bold text-slate-700">{attr.title}</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {attr.values.map((v) => {
-                      const isSelected = selected === v.id;
-                      return (
-                        <label key={v.id} className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${isSelected ? 'bg-brand-deep text-white border-brand-deep' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}>
-                          <input type="checkbox" checked={isSelected} onChange={() => toggleAttribute(attr.id, v.id)} className="accent-[#5d44f8]" />
-                          {v.titleFa}
-                        </label>
-                      );
-                    })}
-                  </div>
+                  <select aria-label={attr.title} value={selected ?? ''} onChange={e => toggleAttribute(attr.id, Number(e.target.value))} className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs">
+                    <option value="">انتخاب مقدار</option>
+                    {attr.values.map(v => <option key={v.id} value={v.id}>{v.titleFa}</option>)}
+                  </select>
                 </div>
               );
             })
@@ -105,35 +100,22 @@ export const SupplierCategoryAttributes: React.FC<{
           {facets.colors.length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-700">رنگ:</p>
-              <div className="flex flex-wrap gap-1.5">
-                {facets.colors.map((color) => {
-                  const isSelected = value.colorId === color.id;
-                  return (
-                    <button
-                      key={color.id}
-                      type="button"
-                      title={color.title}
-                      onClick={() => onChange({ ...value, colorId: isSelected ? null : color.id })}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold border transition-all ${isSelected ? 'border-[#5d44f8] bg-violet-50 text-slate-800' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}
-                    >
-                      <span className="inline-block w-4 h-4 rounded-full border border-slate-300" style={{ backgroundColor: color.hexCode || '#e2e8f0' }} />
-                      {color.title}
-                    </button>
-                  );
-                })}
-              </div>
+              <select aria-label="Color" value={value.colorId ?? ''} onChange={e => onChange({ ...value, colorId: e.target.value ? Number(e.target.value) : null })} className="w-full rounded-xl border border-slate-200 p-2.5 text-xs">
+                <option value="">انتخاب رنگ</option>
+                {facets.colors.map(color => <option key={color.id} value={color.id}>{color.title}</option>)}
+              </select>
             </div>
           )}
           {facets.brands.length > 0 && (
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-700 block">پیشنهاد برند از فهرست دسته:</label>
+              <label className="text-[10px] font-bold text-slate-700 block">برندهای مرتبط با این دسته:</label>
               <select
                 value={value.brandId ?? ''}
                 onChange={(event) => {
                   const id = event.target.value ? Number(event.target.value) : null;
                   const brand = facets.brands.find((b) => b.id === id);
                   onChange({ ...value, brandId: id });
-                  if (brand) onBrandSuggest(brand.titleFa);
+                  onBrandSuggest(brand?.titleFa ?? '');
                 }}
                 className="w-full text-xs p-2 rounded-xl bg-slate-50 border border-slate-200"
               >
@@ -142,7 +124,7 @@ export const SupplierCategoryAttributes: React.FC<{
                   <option key={brand.id} value={brand.id}>{brand.titleFa}{brand.titleEn && brand.titleEn !== brand.titleFa ? ` (${brand.titleEn})` : ''}</option>
                 ))}
               </select>
-              <p className="text-[10px] leading-5 text-slate-500">فقط پیشنهاد است؛ برند نهایی همان فیلد «برند محصول» است.</p>
+              <p className="text-[10px] leading-5 text-slate-500">برند انتخاب‌شده همراه محصول برای بازبینی ثبت می‌شود.</p>
             </div>
           )}
         </>

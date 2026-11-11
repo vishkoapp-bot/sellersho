@@ -1,5 +1,6 @@
 import { apiRequest } from './apiClient';
 import { Store, Order } from '../types';
+import { recordVerifiedAdEvent } from './adProof';
 
 export interface RegisterStorePayload {
   storeName: string;
@@ -203,7 +204,7 @@ export const storeApi = {
   updateSellerCampaign: async (slug: string, id: string, payload: { name: string; productIds: string[] }): Promise<void> => apiRequest<void>(`/stores/${encodeURIComponent(slug)}/campaigns/${id}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
   getSellerCampaignHistory: async (slug: string, id: string): Promise<Array<{ action: string; createdAt: string }>> => apiRequest(`/stores/${encodeURIComponent(slug)}/campaigns/${id}/history`, { auth: true }),
   getPublicSellerCampaigns: async (slug: string): Promise<SellerCampaign[]> => apiRequest<SellerCampaign[]>(`/stores/${encodeURIComponent(slug)}/public-campaigns`),
-  recordSellerAdEvent: async (campaignId: string, type: 'impression'|'click', token: string, productId?: string): Promise<{ accepted: boolean }> => apiRequest<{ accepted: boolean }>('/ads/events', { method: 'POST', body: JSON.stringify({ campaignId, type, token, productId }) }),
+  recordSellerAdEvent: recordVerifiedAdEvent,
   getAllStores: async (): Promise<Store[]> => {
     return apiRequest<Store[]>('/stores', { method: 'GET' });
   },

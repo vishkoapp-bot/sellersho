@@ -68,7 +68,7 @@ type Supplier struct {
 	// TapinToken is internal use ONLY. json:"-" means it is never
 	// serialized in any API response; no handler in this tree selects
 	// or returns it. Tapin crypto details are unverified (U63).
-	TapinToken string    `json:"-" db:"tapin_token"`
+	TapinToken string `json:"-" db:"tapin_token"`
 	// Gap 12: suspension bookkeeping (migration 202611050007). Served
 	// only on the admin records surface; nil unless the supplier is or
 	// was suspended (reactivation clears all three).
@@ -119,33 +119,33 @@ type Niche struct {
 
 // Store represents dropshipper storefront or central marketplace
 type Store struct {
-	Tagline                   string             `json:"tagline"`
-	Description               string             `json:"description"`
-	ShortDescription          string             `json:"shortDescription"`
-	ActiveProductIDs          []string           `json:"activeProductIds"`
-	SelectedNicheIDs          []string           `json:"selectedNicheIds"`
-	ActiveCategories          []string           `json:"activeCategories"`
-	BuilderConfig             json.RawMessage    `json:"builderConfig,omitempty"`
-	CentralDealsFilter        string             `json:"centralDealsFilter,omitempty"`
-	CentralDealsProductIDs    []string           `json:"centralDealsProductIds,omitempty"`
-	Status                    string             `json:"status"`
-	PanelConfig               json.RawMessage    `json:"-"`
-	SellerDealsWidgetConfig   json.RawMessage    `json:"sellerDealsWidgetConfig,omitempty"`
-	ID                        string             `json:"id" db:"id"`
-	Name                      string             `json:"name" db:"name"`
-	Slug                      string             `json:"slug" db:"slug"`
-	OwnerType                 string             `json:"ownerType" db:"owner_type"` // 'central' | 'dropshipper'
-	OwnerName                 string             `json:"ownerName" db:"owner_name"`
-	OwnerUserID               *string            `json:"-" db:"owner_user_id"`
-	ProfitMarginPercent       float64            `json:"profitMarginPercent" db:"profit_margin_percent"`
-	CustomStoreMarginOverride *float64           `json:"customStoreMarginOverride" db:"custom_store_margin_override"`
-	IsMarginLockedByAdmin     bool               `json:"isMarginLockedByAdmin" db:"is_margin_locked_by_admin"`
-	ActivePlanID              string             `json:"activePlanId" db:"active_plan_id"`
-	ReferralCode              string             `json:"referralCode" db:"referral_code"`
-	ReferrerSellerID          *string            `json:"referrerSellerId" db:"referrer_seller_id"`
-	SignedContractVersion     int                `json:"signedContractVersion" db:"signed_contract_version"`
-	CustomDomain              string             `json:"customDomain" db:"custom_domain"`
-	TotalSales                int64              `json:"totalSales" db:"total_sales"`
+	Tagline                   string          `json:"tagline"`
+	Description               string          `json:"description"`
+	ShortDescription          string          `json:"shortDescription"`
+	ActiveProductIDs          []string        `json:"activeProductIds"`
+	SelectedNicheIDs          []string        `json:"selectedNicheIds"`
+	ActiveCategories          []string        `json:"activeCategories"`
+	BuilderConfig             json.RawMessage `json:"builderConfig,omitempty"`
+	CentralDealsFilter        string          `json:"centralDealsFilter,omitempty"`
+	CentralDealsProductIDs    []string        `json:"centralDealsProductIds,omitempty"`
+	Status                    string          `json:"status"`
+	PanelConfig               json.RawMessage `json:"-"`
+	SellerDealsWidgetConfig   json.RawMessage `json:"sellerDealsWidgetConfig,omitempty"`
+	ID                        string          `json:"id" db:"id"`
+	Name                      string          `json:"name" db:"name"`
+	Slug                      string          `json:"slug" db:"slug"`
+	OwnerType                 string          `json:"ownerType" db:"owner_type"` // 'central' | 'dropshipper'
+	OwnerName                 string          `json:"ownerName" db:"owner_name"`
+	OwnerUserID               *string         `json:"-" db:"owner_user_id"`
+	ProfitMarginPercent       float64         `json:"profitMarginPercent" db:"profit_margin_percent"`
+	CustomStoreMarginOverride *float64        `json:"customStoreMarginOverride" db:"custom_store_margin_override"`
+	IsMarginLockedByAdmin     bool            `json:"isMarginLockedByAdmin" db:"is_margin_locked_by_admin"`
+	ActivePlanID              string          `json:"activePlanId" db:"active_plan_id"`
+	ReferralCode              string          `json:"referralCode" db:"referral_code"`
+	ReferrerSellerID          *string         `json:"referrerSellerId" db:"referrer_seller_id"`
+	SignedContractVersion     int             `json:"signedContractVersion" db:"signed_contract_version"`
+	CustomDomain              string          `json:"customDomain" db:"custom_domain"`
+	TotalSales                int64           `json:"totalSales" db:"total_sales"`
 	// FIX3 (public storefront only): the store's public template and logo.
 	// These are presentation fields, read by team05PublicStoreView only;
 	// json:"-" keeps every other domain.Store encoding unchanged.
@@ -209,34 +209,37 @@ type StoreSubscriber struct {
 
 // Product represents catalog inventory item
 type Product struct {
-	ID                 string                 `json:"id" db:"id"`
-	Title              string                 `json:"title" db:"title"`
-	Slug               string                 `json:"slug" db:"slug"`
-	CategorySlug       string                 `json:"categorySlug" db:"category_slug"`
-	SupplierID         string                 `json:"supplierId" db:"supplier_id"`
-	OriginalPrice      int64                  `json:"originalPrice" db:"original_price"`
-	SupplierBaseCost   int64                  `json:"supplierBaseCost" db:"supplier_base_cost"` // C
-	PlatformMargin     int64                  `json:"platformMargin" db:"platform_margin"`      // Default F
-	IsOriginal         bool                   `json:"isOriginal" db:"is_original"`
-	Stock              int                    `json:"stock" db:"stock"`
-	ImageURL           string                 `json:"imageUrl" db:"image_url"`
-	Images             []string               `json:"images,omitempty"`
-	Specs              map[string]interface{} `json:"specs" db:"specs"`
-	Description        string                 `json:"description" db:"description"`
-	WarehouseName      string                 `json:"warehouseName" db:"warehouse_name"`
-	PreparationDays    int                    `json:"preparationDays" db:"preparation_days"`
-	SupplierWarranty   string                 `json:"supplierWarranty" db:"supplier_warranty"`
-	IsFeatured         bool                   `json:"isFeatured" db:"is_featured"`
-	IsSpecialDeal      bool                   `json:"isSpecialDeal" db:"is_special_deal"`
-	FulfillmentMethod  string                 `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct"
-	SupplyOption       string                 `json:"supplyOption" db:"supply_option"`           // "3hour_local" | "1day" | "3day"
-	OriginSupplierWarehouseId *string `json:"originSupplierWarehouseId,omitempty" db:"origin_supplier_warehouse_id"`
-	WarrantyPropertyID string                 `json:"warrantyPropertyId,omitempty" db:"warranty_property_id"`
-	LengthMM           *int                   `json:"lengthMm,omitempty" db:"length_mm"`
-	WidthMM            *int                   `json:"widthMm,omitempty" db:"width_mm"`
-	HeightMM           *int                   `json:"heightMm,omitempty" db:"height_mm"`
-	WeightGrams        *int                   `json:"weightGrams,omitempty" db:"weight_grams"`
-	MeasurementStatus  string                 `json:"measurementStatus" db:"measurement_status"`
+	ProductType               string                 `json:"productType" db:"product_type"`
+	SchemaVersion             int                    `json:"schemaVersion" db:"schema_version"`
+	ProductSchema             *ProductSchema         `json:"productSchema,omitempty" db:"attribute_schema"`
+	ID                        string                 `json:"id" db:"id"`
+	Title                     string                 `json:"title" db:"title"`
+	Slug                      string                 `json:"slug" db:"slug"`
+	CategorySlug              string                 `json:"categorySlug" db:"category_slug"`
+	SupplierID                string                 `json:"supplierId" db:"supplier_id"`
+	OriginalPrice             int64                  `json:"originalPrice" db:"original_price"`
+	SupplierBaseCost          int64                  `json:"supplierBaseCost" db:"supplier_base_cost"` // C
+	PlatformMargin            int64                  `json:"platformMargin" db:"platform_margin"`      // Default F
+	IsOriginal                bool                   `json:"isOriginal" db:"is_original"`
+	Stock                     int                    `json:"stock" db:"stock"`
+	ImageURL                  string                 `json:"imageUrl" db:"image_url"`
+	Images                    []string               `json:"images,omitempty"`
+	Specs                     map[string]interface{} `json:"specs" db:"specs"`
+	Description               string                 `json:"description" db:"description"`
+	WarehouseName             string                 `json:"warehouseName" db:"warehouse_name"`
+	PreparationDays           int                    `json:"preparationDays" db:"preparation_days"`
+	SupplierWarranty          string                 `json:"supplierWarranty" db:"supplier_warranty"`
+	IsFeatured                bool                   `json:"isFeatured" db:"is_featured"`
+	IsSpecialDeal             bool                   `json:"isSpecialDeal" db:"is_special_deal"`
+	FulfillmentMethod         string                 `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct"
+	SupplyOption              string                 `json:"supplyOption" db:"supply_option"`           // "3hour_local" | "1day" | "3day"
+	OriginSupplierWarehouseId *string                `json:"originSupplierWarehouseId,omitempty" db:"origin_supplier_warehouse_id"`
+	WarrantyPropertyID        string                 `json:"warrantyPropertyId,omitempty" db:"warranty_property_id"`
+	LengthMM                  *int                   `json:"lengthMm,omitempty" db:"length_mm"`
+	WidthMM                   *int                   `json:"widthMm,omitempty" db:"width_mm"`
+	HeightMM                  *int                   `json:"heightMm,omitempty" db:"height_mm"`
+	WeightGrams               *int                   `json:"weightGrams,omitempty" db:"weight_grams"`
+	MeasurementStatus         string                 `json:"measurementStatus" db:"measurement_status"`
 	// Brand, Rating, ReviewsCount, CreatedAt: columns confirmed by
 	// migration 202610200003 (brand TEXT, rating NUMERIC(3,2),
 	// reviews_count INT) and by the GetSupplierProducts SELECT in
@@ -453,6 +456,12 @@ type LedgerEntry struct {
 // pricing (NULL = inherit the product cost); it is never serialized
 // into the public variant payload by the catalog handlers.
 type ProductVariant struct {
+	Selection        map[string]string      `json:"selection"`
+	InventoryMode    string                 `json:"inventoryMode"`
+	IsActive         bool                   `json:"isActive"`
+	CombinationKey   string                 `json:"combinationKey,omitempty"`
+	MinCartQty       int                    `json:"minCartQty"`
+	MaxCartQty       *int                   `json:"maxCartQty"`
 	ID               string                 `json:"id"`
 	ProductID        string                 `json:"productId"`
 	Spnc             string                 `json:"spnc"`

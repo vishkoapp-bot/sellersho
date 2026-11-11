@@ -262,6 +262,31 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	version, _ := payload["schemaVersion"].(float64)
+	if version != 2 {
+		http.Error(w, `{"error":"Product schema version 2 is required"}`, http.StatusBadRequest)
+		return
+	}
+	if payload["productType"] != "simple" && payload["productType"] != "variable" {
+		http.Error(w, `{"error":"Product type is required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := repository.ValidateProductVariationProposal(payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	niches, ok := payload["nicheIds"].([]interface{})
+	if !ok || len(niches) != 1 {
+		http.Error(w, `{"error":"Exactly one product niche is required"}`, http.StatusBadRequest)
+		return
+	}
+	niche, ok := niches[0].(string)
+	if !ok || strings.TrimSpace(niche) == "" {
+		http.Error(w, `{"error":"Invalid product niche"}`, http.StatusBadRequest)
+		return
+	}
+
 	payload["supplierId"] = supplierID
 	payload["supplier_id"] = supplierID
 
@@ -347,7 +372,9 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	payload["product_id"] = prodID
 	proposalID, err := h.supplierRepo.ProposeProduct(r.Context(), supplierID, payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -431,7 +458,15 @@ func (h *SupplierHandlers) HandleGetProposals(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
-	proposals, err := h.supplierRepo.GetSupplierProposals(r.Context(), supplierID)
+	var proposals []map[string]interface{}
+	var err error
+	// This exact admin route is protected by RequireRoles in main.go.
+	// Admins have no supplier scope; applying that filter hides all submissions.
+	if r.URL.Path == "/api/v1/admin/products/proposals" {
+		proposals, err = h.supplierRepo.GetAllProposals(r.Context())
+	} else {
+		proposals, err = h.supplierRepo.GetSupplierProposals(r.Context(), supplierID)
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -527,6 +562,7 @@ func (h *SupplierHandlers) HandleGetReturns(w http.ResponseWriter, r *http.Reque
 func (h *SupplierHandlers) HandleCreateReturn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	var req struct {
+		VariantID        string `json:"variantId"`
 		ProductID        string `json:"productId"`
 		Quantity         int    `json:"quantity"`
 		CollectionMethod string `json:"collectionMethod"`
@@ -536,7 +572,7 @@ func (h *SupplierHandlers) HandleCreateReturn(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"Invalid payload"}`, 400)
 		return
 	}
-	item, err := h.supplierRepo.CreateReturnRequestWithIdempotency(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), req.ProductID, req.Quantity, req.CollectionMethod, req.Reason, r.Header.Get("Idempotency-Key"), callerUserID(r))
+	item, err := h.supplierRepo.CreateReturnRequestForVariantWithIdempotency(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), req.ProductID, req.VariantID, req.Quantity, req.CollectionMethod, req.Reason, r.Header.Get("Idempotency-Key"), callerUserID(r))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 		return
@@ -602,15 +638,16 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 	productID := parts[len(parts)-1]
 
 	var req struct {
-		NewStock int    `json:"new_stock"`
-		Reason   string `json:"reason"`
+		VariantID string `json:"variantId"`
+		NewStock  int    `json:"new_stock"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
 
-	err := h.supplierRepo.UpdateProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.NewStock, req.Reason)
+	err := h.supplierRepo.UpdateProductStockForVariant(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -737,7 +774,15 @@ func (h *SupplierHandlers) HandleCreateInbound(w http.ResponseWriter, r *http.Re
 
 	inboundID, err := h.supplierRepo.CreateInbound(r.Context(), supplierID, payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		if errors.Is(err, repository.ErrInboundProductForbidden) {
+			t01WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, repository.ErrInboundInput) {
+			t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeInternalError(w, err)
 		return
 	}
 
@@ -938,6 +983,14 @@ func (h *SupplierHandlers) HandleRespondDiscrepancy(w http.ResponseWriter, r *ht
 	}
 	err := h.supplierRepo.RespondDiscrepancy(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), discrepancyID, req.Response, req.ResolutionOffer)
 	if err != nil {
+		if errors.Is(err, repository.ErrQCResponseExpired) || errors.Is(err, repository.ErrStoreInput) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}

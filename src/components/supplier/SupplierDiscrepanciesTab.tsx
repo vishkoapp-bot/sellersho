@@ -50,7 +50,8 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
           <p>{item.reason}</p>
           <p>وضعیت: {item.status === 'open' ? 'منتظر جواب توست' : item.status === 'resolved' ? 'جواب دادی' : item.status}</p>
           {item.supplier_response && <p className="rounded-xl bg-slate-50 p-2">جواب تو: {item.supplier_response}</p>}
-          {item.status === 'open' && (selectedId === item.id ? (
+          {item.response_due_at && <p className={item.escalated_at || Date.parse(item.response_due_at) <= Date.now() ? 'text-rose-700' : 'text-amber-700'}>{item.escalated_at || (!item.responded_at && Date.parse(item.response_due_at) <= Date.now()) ? 'مهلت پاسخ تمام شده؛ نیازمند بررسی مدیر' : `مهلت پاسخ: ${new Date(item.response_due_at).toLocaleString('fa-IR')}`}</p>}
+          {item.status === 'open' && !item.escalated_at && Date.parse(item.response_due_at) > Date.now() && (selectedId === item.id ? (
             <form onSubmit={submit} className="space-y-2">
               <label className="block">جوابت را بنویس (اگر اشتباه شده، همین‌جا بگو)
                 <textarea required disabled={saving} value={response} onChange={(event) => setResponse(event.target.value)} className="mt-1 w-full rounded-xl border p-2 min-h-[44px]" />

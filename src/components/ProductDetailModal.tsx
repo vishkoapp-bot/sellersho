@@ -7,9 +7,10 @@ import { ProductInfoRight } from './ProductInfoRight';
 import { ProductVariantSelector } from './ProductVariantSelector';
 import { X, ShoppingCart } from 'lucide-react';
 import { motion } from 'motion/react';
+import { activeProductVariants, initialPurchaseVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../utils/productPurchase';
 
 export const ProductDetailModal: React.FC = () => {
-  const { selectedProduct, setSelectedProduct, addToCart, toPersianDigits, formatPrice, currentStore, routeStoreSlug } = useStore();
+  const { selectedProduct, setSelectedProduct, addToCart, toPersianDigits, formatPrice, currentStore, routeStoreSlug, cart } = useStore();
   const [quantity, setQuantity] = useState(1);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
 
@@ -27,7 +28,7 @@ export const ProductDetailModal: React.FC = () => {
       setSelectedVariantId(null);
       return;
     }
-    const variants = selectedProduct.variants ?? [];
+    const variants = activeProductVariants(selectedProduct);
     if (variants.length === 0) {
       setSelectedVariantId(null);
       return;
@@ -36,57 +37,29 @@ export const ProductDetailModal: React.FC = () => {
     try {
       spnc = new URLSearchParams(window.location.search).get('spnc');
     } catch {}
-    const bySpnc = spnc ? variants.find((v) => v.spnc === spnc) : undefined;
-    // USER DECISION (Nov 5, 2026): initial selection is the isDefault variant.
-    const next = bySpnc ?? variants.find((v) => v.isDefault) ?? variants[0];
-    setSelectedVariantId(next.id);
-    setQuantity(1);
+    const next = initialPurchaseVariant(selectedProduct, spnc);
+    setSelectedVariantId(next?.id ?? null);
+    setQuantity(next ? purchaseLimits(selectedProduct, next).minQty : 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProduct?.id]);
+  }, [selectedProduct?.id, selectedProduct?.variants]);
 
   if (!selectedProduct) return null;
 
-  // FIX 4: live variant behaviour — the selected variant overrides the
-  // displayed price/originalPrice/discountPercent/stock from
-  // variantPrices[variant.id]. FIX 5: the cart now keys on
-  // product::variant, so two variants of one product no longer merge.
-  const variants = selectedProduct.variants ?? [];
-  const showVariantSelector = variants.length > 1;
-  const selectedVariant =
-    variants.find((v) => v.id === selectedVariantId) ??
-    variants.find((v) => v.isDefault) ??
-    variants[0];
-  const variantPrice = selectedVariant
-    ? selectedProduct.variantPrices?.[selectedVariant.id]
-    : undefined;
-  const displayProduct =
-    selectedVariant && variantPrice
-      ? {
-          ...selectedProduct,
-          price: variantPrice.price,
-          originalPrice: variantPrice.originalPrice ?? selectedProduct.originalPrice,
-          discountPercent: variantPrice.discountPercent ?? selectedProduct.discountPercent,
-          stock: selectedVariant.stock,
-        }
-      : selectedProduct;
+  const variants = activeProductVariants(selectedProduct);
+  const showVariantSelector = variants.length > 1 || selectedProduct.productType === 'variable';
+  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(selectedProduct);
+  const displayProduct = productForVariant(selectedProduct, selectedVariant);
   const published = isProductPublishedInStore(currentStore, displayProduct.id);
-  const minQty =
-    selectedVariant?.minCartQty && selectedVariant.minCartQty > 0
-      ? selectedVariant.minCartQty
-      : 1;
-  const maxQty =
-    selectedVariant?.maxCartQty ?? selectedVariant?.stock ?? selectedProduct.stock;
-  const outOfStock = (displayProduct.stock || 0) <= 0;
+  const { minQty, maxQty } = purchaseLimits(selectedProduct, selectedVariant);
+  const purchase = resolvePurchase(selectedProduct, selectedVariant?.id);
+  const outOfStock = !purchase;
 
   const handleSelectVariant = (id: string) => {
+    const variant = variants.find((item) => item.id === id);
+    if (!variant || !resolvePurchase(selectedProduct, id)) return;
     setSelectedVariantId(id);
-    const v = variants.find((item) => item.id === id);
-    const max = v?.maxCartQty ?? v?.stock ?? displayProduct.stock;
-    const min = v?.minCartQty && v.minCartQty > 0 ? v.minCartQty : 1;
-    setQuantity((q) => {
-      const clamped = Math.max(min, q);
-      return max > 0 ? Math.min(clamped, max) : clamped;
-    });
+    const { minQty: min, maxQty: max } = purchaseLimits(selectedProduct, variant);
+    setQuantity((quantity) => Math.max(min, Math.min(quantity, max)));
   };
 
   return (
@@ -122,6 +95,7 @@ export const ProductDetailModal: React.FC = () => {
 
           {showVariantSelector && selectedVariant && (
             <ProductVariantSelector
+              product={selectedProduct}
               variants={variants}
               variantPrices={selectedProduct.variantPrices}
               selectedId={selectedVariant.id}
@@ -133,7 +107,7 @@ export const ProductDetailModal: React.FC = () => {
 
           <ProductSpecsList
             description={selectedProduct.description}
-            specs={selectedProduct.specs}
+            specs={displayProduct.specs}
           />
         </div>
 
@@ -168,8 +142,8 @@ export const ProductDetailModal: React.FC = () => {
           ) : (
             <button
               onClick={() => {
-                if (!published) return;
-                addToCart(displayProduct, quantity, undefined, selectedVariantId ?? undefined);
+                if (!published || !purchase || !cartQuantityAllowed(cart, purchase, quantity)) return;
+                addToCart(displayProduct, quantity, undefined, selectedVariant?.id);
                 setSelectedProduct(null);
               }}
               disabled={!published}

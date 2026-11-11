@@ -31,6 +31,11 @@ import (
 // is a cost input to pricing, not a public field (same reasoning as the
 // removal of baseCostB from the product response, D21).
 type ProductVariantResponse struct {
+	Selection        map[string]string `json:"selection"`
+	InventoryMode    string            `json:"inventoryMode"`
+	IsActive         bool              `json:"isActive"`
+	CombinationKey   string            `json:"combinationKey,omitempty"`
+	SupplierBaseCost *int64            `json:"supplierBaseCost,omitempty"`
 	// FIX 14b: field order is live's (probed 2026-11-03 on the bracelet
 	// detail): spnc 4th, isDefault before stock. Go encodes struct
 	// fields in declaration order, so this order IS the wire order.
@@ -48,9 +53,9 @@ type ProductVariantResponse struct {
 // VariantPriceResponse is one entry of variantPrices, keyed by variant
 // ID (UUID) exactly as live serves it (FIX 4, team 04 G1 / team 02 G6).
 type VariantPriceResponse struct {
-	Price           int64 `json:"price"`
-	OriginalPrice   int64 `json:"originalPrice"`
-	DiscountPercent int   `json:"discountPercent"`
+	Price           int64  `json:"price"`
+	OriginalPrice   int64  `json:"originalPrice"`
+	DiscountPercent int    `json:"discountPercent"`
 	CampaignName    string `json:"campaignName,omitempty"`
 }
 
@@ -62,10 +67,13 @@ type VariantPriceResponse struct {
 // a response key), profitToman, marginPercent, installmentPrice
 // (installments were deleted by user decision).
 type ProductResponse struct {
-	ID               string                          `json:"id"`
-	Title            string                          `json:"title"`
-	Slug             string                          `json:"slug"`
-	Category         string                          `json:"category"`
+	ProductType   string                `json:"productType"`
+	SchemaVersion int                   `json:"schemaVersion"`
+	ProductSchema *domain.ProductSchema `json:"productSchema,omitempty"`
+	ID            string                `json:"id"`
+	Title         string                `json:"title"`
+	Slug          string                `json:"slug"`
+	Category      string                `json:"category"`
 	// FIX 14: live list serves the three supplier keys ONLY for an
 	// existing NON-central store view, at exactly these positions
 	// (supplierId/supplierName after category, baseCostB after price).
@@ -99,25 +107,28 @@ type ProductResponse struct {
 // live-proven, and a future live-parity check must compare only the
 // first 20 keys against live.
 type ProductDetailResponse struct {
+	ProductType   string                `json:"productType"`
+	SchemaVersion int                   `json:"schemaVersion"`
+	ProductSchema *domain.ProductSchema `json:"productSchema,omitempty"`
 	// FIX 14b: live's detail mapper also reads addons + addonSectionTitle
 	// (live bundle); both are omitempty, so products without addons --
 	// all 40 current live products -- serve no addon keys, like live.
-	Addons           []repository.PDPAddon `json:"addons,omitempty"`
-	AddonSectionTitle string               `json:"addonSectionTitle,omitempty"`
+	Addons            []repository.PDPAddon `json:"addons,omitempty"`
+	AddonSectionTitle string                `json:"addonSectionTitle,omitempty"`
 	// Live detail keys are alphabetical (live builds the detail from a
 	// map); this struct is ordered to match live's byte order.
 	// FIX 4 (team 04 G3 / team 02 G5): live serves the three supplier
 	// keys ONLY on an existing non-central store view (?storeSlug=...).
 	// They stay absent (omitempty nil) on the central view, matching
 	// live central responses.
-	BaseCostB        *int64                          `json:"baseCostB,omitempty"`
-	Category         string                          `json:"category"`
-	Description      string                          `json:"description"`
-	DiscountEligible bool                            `json:"discountEligible"`
-	DiscountPercent  int                             `json:"discountPercent"`
-	CampaignName     string                          `json:"campaignName,omitempty"`
-	ID               string                          `json:"id"`
-	Image            string                          `json:"image"`
+	BaseCostB        *int64 `json:"baseCostB,omitempty"`
+	Category         string `json:"category"`
+	Description      string `json:"description"`
+	DiscountEligible bool   `json:"discountEligible"`
+	DiscountPercent  int    `json:"discountPercent"`
+	CampaignName     string `json:"campaignName,omitempty"`
+	ID               string `json:"id"`
+	Image            string `json:"image"`
 	// Flagged extensions (see type comment above).
 	Images           []string                        `json:"images,omitempty"`
 	IsActive         bool                            `json:"isActive"`
@@ -255,11 +266,19 @@ func DefaultVariantForResponse(variants []domain.ProductVariant) *domain.Product
 		return nil
 	}
 	for i := range variants {
+		if variants[i].InventoryMode == "tracked" && !variants[i].IsActive {
+			continue
+		}
 		if variants[i].IsDefault {
 			return &variants[i]
 		}
 	}
-	return &variants[0]
+	for i := range variants {
+		if variants[i].InventoryMode != "tracked" || variants[i].IsActive {
+			return &variants[i]
+		}
+	}
+	return nil
 }
 
 // buildProductResponse renders one product in the frozen 19-key list
@@ -277,7 +296,21 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if attrs == nil {
 			attrs = map[string]interface{}{}
 		}
+		mode, active := v.InventoryMode, v.IsActive
+		if mode == "" {
+			mode = "legacy"
+			active = true
+		}
+		selection := v.Selection
+		if selection == nil {
+			selection = map[string]string{}
+		}
+		minQty := v.MinCartQty
+		if minQty < 1 {
+			minQty = 1
+		}
 		vresp = append(vresp, ProductVariantResponse{
+			Selection: selection, InventoryMode: mode, IsActive: active, CombinationKey: v.CombinationKey,
 			ID:          v.ID,
 			Spnc:        v.Spnc,
 			Name:        v.Name,
@@ -285,8 +318,8 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 			Attributes:  attrs,
 			Stock:       v.Stock,
 			IsDefault:   v.IsDefault,
-			MinCartQty:  1,
-			MaxCartQty:  nil,
+			MinCartQty:  minQty,
+			MaxCartQty:  v.MaxCartQty,
 		})
 	}
 	if variantPrices == nil {
@@ -296,6 +329,7 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		p.NicheIDs = []string{}
 	}
 	return ProductResponse{
+		ProductType: productTypeForResponse(p), SchemaVersion: p.SchemaVersion, ProductSchema: p.ProductSchema,
 		ID:               p.ID,
 		Title:            p.Title,
 		Slug:             p.Slug,
@@ -331,6 +365,9 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 	out := make(map[string]VariantPriceResponse, len(variants))
 	widgetCfg := loadDealsWidgetConfig(&store)
 	for _, v := range variants {
+		if v.InventoryMode == "tracked" && !v.IsActive {
+			continue
+		}
 		cost := p.SupplierBaseCost
 		if v.SupplierBaseCost != nil {
 			cost = *v.SupplierBaseCost
@@ -557,6 +594,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			}
 			b := p.SupplierBaseCost
 			item.BaseCostB = &b
+			exposeScopedVariantCosts(&item, variants, p.SupplierBaseCost)
 		} else {
 			item.PlatformFeeF = 0
 		}
@@ -626,6 +664,7 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		addonSectionTitle = ""
 	}
 	if showSupplier {
+		exposeScopedVariantCosts(&base, variants, p.SupplierBaseCost)
 		sid := p.SupplierID
 		supplierID = &sid
 		name, _ := catalogRepo.GetSupplierNameByID(ctx, p.SupplierID)
@@ -644,34 +683,35 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		supplierWarranty = ""
 	}
 	return ProductDetailResponse{
-		ID:               base.ID,
-		Title:            base.Title,
-		Slug:             base.Slug,
-		Category:         base.Category,
-		OriginalPrice:    base.OriginalPrice,
-		DiscountEligible: base.DiscountEligible,
-		DiscountPercent:  base.DiscountPercent,
-		Price:            base.Price,
-		PlatformFeeF:     platformFeeF,
-		IsOriginal:       base.IsOriginal,
-		Stock:            base.Stock,
-		Image:            base.Image,
-		Description:      base.Description,
-		Warehouse:        base.Warehouse,
-		SupplierWarranty: supplierWarranty,
-		NicheIDs:         base.NicheIDs,
-		IsActive:         base.IsActive,
-		StoreCount:       storeCount,
-		Variants:         base.Variants,
-		VariantPrices:    base.VariantPrices,
-		Specs:            specs,
-		Images:           images,
-		Addons:           pdpAddons,
+		ProductType: base.ProductType, SchemaVersion: base.SchemaVersion, ProductSchema: base.ProductSchema,
+		ID:                base.ID,
+		Title:             base.Title,
+		Slug:              base.Slug,
+		Category:          base.Category,
+		OriginalPrice:     base.OriginalPrice,
+		DiscountEligible:  base.DiscountEligible,
+		DiscountPercent:   base.DiscountPercent,
+		Price:             base.Price,
+		PlatformFeeF:      platformFeeF,
+		IsOriginal:        base.IsOriginal,
+		Stock:             base.Stock,
+		Image:             base.Image,
+		Description:       base.Description,
+		Warehouse:         base.Warehouse,
+		SupplierWarranty:  supplierWarranty,
+		NicheIDs:          base.NicheIDs,
+		IsActive:          base.IsActive,
+		StoreCount:        storeCount,
+		Variants:          base.Variants,
+		VariantPrices:     base.VariantPrices,
+		Specs:             specs,
+		Images:            images,
+		Addons:            pdpAddons,
 		AddonSectionTitle: addonSectionTitle,
-		SpnNumber:        p.SpnNumber,
-		SupplierID:       supplierID,
-		SupplierName:     supplierName,
-		BaseCostB:        baseCostB,
+		SpnNumber:         p.SpnNumber,
+		SupplierID:        supplierID,
+		SupplierName:      supplierName,
+		BaseCostB:         baseCostB,
 	}, nil
 }
 

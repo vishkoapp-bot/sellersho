@@ -3,7 +3,8 @@ import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
 import { useToast } from '../../context/ToastContext';
 import { Product } from '../../types';
-import { ProductCard } from '../ProductCard';
+import { activeProductVariants, initialPurchaseVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../../utils/productPurchase';
+import { ProductDetailRelated } from './product/ProductDetailRelated';
 import { ProductDetailGallery } from './product/ProductDetailGallery';
 import { ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
 import { catalogApi } from '../../services/catalogApi';
@@ -13,7 +14,7 @@ import { storefrontProducts } from '../storefront/templates/templateTypes';
 import { resolvePdpTheme } from './product/pdpTheme';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { ProductVariantSelector } from '../ProductVariantSelector';
-import { ArrowRight, Share2, Heart, ShoppingCart, Sparkles } from 'lucide-react';
+import { ArrowRight, Share2, Heart, ShoppingCart } from 'lucide-react';
 import { ReturnWindowBadge } from '../ReturnWindowBadge';
 import { BuyNowAddressModal } from '../BuyNowAddressModal';
 
@@ -35,6 +36,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     cartItemsCount,
     cart,
     products,
+    openProductDetail,
     routeStoreSlug,
     stores,
   } = useStore();
@@ -118,66 +120,24 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     return () => { cancelled = true; };
   }, [scopedStoreSlug, product.id, product.category]);
 
-  // FIX 7: the standalone product page previously ignored variants entirely
-  // (FIX 4 wired the selector only into ProductDetailModal). Same live
-  // behaviour as the modal: default variant honouring ?spnc=, displayed
-  // price/originalPrice/discountPercent/stock from variantPrices[variant.id].
+  const displayBase = detailProduct?.id === product.id ? detailProduct : product;
+  const variants = activeProductVariants(displayBase);
   useEffect(() => {
-    const variants = product.variants ?? [];
-    if (variants.length === 0) {
-      setSelectedVariantId(null);
-      setQty(1);
-      setSelectedAddonIds([]);
-      return;
-    }
     let spnc: string | null = null;
-    try {
-      spnc = new URLSearchParams(window.location.search).get('spnc');
-    } catch {}
-    const bySpnc = spnc ? variants.find((v) => v.spnc === spnc) : undefined;
-    // USER DECISION (Nov 5, 2026): the initial selection is the
-    // isDefault variant — it is a real, selectable option now.
-    const next = bySpnc ?? variants.find((v) => v.isDefault) ?? variants[0];
-    setSelectedVariantId(next.id);
-    setSelectedAddonIds([]);
-    setQty(next.minCartQty && next.minCartQty > 0 ? next.minCartQty : 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.id]);
+    try { spnc = new URLSearchParams(window.location.search).get('spnc'); } catch {}
+    const next = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, spnc);
+    setSelectedVariantId(next?.id ?? null);
+    setQty(next ? purchaseLimits(displayBase, next).minQty : 1);
+  }, [displayBase.id, displayBase.variants]);
+  useEffect(() => { setSelectedAddonIds([]); }, [product.id]);
 
   const wishlisted = isWishlisted(product.id, pdpStore);
-  const variants = product.variants ?? [];
-  const showVariantSelector = variants.length > 1;
-  const selectedVariant =
-    variants.find((v) => v.id === selectedVariantId) ??
-    variants.find((v) => v.isDefault) ??
-    variants[0];
-  // FIX 33 (reverts FIX 32): live settled prod PDP shows the DETAIL
-  // warranty. The 04:02 side note (fallback on live) was the transient
-  // load state before the detail fetch resolved. Warranty comes from
-  // displayBase again; the mapper fallback covers the transient state.
-  const displayBase = detailProduct ?? product;
-  const variantPrice = selectedVariant
-    ? displayBase.variantPrices?.[selectedVariant.id]
-    : undefined;
-  const displayProduct =
-    selectedVariant && variantPrice
-      ? {
-          ...displayBase,
-          price: variantPrice.price,
-          originalPrice: variantPrice.originalPrice ?? displayBase.originalPrice,
-          discountPercent: variantPrice.discountPercent ?? displayBase.discountPercent,
-          // Live shows the product's overall stock (5) for both variants;
-          // the per-variant stock lives in the selector's stock line.
-          stock: displayBase.stock,
-        }
-      : displayBase;
-  const minQty =
-    selectedVariant?.minCartQty && selectedVariant.minCartQty > 0
-      ? selectedVariant.minCartQty
-      : 1;
-  const maxQty =
-    selectedVariant?.maxCartQty ?? selectedVariant?.stock ?? product.stock;
-  const outOfStock = selectedVariant ? (selectedVariant.stock || 0) <= 0 : (product.stock || 0) <= 0;
+  const showVariantSelector = variants.length > 1 || displayBase.productType === 'variable';
+  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase);
+  const displayProduct = productForVariant(displayBase, selectedVariant);
+  const { minQty, maxQty } = purchaseLimits(displayBase, selectedVariant);
+  const purchase = resolvePurchase(displayBase, selectedVariant?.id);
+  const outOfStock = !purchase;
   // FIX 14b: live buy-now price is (price + sum of selected addon
   // fees) x qty; with no addons this is exactly the old price x qty.
   const detailAddons = displayBase.addons ?? [];
@@ -187,14 +147,11 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   const buyNowUnit = displayProduct.price + addonFeePerUnit;
 
   const handleSelectVariant = (id: string) => {
+    const variant = variants.find((item) => item.id === id);
+    if (!variant || !resolvePurchase(displayBase, id)) return;
     setSelectedVariantId(id);
-    const v = variants.find((item) => item.id === id);
-    const max = v?.maxCartQty ?? v?.stock ?? displayProduct.stock;
-    const min = v?.minCartQty && v.minCartQty > 0 ? v.minCartQty : 1;
-    setQty((q) => {
-      const clamped = Math.max(min, q);
-      return max > 0 ? Math.min(clamped, max) : clamped;
-    });
+    const { minQty: min, maxQty: max } = purchaseLimits(displayBase, variant);
+    setQty((quantity) => Math.max(min, Math.min(quantity, max)));
   };
   const related = (scopedStoreSlug ? scopedRelated ?? [] : products)
     .filter((p) => p.category === product.category && p.id !== product.id && isProductPublishedInStore(currentStore, p.id))
@@ -206,7 +163,8 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       // not the address bar: a scoped PDP reached through a legacy
       // storeless path must still share the store's link, so the
       // recipient lands in the same store at the same prices.
-      const url = window.location.origin + buildProductUrl(displayBase, scopedStoreSlug ?? undefined);
+      const url = window.location.origin + buildProductUrl(displayBase, scopedStoreSlug ?? undefined)
+        + (selectedVariant?.spnc ? `?spnc=${encodeURIComponent(selectedVariant.spnc)}` : '');
       navigator.clipboard.writeText(url);
       success('لینک کالا در حافظه کپی شد.');
     }
@@ -218,14 +176,18 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       error(`این کالا در «${currentStore?.name}» عرضه نمی‌شود.`);
       return;
     }
-    addToCart(displayProduct, qty, undefined, selectedVariantId ?? undefined, selectedAddonIds);
+    if (!purchase || !cartQuantityAllowed(cart, purchase, qty)) {
+      error('تعداد انتخاب‌شده با موجودی یا محدودیت خرید این تنوع سازگار نیست.');
+      return;
+    }
+    addToCart(displayProduct, qty, undefined, selectedVariant?.id, selectedAddonIds);
     success(`«${product.title}» (${toPersianDigits(qty)} عدد) به سبد خرید افزوده شد.`);
   };
   // Worker A (buy-now): live's خرید فوری does NOT add to cart. It
   // stages a direct-buy payload (index-MERGED.js PDP _e) and opens
   // the address modal; the drawer then checks out that line only.
   const handleBuyNow = () => {
-    if (outOfStock) return;
+    if (!purchase || !cartQuantityAllowed([], purchase, qty)) return;
     if (!currentStore) return;
     if (!publishedInCurrentStore) {
       error(`این کالا در «${currentStore.name}» عرضه نمی‌شود.`);
@@ -234,7 +196,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     startDirectBuy({
       product: displayProduct,
       qty,
-      variantId: selectedVariantId ?? undefined,
+      variantId: selectedVariant?.id,
       variantLabel: selectedVariant?.name,
       addonIds: selectedAddonIds,
       addonSnapshot: detailAddons,
@@ -331,6 +293,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         {showVariantSelector && selectedVariant && (
           <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
             <ProductVariantSelector
+              product={displayBase}
               variants={variants}
               variantPrices={displayProduct.variantPrices}
               selectedId={selectedVariant.id}
@@ -431,21 +394,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         )}
 
       </div>
-      {related.length > 0 && (
-        <div className="px-3.5 -mt-3.5 pb-3.5 lg:px-0 lg:pb-0 lg:mt-0 lg:col-span-2">
-          <div className={fashion ? 'pt-3 border-t border-[#e5e0d8] space-y-2' : 'pt-3 border-t border-slate-100 space-y-2'}>
-          <h3 className={fashion ? 'text-base lg:text-lg xl:text-xl font-bold text-[#1c1c1a] flex items-center gap-1' : 'text-base lg:text-lg xl:text-xl font-bold text-slate-800 flex items-center gap-1'}>
-            <Sparkles className={fashion ? 'w-3.5 h-3.5 text-[#1c1c1a]' : 'w-3.5 h-3.5 text-brand-deep'}  strokeWidth={1.5}/>
-            <span>کالاهای مرتبط و مشابه</span>
-          </h3>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {related.map((p) => (
-              <ProductCard key={p.id} product={p} />
-            ))}
-          </div>
-          </div>
-        </div>
-      )}
+      <ProductDetailRelated products={related} fashion={fashion} onOpen={openProductDetail} />
       </div>
 
     </div>

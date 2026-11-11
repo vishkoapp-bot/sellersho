@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/drup/platform/internal/adguard"
 	"strings"
 	"time"
 
@@ -218,7 +219,7 @@ func (r *StoreRepository) SetSellerCampaignStatus(ctx context.Context, ownerID, 
 	return nil
 }
 
-func (r *StoreRepository) RecordSellerCampaignEvent(ctx context.Context, campaignID, eventType, token, productID string) (bool, error) {
+func (r *StoreRepository) RecordSellerCampaignEvent(ctx context.Context, campaignID, eventType, token, productID string, evidence ...adguard.Evidence) (bool, error) {
 	if _, err := uuid.Parse(campaignID); err != nil {
 		return false, ErrCampaignInput
 	}
@@ -257,15 +258,38 @@ func (r *StoreRepository) RecordSellerCampaignEvent(ctx context.Context, campaig
 			return false, ErrCampaignInput
 		}
 	}
+	if len(evidence) > 0 {
+		for _, key := range []string{"ip:" + evidence[0].IPHash, "fp:" + evidence[0].FingerprintHash} {
+			res, e := tx.ExecContext(ctx, `INSERT INTO ad_fraud_keys(campaign_id,event_type,identity_key,expires_at) VALUES($1,$2,$3,NOW()+INTERVAL '24 hours') ON CONFLICT(campaign_id,event_type,identity_key) DO UPDATE SET expires_at=EXCLUDED.expires_at WHERE ad_fraud_keys.expires_at<=NOW()`, campaignID, eventType, key)
+			if e != nil {
+				return false, e
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				return false, nil
+			}
+		}
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO seller_campaign_events(campaign_id,store_id,event_type,ad_token,product_id) VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,'')) ON CONFLICT DO NOTHING`, campaignID, storeID, eventType, token, productID)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
 	return n == 1, nil
+}
+
+func (r *StoreRepository) RejectAdEvent(ctx context.Context, campaign, event, token, reason, ipHash string) error {
+	if len(token) > 12 {
+		token = token[:12]
+	}
+	_, e := r.db.ExecContext(ctx, `INSERT INTO ad_event_rejections(campaign_id,event_type,token_prefix,reason,ip_address) VALUES($1,$2,$3,$4,$5)`, campaign, event, token, reason, ipHash)
+	return e
 }
 
 func (r *StoreRepository) SellerCampaignAnalytics(ctx context.Context, ownerID, slug, campaignID string) (*SellerCampaignAnalytics, error) {

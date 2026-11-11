@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS operations_job_runs;
+DROP INDEX IF EXISTS orders_payment_expiry_idx;
+ALTER TABLE orders DROP COLUMN IF EXISTS payment_expires_at;
+DROP TABLE IF EXISTS ad_fraud_keys;
+DROP TABLE IF EXISTS ad_request_limits;
+DROP TABLE IF EXISTS supplier_sla_metrics;
+ALTER TABLE qc_discrepancies DROP COLUMN IF EXISTS response_due_at, DROP COLUMN IF EXISTS responded_at, DROP COLUMN IF EXISTS escalated_at;
+ALTER TABLE qc_discrepancies DROP COLUMN IF EXISTS admin_resolution, DROP COLUMN IF EXISTS reviewed_by;
+ALTER TABLE warehouse_bins DROP COLUMN IF EXISTS position_x, DROP COLUMN IF EXISTS position_y, DROP COLUMN IF EXISTS position_z;
+DROP TABLE IF EXISTS store_domains;

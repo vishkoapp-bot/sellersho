@@ -1,8 +1,16 @@
 import { apiRequest, tokenStore, getApiBase } from './apiClient';
+import type { ProductSchema } from '../types/productSchema';
+
+export interface SupplierSKUIdentity { variantId?: string; variantName?: string; variantSpnc?: string; }
+export interface SupplierProductVariantDto { id: string; variant_name: string; spnc: string; stock: number; selection?: Record<string,string>; attributes?: Record<string,string>; is_default?: boolean; is_active?: boolean; inventory_mode?: 'legacy'|'tracked'; combination_key?: string; min_cart_qty?: number|null; max_cart_qty?: number|null; supplier_base_cost?: number|null; }
+export interface SupplierOrderItemDto extends SupplierSKUIdentity { orderItemId?: string; productId: string; productTitle: string; quantity: number; }
 
 export interface TapinBoxDto { id: string; title: string; lengthCm: number; widthCm: number; heightCm: number; maxWeightGrams?: number | null; isActive: boolean; sort: number }
 
 export interface SupplierProductDto {
+  productType?: 'legacy'|'simple'|'variable';
+  schemaVersion?: number;
+  productSchema?: ProductSchema;
   id: string;
   title: string;
   slug: string;
@@ -26,12 +34,12 @@ export interface SupplierProductDto {
   rating?: number;
   reviewsCount?: number;
 }
-export interface SupplierReturnRequestDto { id:string; supplierId?:string; productId:string; productTitle:string; warehouseName:string; requestedQuantity:number; eligibleQuantity:number; collectionMethod:'supplier_collect'|'postal'; postalCharge:number; status:string; reason:string; createdAt:string; reviewedAt?:string; handoverAt?:string; receivedAt?:string; inspectedAt?:string; inspectionStatus?:string; acceptedQuantity?:number; failedQuantity?:number; }
+export interface SupplierReturnRequestDto extends SupplierSKUIdentity { id:string; supplierId?:string; productId:string; productTitle:string; warehouseName:string; requestedQuantity:number; eligibleQuantity:number; collectionMethod:'supplier_collect'|'postal'; postalCharge:number; status:string; reason:string; createdAt:string; reviewedAt?:string; handoverAt?:string; receivedAt?:string; inspectedAt?:string; inspectionStatus?:string; acceptedQuantity?:number; failedQuantity?:number; }
 export interface ReturnParcelInput { quantity:number; carrierCode:string; paymentMethod:'sender_pays'|'receiver_pays'; origin:string; destination:string; lengthMm:number; widthMm:number; heightMm:number; weightGrams:number; estimatedCharge?:number; estimateSource?:'tariff'|'api'|'manual'; estimateReference?:string; finalCharge?:number; finalChargeSource?:'tariff'|'api'|'manual'; finalChargeReference?:string; trackingNumber?:string; notes?:string; }
 export interface ReturnParcelDto extends ReturnParcelInput { id:string; returnRequestId:string; parcelNumber:number; status:string; createdBy:string; confirmedBy?:string; }
 export interface ReturnFinancialEventDto { id:string; returnRequestId:string; parcelId?:string; operation:string; amount:number; paymentMethod:string; ledgerEntryId?:string; reason:string; actorUserId:string; createdAt:string; }
 export interface CarrierOptionDto { code:string; displayName:string; supportsSenderPays:boolean; supportsReceiverPays:boolean; supportsQuoteApi:boolean; tariffVersion:number; }
-export interface SupplierInventoryLocationDto { productId:string; productTitle:string; ownerType:string; locationType:string; locationKey:string; warehouseName?:string; binCode?:string; status:string; quantity:number; reconciled:boolean; }
+export interface SupplierInventoryLocationDto extends SupplierSKUIdentity { allocation?: 'sku'|'unallocated'; productId:string; productTitle:string; ownerType:string; locationType:string; locationKey:string; warehouseName?:string; binCode?:string; status:string; quantity:number; reconciled:boolean; }
 export interface WarrantyPropertyDto { id:string; name:string; description:string; status:string; }
 
 export interface SupplierInboundDto {
@@ -49,6 +57,9 @@ export interface SupplierInboundDto {
 }
 
 export interface SupplierDiscrepancyDto {
+  response_due_at: string;
+  responded_at?: string;
+  escalated_at?: string;
   id: string;
   inbound_id: string;
   supplier_id: string;
@@ -81,6 +92,7 @@ export interface SupplierCampaignStatsDto {
 }
 
 export interface SupplierOrderDto {
+  items?: SupplierOrderItemDto[];
   id: string;
   orderId: string;
   orderNumber: string;
@@ -95,7 +107,8 @@ export interface SupplierOrderDto {
   itemCount: number;
 }
 
-export interface SupplierWarehouseOrderItemDto {
+export interface SupplierWarehouseOrderItemDto extends SupplierSKUIdentity {
+  orderItemId?: string;
   productId: string;
   productTitle: string;
   quantity: number;
@@ -250,7 +263,7 @@ export const supplierApi = {
   getProducts: () => apiRequest<SupplierProductDto[]>('/supplier/products', { method: 'GET', auth: true }),
   getProposals: () => apiRequest<SupplierProposalDto[]>('/supplier/products/proposals', { method: 'GET', auth: true }),
   proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
-  updateStock: (productId: string, newStock: number, reason?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason }) }),
+  updateStock: (productId: string, newStock: number, reason?: string, variantId?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
   updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest<UpdatePricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
   // Gap 11 — price-increase governance: own request history + exception tickets.
   getPriceIncreases: () => apiRequest<SupplierPriceIncreaseDto[]>('/supplier/price-increases', { method: 'GET', auth: true }),
@@ -262,7 +275,7 @@ export const supplierApi = {
     const data = await apiRequest<any>('/supplier/shipments', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.shipments ?? []);
   },
-  getVariants: async (productId: string): Promise<any[]> => {
+  getVariants: async (productId: string): Promise<SupplierProductVariantDto[]> => {
     const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/variants`, { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.variants ?? []);
   },
@@ -375,7 +388,7 @@ export const supplierApi = {
   acceptOrder: (orderId: string) => apiRequest<{ success: boolean; status: string }>(`/supplier/orders/${encodeURIComponent(orderId)}/accept`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
   getWarehouseOrders: (page = 1, pageSize = 20) => apiRequest<{ success: boolean; orders: SupplierWarehouseOrderDto[]; total: number; page: number; pageSize: number }>(`/supplier/warehouse-orders?page=${page}&pageSize=${pageSize}`, { method: 'GET', auth: true }),
   getReturns: () => apiRequest<SupplierReturnRequestDto[]>('/supplier/returns', { method:'GET', auth:true }),
-  requestReturn: (productId:string, quantity:number, collectionMethod:'supplier_collect'|'postal', reason:string, idempotencyKey:string) => apiRequest<SupplierReturnRequestDto>('/supplier/returns', { method:'POST', auth:true, headers:{'Idempotency-Key':idempotencyKey}, body:JSON.stringify({productId,quantity,collectionMethod,reason}) }),
+  requestReturn: (productId:string, quantity:number, collectionMethod:'supplier_collect'|'postal', reason:string, idempotencyKey:string, variantId?:string) => apiRequest<SupplierReturnRequestDto>('/supplier/returns', { method:'POST', auth:true, headers:{'Idempotency-Key':idempotencyKey}, body:JSON.stringify({productId,quantity,collectionMethod,reason,variantId}) }),
   cancelReturn: (returnId:string, reason:string) => apiRequest(`/supplier/returns/${encodeURIComponent(returnId)}/cancel`, { method:'POST', auth:true, headers:{'Idempotency-Key':`cancel-${returnId}`}, body:JSON.stringify({reason}) }),
   getWarranties: () => apiRequest<WarrantyPropertyDto[]>('/supplier/warranties', { method:'GET', auth:true }),
   requestWarranty: (payload:{productId?:string;name:string;description:string;images:string[]}) => apiRequest<{success:boolean;id:string;status:string}>('/supplier/warranties', { method:'POST', auth:true, body:JSON.stringify(payload) }),

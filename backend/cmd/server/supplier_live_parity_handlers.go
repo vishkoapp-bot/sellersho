@@ -9,14 +9,14 @@ import (
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/tapin"
-	"github.com/drup/platform/internal/domain"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
-	"github.com/google/uuid"
 )
 
 // Live-parity supplier handlers (Team 06, Phase 2; MASTER-AUDIT D11/D12/D15).
@@ -1094,11 +1094,36 @@ func (h *SupplierHandlers) HandleCreateProductVariant(w http.ResponseWriter, r *
 		return
 	}
 	var body struct {
-		VariantName string            `json:"variant_name"`
-		Attributes  map[string]string `json:"attributes"`
+		ID               string            `json:"id"`
+		Selection        map[string]string `json:"selection"`
+		IsActive         *bool             `json:"is_active"`
+		Stock            int               `json:"stock"`
+		SupplierBaseCost *int64            `json:"supplier_base_cost"`
+		MinCartQty       *int              `json:"min_cart_qty"`
+		MaxCartQty       *int              `json:"max_cart_qty"`
+		VariantName      string            `json:"variant_name"`
+		Attributes       map[string]string `json:"attributes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Selection != nil {
+		if body.IsActive == nil {
+			http.Error(w, `{"error":"SKU active state required"}`, http.StatusBadRequest)
+			return
+		}
+		out, err := h.supplierRepo.CreateProductVariantV2(r.Context(), supplierID, productID, repository.SupplierProductVariant{ID: body.ID, Selection: body.Selection, IsActive: *body.IsActive, Stock: body.Stock, SupplierBaseCost: body.SupplierBaseCost, MinCartQty: body.MinCartQty, MaxCartQty: body.MaxCartQty})
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			http.Error(w, `{"error":"Invalid canonical SKU configuration"}`, status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
 		return
 	}
 	if strings.TrimSpace(body.VariantName) == "" {
@@ -1128,13 +1153,33 @@ func (h *SupplierHandlers) HandleCreateProductVariantsBulk(w http.ResponseWriter
 		return
 	}
 	var body struct {
-		Variants []repository.SupplierProductVariant `json:"variants"`
+		Variants []json.RawMessage `json:"variants"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
-	count, err := h.supplierRepo.CreateProductVariantsBulk(r.Context(), supplierID, productID, body.Variants)
+	variants := make([]repository.SupplierProductVariant, 0, len(body.Variants))
+	for _, raw := range body.Variants {
+		var v repository.SupplierProductVariant
+		var fields map[string]interface{}
+		if err := json.Unmarshal(raw, &v); err != nil {
+			http.Error(w, `{"error":"invalid SKU"}`, 400)
+			return
+		}
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			http.Error(w, `{"error":"invalid SKU"}`, 400)
+			return
+		}
+		if v.Selection != nil {
+			if _, ok := fields["is_active"].(bool); !ok {
+				http.Error(w, `{"error":"SKU active state required"}`, 400)
+				return
+			}
+		}
+		variants = append(variants, v)
+	}
+	count, err := h.supplierRepo.CreateProductVariantsBulk(r.Context(), supplierID, productID, variants)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)

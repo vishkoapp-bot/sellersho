@@ -59,7 +59,7 @@ func (r *SupplierShipmentRepository) CreateShipment(ctx context.Context, shipmen
 // GetPendingShipments returns pending shipments for a given supplier (or all if empty/admin)
 func (r *SupplierShipmentRepository) GetPendingShipments(ctx context.Context, supplierID string) ([]domain.SupplierShipment, error) {
 	query := `
-		SELECT 
+		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
@@ -129,7 +129,7 @@ func (r *SupplierShipmentRepository) GetShipments(ctx context.Context, supplierI
 	}
 
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
@@ -174,7 +174,7 @@ func (r *SupplierShipmentRepository) GetShipments(ctx context.Context, supplierI
 // GetShipmentByID retrieves a shipment record by its primary key
 func (r *SupplierShipmentRepository) GetShipmentByID(ctx context.Context, id string) (*domain.SupplierShipment, error) {
 	query := `
-		SELECT 
+		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
@@ -241,7 +241,7 @@ func (r *SupplierShipmentRepository) scanShipment(ctx context.Context, query str
 // GetShipmentByOrderID retrieves the direct shipment record for an order
 func (r *SupplierShipmentRepository) GetShipmentByOrderID(ctx context.Context, orderID string) (*domain.SupplierShipment, error) {
 	query := `
-		SELECT 
+		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
@@ -399,8 +399,12 @@ func (r *SupplierShipmentRepository) LogShipmentAudit(ctx context.Context, shipm
 // warehouse-routed order. Wholesale cost only: this view never carries the
 // dropshipper's margin or the final customer price.
 type SupplierWarehouseOrderItem struct {
+	OrderItemID   string `json:"orderItemId"`
 	ProductID     string `json:"productId"`
 	ProductTitle  string `json:"productTitle"`
+	VariantID     string `json:"variantId,omitempty"`
+	VariantName   string `json:"variantName,omitempty"`
+	VariantSPNC   string `json:"variantSpnc,omitempty"`
 	Quantity      int    `json:"quantity"`
 	WholesaleCost int64  `json:"wholesaleCost"`
 	LineTotal     int64  `json:"lineTotal"`
@@ -470,7 +474,8 @@ func (r *SupplierShipmentRepository) GetSupplierWarehouseOrders(ctx context.Cont
 
 	for i := range orders {
 		itemRows, err := r.db.QueryContext(ctx, `
-			SELECT oi.product_id, p.title, oi.quantity, oi.wholesale_cost
+			SELECT oi.product_id, p.title, oi.quantity, oi.wholesale_cost, oi.id::text,
+			       COALESCE(oi.variant_id::text,''), COALESCE(oi.variant_name,''), COALESCE(oi.variant_spnc,'')
 			FROM order_items oi
 			JOIN products p ON p.id = oi.product_id
 			WHERE oi.order_id = $1 AND p.supplier_id = $2
@@ -481,7 +486,7 @@ func (r *SupplierShipmentRepository) GetSupplierWarehouseOrders(ctx context.Cont
 		}
 		for itemRows.Next() {
 			var item SupplierWarehouseOrderItem
-			if err := itemRows.Scan(&item.ProductID, &item.ProductTitle, &item.Quantity, &item.WholesaleCost); err != nil {
+			if err := itemRows.Scan(&item.ProductID, &item.ProductTitle, &item.Quantity, &item.WholesaleCost, &item.OrderItemID, &item.VariantID, &item.VariantName, &item.VariantSPNC); err != nil {
 				itemRows.Close()
 				return nil, 0, fmt.Errorf("scan supplier warehouse order item: %w", err)
 			}

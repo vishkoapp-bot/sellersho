@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
@@ -13,7 +13,34 @@ import { SupplierAddonsWidget } from './SupplierAddonsWidget';
 import { SupplierProposeForm } from './SupplierProposeForm';
 import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
 
-export const SupplierProductsTab: React.FC = () => {
+// Reject-notification deep-link decision (DESIGN.md §4.3-4.4), extracted
+// as a pure function so the guard / consume-once semantics are
+// unit-testable: renderToStaticMarkup never runs effects, so the effect
+// below cannot be exercised by a static render. The effect applies the
+// outcome verbatim — 'focus' means switch to proposed_offers and (when
+// targetId is set) scroll to + open the SupplierFeedbackModal for that
+// proposal after a paint; the caller marks the id handled and reports it
+// consumed. 'skip' while loading deliberately does NOT consume the id,
+// so the deep-link still lands once the proposals arrive.
+export type ProposalFocusOutcome =
+  | { kind: 'reset' }
+  | { kind: 'skip' }
+  | { kind: 'focus'; focusId: string; targetId: string | null };
+
+export const resolveProposalFocus = (
+  focusProposalId: string | null | undefined,
+  proposals: Array<{ id: string | number }>,
+  handledId: string | null,
+  loading: boolean,
+): ProposalFocusOutcome => {
+  if (!focusProposalId) return { kind: 'reset' };
+  if (handledId === focusProposalId) return { kind: 'skip' };
+  if (loading) return { kind: 'skip' };
+  const target = proposals.find((prop) => String(prop.id) === String(focusProposalId));
+  return { kind: 'focus', focusId: focusProposalId, targetId: target ? String(target.id) : null };
+};
+
+export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void }> = ({ focusProposalId, onFocusConsumed }) => {
   const {
     supplierSession,
     formatPrice,
@@ -36,6 +63,19 @@ export const SupplierProductsTab: React.FC = () => {
   const [variantsProduct, setVariantsProduct] = useState<SupplierProductDto | null>(null);
   const [reviewsProduct, setReviewsProduct] = useState<SupplierProductDto | null>(null);
   const [feedbackProposalId, setFeedbackProposalId] = useState<string | null>(null);
+  // Reject-notification deep-link (DESIGN.md §4.3-4.4): the drawer hands
+  // this tab a proposal id; the tab switches to proposed_offers, scrolls
+  // the card into view with a temporary rose ring, and auto-opens the
+  // existing SupplierFeedbackModal (the resubmit flow) for it. No second
+  // edit path is built; the focus is consumed once so re-renders never
+  // re-open the modal.
+  const [highlightedProposalId, setHighlightedProposalId] = useState<string | null>(null);
+  const handledFocusRef = useRef<string | null>(null);
+  const scrollToProposal = (id: string) => {
+    setHighlightedProposalId(id);
+    document.getElementById(`proposal-card-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => setHighlightedProposalId((cur) => (cur === id ? null : cur)), 5000);
+  };
   const [originWarehouseId, setOriginWarehouseId] = useState('');
   useEffect(() => {
     supplierApi.getMyWarehouses().then(setMyWarehouses).catch(() => {});
@@ -60,6 +100,20 @@ export const SupplierProductsTab: React.FC = () => {
   const [editedSupplyOption, setEditedSupplyOption] = useState<'3hour_local' | '1day' | '3day'>('1day');
   const supplierProducts = productsResource.error ? [] : productsResource.data || [];
   const supplierProposedOffers = proposalsResource.error ? [] : proposalsResource.data || [];
+  const rejectedProposals = supplierProposedOffers.filter((prop) => prop.status === 'rejected');
+  useEffect(() => {
+    const outcome = resolveProposalFocus(focusProposalId, supplierProposedOffers, handledFocusRef.current, proposalsResource.loading);
+    if (outcome.kind === 'reset') { handledFocusRef.current = null; return; }
+    if (outcome.kind === 'skip') return;
+    handledFocusRef.current = outcome.focusId;
+    setSubTab('proposed_offers');
+    if (outcome.targetId !== null) {
+      const targetId = outcome.targetId;
+      // Let the proposed_offers list render before scrolling/opening.
+      window.setTimeout(() => { scrollToProposal(targetId); setFeedbackProposalId(targetId); }, 50);
+    }
+    onFocusConsumed?.();
+  }, [focusProposalId, proposalsResource.loading, supplierProposedOffers, onFocusConsumed]);
   const canManageStock = supplierSession?.permissions?.some(permission => permission === 'supplier.manage' || permission === 'inventory.manage');
   React.useEffect(() => { supplierApi.getWarranties().then(setWarranties).catch(() => undefined); }, []);
 
@@ -404,6 +458,12 @@ export const SupplierProductsTab: React.FC = () => {
       {/* Sub-Tab 2: Proposed Product Offers Sent to Admin */}
       {subTab === 'proposed_offers' && (
         <div className="space-y-2.5">
+          {rejectedProposals.length > 0 && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 flex items-center justify-between gap-2 text-xs">
+              <p className="text-rose-800 font-bold leading-5">{toPersianDigits(rejectedProposals.length)} پیشنهاد رد شده — علت را بخوانید، ویرایش کنید و دوباره بفرستید.</p>
+              <button type="button" onClick={() => scrollToProposal(String(rejectedProposals[0].id))} className="shrink-0 min-h-[36px] px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold transition">مشاهده اولین ردشده</button>
+            </div>
+          )}
           {supplierProposedOffers.length === 0 ? (
             <div className="bg-white rounded-2xl p-6 text-center space-y-1.5">
               <p className="text-xs font-bold text-slate-600">هنوز پیشنهادی نفرستاده‌ای.</p>
@@ -411,7 +471,7 @@ export const SupplierProductsTab: React.FC = () => {
             </div>
           ) : (
             supplierProposedOffers.map((prop) => (
-              <div key={prop.id} className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2 text-xs">
+              <div key={prop.id} id={`proposal-card-${prop.id}`} className={`bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2 text-xs transition-shadow ${highlightedProposalId === String(prop.id) ? 'ring-2 ring-rose-400 border-rose-300' : ''}`}>
                 <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
                   <div>
                     <span className="font-bold text-slate-900">{prop.title}</span>
@@ -449,7 +509,12 @@ export const SupplierProductsTab: React.FC = () => {
                   </div>
                 )}
                 {(prop.status === 'rejected' || prop.status === 'pending') && (
-                  <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="w-full py-1.5 min-h-[40px] text-[11px] font-bold rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50 transition">دیدن نظر مدیر درباره هر بخش</button>
+                  <div className="space-y-1.5">
+                    <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="w-full py-1.5 min-h-[40px] text-[11px] font-bold rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50 transition">دیدن نظر مدیر درباره هر بخش</button>
+                    {prop.status === 'rejected' && (
+                      <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="w-full py-1.5 min-h-[40px] text-[11px] font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition">ویرایش و ارسال مجدد</button>
+                    )}
+                  </div>
                 )}
               </div>
             ))

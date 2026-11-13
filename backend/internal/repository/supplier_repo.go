@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -606,8 +607,36 @@ func (r *SupplierRepository) ReactivateSupplier(ctx context.Context, supplierID,
 // ApproveProposal's atomic backstop: an already-approved proposal
 // can never be flipped back to rejected, and a double rejection
 // reports ErrProposalNotPending instead of rewriting the row.
+//
+// The reject runs in its own transaction (Tx 1) and commits before
+// any notification is attempted. On the single successful flip it
+// best-effort notifies the proposing supplier's owner
+// (notifyProposalRejected, Tx 2): a notification failure —
+// unresolvable recipient, missing outbox table, insert error — is
+// logged and never fails the rejection, because the admin's decision
+// is authoritative and the supplier still sees the rejection
+// passively in the proposed-offers list.
 func (r *SupplierRepository) RejectProposal(ctx context.Context, proposalID, reason string) error {
-	res, err := r.db.ExecContext(ctx, `
+	// Tx 1 — the reject (authoritative, unchanged semantics).
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var title, requestedBy string
+	err = tx.QueryRowContext(ctx, `
+		SELECT title, requested_by FROM pending_approvals
+		WHERE id = $1 AND entity_type = 'proposed_product' AND status = 'pending'
+		FOR UPDATE
+	`, proposalID).Scan(&title, &requestedBy)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ErrProposalNotPending
+		}
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
 		UPDATE pending_approvals
 		SET status = 'rejected', rejection_reason = NULLIF($2, ''), reviewed_at = NOW()
 		WHERE id = $1 AND entity_type = 'proposed_product' AND status = 'pending'
@@ -618,7 +647,82 @@ func (r *SupplierRepository) RejectProposal(ctx context.Context, proposalID, rea
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrProposalNotPending
 	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Tx 2 — the notification (best-effort, separate tx so a notify
+	// failure can never roll the rejection back).
+	r.notifyProposalRejected(ctx, proposalID, title, requestedBy, reason)
 	return nil
+}
+
+// truncateRunes shortens s to at most n runes (no-op when shorter).
+// The notification title column is VARCHAR(200); the composed title
+// keeps the product title to ~60 chars so the fixed Persian wording
+// always fits.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// notifyProposalRejected inserts one proposal_rejected outbox row for
+// the supplier that proposed the product. Best-effort by design: every
+// failure path logs a structured line and returns without error — the
+// rejection already committed and must never be undone by a
+// notification problem. No fallback recipient is ever guessed: if the
+// supplier row is gone or its owner_user_id is NULL, there is no
+// correct recipient to notify.
+func (r *SupplierRepository) notifyProposalRejected(ctx context.Context, proposalID, productTitle, supplierID, reason string) {
+	supplier, err := r.GetSupplierByID(ctx, supplierID)
+	if err != nil {
+		log.Printf("proposal_rejected_notify_skipped proposal_id=%s supplier_id=%s reason=supplier_lookup_error error=%v", proposalID, supplierID, err)
+		return
+	}
+	if supplier == nil {
+		log.Printf("proposal_rejected_notify_skipped proposal_id=%s supplier_id=%s reason=supplier_not_found", proposalID, supplierID)
+		return
+	}
+	if supplier.OwnerUserID == nil || *supplier.OwnerUserID == "" {
+		log.Printf("proposal_rejected_notify_skipped proposal_id=%s supplier_id=%s reason=owner_user_id_null", proposalID, supplierID)
+		return
+	}
+	recipient := *supplier.OwnerUserID
+
+	title := fmt.Sprintf("پیشنهاد «%s» رد شد", truncateRunes(productTitle, 60))
+	var body string
+	if strings.TrimSpace(reason) == "" {
+		body = fmt.Sprintf("مدیر پلتفرم پیشنهاد کالای «%s» را تأیید نکرد. دلیلی ثبت نشده است؛ جزئیات را در بخش «پیشنهادها» ببینید و در صورت نیاز پیشنهاد را ویرایش و دوباره ارسال کنید.", productTitle)
+	} else {
+		body = fmt.Sprintf("مدیر پلتفرم پیشنهاد کالای «%s» را تأیید نکرد. علت عدم تأیید: %s برای ویرایش و ارسال مجدد، به بخش «پیشنهادها» در پنل تأمین‌کننده بروید.", productTitle, reason)
+	}
+	payload := map[string]interface{}{
+		"proposal_id":   proposalID,
+		"event":         "proposal_rejected",
+		"entity_type":   "proposed_product",
+		"product_title": productTitle,
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("proposal_rejected_notify_failed proposal_id=%s supplier_id=%s recipient_user_id=%s reason=tx_begin_error error=%v", proposalID, supplierID, recipient, err)
+		return
+	}
+	defer tx.Rollback()
+	if err := NotifyUser(ctx, tx, recipient, NotifKindProposalRejected, title, body, payload); err != nil {
+		log.Printf("proposal_rejected_notify_failed proposal_id=%s supplier_id=%s recipient_user_id=%s reason=notify_insert_error error=%v", proposalID, supplierID, recipient, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("proposal_rejected_notify_failed proposal_id=%s supplier_id=%s recipient_user_id=%s reason=tx_commit_error error=%v", proposalID, supplierID, recipient, err)
+		return
+	}
 }
 
 // IsPendingApproval reports whether the user's supplier account is still

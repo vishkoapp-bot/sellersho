@@ -33,6 +33,11 @@ import (
 // (packing/shipping). Its stored string value is unverified; see file header.
 const NotifKindOrderStatus = "order_status"
 
+// NotifKindProposalRejected is the notification kind for a super-admin
+// rejection of a supplier's proposed product (RejectProposal). It is
+// addressed to the proposing supplier's owner user.
+const NotifKindProposalRejected = "proposal_rejected"
+
 // syncProductStockTx re-syncs the products.stock projection from the canonical
 // inventory_balances ledger: SUM(quantity) over status='sellable' rows. It is
 // a no-op for products with no balance rows, so legacy products keep their

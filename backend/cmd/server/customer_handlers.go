@@ -471,50 +471,16 @@ func handleT01Notifications(w http.ResponseWriter, r *http.Request, db *sql.DB) 
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	ctx := r.Context()
-	if !t01TableExists(ctx, db, "notification_outbox") {
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"notifications": []interface{}{}})
-		return
-	}
-	var unreadCount int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM notification_outbox
-		WHERE recipient_user_id = $1::uuid AND status <> 'read'`, userID).Scan(&unreadCount); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	rows, err := db.QueryContext(ctx,
-		`SELECT id, kind, title, body, payload, status, created_at, sent_at FROM notification_outbox
-		WHERE recipient_user_id = $1::uuid ORDER BY created_at DESC LIMIT 100`, userID)
+	items, unreadCount, exists, err := listNotificationsForUser(r.Context(), db, userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	defer rows.Close()
-	out := []map[string]interface{}{}
-	for rows.Next() {
-		var id, kind, title, body, payload, status string
-		var created time.Time
-		var sentAt sql.NullTime
-		if err := rows.Scan(&id, &kind, &title, &body, &payload, &status, &created, &sentAt); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		item := map[string]interface{}{
-			"id": id, "kind": kind, "title": title, "body": body,
-			"payload": json.RawMessage(payload),
-			"status":  status, "createdAt": created.Format(time.RFC3339),
-		}
-		if sentAt.Valid {
-			item["sentAt"] = sentAt.Time.Format(time.RFC3339)
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		writeInternalError(w, err)
+	if !exists {
+		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"notifications": []interface{}{}})
 		return
 	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": out, "unreadCount": unreadCount})
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": items, "unreadCount": unreadCount})
 }
 
 // handleT01NotificationsRead serves POST /api/v1/notifications/read.
@@ -541,36 +507,10 @@ func handleT01NotificationsRead(w http.ResponseWriter, r *http.Request, db *sql.
 	if req.ID != "" {
 		ids = append(ids, req.ID)
 	}
-	if len(ids) == 0 {
-		// Mark-all (live client POSTs /notifications/read with no body).
-		// Scoped to the caller only; pending rows are included because no
-		// pending->sent worker exists in this tree (see GET above).
-		res, err := db.ExecContext(r.Context(),
-			`UPDATE notification_outbox SET status = 'read', read_at = NOW()
-			WHERE recipient_user_id = $1::uuid AND status IN ('pending', 'sent')`, userID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		updated, _ := res.RowsAffected()
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "updated": updated})
+	updated, err := markNotificationsReadForUser(r.Context(), db, userID, ids)
+	if err != nil {
+		writeInternalError(w, err)
 		return
-	}
-	if !t01TableExists(r.Context(), db, "notification_outbox") {
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "updated": 0})
-		return
-	}
-	var updated int64
-	for _, id := range ids {
-		res, err := db.ExecContext(r.Context(),
-			`UPDATE notification_outbox SET status = 'read', read_at = NOW()
-			WHERE id = $1 AND recipient_user_id = $2::uuid AND status IN ('pending', 'sent')`, id, userID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		n, _ := res.RowsAffected()
-		updated += n
 	}
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "updated": updated})
 }

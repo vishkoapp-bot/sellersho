@@ -1415,6 +1415,16 @@ func main() {
 		}
 	}))
 
+	// Supplier notification inbox (proposal_rejected outbox rows).
+	// Same envelope as the customer /api/v1/notifications routes,
+	// scoped to the supplier owner via RequireSupplierAccess.
+	mux.HandleFunc("/api/v1/supplier/notifications", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
+		handleSupplierNotifications(w, r, db.DB)
+	}))
+	mux.HandleFunc("/api/v1/supplier/notifications/read", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
+		handleSupplierNotificationsRead(w, r, db.DB)
+	}))
+
 	// Gap 13: the legacy PUT /supplier/profile/shipping-settings
 	// route is REMOVED with its handler — supports_direct_shipping
 	// is no longer writable; the DTO field is derived from the

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SupplierAuthGuard } from './SupplierAuthGuard';
@@ -21,7 +21,8 @@ import {
   Building2,
   Boxes,
   Users,
-  Wallet
+  Wallet,
+  Bell
 } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
@@ -36,6 +37,7 @@ import { SupplierTeamTab } from './SupplierTeamTab';
 import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesTab, SupplierShippingMethodsTab, SupplierDemandInsightTab, SupplierContractTab, SupplierPlaceholderTab } from './SupplierNewTabs';
 import { SupplierProfileTab } from './SupplierProfileTab';
 import { supplierApi } from '../../services/supplierApi';
+import { SupplierNotificationDrawer } from './SupplierNotificationDrawer';
 import { ShoppingBag } from 'lucide-react';
 
 interface Props {
@@ -46,6 +48,19 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
+  // Reject-notification bell (DESIGN.md §4.3): unread count lives here,
+  // NOT in StoreContext.setUnreadNotificationCount — that counter feeds
+  // the customer/storefront header bell and would leak supplier counts
+  // into the storefront. focusProposalId is the deep-link target the
+  // drawer hands to SupplierProductsTab (one tap -> proposed_offers,
+  // highlight + SupplierFeedbackModal).
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [focusProposalId, setFocusProposalId] = useState<string | null>(null);
+  const refreshUnreadNotifCount = useCallback(() => {
+    supplierApi.getNotifications().then((res) => setUnreadNotifCount(res.unreadCount)).catch(() => {});
+  }, []);
+  useEffect(() => { refreshUnreadNotifCount(); }, [refreshUnreadNotifCount]);
   const [contractChecked, setContractChecked] = useState(false);
   const latestContractVersion = platformSettings.contracts?.supplierContractVersion || 0;
   const signedContractVersion = supplierSession?.signedContractVersion ?? 0;
@@ -137,6 +152,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // Active tab label for the desktop header title slot (item: at lg the
   // header stops repeating the identity and names the current section).
   const activeTabLabel = allowedTabs.find((item) => item.id === visibleTab)?.label;
+  // A rejection that lands while the panel is open shows only after
+  // the next drawer open / Products activation (no polling in v1).
+  useEffect(() => { if (visibleTab === 'products') refreshUnreadNotifCount(); }, [visibleTab, refreshUnreadNotifCount]);
+  const handleSelectNotifProposal = useCallback((proposalId: string) => {
+    setIsNotifOpen(false);
+    setActiveTab('products');
+    setFocusProposalId(proposalId);
+  }, []);
   // Warehouse status pill for the sidebar identity card, driven by the same
   // warehouseCityConfirmed flag as the header line: explicitly unconfirmed
   // -> amber; a recorded city -> confirmed (emerald); no city -> neutral.
@@ -201,6 +224,20 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
           </div>
         </div>
 
+        <div className="flex items-center gap-1.5">
+        <button
+          onClick={() => setIsNotifOpen(true)}
+          className="relative p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+          title="اعلان‌ها"
+          aria-label="اعلان‌ها"
+        >
+          <Bell className="w-5 h-5" strokeWidth={1.5} />
+          {unreadNotifCount > 0 && (
+            <span className="absolute -top-0.5 -left-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+              {toPersianDigits(unreadNotifCount)}
+            </span>
+          )}
+        </button>
         <button
           onClick={() => {
             logoutSupplier();
@@ -212,6 +249,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
           <LogOut className="w-4 h-4"  strokeWidth={1.5}/>
           <span>خروج</span>
         </button>
+        </div>
         </div>
       </header>
 
@@ -316,7 +354,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={setActiveTab} />}
             {visibleTab === 'orders' && <SupplierOrdersTab />}
-            {visibleTab === 'products' && <SupplierProductsTab />}
+            {visibleTab === 'products' && <SupplierProductsTab focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab />}
             {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
@@ -334,6 +372,12 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </main>
       </div>
     </div>
+      <SupplierNotificationDrawer
+        isOpen={isNotifOpen}
+        onClose={() => setIsNotifOpen(false)}
+        onSelectProposal={handleSelectNotifProposal}
+        onUnreadCountChange={setUnreadNotifCount}
+      />
     </SupplierAuthGuard>
   );
 };

@@ -259,9 +259,44 @@ export interface UpdatePricingResponse {
 // explanation in `message`).
 export type UpdateVariantPricingResponse = UpdatePricingResponse;
 
+export interface SupplierNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  payload?: { proposal_id?: string; event?: string; entity_type?: string; product_title?: string };
+  status: string;
+  createdAt: string;
+  sentAt?: string;
+}
+
+export interface SupplierNotificationsResponse {
+  success?: boolean;
+  notifications: SupplierNotification[];
+  unreadCount: number;
+}
 export const supplierApi = {
   getProducts: () => apiRequest<SupplierProductDto[]>('/supplier/products', { method: 'GET', auth: true }),
   getProposals: () => apiRequest<SupplierProposalDto[]>('/supplier/products/proposals', { method: 'GET', auth: true }),
+  // Reject-notification (DESIGN.md 4.1-4.2): supplier-scoped outbox
+  // read endpoints. Contract mirrors the customer GET/POST
+  // /api/v1/notifications[/read] envelope: {success, notifications:
+  // [{id, kind, title, body, payload, status, createdAt, sentAt?}],
+  // unreadCount}; read accepts {id}, {ids}, or empty body = mark-all
+  // and answers {success, updated}. The backend builder is implementing
+  // these routes in parallel - this client codes against that contract.
+  // Defensive normalization: when the outbox table is missing the GET
+  // returns {notifications: []} with no unreadCount (customer handler
+  // behaviour), and a bare array is tolerated too.
+  getNotifications: async (): Promise<SupplierNotificationsResponse> => {
+    const data = await apiRequest<any>('/supplier/notifications', { method: 'GET', auth: true });
+    const notifications: SupplierNotification[] = Array.isArray(data) ? data : (Array.isArray(data?.notifications) ? data.notifications : []);
+    const unreadCount: number = typeof data?.unreadCount === 'number'
+      ? data.unreadCount
+      : notifications.filter((n) => n.status !== 'read').length;
+    return { success: data?.success, notifications, unreadCount };
+  },
+  markNotificationsRead: (ids?: string[]) => apiRequest<{ success?: boolean; updated?: number; unreadCount?: number }>('/supplier/notifications/read', { method: 'POST', auth: true, body: JSON.stringify(ids?.length ? { ids } : {}) }),
   proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   updateStock: (productId: string, newStock: number, reason?: string, variantId?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
   updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest<UpdatePricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),

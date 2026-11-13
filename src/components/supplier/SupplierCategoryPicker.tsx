@@ -9,14 +9,17 @@ export interface CategorySelection {
 }
 
 
-export const SupplierCategoryPicker: React.FC<{ value: CategorySelection | null; onSelect: (cat: CategorySelection | null) => void }> = ({ value, onSelect }) => {
+export const SupplierCategoryPicker: React.FC<{ value: CategorySelection | null; onSelect: (cat: CategorySelection | null) => void; onCategoriesLoaded?: (categories: CategoryDto[]) => void }> = ({ value, onSelect, onCategoriesLoaded }) => {
   const [categories, setCategories] = useState<CategoryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let active = true; setLoading(true); setError(false);
-    catalogApi.getCategories().then(data => { if (active) setCategories(data); }).catch(() => { if (active) setError(true); }).finally(() => { if (active) setLoading(false); });
+    // onCategoriesLoaded shares the tree this picker already fetched with the propose form's
+    // category suggester, so categories are never fetched twice. Optional: existing callers
+    // are unaffected.
+    catalogApi.getCategories().then(data => { if (active) { setCategories(data); onCategoriesLoaded?.(data); } }).catch(() => { if (active) setError(true); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [retry]);
   const selectedPath = value?.path ?? [];

@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supplierApi } from '../../services/supplierApi';
-import { catalogApi, NicheDto } from '../../services/catalogApi';
+import { catalogApi, CategoryDto, NicheDto } from '../../services/catalogApi';
+import { suggestCategories, decideAutoApply } from '../../services/categorySuggest';
+import type { SuggestedCategory, SuggestResult } from '../../services/categorySuggest';
 import { getApiBase, ApiError } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
@@ -226,6 +228,20 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     const c = restoredDraft?.category;
     return c && typeof c.slug === 'string' && Array.isArray(c.path) ? c : null;
   });
+  // Category suggestion (launch-readiness/category-suggest): the picker
+  // shares the tree it already loaded via onCategoriesLoaded, so the form
+  // never fetches categories a second time. A restored draft category
+  // counts as a manual pick (autoAppliedSlug starts null), so it is never
+  // auto-overridden.
+  const [pickerCategories, setPickerCategories] = useState<CategoryDto[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestResult | null>(null);
+  const [autoAppliedSlug, setAutoAppliedSlug] = useState<string | null>(null);
+  // Refs mirror the state above so the debounced suggestion effect (which
+  // only depends on [title, pickerCategories]) always decides on the
+  // latest values, updated synchronously in the handlers below.
+  const categoryRef = useRef<CategorySelection | null>(category);
+  const autoSlugRef = useRef<string | null>(null);
+  const dismissedAutoRef = useRef<{ title: string; slug: string } | null>(null);
   const [allNiches, setAllNiches] = useState<NicheDto[]>([]);
   const [selectedNicheIds, setSelectedNicheIds] = useState<string[]>(() => {
     const ids = restoredDraft?.selectedNicheIds;
@@ -372,6 +388,47 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       target?.scrollIntoView({ block: 'center' });
     }, 0);
   };
+  // Category suggestion: debounced ~400ms after the title changes, run
+  // against the tree the picker already loaded. Auto-select only fires
+  // when the field is empty or the current pick was itself auto-applied;
+  // a hand pick or a restored draft category is never overridden, and a
+  // stale auto-applied pick is dropped when the new title no longer has
+  // a clear winner (see decideAutoApply in services/categorySuggest).
+  useEffect(() => {
+    if (pickerCategories.length === 0) { setSuggestions(null); return; }
+    const timer = setTimeout(() => {
+      const result = suggestCategories(title, pickerCategories);
+      const decision = decideAutoApply(
+        result,
+        { slug: categoryRef.current?.slug ?? null, autoApplied: autoSlugRef.current !== null && autoSlugRef.current === categoryRef.current?.slug },
+        dismissedAutoRef.current,
+        title,
+      );
+      if (decision.clearStaleAuto) {
+        categoryRef.current = null;
+        autoSlugRef.current = null;
+        setCategory(null);
+        setAutoAppliedSlug(null);
+        setBrand('');
+      }
+      if (decision.apply) {
+        const top: SuggestedCategory = decision.apply;
+        const selection: CategorySelection = { slug: top.slug, title: top.title, path: top.path, pathDisplay: top.pathDisplay, isLeaf: true };
+        categoryRef.current = selection;
+        autoSlugRef.current = top.slug;
+        setCategory(selection);
+        setAutoAppliedSlug(top.slug);
+        // Same as a hand pick via the picker: the brand list belongs to
+        // the new category, so the previous brand is cleared.
+        setBrand('');
+        clearFieldError('category');
+        clearFieldError('brand');
+      }
+      setSuggestions(result);
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, pickerCategories]);
   const goBack = () => {
     setFieldErrors({});
     setStep2Error(null);
@@ -438,6 +495,11 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     setFirstImage(null);
     setImageLink('');
     setSelectedNicheIds(visibleNiches.length > 0 ? [visibleNiches[0].id] : []);
+    categoryRef.current = null;
+    autoSlugRef.current = null;
+    dismissedAutoRef.current = null;
+    setAutoAppliedSlug(null);
+    setSuggestions(null);
   };
 
   const uploadImages = async (files: File[]) => {
@@ -570,6 +632,11 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       setCost('');
       setWarranty('۱۸ ماه گارانتی شرکتی');
       setCategory(null);
+      categoryRef.current = null;
+      autoSlugRef.current = null;
+      dismissedAutoRef.current = null;
+      setAutoAppliedSlug(null);
+      setSuggestions(null);
       setDescription('');
       setStock('100');
       setPrepDays('1');
@@ -658,6 +725,34 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       error(cause instanceof Error ? cause.message : 'ثبت درخواست گارانتی انجام نشد.');
     }
   };
+
+  // Suggestion UI actions (step 1): tapping a chip is a hand pick — it
+  // counts as manual, so later title edits never auto-override it.
+  const applySuggestionChip = (suggestion: SuggestedCategory) => {
+    const selection: CategorySelection = { slug: suggestion.slug, title: suggestion.title, path: suggestion.path, pathDisplay: suggestion.pathDisplay, isLeaf: true };
+    categoryRef.current = selection;
+    autoSlugRef.current = null;
+    setAutoAppliedSlug(null);
+    setCategory(selection);
+    setBrand('');
+    clearFieldError('category');
+    clearFieldError('brand');
+  };
+  // One tap to clear an auto-applied category. The dismissal is recorded
+  // for the current title so the debounced effect does not re-apply the
+  // same leaf; editing the title clears it and re-arms suggestion.
+  const clearAutoSuggestion = () => {
+    const current = categoryRef.current;
+    if (!current) return;
+    dismissedAutoRef.current = { title, slug: current.slug };
+    categoryRef.current = null;
+    autoSlugRef.current = null;
+    setAutoAppliedSlug(null);
+    setCategory(null);
+    setBrand('');
+    setSuggestions(null);
+  };
+  const autoHintVisible = autoAppliedSlug !== null && category?.slug === autoAppliedSlug;
 
   const inputClass = 'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden';
   const filledVariantCount = variants.filter((v) => v.name.trim() !== '').length;
@@ -767,15 +862,33 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         <div className="space-y-3">
           <div>
             <label className="text-[10px] text-slate-600 block mb-1">نام کالا</label>
-            <input ref={refFor('title')} type="text" placeholder="مثال: ساعت هوشمند اولترا ۴…" value={title} onChange={(e) => { setTitle(e.target.value); clearFieldError('title'); }} className={inputClass + invalidClass('title')} {...invalidProps('title')} />
+            <input ref={refFor('title')} type="text" placeholder="مثال: ساعت هوشمند اولترا ۴…" value={title} onChange={(e) => { const nextTitle = e.target.value; setTitle(nextTitle); clearFieldError('title'); if (dismissedAutoRef.current && dismissedAutoRef.current.title !== nextTitle) dismissedAutoRef.current = null; }} className={inputClass + invalidClass('title')} {...invalidProps('title')} />
             {fieldError('title')}
+            {suggestions?.verdict === 'chips' && suggestions.top.length > 0 && (
+              <div className="mt-1.5">
+                <p className="text-[10px] text-slate-600 mb-1">دستهٔ پیشنهادی:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {suggestions.top.map((suggestion) => (
+                    <button key={suggestion.slug} type="button" onClick={() => applySuggestionChip(suggestion)} className="px-2 py-1 rounded-lg text-[10px] font-bold bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100">
+                      {suggestion.pathDisplay}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="space-y-2 pt-1 border-t border-slate-100">
             <div>
               <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
               <div ref={refFor('category')} tabIndex={-1} className="outline-none">
-                <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat); setBrand(''); clearFieldError('category'); clearFieldError('brand'); }} />
+                <SupplierCategoryPicker value={category} onCategoriesLoaded={setPickerCategories} onSelect={(cat) => { categoryRef.current = cat; autoSlugRef.current = null; setAutoAppliedSlug(null); setCategory(cat); setBrand(''); clearFieldError('category'); clearFieldError('brand'); }} />
               </div>
+              {autoHintVisible && category && (
+                <p className="text-[11px] leading-5 text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-2.5 py-1.5 mt-1.5 flex items-center justify-between gap-2">
+                  <span>دستهٔ پیشنهادی بر اساس نام کالا: {category.pathDisplay} — اگر درست نیست، عوضش کن.</span>
+                  <button type="button" onClick={clearAutoSuggestion} className="shrink-0 font-bold underline">حذف</button>
+                </p>
+              )}
               {fieldError('category')}
             </div>
             <div>

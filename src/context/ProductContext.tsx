@@ -29,6 +29,20 @@ const mapBackendVariant = (variant: NonNullable<ProductDto['variants']>[number])
   imageUrl: variant.imageUrl ?? variant.images?.[0] ?? null,
 });
 
+// Admin-review fix (Nov 13): stale mock-era entries in localStorage
+// (drup_custom_approved_products) used to be PREPENDED in live mode too,
+// so they occupied the head of the live catalog and pushed real products
+// down. In live mode the server list leads and customs only fill gaps
+// at the end; customs lead only in mock mode, where they are the source
+// of approved products. Pure helper so the ordering is unit-testable.
+export const mergeCatalogLists = (baseCatalogList: Product[], customApprovedProducts: Product[], mockMode: boolean): Product[] => mockMode ? [
+  ...customApprovedProducts,
+  ...baseCatalogList.filter((b) => !customApprovedProducts.some((c) => c.id === b.id)),
+] : [
+  ...baseCatalogList,
+  ...customApprovedProducts.filter((c) => !baseCatalogList.some((b) => b.id === c.id)),
+];
+
 export const mapBackendProduct = (product: ProductDto): Product => ({
   id: product.id,
   // P0 fix: product-level weight/dims were dropped here even though the
@@ -398,10 +412,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // a brand-new array (and new product objects) on every provider render,
   // which retriggered the routed-product effect and looped the spn fetch
   // forever (15 identical 200s in 2s in the preview nginx log).
-  const mergedList: Product[] = React.useMemo(() => [
-    ...customApprovedProducts,
-    ...baseCatalogList.filter((b) => !customApprovedProducts.some((c) => c.id === b.id)),
-  ], [customApprovedProducts, baseCatalogList]);
+  const mergedList: Product[] = React.useMemo(() => mergeCatalogLists(baseCatalogList, customApprovedProducts, isMockMode()), [customApprovedProducts, baseCatalogList]);
 
   const products: Product[] = React.useMemo(() => mergedList.map((p) => ({
     ...p,

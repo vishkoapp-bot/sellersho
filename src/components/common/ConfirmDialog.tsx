@@ -11,6 +11,7 @@ interface ConfirmDialogProps {
   isDanger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  children?: React.ReactNode;
 }
 
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
@@ -22,6 +23,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   isDanger = false,
   onConfirm,
   onCancel,
+  children,
 }) => {
   if (!isOpen) return null;
 
@@ -53,6 +55,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         <p className="text-xs text-slate-600 leading-relaxed">
           {message}
         </p>
+        {children}
 
         <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
           <button

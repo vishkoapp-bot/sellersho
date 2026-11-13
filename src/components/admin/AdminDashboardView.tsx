@@ -36,9 +36,13 @@ import {
   RotateCcw,
   Users,
   ChevronDown,
+  Bell,
 } from 'lucide-react';
 
 import { AdminLoginPage } from './AdminLoginPage';
+import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
+import { adminNotificationsApi } from '../../services/notificationsApi';
+import { apiRequest } from '../../services/apiClient';
 import { AdminOverviewTab } from './AdminOverviewTab';
 import { AdminStoresTab } from './AdminStoresTab';
 import { AdminSuppliersTab } from './AdminSuppliersTab';
@@ -69,6 +73,15 @@ import { AdminOperationsTab } from './AdminOperationsTab';
 
 interface Props {
   onBackToCustomerSite: () => void;
+}
+
+// Overview alert row (GET /admin/overview/alerts) as surfaced
+// inside the admin notification drawer — one tap from the bell.
+interface AdminOverviewAlert {
+  id: string;
+  title: string;
+  count: number;
+  tab: string;
 }
 
 interface AdminNavItem {
@@ -154,6 +167,24 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
   const { adminSession, logoutAdmin } = useStore();
   const { info, warning } = useToast();
   const [activeTab, setActiveTab] = useState<string>('overview');
+  // Admin notification inbox (Phase 2, W2): the bell badge counts
+  // unread outbox rows addressed to this admin user. The overview
+  // alert counts are fetched alongside and shown inside the drawer,
+  // one tap from the bell; the badge itself counts outbox rows
+  // only, so mark-all-read clears exactly what it marks.
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [overviewAlerts, setOverviewAlerts] = useState<AdminOverviewAlert[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    adminNotificationsApi.getNotifications()
+      .then((res) => { if (!cancelled) setUnreadNotifCount(res.unreadCount); })
+      .catch(() => undefined);
+    apiRequest<{ data: AdminOverviewAlert[] }>('/admin/overview/alerts', { method: 'GET', auth: true })
+      .then((res) => { if (!cancelled) setOverviewAlerts(res.data || []); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   // Automatically set default permitted tab when role changes
   useEffect(() => {
@@ -262,6 +293,20 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
 
         {/* Right Controls: Customer Site return and Logout */}
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setIsNotifOpen(true)}
+            className="relative px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors"
+            title="اعلان‌ها"
+            aria-label={unreadNotifCount > 0 ? `اعلان‌ها (${unreadNotifCount} خوانده‌نشده)` : 'اعلان‌ها'}
+          >
+            <Bell className="w-3.5 h-3.5 text-blue-400" strokeWidth={1.5} />
+            <span>اعلان‌ها</span>
+            {unreadNotifCount > 0 && (
+              <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+                {unreadNotifCount}
+              </span>
+            )}
+          </button>
 
           <button
             onClick={onBackToCustomerSite}
@@ -415,6 +460,32 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
           )}
         </main>
       </div>
+      <RoleNotificationDrawer
+        isOpen={isNotifOpen}
+        onClose={() => setIsNotifOpen(false)}
+        title="اعلان‌های مدیر"
+        emptyTitle="اعلان جدیدی نیست."
+        emptyHint="اختلاف جدید، درخواست تسویه یا درخواستی که به شما برسد اینجا می‌آید."
+        accent="blue"
+        api={adminNotificationsApi}
+        onUnreadCountChange={setUnreadNotifCount}
+        extraContent={overviewAlerts && overviewAlerts.length > 0 ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3 space-y-2">
+            <p className="text-xs font-bold text-amber-800">هشدارهای نیازمند رسیدگی</p>
+            {overviewAlerts.map((alert) => (
+              <button
+                key={alert.id}
+                type="button"
+                onClick={() => { handleNavigate(alert.tab); setIsNotifOpen(false); }}
+                className="w-full min-h-[40px] flex items-center justify-between gap-2 rounded-xl bg-white border border-amber-200 px-3 py-2 text-right hover:brightness-95 transition"
+              >
+                <span className="text-[11px] font-bold text-slate-700">{alert.title}</span>
+                <span className="text-[11px] font-bold text-amber-700 shrink-0">{alert.count}</span>
+              </button>
+            ))}
+          </div>
+        ) : undefined}
+      />
     </div>
   );
 };

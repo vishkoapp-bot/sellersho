@@ -83,7 +83,7 @@ export const SupportTicketsTab: React.FC = () => {
               {isAnswered ? (
                 <div className="p-2 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-xl flex items-center justify-center gap-1">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600"  strokeWidth={1.5}/>
-                  <span>پاسخ رسمی پشتیبانی برای کاربر ارسال و پیامک اطلاع‌رسانی ارسال گردید.</span>
+                  <span>پاسخ رسمی پشتیبانی برای کاربر ثبت شد.</span>
                 </div>
               ) : (
                 <div className="space-y-2 pt-1 border-t border-slate-100">

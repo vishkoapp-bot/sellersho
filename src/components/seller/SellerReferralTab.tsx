@@ -35,7 +35,9 @@ export const SellerReferralTab: React.FC = () => {
             const freshNotifs = notifs.filter((n) => n.releasedAt && n.releasedAt > lastNotifiedAt);
             if (freshNotifs.length > 0) {
               const latest = freshNotifs[0];
-              info(`هدیه ۱۰۰٬۰۰۰ تومانی برای فروشگاه «${latest.referredStoreName}» قابل برداشت شد.`);
+              info(latest.amount
+                ? `هدیه ${formatPrice(latest.amount)} تومانی برای فروشگاه «${latest.referredStoreName}» قابل برداشت شد.`
+                : `پاداش معرفی برای فروشگاه «${latest.referredStoreName}» قابل برداشت شد.`);
               localStorage.setItem(lastNotifiedKey, latest.releasedAt);
             }
           }
@@ -58,7 +60,8 @@ export const SellerReferralTab: React.FC = () => {
       totalSales: s.totalSales,
       isActivated: (s.totalSales || 0) > 0,
       bonusStatus: (s.totalSales || 0) > 0 ? 'released' : 'locked',
-      bonusAmount: 100000,
+      // No bonusAmount here: the local fallback has no server amount
+      // to show, and the platform amount must never be hardcoded.
     }));
 
   const activeReferrals = (!isMockMode() && serverReferrals.length > 0) ? serverReferrals : localReferredStores;
@@ -67,11 +70,11 @@ export const SellerReferralTab: React.FC = () => {
 
   const totalLockedBonus = displayStores
     .filter((s) => s.bonusStatus === 'locked')
-    .reduce((sum, s) => sum + (s.bonusAmount || 100000), 0);
+    .reduce((sum, s) => sum + (s.bonusAmount ?? 0), 0);
 
   const totalReleasedBonus = displayStores
     .filter((s) => s.bonusStatus === 'released')
-    .reduce((sum, s) => sum + (s.bonusAmount || 100000), 0);
+    .reduce((sum, s) => sum + (s.bonusAmount ?? 0), 0);
 
   // Calculate real 2% referral commission directly from server items (no local 0.1 GMV approximation)
   const totalNetworkPlatformF = displayStores.reduce((sum, s) => sum + (s.totalPlatformFee || 0), 0);
@@ -158,13 +161,13 @@ export const SellerReferralTab: React.FC = () => {
             <Users className="w-4 h-4 text-indigo-600"  strokeWidth={1.5}/>
             <span>فروشگاه‌هایی که با دعوت تو ساخته شده‌اند ({toPersianDigits(displayStores.length)} فروشگاه)</span>
           </h3>
-          <span className="text-[10px] text-slate-400 font-medium">برای هر فروشگاه، ۱۰۰ هزار تومان هدیه می‌گیری</span>
+          <span className="text-[10px] text-slate-400 font-medium">برای هر فروشگاه، هدیه می‌گیری</span>
         </div>
         <div className="space-y-2">
           {displayStores.length === 0 && (
             <div className="p-5 text-center space-y-1.5">
               <p className="text-xs font-bold text-slate-600">هنوز کسی با دعوت تو فروشگاه نساخته است</p>
-              <p className="text-[11px] text-slate-400 leading-6">لینک یا کد دعوت بالای همین صفحه را برای دوست‌هایی بفرست که می‌خواهند فروشگاه بزنند؛ وقتی شروع به فروش کنند، هم ۱۰۰ هزار تومان هدیه می‌گیری، هم از فروش‌هایشان پاداش.</p>
+              <p className="text-[11px] text-slate-400 leading-6">لینک یا کد دعوت بالای همین صفحه را برای دوست‌هایی بفرست که می‌خواهند فروشگاه بزنند؛ وقتی شروع به فروش کنند، هم هدیه می‌گیری، هم از فروش‌هایشان پاداش.</p>
             </div>
           )}
           {displayStores.map((st) => {
@@ -198,11 +201,11 @@ export const SellerReferralTab: React.FC = () => {
                     </span>
                   ) : isReleased ? (
                     <span className="inline-block font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg font-mono text-[11px]">
-                      +{formatPrice(st.bonusAmount ?? 100000)} ت (قابل برداشت)
+                      {st.bonusAmount != null ? `+${formatPrice(st.bonusAmount)} ت (قابل برداشت)` : 'قابل برداشت'}
                     </span>
                   ) : (
                     <span className="inline-block font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg font-mono text-[11px]">
-                      {formatPrice(st.bonusAmount ?? 100000)} ت (هنوز قفل است)
+                      {st.bonusAmount != null ? `${formatPrice(st.bonusAmount)} ت (هنوز قفل است)` : 'هنوز قفل است'}
                     </span>
                   )}
                   {st.earnedCommission ? (

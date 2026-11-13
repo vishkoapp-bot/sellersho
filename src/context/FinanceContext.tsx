@@ -39,7 +39,7 @@ const INITIAL_SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     productLimit: 100,
     allowedCustomDomains: 2,
     maxStores: 1,
-    features: ['۱۰۰ قلم کالا در کاتالوگ', '۲ دامنه اختصاصی', 'شارژ پنل پیامکی هدیه', 'تسویه حساب روزانه پایا'],
+    features: ['۱۰۰ قلم کالا در کاتالوگ', '۲ دامنه اختصاصی', 'تسویه حساب روزانه پایا'],
   },
   {
     id: 'pro',

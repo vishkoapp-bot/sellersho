@@ -285,9 +285,10 @@ export const supplierApi = {
   // unreadCount}; read accepts {id}, {ids}, or empty body = mark-all
   // and answers {success, updated}. The backend builder is implementing
   // these routes in parallel - this client codes against that contract.
-  // Defensive normalization: when the outbox table is missing the GET
-  // returns {notifications: []} with no unreadCount (customer handler
-  // behaviour), and a bare array is tolerated too.
+  // Defensive normalization: the server now always returns the full
+  // envelope (success + unreadCount), including when the outbox table
+  // is missing (P1-15), and a bare array is tolerated too -- the
+  // fallback below is a safety net, not a live branch.
   getNotifications: async (): Promise<SupplierNotificationsResponse> => {
     const data = await apiRequest<any>('/supplier/notifications', { method: 'GET', auth: true });
     const notifications: SupplierNotification[] = Array.isArray(data) ? data : (Array.isArray(data?.notifications) ? data.notifications : []);

@@ -5,8 +5,9 @@ import { motion } from 'motion/react';
 
 // Supplier rejection-notification drawer (DESIGN.md §4.3).
 // Deliberately NOT a reuse of src/components/common/NotificationDrawer:
-// that drawer never fetches the outbox (empty local list + referral
-// bonuses only, local-only mark-read), so reusing it would buy nothing.
+// that drawer is the customer inbox (GET /api/v1/notifications +
+// referral bonuses, with a confirm-free read-only list), while this
+// one is the supplier inbox with the resubmit CTA for rejections.
 // This drawer reads the supplier-scoped outbox via
 // supplierApi.getNotifications() and marks read via
 // supplierApi.markNotificationsRead() — server-side, not local-only.

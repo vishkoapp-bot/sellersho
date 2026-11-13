@@ -357,13 +357,13 @@ export const AdminCatalogTab: React.FC = () => {
       <ConfirmDialog
         isOpen={!!rejectingItem}
         title="رد کالا و عودت به تأمین‌کننده"
-        message={`کالای «${rejectingItem?.title}» رد و برای اصلاح به تأمین‌کننده بازگردانده می‌شود؛ این اقدام برای تأمین‌کننده پیامک خواهد شد.`}
+        message={`کالای «${rejectingItem?.title}» رد و برای اصلاح به تأمین‌کننده بازگردانده می‌شود؛ دلیل رد در اعلان داخل پنل تأمین‌کننده و فهرست پیشنهادهای او نمایش داده می‌شود.`}
         confirmText="تأیید رد کالا"
         isDanger={true}
         onConfirm={handleConfirmReject}
         onCancel={() => { setRejectingItem(null); setRejectReason(''); }}
       >
-        <label className="block text-xs font-bold text-slate-700">دلیل رد — الزامی؛ همین متن برای تأمین‌کننده ارسال می‌شود
+        <label className="block text-xs font-bold text-slate-700">دلیل رد — الزامی؛ همین متن در اعلان داخل پنل تأمین‌کننده و فهرست پیشنهادها نمایش داده می‌شود
           <textarea
             value={rejectReason}
             onChange={(e) => setRejectReason(e.target.value)}

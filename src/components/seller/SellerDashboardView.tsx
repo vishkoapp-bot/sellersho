@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { 
@@ -23,10 +23,13 @@ import {
   Percent,
   Mail,
   Tag,
-  RotateCcw
+  RotateCcw,
+  Bell
 } from 'lucide-react';
 
 import { SellerAuthGuard } from './SellerAuthGuard';
+import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
+import { sellerNotificationsApi } from '../../services/notificationsApi';
 import { storeApi } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { validateStoreSlug } from '../../utils/validators';
@@ -71,6 +74,20 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
 }) => {
   const { currentStore, setCurrentStore, stores, addStore, platformSettings, sellerSession, logoutSeller, toPersianDigits, sellerDashboardTab, setSellerDashboardTab, setActiveView } = useStore();
   const { info, success, error } = useToast();
+  // Seller notification inbox (Phase 2, W2): the bell count is
+  // fetched once on mount so it is live on first paint (unlike
+  // the supplier bell, which only learns its count on first
+  // open); the drawer re-fetches on every open.
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  useEffect(() => {
+    if (isMockMode()) return;
+    let cancelled = false;
+    sellerNotificationsApi.getNotifications()
+      .then((res) => { if (!cancelled) setUnreadNotifCount(res.unreadCount); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
   // Team 08 (D47): tab state lives in the router context so tab URLs
   // (?panel=seller&tab=<tab>) survive back/forward and deep links.
   const activeTab = sellerDashboardTab;
@@ -277,6 +294,19 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setIsNotifOpen(true)}
+              className="relative p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+              title="اعلان‌ها"
+              aria-label={unreadNotifCount > 0 ? `اعلان‌ها (${toPersianDigits(unreadNotifCount)} خوانده‌نشده)` : 'اعلان‌ها'}
+            >
+              <Bell className="w-5 h-5" strokeWidth={1.5} />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-0.5 -left-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+                  {toPersianDigits(unreadNotifCount)}
+                </span>
+              )}
+            </button>
             <select
               value={currentStore.id}
               onChange={(event) => {
@@ -552,6 +582,16 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         </main>
       </div>
       </div>
+      <RoleNotificationDrawer
+        isOpen={isNotifOpen}
+        onClose={() => setIsNotifOpen(false)}
+        title="اعلان‌های فروشگاه"
+        emptyTitle="اعلان جدیدی نیست."
+        emptyHint="سفارش جدید، تسویه، بازپرداخت یا تغییر مالی که برای فروشگاه شما ثبت شود اینجا می‌آید."
+        accent="brand"
+        api={sellerNotificationsApi}
+        onUnreadCountChange={setUnreadNotifCount}
+      />
     </SellerAuthGuard>
   );
 };

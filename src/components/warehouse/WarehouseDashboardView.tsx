@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { 
   ArrowRight, 
@@ -12,10 +12,13 @@ import {
   RotateCcw,
   PackageCheck,
   Undo2,
-  LogOut
+  LogOut,
+  Bell
 } from 'lucide-react';
 
 import { WarehouseAuthGuard } from './WarehouseAuthGuard';
+import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
+import { warehouseNotificationsApi } from '../../services/notificationsApi';
 import { WarehouseOverviewTab } from './WarehouseOverviewTab';
 import { WarehouseInboundTab } from './WarehouseInboundTab';
 import { WarehouseQCTab } from './WarehouseQCTab';
@@ -34,6 +37,18 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
   const { warehouseSession, logoutWarehouse } = useStore();
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedPackingOrderId, setSelectedPackingOrderId] = useState<string | undefined>();
+  // Warehouse notification inbox (Phase 2, W2): the bell count is
+  // fetched once on mount so it is live on first paint; the drawer
+  // re-fetches on every open.
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    warehouseNotificationsApi.getNotifications()
+      .then((res) => { if (!cancelled) setUnreadNotifCount(res.unreadCount); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   // FIX 17: live warehouse menu (WarehouseDashboardView-MERGED.js):
   // 11 live tabs in this exact order. 'receive', 'customer-returns'
@@ -91,6 +106,20 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
           </div>
         </div>
         {warehouseSession && (
+          <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setIsNotifOpen(true)}
+            className="relative p-2 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            title="اعلان‌ها"
+            aria-label={unreadNotifCount > 0 ? `اعلان‌ها (${unreadNotifCount} خوانده‌نشده)` : 'اعلان‌ها'}
+          >
+            <Bell className="w-5 h-5" strokeWidth={1.5} />
+            {unreadNotifCount > 0 && (
+              <span className="absolute -top-0.5 -left-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+                {unreadNotifCount}
+              </span>
+            )}
+          </button>
           <button
             onClick={logoutWarehouse}
             className="flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-2.5 py-1 rounded-xl transition-colors border border-rose-200"
@@ -99,6 +128,7 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
             <LogOut className="w-3.5 h-3.5"  strokeWidth={1.5}/>
             <span>خروج شیفت</span>
           </button>
+          </div>
         )}
       </header>
 
@@ -151,6 +181,16 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
         {activeTab === 'return-backs' && <WarehouseReturnBacksTab />}
       </div>
     </div>
+      <RoleNotificationDrawer
+        isOpen={isNotifOpen}
+        onClose={() => setIsNotifOpen(false)}
+        title="اعلان‌های انبار"
+        emptyTitle="اعلان جدیدی نیست."
+        emptyHint="محموله ورودی یا مرجوعی آماده کنترل کیفیت که به شما برسد اینجا می‌آید."
+        accent="amber"
+        api={warehouseNotificationsApi}
+        onUnreadCountChange={setUnreadNotifCount}
+      />
     </WarehouseAuthGuard>
   );
 };

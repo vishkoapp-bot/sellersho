@@ -104,7 +104,7 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
       setIsOtpExpired(false);
       setOtpError(null);
       setOtpCode('1234');
-      info(`کد یکبارمصرف ۴ رقمی (۱۲۳۴) به شماره ${toPersianDigits(mobile)} پیامک شد.`);
+      info(`کد آزمایشی ۴ رقمی (۱۲۳۴) است؛ در حالت نمایشی پیامکی ارسال نمی‌شود.`);
     }
   };
 
@@ -125,7 +125,7 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
       setIsOtpExpired(false);
       setOtpError(null);
       setOtpCode('1234');
-      success(`کد تایید جدید مجدداً به شماره ${toPersianDigits(mobile)} ارسال گردید.`);
+      success(`کد آزمایشی همان ۱۲۳۴ است؛ در حالت نمایشی پیامکی ارسال نمی‌شود.`);
     }
   };
 

@@ -88,7 +88,7 @@ export const AuthModal: React.FC<Props> = ({
       setStep('otp');
       setTimer(120);
       setOtp('1234');
-      success(`کد یکبارمصرف به شماره ${toPersianDigits(cleanMobile)} پیامک شد.`);
+      success(`کد آزمایشی ۴ رقمی (۱۲۳۴) است؛ در حالت نمایشی پیامکی ارسال نمی‌شود.`);
     }
   };
 
@@ -109,7 +109,7 @@ export const AuthModal: React.FC<Props> = ({
     } else {
       setTimer(120);
       setOtp('');
-      success(`کد یکبارمصرف جدید به شماره ${toPersianDigits(cleanMobile)} پیامک شد.`);
+      success(`کد آزمایشی همان ۱۲۳۴ است؛ در حالت نمایشی پیامکی ارسال نمی‌شود.`);
     }
   };
 

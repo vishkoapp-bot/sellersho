@@ -4,7 +4,7 @@ import { useToast } from '../../context/ToastContext';
 import { storeApi, StoreBalanceResponse, WalletBreakdownResponse, EarlyWithdrawalResponse } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { isValidIranianSheba } from '../../utils/validators';
-import { Wallet, ArrowDownToLine, Clock, CheckCircle2, AlertCircle, Eye, ShieldCheck, X, Crown, MessageSquare, Sparkles, Info } from 'lucide-react';
+import { Wallet, ArrowDownToLine, Clock, CheckCircle2, AlertCircle, Eye, ShieldCheck, X, Crown, Sparkles, Info } from 'lucide-react';
 
 export const SellerWalletTab: React.FC = () => {
   const {
@@ -104,7 +104,7 @@ export const SellerWalletTab: React.FC = () => {
     return { text: 'مهلتش تمام شده؛ سود به‌زودی آزاد می‌شود', urgent: false };
   };
 
-  const handleServicePurchase = async (type: 'plan_renewal' | 'sms_500' | 'sms_2000' | 'catalog_upgrade', cost: number, title: string) => {
+  const handleServicePurchase = async (type: 'plan_renewal' | 'catalog_upgrade', cost: number, title: string) => {
     if (!isMockMode()) {
       try { await storeApi.purchaseService(currentStore.slug, type === 'plan_renewal' ? 'standard' : type); setServerBalance(await storeApi.getOwnedBalance(currentStore.slug)); success('خدمت ثبت و مبلغ از کیف پول کسر شد.'); }
       catch (err: any) { error(err.message || 'تراکنش انجام نشد.'); }
@@ -482,49 +482,18 @@ export const SellerWalletTab: React.FC = () => {
             </div>
           </div>
 
-          {/* Service 2: SMS 500 pack */}
-          <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-brand-soft text-brand-deep flex items-center justify-center shrink-0">
-                <MessageSquare className="w-4 h-4"  strokeWidth={1.5}/>
-              </div>
-              <div>
-                <span className="font-bold text-xs text-slate-800 block">بسته شارژ پیامک ۵۰۰ عددی</span>
-                <span className="text-[10px] text-slate-400 block mt-0.5">اطلاع‌رسانی وضعیت فاکتور و کد رهگیری به خریداران</span>
-              </div>
+          {/* SMS packs withdrawn from sale (P0-17 / F2): no seller SMS
+              sending path exists, so the packs sold credits nothing could
+              ever spend. The cards are removed -- not just disabled -- until
+              a sending path is built. Previously purchased credits and
+              purchase history are untouched; only the sale is stopped. */}
+          <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+              <Info className="w-4 h-4"  strokeWidth={1.5}/>
             </div>
-            <div className="text-left shrink-0">
-              <span className="text-xs font-black text-slate-900 block font-mono">۱۵۰٬۰۰۰ تومان</span>
-              <button
-                type="button"
-                onClick={() => handleServicePurchase('sms_500', 150000, 'بسته پیامک ۵۰۰ عددی')}
-                className="mt-1 px-3 py-1 bg-brand-deep hover:bg-brand-deep text-white font-bold text-[10px] rounded-lg shadow-2xs transition-colors"
-              >
-                خرید با کیف پول
-              </button>
-            </div>
-          </div>
-
-          {/* Service 3: SMS 2000 pack */}
-          <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                <MessageSquare className="w-4 h-4"  strokeWidth={1.5}/>
-              </div>
-              <div>
-                <span className="font-bold text-xs text-slate-800 block">بسته شارژ پیامک ۲۰۰۰ عددی اقتصادی</span>
-                <span className="text-[10px] text-slate-400 block mt-0.5">همراه با پیامک اختصاصی خوشامدگویی و پیشنهاد ویژه</span>
-              </div>
-            </div>
-            <div className="text-left shrink-0">
-              <span className="text-xs font-black text-slate-900 block font-mono">۴۸۰٬۰۰۰ تومان</span>
-              <button
-                type="button"
-                onClick={() => handleServicePurchase('sms_2000', 480000, 'بسته پیامک ۲۰۰۰ عددی')}
-                className="mt-1 px-3 py-1 bg-brand-deep hover:bg-brand-deep text-white font-bold text-[10px] rounded-lg shadow-2xs transition-colors"
-              >
-                خرید با کیف پول
-              </button>
+            <div>
+              <span className="font-bold text-xs text-amber-800 block">فروش بسته پیامک فعلاً متوقف است</span>
+              <span className="text-[10px] text-amber-700 block mt-0.5">مسیر ارسال پیامک برای فروشندگان هنوز راه‌اندازی نشده است؛ به‌محض فعال‌شدن، بسته‌های پیامک دوباره برای خرید گذاشته می‌شوند.</span>
             </div>
           </div>
         </div>

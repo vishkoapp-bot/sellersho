@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/domain"
+	phoneutil "github.com/drup/platform/internal/phone"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -302,6 +303,13 @@ type SupplierSalesReport struct {
 	AverageOrder int64 `json:"average_order"`
 }
 
+// ErrInvalidSupplierPhone is returned by RegisterSupplier when the
+// registration carries no usable mobile. The phone is the supplier's
+// login identity (OTP re-login; password login is super-admin-only by
+// design), so a missing/invalid phone is a caller error — a number is
+// never invented here (B2, round 2).
+var ErrInvalidSupplierPhone = errors.New("phone must be a valid Iranian mobile (09xxxxxxxxx)")
+
 // RegisterSupplier creates both a user account and an associated supplier entity
 func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, contactPerson, username, password, phone, email, warehouseCity string) (*domain.User, *domain.Supplier, error) {
 	if warehouseCity == "" {
@@ -311,9 +319,13 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 		contactPerson = companyName
 	}
 
-	mobile := phone
-	if !strings.HasPrefix(mobile, "09") || len(mobile) != 11 {
-		mobile = fmt.Sprintf("098%08d", time.Now().UnixNano()%100000000)
+	// B2 (round 2): the phone is the supplier's login identity — it
+	// must be a real, valid Iranian mobile, stored in canonical
+	// 09xxxxxxxxx form. The old fabricated-mobile fallback
+	// (random 098… number) is deleted: never invent identity data.
+	mobile := phoneutil.Normalize(phone)
+	if !phoneutil.IsValid(mobile) {
+		return nil, nil, ErrInvalidSupplierPhone
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -338,7 +350,7 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 	email = strings.TrimSpace(email)
 	queryUser := `
 		INSERT INTO users (id, mobile, full_name, role, is_active, username, password_hash, email, created_at, updated_at)
-		VALUES ($1, $2, $3, 'supplier', FALSE, $4, $5, NULLIF($6, ''), $7, $7)
+		VALUES ($1, $2, $3, 'supplier', TRUE, $4, $5, NULLIF($6, ''), $7, $7)
 		RETURNING id, mobile, full_name, role, is_active, username, COALESCE(email, ''), created_at, updated_at
 	`
 	var u domain.User
@@ -351,8 +363,8 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 
 	supplierID := fmt.Sprintf("sup-%s", username)
 	querySupplier := `
-		INSERT INTO suppliers (id, owner_user_id, name, logo_url, rating, total_products, delivery_score, warehouse_city, description, badge, approval_status, signed_contract_version, created_at)
-		VALUES ($1, $2, $3, $4, 5.0, 0, 100, $5, $6, 'تأمین‌کننده جدید', 'pending_approval',
+		INSERT INTO suppliers (id, owner_user_id, name, logo_url, rating, total_products, delivery_score, warehouse_city, description, badge, approval_status, approved_at, signed_contract_version, created_at)
+		VALUES ($1, $2, $3, $4, 5.0, 0, 100, $5, $6, 'تأمین‌کننده جدید', 'approved', NOW(),
 		        (SELECT COALESCE(supplier_contract_version, 2) FROM platform_settings WHERE id = 1), $7)
 		RETURNING id, owner_user_id, name, logo_url, rating, total_products, delivery_score, warehouse_city, description, badge, approval_status, COALESCE(signed_contract_version, 1), created_at
 	`
@@ -375,8 +387,12 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 	return &u, &s, nil
 }
 
-// Approval workflow (20261019): new supplier registrations start as
-// pending_approval. Admin must approve before the account becomes active.
+// Owner decision 28 Oct 2026: no supplier-account approval gate. Registration
+// activates immediately (is_active TRUE, approval_status 'approved',
+// approved_at NOW(), approved_by NULL — no human approved anything).
+// Product approval (pending_approvals) is unchanged and still gates listing.
+// Legacy pending_approval rows are activated per-row by an admin in the
+// Suppliers tab (ApproveSupplier); they are NOT auto-flipped by this code.
 
 // ListPendingSuppliers returns suppliers awaiting admin approval.
 func (r *SupplierRepository) ListPendingSuppliers(ctx context.Context) ([]domain.Supplier, error) {
@@ -1258,11 +1274,29 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		measWeight = sql.NullInt64{Int64: int64(v), Valid: true}
 	}
 
+	// P2(b): product-level shipping/tax class (the variant fallback
+	// target). Validated by validateProductV2 when present; absent or
+	// invalid here (legacy proposals predate the field) => 'standard',
+	// the DB default. Never trust a raw string into the CHECK: only
+	// in-enum values are passed through.
+	shipClass := "standard"
+	if s, ok := data["shipping_class"].(string); ok && domain.ValidShippingClass(s) {
+		shipClass = s
+	} else if s, ok := data["shippingClass"].(string); ok && domain.ValidShippingClass(s) {
+		shipClass = s
+	}
+	taxClass := "standard"
+	if s, ok := data["tax_class"].(string); ok && domain.ValidTaxClass(s) {
+		taxClass = s
+	} else if s, ok := data["taxClass"].(string); ok && domain.ValidTaxClass(s) {
+		taxClass = s
+	}
+
 	specsBytes, _ := json.Marshal(data["specs"])
 
 	queryProduct := `
-		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, length_mm, width_mm, height_mm, weight_grams, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20, $21, $22, $23, NOW(), NOW())
+		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, length_mm, width_mm, height_mm, weight_grams, shipping_class, tax_class, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20, $21, $22, $23, $24, $25, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, supplier_base_cost = EXCLUDED.supplier_base_cost, image_url = EXCLUDED.image_url, description = EXCLUDED.description, specs = EXCLUDED.specs, brand = EXCLUDED.brand,
 		                               barcode = CASE WHEN EXCLUDED.barcode IS NOT NULL THEN EXCLUDED.barcode ELSE products.barcode END
 	`
@@ -1285,7 +1319,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 			return "", fmt.Errorf("product belongs to another supplier")
 		}
 	}
-	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight)
+	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight, shipClass, taxClass)
 	if err != nil {
 		return "", fmt.Errorf("failed to insert product: %w", err)
 	}
@@ -1411,7 +1445,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		if err := publishProductModelV2Tx(ctx, tx, productID, categorySlug, proposalID, data); err != nil {
 			return "", err
 		}
-		if err := insertProductV2VariantsTx(ctx, tx, productID, requestedBy, data); err != nil {
+		if err := insertProductV2VariantsTx(ctx, tx, productID, requestedBy, data, true); err != nil {
 			return "", err
 		}
 	}
@@ -3099,12 +3133,32 @@ type SupplierProductVariant struct {
 	// SupplierBaseCost is the variant's own cost C (product_variants.
 	// supplier_base_cost, gap 10); nil = inherit the product's cost.
 	SupplierBaseCost *int64 `json:"supplier_base_cost"`
+	// Images are the variant's own photos, ordered (P0 cap 4).
+	Images []string `json:"images,omitempty"`
+	// Physical attributes; nil = inherit from the product.
+	WeightGrams *int `json:"weight_grams,omitempty"`
+	LengthMM    *int `json:"length_mm,omitempty"`
+	WidthMM     *int `json:"width_mm,omitempty"`
+	HeightMM    *int `json:"height_mm,omitempty"`
+	// Sale price (P1(c)); nil = no sale. Window [SaleFrom, SaleTo).
+	SalePrice *int64     `json:"sale_price,omitempty"`
+	SaleFrom  *time.Time `json:"sale_from,omitempty"`
+	SaleTo    *time.Time `json:"sale_to,omitempty"`
+	// Shipping/tax class (P2(b)); nil = inherit product level.
+	ShippingClass *string `json:"shipping_class,omitempty"`
+	TaxClass      *string `json:"tax_class,omitempty"`
 }
 
 func (r *SupplierRepository) ListProductVariants(ctx context.Context, supplierID, productID string) ([]SupplierProductVariant, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT pv.id, pv.variant_name, pv.spnc, pv.stock, pv.attributes, pv.is_default, pv.min_cart_qty, pv.max_cart_qty, pv.supplier_base_cost,
-		       COALESCE(to_jsonb(pv)->'selection','{}'::jsonb),COALESCE(to_jsonb(pv)->>'inventory_mode','legacy'),COALESCE((to_jsonb(pv)->>'is_active')::boolean,TRUE),COALESCE(to_jsonb(pv)->>'combination_key','')
+		       COALESCE(to_jsonb(pv)->'selection','{}'::jsonb),COALESCE(to_jsonb(pv)->>'inventory_mode','legacy'),COALESCE((to_jsonb(pv)->>'is_active')::boolean,TRUE),COALESCE(to_jsonb(pv)->>'combination_key',''),
+		       pv.weight_grams, pv.length_mm, pv.width_mm, pv.height_mm,
+		       pv.sale_price, pv.sale_from, pv.sale_to, pv.shipping_class, pv.tax_class,
+		       COALESCE((
+		         SELECT jsonb_agg(image_url ORDER BY sort_order ASC, created_at ASC)
+		         FROM product_variant_images WHERE variant_id = pv.id
+		       ), '[]'::jsonb) AS variant_images
 		FROM product_variants pv
 		JOIN products p ON p.id = pv.product_id
 		WHERE pv.product_id = $1 AND p.supplier_id = $2
@@ -3117,10 +3171,56 @@ func (r *SupplierRepository) ListProductVariants(ctx context.Context, supplierID
 	out := []SupplierProductVariant{}
 	for rows.Next() {
 		var v SupplierProductVariant
-		var attrs, selection []byte
+		var attrs, selection, imagesRaw []byte
 		var minQ, maxQ, cost sql.NullInt64
-		if err := rows.Scan(&v.ID, &v.VariantName, &v.SPNC, &v.Stock, &attrs, &v.IsDefault, &minQ, &maxQ, &cost, &selection, &v.InventoryMode, &v.IsActive, &v.CombinationKey); err != nil {
+		var salePrice sql.NullInt64
+		var saleFrom, saleTo sql.NullTime
+		var shipClass, taxClass sql.NullString
+		var weight, length, width, height sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.VariantName, &v.SPNC, &v.Stock, &attrs, &v.IsDefault, &minQ, &maxQ, &cost, &selection, &v.InventoryMode, &v.IsActive, &v.CombinationKey, &weight, &length, &width, &height, &salePrice, &saleFrom, &saleTo, &shipClass, &taxClass, &imagesRaw); err != nil {
 			return nil, err
+		}
+		if salePrice.Valid {
+			s := salePrice.Int64
+			v.SalePrice = &s
+		}
+		if saleFrom.Valid {
+			f := saleFrom.Time
+			v.SaleFrom = &f
+		}
+		if saleTo.Valid {
+			t := saleTo.Time
+			v.SaleTo = &t
+		}
+		if shipClass.Valid {
+			s := shipClass.String
+			v.ShippingClass = &s
+		}
+		if taxClass.Valid {
+			s := taxClass.String
+			v.TaxClass = &s
+		}
+		if weight.Valid {
+			n := int(weight.Int32)
+			v.WeightGrams = &n
+		}
+		if length.Valid {
+			n := int(length.Int32)
+			v.LengthMM = &n
+		}
+		if width.Valid {
+			n := int(width.Int32)
+			v.WidthMM = &n
+		}
+		if height.Valid {
+			n := int(height.Int32)
+			v.HeightMM = &n
+		}
+		if len(imagesRaw) > 0 {
+			var imgs []string
+			if err := json.Unmarshal(imagesRaw, &imgs); err == nil && len(imgs) > 0 {
+				v.Images = imgs
+			}
 		}
 		v.Attributes = map[string]string{}
 		v.Selection = map[string]string{}
@@ -3332,6 +3432,295 @@ func (r *SupplierRepository) ReorderProductImages(ctx context.Context, supplierI
 		return err
 	}
 	return tx.Commit()
+}
+
+// P0 variant images (2026-11-13): mirrors the product gallery CRUD
+// above, scoped to product_variant_images. Cap is 4 images per variant.
+// File-on-disk behaviour matches DeleteProductImage exactly: rows only,
+// no file deletion (orphan cleanup is a separate task).
+
+// ErrVariantGalleryFull is returned when an upload would exceed the
+// 4-image per-variant cap.
+var ErrVariantGalleryFull = errors.New("variant gallery full")
+
+// MaxVariantImages is the P0 per-variant image cap.
+const MaxVariantImages = 4
+
+func (r *SupplierRepository) variantOwnsCheck(ctx context.Context, supplierID, productID, variantID string) (bool, error) {
+	var ok bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $1 AND pv.product_id = $2 AND p.supplier_id = $3
+	)`, variantID, productID, supplierID).Scan(&ok)
+	return ok, err
+}
+
+func (r *SupplierRepository) ListVariantImages(ctx context.Context, supplierID, productID, variantID string) ([]SupplierProductImage, error) {
+	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return nil, err
+	}
+	if !owns {
+		return nil, sql.ErrNoRows
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT id, image_url, sort_order FROM product_variant_images WHERE variant_id = $1 ORDER BY sort_order ASC, created_at ASC`, variantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SupplierProductImage{}
+	for rows.Next() {
+		var im SupplierProductImage
+		if err := rows.Scan(&im.ID, &im.ImageURL, &im.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, im)
+	}
+	return out, rows.Err()
+}
+
+// CheckVariantGalleryRoom verifies, BEFORE any file is written to
+// disk, that the variant belongs to the supplier's product
+// (sql.ErrNoRows when not) and that adding newCount images would not
+// exceed the 4-image cap (ErrVariantGalleryFull). The upload handler
+// calls this first so a rejected upload leaves no orphan files on
+// disk; AddVariantImages re-checks inside its own transaction, which
+// stays the race-safe authority.
+func (r *SupplierRepository) CheckVariantGalleryRoom(ctx context.Context, supplierID, productID, variantID string, newCount int) error {
+	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return err
+	}
+	if !owns {
+		return sql.ErrNoRows
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_variant_images WHERE variant_id = $1`, variantID).Scan(&count); err != nil {
+		return err
+	}
+	if count+newCount > MaxVariantImages {
+		return ErrVariantGalleryFull
+	}
+	return nil
+}
+
+func (r *SupplierRepository) AddVariantImages(ctx context.Context, supplierID, productID, variantID string, urls []string) ([]SupplierProductImage, error) {
+	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return nil, err
+	}
+	if !owns {
+		return nil, sql.ErrNoRows
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_variant_images WHERE variant_id = $1`, variantID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count+len(urls) > MaxVariantImages {
+		return nil, ErrVariantGalleryFull
+	}
+	for k, u := range urls {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product_variant_images (variant_id, image_url, sort_order) VALUES ($1, $2, $3)`, variantID, u, count+k); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r.ListVariantImages(ctx, supplierID, productID, variantID)
+}
+
+func (r *SupplierRepository) variantGalleryOrderedIDs(ctx context.Context, supplierID, productID, variantID string) ([]string, error) {
+	imgs, err := r.ListVariantImages(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(imgs))
+	for _, im := range imgs {
+		ids = append(ids, im.ID)
+	}
+	return ids, nil
+}
+
+func (r *SupplierRepository) resequenceVariantGalleryTx(ctx context.Context, tx *sql.Tx, variantID string, orderedIDs []string) error {
+	for k, id := range orderedIDs {
+		if _, err := tx.ExecContext(ctx, `UPDATE product_variant_images SET sort_order = $1 WHERE id = $2 AND variant_id = $3`, k, id, variantID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *SupplierRepository) DeleteVariantImage(ctx context.Context, supplierID, productID, variantID, imageID string) error {
+	ids, err := r.variantGalleryOrderedIDs(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return err
+	}
+	found := false
+	rest := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == imageID {
+			found = true
+			continue
+		}
+		rest = append(rest, id)
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_variant_images WHERE id = $1 AND variant_id = $2`, imageID, variantID); err != nil {
+		return err
+	}
+	if err := r.resequenceVariantGalleryTx(ctx, tx, variantID, rest); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *SupplierRepository) ReorderVariantImages(ctx context.Context, supplierID, productID, variantID string, orderedIDs []string) error {
+	ids, err := r.variantGalleryOrderedIDs(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return err
+	}
+	if len(orderedIDs) != len(ids) {
+		return fmt.Errorf("ordered ids do not match gallery")
+	}
+	seen := map[string]bool{}
+	for _, id := range orderedIDs {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		if !seen[id] {
+			return fmt.Errorf("ordered ids do not match gallery")
+		}
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := r.resequenceVariantGalleryTx(ctx, tx, variantID, orderedIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateVariantPhysical sets (or clears, via nil) a variant's weight and
+// dimensions. Nil = inherit from the product. Ownership-checked; the
+// variant must belong to the supplier's product, else sql.ErrNoRows.
+// No admin re-approval (P0 decision D6); weight is not cost.
+func (r *SupplierRepository) UpdateVariantPhysical(ctx context.Context, supplierID, productID, variantID string, weight, length, width, height *int) (SupplierProductVariant, error) {
+	var out SupplierProductVariant
+	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return out, err
+	}
+	if !owns {
+		return out, sql.ErrNoRows
+	}
+	toNull := func(v *int) sql.NullInt32 {
+		if v == nil {
+			return sql.NullInt32{}
+		}
+		return sql.NullInt32{Int32: int32(*v), Valid: true}
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE product_variants
+		SET weight_grams = $1, length_mm = $2, width_mm = $3, height_mm = $4
+		WHERE id = $5 AND product_id = $6`,
+		toNull(weight), toNull(length), toNull(width), toNull(height), variantID, productID); err != nil {
+		return out, err
+	}
+	return r.GetSupplierVariant(ctx, supplierID, productID, variantID)
+}
+
+// UpdateVariantSale writes a P1(c) sale (or clears it when salePrice
+// is nil, in which case from/to are cleared too). Validation of the
+// values (floor R, ceiling P_central, %100, window, admin lock) lives
+// in the handler, which owns the pricing resolution; this method only
+// enforces ownership. Returns the updated variant.
+func (r *SupplierRepository) UpdateVariantSale(ctx context.Context, supplierID, productID, variantID string, salePrice *int64, from, to *time.Time) (SupplierProductVariant, error) {
+	var out SupplierProductVariant
+	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return out, err
+	}
+	if !owns {
+		return out, sql.ErrNoRows
+	}
+	var priceArg sql.NullInt64
+	var fromArg, toArg sql.NullTime
+	if salePrice != nil {
+		priceArg = sql.NullInt64{Int64: *salePrice, Valid: true}
+		if from != nil {
+			fromArg = sql.NullTime{Time: *from, Valid: true}
+		}
+		if to != nil {
+			toArg = sql.NullTime{Time: *to, Valid: true}
+		}
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE product_variants
+		SET sale_price = $1, sale_from = $2, sale_to = $3
+		WHERE id = $4 AND product_id = $5`,
+		priceArg, fromArg, toArg, variantID, productID); err != nil {
+		return out, err
+	}
+	return r.GetSupplierVariant(ctx, supplierID, productID, variantID)
+}
+
+// GetVariantPhysicalsByIDs loads weight/dimensions for the given variant
+// IDs in ONE query (quote-time batched loader). Unknown IDs are simply
+// absent from the map; callers keep the product values for them and
+// never fail a quote on a loader miss. The returned rows carry their
+// ProductID (M2/F3, 2026-11-13): callers MUST ignore a row whose
+// product differs from the quote line's product — a variant ID from
+// another product must never override a line's weight/dims.
+func (r *SupplierRepository) GetVariantPhysicalsByIDs(ctx context.Context, variantIDs []string) (map[string]domain.ProductVariant, error) {
+	out := map[string]domain.ProductVariant{}
+	if len(variantIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT id, product_id, weight_grams, length_mm, width_mm, height_mm
+		FROM product_variants WHERE id = ANY($1::uuid[])`, pq.Array(variantIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v domain.ProductVariant
+		var weight, length, width, height sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.ProductID, &weight, &length, &width, &height); err != nil {
+			return nil, err
+		}
+		if weight.Valid {
+			n := int(weight.Int32)
+			v.WeightGrams = &n
+		}
+		if length.Valid {
+			n := int(length.Int32)
+			v.LengthMM = &n
+		}
+		if width.Valid {
+			n := int(width.Int32)
+			v.WidthMM = &n
+		}
+		if height.Valid {
+			n := int(height.Int32)
+			v.HeightMM = &n
+		}
+		out[v.ID] = v
+	}
+	return out, rows.Err()
 }
 
 // CreateProductVariant inserts one variant with a fresh unique SPNC.
@@ -3547,6 +3936,21 @@ func (r *SupplierRepository) GetVariantOwnAndProductCost(ctx context.Context, su
 		own = &v
 	}
 	return own, productCost, nil
+}
+
+// GetVariantSaleBasis returns the P1(c) sale-validation inputs for one
+// supplier-owned variant: the product's category slug (platform-pct
+// ladder) and the variant's effective cost C (own cost, else product
+// cost). sql.ErrNoRows when the variant/product is not owned by the
+// supplier.
+func (r *SupplierRepository) GetVariantSaleBasis(ctx context.Context, supplierID, productID, variantID string) (categorySlug string, costC int64, err error) {
+	err = r.db.QueryRowContext(ctx, `
+		SELECT p.category_slug, COALESCE(pv.supplier_base_cost, p.supplier_base_cost)
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $1 AND pv.product_id = $2 AND p.supplier_id = $3
+	`, variantID, productID, supplierID).Scan(&categorySlug, &costC)
+	return categorySlug, costC, err
 }
 
 // GetSupplierVariant returns one variant of a supplier-owned product

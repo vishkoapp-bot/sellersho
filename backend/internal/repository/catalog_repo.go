@@ -187,7 +187,8 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
 		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
-		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
+		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids,
+		       COALESCE(p.shipping_class, 'standard'), COALESCE(p.tax_class, 'standard')
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
 		%s
@@ -229,7 +230,8 @@ func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string)
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
 		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
-		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
+		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids,
+		       COALESCE(p.shipping_class, 'standard'), COALESCE(p.tax_class, 'standard')
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
 		WHERE p.id = $1 OR p.slug = $1
@@ -397,6 +399,7 @@ func scanProductRow(scanner productRowScanner, p *domain.Product, nicheIDs *pq.S
 		&p.LengthMM, &p.WidthMM, &p.HeightMM, &p.WeightGrams,
 		&p.ProductType, &p.SchemaVersion, &schemaRaw,
 		nicheIDs,
+		&p.ShippingClass, &p.TaxClass,
 	)
 	if err != nil {
 		return err
@@ -433,11 +436,19 @@ func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, product
 	if len(productIDs) == 0 {
 		return out, nil
 	}
+	// P1(c)/P2(b): sale + class columns ride with the variant row.
+	// A loader that omits them silently drops sales.
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT v.id, v.product_id, v.spnc, v.spnc_number, v.variant_name,
 		       v.attributes, v.is_default, v.stock, v.supplier_base_cost,
 		       COALESCE(to_jsonb(v)->'selection','{}'::jsonb), COALESCE(to_jsonb(v)->>'inventory_mode','legacy'), COALESCE((to_jsonb(v)->>'is_active')::boolean,TRUE), COALESCE(to_jsonb(v)->>'combination_key',''),
-		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int
+		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int,
+		       v.weight_grams, v.length_mm, v.width_mm, v.height_mm,
+		       v.sale_price, v.sale_from, v.sale_to, v.shipping_class, v.tax_class,
+		       COALESCE((
+		         SELECT jsonb_agg(image_url ORDER BY sort_order ASC, created_at ASC)
+		         FROM product_variant_images WHERE variant_id = v.id
+		       ), '[]'::jsonb) AS variant_images
 		FROM product_variants v
 		WHERE v.product_id = ANY($1)
 		ORDER BY v.product_id, v.is_default DESC, v.created_at ASC, v.id ASC
@@ -448,12 +459,58 @@ func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, product
 	defer rows.Close()
 	for rows.Next() {
 		var v domain.ProductVariant
-		var attrsRaw, selectionRaw []byte
+		var attrsRaw, selectionRaw, imagesRaw []byte
 		var maxQty sql.NullInt32
 		var spncNumber sql.NullInt32
 		var cost sql.NullInt64
-		if err := rows.Scan(&v.ID, &v.ProductID, &v.Spnc, &spncNumber, &v.Name, &attrsRaw, &v.IsDefault, &v.Stock, &cost, &selectionRaw, &v.InventoryMode, &v.IsActive, &v.CombinationKey, &v.MinCartQty, &maxQty); err != nil {
+		var salePrice sql.NullInt64
+		var saleFrom, saleTo sql.NullTime
+		var shipClass, taxClass sql.NullString
+		var weight, length, width, height sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.ProductID, &v.Spnc, &spncNumber, &v.Name, &attrsRaw, &v.IsDefault, &v.Stock, &cost, &selectionRaw, &v.InventoryMode, &v.IsActive, &v.CombinationKey, &v.MinCartQty, &maxQty, &weight, &length, &width, &height, &salePrice, &saleFrom, &saleTo, &shipClass, &taxClass, &imagesRaw); err != nil {
 			return nil, err
+		}
+		if salePrice.Valid {
+			s := salePrice.Int64
+			v.SalePrice = &s
+		}
+		if saleFrom.Valid {
+			f := saleFrom.Time
+			v.SaleFrom = &f
+		}
+		if saleTo.Valid {
+			t := saleTo.Time
+			v.SaleTo = &t
+		}
+		if shipClass.Valid {
+			s := shipClass.String
+			v.ShippingClass = &s
+		}
+		if taxClass.Valid {
+			s := taxClass.String
+			v.TaxClass = &s
+		}
+		if weight.Valid {
+			n := int(weight.Int32)
+			v.WeightGrams = &n
+		}
+		if length.Valid {
+			n := int(length.Int32)
+			v.LengthMM = &n
+		}
+		if width.Valid {
+			n := int(width.Int32)
+			v.WidthMM = &n
+		}
+		if height.Valid {
+			n := int(height.Int32)
+			v.HeightMM = &n
+		}
+		if len(imagesRaw) > 0 {
+			var imgs []string
+			if err := json.Unmarshal(imagesRaw, &imgs); err == nil && len(imgs) > 0 {
+				v.Images = imgs
+			}
 		}
 		if spncNumber.Valid {
 			n := int(spncNumber.Int32)
@@ -490,6 +547,157 @@ func (r *CatalogRepository) GetProductVariants(ctx context.Context, productID st
 	return variants, nil
 }
 
+// GetVariantsByProductIDsForStore is the P2(a) store-scoped variant
+// load: the same rows/ordering as GetVariantsByProductIDs, minus
+// variants the store explicitly hid in store_variant_visibility.
+// Absence of a row = visible. When storeID is "" or "central" the
+// unfiltered loader is used — the central store is never filtered.
+// Every variant load on a store view must go through this path.
+func (r *CatalogRepository) GetVariantsByProductIDsForStore(ctx context.Context, productIDs []string, storeID string) (map[string][]domain.ProductVariant, error) {
+	if storeID == "" || storeID == "central" {
+		return r.GetVariantsByProductIDs(ctx, productIDs)
+	}
+	out := map[string][]domain.ProductVariant{}
+	if len(productIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT v.id, v.product_id, v.spnc, v.spnc_number, v.variant_name,
+		       v.attributes, v.is_default, v.stock, v.supplier_base_cost,
+		       COALESCE(to_jsonb(v)->'selection','{}'::jsonb), COALESCE(to_jsonb(v)->>'inventory_mode','legacy'), COALESCE((to_jsonb(v)->>'is_active')::boolean,TRUE), COALESCE(to_jsonb(v)->>'combination_key',''),
+		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int,
+		       v.weight_grams, v.length_mm, v.width_mm, v.height_mm,
+		       v.sale_price, v.sale_from, v.sale_to, v.shipping_class, v.tax_class,
+		       COALESCE((
+		         SELECT jsonb_agg(image_url ORDER BY sort_order ASC, created_at ASC)
+		         FROM product_variant_images WHERE variant_id = v.id
+		       ), '[]'::jsonb) AS variant_images
+		FROM product_variants v
+		LEFT JOIN store_variant_visibility svv
+		  ON svv.variant_id = v.id AND svv.store_id = $2
+		WHERE v.product_id = ANY($1)
+		  AND svv.is_visible IS DISTINCT FROM FALSE
+		ORDER BY v.product_id, v.is_default DESC, v.created_at ASC, v.id ASC
+	`, pq.Array(productIDs), storeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v domain.ProductVariant
+		var attrsRaw, selectionRaw, imagesRaw []byte
+		var maxQty sql.NullInt32
+		var spncNumber sql.NullInt32
+		var cost sql.NullInt64
+		var salePrice sql.NullInt64
+		var saleFrom, saleTo sql.NullTime
+		var shipClass, taxClass sql.NullString
+		var weight, length, width, height sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.ProductID, &v.Spnc, &spncNumber, &v.Name, &attrsRaw, &v.IsDefault, &v.Stock, &cost, &selectionRaw, &v.InventoryMode, &v.IsActive, &v.CombinationKey, &v.MinCartQty, &maxQty, &weight, &length, &width, &height, &salePrice, &saleFrom, &saleTo, &shipClass, &taxClass, &imagesRaw); err != nil {
+			return nil, err
+		}
+		if weight.Valid {
+			n := int(weight.Int32)
+			v.WeightGrams = &n
+		}
+		if length.Valid {
+			n := int(length.Int32)
+			v.LengthMM = &n
+		}
+		if width.Valid {
+			n := int(width.Int32)
+			v.WidthMM = &n
+		}
+		if height.Valid {
+			n := int(height.Int32)
+			v.HeightMM = &n
+		}
+		if salePrice.Valid {
+			s := salePrice.Int64
+			v.SalePrice = &s
+		}
+		if saleFrom.Valid {
+			f := saleFrom.Time
+			v.SaleFrom = &f
+		}
+		if saleTo.Valid {
+			t := saleTo.Time
+			v.SaleTo = &t
+		}
+		if shipClass.Valid {
+			s := shipClass.String
+			v.ShippingClass = &s
+		}
+		if taxClass.Valid {
+			s := taxClass.String
+			v.TaxClass = &s
+		}
+		if len(imagesRaw) > 0 {
+			var imgs []string
+			if err := json.Unmarshal(imagesRaw, &imgs); err == nil && len(imgs) > 0 {
+				v.Images = imgs
+			}
+		}
+		if spncNumber.Valid {
+			n := int(spncNumber.Int32)
+			v.SpncNumber = &n
+		}
+		if cost.Valid {
+			c := cost.Int64
+			v.SupplierBaseCost = &c
+		}
+		v.Selection = map[string]string{}
+		if err = json.Unmarshal(selectionRaw, &v.Selection); err != nil {
+			return nil, err
+		}
+		if maxQty.Valid {
+			n := int(maxQty.Int32)
+			v.MaxCartQty = &n
+		}
+		v.Attributes = parseProductSpecs(attrsRaw)
+		out[v.ProductID] = append(out[v.ProductID], v)
+	}
+	return out, rows.Err()
+}
+
+// GetProductVariantsForStore returns one product's store-filtered
+// variants in repo order (P2(a)).
+func (r *CatalogRepository) GetProductVariantsForStore(ctx context.Context, productID, storeID string) ([]domain.ProductVariant, error) {
+	byProduct, err := r.GetVariantsByProductIDsForStore(ctx, []string{productID}, storeID)
+	if err != nil {
+		return nil, err
+	}
+	variants := byProduct[productID]
+	if variants == nil {
+		variants = []domain.ProductVariant{}
+	}
+	return variants, nil
+}
+
+// GetStoreVariantDefaults returns, for one store, the per-store
+// default variant per product (P2(c)): map[productID]variantID.
+// Absence = fall back to the product-level default. One batched
+// query per list/detail request.
+func (r *CatalogRepository) GetStoreVariantDefaults(ctx context.Context, storeID string, productIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if storeID == "" || storeID == "central" || len(productIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT product_id, variant_id FROM store_variant_defaults WHERE store_id = $1 AND product_id = ANY($2)`, storeID, pq.Array(productIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid, vid string
+		if err := rows.Scan(&pid, &vid); err != nil {
+			return nil, err
+		}
+		out[pid] = vid
+	}
+	return out, rows.Err()
+}
+
 // GetProductBySpn resolves a product by its public spn_number (D46
 // decision: implement the server lookup so shared spn- links work).
 // It deliberately has NO is_active condition: detail of an inactive
@@ -505,7 +713,8 @@ func (r *CatalogRepository) GetProductBySpn(ctx context.Context, spn int64) (*do
 		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
 		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
 		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
-		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids
+		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids,
+		       COALESCE(p.shipping_class, 'standard'), COALESCE(p.tax_class, 'standard')
 		FROM products p
 		LEFT JOIN product_niches pn ON p.id = pn.product_id
 		WHERE p.spn_number = $1

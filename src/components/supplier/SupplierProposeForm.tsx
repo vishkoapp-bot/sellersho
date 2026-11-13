@@ -408,7 +408,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         <div>
           <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
           <SupplierCategoryPicker value={category} onSelect={(cat) => { setCategory(cat);setBrand(''); }} />
-          <SupplierProductDefinitionEditor categorySlug={category?.isLeaf===false?null:category?.slug??null} productType={productType} schema={productSchema} onSchema={setProductSchema} rows={variants} onRows={setVariants} brand={brand} noBrand={noBrand} onBrand={value=>{setBrand(value);setNoBrand(false)}} onNoBrand={setNoBrand}/>
+          <SupplierProductDefinitionEditor categorySlug={category?.isLeaf===false?null:category?.slug??null} productType={productType} schema={productSchema} onSchema={setProductSchema} rows={variants} onRows={setVariants} brand={brand} noBrand={noBrand} onBrand={value=>{setBrand(value);setNoBrand(false)}} onNoBrand={setNoBrand} sessionToken={sessionToken}/>
 
         </div>
         <div>
@@ -492,7 +492,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       )}
       <div className="space-y-1.5 pt-1 border-t border-slate-100">
         <label className="text-[10px] font-bold text-slate-700 block">ابعاد و وزن کالا (الزامی):</label>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div>
             <label className="text-[10px] text-slate-600 block mb-1">وزن (گرم) — الزامی</label>
             <input type="text" inputMode="numeric" value={formatSep(weightGrams)} onChange={(e) => setWeightGrams(parseSep(e.target.value))} placeholder="۱٬۲۰۰" min="1" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
@@ -510,7 +510,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
             <input type="text" inputMode="numeric" value={formatSep(heightCm)} onChange={(e) => setHeightCm(parseSep(e.target.value))} placeholder="۲۰" min="1" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
           </div>
         </div>
-        <p className="text-[10px] text-slate-500 leading-5">وزن و ابعاد کالا برای تأیید پیشنهاد الزامی است؛ انبار هنگام تحویل اندازه واقعی را می‌گیرد و جایگزین می‌کند. هزینه ارسال بر اساس وزن واقعی حساب می‌شود.</p>
+        <p className="text-[10px] text-slate-500 leading-5">وزن و ابعاد کالا برای تأیید پیشنهاد الزامی است؛ انبار هنگام تحویل اندازه واقعی را می‌گیرد و جایگزین می‌کند. هزینه ارسال بر اساس وزن واقعی حساب می‌شود. اگر تنوعی وزن یا ابعاد متفاوتی دارد، همان را در جزئیات همان تنوع بنویس؛ خالی بماند، همین وزن و ابعاد برای آن تنوع حساب می‌شود.</p>
         <label className="text-[10px] font-bold text-slate-700 block pt-1">ابعاد بسته‌بندی (اختیاری — پیش‌فرض مرسوله):</label>
         <div className="grid grid-cols-3 gap-2">
           <div>

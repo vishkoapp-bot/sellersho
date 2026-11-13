@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,6 +16,19 @@ import (
 type FinanceRepository struct {
 	db *sql.DB
 }
+
+// ErrDisputeOrderNotDisputable is returned by CreateDispute when the
+// atomic status flip affects 0 rows: the order left the disputable
+// states (shipped / delivered_unconfirmed / delivered) between the
+// handler's check and the flip — e.g. a concurrent confirm won the
+// race — or a second dispute already flipped it. The tx rolls back,
+// so no second DISP row is created. Callers map it to 409 (M2, round 2).
+var ErrDisputeOrderNotDisputable = errors.New("order cannot be disputed in its current status")
+
+// ErrDisputeIDCollision is returned by CreateDispute when the
+// generated dispute id collides with an existing row. Callers map it
+// to a JSON 409, never a raw DB error body (M2, round 2).
+var ErrDisputeIDCollision = errors.New("dispute id already exists")
 
 func NewFinanceRepository(db *sql.DB) *FinanceRepository {
 	return &FinanceRepository{db: db}
@@ -151,19 +165,27 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 		d.ID, d.OrderID, d.OrderNumber, d.Type, d.CustomerName, d.ProductTitle,
 		d.ClaimAmount, d.Reason, d.StoreID, d.SupplierName, "pending",
 	); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return ErrDisputeIDCollision
+		}
 		return err
 	}
 
 	// Update order status to delivery_disputed by resolved id only: the
 	// old code flipped by the raw order-number input, so a lookup miss
 	// silently flipped nothing while still returning success.
+	// M2 (round 2): the flip is atomic — the status predicate makes
+	// the UPDATE itself the guard, so a dispute whose handler loaded
+	// 'shipped' before a concurrent confirm committed can no longer
+	// un-confirm the order, and two concurrent disputes cannot both
+	// insert: the loser's UPDATE affects 0 rows and its tx rolls back.
 	now := time.Now()
-	res, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'delivery_disputed', disputed_at = $1 WHERE id = $2`, now, resolvedID)
+	res, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'delivery_disputed', disputed_at = $1 WHERE id = $2 AND status IN ('shipped','delivered_unconfirmed','delivered')`, now, resolvedID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("order not found: %s", orderRef)
+		return ErrDisputeOrderNotDisputable
 	}
 
 	return tx.Commit()

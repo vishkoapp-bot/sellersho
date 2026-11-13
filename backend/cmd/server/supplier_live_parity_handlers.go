@@ -10,6 +10,7 @@ import (
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/tapin"
 	"github.com/google/uuid"
@@ -1085,6 +1086,406 @@ func (h *SupplierHandlers) HandleReorderProductImages(w http.ResponseWriter, r *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// P0 variant images (2026-11-13): mirrors the product gallery handlers
+// above, scoped to product_variant_images (cap 4/variant). Same upload
+// validation: 5 MB/file, magic bytes via fix47ImageExt, UUID filenames.
+
+// GET /api/v1/supplier/products/{id}/variants/{vid}/images
+func (h *SupplierHandlers) HandleGetVariantImages(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	list, err := h.supplierRepo.ListVariantImages(r.Context(), supplierID, productID, variantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	if list == nil {
+		list = []repository.SupplierProductImage{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+}
+
+// POST /api/v1/supplier/products/{id}/variants/{vid}/images (multipart field "images")
+func (h *SupplierHandlers) HandleUploadVariantImages(w http.ResponseWriter, r *http.Request, productID, variantID, uploadDir string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if uploadDir == "" {
+		uploadDir = "./static/uploads/products"
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 48*1024*1024)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, `{"error":"خطا در پردازش فرم یا حجم بیش از حد مجاز"}`, http.StatusBadRequest)
+		return
+	}
+	files := r.MultipartForm.File["images"]
+	if len(files) == 0 {
+		http.Error(w, `{"error":"فایل تصویر یافت نشد"}`, http.StatusBadRequest)
+		return
+	}
+	// Cap + ownership are checked BEFORE any file is written to disk:
+	// a rejected upload (full gallery, or a variant the supplier does
+	// not own) must leave no orphan files behind.
+	if err := h.supplierRepo.CheckVariantGalleryRoom(r.Context(), supplierID, productID, variantID, len(files)); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		if err == repository.ErrVariantGalleryFull {
+			http.Error(w, `{"error":"حداکثر ۴ تصویر برای هر تنوع مجاز است."}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	urls := make([]string, 0, len(files))
+	for _, fh := range files {
+		if fh.Size > 5*1024*1024 {
+			http.Error(w, `{"error":"حجم هر فایل نباید بیشتر از ۵ مگابایت باشد."}`, http.StatusBadRequest)
+			return
+		}
+		f, err := fh.Open()
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		head := make([]byte, 512)
+		n, _ := io.ReadFull(f, head)
+		head = head[:n]
+		safeExt, valid := fix47ImageExt(head, fh.Filename)
+		if !valid {
+			f.Close()
+			http.Error(w, `{"error":"فرمت نامعتبر. فقط JPG، PNG و WEBP مجاز است."}`, http.StatusBadRequest)
+			return
+		}
+		if seeker, ok := f.(io.Seeker); ok {
+			_, _ = seeker.Seek(0, io.SeekStart)
+		}
+		filename := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), safeExt)
+		dst, err := os.Create(filepath.Join(uploadDir, filename))
+		if err != nil {
+			f.Close()
+			writeInternalError(w, err)
+			return
+		}
+		if _, err := io.Copy(dst, f); err != nil {
+			dst.Close()
+			f.Close()
+			writeInternalError(w, err)
+			return
+		}
+		dst.Close()
+		f.Close()
+		urls = append(urls, "/static/uploads/products/"+filename)
+	}
+	list, err := h.supplierRepo.AddVariantImages(r.Context(), supplierID, productID, variantID, urls)
+	if err != nil {
+		// Best-effort cleanup: the pre-check above normally prevents
+		// this, but a concurrent upload can still fill the gallery
+		// between the check and the insert — never leave orphans.
+		for _, u := range urls {
+			_ = os.Remove(filepath.Join(uploadDir, filepath.Base(u)))
+		}
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		if err == repository.ErrVariantGalleryFull {
+			http.Error(w, `{"error":"حداکثر ۴ تصویر برای هر تنوع مجاز است."}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+}
+
+// DELETE /api/v1/supplier/products/{id}/variants/{vid}/images/{imageId}
+func (h *SupplierHandlers) HandleDeleteVariantImage(w http.ResponseWriter, r *http.Request, productID, variantID, imageID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	if err := h.supplierRepo.DeleteVariantImage(r.Context(), supplierID, productID, variantID, imageID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"image not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// PUT /api/v1/supplier/products/{id}/variants/{vid}/images/reorder {orderedIds}
+func (h *SupplierHandlers) HandleReorderVariantImages(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var body struct {
+		OrderedIDs []string `json:"orderedIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if err := h.supplierRepo.ReorderVariantImages(r.Context(), supplierID, productID, variantID, body.OrderedIDs); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"خطا در ذخیره ترتیب."}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// PUT /api/v1/supplier/products/{id}/variants/{vid}/physical
+// Body: {"weightGrams": 1200, "lengthMm": 300, "widthMm": 200,
+// "heightMm": 150}. All fields nullable; an explicit null clears the
+// field back to inherit-from-product. A field absent from the body
+// keeps its stored value. Dims are validated on the RESULTING triple
+// (all-or-none), so a single-dim update is fine when the other two
+// are already stored, and a lone dimension on an unmeasured variant
+// is rejected. No admin re-approval (P0 decision D6).
+func (h *SupplierHandlers) HandleUpdateVariantPhysical(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	current, err := h.supplierRepo.GetSupplierVariant(r.Context(), supplierID, productID, variantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	// Merge body over stored values; each key accepts a JSON integer
+	// or explicit null (clear). Anything else is a 400.
+	weight, length, width, height := current.WeightGrams, current.LengthMM, current.WidthMM, current.HeightMM
+	for _, f := range []struct {
+		key string
+		dst **int
+	}{
+		{"weightGrams", &weight},
+		{"lengthMm", &length},
+		{"widthMm", &width},
+		{"heightMm", &height},
+	} {
+		msg, present := raw[f.key]
+		if !present {
+			continue
+		}
+		if string(msg) == "null" {
+			*f.dst = nil
+			continue
+		}
+		var n int
+		if err := json.Unmarshal(msg, &n); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		// Reject non-integers (e.g. 1.5) that Unmarshal into int
+		// would otherwise silently accept via truncation in older
+		// decoders: re-encode and compare the raw text.
+		var f64 float64
+		if err := json.Unmarshal(msg, &f64); err != nil || f64 != float64(n) {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		*f.dst = &n
+	}
+	if err := repository.ValidateVariantPhysicalValues(weight, length, width, height); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	out, err := h.supplierRepo.UpdateVariantPhysical(r.Context(), supplierID, productID, variantID, weight, length, width, height)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// PUT /api/v1/supplier/products/{id}/variants/{vid}/sale (P1(c)).
+// Sets (or clears) a per-variant sale price with an optional window.
+// Body fields are partial: omitted fields keep their values, except
+// clearing salePrice clears from/to as well. salePrice null clears
+// the whole sale. Validation (all server-side, before write):
+//   - S > 0, multiple of 100 (displayed prices sit on the 100 grid)
+//   - S > R, where R is the reference cost from the variant's current
+//     effective cost C and the platform-pct ladder (floor = R, not C:
+//     the platform fee R-C is not discountable; R is a derived
+//     platform number, safe to reveal to the variant's own supplier)
+//   - S < P_central, the central-store resolved price at write time
+//   - saleFrom < saleTo when both set; saleTo strictly in the future
+//   - admin-locked variants (variant/product admin_set lock) => 409
+// A sale may be set on an inactive variant (inert until activation).
+// Setting a sale needs no supplier_price_increases row: a sale is a
+// final-price DECREASE. If a later governed cost increase pushes R
+// above S, the sale auto-suspends at display/charge time.
+func (h *SupplierHandlers) HandleUpdateVariantSale(w http.ResponseWriter, r *http.Request, productID, variantID string) {
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	current, err := h.supplierRepo.GetSupplierVariant(r.Context(), supplierID, productID, variantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	// Merge body over stored values. salePrice accepts an integer or
+	// explicit null (clear); saleFrom/saleTo accept RFC3339 strings
+	// or explicit null (clear). Anything else is a 400.
+	salePrice := current.SalePrice
+	saleFrom := current.SaleFrom
+	saleTo := current.SaleTo
+	if msg, present := raw["salePrice"]; present {
+		if string(msg) == "null" {
+			salePrice, saleFrom, saleTo = nil, nil, nil
+		} else {
+			var n int64
+			var f float64
+			if err := json.Unmarshal(msg, &f); err != nil || f != float64(int64(f)) {
+				http.Error(w, `{"error":"invalid salePrice"}`, http.StatusBadRequest)
+				return
+			}
+			n = int64(f)
+			salePrice = &n
+		}
+	}
+	for _, f := range []struct {
+		key string
+		dst **time.Time
+	}{
+		{"saleFrom", &saleFrom},
+		{"saleTo", &saleTo},
+	} {
+		msg, present := raw[f.key]
+		if !present {
+			continue
+		}
+		if string(msg) == "null" {
+			*f.dst = nil
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(msg, &s); err != nil {
+			http.Error(w, `{"error":"invalid sale window"}`, http.StatusBadRequest)
+			return
+		}
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(s))
+		if err != nil {
+			http.Error(w, `{"error":"invalid sale window"}`, http.StatusBadRequest)
+			return
+		}
+		*f.dst = &parsed
+	}
+	// Clearing salePrice clears the window too.
+	if salePrice == nil {
+		saleFrom, saleTo = nil, nil
+	}
+	if salePrice != nil {
+		if *salePrice <= 0 || *salePrice%100 != 0 {
+			http.Error(w, `{"error":"salePrice must be a positive multiple of 100"}`, http.StatusBadRequest)
+			return
+		}
+		if saleFrom != nil && saleTo != nil && !saleFrom.Before(*saleTo) {
+			http.Error(w, `{"error":"saleFrom must be before saleTo"}`, http.StatusBadRequest)
+			return
+		}
+		if saleTo != nil && !saleTo.After(time.Now()) {
+			http.Error(w, `{"error":"saleTo must be in the future"}`, http.StatusBadRequest)
+			return
+		}
+		// Floor R / ceiling P_central from the CURRENT effective cost
+		// and the platform-pct ladder, resolved as the central store.
+		categorySlug, costC, err := h.supplierRepo.GetVariantSaleBasis(r.Context(), supplierID, productID, variantID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		settings, _ := loadPricingSettings(r.Context(), h.pricingRepo)
+		central := domain.Store{ID: "store-central", Slug: "central", OwnerType: "central"}
+		prod := domain.Product{ID: productID, CategorySlug: categorySlug, SupplierBaseCost: costC}
+		centralRes := pricing.ResolveReferencePricingForStoreProductVariantWithCost(prod, costC, variantID, central, settings, nil, nil)
+		refCost := centralRes.BaseCost
+		if *salePrice <= refCost {
+			http.Error(w, fmt.Sprintf(`{"error":"salePrice must be above the reference cost %d"}`, refCost), http.StatusBadRequest)
+			return
+		}
+		if *salePrice >= centralRes.FinalPrice {
+			http.Error(w, fmt.Sprintf(`{"error":"salePrice must be below the central price %d"}`, centralRes.FinalPrice), http.StatusBadRequest)
+			return
+		}
+		// Admin-locked variants cannot go on sale: the lock fixes
+		// the margin and a sale would undercut it (409).
+		if h.pricingRepo != nil {
+			locked, lerr := h.pricingRepo.VariantAdminLocked(r.Context(), productID, variantID)
+			if lerr != nil {
+				writeInternalError(w, lerr)
+				return
+			}
+			if locked {
+				http.Error(w, `{"error":"variant margin is locked by admin"}`, http.StatusConflict)
+				return
+			}
+		}
+	}
+	out, err := h.supplierRepo.UpdateVariantSale(r.Context(), supplierID, productID, variantID, salePrice, saleFrom, saleTo)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }
 
 // POST /api/v1/supplier/products/{id}/variants {variant_name, attributes}

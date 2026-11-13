@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { SearchX, ArrowRight } from 'lucide-react';
 import { 
   Store, 
   StoreBuilderConfig, 
@@ -165,6 +166,11 @@ export interface StoreState {
   // Store context of a product opened from inside a seller storefront
   // (null = the product route is unscoped, i.e. the central PDP).
   routeStoreSlug: string | null;
+  // P0-2: true once the routed store is installed as currentStore (or
+  // its resolve failed terminally); the PDP waits on it instead of
+  // rendering under the wrong (central) store.
+  routeStoreResolved: boolean;
+  routeStoreInvalid: boolean;
   openStorefront: (slug?: string) => void;
 }
 
@@ -275,6 +281,23 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     }
   }, [wishlistScopeStore?.id, wishlistScopeStore?.slug]);
   const routeStoreResolveRef = useRef<string | null>(null);
+  // P0-2: terminal failure of the routed-store resolve (unknown or
+  // suspended slug) — the PDP renders the invalid-store view instead
+  // of silently keeping the central store.
+  const [routeStoreInvalid, setRouteStoreInvalid] = useState<boolean>(false);
+  // P0-2: loadStores' setCurrentStore updater runs inside an effect
+  // that does not depend on routeStoreSlug, so it reads the slug from
+  // this ref (mirrored on every change) instead of a stale closure.
+  const routeStoreSlugRef = useRef<string | null>(routeStoreSlug);
+  useEffect(() => { routeStoreSlugRef.current = routeStoreSlug; }, [routeStoreSlug]);
+  // P0-2: the store scope the currently installed routed product was
+  // resolved with (null = unscoped central). The already-resolved
+  // guard must compare scope too, or bibi -> sepehr on the same
+  // product id returns early as "already resolved" with the wrong price.
+  const routeProductScopeRef = useRef<string | null | undefined>(undefined);
+  // P0-2: resolved = no route scope, or the routed store is the
+  // current store, or its resolve failed terminally (invalid view).
+  const routeStoreResolved = !routeStoreSlug || currentStore?.slug === routeStoreSlug || routeStoreInvalid;
 
   type NavigationState = {
     activeView: ActiveView;
@@ -532,6 +555,19 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
             const sellerStore = availableStores.find((store) => store.id === sellerSession.storeId);
             if (sellerStore) return sellerStore;
           }
+          // P0-2: the URL route the user is ON wins over a stored
+          // referral and over the [0] default — a cold store PDP must
+          // install its own store before the first paint, not central.
+          const routeSlug = routeStoreSlugRef.current;
+          if (routeSlug) {
+            const routeStore = availableStores.find((store) => store.slug === routeSlug);
+            if (routeStore) return routeStore;
+            // The slug names a store outside this list (owned-list
+            // session, or an unknown slug): never fall through to
+            // [0]/central while the resolve effect is still fetching
+            // it — keep the previous store so the PDP gate holds.
+            return previous;
+          }
           if (referredStoreSlug) {
             const referredStore = availableStores.find((store) => store.slug === referredStoreSlug);
             if (referredStore) return referredStore;
@@ -673,20 +709,43 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   useEffect(() => {
     if (activeView !== 'product_detail' || !routeStoreSlug) {
       routeStoreResolveRef.current = null;
+      setRouteStoreInvalid(false);
       return;
     }
-    if (currentStore?.slug === routeStoreSlug) return;
-    if (routeStoreResolveRef.current === routeStoreSlug) return;
-    routeStoreResolveRef.current = routeStoreSlug;
+    if (currentStore?.slug === routeStoreSlug) {
+      setRouteStoreInvalid(false);
+      return;
+    }
+    // P0-2: the in-list check runs BEFORE the ref guard — when the
+    // store list arrives it must install the store even if an earlier
+    // run already stamped the ref and its fetch was cancelled by that
+    // arrival. The ref is stamped only when a fetch actually starts.
     const inList = stores.find((s) => s.slug === routeStoreSlug);
     if (inList) {
+      setRouteStoreInvalid(false);
       setCurrentStore(inList);
       return;
     }
-    let cancelled = false;
+    // M6 (round 2): recoverable resolve — if currentStore has since
+    // changed to a store whose slug is NOT the route slug (the
+    // seller-session branch of loadStores re-ran mid-browse), the
+    // stamped ref must not wedge this effect: clear it (and the
+    // invalid flag) so the fetch below re-runs. The slug guard in
+    // the .then below is kept, so the verified P0-2 race fix is
+    // preserved; only the stuck-ref state is re-armed.
+    if (routeStoreResolveRef.current === routeStoreSlug && currentStore && currentStore.slug !== routeStoreSlug) {
+      routeStoreResolveRef.current = null;
+      setRouteStoreInvalid(false);
+    }
+    if (routeStoreResolveRef.current === routeStoreSlug) return;
+    routeStoreResolveRef.current = routeStoreSlug;
+    setRouteStoreInvalid(false);
     storeApi.getStoreBySlug(routeStoreSlug)
       .then((resolved: any) => {
-        if (cancelled || !resolved) return;
+        // P0-2: slug-guarded, not run-guarded — a re-run caused by the
+        // store list arriving must not cancel this fetch; only a slug
+        // change (or leaving the PDP) abandons it.
+        if (routeStoreResolveRef.current !== routeStoreSlug || !resolved) return;
         setCurrentStore((previous) => {
           if (previous?.slug === routeStoreSlug) return previous;
           return {
@@ -716,8 +775,15 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
           } as Store;
         });
       })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
+      .catch(() => {
+        if (routeStoreResolveRef.current !== routeStoreSlug) return;
+        // P0-2: terminal failure (unknown/suspended slug) — never
+        // leave central as currentStore under another store's slug.
+        // routeStoreResolved flips true and the PDP renders the
+        // invalid-store view.
+        setRouteStoreInvalid(true);
+      });
+    // No cleanup cancellation: the slug guard above owns abandonment.
   }, [activeView, routeStoreSlug, currentStore?.slug, stores]);
 
   // Canonical store-product URL: a scoped PDP reached through a
@@ -751,19 +817,38 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     // routes (the list DTO carries no spnNumber, so `found` never matches)
     // and the spn fetch looped forever, leaving the page stuck on
     // "loading product" in the preview browser check.
+    // Slug routes: routeProduct.id carries the SLUG (parseProductRemainder
+    // returns the path segment), while currentProductDetail.id is the real
+    // product id — the id-only comparison above never matched, so every
+    // slug PDP refetched + reopened in a loop (~10 req/s), unmounting the
+    // PDP (loading flash) and resetting any variant selection. Match the
+    // slug too, mirroring the FIX 10 spn guard.
+    // P0-2: the same product id under a different store scope is NOT
+    // already resolved — the installed product carries the old store's
+    // price. The scope the installed product was resolved with must
+    // match the route's scope.
     const alreadyResolved =
-      (routeProduct.spnNumber !== undefined && currentProductDetail?.spnNumber === routeProduct.spnNumber) ||
-      (routeProduct.id !== undefined && currentProductDetail?.id === routeProduct.id);
+      routeProductScopeRef.current === (routeStoreSlug ?? null) &&
+      ((routeProduct.spnNumber !== undefined && currentProductDetail?.spnNumber === routeProduct.spnNumber) ||
+      (routeProduct.id !== undefined && currentProductDetail?.id === routeProduct.id) ||
+      (routeProduct.id !== undefined && currentProductDetail?.slug === routeProduct.id));
     if (alreadyResolved) {
       setRouteProductPending(false);
       return;
     }
-    const found = routeProduct.spnNumber !== undefined
-      ? products.find((item) => item.spnNumber === routeProduct.spnNumber)
-      : routeProduct.id
-        ? products.find((item) => item.id === routeProduct.id)
-        : undefined;
+    // P0-2: the in-memory catalogue is unscoped (central prices) — it
+    // must never install the PDP product for a store-scoped route.
+    // Scoped routes always take the detail fetch below, which sends
+    // ?storeSlug; only unscoped (central) routes use the list shortcut.
+    const found = routeStoreSlug
+      ? undefined
+      : (routeProduct.spnNumber !== undefined
+        ? products.find((item) => item.spnNumber === routeProduct.spnNumber)
+        : routeProduct.id
+          ? products.find((item) => item.id === routeProduct.id || item.slug === routeProduct.id)
+          : undefined);
     if (found) {
+      routeProductScopeRef.current = null;
       openProductDetail(found);
       setRouteProductPending(false);
       return;
@@ -771,23 +856,25 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     let cancelled = false;
     setRouteProductPending(true);
     const fetch = routeProduct.spnNumber !== undefined
-      ? catalogApi.getProductBySpn(routeProduct.spnNumber)
+      ? catalogApi.getProductBySpn(routeProduct.spnNumber, routeStoreSlug ?? undefined)
       : routeProduct.id
-        ? catalogApi.getProductById(routeProduct.id)
+        ? catalogApi.getProductById(routeProduct.id, routeStoreSlug ?? undefined)
         : Promise.reject(new Error('no product route'));
     fetch
       .then((dto) => {
         if (cancelled) return;
+        routeProductScopeRef.current = routeStoreSlug ?? null;
         openProductDetail(mapBackendProduct(dto));
         setRouteProductPending(false);
       })
       .catch(() => {
         if (cancelled) return;
+        routeProductScopeRef.current = undefined;
         setRouteProductPending(false);
         setRouteProductInvalid(true);
       });
     return () => { cancelled = true; };
-  }, [activeView, routeProduct, products, currentProductDetail]);
+  }, [activeView, routeProduct, routeStoreSlug, products, currentProductDetail]);
 
   const openStaticPage = (key: StaticPageKey) => {
     setStaticPageKey(key);
@@ -1168,6 +1255,8 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     routeProductPending,
     routeProductInvalid,
     routeStoreSlug,
+    routeStoreResolved,
+    routeStoreInvalid,
     openStorefront,
   };
 
@@ -1182,6 +1271,44 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   }
 
   if (!currentStore) {
+    // M1 (round 2): when the routed store is terminally invalid
+    // (unknown/suspended slug on cold load), render the store 404
+    // HERE instead of the bare dead-end line. The children cannot
+    // simply be let through: useStore() throws when currentStore
+    // is null (AppContent + ProductDetailView both consume it), so
+    // mounting them crashes the app to a blank page. This markup
+    // is the NotFoundView variant="store" content verbatim (same
+    // copy, same back link: history back, else home) — that
+    // component cannot be imported here because it pulls
+    // Header/Footer, which import this context (cycle).
+    // routeStoreInvalid is only ever set by the PDP resolve
+    // effect, so no other view is affected.
+    if (routeStoreInvalid) {
+      return (
+        <StoreContext.Provider value={value}>
+          <div className="flex-1 flex flex-col bg-white min-h-screen">
+            <main className="flex-1 flex flex-col items-center justify-center px-6 py-16 text-center select-none bg-[#FAF9F7]">
+              <div className="w-20 h-20 rounded-full flex items-center justify-center mb-5 bg-stone-200/70">
+                <SearchX className="w-10 h-10 text-stone-400" strokeWidth={1.5} />
+              </div>
+              <h1 className="text-5xl font-black tracking-tight text-stone-900">۴۰۴</h1>
+              <h2 className="mt-2 text-sm font-bold text-stone-800">صفحه مورد نظر یافت نشد</h2>
+              <p className="mt-2 text-xs leading-relaxed max-w-[260px] text-stone-500">
+                به نظر می‌رسد نشانی فروشگاه اشتباه است یا این فروشگاه دیگر فعال نیست.
+              </p>
+              <button
+                type="button"
+                onClick={() => { if (typeof window !== 'undefined' && window.history.length > 1) { window.history.back(); } else if (typeof window !== 'undefined') { window.location.href = '/'; } }}
+                className="mt-6 text-xs font-bold text-stone-500 hover:text-stone-800 flex items-center gap-1 transition-colors"
+              >
+                <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <span>بازگشت به صفحه قبل</span>
+              </button>
+            </main>
+          </div>
+        </StoreContext.Provider>
+      );
+    }
     return (
       <StoreContext.Provider value={value}>
         {allowUnselectedChildren ? children : (
@@ -1305,6 +1432,8 @@ export const useStore = (): StoreContextType => {
     routeProductPending: store.routeProductPending,
     routeProductInvalid: store.routeProductInvalid,
     routeStoreSlug: store.routeStoreSlug,
+    routeStoreResolved: store.routeStoreResolved,
+    routeStoreInvalid: store.routeStoreInvalid,
     formatPrice,
     toPersianDigits,
     // Auth Context
@@ -1401,6 +1530,9 @@ export const useStore = (): StoreContextType => {
     cart: cart.cart,
     addToCart: (p: Product, q?: number, c?: string, variantId?: string, addonIds?: string[]) => {
       if (!store.currentStore) return;
+      // P0-2: while a store-scoped PDP is still resolving its store,
+      // no line may be stamped with the wrong (central) cart bucket.
+      if (store.routeStoreSlug && store.currentStore.slug !== store.routeStoreSlug) return;
       if (!variantId && (p.productType === 'variable' || (p.variants?.length && !resolvePurchase(p)))) {
         prod.openProductDetail(p); return;
       }
@@ -1453,6 +1585,7 @@ export const useStore = (): StoreContextType => {
     },
     confirmOrderDelivery: ord.confirmOrderDelivery,
     disputeOrderDelivery: ord.disputeOrderDelivery,
+    busyOrderId: ord.busyOrderId,
     adminResolveDeliveryDispute: ord.adminResolveDeliveryDispute,
 
     // Finance Context

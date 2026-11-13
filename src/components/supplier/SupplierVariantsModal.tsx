@@ -22,6 +22,19 @@ interface VariantRow {
   min_cart_qty?: number | null;
   max_cart_qty?: number | null;
   supplier_base_cost?: number | null;
+  // Variant systems P0/P1(c)/P2(b) (served by the supplier variant DTO
+  // once the parallel backend workers land; all optional).
+  images?: string[];
+  image_url?: string | null;
+  weight_grams?: number | null;
+  length_mm?: number | null;
+  width_mm?: number | null;
+  height_mm?: number | null;
+  sale_price?: number | null;
+  sale_from?: string | null;
+  sale_to?: string | null;
+  shipping_class?: string | null;
+  tax_class?: string | null;
 }
 
 interface CustomAttr {
@@ -257,6 +270,175 @@ const LabelPrintPreview: React.FC<{
         ))}
       </div>
     </div>
+  );
+};
+
+// P0/P1(c)/P2(b) per-variant details for a PUBLISHED variant. Physicals
+// save via PUT .../variants/{vid}/physical and the sale via PUT
+// .../variants/{vid}/sale (a sale is a price *decrease*, so it needs no
+// price-increase governance). Images use the variant gallery endpoints.
+// Classes have NO post-publication endpoint in v1 (P2(b) spec), so they
+// render read-only here with that note — they are set at propose time.
+const VariantPublishedDetails: React.FC<{
+  productId: string;
+  variant: VariantRow;
+  onSaved: (v: VariantRow) => void;
+}> = ({ productId, variant, onSaved }) => {
+  const { error, success } = useToast();
+  const [images, setImages] = useState<{ id: string; url: string }[] | null>(null);
+  const [imagesLoading, setImagesLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [weight, setWeight] = useState(variant.weight_grams != null ? String(variant.weight_grams) : '');
+  const [lenCm, setLenCm] = useState(variant.length_mm != null ? String(variant.length_mm / 10) : '');
+  const [widCm, setWidCm] = useState(variant.width_mm != null ? String(variant.width_mm / 10) : '');
+  const [heiCm, setHeiCm] = useState(variant.height_mm != null ? String(variant.height_mm / 10) : '');
+  const [physicalSaving, setPhysicalSaving] = useState(false);
+  const [sale, setSale] = useState(variant.sale_price != null ? String(variant.sale_price) : '');
+  const [saleFrom, setSaleFrom] = useState(variant.sale_from ? variant.sale_from.slice(0, 16) : '');
+  const [saleTo, setSaleTo] = useState(variant.sale_to ? variant.sale_to.slice(0, 16) : '');
+  const [saleSaving, setSaleSaving] = useState(false);
+
+  const loadImages = async () => {
+    if (images !== null || imagesLoading) return;
+    setImagesLoading(true);
+    try {
+      const data = await supplierApi.getVariantImages(productId, variant.id);
+      setImages(data.map((it: any) => typeof it === 'string' ? { id: it, url: it } : { id: String(it.id ?? it.imageUrl ?? it.image_url ?? ''), url: it.imageUrl ?? it.image_url ?? '' }).filter((r) => r.url));
+    } catch {
+      // Pre-P0 backend (or a variant without images yet): start empty.
+      setImages((variant.images ?? []).map((url) => ({ id: url, url })));
+    } finally {
+      setImagesLoading(false);
+    }
+  };
+
+  const parseNum = (s: string): number | null => {
+    const d = s.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
+    if (!/^\d+$/.test(d)) return null;
+    return parseInt(d, 10);
+  };
+
+  const savePhysical = async () => {
+    const w = weight.trim() === '' ? null : parseNum(weight);
+    if (weight.trim() !== '' && (w === null || w < 1 || w > 100000)) { error('وزن تنوع باید عدد صحیح بین ۱ تا ۱۰۰٬۰۰۰ گرم باشد.'); return; }
+    const dims = [lenCm, widCm, heiCm];
+    const filled = dims.filter((d) => d.trim() !== '').length;
+    if (filled > 0 && filled < 3) { error('ابعاد تنوع را کامل وارد کنید: طول، عرض و ارتفاع (سانتی‌متر).'); return; }
+    const mms: (number | null)[] = [null, null, null];
+    if (filled === 3) {
+      for (let i = 0; i < 3; i++) {
+        const n = parseNum(dims[i]);
+        if (n === null || n < 1 || n > 300) { error('ابعاد تنوع را کامل وارد کنید: طول، عرض و ارتفاع (سانتی‌متر).'); return; }
+        mms[i] = n * 10;
+      }
+    }
+    setPhysicalSaving(true);
+    try {
+      await supplierApi.updateVariantPhysical(productId, variant.id, { weightGrams: w, lengthMm: mms[0], widthMm: mms[1], heightMm: mms[2] });
+      success('وزن و ابعاد این تنوع ذخیره شد.');
+      onSaved({ ...variant, weight_grams: w, length_mm: mms[0], width_mm: mms[1], height_mm: mms[2] });
+    } catch (e: any) {
+      error(e?.message || 'ذخیره وزن و ابعاد انجام نشد.');
+    } finally {
+      setPhysicalSaving(false);
+    }
+  };
+
+  const saveSale = async () => {
+    const s = sale.trim() === '' ? null : parseNum(sale);
+    if (sale.trim() !== '' && (s === null || s <= 0)) { error('قیمت حراج تنوع را درست وارد کنید.'); return; }
+    const from = saleFrom ? new Date(saleFrom).getTime() : NaN;
+    const to = saleTo ? new Date(saleTo).getTime() : NaN;
+    if (saleFrom && !Number.isFinite(from)) { error('تاریخ شروع حراج معتبر نیست.'); return; }
+    if (saleTo && !Number.isFinite(to)) { error('تاریخ پایان حراج معتبر نیست.'); return; }
+    if (Number.isFinite(from) && Number.isFinite(to) && !(from < to)) { error('تاریخ پایان حراج باید بعد از تاریخ شروع باشد.'); return; }
+    setSaleSaving(true);
+    try {
+      await supplierApi.updateVariantSale(productId, variant.id, {
+        salePrice: s,
+        saleFrom: saleFrom ? new Date(saleFrom).toISOString() : null,
+        saleTo: saleTo ? new Date(saleTo).toISOString() : null,
+      });
+      success(s === null ? 'حراج این تنوع حذف شد.' : 'حراج این تنوع ذخیره شد.');
+      onSaved({ ...variant, sale_price: s, sale_from: saleFrom ? new Date(saleFrom).toISOString() : null, sale_to: saleTo ? new Date(saleTo).toISOString() : null });
+    } catch (e: any) {
+      error(e?.message || 'ذخیره حراج انجام نشد.');
+    } finally {
+      setSaleSaving(false);
+    }
+  };
+
+  const upload = async (files: File[]) => {
+    for (const file of files) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { error('فرمت تصویر نامعتبر است. فقط فرمت‌های JPG، PNG و WEBP مجاز هستند.'); return; }
+      if (file.size > 2 * 1024 * 1024) { error('حجم هر فایل تصویر نباید بیشتر از ۲ مگابایت باشد.'); return; }
+    }
+    if ((images?.length ?? 0) + files.length > 4) { error('حداکثر ۴ تصویر برای هر تنوع مجاز است.'); return; }
+    setUploading(true);
+    try {
+      await supplierApi.uploadVariantImages(productId, variant.id, files);
+      success(`${files.length} تصویر تنوع بارگذاری شد.`);
+      setImages(null);
+      await loadImages();
+    } catch (e: any) {
+      error(e?.message || 'آپلود تصویر تنوع انجام نشد.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const inputCls = 'w-full rounded-xl border border-slate-200 p-2 text-xs bg-white focus:border-brand-deep outline-none';
+  return (
+    <details className="border-t border-slate-100 pt-2 space-y-3" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void loadImages(); }}>
+      <summary className="text-xs font-bold cursor-pointer text-slate-700">تصویر، وزن و حراج این تنوع</summary>
+      <div className="space-y-2">
+        <span className="block text-[10px] font-bold text-slate-500">تصویر تنوع (حداکثر ۴ تصویر؛ اولی شاخص است)</span>
+        {imagesLoading ? (
+          <p className="text-[10px] text-slate-400">در حال دریافت تصاویر…</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {(images ?? []).map((img, i) => (
+              <span key={img.id} className="relative inline-block w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-white">
+                <img src={img.url} alt={`تصویر تنوع ${i + 1}`} className="w-full h-full object-cover" />
+                {i === 0 && <span className="absolute bottom-0 inset-x-0 bg-amber-400 text-amber-950 text-[8px] font-bold text-center">شاخص</span>}
+                <button type="button" onClick={async () => { try { await supplierApi.deleteVariantImage(productId, variant.id, img.id); setImages((prev) => (prev ?? []).filter((r) => r.id !== img.id)); } catch (e: any) { error(e?.message || 'حذف تصویر انجام نشد.'); } }} className="absolute top-0 left-0 bg-rose-500 text-white text-[9px] px-1 rounded-bl" aria-label="حذف تصویر تنوع">✕</button>
+              </span>
+            ))}
+            <label className={`rounded-lg border-2 border-dashed border-slate-300 bg-white px-2 py-2 text-[11px] font-bold text-brand-deep ${uploading ? 'opacity-50' : 'cursor-pointer'}`}>
+              {uploading ? 'در حال آپلود…' : '+ افزودن تصویر'}
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={(e) => { const files = e.target.files ? Array.from(e.target.files) : []; if (files.length) void upload(files); e.target.value = ''; }} className="hidden" />
+            </label>
+          </div>
+        )}
+        {(images?.length ?? 0) === 0 && !imagesLoading && <p className="text-[10px] text-slate-400">تصویری برای این تنوع ثبت نشده است؛ تصویر کالا نمایش داده می‌شود.</p>}
+      </div>
+      <div className="space-y-1.5">
+        <span className="block text-[10px] font-bold text-slate-500">وزن و ابعاد (خالی = ارث از کالا)</span>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <label className="text-[10px]">وزن (گرم)<input value={weight} onChange={(e) => setWeight(e.target.value)} inputMode="numeric" placeholder="ارث از کالا" className={inputCls} /></label>
+          <label className="text-[10px]">طول (سانتی‌متر)<input value={lenCm} onChange={(e) => setLenCm(e.target.value)} inputMode="numeric" placeholder="ارث از کالا" className={inputCls} /></label>
+          <label className="text-[10px]">عرض (سانتی‌متر)<input value={widCm} onChange={(e) => setWidCm(e.target.value)} inputMode="numeric" placeholder="ارث از کالا" className={inputCls} /></label>
+          <label className="text-[10px]">ارتفاع (سانتی‌متر)<input value={heiCm} onChange={(e) => setHeiCm(e.target.value)} inputMode="numeric" placeholder="ارث از کالا" className={inputCls} /></label>
+        </div>
+        <button type="button" onClick={savePhysical} disabled={physicalSaving} className="px-3.5 py-2 rounded-xl bg-brand-deep text-white text-[11px] font-bold hover:bg-brand transition-colors disabled:opacity-50">{physicalSaving ? 'در حال ذخیره…' : 'ذخیره وزن و ابعاد'}</button>
+      </div>
+      <div className="space-y-1.5">
+        <span className="block text-[10px] font-bold text-slate-500">حراج (قیمت نهایی مشتری؛ خالی = بدون حراج)</span>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <label className="text-[10px]">قیمت حراج (تومان)<input value={sale} onChange={(e) => setSale(e.target.value)} inputMode="numeric" placeholder="بدون حراج" className={inputCls} /></label>
+          <label className="text-[10px]">شروع حراج<input value={saleFrom} onChange={(e) => setSaleFrom(e.target.value)} type="datetime-local" className={inputCls} /></label>
+          <label className="text-[10px]">پایان حراج<input value={saleTo} onChange={(e) => setSaleTo(e.target.value)} type="datetime-local" className={inputCls} /></label>
+        </div>
+        <button type="button" onClick={saveSale} disabled={saleSaving} className="px-3.5 py-2 rounded-xl bg-brand-deep text-white text-[11px] font-bold hover:bg-brand transition-colors disabled:opacity-50">{saleSaving ? 'در حال ذخیره…' : 'ذخیره حراج'}</button>
+      </div>
+      <div className="space-y-1">
+        <span className="block text-[10px] font-bold text-slate-500">کلاس حمل‌ونقل / مالیاتی</span>
+        <p className="text-[10px] text-slate-400 leading-relaxed">
+          {variant.shipping_class ? `حمل‌ونقل: ${variant.shipping_class}` : 'حمل‌ونقل: پیش‌فرض (ارث از کالا)'} • {variant.tax_class ? `مالیاتی: ${variant.tax_class}` : 'مالیاتی: پیش‌فرض (ارث از کالا)'}
+          <br />کلاس تنوع منتشرشده فعلاً فقط هنگام پیشنهاد قابل تغییر است.
+        </p>
+      </div>
+    </details>
   );
 };
 
@@ -536,6 +718,7 @@ export const SupplierVariantsModal: React.FC<{
                     )}
                     <VariantCartLimits productId={productId} variant={v} onSaved={(updated) => setVariants((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))} />
                     <VariantCostEditor productId={productId} variant={v} productBaseCost={productBaseCost} pendingReview={pendingVariantIds.has(v.id)} onReviewQueued={reloadPriceIncreases} onSaved={(updated) => setVariants((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))} />
+                    <VariantPublishedDetails productId={productId} variant={v} onSaved={(updated) => setVariants((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))} />
                   </div>
                 ))}
               </div>

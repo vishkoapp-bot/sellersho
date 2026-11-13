@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
@@ -48,19 +49,37 @@ type ProductVariantResponse struct {
 	Stock       int                    `json:"stock"`
 	MinCartQty  int                    `json:"minCartQty"`
 	MaxCartQty  *int                   `json:"maxCartQty"`
+	Images      []string               `json:"images,omitempty"`
+	WeightGrams *int                   `json:"weightGrams,omitempty"`
+	LengthMM    *int                   `json:"lengthMm,omitempty"`
+	WidthMM     *int                   `json:"widthMm,omitempty"`
+	HeightMM    *int                   `json:"heightMm,omitempty"`
+	// P2(b): EFFECTIVE classes (variant ?? product ?? 'standard'),
+	// resolved in buildProductResponse; always present.
+	ShippingClass string `json:"shippingClass"`
+	TaxClass      string `json:"taxClass"`
 }
 
 // VariantPriceResponse is one entry of variantPrices, keyed by variant
 // ID (UUID) exactly as live serves it (FIX 4, team 04 G1 / team 02 G6).
 type VariantPriceResponse struct {
-	Price           int64  `json:"price"`
-	OriginalPrice   int64  `json:"originalPrice"`
-	DiscountPercent int    `json:"discountPercent"`
-	CampaignName    string `json:"campaignName,omitempty"`
+	Price           int64      `json:"price"`
+	OriginalPrice   int64      `json:"originalPrice"`
+	DiscountPercent int        `json:"discountPercent"`
+	CampaignName    string     `json:"campaignName,omitempty"`
+	// P1(c): configured sale price + window (echoed whenever set, any
+	// window state); OnSale is true iff the sale determined this price.
+	SalePrice *int64     `json:"salePrice,omitempty"`
+	SaleFrom  *time.Time `json:"saleFrom,omitempty"`
+	SaleTo    *time.Time `json:"saleTo,omitempty"`
+	OnSale    bool       `json:"onSale,omitempty"`
 }
 
-// ProductResponse is the FROZEN live list shape (D21): exactly these 19
-// keys, in this order. The following source fields are deliberately
+// ProductResponse is the FROZEN live list shape (D21): 21 always-present
+// keys, in this order, plus three appended omitempty extensions:
+// priceMin/priceMax (P1(a)) and storeDefaultVariantId (P2(c)). The
+// appended keys sit at the end so the FIX-14 supplier-key positions
+// never shift. The following source fields are deliberately
 // absent and must not be re-added: supplierId, supplierName (hardcoded
 // supplier names), baseCostB (cost leak; live central responses omit it
 // and the dropshipper-view baseCostB=C is an engine-internal value, not
@@ -96,6 +115,15 @@ type ProductResponse struct {
 	Brand            string                          `json:"brand"`
 	Variants         []ProductVariantResponse        `json:"variants"`
 	VariantPrices    map[string]VariantPriceResponse `json:"variantPrices"`
+	// P1(a): per-store price range over priced ACTIVE variants
+	// (stock deliberately NOT a filter — the range states price truth,
+	// not availability truth). Simple products: min == max. Zero-variant
+	// legacy products: both = product-level price. Variable products
+	// with no priced variant: both omitted (nil), never 0 and never
+	// the product price. P2(c): this store view's default variant.
+	PriceMin             *int64  `json:"priceMin,omitempty"`
+	PriceMax             *int64  `json:"priceMax,omitempty"`
+	StoreDefaultVariantID *string `json:"storeDefaultVariantId,omitempty"`
 }
 
 // ProductDetailResponse is the live detail shape (D21): the 19 list keys
@@ -105,7 +133,8 @@ type ProductResponse struct {
 // section 1: present in the DB in both source and live, in neither API)
 // and spnNumber (D46). Team 08 must not treat the extension keys as
 // live-proven, and a future live-parity check must compare only the
-// first 20 keys against live.
+// first 20 keys against live. P1(a)/P2(c) append priceMin, priceMax and
+// storeDefaultVariantId at the end (same semantics as the list shape).
 type ProductDetailResponse struct {
 	ProductType   string                `json:"productType"`
 	SchemaVersion int                   `json:"schemaVersion"`
@@ -149,6 +178,9 @@ type ProductDetailResponse struct {
 	VariantPrices    map[string]VariantPriceResponse `json:"variantPrices"`
 	Variants         []ProductVariantResponse        `json:"variants"`
 	Warehouse        string                          `json:"warehouse"`
+	PriceMin         *int64                          `json:"priceMin,omitempty"`
+	PriceMax         *int64                          `json:"priceMax,omitempty"`
+	StoreDefaultVariantID *string                    `json:"storeDefaultVariantId,omitempty"`
 }
 
 // deriveDiscountPercent derives discountPercent exactly as Team 02
@@ -281,12 +313,30 @@ func DefaultVariantForResponse(variants []domain.ProductVariant) *domain.Product
 	return nil
 }
 
+// StoreDefaultVariantForResponse returns the store's default variant
+// from an already store-filtered variant list (P2(a) filtering applied
+// by the caller), or nil when there is no row / the row's variant is
+// not in the list. Purchasability (price/stock) is NOT checked here —
+// the caller applies it. DefaultVariantForResponse is left unchanged:
+// its tests and semantics are product-level.
+func StoreDefaultVariantForResponse(variants []domain.ProductVariant, storeDefaultVariantID string) *domain.ProductVariant {
+	if storeDefaultVariantID == "" {
+		return nil
+	}
+	for i := range variants {
+		if variants[i].ID == storeDefaultVariantID {
+			return &variants[i]
+		}
+	}
+	return nil
+}
+
 // buildProductResponse renders one product in the frozen 19-key list
 // shape. discountEligible is true for every listed product: live
 // returned true for all 40 active central products and no eligibility
 // rule beyond that observation was proven, so no narrower rule is
 // invented here.
-func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, variants []domain.ProductVariant, variantPrices map[string]VariantPriceResponse) ProductResponse {
+func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, variants []domain.ProductVariant, variantPrices map[string]VariantPriceResponse, storeDefaultVariantID ...string) ProductResponse {
 	if variants == nil {
 		variants = []domain.ProductVariant{}
 	}
@@ -309,6 +359,14 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if minQty < 1 {
 			minQty = 1
 		}
+		shipClass := ""
+		if v.ShippingClass != nil {
+			shipClass = *v.ShippingClass
+		}
+		taxClass := ""
+		if v.TaxClass != nil {
+			taxClass = *v.TaxClass
+		}
 		vresp = append(vresp, ProductVariantResponse{
 			Selection: selection, InventoryMode: mode, IsActive: active, CombinationKey: v.CombinationKey,
 			ID:          v.ID,
@@ -320,10 +378,61 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 			IsDefault:   v.IsDefault,
 			MinCartQty:  minQty,
 			MaxCartQty:  v.MaxCartQty,
+			Images:      v.Images,
+			WeightGrams: v.WeightGrams,
+			LengthMM:    v.LengthMM,
+			WidthMM:     v.WidthMM,
+			HeightMM:    v.HeightMM,
+			// P2(b): effective classes, resolved once here.
+			ShippingClass: domain.EffectiveShippingClass(shipClass, p.ShippingClass),
+			TaxClass:      domain.EffectiveTaxClass(taxClass, p.TaxClass),
 		})
 	}
 	if variantPrices == nil {
 		variantPrices = map[string]VariantPriceResponse{}
+	}
+	// P1(a): price range over priced ACTIVE variants in the rendered
+	// list. Stock is deliberately NOT a filter (see struct comment).
+	// The IsActive filter comes from the rendered list (the legacy
+	// normalisation above already handled mode == "" rows), not from
+	// the map alone: priceVariantsForResponse still prices legacy
+	// inactive variants.
+	var priceMin, priceMax *int64
+	for _, vr := range vresp {
+		if !vr.IsActive {
+			continue
+		}
+		vp, ok := variantPrices[vr.ID]
+		if !ok || vp.Price <= 0 {
+			continue
+		}
+		if priceMin == nil || vp.Price < *priceMin {
+			v := vp.Price
+			priceMin = &v
+		}
+		if priceMax == nil || vp.Price > *priceMax {
+			v := vp.Price
+			priceMax = &v
+		}
+	}
+	if priceMin == nil && len(variants) == 0 {
+		// Zero-variant legacy product: the product-level price is the
+		// only price that exists.
+		v := res.FinalPrice
+		priceMin, priceMax = &v, &v
+	}
+	var storeDefaultID *string
+	if len(storeDefaultVariantID) > 0 && storeDefaultVariantID[0] != "" {
+		// Only advertise a store default that is actually in the
+		// (store-filtered) variant list; a hidden/inactive default
+		// falls through silently (the row is not auto-deleted).
+		for _, v := range variants {
+			if v.ID == storeDefaultVariantID[0] {
+				s := storeDefaultVariantID[0]
+				storeDefaultID = &s
+				break
+			}
+		}
 	}
 	if p.NicheIDs == nil {
 		p.NicheIDs = []string{}
@@ -349,6 +458,9 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		Brand:            p.Brand,
 		Variants:         vresp,
 		VariantPrices:    variantPrices,
+		PriceMin:         priceMin,
+		PriceMax:         priceMax,
+		StoreDefaultVariantID: storeDefaultID,
 	}
 }
 
@@ -385,11 +497,27 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 			res = d.Resolution
 			vname = d.CampaignName
 		}
+		// P1(c): sale AFTER campaigns (shared helper — the charge
+		// path calls the same one). Lowest wins; floor R; a sale
+		// below R suspends. When the sale wins, no campaign name.
+		onSale := false
+		if v.SalePrice != nil {
+			var saleRes pricing.ReferenceResolution
+			saleRes, onSale = pricing.ApplyVariantSale(res, v.SalePrice, time.Now(), v.SaleFrom, v.SaleTo)
+			res = saleRes
+			if onSale {
+				vname = ""
+			}
+		}
 		out[v.ID] = VariantPriceResponse{
 			Price:           res.FinalPrice,
 			OriginalPrice:   res.OriginalPrice,
 			DiscountPercent: deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
 			CampaignName:    vname,
+			SalePrice:       v.SalePrice,
+			SaleFrom:        v.SaleFrom,
+			SaleTo:          v.SaleTo,
+			OnSale:          onSale,
 		}
 	}
 	return out
@@ -534,7 +662,15 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	for _, p := range products {
 		ids = append(ids, p.ID)
 	}
-	variantsByProduct, _ := catalogRepo.GetVariantsByProductIDs(ctx, ids)
+	// P2(a): a non-central store view loads store-filtered variants
+	// (hidden variants never reach pricing or the response). Central
+	// is never filtered. P2(c): the store's default variants, batched.
+	storeIDForVariants := ""
+	if store != nil && store.Slug != "central" {
+		storeIDForVariants = store.ID
+	}
+	variantsByProduct, _ := catalogRepo.GetVariantsByProductIDsForStore(ctx, ids, storeIDForVariants)
+	defaultsByProduct, _ := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, ids)
 
 	var storeVal domain.Store
 	var locks []pricing.MarginLock
@@ -580,7 +716,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			displayCampaignName = d.CampaignName
 		}
 		variants := variantsByProduct[p.ID]
-		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
+		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns), defaultsByProduct[p.ID])
 		item.CampaignName = displayCampaignName
 		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
 			sid := p.SupplierID
@@ -632,8 +768,18 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		res = d.Resolution
 		pdpCampaignName = d.CampaignName
 	}
-	variants, _ := catalogRepo.GetProductVariants(ctx, p.ID)
-	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns))
+	// P2(a)/P2(c): store-filtered variants + the store's default for
+	// this product (central: unfiltered, no default).
+	storeIDForVariants := ""
+	if store != nil && store.Slug != "central" {
+		storeIDForVariants = store.ID
+	}
+	variants, _ := catalogRepo.GetProductVariantsForStore(ctx, p.ID, storeIDForVariants)
+	storeDefaultID := ""
+	if defaults, derr := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, []string{p.ID}); derr == nil {
+		storeDefaultID = defaults[p.ID]
+	}
+	base := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns), storeDefaultID)
 	base.CampaignName = pdpCampaignName
 	storeCount, _ := catalogRepo.GetProductStoreCount(ctx, p.ID)
 	// FIX 12: live's detail DTO has exactly 20 keys — no images/specs
@@ -704,6 +850,9 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		StoreCount:        storeCount,
 		Variants:          base.Variants,
 		VariantPrices:     base.VariantPrices,
+		PriceMin:          base.PriceMin,
+		PriceMax:          base.PriceMax,
+		StoreDefaultVariantID: base.StoreDefaultVariantID,
 		Specs:             specs,
 		Images:            images,
 		Addons:            pdpAddons,

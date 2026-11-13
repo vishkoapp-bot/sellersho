@@ -1347,6 +1347,28 @@ func main() {
 		handleSellerVariantOverrides(w, r, pricingRepo, storeRepo)
 	}))
 
+	// P2(a)/P2(c): seller per-store variant visibility + default variant.
+	// The literal segments ("visibility", "default-variant") sit AFTER
+	// {variantId}/{productId}, never a {param} directly after a literal
+	// prefix that already has a sibling literal route (Nov 5 route
+	// gate). Manual sub-path dispatch inside one mux pattern, like
+	// the /api/v1/stores/ block.
+	mux.HandleFunc("/api/v1/seller/stores/", RequireRoles(jwtService, "seller", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/seller/stores/")
+		parts := strings.Split(strings.Trim(sub, "/"), "/")
+		// {slug}/products/{productId}/variants/{variantId}/visibility
+		if len(parts) == 6 && parts[1] == "products" && parts[3] == "variants" && parts[5] == "visibility" {
+			handleSellerStoreVariantVisibility(w, r, storeRepo, catalogRepo, parts[0], parts[2], parts[4])
+			return
+		}
+		// {slug}/products/{productId}/default-variant
+		if len(parts) == 4 && parts[1] == "products" && parts[3] == "default-variant" {
+			handleSellerStoreVariantDefault(w, r, storeRepo, catalogRepo, parts[0], parts[2])
+			return
+		}
+		http.NotFound(w, r)
+	}))
+
 	mux.HandleFunc("/api/v1/seller/pricing-settings", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) {
 		handleSellerPricingSettings(w, r, pricingRepo)
 	}))
@@ -1591,6 +1613,58 @@ func main() {
 			productID = strings.Trim(productID, "/")
 			supplierHandlers.HandleCreateProductVariantsBulk(w, r, productID)
 			return
+		}
+		// P0 variant images/physical: variant routes must be matched
+		// BEFORE the product "/images" branch below — a variant-images
+		// path also ends in "/images" and HandleGetProductImages would
+		// otherwise swallow it, treating "{id}/variants/{vid}" as a
+		// product id (same class of bug as the "/pricing" ordering
+		// comment above).
+		if strings.HasSuffix(sub, "/images/reorder") && r.Method == http.MethodPut {
+			rest := strings.TrimSuffix(sub, "/images/reorder")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 3 && parts[1] == "variants" {
+				supplierHandlers.HandleReorderVariantImages(w, r, parts[0], parts[2])
+				return
+			}
+		}
+		if strings.HasSuffix(sub, "/images") && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+			rest := strings.TrimSuffix(sub, "/images")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 3 && parts[1] == "variants" {
+				if r.Method == http.MethodGet {
+					supplierHandlers.HandleGetVariantImages(w, r, parts[0], parts[2])
+				} else {
+					supplierHandlers.HandleUploadVariantImages(w, r, parts[0], parts[2], cfg.UploadDir)
+				}
+				return
+			}
+		}
+		if strings.Contains(sub, "/images/") && r.Method == http.MethodDelete {
+			parts := strings.Split(strings.Trim(sub, "/"), "/")
+			if len(parts) == 5 && parts[1] == "variants" && parts[3] == "images" {
+				supplierHandlers.HandleDeleteVariantImage(w, r, parts[0], parts[2], parts[4])
+				return
+			}
+		}
+		if strings.HasSuffix(sub, "/physical") && r.Method == http.MethodPut {
+			rest := strings.TrimSuffix(sub, "/physical")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 3 && parts[1] == "variants" {
+				supplierHandlers.HandleUpdateVariantPhysical(w, r, parts[0], parts[2])
+				return
+			}
+		}
+		// P1(c) variant sale: "{id}/variants/{vid}/sale" ends in
+		// "/sale", which no product-level route uses, so no ordering
+		// trap — but it is still matched on the full 3-part shape.
+		if strings.HasSuffix(sub, "/sale") && r.Method == http.MethodPut {
+			rest := strings.TrimSuffix(sub, "/sale")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 3 && parts[1] == "variants" {
+				supplierHandlers.HandleUpdateVariantSale(w, r, parts[0], parts[2])
+				return
+			}
 		}
 		if strings.HasSuffix(sub, "/cart-limits") && r.Method == http.MethodPut {
 			rest := strings.TrimSuffix(sub, "/cart-limits")

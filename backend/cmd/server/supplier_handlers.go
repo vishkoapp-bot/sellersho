@@ -13,6 +13,7 @@ import (
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/bank"
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -75,11 +76,22 @@ func (h *SupplierHandlers) HandleRegister(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"Username and password required"}`, http.StatusBadRequest)
 		return
 	}
+	// B2 (round 2): the phone is the supplier's login identity (OTP
+	// re-login) — it is required and must be a valid 09xxxxxxxxx
+	// mobile. No fabricated number is ever stored.
+	if !phone.IsValid(req.Phone) {
+		http.Error(w, `{"error":"phone must be a valid Iranian mobile (09xxxxxxxxx)"}`, http.StatusBadRequest)
+		return
+	}
 
 	user, supplier, err := h.supplierRepo.RegisterSupplier(
 		r.Context(), req.CompanyName, req.ContactPerson, req.Username, req.Password, req.Phone, req.Email, req.WarehouseCity,
 	)
 	if err != nil {
+		if errors.Is(err, repository.ErrInvalidSupplierPhone) {
+			http.Error(w, `{"error":"phone must be a valid Iranian mobile (09xxxxxxxxx)"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}

@@ -336,6 +336,18 @@ func decodeFeeOverrideJSON(text string, into map[string]int64) error {
 
 // --- Margin locks (D29) ---
 
+// VariantAdminLocked reports whether any store carries an admin_set
+// margin lock covering a variant — variant-scoped on the variant, or
+// product-scoped on its product (P1(c) sale gate: a sale would undercut
+// the locked margin, so the sale endpoint rejects with 409). Locks are
+// per-store rows, so the check scans all stores.
+func (r *PricingRepository) VariantAdminLocked(ctx context.Context, productID, variantID string) (bool, error) {
+	var locked bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM store_margin_locks
+		WHERE lock_mode = 'admin_set' AND ((scope = 'variant' AND scope_id = $1) OR (scope = 'product' AND scope_id = $2)))`, variantID, productID).Scan(&locked)
+	return locked, err
+}
+
 // ListStoreMarginLocks returns all locks for a store (0 rows in live).
 func (r *PricingRepository) ListStoreMarginLocks(ctx context.Context, storeID string) ([]pricing.MarginLock, error) {
 	rows, err := r.db.QueryContext(ctx, `

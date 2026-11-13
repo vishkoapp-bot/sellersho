@@ -5,7 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
 import { catalogApi } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
-import { activeProductVariants, sellerVariantPreview } from '../../utils/productPurchase';
+import { activeProductVariants, resolvePurchase, sellerVariantPreview } from '../../utils/productPurchase';
 import { isMockMode } from '../../services/apiClient';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { roundTo100, resolveBaseCostR, resolvePlatformPct, resolvePricing } from '../../utils/pricingEngine';
@@ -37,16 +37,54 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   const [showNicheConfirmModal, setShowNicheConfirmModal] = useState(false);
   const [scopedPricingProduct, setScopedPricingProduct] = useState<Product | null>(null);
+  // P2(a)/P2(c): full (unscoped) variant list + per-store settings.
+  // Visibility is derived by comparing the store-scoped DTO against
+  // the central DTO (a hidden variant is absent from the scoped list);
+  // there is no bulk GET endpoint for these settings (backend P1-P2
+  // spec), so nothing here invents one.
+  const isCentralStore = !currentStore || currentStore.ownerType !== 'dropshipper';
+  const [centralPricingProduct, setCentralPricingProduct] = useState<Product | null>(null);
+  const [scopedFetchDone, setScopedFetchDone] = useState(false);
+  const [centralFetchDone, setCentralFetchDone] = useState(false);
+  const [visibilityInputs, setVisibilityInputs] = useState<Record<string, boolean>>({});
+  const [visibilitySaved, setVisibilitySaved] = useState<Record<string, boolean>>({});
+  const [defaultInput, setDefaultInput] = useState<string | null>(null);
+  const [defaultSaved, setDefaultSaved] = useState<string | null>(null);
+  const variantSettingsReady = !isMockMode() && !isCentralStore && scopedFetchDone && centralFetchDone;
   const pricingProduct = scopedPricingProduct ?? product;
-  const pricingVariants = activeProductVariants(pricingProduct);
+  const pricingVariants = activeProductVariants(centralPricingProduct ?? pricingProduct);
+  const scopedVariantIds = new Set(activeProductVariants(pricingProduct).map((v) => v.id));
   useEffect(() => {
-    if (isMockMode() || !currentStore?.slug) return;
+    if (isMockMode() || !currentStore?.slug) { setScopedFetchDone(true); return; }
     let cancelled = false;
     catalogApi.getProductById(product.id, currentStore.slug)
       .then((dto) => { if (!cancelled) setScopedPricingProduct(mapBackendProduct(dto)); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setScopedFetchDone(true); });
     return () => { cancelled = true; };
   }, [product.id, currentStore?.slug]);
+  useEffect(() => {
+    if (isMockMode() || isCentralStore) { setCentralPricingProduct(null); setCentralFetchDone(true); return; }
+    let cancelled = false;
+    catalogApi.getProductById(product.id)
+      .then((dto) => { if (!cancelled) setCentralPricingProduct(mapBackendProduct(dto)); })
+      .catch(() => { /* full list falls back to the passed product */ })
+      .finally(() => { if (!cancelled) setCentralFetchDone(true); });
+    return () => { cancelled = true; };
+  }, [product.id]);
+  // Snapshot the settings once both DTOs have landed (the modal is
+  // keyed per product, so this runs once per open).
+  useEffect(() => {
+    if (!variantSettingsReady) return;
+    const vis: Record<string, boolean> = {};
+    for (const v of pricingVariants) vis[v.id] = scopedVariantIds.has(v.id);
+    setVisibilitySaved(vis);
+    setVisibilityInputs(vis);
+    const def = pricingProduct.storeDefaultVariantId ?? null;
+    setDefaultSaved(def);
+    setDefaultInput(def);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variantSettingsReady]);
 
   // Percent base price R = C x (1+pct/100) (server percent engine).
   const baseCostR = resolveBaseCostR(pricingProduct, platformSettings);
@@ -56,6 +94,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // store flag; live also has per-product / per-niche locks — see report).
   const isLocked = !!currentStore.isMarginLockedByAdmin;
   const variantCount = pricingVariants.length;
+  const visibleVariantCount = pricingVariants.filter((v) => visibilityInputs[v.id] !== false).length;
+  const allVariantsHidden = variantSettingsReady && variantCount > 0 && visibleVariantCount === 0;
   const baseUnknown = !isFinite(baseCostR) || baseCostR <= 0;
 
   // Identify product niche
@@ -258,9 +298,51 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
       }
     }
     setVariantSaved(nextSaved);
+    // P2(a) visibility: only changed rows are PUT; a failed row reverts
+    // to its saved value (same firstError pattern as the margin loop).
+    const nextVisibilitySaved = { ...visibilitySaved };
+    for (const v of variants) {
+      if (!variantSettingsReady) break;
+      const next = visibilityInputs[v.id];
+      const saved = visibilitySaved[v.id];
+      if (next === undefined || next === saved) continue;
+      try {
+        await storeApi.setSellerVariantVisibility(currentStore.slug, product.id, v.id, next); // F2: /seller/stores/{slug}/… resolves by SLUG only (GetStoreBySlug) — passing the store id ("store-mone") 404s. Margin overrides above correctly keep .id (backend checks ownership by ID).
+        nextVisibilitySaved[v.id] = next;
+      } catch (err: any) {
+        setVisibilityInputs((prev) => ({ ...prev, [v.id]: saved ?? true }));
+        nextVisibilitySaved[v.id] = saved ?? true;
+        if (!firstError) firstError = err?.message || 'ذخیره نمایش تنوع انجام نشد.';
+      }
+    }
+    setVisibilitySaved(nextVisibilitySaved);
+    // P2(c) store default: if the chosen default is now hidden, the
+    // store falls back to the first visible purchasable variant (or no
+    // store default at all when nothing is visible).
+    if (variantSettingsReady) {
+      let defaultToSave = defaultInput;
+      if (defaultToSave) {
+        const defVariant = variants.find((v) => v.id === defaultToSave);
+        const defVisible = defVariant ? (visibilityInputs[defVariant.id] ?? true) : false;
+        if (!defVariant || !defVisible) {
+          const fallback = variants.find((v) => (visibilityInputs[v.id] ?? true) && resolvePurchase(pricingProduct, v.id) != null);
+          defaultToSave = fallback?.id ?? null;
+        }
+      }
+      if (defaultToSave !== defaultSaved) {
+        try {
+          if (defaultToSave) await storeApi.setSellerStoreDefaultVariant(currentStore.slug, product.id, defaultToSave); // F2: slug, not id (see visibility save above)
+          else await storeApi.deleteSellerStoreDefaultVariant(currentStore.slug, product.id); // F2: slug, not id
+          setDefaultSaved(defaultToSave);
+        } catch (err: any) {
+          setDefaultInput(defaultSaved);
+          if (!firstError) firstError = err?.message || 'ذخیره پیش‌فرض فروشگاه انجام نشد.';
+        }
+      }
+    }
     setVariantSaving(false);
     if (firstError) { error(firstError); return; }
-    success('سود تنوع‌ها ذخیره شد.');
+    success('تنظیمات تنوع‌ها ذخیره شد.');
   };
 
   // Summary for variant products: computed from each variant's EFFECTIVE
@@ -342,8 +424,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 const preview = sellerVariantPreview(pricingProduct, v, productPct, marginV);
                 const baseV = preview.baseCost;
                 const finalV = preview.finalPrice;
+                const isVisible = visibilityInputs[v.id] ?? true;
+                const isStoreDefault = defaultInput === v.id;
                 return (
-                  <div key={v.id} className="space-y-2 bg-white border border-slate-200 rounded-xl p-2.5">
+                  <div key={v.id} className={`space-y-2 bg-white border border-slate-200 rounded-xl p-2.5 ${!isVisible ? 'opacity-60' : ''}`}>
                     <div className="flex items-center gap-2">
                       <span className="flex-1 min-w-0 truncate text-[11px] font-bold text-slate-800">{v.variantName || v.name}</span>
                       <input
@@ -358,6 +442,38 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                       />
                       <span className="shrink-0 text-[10px] font-bold text-slate-400">٪</span>
                     </div>
+                    {!isCentralStore && !isMockMode() && (variantSettingsReady ? (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-slate-100 pt-1.5 text-[10px] text-slate-600">
+                        <label className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={isVisible}
+                            aria-label={`نمایش تنوع ${v.variantName || v.name} در فروشگاه`}
+                            disabled={variantSaving}
+                            onClick={() => setVisibilityInputs((prev) => ({ ...prev, [v.id]: !(prev[v.id] ?? true) }))}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${isVisible ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isVisible ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-1 rtl:-translate-x-1'}`} />
+                          </button>
+                          <span className="font-bold">در فروشگاه من</span>
+                        </label>
+                        <label className="flex items-center gap-1.5">
+                          <input
+                            type="radio"
+                            name="store-default-variant"
+                            checked={isStoreDefault}
+                            disabled={variantSaving || !isVisible}
+                            onChange={() => setDefaultInput(v.id)}
+                            aria-label={`پیش‌فرض فروشگاه: ${v.variantName || v.name}`}
+                          />
+                          <span className="font-bold">پیش‌فرض فروشگاه</span>
+                        </label>
+                        {isStoreDefault && <span className="text-slate-400">پیش‌فرض فروشگاه</span>}
+                      </div>
+                    ) : (
+                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-400">در حال بارگذاری تنظیمات تنوع…</p>
+                    ))}
                     {baseV != null && finalV != null ? (
                       <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
                         <span className="whitespace-nowrap">پایه: <span className="font-mono font-bold text-slate-700">{formatPrice(baseV)} ت</span></span>
@@ -371,13 +487,21 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                   </div>
                 );
               })}
+              {allVariantsHidden && (
+                <p role="alert" className="rounded-xl bg-amber-50 border border-amber-200 p-2.5 text-[11px] leading-5 text-amber-800">
+                  همه‌ی تنوع‌های این کالا در فروشگاهت خاموش شدند؛ کالا در فروشگاهت نمایش داده نمی‌شود.
+                </p>
+              )}
+              {!isCentralStore && !isMockMode() && defaultInput && (
+                <button type="button" disabled={variantSaving} onClick={() => setDefaultInput(null)} className="text-[10px] font-bold text-slate-500 underline underline-offset-2">حذف پیش‌فرض فروشگاه (بازگشت به پیش‌فرض کالا)</button>
+              )}
               <button
                 type="button"
                 disabled={isLocked || variantSaving}
                 onClick={handleSaveVariantMargins}
                 className="w-full py-2 bg-slate-700 hover:bg-slate-800 text-white font-bold text-xs rounded-xl disabled:opacity-50"
               >
-                {variantSaving ? 'در حال ذخیره…' : 'ذخیره سود تنوع‌ها'}
+                {variantSaving ? 'در حال ذخیره…' : 'ذخیره تنظیمات تنوع‌ها'}
               </button>
             </div>
           )}
@@ -455,6 +579,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
           {variantCount > 0 && variantSummary ? (
             <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1">
+              {variantSettingsReady && (
+                <p className="text-[10px] text-emerald-800 font-bold">تنوع‌های فعال در فروشگاهت: {toPersianDigits(visibleVariantCount)} از {toPersianDigits(variantCount)}{defaultSaved ? ` · پیش‌فرض: ${pricingVariants.find((v) => v.id === defaultSaved)?.variantName || pricingVariants.find((v) => v.id === defaultSaved)?.name || ''}` : ''}</p>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-emerald-800 font-bold">{variantSummary.hasCosts ? 'قیمت نهایی تنوع‌ها (رند ۱۰۰ ت):' : 'قیمت فعلی تنوع‌ها در فروشگاه:'}</span>
                 <span className="text-base font-black text-emerald-800 font-mono">

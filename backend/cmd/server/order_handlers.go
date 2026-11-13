@@ -434,6 +434,21 @@ func handleCreateOrder(
 				http.Error(w, fmt.Sprintf(`{"error":"Variant %s not found for product %s"}`, itemReq.VariantID, itemReq.ProductID), http.StatusBadRequest)
 				return
 			}
+			// P2(a): re-check visibility at checkout — a line whose
+			// variant was hidden in this store after the cart was
+			// built is rejected, never silently dropped. Central
+			// stores are never filtered.
+			if store.OwnerType == "dropshipper" {
+				visible, verr := storeRepo.IsVariantVisibleInStore(ctx, store.ID, chosenVariant.ID)
+				if verr != nil {
+					http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
+					return
+				}
+				if !visible {
+					http.Error(w, fmt.Sprintf(`{"error":"Variant %s is not available in this store"}`, itemReq.VariantID), http.StatusBadRequest)
+					return
+				}
+			}
 			var vstock, vmin int
 			var inventoryMode string
 			var active bool
@@ -511,6 +526,13 @@ func handleCreateOrder(
 		// in res are untouched, only FinalPrice/SellerMargin shrink.
 		discounted := applyStoreDiscounts(ctx, storeRepo, store, p, lineVariantID, res, discountCodeObj)
 		discounted.DiscountAmount += widgetDiscountAmount
+		// P1(c) charge path: the sale applies after campaigns, with
+		// the same shared helper as the display path, so the charged
+		// line equals the displayed variant price.
+		if saleRes, saleAmount := applyVariantSaleToCharge(discounted.Resolution, chosenVariant); saleAmount > 0 {
+			discounted.Resolution = saleRes
+			discounted.DiscountAmount += saleAmount
+		}
 		// Fix69 follow-up: DiscountResult.Code is set only by
 		// ApplyCodeDiscount, which runs only when the code passed
 		// the lock gate in applyStoreDiscounts (dropshipper store,
@@ -694,6 +716,18 @@ func handleCreateOrder(
 		if p.HeightMM != nil {
 			quoteLine.HeightMM = *p.HeightMM
 		}
+		// P0 (parity with resolveQuoteLines, T3): the chosen variant's
+		// physicals override the product's, identically to the quote.
+		// chosenVariant comes from GetProductVariants, which loads the
+		// physical columns; no second query is needed.
+		if chosenVariant != nil {
+			if chosenVariant.WeightGrams != nil {
+				quoteLine.WeightG = *chosenVariant.WeightGrams
+			}
+			if chosenVariant.LengthMM != nil && chosenVariant.WidthMM != nil && chosenVariant.HeightMM != nil {
+				quoteLine.LengthMM, quoteLine.WidthMM, quoteLine.HeightMM = *chosenVariant.LengthMM, *chosenVariant.WidthMM, *chosenVariant.HeightMM
+			}
+		}
 		quoteLines = append(quoteLines, quoteLine)
 
 	}
@@ -810,6 +844,15 @@ func handleCreateOrder(
 	// Every order is a cash order, whatever the request asked for;
 	// the old "installments" value is not honoured or stored.
 	paymentMethod := "cash"
+
+	// P1-3: an order without a shipping quote must not be created with
+	// shippingCost 0. A quote (Tapin-priced, or the weight_formula
+	// fallback when Tapin 30129 applies) is required for every order,
+	// including direct buy. Gate on quoteId presence only, never on amount.
+	if strings.TrimSpace(req.ShippingQuoteID) == "" {
+		http.Error(w, `{"error":"shipping_quote_required"}`, http.StatusBadRequest)
+		return
+	}
 
 	// FIX 5 (Team 03 G1): a quoted order records its quote instead
 	// of ShippingCost: 0. The quote is never trusted from the client:
@@ -1373,6 +1416,14 @@ func handleOrderDispute(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			return
 		}
 	}
+	// P0-1 status guard: a dispute may only be filed while the order is
+	// still in flight (shipped / delivered_unconfirmed / delivered). Without
+	// it a dispute on a cancelled or already-confirmed order would silently
+	// flip it to delivery_disputed.
+	if order.Status != "shipped" && order.Status != "delivered_unconfirmed" && order.Status != "delivered" {
+		http.Error(w, `{"error":"Order cannot be disputed in its current status"}`, http.StatusConflict)
+		return
+	}
 	var req struct {
 		Type         string `json:"type"`
 		ClaimAmount  int64  `json:"claimAmount"`
@@ -1400,7 +1451,10 @@ func handleOrderDispute(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		return
 	}
 	dispute := domain.Dispute{
-		ID:           fmt.Sprintf("DISP-%d", time.Now().UnixMilli()%100000),
+		// M2 (round 2): collision-free id — full UUID suffix, matching
+		// finance_handlers.go. The old DISP-<millis%100000> had a
+		// 100k space and collided on same-millisecond filings.
+		ID:           "DISP-" + uuid.NewString(),
 		OrderID:      order.ID,
 		OrderNumber:  order.OrderNumber,
 		Type:         req.Type,
@@ -1413,7 +1467,17 @@ func handleOrderDispute(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		CreatedAt:    time.Now(),
 	}
 	if err := finRepo.CreateDispute(ctx, dispute); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// M2 (round 2): the atomic flip / id collision surface as a
+		// JSON 409, never a raw DB error body (the P1-16 leak pattern).
+		if errors.Is(err, repository.ErrDisputeOrderNotDisputable) {
+			http.Error(w, `{"error":"Order cannot be disputed in its current status"}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrDisputeIDCollision) {
+			http.Error(w, `{"error":"A dispute for this order already exists"}`, http.StatusConflict)
+			return
+		}
+		writeInternalError(w, err)
 		return
 	}
 	if !claims.HasCapability("admin") && (order.CustomerUserID == nil || *order.CustomerUserID != claims.UserID) {

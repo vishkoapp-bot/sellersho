@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supplierApi, SupplierNotification } from '../../services/supplierApi';
-import { Bell, CheckCheck, X, XCircle } from 'lucide-react';
+import { Bell, Check, CheckCheck, X, XCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 
 // Supplier rejection-notification drawer (DESIGN.md §4.3).
@@ -16,6 +16,46 @@ import { motion } from 'motion/react';
 
 export const countUnreadNotifications = (items: SupplierNotification[]): number =>
   items.filter((n) => n.status !== 'read').length;
+
+// Read/unread tabs (ITEM 3): counts and filtering are pure so the tab
+// contract is unit-testable without mounting the drawer. Tabs count
+// the FULL list; filtering never changes the bell count (the header
+// subtitle and onUnreadCountChange always derive from `notifications`).
+export type NotificationTab = 'all' | 'unread' | 'read';
+
+export const NOTIFICATION_TAB_LABELS: Record<NotificationTab, string> = {
+  all: 'همه',
+  unread: 'خوانده‌نشده',
+  read: 'خوانده‌شده',
+};
+
+export const countSupplierNotificationsByTab = (items: SupplierNotification[]): Record<NotificationTab, number> => ({
+  all: items.length,
+  unread: items.filter((n) => n.status !== 'read').length,
+  read: items.filter((n) => n.status === 'read').length,
+});
+
+export const filterSupplierNotificationsByTab = (items: SupplierNotification[], tab: NotificationTab): SupplierNotification[] => {
+  if (tab === 'unread') return items.filter((n) => n.status !== 'read');
+  if (tab === 'read') return items.filter((n) => n.status === 'read');
+  return items;
+};
+
+// Standalone per-item mark-read (ITEM 3) — deliberately NOT coupled
+// to selectProposalFromNotification: that helper only marks read as a
+// side effect of the resubmit CTA, so a non-rejection row (or a
+// rejection without proposal_id) had no per-item read path at all.
+// Same best-effort pattern as the role drawer: POSTs {ids: [id]} and
+// returns whether a call was attempted; the caller flips the row
+// locally regardless of the POST outcome.
+export const markOneSupplierNotificationRead = (
+  item: SupplierNotification,
+  markRead: (ids: string[]) => Promise<unknown>,
+): boolean => {
+  if (item.status === 'read') return false;
+  void markRead([item.id]).catch(() => undefined);
+  return true;
+};
 
 export const rejectionProposalId = (item: SupplierNotification): string | null =>
   item.kind === 'proposal_rejected' ? (item.payload?.proposal_id || null) : null;
@@ -58,6 +98,9 @@ interface Props {
   // Test seam (and only that): when provided, the drawer renders this
   // list instead of fetching. Production never passes it.
   initialNotifications?: SupplierNotification[];
+  // Test seam (and only that): the tab the drawer opens on.
+  // Production never passes it; the default tab is 'all'.
+  initialTab?: NotificationTab;
 }
 
 export const SupplierNotificationDrawer: React.FC<Props> = ({
@@ -66,10 +109,12 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
   onSelectProposal,
   onUnreadCountChange,
   initialNotifications,
+  initialTab,
 }) => {
   const [notifications, setNotifications] = useState<SupplierNotification[]>(initialNotifications ?? []);
   const [loading, setLoading] = useState(!initialNotifications);
   const [loadError, setLoadError] = useState('');
+  const [tab, setTab] = useState<NotificationTab>(initialTab ?? 'all');
 
   useEffect(() => {
     if (!isOpen) return;
@@ -105,6 +150,8 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
   if (!isOpen) return null;
 
   const unreadCount = countUnreadNotifications(notifications);
+  const tabCounts = countSupplierNotificationsByTab(notifications);
+  const visibleNotifications = filterSupplierNotificationsByTab(notifications, tab);
 
   const handleMarkAllRead = async () => {
     if (unreadCount === 0) return;
@@ -118,6 +165,16 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
     } catch {
       // Leave the list untouched; the supplier can retry from the drawer.
     }
+  };
+
+  // Standalone per-item mark-read: works on every unread row,
+  // including non-rejections and rejections without a proposal id
+  // (rows the resubmit CTA never touches).
+  const handleMarkOneRead = (item: SupplierNotification) => {
+    if (!markOneSupplierNotificationRead(item, (ids) => supplierApi.markNotificationsRead(ids))) return;
+    const next = notifications.map((n) => (n.id === item.id ? { ...n, status: 'read' } : n));
+    setNotifications(next);
+    onUnreadCountChange?.(countUnreadNotifications(next));
   };
 
   const handleSelect = (item: SupplierNotification) => {
@@ -177,6 +234,26 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
           </div>
         </div>
 
+        <div className="px-4 pt-3 flex items-center gap-2 border-b border-slate-100" role="tablist" aria-label="دسته‌بندی اعلان‌ها">
+          {(['all', 'unread', 'read'] as NotificationTab[]).map((t) => {
+            const active = tab === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t)}
+                className={`pb-2 text-[11px] font-bold border-b-2 transition-colors ${
+                  active ? 'text-rose-600 border-rose-600' : 'text-slate-400 border-transparent hover:text-slate-600'
+                }`}
+              >
+                {`${NOTIFICATION_TAB_LABELS[t]} ${toPersianDigits(tabCounts[t])}`}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
           {loading ? (
             <p className="text-xs text-slate-400 text-center py-8">در حال دریافت اعلان‌ها…</p>
@@ -203,8 +280,14 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
               <p className="text-xs font-bold text-slate-600">اعلان جدیدی نیست.</p>
               <p className="text-[11px] leading-5 text-slate-400">وقتی مدیر پیشنهادت را رد کند، علت ردشدن اینجا می‌آید تا ویرایش کنی و دوباره بفرستی.</p>
             </div>
+          ) : visibleNotifications.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
+              <p className="text-xs font-bold text-slate-600">
+                {tab === 'unread' ? 'اعلان خوانده‌نشده‌ای نیست.' : 'اعلان خوانده‌شده‌ای نیست.'}
+              </p>
+            </div>
           ) : (
-            notifications.map((item) => {
+            visibleNotifications.map((item) => {
               const proposalId = rejectionProposalId(item);
               const isUnread = item.status !== 'read';
               return (
@@ -226,6 +309,19 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
                   <p className="text-[11px] leading-relaxed text-slate-600 pr-5">
                     {item.body}
                   </p>
+                  {isUnread && (
+                    <div className="pt-1 pr-5">
+                      <button
+                        type="button"
+                        aria-label={`خوانده شد: ${item.title}`}
+                        onClick={() => handleMarkOneRead(item)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[28px] rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                      >
+                        <Check className="w-3.5 h-3.5" strokeWidth={2} />
+                        <span>خوانده شد</span>
+                      </button>
+                    </div>
+                  )}
                   {proposalId && (
                     <div className="pt-2 pr-5">
                       <button

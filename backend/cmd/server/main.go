@@ -2104,6 +2104,17 @@ func main() {
 			supplierHandlers.HandleAdminSupplierReactivate(w, r, strings.TrimSuffix(sub, "/reactivate"))
 			return
 		}
+		// Item 6 (admin supplier detail): GET /api/v1/admin/suppliers/<id>.
+		// Bare single segment only (no "/" in sub), so it is disjoint
+		// by shape from the four POST .../<id>/<action> branches above
+		// and must stay AFTER them. In-closure branch, not a new mux
+		// pattern: TestRouteTableNoConflicts cannot see it and it
+		// cannot panic the ServeMux at boot; the ordering invariant
+		// is asserted in TestManualDispatchOrderingInvariants.
+		if r.Method == http.MethodGet && sub != "" && !strings.Contains(sub, "/") {
+			supplierHandlers.HandleAdminSupplierDetail(w, r, sub)
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	mux.HandleFunc("/api/v1/admin/store-intel/suppliers", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {

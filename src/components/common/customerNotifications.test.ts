@@ -2,10 +2,15 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bonusReadStorageKey,
+  countNotificationsByTab,
+  filterNotificationsByTab,
   formatNotificationTime,
+  isBonusNotification,
   loadReadBonusIds,
   mapOutboxNotificationToItem,
+  markOneCustomerNotificationRead,
   storeReadBonusIds,
+  type NotificationItem,
 } from './NotificationDrawer';
 import type { OutboxNotification } from '../../services/notificationsApi';
 
@@ -62,4 +67,74 @@ it('persists bonus read state per store in localStorage (P1-14)', () => {
   } finally {
     delete (globalThis as any).localStorage;
   }
+});
+
+// ITEM 3 — read/unread tabs: counts and filtering span BOTH slices
+// the customer drawer merges (server outbox rows + localStorage
+// referral-bonus rows), never just one of them.
+const customerItem = (id: string, read: boolean): NotificationItem => ({
+  id,
+  role: 'customer',
+  title: `اعلان ${id}`,
+  message: 'متن اعلان',
+  time: 'به‌تازگی',
+  read,
+  type: 'order',
+});
+
+it('tab counts and filters cover bonus and outbox rows together', () => {
+  const items = [
+    customerItem('notif-bonus-b1', false),
+    customerItem('notif-bonus-b2', true),
+    customerItem('11111111-1111-1111-1111-111111111111', false),
+    customerItem('22222222-2222-2222-2222-222222222222', true),
+  ];
+  assert.deepEqual(countNotificationsByTab(items), { all: 4, unread: 2, read: 2 });
+  assert.deepEqual(filterNotificationsByTab(items, 'unread').map((n) => n.id), ['notif-bonus-b1', '11111111-1111-1111-1111-111111111111']);
+  assert.deepEqual(filterNotificationsByTab(items, 'read').map((n) => n.id), ['notif-bonus-b2', '22222222-2222-2222-2222-222222222222']);
+  assert.deepEqual(filterNotificationsByTab(items, 'all').map((n) => n.id), items.map((n) => n.id));
+  assert.equal(isBonusNotification(items[0]), true);
+  assert.equal(isBonusNotification(items[2]), false);
+});
+
+// ITEM 3 — per-item mark-read: a bonus row stays local-only (its id
+// is not a server id, so no POST may ever fire for it); an outbox row
+// POSTs {ids: [id]}. The drawer itself cannot be mounted in this
+// harness (no jsdom; useStore throws without StoreContext providers),
+// so the decision — the part that differs per row — is pinned here,
+// and the drawer's row-tap and "خوانده شد" button both call this
+// helper verbatim.
+it('bonus row mark-read stays local-only and persists the read id', () => {
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => { store.set(k, v); },
+    removeItem: (k: string) => { store.delete(k); },
+  };
+  try {
+    const marked: string[][] = [];
+    const result = markOneCustomerNotificationRead(
+      customerItem('notif-bonus-b1', false),
+      'mone',
+      async (ids) => { marked.push(ids); },
+    );
+    assert.equal(result, 'local');
+    assert.deepEqual(marked, []);
+    assert.deepEqual([...loadReadBonusIds('mone')], ['notif-bonus-b1']);
+  } finally {
+    delete (globalThis as any).localStorage;
+  }
+});
+
+it('outbox row mark-read posts {ids: [id]} and skips already-read rows', async () => {
+  const marked: string[][] = [];
+  const outboxId = '11111111-1111-1111-1111-111111111111';
+  assert.equal(markOneCustomerNotificationRead(customerItem(outboxId, false), 'mone', async (ids) => { marked.push(ids); }), 'server');
+  assert.deepEqual(marked, [[outboxId]]);
+  assert.equal(markOneCustomerNotificationRead(customerItem(outboxId, true), 'mone', async (ids) => { marked.push(ids); }), 'already-read');
+  assert.deepEqual(marked, [[outboxId]]);
+  assert.equal(markOneCustomerNotificationRead(customerItem('notif-bonus-b1', true), 'mone', async (ids) => { marked.push(ids); }), 'already-read');
+  // Best-effort: a failing POST never throws.
+  assert.equal(markOneCustomerNotificationRead(customerItem(outboxId, false), 'mone', async () => { throw new Error('network down'); }), 'server');
+  await new Promise((resolve) => setImmediate(resolve));
 });

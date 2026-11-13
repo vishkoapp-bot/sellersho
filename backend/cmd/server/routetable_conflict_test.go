@@ -136,4 +136,25 @@ func TestManualDispatchOrderingInvariants(t *testing.T) {
 			t.Errorf("seller stores dispatch is missing branch %q (visibility and default-variant must match on disjoint part counts)", want)
 		}
 	}
+	// Item 6 (2026-11-13): admin-suppliers block. The GET-single
+	// branch matches a bare segment (no "/" in sub) while the four
+	// POST branches match suffixed paths, so no path can match both —
+	// but the GET branch must stay AFTER the POST branches, or a
+	// POST .../<id>/approve could never reach its branch if the
+	// shapes ever overlapped. Scoped to the
+	// /api/v1/admin/suppliers/ block like the seller check above.
+	suppliersMarker := `mux.HandleFunc("/api/v1/admin/suppliers/",`
+	suppliersStart := index(suppliersMarker)
+	suppliersRest := text[suppliersStart+len(suppliersMarker):]
+	suppliersEnd := strings.Index(suppliersRest, "mux.HandleFunc(")
+	if suppliersEnd < 0 {
+		t.Fatal("admin suppliers block has no following mux.HandleFunc; cannot scope the disjointness check")
+	}
+	suppliers := suppliersRest[:suppliersEnd]
+	if !strings.Contains(suppliers, `r.Method == http.MethodGet && sub != "" && !strings.Contains(sub, "/")`) {
+		t.Errorf("admin suppliers dispatch is missing the GET-single bare-segment guard (the detail branch must only match a segment with no '/')")
+	}
+	if index("HandleAdminSupplierDetail(w, r, sub)") < index("HandleAdminSupplierReactivate(w, r,") {
+		t.Errorf("manual dispatch order: HandleAdminSupplierDetail must come AFTER the POST action branches in main.go (the GET-single branch must not precede them)")
+	}
 }

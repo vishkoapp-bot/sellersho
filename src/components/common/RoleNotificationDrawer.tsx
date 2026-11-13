@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { NotificationsResponse, OutboxNotification, RoleNotificationsApi } from '../../services/notificationsApi';
-import { Bell, CheckCheck, Package, Sparkles, Truck, Wallet, X } from 'lucide-react';
+import { Bell, Check, CheckCheck, Package, Sparkles, Truck, Wallet, X } from 'lucide-react';
 import { motion } from 'motion/react';
 
 // Generic role-scoped outbox drawer (Phase 2, W2) — the seller, admin
@@ -16,6 +16,44 @@ import { motion } from 'motion/react';
 
 export const countUnreadOutboxNotifications = (items: OutboxNotification[]): number =>
   items.filter((n) => n.status !== 'read').length;
+
+// Read/unread tabs (ITEM 3): counts and filtering are pure so the tab
+// contract is unit-testable without mounting the drawer. Tabs count
+// the FULL list; filtering never changes the bell count (the header
+// subtitle and onUnreadCountChange always derive from `notifications`).
+export type NotificationTab = 'all' | 'unread' | 'read';
+
+export const NOTIFICATION_TAB_LABELS: Record<NotificationTab, string> = {
+  all: 'همه',
+  unread: 'خوانده‌نشده',
+  read: 'خوانده‌شده',
+};
+
+export const countOutboxNotificationsByTab = (items: OutboxNotification[]): Record<NotificationTab, number> => ({
+  all: items.length,
+  unread: items.filter((n) => n.status !== 'read').length,
+  read: items.filter((n) => n.status === 'read').length,
+});
+
+export const filterOutboxNotificationsByTab = (items: OutboxNotification[], tab: NotificationTab): OutboxNotification[] => {
+  if (tab === 'unread') return items.filter((n) => n.status !== 'read');
+  if (tab === 'read') return items.filter((n) => n.status === 'read');
+  return items;
+};
+
+// Per-item mark-read, extracted so the button's wire call is
+// unit-testable without a DOM (this harness has no jsdom): POSTs
+// {ids: [id]} best-effort and returns whether a call was attempted.
+// The caller flips the row locally regardless of the POST outcome —
+// the next open re-fetches the server state.
+export const markOneOutboxNotificationRead = (
+  item: OutboxNotification,
+  markRead: (ids: string[]) => Promise<unknown>,
+): boolean => {
+  if (item.status === 'read') return false;
+  void markRead([item.id]).catch(() => undefined);
+  return true;
+};
 
 const toPersianDigits = (n: number): string => String(n).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]);
 
@@ -62,6 +100,9 @@ interface Props {
   // Test seam (and only that): when provided, the drawer renders this
   // list instead of fetching. Production never passes it.
   initialNotifications?: OutboxNotification[];
+  // Test seam (and only that): the tab the drawer opens on.
+  // Production never passes it; the default tab is 'all'.
+  initialTab?: NotificationTab;
 }
 
 export const RoleNotificationDrawer: React.FC<Props> = ({
@@ -75,10 +116,12 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
   onUnreadCountChange,
   extraContent,
   initialNotifications,
+  initialTab,
 }) => {
   const [notifications, setNotifications] = useState<OutboxNotification[]>(initialNotifications ?? []);
   const [loading, setLoading] = useState(!initialNotifications);
   const [loadError, setLoadError] = useState('');
+  const [tab, setTab] = useState<NotificationTab>(initialTab ?? 'all');
 
   useEffect(() => {
     if (!isOpen) return;
@@ -115,6 +158,8 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
 
   const unreadCount = countUnreadOutboxNotifications(notifications);
   const accentClasses = ACCENT_CLASSES[accent];
+  const tabCounts = countOutboxNotificationsByTab(notifications);
+  const visibleNotifications = filterOutboxNotificationsByTab(notifications, tab);
 
   const handleMarkAllRead = async () => {
     if (unreadCount === 0) return;
@@ -130,10 +175,9 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
   };
 
   const handleMarkOneRead = (item: OutboxNotification) => {
-    if (item.status === 'read') return;
+    if (!markOneOutboxNotificationRead(item, (ids) => api.markNotificationsRead(ids))) return;
     // Best-effort: the row flips locally even if the POST fails, the
     // next open re-fetches the server state.
-    void api.markNotificationsRead([item.id]).catch(() => undefined);
     const next = notifications.map((n) => (n.id === item.id ? { ...n, status: 'read' } : n));
     setNotifications(next);
     onUnreadCountChange?.(countUnreadOutboxNotifications(next));
@@ -181,6 +225,26 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
           </div>
         </div>
 
+        <div className="px-4 pt-3 flex items-center gap-2 border-b border-slate-100" role="tablist" aria-label="دسته‌بندی اعلان‌ها">
+          {(['all', 'unread', 'read'] as NotificationTab[]).map((t) => {
+            const active = tab === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t)}
+                className={`pb-2 text-[11px] font-bold border-b-2 transition-colors ${
+                  active ? 'text-brand-deep border-brand-deep' : 'text-slate-400 border-transparent hover:text-slate-600'
+                }`}
+              >
+                {`${NOTIFICATION_TAB_LABELS[t]} ${toPersianDigits(tabCounts[t])}`}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
           {extraContent}
           {loading ? (
@@ -203,13 +267,21 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
                 تلاش دوباره
               </button>
             </div>
-          ) : notifications.length === 0 && !extraContent ? (
+          ) : notifications.length === 0 ? (
+            extraContent ? null : (
+              <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
+                <p className="text-xs font-bold text-slate-600">{emptyTitle}</p>
+                <p className="text-[11px] leading-5 text-slate-400">{emptyHint}</p>
+              </div>
+            )
+          ) : visibleNotifications.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
-              <p className="text-xs font-bold text-slate-600">{emptyTitle}</p>
-              <p className="text-[11px] leading-5 text-slate-400">{emptyHint}</p>
+              <p className="text-xs font-bold text-slate-600">
+                {tab === 'unread' ? 'اعلان خوانده‌نشده‌ای نیست.' : 'اعلان خوانده‌شده‌ای نیست.'}
+              </p>
             </div>
           ) : (
-            notifications.map((item) => {
+            visibleNotifications.map((item) => {
               const isUnread = item.status !== 'read';
               return (
                 <div
@@ -231,6 +303,19 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
                   <p className="text-[11px] leading-relaxed text-slate-600 pr-5">
                     {item.body}
                   </p>
+                  {isUnread && (
+                    <div className="pt-1 pr-5">
+                      <button
+                        type="button"
+                        aria-label={`خوانده شد: ${item.title}`}
+                        onClick={(e) => { e.stopPropagation(); handleMarkOneRead(item); }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[28px] rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                      >
+                        <Check className="w-3.5 h-3.5" strokeWidth={2} />
+                        <span>خوانده شد</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })

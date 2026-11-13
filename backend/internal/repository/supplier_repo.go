@@ -6621,3 +6621,283 @@ func (r *SupplierRepository) GetSupplierSearchInsight(ctx context.Context, suppl
 	}
 	return out, nil
 }
+
+// ---------------------------------------------------------------------------
+// Item 6 (admin supplier detail, 2026-11-13): single-supplier detail reads.
+// Appended — never rewrite the in-flight hunks above. Every figure here
+// comes from a real query; nothing is fabricated. tapin_token is never
+// selected by any of these functions (GetSupplierByID is the only
+// selector of that column, for server-side Tapin use only).
+// ---------------------------------------------------------------------------
+
+// SupplierOwnerContact is the supplier owner's contact row from users.
+// Registration stores contactPerson -> users.full_name, phone ->
+// users.mobile, email -> users.email (RegisterSupplier).
+type SupplierOwnerContact struct {
+	UserID   string `json:"userId"`
+	FullName string `json:"fullName"`
+	Mobile   string `json:"mobile"`
+	Email    string `json:"email"`
+	IsActive bool   `json:"isActive"`
+}
+
+// SupplierDetailProposalCounts groups the supplier's catalog proposals
+// (pending_approvals rows whose requested_by is the SUPPLIER id —
+// ProposeProduct inserts requested_by = supplierID) by review status.
+type SupplierDetailProposalCounts struct {
+	Pending  int `json:"pending"`
+	Approved int `json:"approved"`
+	Rejected int `json:"rejected"`
+}
+
+// SupplierDetailOrderCounts groups the supplier's paid-order and
+// direct-shipment footprint. Paid orders reuse the
+// GetSupplierWarehouseOrders EXISTS pattern (an order counts when at
+// least one of its items is one of this supplier's products).
+type SupplierDetailOrderCounts struct {
+	Paid                    int            `json:"paid"`
+	DirectShipmentsByStatus map[string]int `json:"directShipmentsByStatus"`
+}
+
+// SupplierDetailCounts are the live-computed counts for the admin
+// detail view. They deliberately do NOT reuse the stored
+// suppliers.total_products / rating / delivery_score columns, whose
+// freshness is unverified — the card's stored totalProducts is a
+// stored figure, these are the counted ones.
+type SupplierDetailCounts struct {
+	Products       int                          `json:"products"`
+	ActiveProducts int                          `json:"activeProducts"`
+	Variants       int                          `json:"variants"`
+	Proposals      SupplierDetailProposalCounts `json:"proposals"`
+	Orders         SupplierDetailOrderCounts    `json:"orders"`
+}
+
+// SupplierAuditHistoryRow is one audit_logs row about this supplier.
+// Only Suspend/Reactivate write such rows (insertAdminSupplierAuditTx);
+// ApproveSupplier and RejectSupplier write NO audit row, so
+// approve/reject history is unrecoverable — the handler says so
+// instead of fabricating it.
+type SupplierAuditHistoryRow struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Operator  string    `json:"operator"`
+	Action    string    `json:"action"`
+	Details   string    `json:"details"`
+}
+
+// GetSupplierDetailByID is the single-row variant of
+// ListSuppliersForAdminDetail: the identical SELECT, plus WHERE id=$1,
+// and — unlike GetSupplierByID — it does NOT select tapin_token, so
+// its row is safe to serialize into the admin response.
+func (r *SupplierRepository) GetSupplierDetailByID(ctx context.Context, id string) (*domain.Supplier, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, owner_user_id, name, COALESCE(logo_url, ''), rating, total_products, delivery_score,
+		       warehouse_city, COALESCE(description, ''), COALESCE(badge, ''), created_at,
+		       COALESCE(supports_direct_shipping, FALSE), default_markup_type, default_markup_value,
+		       COALESCE(signed_contract_version, 1), approval_status, approved_by, approved_at,
+		       rejection_reason, tapin_shop_id, COALESCE(warehouse_city_confirmed, FALSE),
+		       warehouse_city_source, suspended_at, suspended_by, suspension_reason
+		FROM suppliers
+		WHERE id = $1
+	`, id)
+	var s domain.Supplier
+	var ownerUID, approvedBy, rejectionReason, tapinShopID, warehouseCitySource, suspendedBy, suspensionReason sql.NullString
+	var approvedAt, suspendedAt sql.NullTime
+	if err := row.Scan(&s.ID, &ownerUID, &s.Name, &s.LogoURL, &s.Rating, &s.TotalProducts,
+		&s.DeliveryScore, &s.WarehouseCity, &s.Description, &s.Badge, &s.CreatedAt,
+		&s.SupportsDirectShipping, &s.DefaultMarkupType, &s.DefaultMarkupValue,
+		&s.SignedContractVersion, &s.ApprovalStatus, &approvedBy, &approvedAt,
+		&rejectionReason, &tapinShopID, &s.WarehouseCityConfirmed, &warehouseCitySource,
+		&suspendedAt, &suspendedBy, &suspensionReason); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if suspendedAt.Valid {
+		s.SuspendedAt = &suspendedAt.Time
+	}
+	if suspendedBy.Valid {
+		s.SuspendedBy = &suspendedBy.String
+	}
+	if suspensionReason.Valid {
+		s.SuspensionReason = &suspensionReason.String
+	}
+	if ownerUID.Valid {
+		s.OwnerUserID = &ownerUID.String
+	}
+	if approvedBy.Valid {
+		s.ApprovedBy = &approvedBy.String
+	}
+	if approvedAt.Valid {
+		s.ApprovedAt = &approvedAt.Time
+	}
+	if rejectionReason.Valid {
+		s.RejectionReason = &rejectionReason.String
+	}
+	if tapinShopID.Valid {
+		s.TapinShopID = &tapinShopID.String
+	}
+	if warehouseCitySource.Valid {
+		s.WarehouseCitySource = &warehouseCitySource.String
+	}
+	return &s, nil
+}
+
+// GetSupplierOwnerContact resolves the supplier's owner user row.
+// Returns (nil, nil) for the ownerless central record and for an
+// owner id with no users row — the caller renders an honest empty
+// state, never a fabricated contact.
+func (r *SupplierRepository) GetSupplierOwnerContact(ctx context.Context, supplierID string) (*SupplierOwnerContact, error) {
+	var c SupplierOwnerContact
+	var email sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT u.id, u.full_name, u.mobile, u.email, u.is_active
+		FROM suppliers s
+		JOIN users u ON u.id = s.owner_user_id
+		WHERE s.id = $1
+	`, supplierID).Scan(&c.UserID, &c.FullName, &c.Mobile, &email, &c.IsActive)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if email.Valid {
+		c.Email = email.String
+	}
+	return &c, nil
+}
+
+// GetSupplierDetailCounts counts the supplier's live catalog, proposal
+// and order footprint from the source tables.
+func (r *SupplierRepository) GetSupplierDetailCounts(ctx context.Context, supplierID string) (*SupplierDetailCounts, error) {
+	var c SupplierDetailCounts
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active)
+		FROM products WHERE supplier_id = $1
+	`, supplierID).Scan(&c.Products, &c.ActiveProducts); err != nil {
+		return nil, err
+	}
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE p.supplier_id = $1
+	`, supplierID).Scan(&c.Variants); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT status, COUNT(*)
+		FROM pending_approvals
+		WHERE entity_type IN ('proposed_product', 'product_gallery_update', 'product_variant_create')
+		  AND requested_by = $1
+		GROUP BY status
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			c.Proposals.Pending = n
+		case "approved":
+			c.Proposals.Approved = n
+		case "rejected":
+			c.Proposals.Rejected = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM orders o
+		WHERE o.payment_status = 'paid'
+		  AND EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id = oi.product_id
+		              WHERE oi.order_id = o.id AND p.supplier_id = $1)
+	`, supplierID).Scan(&c.Orders.Paid); err != nil {
+		return nil, err
+	}
+	c.Orders.DirectShipmentsByStatus = map[string]int{}
+	srows, err := r.db.QueryContext(ctx, `
+		SELECT status, COUNT(*) FROM supplier_shipments
+		WHERE supplier_id = $1 GROUP BY status
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var status string
+		var n int
+		if err := srows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		c.Orders.DirectShipmentsByStatus[status] = n
+	}
+	return &c, srows.Err()
+}
+
+// GetSupplierAuditHistory returns the admin audit trail for one
+// supplier: audit_logs rows in the 'supplier' category whose details
+// name this supplier id. Suspend/reactivate are the only admin
+// supplier actions that write such rows; approve/reject do not, so
+// their absence from this list is a real gap, not a query bug.
+func (r *SupplierRepository) GetSupplierAuditHistory(ctx context.Context, supplierID string) ([]SupplierAuditHistoryRow, error) {
+	// The details column is JSONB in production (its ::text rendering
+	// puts a space after the colon: "supplier_id": "sup-a") and TEXT
+	// in the test DDL (no space), so the match is two loose LIKEs
+	// rather than one exact '"supplier_id":"<id>"' pattern, which
+	// would silently miss every real row.
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, timestamp, operator, action, details::text
+		FROM audit_logs
+		WHERE category = 'supplier'
+		  AND details::text LIKE '%supplier_id%'
+		  AND details::text LIKE '%' || $1 || '%'
+		ORDER BY timestamp DESC
+	`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SupplierAuditHistoryRow{}
+	for rows.Next() {
+		var h SupplierAuditHistoryRow
+		if err := rows.Scan(&h.ID, &h.Timestamp, &h.Operator, &h.Action, &h.Details); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// GetSupplierTapinStatus is the strict Tapin-connection check used
+// when no TapinRepository is attached to the handler: connected means
+// BOTH a shop id and a token are stored (mirrors
+// TapinRepository.GetSupplierCredentials / SupplierTapinCredentials.
+// Connected()). The token itself is never returned — only the boolean.
+func (r *SupplierRepository) GetSupplierTapinStatus(ctx context.Context, supplierID string) (shopID string, connected bool, err error) {
+	var shop, token sql.NullString
+	err = r.db.QueryRowContext(ctx, `
+		SELECT tapin_shop_id, tapin_token FROM suppliers WHERE id = $1
+	`, supplierID).Scan(&shop, &token)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	shopID = strings.TrimSpace(shop.String)
+	connected = shopID != "" && strings.TrimSpace(token.String) != ""
+	return shopID, connected, nil
+}

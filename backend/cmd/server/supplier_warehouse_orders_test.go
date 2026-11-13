@@ -48,11 +48,13 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 	}
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
-		`DROP TABLE IF EXISTS supplier_shipment_audit_logs, supplier_shipments, order_items, orders, products CASCADE`,
+		`DROP TABLE IF EXISTS supplier_shipment_audit_logs, supplier_shipments, order_items, order_item_origins, orders, products, suppliers CASCADE`,
 		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, supplier_id VARCHAR(50), fulfillment_method VARCHAR(50))`,
 		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, order_number VARCHAR(30) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'processing', payment_status VARCHAR(20) NOT NULL DEFAULT 'pending', fulfillment_method VARCHAR(20) NOT NULL DEFAULT 'warehouse', tracking_code TEXT, shipped_at TIMESTAMPTZ, customer_province VARCHAR(50) NOT NULL DEFAULT '', customer_city VARCHAR(50) NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, quantity INT NOT NULL DEFAULT 1, wholesale_cost BIGINT NOT NULL)`,
-		`CREATE TABLE supplier_shipments (id VARCHAR(255) PRIMARY KEY, order_id VARCHAR(255) NOT NULL, supplier_id VARCHAR(255) NOT NULL, carrier VARCHAR(100), tracking_number VARCHAR(255), shipped_at TIMESTAMPTZ, status VARCHAR(50) DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, quantity INT NOT NULL DEFAULT 1, wholesale_cost BIGINT NOT NULL, variant_id UUID, variant_name TEXT, variant_spnc TEXT)`,
+		`CREATE TABLE order_item_origins (order_item_id TEXT NOT NULL, leg_index INT NOT NULL DEFAULT 0, origin_type VARCHAR(20) NOT NULL)`,
+		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, owner_user_id TEXT)`,
+		`CREATE TABLE supplier_shipments (id VARCHAR(255) PRIMARY KEY, order_id VARCHAR(255) NOT NULL, supplier_id VARCHAR(255) NOT NULL, carrier VARCHAR(100), tracking_number VARCHAR(255), shipped_at TIMESTAMPTZ, delivered_at TIMESTAMPTZ, status VARCHAR(50) DEFAULT 'pending', shipping_address JSONB NOT NULL DEFAULT '{}', customer_phone TEXT NOT NULL DEFAULT '', customer_name TEXT NOT NULL DEFAULT '', supplier_notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE supplier_shipment_audit_logs (id VARCHAR(255) PRIMARY KEY, shipment_id VARCHAR(255), actor_user_id VARCHAR(255), action VARCHAR(100) NOT NULL, timestamp TIMESTAMPTZ DEFAULT NOW())`,
 	}
 	for _, q := range ddl {
@@ -64,6 +66,8 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 		`INSERT INTO products (id,title,supplier_id,fulfillment_method) VALUES ('prod-a-wh','کالای انباری الف','sup-a','warehouse')`,
 		`INSERT INTO products (id,title,supplier_id,fulfillment_method) VALUES ('prod-a-direct','کالای مستقیم الف','sup-a','supplier_direct')`,
 		`INSERT INTO products (id,title,supplier_id,fulfillment_method) VALUES ('prod-b-wh','کالای انباری ب','sup-b','warehouse')`,
+		`INSERT INTO products (id,title,supplier_id,fulfillment_method) VALUES ('prod-b-direct','کالای مستقیم ب','sup-b','supplier_direct')`,
+		`INSERT INTO suppliers (id,owner_user_id) VALUES ('sup-a','user-sup-a'),('sup-b','user-sup-b')`,
 		// Paid mixed-supplier warehouse order: A has 2x1000, B has 1x2000.
 		`INSERT INTO orders (id,order_number,status,payment_status,customer_province,customer_city) VALUES ('ord-wh-mixed','ORD-WH-1','processing','paid','قم','قم')`,
 		`INSERT INTO order_items (id,order_id,product_id,quantity,wholesale_cost) VALUES ('it-1','ord-wh-mixed','prod-a-wh',2,1000)`,
@@ -79,6 +83,10 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 		`INSERT INTO orders (id,order_number,status,payment_status) VALUES ('ord-direct2','ORD-D-2','processing','paid')`,
 		`INSERT INTO order_items (id,order_id,product_id,quantity,wholesale_cost) VALUES ('it-5','ord-direct2','prod-a-direct',1,5000)`,
 		`INSERT INTO supplier_shipments (id,order_id,supplier_id,status) VALUES ('ship-2','ord-direct2','sup-a','pending')`,
+		// Paid direct order for B (scoping witness: A must never see it).
+		`INSERT INTO orders (id,order_number,status,payment_status) VALUES ('ord-direct-b','ORD-D-B','processing','paid')`,
+		`INSERT INTO order_items (id,order_id,product_id,quantity,wholesale_cost) VALUES ('it-7','ord-direct-b','prod-b-direct',1,7000)`,
+		`INSERT INTO supplier_shipments (id,order_id,supplier_id,status) VALUES ('ship-3','ord-direct-b','sup-b','pending')`,
 		// Unpaid warehouse order with A's product: invisible.
 		`INSERT INTO orders (id,order_number,status,payment_status) VALUES ('ord-unpaid','ORD-U-1','processing','pending')`,
 		`INSERT INTO order_items (id,order_id,product_id,quantity,wholesale_cost) VALUES ('it-6','ord-unpaid','prod-a-wh',1,1000)`,
@@ -91,8 +99,24 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 	return db, repository.NewSupplierShipmentRepository(db)
 }
 
-func gap14Ctx(supplierID string) context.Context {
-	ctx := context.WithValue(context.Background(), userClaimsKey, &auth.UserClaims{UserID: "user-" + supplierID, Role: "supplier"})
+// gap14Ctx builds a request context with the given legacy Role string and,
+// unless supplierID is "", the middleware-resolved supplierIDKey. The
+// customer-role case mirrors the real test account (09331796649):
+// Role "customer" with capabilities customer+seller+supplier.
+func gap14Ctx(supplierID, role string) context.Context {
+	claims := &auth.UserClaims{UserID: "user-" + supplierID, Role: role}
+	switch role {
+	case "customer":
+		claims.Capabilities = []string{"customer", "seller", "supplier"}
+	case "admin":
+		claims.Capabilities = []string{"admin"}
+	case "super_admin":
+		claims.Capabilities = []string{"super_admin"}
+	}
+	ctx := context.WithValue(context.Background(), userClaimsKey, claims)
+	if supplierID == "" {
+		return ctx
+	}
 	return context.WithValue(ctx, supplierIDKey, supplierID)
 }
 
@@ -116,7 +140,7 @@ type gap14WarehouseOrder struct {
 
 func gap14GetWarehouseOrders(t *testing.T, repo *repository.SupplierShipmentRepository, supplierID string) (*httptest.ResponseRecorder, []gap14WarehouseOrder, int) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/supplier/warehouse-orders", nil).WithContext(gap14Ctx(supplierID))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/supplier/warehouse-orders", nil).WithContext(gap14Ctx(supplierID, "supplier"))
 	rec := httptest.NewRecorder()
 	handleGetSupplierWarehouseOrders(rec, req, req.Context(), repo, nil)
 	var body struct {
@@ -184,7 +208,7 @@ func gap14Accept(t *testing.T, repo *repository.SupplierShipmentRepository, supp
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/orders/"+orderID+"/accept", nil)
 	rec := httptest.NewRecorder()
-	handleSupplierAcceptOrder(rec, req, gap14Ctx(supplierID), orderID, repo)
+	handleSupplierAcceptOrder(rec, req, gap14Ctx(supplierID, "supplier"), orderID, repo)
 	return rec
 }
 
@@ -243,5 +267,149 @@ func TestGap14AcceptOtherSupplierNotFound(t *testing.T) {
 	rec := gap14Accept(t, repo, "sup-b", "ord-direct")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("accept of another supplier's order = %d, want 404 (shipping endpoint scoping), body %s", rec.Code, rec.Body.String())
+	}
+}
+
+type gap14SupplierOrder struct {
+	OrderID     string `json:"orderId"`
+	OrderNumber string `json:"orderNumber"`
+	Status      string `json:"status"`
+	Items       []struct {
+		ProductID string `json:"productId"`
+	} `json:"items"`
+}
+
+// gap14GetSupplierOrders calls handleGetSupplierOrders with the given context
+// and raw URL (query string carries ?supplierId= for the admin cases).
+// supplierRepo/orderRepo are nil on purpose: scoping must come from the
+// middleware context, never from the getSupplierIDFromContext DB fallback.
+func gap14GetSupplierOrders(t *testing.T, repo *repository.SupplierShipmentRepository, ctx context.Context, rawURL string) (*httptest.ResponseRecorder, []gap14SupplierOrder) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, rawURL, nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handleGetSupplierOrders(rec, req, req.Context(), repo, nil, nil)
+	var body struct {
+		Success bool               `json:"success"`
+		Orders  []gap14SupplierOrder `json:"orders"`
+	}
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode supplier orders: %v", err)
+		}
+	}
+	return rec, body.Orders
+}
+
+func gap14OrderIDs(orders []gap14SupplierOrder) map[string]bool {
+	ids := map[string]bool{}
+	for _, o := range orders {
+		ids[o.OrderID] = true
+	}
+	return ids
+}
+
+// Item 1: the legacy Role string is 'customer' for an account created as a
+// customer that later became a supplier owner, so Role branching 403d its
+// "My Orders" panel. Middleware-context scoping must admit it.
+func TestGap14SupplierOrdersCustomerRole(t *testing.T) {
+	_, repo := gap14Repos(t)
+	rec, orders := gap14GetSupplierOrders(t, repo, gap14Ctx("sup-a", "customer"), "/api/v1/supplier/orders")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("customer-role supplier orders status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	ids := gap14OrderIDs(orders)
+	if !ids["ord-direct"] || !ids["ord-direct2"] {
+		t.Fatalf("customer-role orders = %v, want ord-direct + ord-direct2", ids)
+	}
+	if ids["ord-direct-b"] {
+		t.Fatalf("customer-role orders leak supplier B's order: %v", ids)
+	}
+	for _, o := range orders {
+		for _, item := range o.Items {
+			if item.ProductID != "prod-a-direct" {
+				t.Fatalf("order %s exposes another supplier's item %s", o.OrderID, item.ProductID)
+			}
+		}
+	}
+}
+
+// Same customer-role token without the middleware scope must still be denied.
+func TestGap14SupplierOrdersNoScopeForbidden(t *testing.T) {
+	_, repo := gap14Repos(t)
+	rec, _ := gap14GetSupplierOrders(t, repo, gap14Ctx("", "customer"), "/api/v1/supplier/orders")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unscoped supplier orders status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Supplier scope required") {
+		t.Fatalf("unscoped body = %s, want 'Supplier scope required'", rec.Body.String())
+	}
+}
+
+// Regression test for the admin scope leak: an admin with no ?supplierId=
+// used to get EVERY supplier's shipments (GetShipments omits the filter for
+// supplierID ""). Admin + ?supplierId=X sees only X's rows.
+func TestGap14SupplierOrdersAdminScope(t *testing.T) {
+	_, repo := gap14Repos(t)
+	rec, _ := gap14GetSupplierOrders(t, repo, gap14Ctx("", "admin"), "/api/v1/supplier/orders")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unscoped admin status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Supplier scope required") {
+		t.Fatalf("unscoped admin body = %s, want 'Supplier scope required'", rec.Body.String())
+	}
+	rec, orders := gap14GetSupplierOrders(t, repo, gap14Ctx("", "admin"), "/api/v1/supplier/orders?supplierId=sup-a")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin scoped to sup-a status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	ids := gap14OrderIDs(orders)
+	if !ids["ord-direct"] || !ids["ord-direct2"] || ids["ord-direct-b"] {
+		t.Fatalf("admin sup-a view = %v, want only ord-direct + ord-direct2", ids)
+	}
+	rec, orders = gap14GetSupplierOrders(t, repo, gap14Ctx("", "admin"), "/api/v1/supplier/orders?supplierId=sup-b")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin scoped to sup-b status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	if ids = gap14OrderIDs(orders); len(ids) != 1 || !ids["ord-direct-b"] {
+		t.Fatalf("admin sup-b view = %v, want only ord-direct-b", ids)
+	}
+	// super_admin counts as admin (HasCapability alias) and is scoped the same way.
+	rec, _ = gap14GetSupplierOrders(t, repo, gap14Ctx("", "super_admin"), "/api/v1/supplier/orders")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unscoped super_admin status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	rec, orders = gap14GetSupplierOrders(t, repo, gap14Ctx("", "super_admin"), "/api/v1/supplier/orders?supplierId=sup-b")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("super_admin scoped to sup-b status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	if ids = gap14OrderIDs(orders); len(ids) != 1 || !ids["ord-direct-b"] {
+		t.Fatalf("super_admin sup-b view = %v, want only ord-direct-b", ids)
+	}
+}
+
+// Item 1: POST accept + POST shipping also 403d the customer-role token at
+// the Role gate (:709/:516). With middleware-context scoping both must work.
+func TestGap14SupplierShipAcceptCustomerRole(t *testing.T) {
+	db, repo := gap14Repos(t)
+	ctx := gap14Ctx("sup-a", "customer")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/orders/ord-direct/accept", nil)
+	handleSupplierAcceptOrder(rec, req, ctx, "ord-direct", repo)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("customer-role accept status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	if got := gap14ShipmentStatus(t, db, "ship-1"); got != "processing" {
+		t.Fatalf("shipment status after customer-role accept = %q, want processing", got)
+	}
+
+	body := `{"carrier":"پست پیشتاز","trackingNumber":"TRK-CUST-1"}`
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/supplier/orders/ord-direct2/shipping", strings.NewReader(body))
+	handleSupplierSubmitShipping(rec, req, ctx, "ord-direct2", repo, repository.NewOrderRepository(db), repository.NewSupplierRepository(db), repository.NewTapinRepository(db))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("customer-role shipping status = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	if got := gap14ShipmentStatus(t, db, "ship-2"); got != "shipped" {
+		t.Fatalf("shipment status after customer-role shipping = %q, want shipped", got)
 	}
 }

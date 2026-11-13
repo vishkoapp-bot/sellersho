@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { SupplierNotificationDrawer, countUnreadNotifications, rejectionProposalId, selectProposalFromNotification } from './SupplierNotificationDrawer';
+import { SupplierNotificationDrawer, countSupplierNotificationsByTab, countUnreadNotifications, filterSupplierNotificationsByTab, markOneSupplierNotificationRead, rejectionProposalId, selectProposalFromNotification, type NotificationTab } from './SupplierNotificationDrawer';
 import type { SupplierNotification } from '../../services/supplierApi';
 
 const rejected = (id: string, status: string): SupplierNotification => ({
@@ -15,9 +15,16 @@ const rejected = (id: string, status: string): SupplierNotification => ({
   createdAt: '2026-11-13T10:00:00Z',
 });
 
-const render = (items: SupplierNotification[]) =>
+const otherRow = (id: string, status: string): SupplierNotification => ({
+  ...rejected(id, status),
+  kind: 'order_status',
+  title: `اعلان ${id}`,
+  payload: undefined,
+});
+
+const render = (items: SupplierNotification[], initialTab?: NotificationTab) =>
   renderToStaticMarkup(
-    <SupplierNotificationDrawer isOpen onClose={() => {}} onSelectProposal={() => {}} initialNotifications={items} />,
+    <SupplierNotificationDrawer isOpen onClose={() => {}} onSelectProposal={() => {}} initialNotifications={items} initialTab={initialTab} />,
   );
 
 it('counts unread and extracts the deep-link proposal id only for rejections', () => {
@@ -53,6 +60,77 @@ it('renders nothing when closed', () => {
     <SupplierNotificationDrawer isOpen={false} onClose={() => {}} onSelectProposal={() => {}} initialNotifications={[rejected('1', 'pending')]} />,
   );
   assert.equal(html, '');
+});
+
+// ITEM 3 — read/unread tabs: Persian-digit counts cover the full list,
+// and each tab filters the rendered rows.
+it('shows tab counts for all / unread / read with Persian digits', () => {
+  const items = [rejected('1', 'pending'), otherRow('2', 'pending'), rejected('3', 'read')];
+  assert.deepEqual(countSupplierNotificationsByTab(items), { all: 3, unread: 2, read: 1 });
+  assert.deepEqual(filterSupplierNotificationsByTab(items, 'unread').map((n) => n.id), ['1', '2']);
+  assert.deepEqual(filterSupplierNotificationsByTab(items, 'read').map((n) => n.id), ['3']);
+  assert.deepEqual(filterSupplierNotificationsByTab(items, 'all').map((n) => n.id), ['1', '2', '3']);
+  const html = render(items);
+  assert.match(html, /همه ۳/);
+  assert.match(html, /خوانده‌نشده ۲/);
+  assert.match(html, /خوانده‌شده ۱/);
+});
+
+it('filters rows by tab and shows a tab-specific empty state', () => {
+  const items = [rejected('1', 'pending'), otherRow('2', 'pending'), rejected('3', 'read')];
+  const unreadHtml = render(items, 'unread');
+  assert.match(unreadHtml, /پیشنهاد «کالا 1» رد شد/);
+  assert.match(unreadHtml, /اعلان 2/);
+  assert.doesNotMatch(unreadHtml, /پیشنهاد «کالا 3» رد شد/);
+  const readHtml = render(items, 'read');
+  assert.match(readHtml, /پیشنهاد «کالا 3» رد شد/);
+  assert.doesNotMatch(readHtml, /پیشنهاد «کالا 1» رد شد/);
+  assert.doesNotMatch(readHtml, /اعلان 2/);
+  const emptyReadHtml = render([rejected('1', 'pending')], 'read');
+  assert.match(emptyReadHtml, /اعلان خوانده‌شده‌ای نیست\./);
+  assert.doesNotMatch(emptyReadHtml, /پیشنهاد «کالا 1» رد شد/);
+});
+
+// ITEM 3 — explicit per-item "خوانده شد" button: present on every
+// unread row, including non-rejections and rejections without a
+// proposal id (rows the resubmit CTA never touches).
+it('renders a per-item read button on unread rows of every kind', () => {
+  const noProposal = { ...rejected('4', 'pending'), payload: undefined };
+  const html = render([rejected('1', 'pending'), otherRow('2', 'pending'), noProposal, rejected('3', 'read')]);
+  assert.match(html, /خوانده شد: پیشنهاد «کالا 1» رد شد/);
+  assert.match(html, /خوانده شد: اعلان 2/);
+  assert.match(html, /خوانده شد: پیشنهاد «کالا 4» رد شد/);
+  assert.doesNotMatch(html, /خوانده شد: پیشنهاد «کالا 3» رد شد/);
+  assert.equal((html.match(/>خوانده شد</g) ?? []).length, 3);
+  // The non-rejection row has the read button but no resubmit CTA.
+  const otherHtml = render([otherRow('2', 'pending')]);
+  assert.match(otherHtml, /خوانده شد: اعلان 2/);
+  assert.doesNotMatch(otherHtml, /ویرایش و ارسال مجدد/);
+});
+
+// The button's wire call, pinned without a DOM: this harness has no
+// jsdom, so the click itself cannot be dispatched — the JSX binds the
+// button's onClick to handleMarkOneRead, which calls this helper
+// verbatim (same pattern as the CTA-handler tests above).
+it('per-item mark-read posts {ids: [id]} on a non-rejection row', () => {
+  const marked: string[][] = [];
+  assert.equal(markOneSupplierNotificationRead(otherRow('2', 'pending'), async (ids) => { marked.push(ids); }), true);
+  assert.deepEqual(marked, [['2']]);
+});
+
+it('per-item mark-read works on a rejection without a proposal id', () => {
+  const marked: string[][] = [];
+  const noProposal = { ...rejected('4', 'pending'), payload: undefined };
+  assert.equal(markOneSupplierNotificationRead(noProposal, async (ids) => { marked.push(ids); }), true);
+  assert.deepEqual(marked, [['4']]);
+});
+
+it('per-item mark-read skips already-read rows and never throws on a failed POST', async () => {
+  const marked: string[][] = [];
+  assert.equal(markOneSupplierNotificationRead(rejected('3', 'read'), async (ids) => { marked.push(ids); }), false);
+  assert.deepEqual(marked, []);
+  assert.equal(markOneSupplierNotificationRead(rejected('1', 'pending'), async () => { throw new Error('network down'); }), true);
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 // CTA handler tests: the drawer button's onClick calls

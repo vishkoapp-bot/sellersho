@@ -2141,6 +2141,164 @@ func supplierAdminReviewError(w http.ResponseWriter, err error) {
 	writeInternalError(w, err)
 }
 
+// Item 6 (admin supplier detail, 2026-11-13): GET
+// /api/v1/admin/suppliers/:id — one supplier, fully enriched. The
+// route is a bare-segment branch INSIDE the existing sub-router
+// closure in main.go (no new mux pattern, so no route-table conflict
+// risk); the RequireRoles(admin) gate is inherited from the closure.
+//
+// Every figure comes from a real query. Supplementary sections are
+// best-effort: a failed load renders as an empty array / null and is
+// named in "gaps", never as fabricated data. Stored
+// totalProducts/rating/deliveryScore are returned as stored (the
+// record row); the live-computed figures are under "counts".
+// Finance is in TOMAN: Earned sums wholesale_cost (Toman prices),
+// storage fees read amount_toman, and the payout gate compares
+// Available against payout_requests.amount in the same unit.
+// tapin_token is never selected or returned: connected is a strict
+// boolean (shop id AND token both stored).
+func (h *SupplierHandlers) HandleAdminSupplierDetail(w http.ResponseWriter, r *http.Request, supplierID string) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if strings.TrimSpace(supplierID) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+	sup, err := h.supplierRepo.GetSupplierDetailByID(ctx, supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sup == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// GAP (honest, unrecoverable): ApproveSupplier and RejectSupplier
+	// write NO audit_logs row, so approve/reject history cannot be
+	// reconstructed. Only suspend/reactivate appear in "history".
+	gaps := []string{
+		"سابقهٔ تأیید/رد در دسترس نیست: تأیید و رد تأمین‌کننده در سوابق ثبت نمی‌شود و قابل بازیابی نیست؛ فقط تعلیق و فعال‌سازی مجدد در تاریخچه دیده می‌شود.",
+	}
+
+	supplierRow := supplierAdminRecordRow(*sup)
+
+	owner, err := h.supplierRepo.GetSupplierOwnerContact(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "owner")
+	} else if owner != nil {
+		supplierRow["owner"] = owner
+	} else {
+		supplierRow["owner"] = nil
+	}
+
+	warehouses, err := h.supplierRepo.ListSupplierWarehouses(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "warehouses")
+		warehouses = []repository.SupplierWarehouse{}
+	}
+	members, err := h.supplierRepo.ListMembers(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "members")
+		members = []domain.SupplierMember{}
+	}
+	methods, err := h.supplierRepo.ListSupplierShippingMethods(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "shippingMethods")
+		methods = []repository.SupplierShippingMethod{}
+	}
+	// supportsDirectShipping is DERIVED from the direct method toggle,
+	// same as the list handler — the stored column is not trusted.
+	for _, m := range methods {
+		if m.Method == "direct" {
+			supplierRow["supportsDirectShipping"] = m.Status == "enabled"
+		}
+	}
+
+	counts, err := h.supplierRepo.GetSupplierDetailCounts(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "counts")
+		counts = &repository.SupplierDetailCounts{Orders: repository.SupplierDetailOrderCounts{DirectShipmentsByStatus: map[string]int{}}}
+	}
+
+	history, err := h.supplierRepo.GetSupplierAuditHistory(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "history")
+		history = []repository.SupplierAuditHistoryRow{}
+	}
+
+	// Tapin: strict boolean, shop AND token. Prefer the attached
+	// TapinRepository (wired in main); fall back to the supplier-repo
+	// check (same rule, token never leaves the DB) when it is nil,
+	// e.g. in handler tests that construct SupplierHandlers directly.
+	tapinShopID := ""
+	tapinConnected := false
+	if h.tapinRepo != nil {
+		if creds, cerr := h.tapinRepo.GetSupplierCredentials(ctx, supplierID); cerr == nil {
+			tapinShopID = creds.ShopID
+			tapinConnected = creds.Connected()
+		} else {
+			gaps = append(gaps, "tapin")
+		}
+	} else if shop, connected, serr := h.supplierRepo.GetSupplierTapinStatus(ctx, supplierID); serr == nil {
+		tapinShopID = shop
+		tapinConnected = connected
+	} else {
+		gaps = append(gaps, "tapin")
+	}
+	// The record row's tapinConnected is shop-id-only; the strict
+	// (shop AND token) value wins here.
+	supplierRow["tapinConnected"] = tapinConnected
+
+	// Finance, in TOMAN (see header comment). Balance errors leave a
+	// null balance rather than a fabricated zero.
+	var balance interface{}
+	if bal, berr := h.supplierRepo.GetSettlementBalance(ctx, supplierID); berr == nil {
+		balance = bal
+	} else {
+		gaps = append(gaps, "financeBalance")
+	}
+	settlements, err := h.supplierRepo.GetSettlementHistory(ctx, supplierID)
+	if err != nil {
+		gaps = append(gaps, "settlements")
+		settlements = []map[string]interface{}{}
+	}
+
+	// Contract: the supplier's signed version vs the platform-current
+	// version. No per-supplier version history exists — the response
+	// carries only the two current numbers.
+	var platformContractVersion interface{}
+	if v, verr := h.supplierRepo.GetSupplierContractVersion(ctx); verr == nil {
+		platformContractVersion = v
+	} else {
+		gaps = append(gaps, "platformContractVersion")
+	}
+	supplierRow["platformContractVersion"] = platformContractVersion
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supplier":        supplierRow,
+		"counts":          counts,
+		"warehouses":      warehouses,
+		"members":         members,
+		"shippingMethods": methods,
+		"tapin": map[string]interface{}{
+			"shopId":    tapinShopID,
+			"connected": tapinConnected,
+		},
+		"finance": map[string]interface{}{
+			"currencyUnit": "TOMAN",
+			"balance":      balance,
+			"settlements":  settlements,
+		},
+		"history": history,
+		"gaps":    gaps,
+	})
+}
+
 // POST /api/v1/admin/suppliers/:id/approve (D54, route choice per U06).
 // The approver is the admin's own user id from the JWT claims.
 func (h *SupplierHandlers) HandleAdminSupplierApprove(w http.ResponseWriter, r *http.Request, supplierID string) {

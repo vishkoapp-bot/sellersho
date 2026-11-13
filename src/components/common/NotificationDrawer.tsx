@@ -6,10 +6,10 @@ import { storeApi } from '../../services/storeApi';
 import { customerNotificationsApi, type OutboxNotification } from '../../services/notificationsApi';
 import { isMockMode } from '../../services/apiClient';
 import { tokenStore } from '../../services/apiClient';
-import { Bell, CheckCheck, X, ShieldAlert, Sparkles, Package, Truck, Wallet } from 'lucide-react';
+import { Bell, Check, CheckCheck, X, ShieldAlert, Sparkles, Package, Truck, Wallet } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-interface NotificationItem {
+export interface NotificationItem {
   id: string;
   role: string;
   title: string;
@@ -82,6 +82,62 @@ export const storeReadBonusIds = (storeSlug: string, ids: Set<string>): void => 
   }
 };
 
+// Read/unread tabs (ITEM 3): counts and filtering are pure so the tab
+// contract is unit-testable without mounting the drawer (it needs
+// StoreContext providers). Tabs count the FULL merged list — server
+// outbox rows PLUS referral-bonus rows — and filtering never changes
+// the bell count (the header bell syncs from `notifications`).
+export type NotificationTab = 'all' | 'unread' | 'read';
+
+export const NOTIFICATION_TAB_LABELS: Record<NotificationTab, string> = {
+  all: 'همه',
+  unread: 'خوانده‌نشده',
+  read: 'خوانده‌شده',
+};
+
+export const countNotificationsByTab = (items: NotificationItem[]): Record<NotificationTab, number> => ({
+  all: items.length,
+  unread: items.filter((n) => !n.read).length,
+  read: items.filter((n) => n.read).length,
+});
+
+export const filterNotificationsByTab = (items: NotificationItem[], tab: NotificationTab): NotificationItem[] => {
+  if (tab === 'unread') return items.filter((n) => !n.read);
+  if (tab === 'read') return items.filter((n) => n.read);
+  return items;
+};
+
+export const isBonusNotification = (item: NotificationItem): boolean =>
+  item.id.startsWith('notif-bonus-');
+
+// Per-item mark-read decision, extracted so the bonus-local vs
+// server split is unit-testable without mounting the drawer. Bonus
+// rows have no server id, so marking one read stays local-only
+// (localStorage read-set, never a POST); outbox rows POST
+// {ids: [id]} best-effort. Returns what happened; the caller flips
+// the row locally in all cases except 'already-read'.
+export type MarkOneCustomerResult = 'local' | 'server' | 'already-read';
+
+export const markOneCustomerNotificationRead = (
+  item: NotificationItem,
+  storeSlug: string | undefined,
+  markRead: (ids: string[]) => Promise<unknown>,
+): MarkOneCustomerResult => {
+  if (item.read) return 'already-read';
+  if (isBonusNotification(item)) {
+    if (storeSlug) {
+      const next = loadReadBonusIds(storeSlug);
+      next.add(item.id);
+      storeReadBonusIds(storeSlug, next);
+    }
+    return 'local';
+  }
+  void markRead([item.id]).catch(() => undefined);
+  return 'server';
+};
+
+const toPersianDigits = (n: number): string => String(n).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]);
+
 export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
   isOpen,
   onClose,
@@ -91,6 +147,7 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
   const { error } = useToast();
   const [notifications, setNotifications] = useState<NotificationItem[]>(initialNotifications);
   const [outboxError, setOutboxError] = useState('');
+  const [tab, setTab] = useState<NotificationTab>('all');
 
   // Fetch persistent released bonus notifications for current seller store.
   // ISO-D Worker 3: bonus items are scoped to the CURRENT store only. The
@@ -173,6 +230,8 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
   if (!isOpen) return null;
 
   const unreadCount = notifications.filter(n => !n.read).length;
+  const tabCounts = countNotificationsByTab(notifications);
+  const visibleNotifications = filterNotificationsByTab(notifications, tab);
 
   // Mark-all-read is server-side for outbox rows (POST
   // /api/v1/notifications/read, empty body = mark-all) and persisted
@@ -199,22 +258,12 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
   };
 
-  // Tapping an unread row marks just that row read: server-side for
-  // outbox rows (best-effort — the row flips locally even if the
-  // POST fails; the next open re-fetches the server state), persisted
-  // locally for bonus rows.
+  // Tapping an unread row (or its "خوانده شد" button) marks just that
+  // row read: server-side for outbox rows (best-effort — the row flips
+  // locally even if the POST fails; the next open re-fetches the
+  // server state), persisted locally for bonus rows.
   const handleItemClick = (item: NotificationItem) => {
-    if (item.read) return;
-    if (item.id.startsWith('notif-bonus-')) {
-      const slug = currentStore?.slug;
-      if (slug) {
-        const next = loadReadBonusIds(slug);
-        next.add(item.id);
-        storeReadBonusIds(slug, next);
-      }
-    } else {
-      void customerNotificationsApi.markNotificationsRead([item.id]).catch(() => undefined);
-    }
+    if (markOneCustomerNotificationRead(item, currentStore?.slug, (ids) => customerNotificationsApi.markNotificationsRead(ids)) === 'already-read') return;
     setNotifications(prev => prev.map(n => n.id === item.id ? { ...n, read: true } : n));
   };
 
@@ -268,6 +317,26 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
           </div>
         </div>
 
+        <div className="px-4 pt-3 flex items-center gap-2 border-b border-slate-100" role="tablist" aria-label="دسته‌بندی اعلان‌ها">
+          {(['all', 'unread', 'read'] as NotificationTab[]).map((t) => {
+            const active = tab === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t)}
+                className={`pb-2 text-[11px] font-bold border-b-2 transition-colors ${
+                  active ? 'text-brand-deep border-brand-deep' : 'text-slate-400 border-transparent hover:text-slate-600'
+                }`}
+              >
+                {`${NOTIFICATION_TAB_LABELS[t]} ${toPersianDigits(tabCounts[t])}`}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
           {outboxError && (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-center">
@@ -279,8 +348,14 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
               <p className="text-xs font-bold text-slate-600">اعلان جدیدی نیست.</p>
               <p className="text-[11px] leading-5 text-slate-400">بسته‌بندی و ارسال سفارش‌های شما اینجا نمایش داده می‌شود.</p>
             </div>
+          ) : visibleNotifications.length === 0 && !outboxError ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
+              <p className="text-xs font-bold text-slate-600">
+                {tab === 'unread' ? 'اعلان خوانده‌نشده‌ای نیست.' : 'اعلان خوانده‌شده‌ای نیست.'}
+              </p>
+            </div>
           ) : (
-            notifications.map((item) => (
+            visibleNotifications.map((item) => (
               <div
                 key={item.id}
                 onClick={() => handleItemClick(item)}
@@ -300,6 +375,19 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
                 <p className="text-[11px] leading-relaxed text-slate-600 pr-5">
                   {item.message}
                 </p>
+                {!item.read && (
+                  <div className="pt-1 pr-5">
+                    <button
+                      type="button"
+                      aria-label={`خوانده شد: ${item.title}`}
+                      onClick={(e) => { e.stopPropagation(); handleItemClick(item); }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[28px] rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                    >
+                      <Check className="w-3.5 h-3.5" strokeWidth={2} />
+                      <span>خوانده شد</span>
+                    </button>
+                  </div>
+                )}
               </div>
             ))
           )}

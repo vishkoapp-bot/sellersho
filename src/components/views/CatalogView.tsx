@@ -198,6 +198,17 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     ? `برند: «${activeBrand}»`
     : activeCategoryObj ? activeCategoryObj.title : 'کاتالوگ جامع کالاها';
 
+  // Central-paint guard: the store-guard effect above bounces to the
+  // storefront, but effects run AFTER the first paint -- without this
+  // return the central assortment (at central prices) flashes for one
+  // frame inside a dropshipper session, and a product the store does
+  // not carry (e.g. a newly approved product in 0 assortments) appears
+  // and then vanishes when the scoped storefront list replaces it.
+  // Render nothing while a store context is active; the effect still
+  // performs the navigation. This sits after every hook above -- an
+  // earlier return would break hook order.
+  if (storeSlug) return null;
+
   return (
     <div className="flex-1 flex flex-col bg-white select-none pb-20 lg:pb-8">
       <header className="sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 lg:px-8 xl:px-10 2xl:px-12 py-2 lg:py-3 flex items-center gap-2">

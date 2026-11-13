@@ -410,14 +410,20 @@ func handleGetSupplierOrders(
 		return
 	}
 
-	supplierID := ""
-	if claims.Role == "supplier" {
-		supplierID = getSupplierIDFromContext(r, supplierRepo)
-	} else if claims.Role == "admin" {
-		supplierID = r.URL.Query().Get("supplierId")
-	} else {
-		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
-		return
+	// Scope comes from the middleware-resolved supplierIDKey (ownership-checked
+	// by RequireSupplierAccess), NOT the legacy claims.Role string: an account
+	// created as a customer that later becomes a supplier owner keeps
+	// role='customer' forever, so Role branching 403s it here. Admins have no
+	// supplierIDKey by design and scope via ?supplierId= instead.
+	supplierID, _ := ctx.Value(supplierIDKey).(string)
+	if supplierID == "" {
+		if claims.HasCapability("admin") {
+			supplierID = r.URL.Query().Get("supplierId")
+		}
+		if supplierID == "" {
+			http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+			return
+		}
 	}
 
 	shipments, err := shipmentRepo.GetShipments(ctx, supplierID, "")
@@ -513,11 +519,6 @@ func handleSupplierSubmitShipping(
 		return
 	}
 
-	if claims.Role != "supplier" && claims.Role != "admin" {
-		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
-		return
-	}
-
 	var req struct {
 		Carrier        string `json:"carrier"`
 		TrackingNumber string `json:"trackingNumber"`
@@ -535,13 +536,20 @@ func handleSupplierSubmitShipping(
 		return
 	}
 
+	// Scope comes from the middleware-resolved supplierIDKey (ownership-checked
+	// by RequireSupplierAccess), NOT the legacy claims.Role string: an account
+	// created as a customer that later becomes a supplier owner keeps
+	// role='customer' forever, so Role branching 403s it here. Admins have no
+	// supplierIDKey by design and scope via ?supplierId= instead.
 	supplierID, _ := ctx.Value(supplierIDKey).(string)
-	if claims.Role == "admin" {
-		supplierID = r.URL.Query().Get("supplierId")
-	}
 	if supplierID == "" {
-		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
-		return
+		if claims.HasCapability("admin") {
+			supplierID = r.URL.Query().Get("supplierId")
+		}
+		if supplierID == "" {
+			http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+			return
+		}
 	}
 
 	if req.ViaTapin {
@@ -604,18 +612,20 @@ func handleGetSupplierWarehouseOrders(
 		return
 	}
 
-	supplierID := ""
-	if claims.Role == "supplier" {
-		supplierID = getSupplierIDFromContext(r, supplierRepo)
-	} else if claims.Role == "admin" {
-		supplierID = r.URL.Query().Get("supplierId")
-	} else {
-		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
-		return
-	}
+	// Scope comes from the middleware-resolved supplierIDKey (ownership-checked
+	// by RequireSupplierAccess), NOT the legacy claims.Role string: an account
+	// created as a customer that later becomes a supplier owner keeps
+	// role='customer' forever, so Role branching 403s it here. Admins have no
+	// supplierIDKey by design and scope via ?supplierId= instead.
+	supplierID, _ := ctx.Value(supplierIDKey).(string)
 	if supplierID == "" {
-		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
-		return
+		if claims.HasCapability("admin") {
+			supplierID = r.URL.Query().Get("supplierId")
+		}
+		if supplierID == "" {
+			http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+			return
+		}
 	}
 
 	page := 1
@@ -706,18 +716,20 @@ func handleSupplierAcceptOrder(
 		return
 	}
 
-	if claims.Role != "supplier" && claims.Role != "admin" {
-		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
-		return
-	}
-
+	// Scope comes from the middleware-resolved supplierIDKey (ownership-checked
+	// by RequireSupplierAccess), NOT the legacy claims.Role string: an account
+	// created as a customer that later becomes a supplier owner keeps
+	// role='customer' forever, so Role branching 403s it here. Admins have no
+	// supplierIDKey by design and scope via ?supplierId= instead.
 	supplierID, _ := ctx.Value(supplierIDKey).(string)
-	if claims.Role == "admin" {
-		supplierID = r.URL.Query().Get("supplierId")
-	}
 	if supplierID == "" {
-		http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
-		return
+		if claims.HasCapability("admin") {
+			supplierID = r.URL.Query().Get("supplierId")
+		}
+		if supplierID == "" {
+			http.Error(w, `{"error":"Supplier scope required"}`, http.StatusForbidden)
+			return
+		}
 	}
 
 	if err := shipmentRepo.AcceptShipment(ctx, supplierID, orderID, claims.UserID); err != nil {

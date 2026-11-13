@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
+import { ProvinceCityPicker } from '../ProvinceCityPicker';
 import { SupplierSLACard } from './SupplierSLACard';
 
 import { useToast } from "../../context/ToastContext";import { authApi } from '../../services/authApi';
@@ -431,6 +432,14 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
 // comes from the supplier profile city, which live's help text says is the
 // origin when no warehouse is registered — not a contradiction).
 const WAREHOUSE_EMPTY_FORM = { name: "", provinceName: "", cityName: "", address: "", postalCode: "", phone: "" };
+export type WarehouseForm = typeof WAREHOUSE_EMPTY_FORM;
+// Pure helpers for the ProvinceCityPicker wiring, so the rules are
+// unit-testable in the tsx --test + renderToStaticMarkup harness (no DOM):
+// a province picked from the dataset list clears a stale city, a free-text
+// province keeps it; edit mode copies the saved Persian name strings into
+// the form and the picker resolves them by name (matchedProvince/matchedCity).
+export const warehouseFormFromItem = (w: any): WarehouseForm => ({ name: w.name, provinceName: w.provinceName, cityName: w.cityName, address: w.address || "", postalCode: w.postalCode || "", phone: w.phone || "" });
+export const applyWarehouseProvinceChange = (form: WarehouseForm, value: string, fromList: boolean): WarehouseForm => fromList ? { ...form, provinceName: value, cityName: "" } : { ...form, provinceName: value };
 export const SupplierMyWarehousesTab: React.FC = () => {
   const { success, error } = useToast();
   const [items, setItems] = useState<any[]>([]);
@@ -462,7 +471,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
   };
   const openEdit = (w: any) => {
     setEditing(w);
-    setForm({ name: w.name, provinceName: w.provinceName, cityName: w.cityName, address: w.address || "", postalCode: w.postalCode || "", phone: w.phone || "" });
+    setForm(warehouseFormFromItem(w));
     setFormOpen(true);
   };
   const submit = async (e: React.FormEvent) => {
@@ -537,8 +546,17 @@ export const SupplierMyWarehousesTab: React.FC = () => {
           <h3 className="text-xs font-bold">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
           <label className="block text-[11px] font-bold text-slate-600">نام انبار *<input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج یا انبار شماره ۲" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
           <div className="grid grid-cols-2 gap-2">
-            <label className="block text-[11px] font-bold text-slate-600">استان *<input value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} placeholder="تهران" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
-            <label className="block text-[11px] font-bold text-slate-600">شهر *<input value={form.cityName} onChange={(e) => setForm({ ...form, cityName: e.target.value })} placeholder="کرج" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
+            <div className="block text-[11px] font-bold text-slate-600">استان *</div>
+            <div className="block text-[11px] font-bold text-slate-600">شهر *</div>
+            <ProvinceCityPicker
+              province={form.provinceName}
+              city={form.cityName}
+              onProvinceChange={(value, fromList) => setForm((f) => applyWarehouseProvinceChange(f, value, fromList))}
+              onCityChange={(value) => setForm((f) => ({ ...f, cityName: value }))}
+              inputClassName="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal"
+              provinceId="supplier-warehouse-province"
+              cityId="supplier-warehouse-city"
+            />
           </div>
           <label className="block text-[11px] font-bold text-slate-600">نشانی (اختیاری)<input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
           <div className="grid grid-cols-2 gap-2">

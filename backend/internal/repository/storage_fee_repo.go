@@ -50,10 +50,10 @@ var ErrStorageFeeDisabled = errors.New("storage fee assessment is disabled")
 // StorageFeeSettings is the platform_settings storage-fee block
 // (migration 202611050005). All amounts are integer Tomans.
 type StorageFeeSettings struct {
-	Enabled      bool  `json:"storageFeeEnabled"`
-	FreeDays     int   `json:"storageFeeFreeDays"`
-	PerKgDay     int64 `json:"storageFeePerKgDayToman"`
-	PerM3Day     int64 `json:"storageFeePerM3DayToman"`
+	Enabled  bool  `json:"storageFeeEnabled"`
+	FreeDays int   `json:"storageFeeFreeDays"`
+	PerKgDay int64 `json:"storageFeePerKgDayToman"`
+	PerM3Day int64 `json:"storageFeePerM3DayToman"`
 }
 
 // DefaultStorageFeeSettings mirrors the migration defaults (flag OFF).
@@ -199,6 +199,10 @@ func (r *SupplierRepository) RunStorageFeeAssessment(ctx context.Context) (Stora
 	}
 	rows.Close()
 
+	// P0-16 notify totals per supplier, sent only after the run commits.
+	chargedBySupplier := map[string]int64{}
+	positionsBySupplier := map[string]int{}
+
 	today := tehranDay(time.Now())
 	lastChargeableDay := today.AddDate(0, 0, -1) // only fully elapsed days are billed
 
@@ -259,6 +263,8 @@ func (r *SupplierRepository) RunStorageFeeAssessment(ctx context.Context) (Stora
 		if chargedHere {
 			summary.PositionsCharged++
 			summary.TotalCharged += insertedTotal
+			chargedBySupplier[p.supplierID] += insertedTotal
+			positionsBySupplier[p.supplierID]++
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE warehouse_storage_positions
 				SET last_fee_date = $2, last_assessed_date = $3,
@@ -275,6 +281,10 @@ func (r *SupplierRepository) RunStorageFeeAssessment(ctx context.Context) (Stora
 
 	if err := tx.Commit(); err != nil {
 		return summary, fmt.Errorf("commit storage fee assessment: %w", err)
+	}
+	// P0-16 (best-effort): storage fee charged - each charged supplier.
+	for supplierID, total := range chargedBySupplier {
+		notifyStorageFeeCharged(ctx, r.db, supplierID, total, positionsBySupplier[supplierID])
 	}
 	return summary, nil
 }

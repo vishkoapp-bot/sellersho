@@ -188,7 +188,12 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 		return ErrDisputeOrderNotDisputable
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-6 (best-effort): dispute filed - admins (adjudication).
+	notifyDisputeFiled(ctx, r.db, d.ID, resolvedNumber, d.Type, d.ClaimAmount)
+	return nil
 }
 
 // ResolveDispute resolves a dispute and issues compensation without debiting seller wallet if carrier is liable.
@@ -204,6 +209,10 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 //     resolution fails closed instead of silently defaulting to carrier.
 //   - ledger ids are UUIDs (ADJ- + UUID), never ADJ- + millis%10000.
 func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, action, party, operator string, claimAmount int64) error {
+	// Facts for the post-commit notify (P0-7): order id for recipient
+	// resolution. Read before the tx; the dispute row is pending here.
+	var disputeOrderID string
+	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(order_id, '') FROM disputes WHERE id = $1`, disputeID).Scan(&disputeOrderID)
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -237,7 +246,13 @@ func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, actio
 
 	// No ledger entry for a rejected claim or a non-positive amount.
 	if action == "release_to_seller" || claimAmount <= 0 {
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		// P0-7 (best-effort): dispute resolved, incl. claim-rejected -
+		// customer (verdict + reason) and the debited/liable party.
+		notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
+		return nil
 	}
 
 	targetType, ok := disputePartyLedgerType(party, action)
@@ -255,7 +270,12 @@ func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, actio
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-7 (best-effort): dispute resolved - customer + debited party.
+	notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
+	return nil
 }
 
 // disputePartyLedgerType maps a responsible-party value to a
@@ -631,6 +651,8 @@ func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUs
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// P1-6 (best-effort): payout requested - admins.
+	notifyPayoutRequested(ctx, r.db, item.ID, "تسویه فروشگاه", item.Amount, storeID)
 	return &item, nil
 }
 
@@ -661,6 +683,8 @@ func (r *FinanceRepository) RequestStorePayout(ctx context.Context, storeID, sha
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert payout request: %w", err)
 	}
+	// P1-6 (best-effort): payout requested - admins.
+	notifyPayoutRequested(ctx, r.db, s.ID, "تسویه فروشگاه", s.Amount, storeID)
 	return &s, nil
 }
 func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, month string) (*StoreStatement, error) {
@@ -890,12 +914,13 @@ func (r *FinanceRepository) ReviewSettlement(ctx context.Context, id, status, re
 	var recName string
 	var recType string
 
+	var payoutStoreID, payoutSupplierID sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT amount, recipient_name, recipient_type
+		SELECT amount, recipient_name, recipient_type, store_id, supplier_id
 		FROM payout_requests
 		WHERE id = $1 AND status = 'pending'
 		FOR UPDATE
-	`, id).Scan(&amount, &recName, &recType)
+	`, id).Scan(&amount, &recName, &recType, &payoutStoreID, &payoutSupplierID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("settlement is missing or already reviewed")
 	}
@@ -915,6 +940,12 @@ func (r *FinanceRepository) ReviewSettlement(ctx context.Context, id, status, re
 		return fmt.Errorf("settlement was not pending")
 	}
 
+	// P0-10 (best-effort, after the commit below): payout reviewed -
+	// store/supplier owner (approved/rejected + reason).
+	reviewedStatus, reviewedReason := status, reason
+	reviewedAmount := amount
+	reviewedStore, reviewedSupplier := payoutStoreID.String, payoutSupplierID.String
+
 	// D32: "approved" is ONLY a manual-transfer marker. No ledger
 	// entry is written here — money has not moved yet. The ledger debit
 	// is recorded by ConfirmManualTransfer when the transfer is
@@ -927,7 +958,11 @@ func (r *FinanceRepository) ReviewSettlement(ctx context.Context, id, status, re
 	_ = recName
 	_ = recType
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	notifyPayoutReviewed(ctx, r.db, id, reviewedStatus, reviewedReason, reviewedAmount, reviewedStore, reviewedSupplier)
+	return nil
 }
 
 // ConfirmManualTransfer records a real manual bank transfer (D32, live
@@ -964,12 +999,13 @@ func (r *FinanceRepository) ConfirmManualTransferWithDate(ctx context.Context, i
 	var recName string
 	var recType string
 
+	var confirmStoreID, confirmSupplierID sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT amount, recipient_name, recipient_type
+		SELECT amount, recipient_name, recipient_type, store_id, supplier_id
 		FROM payout_requests
 		WHERE id = $1 AND status = 'approved'
 		FOR UPDATE
-	`, id).Scan(&amount, &recName, &recType)
+	`, id).Scan(&amount, &recName, &recType, &confirmStoreID, &confirmSupplierID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("payout is missing or not approved")
 	}
@@ -1003,6 +1039,7 @@ func (r *FinanceRepository) ConfirmManualTransferWithDate(ctx context.Context, i
 		}
 	}
 
+	confirmedAmount, confirmedStore, confirmedSupplier := amount, confirmStoreID.String, confirmSupplierID.String
 	if amount > 0 {
 		ledgerID := "PAY-LED-" + uuid.NewString()
 		if _, err := tx.ExecContext(ctx, `
@@ -1013,7 +1050,13 @@ func (r *FinanceRepository) ConfirmManualTransferWithDate(ctx context.Context, i
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-10 (best-effort): transfer confirmed - store/supplier owner
+	// (amount + reference).
+	notifyPayoutTransferConfirmed(ctx, r.db, id, transferReference, confirmedAmount, confirmedStore, confirmedSupplier)
+	return nil
 }
 
 // GetRevenueReport aggregates revenue, platform fees, seller payouts and

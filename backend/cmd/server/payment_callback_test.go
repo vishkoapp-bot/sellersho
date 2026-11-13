@@ -36,6 +36,13 @@ func (f *FakeOrderRepository) GetOrderByID(ctx context.Context, id string) (*dom
 	return nil, sql.ErrNoRows
 }
 
+func (f *FakeOrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken string) error {
+	if f.tx != nil && f.tx.GatewayToken == gatewayToken {
+		f.tx.Status = "failed"
+	}
+	return nil
+}
+
 func (f *FakeOrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn, cardMask string) (*repository.PaymentTransaction, error) {
 	f.markPaidCalls++
 	f.tx.Status = "paid"
@@ -147,4 +154,3 @@ func TestPaymentCallback_AmountMismatch(t *testing.T) {
 		t.Fatalf("MarkPaymentPaid must not be called on amount mismatch")
 	}
 }
-

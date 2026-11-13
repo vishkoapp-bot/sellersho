@@ -385,6 +385,9 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 		return nil, nil, err
 	}
 
+	// P1-12 (best-effort): supplier registered - admins. Smallest honest
+	// fix: an outbox row for admins (admin read path is W2's).
+	notifySupplierRegistered(ctx, r.db, s.ID, companyName, u.ID)
 	return &u, &s, nil
 }
 
@@ -456,11 +459,14 @@ func (r *SupplierRepository) ApproveSupplier(ctx context.Context, supplierID, ap
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	// P1-7 (best-effort): legacy supplier approved - supplier owner.
+	notifyLegacySupplierDecision(ctx, r.db, supplierID, userID, true, "")
 	return userID, nil
 }
 
 // RejectSupplier marks a pending supplier as rejected with a reason.
 func (r *SupplierRepository) RejectSupplier(ctx context.Context, supplierID, rejectedBy, reason string) error {
+	ownerUserID := supplierOwnerID(ctx, r.db, supplierID)
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE suppliers SET approval_status = 'rejected', approved_by = $2, approved_at = NOW(), rejection_reason = $3
 		WHERE id = $1 AND approval_status = 'pending_approval'
@@ -472,6 +478,8 @@ func (r *SupplierRepository) RejectSupplier(ctx context.Context, supplierID, rej
 	if n == 0 {
 		return fmt.Errorf("supplier not found or already processed")
 	}
+	// P1-7 (best-effort): legacy supplier rejected - supplier owner.
+	notifyLegacySupplierDecision(ctx, r.db, supplierID, ownerUserID, false, reason)
 	return nil
 }
 
@@ -707,6 +715,7 @@ func (r *SupplierRepository) notifyProposalRejected(ctx context.Context, proposa
 		"event":         "proposal_rejected",
 		"entity_type":   "proposed_product",
 		"product_title": productTitle,
+		"reason":        reason,
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -1661,6 +1670,9 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	// P1-1 (best-effort): proposal approved, symmetric with the
+	// rejection row - supplier owner.
+	notifyProposalApproved(ctx, r.db, proposalID, title, requestedBy, productID, notes)
 	return productID, nil
 }
 
@@ -2182,7 +2194,12 @@ func (r *SupplierRepository) ReviewReturn(ctx context.Context, returnID, status,
 		ON CONFLICT (idempotency_key) DO NOTHING`, "RET-EVT-"+uuid.NewString(), returnID, current, status, reason, actorUserID, returnID+":"+status); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-8 (best-effort): supplier return-review decision - supplier.
+	notifySupplierReturnReview(ctx, r.db, returnID, supplierID, status, reason)
+	return nil
 }
 
 func (r *SupplierRepository) releaseReturnReservations(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actorUserID string) error {
@@ -2418,7 +2435,13 @@ func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actor
 	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_events (id,return_request_id,from_status,to_status,actor_user_id,idempotency_key) VALUES ($1,$2,$3,'in_transit',NULLIF($4,''),$5) ON CONFLICT (idempotency_key) DO NOTHING`, "RET-EVT-"+uuid.NewString(), returnID, current, actorUserID, idempotencyKey+":event"); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-15 (best-effort): supplier return handed over, in transit -
+	// warehouse staff.
+	notifySupplierReturnTransit(ctx, r.db, returnID, supplierID)
+	return nil
 }
 
 // ReceiveReturn records physical receipt at the destination and moves the
@@ -2813,6 +2836,8 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 	if err != nil {
 		return "", err
 	}
+	// P0-15 (best-effort): inbound created - warehouse staff.
+	notifyInbound(ctx, r.db, inboundID, supName, false)
 	return inboundID, nil
 }
 
@@ -2920,6 +2945,12 @@ func (r *SupplierRepository) DispatchInbound(ctx context.Context, supplierID, in
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	// P0-15 (best-effort): inbound dispatched, in transit - warehouse staff.
+	supName := supplierID
+	if sup, serr := r.GetSupplierByID(ctx, supplierID); serr == nil && sup != nil {
+		supName = sup.Name
+	}
+	notifyInbound(ctx, r.db, inboundID, supName, true)
 	return nil
 }
 

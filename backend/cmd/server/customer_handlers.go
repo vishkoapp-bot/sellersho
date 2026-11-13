@@ -477,14 +477,18 @@ func handleT01Notifications(w http.ResponseWriter, r *http.Request, db *sql.DB) 
 		return
 	}
 	if !exists {
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"notifications": []interface{}{}})
+		// P1-15: the missing-table envelope matches the normal one
+		// (success + unreadCount), so clients never have to branch.
+		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": []interface{}{}, "unreadCount": 0})
 		return
 	}
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": items, "unreadCount": unreadCount})
 }
 
 // handleT01NotificationsRead serves POST /api/v1/notifications/read.
-// Per migration 202610180005, read flips 'sent' -> 'read'.
+// Read flips 'pending' -> 'read' (a 'sent' row, if one ever exists, is
+// flipped too). There is no pending -> sent worker in this tree:
+// 'pending' is the readable state, not a queue awaiting delivery.
 // TODO: the exact live read contract (single id vs ids vs mark-all)
 // is unverified; {id} and {ids: [...]} are both accepted.
 func handleT01NotificationsRead(w http.ResponseWriter, r *http.Request, db *sql.DB) {

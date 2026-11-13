@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
 )
 
@@ -187,5 +188,9 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 		writeInternalError(w, err)
 		return
 	}
+	// P0-9 (best-effort): finance adjustment - the adjusted supplier /
+	// seller (amount, reason, docId). A notify failure never fails the
+	// adjustment, which already committed.
+	repository.NotifyFinanceAdjustment(ctx, db, req.TargetKind, targetID, req.Direction, req.Amount, reason, docID)
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "docId": docID})
 }

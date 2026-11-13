@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
 )
 
@@ -723,6 +724,10 @@ func handleT01AdminTicketReply(w http.ResponseWriter, r *http.Request, db *sql.D
 		writeInternalError(w, err)
 		return
 	}
+	// P1-11 (best-effort, writer only): ticket reply - the requester
+	// when an admin replied, admins when the requester replied.
+	// Internal notes notify nobody. (The false SMS copy is W3's.)
+	repository.NotifyTicketReply(r.Context(), db, ticketID, author, req.IsInternal, req.Body)
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "ticketId": ticketID})
 }
 

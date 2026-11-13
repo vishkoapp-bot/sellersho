@@ -124,12 +124,22 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 	if err != nil || balance.AvailableAmount != 300000 {
 		t.Fatalf("approved payout spent twice: %+v %v", balance, err)
 	}
-	if err := fin.PurchaseSellerService(ctx, owner, store.ID, "sms_500"); err != nil {
-		t.Fatal(err)
+	// SMS packs are not for sale until a sending path exists: both
+	// packs must be rejected before any wallet debit, with no purchase
+	// row and no smsCredits granted.
+	if err := fin.PurchaseSellerService(ctx, owner, store.ID, "sms_500"); !errors.Is(err, repository.ErrSMSServiceUnavailable) {
+		t.Fatalf("sms_500 purchase: %v, want ErrSMSServiceUnavailable", err)
+	}
+	if err := fin.PurchaseSellerService(ctx, owner, store.ID, "sms_2000"); !errors.Is(err, repository.ErrSMSServiceUnavailable) {
+		t.Fatalf("sms_2000 purchase: %v, want ErrSMSServiceUnavailable", err)
 	}
 	balance, err = fin.GetStoreBalance(ctx, store.ID)
-	if err != nil || balance.AvailableAmount != 150000 {
-		t.Fatalf("service debit: %+v %v", balance, err)
+	if err != nil || balance.AvailableAmount != 300000 {
+		t.Fatalf("rejected sms purchase debited wallet: %+v %v", balance, err)
+	}
+	var purchaseCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM seller_service_purchases WHERE store_id=$1`, store.ID).Scan(&purchaseCount); err != nil || purchaseCount != 0 {
+		t.Fatalf("rejected sms purchase wrote history: count %d: %v", purchaseCount, err)
 	}
 	if err := fin.PurchaseSellerService(ctx, stranger, store.ID, "vip"); !errors.Is(err, repository.ErrStoreForbidden) {
 		t.Fatalf("foreign subscription: %v", err)
@@ -138,8 +148,8 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 		t.Fatalf("unfunded subscription: %v", err)
 	}
 	var credits int
-	if err := db.QueryRow(`SELECT (panel_config->>'smsCredits')::int FROM stores WHERE id=$1`, store.ID).Scan(&credits); err != nil || credits != 500 {
-		t.Fatalf("credits %d: %v", credits, err)
+	if err := db.QueryRow(`SELECT COALESCE((panel_config->>'smsCredits')::int,0) FROM stores WHERE id=$1`, store.ID).Scan(&credits); err != nil || credits != 0 {
+		t.Fatalf("rejected sms purchase granted credits %d: %v", credits, err)
 	}
 	payouts, err := fin.GetStorePayouts(ctx, owner, store.ID)
 	if err != nil || len(payouts) != 1 {

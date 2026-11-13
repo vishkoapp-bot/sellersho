@@ -11,8 +11,10 @@ var ErrPaymentExpired = errors.New("payment window has expired or order was canc
 var ErrQCResponseExpired = errors.New("مهلت ۴۸ساعته پاسخ به مغایرت تمام شده؛ پرونده برای بررسی مدیر ارجاع شده است")
 
 type ExpiredOrder struct {
-	ID       string
-	Products []string
+	ID             string
+	Products       []string
+	CustomerUserID string
+	OrderNumber    string
 }
 
 func (r *OrderRepository) PaymentDeadline(ctx context.Context, id string) *sql.Row {
@@ -27,14 +29,14 @@ func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrde
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM orders WHERE payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 200`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(customer_user_id::text, ''), order_number FROM orders WHERE payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
 	out := []ExpiredOrder{}
 	for rows.Next() {
 		var o ExpiredOrder
-		if err = rows.Scan(&o.ID); err != nil {
+		if err = rows.Scan(&o.ID, &o.CustomerUserID, &o.OrderNumber); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -74,7 +76,16 @@ func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrde
 			return nil, err
 		}
 	}
-	return out, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	// P0-5 (best-effort): system expiry-cancel of an unpaid order -
+	// the customer is told (the cancel itself was system-initiated,
+	// so the customer would otherwise never learn of it).
+	for _, o := range out {
+		notifyExpiredOrder(ctx, r.db, o.ID, o.OrderNumber, o.CustomerUserID)
+	}
+	return out, nil
 }
 
 // Expiry escalates for human review; silence never accepts a shortage or

@@ -373,7 +373,15 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 			status = $2 OR
 			(status IN ('shipped', 'in_transit') AND $2 IN ('in_transit', 'delivered')) OR
 			(status = 'pending' AND $2 = 'shipped') OR
-			(status IN ('pending', 'processing') AND $2 = 'failed')
+			(status IN ('pending', 'processing') AND $2 = 'failed') OR
+			-- Critic fix (Phase 2, fix 1): a carrier failure realistically
+			-- arrives AFTER dispatch, when the shipment is shipped /
+			-- in_transit. Without this leg a failed webhook for an
+			-- in-flight direct shipment matched no row, the handler
+			-- fell through to the warehouse path (404), and the
+			-- 'failed' wiring in handleWebhookTrackingUpdate was dead
+			-- for the only realistic case.
+			(status IN ('shipped', 'in_transit') AND $2 = 'failed')
 		  )
 		RETURNING id, order_id, supplier_id, status
 	`, trackingNumber, status).Scan(&s.ID, &s.OrderID, &s.SupplierID, &s.Status)

@@ -24,6 +24,8 @@ func sellerError(w http.ResponseWriter, err error) {
 		// cannot afford yet — say so in Persian instead of the generic
 		// English "Invalid input" this used to collapse into.
 		http.Error(w, `{"error":"موجودی کیف پول فروشگاه برای این خرید کافی نیست."}`, http.StatusBadRequest)
+	case errors.Is(err, repository.ErrSMSServiceUnavailable):
+		http.Error(w, `{"error":"بسته‌های پیامک در حال حاضر قابل خرید نیستند؛ مسیر ارسال پیامک هنوز فعال نشده است."}`, http.StatusBadRequest)
 	case errors.Is(err, repository.ErrUnknownSellerService):
 		http.Error(w, `{"error":"این اشتراک یا خدمت در حال حاضر قابل خرید نیست."}`, http.StatusBadRequest)
 	case errors.Is(err, repository.ErrStoreInput):

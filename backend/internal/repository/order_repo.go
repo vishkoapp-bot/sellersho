@@ -197,7 +197,13 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-14 (best-effort, separate tx): order placed - fulfilling
+	// suppliers + store owner. A notify failure never fails the order.
+	notifyOrderPlaced(ctx, r.db, order.ID)
+	return nil
 }
 
 // GetOrderByID retrieves an order with its items by ID
@@ -304,7 +310,13 @@ func (r *OrderRepository) ConfirmOrderDelivery(ctx context.Context, idOrNumber, 
 		_, _ = tx.ExecContext(ctx, releaseBonusQuery, now, orderStoreID)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-3 (best-effort): delivery confirmed - customer + store owner
+	// + suppliers. Profit is NOT released here (window close only).
+	NotifyDeliveryConfirmed(ctx, r.db, idOrNumber, false)
+	return nil
 }
 
 // ConfirmOrderDeliverySystem allows an explicit administrative or worker system operation to confirm delivery.
@@ -353,7 +365,12 @@ func (r *OrderRepository) ConfirmOrderDeliverySystem(ctx context.Context, idOrNu
 		_, _ = tx.ExecContext(ctx, releaseBonusQuery, now, orderStoreID)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-3 (best-effort): system-confirmed delivery.
+	NotifyDeliveryConfirmed(ctx, r.db, idOrNumber, false)
+	return nil
 }
 
 // UpdateOrderStatusFromCarrier updates the order status based on carrier events,
@@ -401,6 +418,11 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 	if rows == 0 {
 		return sql.ErrNoRows
 	}
+	// P1-5 (best-effort): carrier 'failed' flips the order to
+	// delivery_disputed - the customer is told.
+	if targetStatus == "delivery_disputed" {
+		notifyCarrierFailed(ctx, r.db, idOrNumber)
+	}
 	return nil
 }
 
@@ -428,6 +450,17 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		return nil, sql.ErrNoRows
 	}
 
+	// Critic fix (Phase 2): a repeated webhook for an order ALREADY in
+	// the target state is a no-op success — return the order, notify
+	// nobody. The transition UPDATE below has NO `status = $2` leg
+	// (the old leg re-matched an already-disputed order and re-notified
+	// on every repeated 'failed' webhook); without the pre-check here,
+	// removing that leg would turn a duplicate webhook into a 404.
+	var existingID, currentStatus string
+	if err := r.db.QueryRowContext(ctx, `SELECT id, status FROM orders WHERE tracking_number = $1 AND fulfillment_method IN ('warehouse', 'mixed')`, trackingNumber).Scan(&existingID, &currentStatus); err == nil && currentStatus == targetStatus {
+		return r.GetOrderByID(ctx, existingID)
+	}
+
 	var orderID string
 	query := `
 		UPDATE orders
@@ -438,7 +471,6 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		WHERE tracking_number = $1
 		  AND fulfillment_method IN ('warehouse', 'mixed')
 		  AND (
-			status = $2 OR
 			(status IN ('processing', 'picking', 'picked', 'packed') AND $2 = 'shipped') OR
 			(status = 'shipped' AND $2 = 'delivered') OR
 			(status IN ('processing', 'picking', 'picked', 'packed', 'shipped') AND $2 = 'delivery_disputed')
@@ -452,6 +484,10 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 	order, err := r.GetOrderByID(ctx, orderID)
 	if err != nil || order == nil {
 		return nil, err
+	}
+	// P1-5 (best-effort): carrier 'failed' on a warehouse order.
+	if targetStatus == "delivery_disputed" {
+		notifyCarrierFailed(ctx, r.db, orderID)
 	}
 	return order, nil
 }
@@ -721,6 +757,40 @@ func (r *OrderRepository) GetPaymentTransactionByOrderID(ctx context.Context, or
 	return &tx, nil
 }
 
+// RecordPaymentFailure records a gateway verification failure on
+// the payment transaction (status='failed', a CHECK-legal value per
+// migration 202610250006) and on the order, then best-effort notifies
+// the customer (P1-9). Idempotent: a non-pending transaction is left
+// alone and no duplicate row is written.
+func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var orderID, status string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id, status FROM payment_transactions WHERE gateway_token = $1 FOR UPDATE`, gatewayToken).Scan(&orderID, &status); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if status != "pending" {
+		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status = 'failed' WHERE gateway_token = $1 AND status = 'pending'`, gatewayToken); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET payment_status = 'failed', updated_at = NOW() WHERE id = $1 AND payment_status = 'pending'`, orderID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	notifyPaymentFailed(ctx, r.db, orderID)
+	return nil
+}
+
 func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn, cardMask string) (*PaymentTransaction, error) {
 	dbTx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -842,6 +912,11 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	if err = dbTx.Commit(); err != nil {
 		return nil, err
 	}
+	// P0-14 (best-effort): payment confirmed - fulfilment unblocked
+	// for suppliers + store owner. P1-10: low-stock check on the
+	// just-decremented products. Notify failures never fail payment.
+	notifyPaymentConfirmed(ctx, r.db, payment.OrderID)
+	notifyLowStock(ctx, r.db, payment.OrderID)
 
 	payment.RRN = sql.NullString{String: rrn, Valid: true}
 	payment.CardMask = sql.NullString{String: cardMask, Valid: true}
@@ -999,6 +1074,8 @@ func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64
 			return released, err
 		}
 		released++
+		// P1-3 (best-effort): profit released - store owner + suppliers.
+		notifyProfitReleased(ctx, r.db, c.id, c.profit)
 	}
 	return released, nil
 }
@@ -1111,7 +1188,13 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-5 (best-effort): cancelled - fulfilling suppliers (stop
+	// preparing) + store owner.
+	notifyOrderCancelled(ctx, r.db, orderID)
+	return nil
 }
 
 // ApplyDisputeRefundEffect implements D37 without touching
@@ -1133,7 +1216,9 @@ func (r *OrderRepository) ApplyDisputeRefundEffect(ctx context.Context, disputeI
 	defer tx.Rollback()
 	var orderID sql.NullString
 	var action string
-	err = tx.QueryRowContext(ctx, `SELECT order_id, COALESCE(resolution_action, '') FROM disputes WHERE id = $1`, disputeID).Scan(&orderID, &action)
+	var disputeStatus string
+	var claimAmount int64
+	err = tx.QueryRowContext(ctx, `SELECT order_id, COALESCE(resolution_action, ''), COALESCE(status, ''), COALESCE(claim_amount, 0) FROM disputes WHERE id = $1`, disputeID).Scan(&orderID, &action, &disputeStatus, &claimAmount)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
@@ -1143,15 +1228,38 @@ func (r *OrderRepository) ApplyDisputeRefundEffect(ctx context.Context, disputeI
 	if !strings.HasPrefix(action, "refund") || !orderID.Valid || orderID.String == "" {
 		return false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'refunded', updated_at = NOW() WHERE id = $1 AND status <> 'cancelled'`, orderID.String); err != nil {
+	orderRes, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'refunded', updated_at = NOW() WHERE id = $1 AND status <> 'cancelled'`, orderID.String)
+	if err != nil {
 		return false, err
 	}
+	orderTouched, _ := orderRes.RowsAffected()
 	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status = 'refunded' WHERE order_id = $1 AND status IN ('paid', 'pending')`, orderID.String); err != nil {
 		return false, err
 	}
+	var payable int64
+	var customerID sql.NullString
+	var orderNumber string
+	_ = tx.QueryRowContext(ctx, `SELECT COALESCE(payable_amount, 0), customer_user_id, order_number FROM orders WHERE id = $1`, orderID.String).Scan(&payable, &customerID, &orderNumber)
+	_ = payable // kept for the read above; the notified figure is the claim amount, never the full payable_amount.
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	// P0-8 (best-effort): refund state change - customer, claim amount.
+	// Critic fix (Phase 2):
+	//   - notify ONLY when the order UPDATE actually moved a row: a
+	//     retry on an already-cancelled order is a no-op, not a second
+	//     refund notice.
+	//   - the figure is the dispute CLAIM amount, never the full
+	//     payable_amount (the old row quoted the whole order total).
+	//   - NO second customer row when the dispute is already resolved:
+	//     ResolveDispute (which always runs first in the live
+	//     handleResolveDispute path) already told the customer the same
+	//     verdict + claim amount via notifyDisputeResolved. One
+	//     resolution, one customer row, one figure.
+	if orderTouched == 0 || disputeStatus == "resolved" || claimAmount <= 0 {
+		return true, nil
+	}
+	notifyRefundIssued(ctx, r.db, orderID.String, orderNumber, customerID.String, claimAmount, false, "")
 	return true, nil
 }
 
@@ -1757,6 +1865,8 @@ func (r *OrderRepository) CreateCustomerReturn(ctx context.Context, customerID, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// P1-4 (best-effort): return filed - warehouse staff + admins.
+	notifyReturnRequested(ctx, r.db, returnID, order.OrderNumber, reason)
 	return r.GetCustomerReturn(ctx, returnID)
 }
 
@@ -1871,11 +1981,36 @@ func (r *OrderRepository) transitionCustomerReturn(ctx context.Context, id, from
 }
 
 func (r *OrderRepository) ApproveCustomerReturn(ctx context.Context, id, adminNote string) error {
-	return r.transitionCustomerReturn(ctx, id, "requested", "approved", adminNote)
+	cr, _ := r.GetCustomerReturn(ctx, id)
+	if err := r.transitionCustomerReturn(ctx, id, "requested", "approved", adminNote); err != nil {
+		return err
+	}
+	// P0-11 (best-effort): return approved - customer.
+	if cr != nil {
+		orderNum := cr.OrderID
+		if o, oerr := loadOrderNotifyCtx(ctx, r.db, cr.OrderID); oerr == nil {
+			orderNum = o.OrderNumber
+		}
+		notifyReturnDecision(ctx, r.db, id, orderNum, cr.CustomerID, "approved", adminNote)
+	}
+	return nil
 }
 
 func (r *OrderRepository) RejectCustomerReturn(ctx context.Context, id, adminNote string) error {
-	return r.transitionCustomerReturn(ctx, id, "requested", "rejected", adminNote)
+	cr, _ := r.GetCustomerReturn(ctx, id)
+	if err := r.transitionCustomerReturn(ctx, id, "requested", "rejected", adminNote); err != nil {
+		return err
+	}
+	// P0-11 (best-effort): return rejected - customer, incl. the
+	// admin_note reason.
+	if cr != nil {
+		orderNum := cr.OrderID
+		if o, oerr := loadOrderNotifyCtx(ctx, r.db, cr.OrderID); oerr == nil {
+			orderNum = o.OrderNumber
+		}
+		notifyReturnDecision(ctx, r.db, id, orderNum, cr.CustomerID, "rejected", adminNote)
+	}
+	return nil
 }
 
 func (r *OrderRepository) CancelCustomerReturn(ctx context.Context, id string) error {
@@ -1908,6 +2043,15 @@ func (r *OrderRepository) ShipCustomerReturn(ctx context.Context, id, trackingNu
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		return sql.ErrNoRows
+	}
+	// P1-4 (best-effort): customer shipped the return - destination
+	// (supplier warehouse owner, else warehouse staff), with tracking.
+	if cr, cerr := r.GetCustomerReturn(ctx, id); cerr == nil && cr != nil {
+		orderNum := cr.OrderID
+		if o, oerr := loadOrderNotifyCtx(ctx, r.db, cr.OrderID); oerr == nil {
+			orderNum = o.OrderNumber
+		}
+		notifyReturnShipped(ctx, r.db, id, orderNum, trackingNumber, cr.DestinationSupplierWarehouseID)
 	}
 	return nil
 }
@@ -1945,17 +2089,18 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	var status string
 	var orderID string
 	var prepaid bool
+	var codRefused bool
 	var returnCode sql.NullString
 	var recordedShippingAmount sql.NullInt64
 	var recordedShippingBearer sql.NullString
 	var shippingSettledAt sql.NullTime
 	var destWarehouseID, destSupplierWarehouseID sql.NullString
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status, order_id, COALESCE(prepaid, FALSE), return_code,
+		SELECT status, order_id, COALESCE(prepaid, FALSE), COALESCE(cod_refused, FALSE), return_code,
 			return_shipping_amount, return_shipping_bearer, return_shipping_settled_at,
 			warehouse_id, destination_supplier_warehouse_id
 		FROM customer_returns WHERE id = $1 FOR UPDATE
-	`, id).Scan(&status, &orderID, &prepaid, &returnCode, &recordedShippingAmount, &recordedShippingBearer, &shippingSettledAt, &destWarehouseID, &destSupplierWarehouseID); err != nil {
+	`, id).Scan(&status, &orderID, &prepaid, &codRefused, &returnCode, &recordedShippingAmount, &recordedShippingBearer, &shippingSettledAt, &destWarehouseID, &destSupplierWarehouseID); err != nil {
 		return nil, err
 	}
 	// FIX 14: a shipped return is receivable too (ship precedes
@@ -1964,11 +2109,24 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, sql.ErrNoRows
 	}
 	if !prepaid {
-		if _, err := tx.ExecContext(ctx, `UPDATE customer_returns SET cod_refused = TRUE, updated_at = NOW() WHERE id = $1`, id); err != nil {
+		// Critic fix (Phase 2): guard on cod_refused = FALSE — a retry
+		// after a refusal must NOT re-notify. The row is FOR UPDATE
+		// locked above, so concurrent retries serialize on this flag.
+		res, err := tx.ExecContext(ctx, `UPDATE customer_returns SET cod_refused = TRUE, updated_at = NOW() WHERE id = $1 AND cod_refused = FALSE`, id)
+		if err != nil {
 			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// Already refused (and already notified) — same error, no
+			// second notification row.
+			return nil, ErrReturnCODRefused
 		}
 		if err := tx.Commit(); err != nil {
 			return nil, err
+		}
+		// P0-12 (best-effort): COD parcel refused - customer.
+		if o, oerr := loadOrderNotifyCtx(ctx, r.db, orderID); oerr == nil {
+			notifyReturnCODRefused(ctx, r.db, id, o.OrderNumber, o.CustomerID)
 		}
 		return nil, ErrReturnCODRefused
 	}
@@ -2106,6 +2264,15 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// P0-12 (best-effort): QC received - charged suppliers (amount +
+	// return code + per-item split, from the persisted charge rows).
+	if o, oerr := loadOrderNotifyCtx(ctx, r.db, orderID); oerr == nil {
+		code := ""
+		if cr, cerr := r.GetCustomerReturn(ctx, id); cerr == nil && cr != nil && cr.ReturnCode != nil {
+			code = *cr.ReturnCode
+		}
+		notifyReturnQCCharged(ctx, r.db, id, o.OrderNumber, code)
 	}
 	return settlement, nil
 }
@@ -2616,6 +2783,24 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, err
+	}
+	// P0-8 (best-effort): wallet refund - customer, amount + wallet
+	// destination. The wallet credit above is real (customer_wallets
+	// upsert), so the wording states a wallet credit, not a PSP
+	// reversal. Total credited = product refund + supplier-borne
+	// shipping - customer-borne shipping debited.
+	totalCredited := amount
+	extra := ""
+	if settlement != nil {
+		totalCredited += settlement.SupplierBorneTotal - settlement.CustomerDebited
+		if settlement.CustomerDebited > 0 {
+			extra = fmt.Sprintf(" هزینه حمل سهم شما (%s) از کیف پول کسر شد.", formatToman(settlement.CustomerDebited))
+		}
+	}
+	if o, oerr := loadOrderNotifyCtx(ctx, r.db, orderID); oerr == nil {
+		notifyRefundIssued(ctx, r.db, orderID, o.OrderNumber, customerID, totalCredited, true, extra)
+	} else {
+		notifyRefundIssued(ctx, r.db, orderID, "", customerID, totalCredited, true, extra)
 	}
 	return amount, settlement, nil
 }

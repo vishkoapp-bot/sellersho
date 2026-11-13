@@ -186,7 +186,7 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 			windowDays = days
 		}
 	}
-	confirmRes, confirmErr := w.db.ExecContext(ctx, `
+	confirmRows, confirmErr := w.db.QueryContext(ctx, `
 		UPDATE orders
 		SET status = 'delivered_confirmed',
 		    confirmed_at = NOW(),
@@ -196,13 +196,27 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 		  AND shipped_at IS NOT NULL
 		  AND shipped_at <= NOW() - INTERVAL '20 days'
 		  AND profit_released = FALSE
+		RETURNING id
 	`, windowDays)
 	if confirmErr != nil {
 		w.recordJobRun(ctx, started, 0, 0, confirmErr)
 		return 0, 0, confirmErr
 	}
-	if confirmRes != nil {
-		confirmed, _ = confirmRes.RowsAffected()
+	var confirmedOrderIDs []string
+	if confirmRows != nil {
+		for confirmRows.Next() {
+			var oid string
+			if err := confirmRows.Scan(&oid); err == nil && oid != "" {
+				confirmedOrderIDs = append(confirmedOrderIDs, oid)
+			}
+		}
+		confirmRows.Close()
+	}
+	confirmed = int64(len(confirmedOrderIDs))
+	// P1-3 (best-effort): 20-day auto-confirm — customer + store owner
+	// + suppliers, per auto-confirmed order.
+	for _, oid := range confirmedOrderIDs {
+		repository.NotifyDeliveryConfirmed(ctx, w.db, oid, true)
 	}
 
 	// Stage 2 (released): return-window-close releaser. Only orders

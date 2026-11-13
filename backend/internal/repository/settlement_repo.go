@@ -253,6 +253,8 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// P1-6 (best-effort): early-withdrawal requested - admins.
+	notifyPayoutRequested(ctx, r.db, out.ID, "برداشت زودهنگام", out.GrossAmount, storeID)
 	return &out, nil
 }
 
@@ -439,6 +441,14 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 	}
 	totalStores, skippedStores := 0, 0
 	var totalGross, totalNet int64
+	// P0-13 / P1-6 notify lists, resolved during the loop and sent
+	// only after the cycle commits (best-effort, separate tx each).
+	type settlementNotify struct {
+		storeID  string
+		amount   int64
+		payoutID string
+	}
+	var skippedNotifies, createdNotifies []settlementNotify
 	for _, c := range candidates {
 		if c.available <= 0 {
 			continue
@@ -454,6 +464,7 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 			totalStores++
 			totalGross += c.available
 			totalNet += c.available
+			skippedNotifies = append(skippedNotifies, settlementNotify{storeID: c.id, amount: c.available})
 			continue
 		}
 		if err != nil {
@@ -474,12 +485,22 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 		totalStores++
 		totalGross += c.available
 		totalNet += c.available
+		createdNotifies = append(createdNotifies, settlementNotify{storeID: c.id, amount: c.available, payoutID: payoutID})
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE monthly_settlement_cycles SET total_stores=$1, total_gross=$2, total_net=$3, skipped_stores=$4 WHERE period=$5`, totalStores, totalGross, totalNet, skippedStores, period); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// P0-13 (best-effort): skipped for missing bank details - store
+	// owner, telling them to add bank details. P1-6: sellers whose
+	// cycle created a payout for them.
+	for _, n := range skippedNotifies {
+		notifySettlementSkipped(ctx, r.db, n.storeID, period, n.amount)
+	}
+	for _, n := range createdNotifies {
+		notifySettlementCreated(ctx, r.db, n.storeID, period, n.payoutID, n.amount)
 	}
 	return &MonthlySettlementCycle{Period: period, SettlementDay: effectiveDay, Status: "completed", TotalStores: totalStores, TotalGross: totalGross, TotalNet: totalNet, SkippedStores: skippedStores}, nil
 }

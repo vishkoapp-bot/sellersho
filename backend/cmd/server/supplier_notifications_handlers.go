@@ -12,11 +12,13 @@ import (
 //
 // The SQL + envelope live here in shared helpers so the customer
 // handlers (handleT01Notifications / handleT01NotificationsRead in
-// customer_handlers.go) and the supplier handlers below stay thin
-// wrappers over one implementation. The customer envelope is
-// byte-identical to before the extraction, including the
-// missing-table behaviour (empty list, no "success" key) and the
-// mark-all path running its UPDATE without a table-existence guard.
+// customer_handlers.go), the supplier handlers below, and the
+// seller/admin/warehouse handlers (role_notifications_handlers.go)
+// stay thin wrappers over one implementation. The envelope is the
+// same on every role route: {success, notifications, unreadCount},
+// including when the outbox table is missing (empty list,
+// unreadCount 0) — the missing-table 500 on mark-all (P1-15) is
+// fixed by the table guard in markNotificationsReadForUser below.
 
 // listNotificationsForUser reads the outbox rows addressed to one
 // recipient, newest first (LIMIT 100), plus the unread count
@@ -69,7 +71,14 @@ func listNotificationsForUser(ctx context.Context, db *sql.DB, userID string) ([
 // otherwise each id is flipped individually. The UPDATE is
 // idempotent: already-read rows match nothing and report updated 0,
 // which the client must treat as success, not an error.
+// P1-15: the table-existence guard covers BOTH paths — the old
+// mark-all path ran its UPDATE unguarded and 500d when
+// notification_outbox did not exist, while the single-id path
+// already guarded. A missing table now answers success + updated 0.
 func markNotificationsReadForUser(ctx context.Context, db *sql.DB, userID string, ids []string) (int64, error) {
+	if !t01TableExists(ctx, db, "notification_outbox") {
+		return 0, nil
+	}
 	if len(ids) == 0 {
 		// Mark-all (live client POSTs with no body). Scoped to the
 		// caller only; pending rows are included because no
@@ -82,9 +91,6 @@ func markNotificationsReadForUser(ctx context.Context, db *sql.DB, userID string
 		}
 		updated, _ := res.RowsAffected()
 		return updated, nil
-	}
-	if !t01TableExists(ctx, db, "notification_outbox") {
-		return 0, nil
 	}
 	var updated int64
 	for _, id := range ids {
@@ -120,7 +126,9 @@ func handleSupplierNotifications(w http.ResponseWriter, r *http.Request, db *sql
 		return
 	}
 	if !exists {
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"notifications": []interface{}{}})
+		// P1-15: the missing-table envelope matches the normal one
+		// (success + unreadCount), so clients never have to branch.
+		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": []interface{}{}, "unreadCount": 0})
 		return
 	}
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": items, "unreadCount": unreadCount})

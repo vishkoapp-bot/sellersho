@@ -375,8 +375,13 @@ func handleWebhookTrackingUpdate(
 
 	// 3. Carrier delivery updates order status WITHOUT releasing profit.
 	// Profit release is strictly gated to customer confirmation or the 20-day system dispute lock.
-	if req.Status == "delivered" && orderRepo != nil && shipment.OrderID != "" {
-		_ = orderRepo.UpdateOrderStatusFromCarrier(ctx, shipment.OrderID, "delivered")
+	// Critic fix (Phase 2): 'failed' goes through the same call path as
+	// 'delivered' — UpdateOrderStatusFromCarrier maps it to
+	// delivery_disputed and notifyCarrierFailed tells the customer.
+	// Previously only 'delivered' was wired, so a failed webhook only
+	// flipped the shipment row and the customer was never told.
+	if (req.Status == "delivered" || req.Status == "failed") && orderRepo != nil && shipment.OrderID != "" {
+		_ = orderRepo.UpdateOrderStatusFromCarrier(ctx, shipment.OrderID, req.Status)
 	}
 
 	_ = shipmentRepo.LogShipmentAudit(ctx, shipment.ID, "carrier_webhook", "status_"+req.Status)

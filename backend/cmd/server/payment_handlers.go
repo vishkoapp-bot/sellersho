@@ -116,6 +116,9 @@ type PaymentOrderRepository interface {
 	GetPaymentTransaction(ctx context.Context, gatewayToken string) (*repository.PaymentTransaction, error)
 	GetOrderByID(ctx context.Context, id string) (*domain.Order, error)
 	MarkPaymentPaid(ctx context.Context, gatewayToken, rrn, cardMask string) (*repository.PaymentTransaction, error)
+	// RecordPaymentFailure records a gateway verification failure on
+	// the payment transaction/order and notifies the customer (P1-9).
+	RecordPaymentFailure(ctx context.Context, gatewayToken string) error
 }
 
 // IsCallbackSimulatorAllowed evaluates if the callback simulator route is allowed in the current environment (fail-closed allowlist)
@@ -197,6 +200,9 @@ func handleShaparakCallback(
 	}
 	verifyRes, verifyErr := gatewayClient.VerifyTransaction(ctx, req.Token, existing.Amount)
 	if verifyErr != nil || verifyRes == nil || !verifyRes.Success {
+		// P1-9 (best-effort): record the failure on the payment tx /
+		// order and notify the customer. The 402 response is unchanged.
+		_ = orderRepo.RecordPaymentFailure(ctx, req.Token)
 		writePaymentError(w, http.StatusPaymentRequired, "gateway_verification_failed", "تأییدیه تراکنش توسط درگاه شاپرک صادر نشد")
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/drup/platform/internal/ippanel"
+	"github.com/google/uuid"
 	"net/http"
 	"strings"
 	"time"
@@ -143,8 +144,33 @@ func handleIPPanelTest(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	ids, err := client.SendPattern(r.Context(), req.Recipient, pattern, map[string]string{"code": req.Code})
 	if err != nil {
+		// F8: log the failed test send in sms_logs, like the OTP path
+		// (main.go OTP logSMS callback) logs its failures — best effort,
+		// never masks the send error.
+		logIPPanelTestSMS(r.Context(), db, req.Recipient, "failed", "", err.Error())
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadGateway)
 		return
 	}
+	// F8: the admin test SMS is a real send — write the same sms_logs
+	// row the OTP path writes (same columns, same masking, same
+	// provider), so it shows up in the admin SMS log (GET
+	// /api/v1/admin/sms/logs). message_type "test" distinguishes it
+	// from OTP ("otp") rows.
+	logIPPanelTestSMS(r.Context(), db, req.Recipient, "sent", strings.Join(ids, ","), "")
 	json.NewEncoder(w).Encode(map[string]any{"success": true, "messageOutboxIds": ids, "sentAt": time.Now()})
+}
+
+// logIPPanelTestSMS mirrors the OTP sms_logs insert in main.go: same
+// table/columns, same mobile masking (first 4 + **** + last 3), same
+// provider ("ippanel"). Best effort — a logging failure is swallowed
+// so it can never turn a send result into a handler error.
+func logIPPanelTestSMS(ctx context.Context, db *sql.DB, mobile, status, providerID, message string) {
+	if db == nil {
+		return
+	}
+	masked := mobile
+	if len(masked) > 7 {
+		masked = masked[:4] + "****" + masked[len(masked)-3:]
+	}
+	_, _ = db.ExecContext(ctx, `INSERT INTO sms_logs (id,mobile_masked,message_type,provider,provider_message_id,status,error) VALUES ($1,$2,$3,$4,$5,$6,$7)`, uuid.New(), masked, "test", "ippanel", providerID, status, message)
 }

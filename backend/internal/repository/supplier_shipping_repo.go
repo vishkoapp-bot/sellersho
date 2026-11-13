@@ -54,7 +54,19 @@ func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplie
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'shipped', tracking_code = $1, shipped_at = COALESCE(shipped_at, NOW()), updated_at = NOW() WHERE id = $2 AND fulfillment_method = 'supplier_direct' AND status NOT IN ('delivered','delivered_confirmed','cancelled') AND NOT EXISTS (SELECT 1 FROM supplier_shipments WHERE order_id = $2 AND status NOT IN ('shipped','in_transit','delivered'))`, tracking, orderID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-4 (best-effort): direct-ship — the customer is told the order
+	// shipped, with tracking, like the warehouse ShipOrder row. Only
+	// when the order actually flipped to shipped.
+	if o, oerr := loadOrderNotifyCtx(ctx, r.db, orderID); oerr == nil && o.Status == "shipped" && o.CustomerID != "" {
+		notifyBestEffort(ctx, r.db, o.CustomerID, NotifKindOrderStatus,
+			fmt.Sprintf("سفارش %s ارسال شد", o.OrderNumber),
+			fmt.Sprintf("سفارش %s ارسال شد و در راه است. کد رهگیری: %s", o.OrderNumber, tracking),
+			o.payload("shipped"), "direct_ship_customer")
+	}
+	return nil
 }
 
 // AcceptShipment moves the caller's own direct shipment from 'pending' to
@@ -77,10 +89,19 @@ func (r *SupplierShipmentRepository) AcceptShipment(ctx context.Context, supplie
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status = 'processing', updated_at = NOW() WHERE id = $1 AND supplier_id = $2`, shipmentID, supplierID); err != nil {
 		return err
 	}
+	var acceptOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE id = $1`, shipmentID).Scan(&acceptOrderID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipment_audit_logs (id, shipment_id, actor_user_id, action, timestamp) VALUES ($1, $2, $3, 'accepted', NOW())`, uuid.NewString(), shipmentID, actor); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-5 (best-effort): supplier accepted the order - customer.
+	notifySupplierAccepted(ctx, r.db, acceptOrderID, "")
+	return nil
 }
 
 func (r *SupplierShipmentRepository) SupplierItemCount(ctx context.Context, orderID, supplierID string) (int, error) {

@@ -107,6 +107,10 @@ func (r *AdminRepository) GetPendingApprovalEntityType(ctx context.Context, id s
 
 // ReviewPendingApproval updates status of approval item
 func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status, reason string) error {
+	// Facts for the post-commit notify (P1-2): entity type, title and
+	// requester, read before the tx flips the row.
+	var approvalEntity, approvalTitle, approvalRequester string
+	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(entity_type, ''), COALESCE(title, ''), COALESCE(requested_by, '') FROM pending_approvals WHERE id = $1`, id).Scan(&approvalEntity, &approvalTitle, &approvalRequester)
 	now := time.Now()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -149,7 +153,16 @@ func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status,
 	if _, err := tx.ExecContext(ctx, query, status, reason, now, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-2 (best-effort): generic (non-product) approval rejection -
+	// the requester. Product proposals are excluded: their rejection
+	// notifies through RejectProposal/notifyProposalRejected.
+	if status == "rejected" && approvalEntity != "proposed_product" {
+		notifyApprovalRejected(ctx, r.db, id, approvalEntity, approvalTitle, approvalRequester, reason)
+	}
+	return nil
 }
 
 // GetAuditLogs returns enterprise system audit trails
@@ -296,8 +309,6 @@ func (r *AdminRepository) ReviewStore(ctx context.Context, storeID, status, reje
 	`, status, rejectionReason, storeID)
 	return err
 }
-
-
 
 func (r *AdminRepository) LockStoreMargin(ctx context.Context, storeID string, lockedMargin float64) error {
 	_, err := r.db.ExecContext(ctx, `

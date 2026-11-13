@@ -844,6 +844,17 @@ func main() {
 		}
 		handleGetWarehouseOverview(w, r, r.Context(), wmsRepo)
 	}))
+	// Warehouse notification inbox (Phase 2, W2): outbox rows
+	// addressed to the calling warehouse staff user (inbound /
+	// return-QC notices from W1). Same envelope + shared helpers
+	// as the supplier inbox; same warehouseRoles gate as the other
+	// warehouse routes.
+	mux.HandleFunc("/api/v1/warehouse/notifications", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		handleWarehouseNotifications(w, r, db.DB)
+	}))
+	mux.HandleFunc("/api/v1/warehouse/notifications/read", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		handleWarehouseNotificationsRead(w, r, db.DB)
+	}))
 	mux.HandleFunc("/api/v1/warehouse/inventory/reconciliation-report", RequireRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w)
@@ -2157,6 +2168,11 @@ func main() {
 	mux.HandleFunc("/api/v1/seller/search-insight", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerSearchInsight(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/seller/store/template", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerStoreTemplate(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/seller/store/template/publish", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerStoreTemplatePublish(w, r, db.DB) }))
+	// Seller notification inbox (Phase 2, W2): outbox rows addressed
+	// to the calling store owner (order/finance notices from W1).
+	// Same envelope + shared helpers as the supplier inbox.
+	mux.HandleFunc("/api/v1/seller/notifications", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerNotifications(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/seller/notifications/read", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerNotificationsRead(w, r, db.DB) }))
 	// Admin insight (D13).
 	mux.HandleFunc("/api/v1/admin/subscription-plans", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminPlans(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/overview", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminOverview(w, r, db.DB) }))
@@ -2168,6 +2184,17 @@ func main() {
 		}
 		handleT01AdminOverviewSub(w, r, db.DB, sub)
 	}))
+	// Admin notification inbox (Phase 2, W2): outbox rows addressed
+	// to the calling admin user (dispute-filed etc. from W1). Same
+	// envelope + shared helpers as the supplier inbox.
+	// Critic fix (Phase 2): the gate admits the finance queue too
+	// ("finance" admits finance_specialist and vice versa, plus
+	// support_specialist) — W1 addresses dispute-filed and
+	// payout-requested rows to those users, so the inbox must let
+	// them read their own rows. Sellers/warehouse staff still cannot
+	// read this inbox; their own inboxes are separate routes.
+	mux.HandleFunc("/api/v1/admin/notifications", RequireRoles(jwtService, "admin", "finance", "support_specialist")(func(w http.ResponseWriter, r *http.Request) { handleAdminNotifications(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/notifications/read", RequireRoles(jwtService, "admin", "finance", "support_specialist")(func(w http.ResponseWriter, r *http.Request) { handleAdminNotificationsRead(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/growth/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/growth/")
 		// Fix69 R1: the live bundle also calls /admin/growth/ads/fraud,

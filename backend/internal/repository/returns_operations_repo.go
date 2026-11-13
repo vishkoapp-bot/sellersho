@@ -232,7 +232,14 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=$2 WHERE id=$3 AND status IN ('draft','confirmed')`, actorUserID, now, parcelID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P1-8 (best-effort): sender-paid parcel charge confirmed - supplier
+	// (amount debited). Receiver-pays confirmations carry no debit and
+	// return earlier, so they notify nothing here.
+	notifySupplierParcelCharge(ctx, r.db, returnID, parcelID, supplierID, amount)
+	return nil
 }
 
 func (r *SupplierRepository) RecordProductMeasurement(ctx context.Context, productID, actorUserID string, lengthMM, widthMM, heightMM, weightGrams int, reason string) error {

@@ -38,6 +38,52 @@ const NotifKindOrderStatus = "order_status"
 // addressed to the proposing supplier's owner user.
 const NotifKindProposalRejected = "proposal_rejected"
 
+// Phase-2 notification kinds (launch-readiness/notifications INVENTORY.md
+// §3). Every kind below is written by a best-effort writer in
+// notifications.go (separate tx, structured log on skip/failure — a
+// notify failure never rolls back the business transaction). Payloads
+// stay minimal: ids + title/body + reason/amount where relevant.
+// The legacy order_status kind above is reused for pack/ship rows so
+// the existing customer reader keeps working.
+const (
+	NotifKindOrderPlaced           = "order_placed"
+	NotifKindPaymentConfirmed      = "payment_confirmed"
+	NotifKindPaymentFailed         = "payment_failed"
+	NotifKindOrderCancelled        = "order_cancelled"
+	NotifKindDisputeFiled          = "dispute_filed"
+	NotifKindDisputeResolved       = "dispute_resolved"
+	NotifKindRefundIssued          = "refund_issued"
+	NotifKindFinanceAdjustment     = "finance_adjustment"
+	NotifKindPayoutReviewed        = "payout_reviewed"
+	NotifKindPayoutTransfer        = "payout_transfer_confirmed"
+	NotifKindPayoutRequested       = "payout_requested"
+	NotifKindReturnApproved        = "return_approved"
+	NotifKindReturnRejected        = "return_rejected"
+	NotifKindReturnQCCharged       = "return_qc_charged"
+	NotifKindReturnCODRefused      = "return_cod_refused"
+	NotifKindSettlementSkipped     = "settlement_skipped"
+	NotifKindSettlementCreated     = "settlement_created"
+	NotifKindProposalApproved      = "proposal_approved"
+	NotifKindApprovalRejected      = "approval_rejected"
+	NotifKindDeliveryConfirmed     = "delivery_confirmed"
+	NotifKindProfitReleased        = "profit_released"
+	NotifKindReturnRequested       = "return_requested"
+	NotifKindReturnShipped         = "return_shipped"
+	NotifKindSupplierAccepted      = "supplier_order_accepted"
+	NotifKindCarrierFailed         = "carrier_failed"
+	NotifKindSupplierApproved      = "supplier_approved"
+	NotifKindSupplierRejected      = "supplier_rejected"
+	NotifKindSupplierReturnReview  = "supplier_return_reviewed"
+	NotifKindSupplierParcelCharge  = "supplier_parcel_charge"
+	NotifKindLowStock              = "low_stock"
+	NotifKindTicketReply           = "ticket_reply"
+	NotifKindSupplierRegistered    = "supplier_registered"
+	NotifKindStorageFeeCharged     = "storage_fee_charged"
+	NotifKindInboundCreated        = "inbound_created"
+	NotifKindInboundDispatched     = "inbound_dispatched"
+	NotifKindSupplierReturnTransit = "supplier_return_in_transit"
+)
+
 // syncProductStockTx re-syncs the products.stock projection from the canonical
 // inventory_balances ledger: SUM(quantity) over status='sellable' rows. It is
 // a no-op for products with no balance rows, so legacy products keep their
@@ -78,9 +124,20 @@ func canonicalCoveredTx(ctx context.Context, tx *sql.Tx, productID string) (bool
 
 // NotifyUser appends one pending notification to the transactional outbox
 // (notification_outbox, migration 202610180005) inside the caller's
-// transaction. Delivery (pending -> sent) is a background worker's job, not
-// this function's. A failed insert fails the caller's transaction closed,
+// transaction. A failed insert fails the caller's transaction closed,
 // by design.
+//
+// REAL OUTBOX CONTRACT (P1-16, 2026-11-13 — supersedes the migration
+// header and any comment describing a delivery worker): there is NO
+// background worker and NO pending -> sent transition anywhere in this
+// tree. 'pending' IS the readable state: the read endpoints return
+// pending rows, and marking read flips 'pending' (or 'sent', if a row
+// ever carries it) -> 'read'. 'sent' exists only as a CHECK-allowed
+// status value in the schema; nothing writes it and nothing should be
+// built to write it. Do not build a worker that flips pending -> sent:
+// there is no external delivery (no push/SMS/email) for it to mark.
+// (The migration SQL file 202610180005 is a historical record and is
+// intentionally left unedited; this comment is the live contract.)
 // notifPayloadWithStore copies base and adds the order's store_id when
 // the order carries one, so a notification row's payload attributes the
 // event to its store (previously Pack/Ship payloads carried no store at

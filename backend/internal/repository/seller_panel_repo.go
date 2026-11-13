@@ -30,6 +30,13 @@ var ErrStoreInsufficientBalance = errors.New("store wallet balance is insufficie
 // Kept distinct from ErrStoreInput for the same handler-message reason.
 var ErrUnknownSellerService = errors.New("unknown seller service")
 
+// ErrSMSServiceUnavailable is returned when a seller tries to buy an
+// SMS credit pack (sms_500/sms_2000). The packs are NOT for sale until
+// a sending path exists: selling credits with nowhere to send them
+// would take wallet money for an unusable entitlement. Returned before
+// any wallet debit or purchase-history write.
+var ErrSMSServiceUnavailable = errors.New("sms credit packs are not for sale: no sending path exists yet")
+
 func (r *StoreRepository) OwnedStore(ctx context.Context, ownerID, slug string) (*domain.Store, error) {
 	store, err := r.GetStoreBySlug(ctx, slug)
 	if err != nil {

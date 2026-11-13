@@ -16,8 +16,14 @@ const sellerAvailableSQL = `SELECT GREATEST(0,
 
 // PurchaseSellerService serializes wallet debits with payouts on the store row.
 // The server chooses the price and entitlement; client prices are never accepted.
+// SMS credit packs (sms_500/sms_2000) are NOT sold: there is no sending path
+// yet, so the purchase is rejected before any wallet debit, purchase-history
+// write, or smsCredits grant. The smsCredits column itself is untouched.
 func (r *FinanceRepository) PurchaseSellerService(ctx context.Context, ownerID, storeID, service string) error {
-	prices := map[string]int64{"standard": 890000, "pro": 1490000, "vip": 3900000, "sms_500": 150000, "sms_2000": 480000}
+	if service == "sms_500" || service == "sms_2000" {
+		return ErrSMSServiceUnavailable
+	}
+	prices := map[string]int64{"standard": 890000, "pro": 1490000, "vip": 3900000}
 	days := map[string]int{"standard": 90, "pro": 180, "vip": 365}
 	price, ok := prices[service]
 	if !ok {
@@ -50,13 +56,10 @@ func (r *FinanceRepository) PurchaseSellerService(ctx context.Context, ownerID, 
 			return err
 		}
 	} else {
-		quota := 500
-		if service == "sms_2000" {
-			quota = 2000
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE stores SET panel_config=jsonb_set(panel_config,'{smsCredits}',to_jsonb(COALESCE((panel_config->>'smsCredits')::int,0)+$2::int)),updated_at=NOW() WHERE id=$1`, storeID, quota); err != nil {
-			return err
-		}
+		// Unreachable today: every priced service has a plan duration,
+		// and SMS packs are rejected above. Defensive: never grant an
+		// entitlement (e.g. smsCredits) for an unpriced service.
+		return ErrUnknownSellerService
 	}
 	return tx.Commit()
 }

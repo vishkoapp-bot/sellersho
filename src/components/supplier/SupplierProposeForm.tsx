@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { catalogApi, CategoryDto, NicheDto } from '../../services/catalogApi';
-import { suggestCategories, decideAutoApply } from '../../services/categorySuggest';
+import { suggestCategories, decideAutoApply, tokenize } from '../../services/categorySuggest';
 import type { SuggestedCategory, SuggestResult } from '../../services/categorySuggest';
 import { getApiBase, ApiError } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
@@ -9,7 +9,7 @@ import { useStore } from '../../context/StoreContext';
 import { SupplierCategoryPicker, CategorySelection } from './SupplierCategoryPicker';
 import { SupplierProductDefinitionEditor } from './SupplierProductDefinitionEditor';
 import type { ProductSchema } from '../../types/productSchema';
-import { buildProductMatrix, serializeProductDraft, DraftProductSKU, selectionKey } from '../../services/productModel';
+import { buildProductMatrix, serializeProductDraft, DraftProductSKU, selectionKey, ensureCanonicalUuid } from '../../services/productModel';
 import { Plus, Trash2, Loader2, ImagePlus, ExternalLink, AlertTriangle } from 'lucide-react';
 
 // Live propose form (Jl form block): supplier's new-product proposal.
@@ -23,26 +23,30 @@ const formatSep = (raw: string): string => {
 const parseSep = (raw: string): string =>
   raw.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
 
-// Live's Bs niche map (category top slug -> niche ids), using the DB niche ids.
-const NICHE_BY_CATEGORY: Record<string, string[]> = {
-  digital: ['niche-smartwatch', 'niche-powerbank', 'niche-headphone'],
-  electronics: ['niche-powerbank', 'niche-headphone'],
-  gadgets: ['niche-smartwatch'],
-  fashion: ['niche-leather'],
-  apparel: ['niche-leather'],
-  gold: ['niche-gold18'],
-  jewelry: ['niche-gold18'],
-  appliances: ['niche-home-appliances'],
-  home: ['niche-home-appliances'],
-  beauty: ['niche-skincare'],
-  cosmetics: ['niche-skincare'],
-  culture: ['niche-books'],
-  books: ['niche-books'],
-  car: ['niche-auto'],
-  tools: ['niche-auto'],
-  supermarket: ['niche-books'],
-  travel: ['niche-auto'],
-};
+// Niche picking is data-driven, not hardcoded: each niche carries its own
+// categorySlug in the DB (e.g. fashion → women-style, men-essentials,
+// leather). Score the visible niches by token overlap between the niche
+// title and the category path titles — leaf title counts double — so
+// «تیشرت زنانه» (path … / لباس زنانه / تی شرت زنانه) picks «استایل زنانه»
+// instead of the old hardcoded «کیف و اکسسوری چرم طبیعی». Returns null
+// when nothing matches; the caller falls back to the first visible niche.
+export function pickNicheForCategory(pathTitles: string[], niches: NicheDto[]): NicheDto | null {
+  if (niches.length === 0) return null;
+  const leafTokens = new Set(tokenize(pathTitles[pathTitles.length - 1] ?? ''));
+  const ancestorTokens = new Set(pathTitles.slice(0, -1).flatMap((t) => tokenize(t)));
+  let best: NicheDto | null = null;
+  let bestScore = 0;
+  for (const niche of niches) {
+    const titleTokens = new Set(tokenize(niche.title));
+    let score = 0;
+    titleTokens.forEach((tok) => {
+      if (leafTokens.has(tok)) score += 2;
+      else if (ancestorTokens.has(tok)) score += 1;
+    });
+    if (score > bestScore) { bestScore = score; best = niche; }
+  }
+  return bestScore > 0 ? best : null;
+}
 
 const DEFAULT_CATEGORY: CategorySelection = {
   slug: 'digital',
@@ -95,7 +99,6 @@ interface ProposeDraftV1 {
 }
 
 const normalizeDraftRow = (v: Partial<DraftProductSKU>): DraftProductSKU => ({
-  id: '',
   selection: {},
   name: '',
   cost: '',
@@ -112,6 +115,10 @@ const normalizeDraftRow = (v: Partial<DraftProductSKU>): DraftProductSKU => ({
   shippingClass: '',
   taxClass: '',
   ...v,
+  // Drafts saved while the fallback produced 'id-…' ids would be rejected
+  // by the backend ("SKU requires a unique canonical UUID") — regenerate
+  // any non-canonical id on restore, so an old poisoned draft submits.
+  id: ensureCanonicalUuid(v.id ?? ''),
   selected: v.selected ?? true,
   isDefault: v.isDefault ?? false,
   images: v.images ?? [],
@@ -330,24 +337,40 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, title, brand, noBrand, cost, category, selectedNicheIds, description, stock, prepDays, fulfillment, warehouseId, productType, productSchema, variants, weightGrams, lengthCm, widthCm, heightCm, packLengthCm, packWidthCm, packHeightCm, isOriginal, images, imageLink]);
 
-  // Live's niche filter: top path segment (or the slug) selects the mapped
-  // subset; without a mapping every niche shows, with the note below.
+  // Niche filter is data-driven: each niche carries its own categorySlug
+  // in the DB. Show only the niches of the top category; when none match,
+  // show all, with the note below.
   const topSlug = category?.path[0]?.slug ?? category?.slug ?? '';
-  const mapped = NICHE_BY_CATEGORY[topSlug];
-  const visibleNiches = mapped ? allNiches.filter((n) => mapped.includes(n.id)) : allNiches;
-  const showNoMappingNote = visibleNiches.length === allNiches.length && (!topSlug || !mapped);
+  const pathTitles = category?.path.map((p) => p.title) ?? [];
+  const nichesForTop = topSlug ? allNiches.filter((n) => n.categorySlug === topSlug) : [];
+  const visibleNiches = nichesForTop.length > 0 ? nichesForTop : allNiches;
+  const showNoMappingNote = visibleNiches.length === allNiches.length && (!topSlug || nichesForTop.length === 0);
+
+  // A hand-picked niche is never auto-overridden; a restored draft counts
+  // as hand-picked. When the category changes and the pick was auto (or is
+  // no longer visible), re-pick the best-scoring visible niche.
+  const [nicheManual, setNicheManual] = useState(() => {
+    const ids = restoredDraft?.selectedNicheIds;
+    return Array.isArray(ids) && ids.length > 0;
+  });
 
   useEffect(() => {
-    if (visibleNiches.length === 0) return;
-    setSelectedNicheIds((prev) => {
-      const kept = prev.filter((id) => visibleNiches.some((n) => n.id === id));
-      return kept.length > 0 ? [kept[0]] : [visibleNiches[0].id];
-    });
+    if (visibleNiches.length === 0 || !topSlug) return;
+    const current = selectedNicheIds[0];
+    if (nicheManual && current && visibleNiches.some((n) => n.id === current)) return;
+    const best = pickNicheForCategory(pathTitles, visibleNiches);
+    const next = best?.id ?? visibleNiches[0].id;
+    if (next !== current) {
+      setSelectedNicheIds([next]);
+      setNicheManual(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topSlug]);
+  }, [topSlug, allNiches.length]);
 
-  const toggleNiche = (id: string) =>
+  const toggleNiche = (id: string) => {
+    setNicheManual(true);
     setSelectedNicheIds([id]);
+  };
 
   // ---- Per-step validation helpers ----
   const refFor = <T extends HTMLElement>(field: string) => (el: T | null) => { fieldRefs.current[field] = el; };
@@ -495,6 +518,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     setFirstImage(null);
     setImageLink('');
     setSelectedNicheIds(visibleNiches.length > 0 ? [visibleNiches[0].id] : []);
+    setNicheManual(false);
     categoryRef.current = null;
     autoSlugRef.current = null;
     dismissedAutoRef.current = null;
@@ -655,6 +679,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       setFirstImage(null);
       setImageLink('');
       setSelectedNicheIds(visibleNiches.length > 0 ? [visibleNiches[0].id] : []);
+      setNicheManual(false);
       try { localStorage.removeItem(DRAFT_KEY); } catch { /* storage unavailable */ }
       setStep(1);
       setFieldErrors({});

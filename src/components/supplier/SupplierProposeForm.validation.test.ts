@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateProposeStep1, validateProposeStep3, isProposeMatrixStale } from './SupplierProposeForm';
+import { validateProposeStep1, validateProposeStep3, isProposeMatrixStale, pickNicheForCategory } from './SupplierProposeForm';
+import type { NicheDto } from '../../services/catalogApi';
 import { buildProductMatrix } from '../../services/productModel';
 import type { ProductSchema } from '../../types/productSchema';
 import type { CategorySelection } from './SupplierCategoryPicker';
@@ -61,4 +62,23 @@ test('matrix staleness: unchanged rows are current; a schema change without rebu
   assert.equal(isProposeMatrixStale(changed, rows), true);
   const simple: ProductSchema = { version: 2, type: 'simple', attributes: [] };
   assert.equal(isProposeMatrixStale(simple, buildProductMatrix(simple, [], () => `id-${++i}`)), false);
+});
+
+const fashionNiches: NicheDto[] = [
+  { id: 'niche-women-style', title: 'استایل زنانه', slug: 'women-style', categorySlug: 'fashion' },
+  { id: 'niche-men-essentials', title: 'ضروری‌های مردانه', slug: 'men-essentials', categorySlug: 'fashion' },
+  { id: 'niche-leather', title: 'کیف و اکسسوری چرم طبیعی', slug: 'leather', categorySlug: 'fashion' },
+  { id: 'niche-smartwatch', title: 'ساعت هوشمند و گجت‌های پوشیدنی', slug: 'smartwatch', categorySlug: 'digital' },
+];
+
+test('niche pick: women tee-shirt picks women-style, not the old hardcoded leather', () => {
+  assert.equal(pickNicheForCategory(['مد و پوشاک', 'لباس زنانه', 'تی شرت زنانه'], fashionNiches)?.id, 'niche-women-style');
+});
+
+test('niche pick: leather bag picks leather, men shirt picks men-essentials, no match returns null', () => {
+  assert.equal(pickNicheForCategory(['مد و پوشاک', 'کیف و کفش', 'کیف چرم زنانه'], fashionNiches)?.id, 'niche-leather');
+  assert.equal(pickNicheForCategory(['مد و پوشاک', 'لباس مردانه', 'پیراهن مردانه'], fashionNiches)?.id, 'niche-men-essentials');
+  assert.equal(pickNicheForCategory(['کالای دیجیتال', 'هدفون'], fashionNiches), null);
+  assert.equal(pickNicheForCategory([], fashionNiches), null);
+  assert.equal(pickNicheForCategory(['مد و پوشاک'], []), null);
 });

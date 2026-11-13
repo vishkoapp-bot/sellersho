@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProductMatrix, selectionKey, serializeProductDraft } from './productModel';
+import { buildProductMatrix, selectionKey, serializeProductDraft, newUuid, isCanonicalUuid, ensureCanonicalUuid } from './productModel';
 import type { ProductSchema } from '../types/productSchema';
 const schema: ProductSchema = { version: 2, type: 'variable', attributes: [{ id: 'color', name: 'Color', source: 'color', role: 'axis', values: [{ id: 'r', label: 'Red' }, { id: 'b', label: 'Blue' }] }, { id: 'size', name: 'Size', source: 'local', role: 'axis', values: [{ id: 's', label: 'S' }, { id: 'm', label: 'M' }, { id: 'l', label: 'L' }] }] };
 test('two axes form six independent combinations and preserve UUID/prices/stock/exclusions', () => { let i = 0; const rows = buildProductMatrix(schema, [], () => `id-${++i}`); assert.equal(rows.length, 6); assert.equal(new Set(rows.map(r => selectionKey(r.selection))).size, 6); rows[0] = { ...rows[0], cost: '100', stock: '7', active: false }; const reordered = { ...schema, attributes: [...schema.attributes].reverse() }; const next = buildProductMatrix(reordered, rows, () => `id-${++i}`); const kept = next.find(r => r.id === rows[0].id)!; assert.equal(kept.cost, '100'); assert.equal(kept.stock, '7'); assert.equal(kept.active, false); });
@@ -25,7 +25,36 @@ test('non-secure context (live plain HTTP): default id factory falls back instea
     const multi = buildProductMatrix(schema, []);
     assert.equal(multi.length, 6);
     assert.equal(new Set(multi.map((r) => r.id)).size, 6);
+    // Regression 2: the old 'id-…' fallback mounted the form but the
+    // backend rejects SKU ids that fail uuid.Validate ("SKU requires a
+    // unique canonical UUID"), so every prod submit failed. Fallback ids
+    // must be canonical lowercase v4 UUIDs, unique across rows.
+    const canonicalV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    multi.forEach((r) => assert.match(r.id, canonicalV4));
   } finally {
     (c as { randomUUID?: unknown }).randomUUID = orig;
   }
+});
+test('newUuid fallback is a canonical v4 UUID; ensureCanonicalUuid keeps valid ids and repairs the rest', () => {
+  const c = globalThis.crypto as unknown as { randomUUID?: unknown };
+  const orig = c.randomUUID;
+  (c as { randomUUID?: unknown }).randomUUID = undefined;
+  try {
+    const ids = new Set(Array.from({ length: 200 }, () => newUuid()));
+    assert.equal(ids.size, 200);
+    ids.forEach((id) => {
+      assert.ok(isCanonicalUuid(id), id);
+      assert.equal(id, id.toLowerCase());
+      assert.equal(id[14], '4');
+      assert.ok('89ab'.includes(id[19]));
+    });
+  } finally {
+    (c as { randomUUID?: unknown }).randomUUID = orig;
+  }
+  const valid = 'a1b2c3d4-e5f6-4a7b-8c9d-e0f1a2b3c4d5';
+  assert.equal(ensureCanonicalUuid(valid), valid);
+  assert.ok(isCanonicalUuid(ensureCanonicalUuid('id-mkq123-abc')));
+  assert.ok(isCanonicalUuid(ensureCanonicalUuid('')));
+  assert.ok(isCanonicalUuid(ensureCanonicalUuid(valid.toUpperCase())));
+  assert.notEqual(ensureCanonicalUuid('id-mkq123-abc'), 'id-mkq123-abc');
 });

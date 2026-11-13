@@ -41,11 +41,22 @@ export const selectionKey = (selection: Record<string, string>) => JSON.stringif
 // propose form (buildProductMatrix runs in a useState initializer) and
 // the whole app whitescreened — there is no error boundary. Fall back
 // instead of throwing; uniqueness is all the call sites need.
+// Canonical UUID (RFC 4122 v4), lowercase. crypto.randomUUID exists only
+// in secure contexts (HTTPS/localhost); the live origin is plain HTTP, so
+// the fallback must still produce a REAL UUID — the backend rejects SKU ids
+// that fail uuid.Validate ("SKU requires a unique canonical UUID"). The old
+// 'id-…' fallback mounted the form but made every submit fail on prod.
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const isCanonicalUuid = (id: string): boolean => typeof id === 'string' && CANONICAL_UUID_RE.test(id);
+export const ensureCanonicalUuid = (id: string): string => (isCanonicalUuid(id) ? id : newUuid());
 export const newUuid = (): string => {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   } catch { /* fall through to the fallback */ }
-  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
 };
 const newID = () => newUuid();
 // Backward compatibility: old draft rows (tests, stored drafts) lack the

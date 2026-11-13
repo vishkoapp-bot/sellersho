@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
 	"github.com/drup/platform/internal/adguard"
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/testdb"
 	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
@@ -22,13 +24,9 @@ func opsHTTPDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("OPERATIONS_TEST_DATABASE_URL required")
 	}
-	db, e := sql.Open("postgres", dsn)
+	db, e := testdb.Open(t, dsn)
 	if e != nil {
 		t.Fatal(e)
-	}
-	var name string
-	if e = db.QueryRow(`SELECT current_database()`).Scan(&name); e != nil || name != "ops_test" {
-		t.Fatal("requires disposable ops_test database", e)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/google/uuid"
 )
 
@@ -23,7 +25,7 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 	if dsn == "" {
 		t.Skip("set SKU_COMMERCE_DATABASE_URL to a disposable migrated database")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +94,7 @@ func skuScopedDB(t *testing.T, schema string) *sql.DB {
 	} else {
 		dsn += " search_path=" + schema + ",public"
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal("open disposable schema database")
 	}

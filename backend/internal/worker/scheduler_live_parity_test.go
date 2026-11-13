@@ -1,10 +1,11 @@
 package worker
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -30,7 +31,7 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("TEAM09_WORKER_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := testdb.Open(t, databaseURL)
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}

@@ -21,11 +21,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
@@ -119,7 +120,7 @@ func TestStoreScopedPriceBoundsMatchStorefront(t *testing.T) {
 	// override margin -> 15% -> 23,000,000), the scoped bounds must
 	// track the discounted card price, exactly as the list shows it.
 	dsn := os.Getenv("TEAM04_TEST_DATABASE_URL")
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB for widget seed: %v", err)
 	}

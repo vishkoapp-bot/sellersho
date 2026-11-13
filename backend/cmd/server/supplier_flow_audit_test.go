@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
@@ -24,14 +26,9 @@ func supplierFlowDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("SUPPLIER_FLOW_TEST_DATABASE_URL must point at a migrated disposable supplier_flow_test database")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var name string
-	if err = db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil || name != "supplier_flow_test" {
-		db.Close()
-		t.Fatal("refusing non-disposable database", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db

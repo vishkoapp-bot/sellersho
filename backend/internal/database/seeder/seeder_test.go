@@ -2,9 +2,11 @@ package seeder
 
 import (
 	"context"
-	"database/sql"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -87,8 +89,8 @@ func TestLiveSeederIdempotencyAndReset(t *testing.T) {
 	t.Setenv("WAREHOUSE_PASSWORD", "TestWarehouse!2026")
 	t.Setenv("SUPPORT_PASSWORD", "TestSupport!2026")
 	t.Setenv("SUPPLIER_PASSWORD", "TestSupplier!2026")
-	dbURL := "postgres://drup_admin:drup_secure_password_2026@drup_postgres:5432/drup_db?sslmode=disable"
-	db, err := sql.Open("postgres", dbURL)
+	dbURL := os.Getenv("SELLERSHO_TEST_DATABASE_URL")
+	db, err := testdb.Open(t, dbURL)
 	if err != nil {
 		t.Skipf("Skipping live database seeder test: %v", err)
 		return

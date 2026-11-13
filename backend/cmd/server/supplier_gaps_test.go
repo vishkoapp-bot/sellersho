@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
@@ -191,7 +193,7 @@ func supplierGapsSetup(t *testing.T) *supplierGapsFixture {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier-gaps handler tests")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

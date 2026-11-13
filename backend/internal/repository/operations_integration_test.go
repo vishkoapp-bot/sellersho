@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
 	"github.com/drup/platform/internal/adguard"
+	"github.com/drup/platform/internal/testdb"
 	"github.com/drup/platform/internal/warehouseopt"
 	"github.com/google/uuid"
 	"net"
@@ -21,16 +23,9 @@ func operationsDB(t *testing.T) *sql.DB {
 	if url == "" {
 		t.Skip("OPERATIONS_TEST_DATABASE_URL must point at a disposable ops_test database")
 	}
-	db, e := sql.Open("postgres", url)
+	db, e := testdb.Open(t, url)
 	if e != nil {
 		t.Fatal(e)
-	}
-	var name string
-	if e = db.QueryRow(`SELECT current_database()`).Scan(&name); e != nil {
-		t.Fatal(e)
-	}
-	if name != "ops_test" {
-		t.Fatal("refusing to modify a database not named ops_test")
 	}
 	t.Cleanup(func() { db.Close() })
 	return db

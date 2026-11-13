@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 )
 
@@ -89,7 +91,7 @@ func rejectNotifyTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("REJECT_NOTIFY_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

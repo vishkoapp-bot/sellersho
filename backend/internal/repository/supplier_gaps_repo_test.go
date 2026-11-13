@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 )
 
@@ -100,7 +102,7 @@ func supplierGapsRepoSetup(t *testing.T) (*sql.DB, context.Context) {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier-gaps repository tests")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

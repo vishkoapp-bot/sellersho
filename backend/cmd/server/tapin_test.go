@@ -22,6 +22,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 
@@ -151,7 +153,7 @@ func tapinTestSetup(t *testing.T) *tapinRepos {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB tapin test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

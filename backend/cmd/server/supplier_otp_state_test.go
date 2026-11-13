@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 
 	"github.com/drup/platform/internal/auth"
@@ -123,7 +125,7 @@ func supplierOTPSetup(t *testing.T) *supplierOTPFixture {
 	if err != nil {
 		t.Skipf("Redis unavailable for the OTP-state tests: %v", err)
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

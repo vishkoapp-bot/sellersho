@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -126,7 +129,7 @@ func TestMeasurementClassificationSeparatesUnknownPresenceFromCatalogOnly(t *tes
 
 func openReturnsIntegrationDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("postgres", "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable")
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Skipf("Postgres integration unavailable: %v", err)
 	}

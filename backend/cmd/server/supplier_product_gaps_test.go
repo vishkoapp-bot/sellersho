@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -111,7 +113,7 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 	if url == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping DB-gated product-gap test")
 	}
-	db, err := sql.Open("postgres", url)
+	db, err := testdb.Open(t, url)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

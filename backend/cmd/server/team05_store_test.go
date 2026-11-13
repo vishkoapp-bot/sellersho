@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/repository"
@@ -35,7 +37,7 @@ func TestTeam05PublicStoreViewKeys(t *testing.T) {
 		Tagline: "tag", Description: "desc", ShortDescription: "short",
 		Status: "suspended", BuilderConfig: json.RawMessage(`{"theme":"x"}`),
 		TemplateID: "tpl-fashion-1", Logo: "https://example.test/logo.png",
-		TemplateConfig: json.RawMessage(`{"accentColor":"#FF3B30","custom":{"heroSlides":[{"image":"https://example.test/h.jpg","title":"Hi"}],"secretNote":"drop me"},"sections":[{"key":"deals","enabled":true}]}`),
+		TemplateConfig:          json.RawMessage(`{"accentColor":"#FF3B30","custom":{"heroSlides":[{"image":"https://example.test/h.jpg","title":"Hi"}],"secretNote":"drop me"},"sections":[{"key":"deals","enabled":true}]}`),
 		SellerDealsWidgetConfig: json.RawMessage(`{"widget":true}`),
 		ActiveProductIDs:        []string{"p-1"},
 	}
@@ -130,7 +132,7 @@ func team05TestDB(t *testing.T) *sql.DB {
 	if url == "" {
 		t.Skip("TEAM05_TEST_DATABASE_URL unset, skipping database test")
 	}
-	db, err := sql.Open("postgres", url)
+	db, err := testdb.Open(t, url)
 	if err != nil {
 		t.Fatal(err)
 	}

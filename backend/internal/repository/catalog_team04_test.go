@@ -13,6 +13,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/domain"
 	_ "github.com/lib/pq"
 )
@@ -23,7 +25,7 @@ func team04TestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

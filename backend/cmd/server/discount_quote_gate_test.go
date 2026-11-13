@@ -16,13 +16,14 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
@@ -35,7 +36,7 @@ func discountQuoteGateRepos(t *testing.T) (*repository.CatalogRepository, *repos
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB HTTP test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

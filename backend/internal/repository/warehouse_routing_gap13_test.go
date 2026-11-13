@@ -13,6 +13,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 )
 
@@ -22,7 +24,7 @@ func gap13QueueSetup(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("GAP13_TEST_DATABASE_URL not set; skipping disposable-DB gap13 queue test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

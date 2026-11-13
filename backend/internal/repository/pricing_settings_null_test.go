@@ -2,9 +2,10 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -21,7 +22,7 @@ func TestGetPlatformPricingSettingsNullEarlyWithdrawalFee(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

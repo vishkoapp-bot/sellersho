@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/google/uuid"
 )
 
@@ -20,7 +22,7 @@ func productModelV2Fixture(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("requires disposable migrated SKU_COMMERCE_DATABASE_URL")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

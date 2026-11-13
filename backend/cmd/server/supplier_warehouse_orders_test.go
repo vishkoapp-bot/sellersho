@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
@@ -39,7 +41,7 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB HTTP test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -289,7 +291,7 @@ func gap14GetSupplierOrders(t *testing.T, repo *repository.SupplierShipmentRepos
 	rec := httptest.NewRecorder()
 	handleGetSupplierOrders(rec, req, req.Context(), repo, nil, nil)
 	var body struct {
-		Success bool               `json:"success"`
+		Success bool                 `json:"success"`
 		Orders  []gap14SupplierOrder `json:"orders"`
 	}
 	if rec.Code == http.StatusOK {

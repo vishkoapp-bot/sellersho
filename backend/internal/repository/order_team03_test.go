@@ -27,6 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/domain"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -38,7 +40,7 @@ func openTeam03DB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := testdb.Open(t, databaseURL)
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}

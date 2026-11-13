@@ -3,7 +3,7 @@ import { catalogApi } from '../../services/catalogApi';
 import { supplierApi } from '../../services/supplierApi';
 import type { CatalogProductAttribute, ProductAttribute, ProductSchema } from '../../types/productSchema';
 import { MAX_PRODUCT_COMBINATIONS, MAX_MATRIX_ROWS } from '../../types/productSchema';
-import { buildProductMatrix, DraftProductSKU, selectionKey } from '../../services/productModel';
+import { buildProductMatrix, DraftProductSKU, newUuid, selectionKey } from '../../services/productModel';
 
 // P2(b) class vocabularies — the backend enum (P2(b) spec). Until the
 // backend serves a list, these fixed options are what is stored; the
@@ -212,7 +212,7 @@ export function SupplierProductDefinitionEditor({ categorySlug, productType, sch
     } if ((productType === 'simple' || requestRole === 'fixed') && values.length !== 1) {
         setFailure('ویژگی ثابت فقط یک مقدار دارد.');
         return;
-    } const a: ProductAttribute = { id: 'requested:' + crypto.randomUUID(), name, source: 'requested', role: productType === 'simple' ? 'fixed' : requestRole, values: values.map(label => ({ id: 'requestedv:' + crypto.randomUUID(), label })) }; setCatalog(p => [...p, a]); update([...schema.attributes, a]); setRequestName(''); setRequestValues(''); setRequesting(false); setFailure(''); };
+    } const a: ProductAttribute = { id: 'requested:' + newUuid(), name, source: 'requested', role: productType === 'simple' ? 'fixed' : requestRole, values: values.map(label => ({ id: 'requestedv:' + newUuid(), label })) }; setCatalog(p => [...p, a]); update([...schema.attributes, a]); setRequestName(''); setRequestValues(''); setRequesting(false); setFailure(''); };
     const matrixCurrent = (() => { try {
         const generated = buildProductMatrix({ ...schema, type: productType }, rows);
         return generated.length === rows.length && generated.every(g => rows.some(v => selectionKey(v.selection) === selectionKey(g.selection)));
@@ -236,7 +236,7 @@ export function SupplierProductDefinitionEditor({ categorySlug, productType, sch
  <div className="flex flex-wrap gap-2 text-xs"><input aria-label={'درخواست مقدار جدید ' + a.name} value={newOptions[a.id] ?? ''} onChange={e => setNewOptions(p => ({ ...p, [a.id]: e.target.value }))} placeholder="مقدار موجود نیست؟" className="min-w-0 flex-1 border rounded-lg p-2"/><button type="button" onClick={() => { const label = newOptions[a.id]?.trim(); if (!label || all.some(v => v.label.trim() === label)) {
                     setFailure('مقدار جدید و غیرتکراری بنویسید.');
                     return;
-                } const option = { id: 'requestedv:' + crypto.randomUUID(), label }; setCatalog(p => p.map(c => c.id === a.id ? { ...c, values: [...c.values, option] } : c)); update(schema.attributes.map(c => c.id === a.id ? { ...c, values: c.role === 'fixed' ? [option] : [...c.values, option] } : c)); setNewOptions(p => ({ ...p, [a.id]: '' })); }} className="border rounded-lg p-2 text-violet-700">درخواست و استفاده در محصول</button></div>
+                } const option = { id: 'requestedv:' + newUuid(), label }; setCatalog(p => p.map(c => c.id === a.id ? { ...c, values: [...c.values, option] } : c)); update(schema.attributes.map(c => c.id === a.id ? { ...c, values: c.role === 'fixed' ? [option] : [...c.values, option] } : c)); setNewOptions(p => ({ ...p, [a.id]: '' })); }} className="border rounded-lg p-2 text-violet-700">درخواست و استفاده در محصول</button></div>
  <p className="text-[11px] text-slate-500">{a.role === 'fixed' ? 'این مقدار برای کل محصول یکسان است و دوباره در تنوع‌ها پرسیده نمی‌شود.' : `${a.values.length} مقدار انتخاب شده؛ هر ترکیب، قیمت و موجودی مستقل خواهد داشت.`}</p>
  </fieldset>;
             })}

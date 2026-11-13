@@ -9,3 +9,23 @@ test('manual subset: unselected rows are never serialised; all unselected is an 
 test('subset validation: weight, partial dims and sale window errors carry the row name', () => { let i = 0; const rows = buildProductMatrix(schema, [], () => `id-${++i}`); rows.forEach(r => { r.cost = '100'; r.stock = '2'; }); rows[0].weightGrams = '0'; assert.throws(() => serializeProductDraft(schema, rows), /وزن/); rows[0].weightGrams = '1200'; rows[0].lengthCm = '40'; assert.throws(() => serializeProductDraft(schema, rows), /ابعاد/); rows[0].lengthCm = '40'; rows[0].widthCm = '30'; rows[0].heightCm = '20'; rows[0].salePrice = '50000'; rows[0].saleFrom = '2026-12-02T10:00'; rows[0].saleTo = '2026-12-01T10:00'; assert.throws(() => serializeProductDraft(schema, rows), /تاریخ پایان حراج/); rows[0].saleTo = '2026-12-03T10:00'; const payload = serializeProductDraft(schema, rows); const first = payload.variants.find(v => v.id === rows[0].id)!; assert.equal(first.weight_grams, 1200); assert.equal(first.length_mm, 400); assert.equal(first.width_mm, 300); assert.equal(first.height_mm, 200); assert.equal(first.sale_price, 50000); assert.equal(first.sale_from, new Date('2026-12-02T10:00').toISOString()); assert.equal(first.shipping_class, null); });
 test('old rows without the new fields still serialise (backward compatibility)', () => { let i = 0; const rows = buildProductMatrix(schema, [], () => `id-${++i}`); const legacy = rows.map(({ selected, imageUrl, images, weightGrams, lengthCm, widthCm, heightCm, salePrice, saleFrom, saleTo, shippingClass, taxClass, ...rest }) => ({ ...rest, cost: '100', stock: '1' })); const payload = serializeProductDraft(schema, legacy as any); assert.equal(payload.variants.length, 6); assert.equal(payload.variants[0].weight_grams, null); });
 test('fixed attributes never become SKU axes and invalid or stale matrix cannot submit', () => { const fixed = { ...schema, attributes: [{ ...schema.attributes[0], role: 'fixed' as const, values: [schema.attributes[0].values[0]] }, schema.attributes[1]] }; const rows = buildProductMatrix(fixed, []); assert.equal(rows.length, 3); assert(!('color' in rows[0].selection)); assert.throws(() => serializeProductDraft(fixed, rows)); rows.forEach(r => { r.cost = '100'; r.stock = '0'; }); const payload = serializeProductDraft(fixed, rows); assert.equal(payload.variants.length, 3); assert.equal(payload.stock, 0); assert.equal(payload.schemaVersion, 2); assert.throws(() => serializeProductDraft({ ...fixed, attributes: [...fixed.attributes, { ...schema.attributes[0], name: 'Color duplicate' }] }, rows)); });
+test('non-secure context (live plain HTTP): default id factory falls back instead of throwing', () => {
+  // Regression: the propose form calls buildProductMatrix with the default
+  // factory in a useState initializer; on plain HTTP crypto.randomUUID is
+  // undefined, the throw whitescreened the whole app (no error boundary).
+  const c = globalThis.crypto as unknown as { randomUUID?: unknown };
+  const orig = c.randomUUID;
+  (c as { randomUUID?: unknown }).randomUUID = undefined;
+  try {
+    const simple: ProductSchema = { version: 2, type: 'simple', attributes: [] };
+    const rows = buildProductMatrix(simple, []);
+    assert.equal(rows.length, 1);
+    assert.equal(typeof rows[0].id, 'string');
+    assert.ok(rows[0].id.length > 0);
+    const multi = buildProductMatrix(schema, []);
+    assert.equal(multi.length, 6);
+    assert.equal(new Set(multi.map((r) => r.id)).size, 6);
+  } finally {
+    (c as { randomUUID?: unknown }).randomUUID = orig;
+  }
+});

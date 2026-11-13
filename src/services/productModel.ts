@@ -36,7 +36,18 @@ export interface DraftProductSKU {
     taxClass: string;
 }
 export const selectionKey = (selection: Record<string, string>) => JSON.stringify(Object.entries(selection).sort(([a], [b]) => a.localeCompare(b)));
-const newID = () => crypto.randomUUID();
+// crypto.randomUUID exists only in secure contexts (HTTPS/localhost); the
+// live origin is plain HTTP, so the bare call threw on mount of the
+// propose form (buildProductMatrix runs in a useState initializer) and
+// the whole app whitescreened — there is no error boundary. Fall back
+// instead of throwing; uniqueness is all the call sites need.
+export const newUuid = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch { /* fall through to the fallback */ }
+  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+};
+const newID = () => newUuid();
 // Backward compatibility: old draft rows (tests, stored drafts) lack the
 // new fields — every reader normalises through these defaults.
 const emptyVariantDetails = () => ({ isDefault: false, imageUrl: '', images: [] as string[], weightGrams: '', lengthCm: '', widthCm: '', heightCm: '', salePrice: '', saleFrom: '', saleTo: '', shippingClass: '', taxClass: '' });

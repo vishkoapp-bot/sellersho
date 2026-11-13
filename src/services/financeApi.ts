@@ -41,6 +41,19 @@ export interface CreateDisputePayload {
   supplierName?: string;
 }
 
+export interface CreateAdjustmentPayload {
+  targetKind: 'supplier' | 'seller';
+  targetId: string;
+  direction: 'debit' | 'credit';
+  amount: number; // Toman, positive integer
+  reason: string;
+}
+
+export interface CreateAdjustmentResponse {
+  success: boolean;
+  docId: string; // e.g. ADJ-<uuid>
+}
+
 export interface ResolveDisputePayload {
   action: string;
   responsibleParty: string;
@@ -71,6 +84,18 @@ export const financeApi = {
 
   resolveDispute: async (id: string, payload: ResolveDisputePayload): Promise<any> => {
     return apiRequest<any>(`/disputes/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      auth: true,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  // P0-3: POST /finance/adjustments. Success is HTTP 200 {success, docId}.
+  // There is no idempotency key: the backend ignores extra fields, so a
+  // repeated submit creates a second, distinct document. The UI's
+  // single-flight disable-while-submitting is the only duplicate guard.
+  createAdjustment: async (payload: CreateAdjustmentPayload): Promise<CreateAdjustmentResponse> => {
+    return apiRequest<CreateAdjustmentResponse>('/finance/adjustments', {
       method: 'POST',
       auth: true,
       body: JSON.stringify(payload),

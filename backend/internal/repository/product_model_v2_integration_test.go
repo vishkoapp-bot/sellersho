@@ -184,11 +184,28 @@ func TestProductModelV2IsolatedPublicationPreservesUUIDsAndRegistry(t *testing.T
 	if version != 2 || kind != "variable" || total != 6 {
 		t.Fatalf("product model/projection %d %s %d", version, kind, total)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM product_variants WHERE product_id=$1 AND inventory_mode='tracked' AND NOT is_default`, product).Scan(&skuCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_variants WHERE product_id=$1 AND inventory_mode='tracked'`, product).Scan(&skuCount); err != nil {
 		t.Fatal(err)
 	}
 	if skuCount != 4 {
 		t.Fatalf("unexpected synthetic/missing SKU rows: %d", skuCount)
+	}
+	// B2 (2026-11-13): publication assigns a real product default —
+	// the first submitted variant here (the proposal names none), so
+	// exactly one of the four published variants is the default.
+	var defaultCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_variants WHERE product_id=$1 AND is_default`, product).Scan(&defaultCount); err != nil {
+		t.Fatal(err)
+	}
+	if defaultCount != 1 {
+		t.Fatalf("expected exactly one default variant, got %d", defaultCount)
+	}
+	var defaultID string
+	if err := db.QueryRow(`SELECT id::text FROM product_variants WHERE product_id=$1 AND is_default`, product).Scan(&defaultID); err != nil {
+		t.Fatal(err)
+	}
+	if defaultID != variants[0].(map[string]interface{})["id"] {
+		t.Fatalf("default variant = %s, want first submitted %s", defaultID, variants[0].(map[string]interface{})["id"])
 	}
 	for _, raw := range variants {
 		v := raw.(map[string]interface{})

@@ -133,6 +133,24 @@ func (r *StoreRepository) SaveStoreProducts(ctx context.Context, ownerID, slug s
 	if _, err := tx.ExecContext(ctx, `DELETE FROM store_products WHERE store_id=$1::varchar AND EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$2::uuid)`, store.ID, ownerID); err != nil {
 		return err
 	}
+	// M3 (2026-11-13): per-store variant settings must not survive
+	// assortment removal. store_variant_visibility and
+	// store_variant_defaults have no FK to store_products (only to
+	// stores/products/variants), so nothing cascades: without this,
+	// removing product P and re-adding it later would silently
+	// resurrect its old hidden variants and store default. Delete
+	// both tables' rows for every product leaving the assortment,
+	// in this same transaction — the rewrite is atomic, so the
+	// settings can neither outlive the listing nor vanish while it
+	// stays. (store_variant_overrides is intentionally untouched:
+	// pre-existing table, same lifecycle question — owner decision
+	// pending, not silently changed here.)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_variant_visibility WHERE store_id=$1::varchar AND NOT (product_id = ANY($2::varchar[]))`, store.ID, pq.Array(ids)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_variant_defaults WHERE store_id=$1::varchar AND NOT (product_id = ANY($2::varchar[]))`, store.ID, pq.Array(ids)); err != nil {
+		return err
+	}
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO store_products(store_id,product_id,position) SELECT $1::varchar,$2::varchar,$3 WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$4::uuid)`, store.ID, id, i, ownerID); err != nil {
 			return err
@@ -366,6 +384,86 @@ func (r *StoreRepository) StoreProductActive(ctx context.Context, storeID, produ
 	var exists bool
 	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM store_products WHERE store_id=$1 AND product_id=$2)`, storeID, productID).Scan(&exists)
 	return exists, err
+}
+
+// ---------------------------------------------------------------------------
+// P2(a) per-store variant visibility + P2(c) per-store default variant.
+// Absence of a visibility row = visible; absence of a default row =
+// fall back to the product-level default. Central store never has rows.
+// ---------------------------------------------------------------------------
+
+// IsVariantVisibleInStore reports whether a variant may sell in a
+// store: false only when an explicit is_visible=false row exists.
+// Central stores are never filtered (always visible). Used by the
+// order/cart path to re-check visibility at checkout.
+func (r *StoreRepository) IsVariantVisibleInStore(ctx context.Context, storeID, variantID string) (bool, error) {
+	if storeID == "" || storeID == "central" {
+		return true, nil
+	}
+	var visible bool
+	err := r.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT is_visible FROM store_variant_visibility WHERE store_id=$1 AND variant_id=$2), TRUE)`, storeID, variantID).Scan(&visible)
+	return visible, err
+}
+
+// SetStoreVariantVisibility upserts is_visible=false, or DELETEs the
+// row when visible=true (reset to default-visible, table stays sparse).
+// Caller must have verified ownership, assortment membership, and that
+// the variant belongs to the product.
+func (r *StoreRepository) SetStoreVariantVisibility(ctx context.Context, storeID, productID, variantID string, visible bool) error {
+	if visible {
+		_, err := r.db.ExecContext(ctx, `DELETE FROM store_variant_visibility WHERE store_id=$1 AND product_id=$2 AND variant_id=$3`, storeID, productID, variantID)
+		return err
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO store_variant_visibility (store_id, product_id, variant_id, is_visible) VALUES ($1,$2,$3,FALSE)
+		ON CONFLICT (store_id, product_id, variant_id) DO UPDATE SET is_visible = FALSE, updated_at = NOW()`, storeID, productID, variantID)
+	return err
+}
+
+// ListHiddenVariantIDs returns the variant IDs explicitly hidden in a
+// store for one product (is_visible=false rows only).
+func (r *StoreRepository) ListHiddenVariantIDs(ctx context.Context, storeID, productID string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT variant_id FROM store_variant_visibility WHERE store_id=$1 AND product_id=$2 AND is_visible = FALSE ORDER BY variant_id`, storeID, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// GetStoreVariantDefault returns the store's default variant for one
+// product, or "" when no row exists (fall back to product default).
+func (r *StoreRepository) GetStoreVariantDefault(ctx context.Context, storeID, productID string) (string, error) {
+	var vid string
+	err := r.db.QueryRowContext(ctx, `SELECT variant_id FROM store_variant_defaults WHERE store_id=$1 AND product_id=$2`, storeID, productID).Scan(&vid)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return vid, err
+}
+
+// SetStoreVariantDefault upserts the single default variant for a
+// (store, product) pair (PK guarantees exactly one). Caller must have
+// verified ownership, assortment membership, and that the variant
+// belongs to the product, is active, and is visible in the store.
+func (r *StoreRepository) SetStoreVariantDefault(ctx context.Context, storeID, productID, variantID string) error {
+	_, err := r.db.ExecContext(ctx, `INSERT INTO store_variant_defaults (store_id, product_id, variant_id) VALUES ($1,$2,$3)
+		ON CONFLICT (store_id, product_id) DO UPDATE SET variant_id = EXCLUDED.variant_id, updated_at = NOW()`, storeID, productID, variantID)
+	return err
+}
+
+// ClearStoreVariantDefault deletes the row: the store falls back to
+// the product-level default.
+func (r *StoreRepository) ClearStoreVariantDefault(ctx context.Context, storeID, productID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM store_variant_defaults WHERE store_id=$1 AND product_id=$2`, storeID, productID)
+	return err
 }
 
 type SellerReport struct {

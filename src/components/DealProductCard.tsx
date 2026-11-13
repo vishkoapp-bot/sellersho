@@ -4,7 +4,7 @@ import { useStore } from "../context/StoreContext";
 import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from "../context/ToastContext";
 import { Package, Plus } from "lucide-react";
-import { cardPriceOf } from "../utils/cardPrice";
+import { cardPriceOf, cardPriceRangeOf } from "../utils/cardPrice";
 
 import { activeProductVariants, cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
 
@@ -26,6 +26,7 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
   const published = isProductPublishedInStore(currentStore, product.id);
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
+  const priceRange = cardPriceRangeOf(product);
 
   const available = product.variants?.length
     ? activeProductVariants(product).some((variant) => !!resolvePurchase(product, variant.id))
@@ -130,6 +131,12 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
               <Plus className="w-4 h-4 stroke-[2.5]"  strokeWidth={1.5}/>
             </button>
           </div>
+          {/* P1(a): price range, secondary line under the price row. */}
+          {priceRange.hasRange && (
+            <p data-testid="price-range" className="text-[10px] text-slate-400 font-normal pt-0.5">
+              از {formatPrice(priceRange.min)} تا {formatPrice(priceRange.max)} تومان
+            </p>
+          )}
         </div>
       </div>
     </div>

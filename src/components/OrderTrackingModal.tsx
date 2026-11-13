@@ -21,6 +21,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({ viewerRo
     setTrackingOrder, 
     confirmOrderDelivery,
     disputeOrderDelivery,
+    busyOrderId,
     customerUser,
     activeView,
     formatPrice 
@@ -170,28 +171,34 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({ viewerRo
                   <div className="text-center">
                     <span className="text-xs font-bold text-slate-800 block">وضعیت دریافت مرسوله توسط شما:</span>
                     <span className="text-[10px] text-slate-500">
-                      جهت تکمیل سفارش و آزادسازی مالی، لطفاً وضعیت بسته را اعلام فرمایید.
+                      لطفاً وضعیت دریافت بسته را اعلام فرمایید.
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        confirmOrderDelivery(current.id);
-                        toastSuccess(`تحویل مرسوله سفارش ${current.orderNumber} با موفقیت توسط شما تایید گردید و مبلغ در کیف پول سلر آزاد شد.`);
+                      disabled={busyOrderId === current.id}
+                      onClick={async () => {
+                        try {
+                          await confirmOrderDelivery(current.id);
+                          toastSuccess('تحویل مرسوله تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ سود فروشنده پس از پایان مهلت آزاد می‌شود.');
+                        } catch (e: any) { toastError(e?.message || 'تأیید تحویل انجام نشد.'); }
                       }}
-                      className="py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs flex items-center justify-center gap-1 transition-all"
+                      className="py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs flex items-center justify-center gap-1 transition-all disabled:opacity-50"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>کالا را دریافت کردم</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        disputeOrderDelivery(current.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
-                        toastSuccess(`گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.`);
+                      disabled={busyOrderId === current.id}
+                      onClick={async () => {
+                        try {
+                          const res = await disputeOrderDelivery(current.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
+                          toastSuccess(res?.id ? `گزارش عدم دریافت کالا ثبت شد (شماره پیگیری: ${res.id}). سفارش تا بررسی پشتیبانی، تأیید خودکار نمی‌شود.` : 'گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.');
+                        } catch (e: any) { toastError(e?.message || 'ثبت گزارش عدم دریافت انجام نشد.'); }
                       }}
-                      className="py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 flex items-center justify-center gap-1 transition-all"
+                      className="py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 flex items-center justify-center gap-1 transition-all disabled:opacity-50"
                     >
                       <AlertCircle className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>هنوز دریافت نکرده‌ام</span>

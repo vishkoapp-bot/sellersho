@@ -122,9 +122,32 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 		writeInternalError(w, qerr)
 		return
 	}
+	// M3 (round 2): server-side duplicate guard — an identical
+	// adjustment (same target + direction + amount + reason, same
+	// operator) within 10 minutes is rejected with a 409 naming the
+	// existing docId. The UI single-flight does not cover
+	// response-loss retries or two tabs; this covers the sequential
+	// case. Truly concurrent identical POSTs can still both pass this
+	// check (check-then-insert, no unique index — no new migrations
+	// in this mission); the window + operator match keep the residual
+	// narrow and admin-only.
+	operator := wr69Operator(r)
+	const wr69DuplicateWindow = 10 * time.Minute
+	if t01TableExists(ctx, db, "finance_adjustments") {
+		var existingDocID string
+		dupErr := db.QueryRowContext(ctx, `SELECT id FROM finance_adjustments WHERE target_kind = $1 AND target_id = $2 AND direction = $3 AND amount = $4 AND reason = $5 AND operator = $6 AND created_at > $7 ORDER BY created_at DESC LIMIT 1`,
+			req.TargetKind, targetID, req.Direction, req.Amount, reason, operator, time.Now().Add(-wr69DuplicateWindow)).Scan(&existingDocID)
+		if dupErr == nil {
+			t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "duplicate adjustment within 10 minutes", "docId": existingDocID})
+			return
+		}
+		if dupErr != sql.ErrNoRows {
+			writeInternalError(w, dupErr)
+			return
+		}
+	}
 	docID := "ADJ-" + uuid.NewString()
 	now := time.Now()
-	operator := wr69Operator(r)
 	payableAccount := "supplier_payable:" + targetID
 	payableType := "supplier"
 	if req.TargetKind == "seller" {

@@ -262,6 +262,35 @@ export const storeApi = {
     });
   },
 
+  // P2(a): per-store variant visibility. Absence of a row = visible;
+  // isVisible=false hides the variant in this store only (the global
+  // isActive and stock are untouched). Central store: 403 server-side.
+  setSellerVariantVisibility: async (storeSlug: string, productId: string, variantId: string, isVisible: boolean): Promise<any> => {
+    return apiRequest<any>(`/seller/stores/${encodeURIComponent(storeSlug)}/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/visibility`, {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify({ isVisible }),
+    });
+  },
+
+  // P2(c): per-store default variant (one row per store-product).
+  // PUT replaces the previous default; DELETE falls back to the
+  // product-level isDefault. Central store: 403 server-side.
+  setSellerStoreDefaultVariant: async (storeSlug: string, productId: string, variantId: string): Promise<any> => {
+    return apiRequest<any>(`/seller/stores/${encodeURIComponent(storeSlug)}/products/${encodeURIComponent(productId)}/default-variant`, {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify({ variantId }),
+    });
+  },
+
+  deleteSellerStoreDefaultVariant: async (storeSlug: string, productId: string): Promise<any> => {
+    return apiRequest<any>(`/seller/stores/${encodeURIComponent(storeSlug)}/products/${encodeURIComponent(productId)}/default-variant`, {
+      method: 'DELETE',
+      auth: true,
+    });
+  },
+
   getStoreOrders: async (slug: string): Promise<Order[]> => {
     return apiRequest<Order[]>(`/stores/${encodeURIComponent(slug)}/orders`, {
       method: 'GET',

@@ -6,7 +6,8 @@ import { useToast } from '../context/ToastContext';
 import { Package, Plus } from 'lucide-react';
 import { ReturnWindowBadge } from './ReturnWindowBadge';
 import { CampaignDiscountBadge } from './common/CampaignDiscountBadge';
-import { cardPriceOf } from '../utils/cardPrice';
+import { FallbackImage } from './common/FallbackImage';
+import { cardPriceOf, cardPriceRangeOf } from '../utils/cardPrice';
 
 import { activeProductVariants, cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
 
@@ -23,6 +24,8 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
   const published = isProductPublishedInStore(currentStore, product.id);
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
+  // P1(a): secondary range line only; the main price above is untouched.
+  const priceRange = cardPriceRangeOf(product);
 
   const available = product.variants?.length
     ? activeProductVariants(product).some((variant) => !!resolvePurchase(product, variant.id))
@@ -48,19 +51,16 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
     >
       {/* 1. Image Container (Square, Rounded Top, Overflow Hidden) */}
       <div className="relative w-full aspect-square bg-[#f8fafc] overflow-hidden rounded-t-[12px] flex items-center justify-center">
-        {product.image ? (
-          <img
-            src={product.image}
-            alt={product.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            loading="lazy"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-            }}
-          />
-        ) : (
-          <Package className="w-10 h-10 text-slate-300"  strokeWidth={1.5}/>
-        )}
+        {/* P1-12: shared FallbackImage — the first loadable URL wins
+            (product.image, then gallery images); when all fail the
+            existing Package icon renders instead of a blank square. */}
+        <FallbackImage
+          srcs={[product.image, ...(product.images ?? [])].filter(Boolean)}
+          alt={product.title}
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          loading="lazy"
+          fallback={<Package className="w-10 h-10 text-slate-300" strokeWidth={1.5} />}
+        />
 
         {/* FIX 12: live cards show no merchant logo circle and no store
             name anywhere (deals, catalog/search, related). */}
@@ -182,6 +182,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
               )}
             </div>
           </div>
+
+          {/* P1(a): price range, secondary line under the main price row. */}
+          {priceRange.hasRange && (
+            <p data-testid="price-range" className="text-[10px] text-slate-400 font-normal pt-0.5">
+              از {formatPrice(priceRange.min)} تا {formatPrice(priceRange.max)} تومان
+            </p>
+          )}
         </div>
       </div>
     </div>

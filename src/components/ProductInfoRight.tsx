@@ -1,7 +1,8 @@
 import React from 'react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
-import { Truck, ShieldCheck, Building2, Star, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Truck, ShieldCheck, Building2, Star, RotateCcw, AlertTriangle, Package } from 'lucide-react';
+import { productWeightLabel } from '../utils/productPurchase';
 
 interface ProductInfoRightProps {
   product: Product;
@@ -93,6 +94,13 @@ export const ProductInfoRight: React.FC<ProductInfoRightProps> = ({ product }) =
           <RotateCcw className="w-4 h-4 text-amber-600 shrink-0"  strokeWidth={1.5}/>
           <span>۷ روز مهلت تست و بازگشت کالا</span>
         </div>
+        {/* P0: effective weight/dims of the selected variant; hidden when empty. */}
+        {productWeightLabel(product) && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <Package className="w-4 h-4 text-slate-500 shrink-0" strokeWidth={1.5} />
+            <span>{productWeightLabel(product)}</span>
+          </div>
+        )}
       </div>
     </div>
   );

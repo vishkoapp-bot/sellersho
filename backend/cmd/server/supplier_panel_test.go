@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
@@ -20,7 +22,7 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewSupplierRepository(db)
 	suffix := uuid.NewString()[:8]
-	owner, supplier, err := repo.RegisterSupplier(ctx, "Panel Test", "Owner", "panel-"+suffix, "TestPanelPassword!", "", "", "Tehran")
+	owner, supplier, err := repo.RegisterSupplier(ctx, "Panel Test", "Owner", "panel-"+suffix, "TestPanelPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestSupplierProposalNotPublishedBeforeApproval(t *testing.T) {
 	repo := repository.NewSupplierRepository(db)
 	ctx := context.Background()
 	suffix := uuid.NewString()[:8]
-	owner, supplier, err := repo.RegisterSupplier(ctx, "Proposal Test", "Owner", "proposal-"+suffix, "TestProposalPassword!", "", "", "Tehran")
+	owner, supplier, err := repo.RegisterSupplier(ctx, "Proposal Test", "Owner", "proposal-"+suffix, "TestProposalPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
 	if err != nil {
 		t.Fatal(err)
 	}

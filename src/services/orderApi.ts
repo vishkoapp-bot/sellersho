@@ -43,6 +43,25 @@ export interface ConfirmDeliveryResponse {
   orderNumber?: string;
 }
 
+export interface DisputeDeliveryPayload {
+  type: 'delivery_undelivered';
+  claimAmount: number; // Toman, order payableAmount
+  reason: string;
+  productTitle?: string;
+}
+
+export interface DisputeDeliveryResponse {
+  id: string; // e.g. DISP-… — show it in the success toast
+  orderId: string;
+  orderNumber: string;
+  type: string;
+  claimAmount: number;
+  reason: string;
+  status: 'pending' | 'resolved';
+  createdAt: string;
+  [key: string]: any;
+}
+
 export interface BackendOrderItemDto {
   id: string;
   orderId: string;
@@ -178,6 +197,16 @@ export const orderApi = {
     return apiRequest<ConfirmDeliveryResponse>(`/orders/confirm-delivery/${encodeURIComponent(idOrNumber)}`, {
       method: 'POST',
       auth: true,
+    });
+  },
+
+  // P0-1: POST /orders/{id}/dispute. The body is mandatory — an empty
+  // body 400s server-side — so always send type + claimAmount + reason.
+  disputeDelivery: async (idOrNumber: string, payload: DisputeDeliveryPayload): Promise<DisputeDeliveryResponse> => {
+    return apiRequest<DisputeDeliveryResponse>(`/orders/${encodeURIComponent(idOrNumber)}/dispute`, {
+      method: 'POST',
+      auth: true,
+      body: JSON.stringify(payload),
     });
   },
 

@@ -8,7 +8,7 @@ import type { ProductSchema } from '../../types/productSchema';
 it('keeps requested definitions visible and disables approved values in structural correction', () => {
   const schema: ProductSchema = { version: 2, type: 'variable', attributes: [{ id: 'requested:size', name: 'سایز سفارشی', role: 'axis', source: 'requested', values: [{ id: 'requested:s', label: 'کوچک سفارشی' }] }] };
   const html = renderToStaticMarkup(<SupplierProductDefinitionEditor categorySlug="clothes" productType="variable" schema={schema}
-    rows={[{ id: 'old', name: 'کوچک', selection: { 'requested:size': 'requested:s' }, cost: '1000', stock: '5', active: true }]}
+    rows={[{ id: 'old', name: 'کوچک', selection: { 'requested:size': 'requested:s' }, cost: '1000', stock: '5', active: true, selected: true, isDefault: false, imageUrl: '', images: [], weightGrams: '', lengthCm: '', widthCm: '', heightCm: '', salePrice: '', saleFrom: '', saleTo: '', shippingClass: '', taxClass: ''}]}
     onSchema={() => {}} onRows={() => {}} brand="" noBrand={false} onBrand={() => {}} onNoBrand={() => {}}
     hideBrand schemaEditable={false} skuStructureEditable={false} canEditSKUValue={(_id, leaf) => leaf === 'stock'} />);
   assert.match(html, /کوچک سفارشی/);

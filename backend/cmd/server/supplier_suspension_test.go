@@ -117,6 +117,7 @@ CREATE TABLE products (
 	spn_number BIGINT,
 	specs JSONB,
 	length_mm INT, width_mm INT, height_mm INT, weight_grams INT,
+	shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

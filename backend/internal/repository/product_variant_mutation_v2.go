@@ -27,6 +27,15 @@ func (r *SupplierRepository) createProductVariantsV2(ctx context.Context, suppli
 	if len(variants) == 0 || len(variants) > MaxProductSKUs {
 		return 0, fmt.Errorf("invalid SKU count")
 	}
+	// B2 (2026-11-13): the product default is fixed at publication.
+	// A post-publication add that names a default is a request to
+	// change it, and is refused outright — not silently ignored
+	// (there is no API to change the product default afterwards).
+	for _, v := range variants {
+		if v.IsDefault {
+			return 0, fmt.Errorf("product default is fixed at publication and cannot be changed by adding variants")
+		}
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -87,7 +96,10 @@ func (r *SupplierRepository) createProductVariantsV2(ctx context.Context, suppli
 	// No registry requests can be introduced by a SKU-only mutation: the stored
 	// schema is fixed and every option was already reviewed when published.
 	data["variants"] = incoming
-	if err = insertProductV2VariantsTx(ctx, tx, productID, supplierID, data); err != nil {
+	// Post-publication add (assignDefault=false): a later-added
+	// variant never becomes the product default (B2 decision — the
+	// default is fixed at publication; see insertProductV2VariantsTx).
+	if err = insertProductV2VariantsTx(ctx, tx, productID, supplierID, data, false); err != nil {
 		return 0, err
 	}
 	// Extend canonical facet union for the newly activated combinations.

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { SellerProductPricingModal } from './SellerProductPricingModal';
@@ -41,9 +41,17 @@ export const SellerCatalogTab: React.FC = () => {
   // context list while it loads or on failure.
   const [scopedProducts, setScopedProducts] = useState<Product[] | null>(null);
   const storeSlug = currentStore?.ownerType === 'dropshipper' ? currentStore?.slug : undefined;
+  // Refetch when the pricing modal closes too: visibility/default changes
+  // saved there must show in the list immediately (same staleness trap
+  // as the variant percents below). The list is only blanked when the
+  // store itself changes, never on a plain refetch.
+  const prevSlugRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!storeSlug) return;
-    setScopedProducts(null);
+    if (pricingProduct) return;
+    const slugChanged = prevSlugRef.current !== storeSlug;
+    prevSlugRef.current = storeSlug;
+    if (slugChanged) setScopedProducts(null);
     let cancelled = false;
     catalogApi.getProducts({ storeSlug })
       .then((data) => {
@@ -53,7 +61,7 @@ export const SellerCatalogTab: React.FC = () => {
       })
       .catch(() => { /* keep the context list as fallback */ });
     return () => { cancelled = true; };
-  }, [storeSlug]);
+  }, [storeSlug, pricingProduct]);
   const displayProducts = scopedProducts ?? products;
 
   const savedProductIds = currentStore.activeProductIds || [];
@@ -224,6 +232,29 @@ export const SellerCatalogTab: React.FC = () => {
                 <span className="text-emerald-700"> ({displayPctText})</span>
               </span>
             </div>
+            {(() => {
+              // P2(a)/P2(c) summary only (no controls here): the scoped
+              // list omits hidden variants, the central list carries all
+              // of them, so the difference IS the hidden count.
+              if (isMockMode() || !scopedProducts) return null;
+              const central = products.find((p) => p.id === product.id);
+              const centralVariants: any[] = (central as any)?.variants ?? [];
+              if (centralVariants.length === 0) return null;
+              const scopedVariants: any[] = (product as any).variants ?? [];
+              const hiddenCount = Math.max(0, centralVariants.length - scopedVariants.length);
+              const defaultVariant = centralVariants.find((v) => v.isDefault);
+              const storeDefaultId = (product as any).storeDefaultVariantId ?? null;
+              const storeDefault = storeDefaultId ? centralVariants.find((v) => v.id === storeDefaultId) : null;
+              const defaultDiffers = !!storeDefault && !!defaultVariant && storeDefaultId !== defaultVariant.id;
+              if (hiddenCount <= 0 && !defaultDiffers) return null;
+              return (
+                <p className="text-[10px] text-slate-500 pt-1">
+                  {hiddenCount > 0 ? `${toPersianDigits(hiddenCount)} تنوع از ${toPersianDigits(centralVariants.length)} تنوع در فروشگاهت خاموش است` : ''}
+                  {hiddenCount > 0 && defaultDiffers ? ' · ' : ''}
+                  {defaultDiffers ? `پیش‌فرض فروشگاه: ${storeDefault.variantName || storeDefault.name}` : ''}
+                </p>
+              );
+            })()}
             {(isNew || isRemoved) && (
               <span className="flex w-fit items-center gap-1 mt-1 text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">
                 {isNew ? 'جدید — ذخیره نشده' : 'حذف می‌شود — ذخیره نشده'}

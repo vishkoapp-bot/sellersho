@@ -191,6 +191,8 @@ export const AdminSuppliersTab: React.FC = () => {
     }
   };
 
+  const pendingCount = suppliersList.filter((s) => s.approvalStatus === 'pending_approval').length;
+
   const visibleSuppliers = statusFilter === 'all'
     ? suppliersList
     : suppliersList.filter((s) => s.approvalStatus === statusFilter);
@@ -230,7 +232,7 @@ export const AdminSuppliersTab: React.FC = () => {
                 statusFilter === value ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              {label}
+              {label}{value === 'pending_approval' && pendingCount > 0 ? ` (${toPersianDigits(pendingCount)})` : ''}
             </button>
           ))}
         </div>

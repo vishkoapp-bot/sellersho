@@ -37,7 +37,7 @@ export const ProductDetailModal: React.FC = () => {
     try {
       spnc = new URLSearchParams(window.location.search).get('spnc');
     } catch {}
-    const next = initialPurchaseVariant(selectedProduct, spnc);
+    const next = initialPurchaseVariant(selectedProduct, spnc, selectedProduct.storeDefaultVariantId);
     setSelectedVariantId(next?.id ?? null);
     setQuantity(next ? purchaseLimits(selectedProduct, next).minQty : 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -47,7 +47,7 @@ export const ProductDetailModal: React.FC = () => {
 
   const variants = activeProductVariants(selectedProduct);
   const showVariantSelector = variants.length > 1 || selectedProduct.productType === 'variable';
-  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(selectedProduct);
+  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(selectedProduct, null, selectedProduct.storeDefaultVariantId);
   const displayProduct = productForVariant(selectedProduct, selectedVariant);
   const published = isProductPublishedInStore(currentStore, displayProduct.id);
   const { minQty, maxQty } = purchaseLimits(selectedProduct, selectedVariant);
@@ -87,10 +87,13 @@ export const ProductDetailModal: React.FC = () => {
 
         {/* Scrollable Content inside mobile shell */}
         <div className="p-4 overflow-y-auto no-scrollbar space-y-4">
+          {/* P0 fix: the quick view used to pass the base product's
+              images, so a variant swap never changed the gallery. The
+              variant-adjusted displayProduct carries the right ones. */}
           <ProductGallery
-            images={selectedProduct.images}
-            mainImage={selectedProduct.image}
-            title={selectedProduct.title}
+            images={displayProduct.images}
+            mainImage={displayProduct.image}
+            title={displayProduct.title}
           />
 
           {showVariantSelector && selectedVariant && (

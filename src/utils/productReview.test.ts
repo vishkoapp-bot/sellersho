@@ -47,7 +47,7 @@ it('rejects changing an approved existing SKU price through a rejected structura
 it('sends full structural rows with original approved values, even when deactivating a SKU', () => {
   const rows = proposalDraftRows(proposal);
   rows[0].active = false;
-  rows.push({ id: 'sku-b', name: 'متوسط', selection: { 'size/id': 'm' }, cost: '1500', stock: '2', active: true });
+  rows.push({ id: 'sku-b', name: 'متوسط', selection: { 'size/id': 'm' }, cost: '1500', stock: '2', active: true, selected: true, isDefault: false, imageUrl: '', images: [], weightGrams: '', lengthCm: '', widthCm: '', heightCm: '', salePrice: '', saleFrom: '', saleTo: '', shippingClass: '', taxClass: '' });
   const patch = buildStructuralCorrection(proposal, rejected('/variants'), schema, rows);
   assert.equal(patch['/variants'][0].supplier_base_cost, 1000);
   assert.equal(patch['/variants'][0].stock, 5);

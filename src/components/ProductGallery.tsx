@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Package } from 'lucide-react';
 
 interface ProductGalleryProps {
@@ -9,6 +9,10 @@ interface ProductGalleryProps {
 
 export const ProductGallery: React.FC<ProductGalleryProps> = ({ images, mainImage, title }) => {
   const [activeIdx, setActiveIdx] = useState(0);
+  // P0: a variant swap changes mainImage — reset to the first thumbnail
+  // instead of keeping the previous variant's selected thumbnail.
+  const galleryKey = [mainImage, ...(images || [])].join('|');
+  useEffect(() => { setActiveIdx(0); }, [galleryKey]);
   const validImages = (images || []).filter((image) => typeof image === 'string' && image.trim().length > 0);
   const current = validImages[activeIdx] || (typeof mainImage === 'string' && mainImage.trim() ? mainImage : null);
 

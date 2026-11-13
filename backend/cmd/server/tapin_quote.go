@@ -252,12 +252,29 @@ func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client 
 	if goodsWeight < 1000 {
 		packageWeight = int(1000 - goodsWeight)
 	}
-	// Dims: the platform box auto-picked for this leg (dims unknown
-	// at quote time -> the platform default box). A catalogue with
-	// no dimensions falls back to the guide's Tipax simplification
-	// (5x5x5, p.17 note).
+	// Dims: the platform box auto-picked for this leg. P0: the leg's
+	// dims are the per-dimension MAX over its lines (mm -> cm, ceil),
+	// so the auto-picked box fits the largest item on the leg. Zero
+	// dims (unmeasured product) keep the old behaviour: PickBox falls
+	// back to the configured default box (size 4) per the existing
+	// rule. A catalogue with no dimensions falls back to the guide's
+	// Tipax simplification (5x5x5, p.17 note).
+	maxL, maxW, maxH := 0, 0, 0
+	for _, line := range legLines {
+		if line.LengthMM > maxL {
+			maxL = line.LengthMM
+		}
+		if line.WidthMM > maxW {
+			maxW = line.WidthMM
+		}
+		if line.HeightMM > maxH {
+			maxH = line.HeightMM
+		}
+	}
+	// ceil(mm / 10); 0 stays 0.
+	legL, legW, legH := (maxL+9)/10, (maxW+9)/10, (maxH+9)/10
 	length, width, height := 5, 5, 5
-	if box, _, berr := repo.PickBoxForParcel(ctx, 0, 0, 0, int(legWeightGrams)); berr == nil &&
+	if box, _, berr := repo.PickBoxForParcel(ctx, legL, legW, legH, int(legWeightGrams)); berr == nil &&
 		box.LengthCm > 0 && box.WidthCm > 0 && box.HeightCm > 0 {
 		length, width, height = box.LengthCm, box.WidthCm, box.HeightCm
 	}

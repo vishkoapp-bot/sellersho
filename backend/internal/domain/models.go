@@ -239,6 +239,11 @@ type Product struct {
 	WidthMM                   *int                   `json:"widthMm,omitempty" db:"width_mm"`
 	HeightMM                  *int                   `json:"heightMm,omitempty" db:"height_mm"`
 	WeightGrams               *int                   `json:"weightGrams,omitempty" db:"weight_grams"`
+	// Shipping/tax class (P2(b)): the fallback target for variants
+	// (variant class ?? this ?? 'standard'). Stored vocabulary only
+	// in v1; consumed nowhere yet. DB default 'standard'.
+	ShippingClass             string                 `json:"shippingClass" db:"shipping_class"`
+	TaxClass                  string                 `json:"taxClass" db:"tax_class"`
 	MeasurementStatus         string                 `json:"measurementStatus" db:"measurement_status"`
 	// Brand, Rating, ReviewsCount, CreatedAt: columns confirmed by
 	// migration 202610200003 (brand TEXT, rating NUMERIC(3,2),
@@ -471,6 +476,81 @@ type ProductVariant struct {
 	IsDefault        bool                   `json:"isDefault"`
 	Stock            int                    `json:"stock"`
 	SupplierBaseCost *int64                 `json:"supplierBaseCost,omitempty"`
+	// Images are the variant's own photos, ordered; images[0] is the hero.
+	// Empty/nil = no variant image; PDP falls back to the product gallery.
+	// (P0 cap is 4, enforced in the repository, not in this struct.)
+	Images []string `json:"images,omitempty"`
+	// Physical attributes. Nil = inherit from the product.
+	// Present values must be > 0; dims are all-or-none.
+	WeightGrams *int `json:"weightGrams,omitempty"`
+	LengthMM    *int `json:"lengthMm,omitempty"`
+	WidthMM     *int `json:"widthMm,omitempty"`
+	HeightMM    *int `json:"heightMm,omitempty"`
+	// Sale price (P1(c)): an absolute final customer price in Toman
+	// that REPLACES the resolved final price inside [SaleFrom, SaleTo)
+	// (lowest wins vs campaigns, floor R). Nil = no sale. Never exposed
+	// alongside cost: the sale price itself is customer-facing data.
+	SalePrice *int64     `json:"salePrice,omitempty" db:"sale_price"`
+	SaleFrom  *time.Time `json:"saleFrom,omitempty" db:"sale_from"`
+	SaleTo    *time.Time `json:"saleTo,omitempty" db:"sale_to"`
+	// Shipping/tax class (P2(b)): stored vocabulary only in v1, nil =
+	// inherit the product-level class. Consumed nowhere yet.
+	ShippingClass *string `json:"shippingClass,omitempty" db:"shipping_class"`
+	TaxClass      *string `json:"taxClass,omitempty" db:"tax_class"`
+}
+
+// Variant shipping/tax class vocabulary (P2(b), mirrors the DB CHECKs
+// in migration 202611130004). 'standard' is the effective default.
+const (
+	ShippingClassStandard   = "standard"
+	ShippingClassFragile    = "fragile"
+	ShippingClassOversized  = "oversized"
+	ShippingClassHeavy      = "heavy"
+	ShippingClassColdChain  = "cold_chain"
+	TaxClassStandard        = "standard"
+	TaxClassReduced         = "reduced"
+	TaxClassZero            = "zero"
+	TaxClassExempt          = "exempt"
+)
+
+// ValidShippingClass reports whether s is a known shipping class.
+func ValidShippingClass(s string) bool {
+	switch s {
+	case ShippingClassStandard, ShippingClassFragile, ShippingClassOversized, ShippingClassHeavy, ShippingClassColdChain:
+		return true
+	}
+	return false
+}
+
+// ValidTaxClass reports whether s is a known tax class.
+func ValidTaxClass(s string) bool {
+	switch s {
+	case TaxClassStandard, TaxClassReduced, TaxClassZero, TaxClassExempt:
+		return true
+	}
+	return false
+}
+
+// EffectiveShippingClass resolves variant ?? product ?? 'standard'.
+func EffectiveShippingClass(variant, product string) string {
+	if variant != "" {
+		return variant
+	}
+	if product != "" {
+		return product
+	}
+	return ShippingClassStandard
+}
+
+// EffectiveTaxClass resolves variant ?? product ?? 'standard'.
+func EffectiveTaxClass(variant, product string) string {
+	if variant != "" {
+		return variant
+	}
+	if product != "" {
+		return product
+	}
+	return TaxClassStandard
 }
 
 // CategoryBrand is one Digikala brand facet row (D40, new API shape).

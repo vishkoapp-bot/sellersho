@@ -55,6 +55,14 @@ export const CartDrawer: React.FC = () => {
   const [shippingQuote, setShippingQuote] = useState<ShippingQuote | null>(null);
   const [shippingQuoteState, setShippingQuoteState] = useState<'idle' | 'loading' | 'quoted' | 'free' | 'warning' | 'error'>('idle');
   const [shippingQuoteMessage, setShippingQuoteMessage] = useState('');
+  // P1-3: bumping this re-runs the quote effect (it is a dep) so a
+  // failed quote can be retried without remounting or clearing the form.
+  const [quoteNonce, setQuoteNonce] = useState(0);
+  const retryShippingQuote = () => {
+    setShippingQuoteMessage('');
+    setShippingQuoteState('loading');
+    setQuoteNonce((n) => n + 1);
+  };
   const { error: toastError, success: toastSuccess } = useToast();
   const cartAddonsTotal = cart.reduce((sum, item) => sum + (item.product.addons && item.selectedAddonIds ? item.selectedAddonIds.reduce((s, id) => s + (item.product.addons!.find((a) => a.id === id)?.feePerUnit || 0), 0) : 0) * item.quantity, 0);
   const cartGrossDiscount = cartDiscount + cartAddonsTotal;
@@ -85,7 +93,9 @@ export const CartDrawer: React.FC = () => {
   const directDiscount = Math.max(0, directSubtotal - directPayable);
   const displayGroups = getCartSupplierGroups(displayItems);
   const displayStoreName = isDirectBuy && directLine ? directLine.storeName : undefined;
-  const hasShippingQuote = !isDirectBuy && (shippingQuoteState === 'quoted' || shippingQuoteState === 'free');
+  // P1-3: the gate keys on a valid quoteId for cart AND direct buy —
+  // a direct order without a quote used to be created with shipping 0.
+  const hasShippingQuote = shippingQuoteState === 'quoted' || shippingQuoteState === 'free';
   const shippingTotal = hasShippingQuote ? (shippingQuote?.totalShipping ?? 0) : 0;
   const finalPayable = (isDirectBuy ? directPayable : cartPayable) + shippingTotal;
   const cartSignature = cart.map((item) => `${item.product.id}::${item.selectedVariantId ?? ''}x${item.quantity}`).join(',');
@@ -93,7 +103,7 @@ export const CartDrawer: React.FC = () => {
   // The per-leg detail line reuses this drawer's established leg
   // format; live's inner fb leg-detail internals are unproven beyond
   // the header/fare/items structure ported here.
-  const shippingSlot = !isDirectBuy && hasShippingQuote && shippingQuote ? (
+  const shippingSlot = hasShippingQuote && shippingQuote ? (
     <div className="space-y-2">
       {shippingQuote.legs.map((leg) => {
         const legItems = (shippingQuote.allocations || [])
@@ -130,6 +140,23 @@ export const CartDrawer: React.FC = () => {
         );
       })}
     </div>
+  ) : effectiveStep === 'checkout' && shippingQuoteState === 'error' ? (
+    // P1-3: the slot must not fall back to the "next step" copy when the
+    // quote FAILED — both the desktop side column and the mobile form
+    // render the misleading fallback when shippingSlot is undefined.
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-amber-700 font-bold text-xs">
+        <span>هزینه ارسال محاسبه نشد — ثبت سفارش ممکن نیست</span>
+      </div>
+      <p className="text-[11px] text-slate-500 leading-5">برای ثبت سفارش، هزینه ارسال باید محاسبه شود. لطفاً دوباره تلاش کنید.</p>
+      <button
+        type="button"
+        onClick={retryShippingQuote}
+        className="rounded-full bg-amber-100 px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-200 transition-colors"
+      >
+        تلاش دوباره
+      </button>
+    </div>
   ) : undefined;
   // Worker A: the footer breakdown (live tt()) shared by the footer
   // (mobile) and the desktop side column. The per-leg rows moved
@@ -165,21 +192,33 @@ export const CartDrawer: React.FC = () => {
           {effectiveStep === 'checkout' && shippingQuoteState === 'loading' && 'در حال محاسبه…'}
           {effectiveStep === 'checkout' && shippingQuoteState === 'quoted' && `${formatPrice(shippingQuote?.totalShipping ?? 0)} تومان`}
           {effectiveStep === 'checkout' && shippingQuoteState === 'free' && 'رایگان'}
-          {effectiveStep === 'checkout' && (shippingQuoteState === 'warning' || shippingQuoteState === 'error' || shippingQuoteState === 'idle') && 'محاسبه در مرحله بعد'}
+          {effectiveStep === 'checkout' && (shippingQuoteState === 'warning' || shippingQuoteState === 'idle') && 'محاسبه در مرحله بعد'}
+          {effectiveStep === 'checkout' && shippingQuoteState === 'error' && 'محاسبه نشد — ثبت سفارش ممکن نیست'}
         </span>
       </div>
       <div className="flex justify-between text-slate-900 font-black text-sm pt-2 border-t border-slate-200">
-        <span>{hasShippingQuote ? 'مبلغ قابل پرداخت:' : 'مبلغ قابل پرداخت (بدون هزینه ارسال):'}</span>
+        <span>{hasShippingQuote ? 'مبلغ قابل پرداخت:' : 'مبلغ قابل پرداخت (هزینه ارسال محاسبه نشده):'}</span>
         <span className="text-brand-deep">{formatPrice(finalPayable)} تومان</span>
       </div>
     </>
   );
 
-  // Live quote flow: with a complete destination, quote the cart;
-  // without one, warn instead of quoting a guessed zone.
+  // Live quote flow: with a complete destination, quote the cart (or
+  // the single direct-buy line, from the same customerInfo the direct
+  // prefill effect fills from directBuyAddress); without one, warn
+  // instead of quoting a guessed zone. P1-3: direct buy quotes its own
+  // line — a direct order must never be created without a quoteId.
+  // The 30129 weight_formula quote IS valid: the gate below keys on
+  // quoteId, never on the amount.
+  const directQuoteSignature = isDirectBuy && directLine
+    ? `direct:${directLine.product.id}::${directLine.selectedVariantId ?? ''}x${directLine.quantity}`
+    : '';
   useEffect(() => {
-    if (isDirectBuy) return;
-    if (checkoutStep !== 'checkout' || cart.length === 0) return;
+    if (effectiveStep !== 'checkout') return;
+    const quoteItems = isDirectBuy && directLine
+      ? [{ productId: directLine.product.id, variantId: directLine.selectedVariantId, quantity: directLine.quantity }]
+      : cart.map((item) => ({ productId: item.product.id, variantId: item.selectedVariantId, quantity: item.quantity }));
+    if (quoteItems.length === 0) return;
     if (!customerInfo.province || !customerInfo.city || !customerInfo.address) {
       setShippingQuote(null);
       setShippingQuoteState('warning');
@@ -191,7 +230,7 @@ export const CartDrawer: React.FC = () => {
     const timer = setTimeout(async () => {
       try {
         const q = await shippingApi.quote(
-          cart.map((item) => ({ productId: item.product.id, variantId: item.selectedVariantId, quantity: item.quantity })),
+          quoteItems,
           { province: customerInfo.province, city: customerInfo.city, address: customerInfo.address, postalCode: customerInfo.postalCode },
         );
         setShippingQuote(q);
@@ -210,13 +249,13 @@ export const CartDrawer: React.FC = () => {
           setShippingQuoteMessage('قیمت ارسال در دسترس نیست؛ لطفاً چند لحظه دیگر دوباره تلاش کنید.');
         } else {
           setShippingQuoteState('error');
-          setShippingQuoteMessage('محاسبه هزینه ارسال انجام نشد. مبلغ دقیق هنگام ثبت سفارش مشخص می‌شود.');
+          setShippingQuoteMessage('محاسبه هزینه ارسال انجام نشد. لطفاً دوباره تلاش کنید.');
         }
       }
     }, 450);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkoutStep, cartSignature, customerInfo.province, customerInfo.city, customerInfo.address, customerInfo.postalCode, isDirectBuy]);
+  }, [checkoutStep, cartSignature, directQuoteSignature, customerInfo.province, customerInfo.city, customerInfo.address, customerInfo.postalCode, isDirectBuy, directBuyAddress?.id, quoteNonce, customerUser.isLoggedIn]);
 
   // Worker A: live drawer prefills the checkout form from the chosen
   // direct-buy address exactly once per direct-buy payload (sC).
@@ -274,6 +313,20 @@ export const CartDrawer: React.FC = () => {
       toastError('کد پستی ۱۰ رقمی وارد شده نامعتبر است.');
       return;
     }
+    // P1-3: never submit without a valid shipping quote (quoted/free).
+    // The gate keys on the quoteId, never on the amount — a 30129
+    // weight_formula quote (or a free quote) passes. A blocked submit
+    // creates no order, clears nothing, and keeps the form intact.
+    if (shippingQuoteState !== 'quoted' && shippingQuoteState !== 'free') {
+      toastError(
+        shippingQuoteState === 'loading'
+          ? 'هزینه ارسال در حال محاسبه است؛ لطفاً چند لحظه صبر کنید.'
+          : shippingQuoteState === 'warning'
+            ? 'برای محاسبه هزینه ارسال، نشانی کامل را وارد کنید.'
+            : 'هزینه ارسال محاسبه نشد. لطفاً دوباره تلاش کنید.',
+      );
+      return;
+    }
 
     setIsSubmittingOrder(true);
     try {
@@ -285,7 +338,7 @@ export const CartDrawer: React.FC = () => {
           setIsSubmittingOrder(false);
           return;
         }
-        const order = await placeOrder(customerInfo, paymentMethod, undefined, undefined, { lines: [directLine], store: directBuy.store }, { addressId: directBuyAddress.id });
+        const order = await placeOrder(customerInfo, paymentMethod, undefined, shippingQuote?.quoteId, { lines: [directLine], store: directBuy.store }, { addressId: directBuyAddress.id });
         // Live clears only the direct-buy state here, never the cart.
         clearDirectBuy();
         setPlacedOrder(order);
@@ -376,8 +429,20 @@ export const CartDrawer: React.FC = () => {
             <div className={effectiveStep === 'checkout' ? 'space-y-1.5 text-xs lg:hidden' : 'space-y-1.5 text-xs'}>
               {pricingBreakdown}
             </div>
-            {effectiveStep === 'checkout' && (shippingQuoteState === 'warning' || shippingQuoteState === 'error') && shippingQuoteMessage && (
+            {effectiveStep === 'checkout' && shippingQuoteState === 'warning' && shippingQuoteMessage && (
               <p className="text-[11px] text-amber-700">{shippingQuoteMessage}</p>
+            )}
+            {effectiveStep === 'checkout' && shippingQuoteState === 'error' && shippingQuoteMessage && (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] text-amber-700">{shippingQuoteMessage}</p>
+                <button
+                  type="button"
+                  onClick={retryShippingQuote}
+                  className="shrink-0 rounded-full bg-amber-100 px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-200 transition-colors"
+                >
+                  تلاش دوباره
+                </button>
+              </div>
             )}
             {effectiveStep === 'cart' ? (
               <button
@@ -398,8 +463,8 @@ export const CartDrawer: React.FC = () => {
                 </button>
                 <button
                   onClick={handleCheckoutSubmit}
-                  disabled={isSubmittingOrder}
-                  className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs md:text-sm lg:text-base py-3 lg:py-3.5 rounded-2xl shadow-md shadow-brand/25 transition-all"
+                  disabled={isSubmittingOrder || (shippingQuoteState !== 'quoted' && shippingQuoteState !== 'free')}
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs md:text-sm lg:text-base py-3 lg:py-3.5 rounded-2xl shadow-md shadow-brand/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* TODO(U44): exact live final-button text beyond the quoted
                       stub texts is unverified. This label says "register

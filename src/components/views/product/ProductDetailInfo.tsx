@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../../../services/apiClient';
 import { Product } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
-import { Truck, ShieldCheck, RotateCcw, Star } from 'lucide-react';
+import { Truck, ShieldCheck, RotateCcw, Star, Package } from 'lucide-react';
 import { CampaignDiscountBadge } from '../../../components/common/CampaignDiscountBadge';
+import { productWeightLabel } from '../../../utils/productPurchase';
+import { toPersianDigits as toPersianDigitsFmt } from '../../../utils/formatters';
 
 // FIX 13: tabs live INSIDE the info column, directly after the info
 // block and BEFORE the variant selector (live bundle order: info with
@@ -47,8 +49,22 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }
         {tab === 'specs' ? (
           <div className="space-y-2 text-xs lg:text-sm">
             <p className={`${fashion ? 'text-[#737373]' : 'text-slate-600'} text-[11px] lg:text-sm leading-relaxed`}>{product.description}</p>
-            {Object.entries(product.specs || {}).length > 0 ? (
+            {Object.entries(product.specs || {}).length > 0 || productWeightLabel(product) ? (
               <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-2.5 divide-y divide-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 divide-y divide-slate-200'}>
+                {/* P0: weight/dims are the first specs rows (they follow
+                    the selected variant, unlike product.specs). */}
+                {product.weightGrams != null && product.weightGrams > 0 && (
+                  <div className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
+                    <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>وزن</span>
+                    <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'}>{toPersianDigitsFmt(product.weightGrams.toLocaleString('en-US')).replace(/,/g, '٬')} گرم</span>
+                  </div>
+                )}
+                {product.lengthMm != null && product.widthMm != null && product.heightMm != null && (
+                  <div className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
+                    <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>ابعاد</span>
+                    <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'} dir="ltr">{toPersianDigitsFmt(`${product.lengthMm / 10}×${product.widthMm / 10}×${product.heightMm / 10}`)} <span dir="rtl">سانتی‌متر</span></span>
+                  </div>
+                )}
                 {Object.entries(product.specs || {}).map(([k, v]) => (
                   <div key={k} className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
                     <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>{k}</span>
@@ -216,6 +232,14 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }
             {returnWindowDays != null ? `${toPersianDigits(returnWindowDays)} روز مهلت تست و بازگشت` : 'مهلت تست و بازگشت'}
           </span>
         </div>
+        {/* P0: effective weight/dims of the selected variant (inherits
+            the product's when the variant has none); hidden when empty. */}
+        {productWeightLabel(product) && (
+          <div className="flex items-center gap-1 flex-wrap pt-1">
+            <Package className={fashion ? 'w-3.5 h-3.5 text-[#737373] shrink-0' : 'w-3.5 h-3.5 text-slate-500 shrink-0'} strokeWidth={1.5} />
+            <span>{productWeightLabel(product)}</span>
+          </div>
+        )}
       </div>
 
             {product.discountPercent > 0 && (
@@ -239,6 +263,12 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }
           <span className={fashion ? 'text-base font-black text-[#1c1c1a]' : 'text-base font-black text-blue-600'}>
             {formatPrice(product.price)} <span className="text-xs font-normal">تومان</span>
           </span>
+          {/* P1(c): when this price is a sale, name its end date. */}
+          {product.saleTo && new Date(product.saleTo).getTime() > Date.now() && (
+            <span className={`text-[10px] ${fashion ? 'text-[#737373]' : 'text-slate-500'} block`}>
+              قیمت حراج تا {toPersianDigits(new Date(product.saleTo).toLocaleDateString('fa-IR', { day: 'numeric', month: 'long' }))}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           {(product.stock || 0) <= 0 ? (

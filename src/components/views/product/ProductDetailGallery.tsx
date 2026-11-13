@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ZoomIn, X, Sparkles, Package, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toPersianDigits } from '../../../utils/formatters';
+import { SaleCountdown } from '../../common/SaleCountdown';
+import { FallbackImage } from '../../common/FallbackImage';
 
 interface Props {
   mainImage: string;
@@ -9,6 +11,13 @@ interface Props {
   title: string;
   discountPercent?: number;
   fashion?: boolean;
+  // P0: when the variant image itself 404s, fall back to the product
+  // image (passed by the PDP as displayBase.image).
+  fallbackImage?: string;
+  // P1(c): active sale window of the selected variant (from
+  // productForVariant); the countdown renders under the badges row.
+  saleEndsAt?: string | null;
+  saleStartsAt?: string | null;
 }
 
 export const ProductDetailGallery: React.FC<Props> = ({
@@ -17,10 +26,16 @@ export const ProductDetailGallery: React.FC<Props> = ({
   title,
   discountPercent = 0,
   fashion = false,
+  fallbackImage,
+  saleEndsAt,
+  saleStartsAt,
 }) => {
   const validMainImage = typeof mainImage === 'string' && mainImage.trim() ? mainImage : null;
   const [selectedImg, setSelectedImg] = useState(validMainImage);
   const [isZoomOpen, setIsZoomOpen] = useState(false);
+  // P1-14: true once every main-image candidate has failed — the zoom
+  // button, counter and arrows only make sense with a loaded image.
+  const [mainImageFailed, setMainImageFailed] = useState(false);
 
   const gallery = Array.from(new Set([validMainImage, ...(images || [])])).filter(
     (image): image is string => typeof image === 'string' && image.trim().length > 0
@@ -30,10 +45,28 @@ export const ProductDetailGallery: React.FC<Props> = ({
   const goNext = () => { if (gallery.length > 1) setSelectedImg(gallery[(currentIndex + 1) % gallery.length]); };
   const goPrev = () => { if (gallery.length > 1) setSelectedImg(gallery[(currentIndex - 1 + gallery.length) % gallery.length]); };
 
+  // P0: two variants can share a hero image but carry different
+  // galleries — reset on the whole gallery, not just the main image.
+  const galleryKey = [validMainImage, ...(images || [])].join('|');
   useEffect(() => {
     setSelectedImg(validMainImage);
     setIsZoomOpen(false);
-  }, [validMainImage]);
+    setMainImageFailed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [galleryKey]);
+  // P1-14: main-image candidates in priority order — the selected
+  // (variant) image, then the product image, then the PDP's
+  // fallbackImage. The variant -> product chain is preserved; the
+  // shared empty state is the terminal fallback after it.
+  const mainSrcs = Array.from(
+    new Set([selectedImg, validMainImage, fallbackImage]),
+  ).filter((src): src is string => typeof src === 'string' && src.trim().length > 0);
+  const emptyState = (
+    <>
+      <Package aria-hidden="true" className={fashion ? 'w-8 h-8 text-[#737373]' : 'w-8 h-8 text-slate-300'} strokeWidth={1.5} />
+      <span className={fashion ? 'text-[11px] font-bold text-[#737373]' : 'text-[11px] font-bold text-slate-400'}>بدون تصویر</span>
+    </>
+  );
 
   useEffect(() => {
     if (!isZoomOpen) return;
@@ -76,7 +109,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
       <div className={frameClass} {...swipeHandlers}>
 
         {/* Zoom Button */}
-        {selectedImg && (
+        {selectedImg && !mainImageFailed && (
         <button
           type="button"
           onClick={() => setIsZoomOpen(true)}
@@ -89,13 +122,13 @@ export const ProductDetailGallery: React.FC<Props> = ({
         )}
 
         {/* Image Counter */}
-        {gallery.length > 1 && (
+        {gallery.length > 1 && !mainImageFailed && (
           <div className={fashion ? 'absolute bottom-3 right-3 px-2 py-0.5 bg-[#1c1c1a]/70 backdrop-blur-xs text-white text-[10px] font-bold rounded-none' : 'absolute bottom-3 right-3 px-2 py-0.5 bg-slate-900/70 backdrop-blur-xs text-white text-[10px] font-bold rounded-lg'}>
             {toPersianDigits(currentIndex + 1)} / {toPersianDigits(gallery.length)}
           </div>
         )}
 
-        {gallery.length > 1 && (
+        {gallery.length > 1 && !mainImageFailed && (
           <>
             <button
               type="button"
@@ -116,22 +149,16 @@ export const ProductDetailGallery: React.FC<Props> = ({
           </>
         )}
 
-        {selectedImg ? (
-          <img
-            src={selectedImg}
-            alt={title}
-            className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105 cursor-zoom-in"
-            onClick={() => setIsZoomOpen(true)}
-            onError={(e) => {
-              if (validMainImage && e.currentTarget.src !== validMainImage) e.currentTarget.src = validMainImage;
-            }}
-          />
-        ) : (
-          <>
-            <Package aria-hidden="true" className={fashion ? 'w-8 h-8 text-[#737373]' : 'w-8 h-8 text-slate-300'} strokeWidth={1.5} />
-            <span className={fashion ? 'text-[11px] font-bold text-[#737373]' : 'text-[11px] font-bold text-slate-400'}>بدون تصویر</span>
-          </>
-        )}
+        <FallbackImage
+          srcs={mainSrcs}
+          alt={title}
+          className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105 cursor-zoom-in"
+          loading="eager"
+          onClick={() => setIsZoomOpen(true)}
+          onLoad={() => setMainImageFailed(false)}
+          onExhausted={() => setMainImageFailed(true)}
+          fallback={emptyState}
+        />
       </div>
 
       {/* Badges Row (live: flow row below the image) */}
@@ -142,6 +169,13 @@ export const ProductDetailGallery: React.FC<Props> = ({
           </span>
         )}
       </div>
+      {/* P1(c): sale countdown on its own line under the badges (390px
+          is too narrow to sit next to the badge). */}
+      {saleEndsAt && (
+        <div className="mt-1.5 px-1">
+          <SaleCountdown endsAt={saleEndsAt} startsAt={saleStartsAt} fashion={fashion} />
+        </div>
+      )}
 
       {/* Thumbnails Row */}
       {gallery.length > 1 && (
@@ -189,10 +223,17 @@ export const ProductDetailGallery: React.FC<Props> = ({
 
           <div className="flex-1 relative flex items-center justify-center p-4">
             {selectedImg && (
-              <img
-                src={selectedImg}
+              <FallbackImage
+                srcs={mainSrcs}
                 alt={title}
+                loading="eager"
                 className={fashion ? 'max-h-[75vh] max-w-full object-contain rounded-none' : 'max-h-[75vh] max-w-full object-contain rounded-2xl'}
+                fallback={
+                  <div className="flex flex-col items-center justify-center gap-2 text-white/70">
+                    <Package aria-hidden="true" className="w-8 h-8" strokeWidth={1.5} />
+                    <span className="text-[11px] font-bold">بدون تصویر</span>
+                  </div>
+                }
               />
             )}
             {gallery.length > 1 && (
@@ -228,7 +269,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
                 <button
                   key={idx}
                   onClick={() => setSelectedImg(im)}
-                  className={`w-12 h-12 ${fashion ? 'rounded-none' : 'rounded-xl'} border p-1 shrink-0 ${
+                  className={`relative w-12 h-12 ${fashion ? 'rounded-none' : 'rounded-xl'} border p-1 shrink-0 ${
                     selectedImg === im
                       ? fashion
                         ? 'border-white ring-2 ring-white'
@@ -236,7 +277,8 @@ export const ProductDetailGallery: React.FC<Props> = ({
                       : 'border-white/30 opacity-60'
                   }`}
                 >
-                  <img src={im} alt="" loading="lazy" decoding="async" className="w-full h-full object-contain" />
+                  <Package aria-hidden="true" className="absolute inset-0 m-auto w-5 h-5 text-white/50" strokeWidth={1.5} />
+                  <img src={im} alt="" loading="lazy" decoding="async" className="relative w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                 </button>
               ))}
             </div>

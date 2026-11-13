@@ -58,13 +58,14 @@ func gap13Setup(t *testing.T) *gap13Repos {
 	}
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
-		`DROP TABLE IF EXISTS supplier_shipments, order_item_origins, order_items, orders, supplier_shipping_methods, suppliers, warehouses, store_products, store_product_overrides, store_niche_overrides, stores, product_images, product_variants, product_niches, products, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS supplier_shipments, order_item_origins, order_items, orders, supplier_shipping_methods, suppliers, warehouses, store_products, store_product_overrides, store_niche_overrides, stores, product_images, product_variant_images, product_variants, product_niches, products, platform_settings CASCADE`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 7, 100000, 20000, 5000, 500)`,
-		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, origin_supplier_warehouse_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', origin_supplier_warehouse_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE product_niches (product_id VARCHAR(50) NOT NULL, niche_id VARCHAR(50) NOT NULL, PRIMARY KEY (product_id, niche_id))`,
-		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'x', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'x', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE product_images (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE product_variant_images (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), variant_id UUID NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE store_products (store_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, position INT NOT NULL DEFAULT 0, PRIMARY KEY (store_id, product_id))`,
 		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', slug VARCHAR(255) NOT NULL DEFAULT '', owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper', owner_name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id VARCHAR(50) NOT NULL DEFAULT '', referral_code VARCHAR(100) NOT NULL DEFAULT '', referrer_seller_id VARCHAR(50), signed_contract_version INT NOT NULL DEFAULT 0, custom_domain VARCHAR(255) NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, template_id VARCHAR(100) NOT NULL DEFAULT '', template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '', panel_config JSONB, tagline TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status VARCHAR(50) NOT NULL DEFAULT 'active', active_categories TEXT[] NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE store_product_overrides (store_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, override_value DOUBLE PRECISION NOT NULL DEFAULT 0, mode VARCHAR(20) NOT NULL DEFAULT 'percent')`,
@@ -153,6 +154,31 @@ func gap13OrderBody(items, shippingQuoteID string) string {
 	return `{"storeId":"central","paymentMethod":"cash","customerInfo":{"fullName":"مشتری تست","phone":"09120000000","province":"تهران","city":"تهران","address":"خیابان تست ۱","postalCode":"1234567890"},"items":[` + items + `]` + q + `}`
 }
 
+// gap13QuoteID obtains a real shipping quote for the given items via
+// handleShippingQuote (same pattern as TestGap13QuoteOrderParity) and
+// returns its quoteId. Since the P1-3 shipping gate, order creation
+// requires a quoteId — tests that assert 201 must pass one.
+func gap13QuoteID(t *testing.T, rp *gap13Repos, itemsJSON string) string {
+	t.Helper()
+	claims := &auth.UserClaims{UserID: gap13UserID, Mobile: "09120000000", Role: "customer", Capabilities: []string{"customer"}}
+	ctx := context.WithValue(context.Background(), userClaimsKey, claims)
+	qreq := httptest.NewRequest(http.MethodPost, "/api/v1/shipping/quote", strings.NewReader(
+		`{"items":[`+itemsJSON+`],"destination":{"province":"تهران","city":"تهران","address":"خیابان تست ۱","postalCode":"1234567890"}}`))
+	qreq = qreq.WithContext(ctx)
+	qrec := httptest.NewRecorder()
+	handleShippingQuote(qrec, qreq, ctx, rp.catalogRepo, rp.supplierRepo, rp.db)
+	if qrec.Code != http.StatusOK {
+		t.Fatalf("quote status = %d, body %s", qrec.Code, qrec.Body.String())
+	}
+	var quote struct {
+		QuoteID string `json:"quoteId"`
+	}
+	if err := json.Unmarshal(qrec.Body.Bytes(), &quote); err != nil || quote.QuoteID == "" {
+		t.Fatalf("decode quote: %v (%s)", err, qrec.Body.String())
+	}
+	return quote.QuoteID
+}
+
 func gap13OrderID(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	if rec.Code != http.StatusCreated {
@@ -211,7 +237,7 @@ func gap13AssertOrderRouting(t *testing.T, rp *gap13Repos, orderID, wantFulfillm
 // product must route direct at creation (the queue always said so).
 func TestGap13DirectOnlySupplierWarehouseFlagRoutesDirect(t *testing.T) {
 	rp := gap13Setup(t)
-	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-wh-directonly","quantity":1}`, ""))
+	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-wh-directonly","quantity":1}`, gap13QuoteID(t, rp, `{"productId":"p-wh-directonly","quantity":1}`)))
 	orderID := gap13OrderID(t, rec)
 	gap13AssertOrderRouting(t, rp, orderID, "supplier_direct", "supplier", "sup-direct-only")
 	// The warehouse leg identity must NOT be stamped on a supplier
@@ -230,7 +256,7 @@ func TestGap13DirectOnlySupplierWarehouseFlagRoutesDirect(t *testing.T) {
 // stays direct.
 func TestGap13BothEnabledDirectFlagStaysDirect(t *testing.T) {
 	rp := gap13Setup(t)
-	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-direct-both","quantity":1}`, ""))
+	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-direct-both","quantity":1}`, gap13QuoteID(t, rp, `{"productId":"p-direct-both","quantity":1}`)))
 	orderID := gap13OrderID(t, rec)
 	gap13AssertOrderRouting(t, rp, orderID, "supplier_direct", "supplier", "sup-both")
 }
@@ -242,7 +268,7 @@ func TestGap13BothEnabledDirectFlagStaysDirect(t *testing.T) {
 // warehouse_id resolves by name.
 func TestGap13RowlessSupplierDirectFlagFallsToWarehouse(t *testing.T) {
 	rp := gap13Setup(t)
-	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-direct-none","quantity":1}`, ""))
+	rec := gap13CreateOrder(t, rp, gap13OrderBody(`{"productId":"p-direct-none","quantity":1}`, gap13QuoteID(t, rp, `{"productId":"p-direct-none","quantity":1}`)))
 	orderID := gap13OrderID(t, rec)
 	gap13AssertOrderRouting(t, rp, orderID, "warehouse", "warehouse", "")
 }

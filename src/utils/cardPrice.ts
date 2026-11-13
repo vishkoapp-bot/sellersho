@@ -1,13 +1,18 @@
+import { variantSaleOf } from './productPurchase';
+
 // OWNER DECISION (Nov 5, 2026): a product CARD displays the DEFAULT
 // variant's price triple (price / originalPrice / discountPercent)
 // whenever the product has an isDefault variant with a priced entry —
 // the PDP opens preselected on that variant, so the card price is the
 // price the customer actually pays for the default pick (gold
 // bracelet: the card showed the product-level 83,520,000 while the PDP
-// opened on the default variant at 80,040,000). Every other case — no
-// variants, no isDefault flag, the default variant missing from
-// variantPrices — falls back to the product-level triple, exactly as
-// cards rendered before.
+// opened on the default variant at 80,040,000). P2(c) extends the pick
+// order: the store's default variant (storeDefaultVariantId) wins over
+// the product isDefault, then the first active PRICED variant; every
+// other case — no variants, no priced variant — falls back to the
+// product-level triple, exactly as cards rendered before. The card
+// price stays identical to the PDP-open price by construction, because
+// initialPurchaseVariant resolves through the same chain.
 //
 // Display-only: this helper never mutates the product. Cart/checkout
 // keep pricing from the cart line's own snapshot (the PDP passes its
@@ -28,12 +33,17 @@ export interface CardPriceTriple {
   discountPercent: number;
 }
 
+
 interface CardPriceSource {
   price: number;
   originalPrice: number;
   discountPercent?: number;
+  productType?: 'legacy' | 'simple' | 'variable';
+  priceMin?: number;
+  priceMax?: number;
+  storeDefaultVariantId?: string | null;
   variants?: { id: string; isDefault?: boolean; isActive?: boolean }[];
-  variantPrices?: Record<string, { price: number; originalPrice: number; discountPercent: number }>;
+  variantPrices?: Record<string, { price: number; originalPrice: number; discountPercent: number; salePrice?: number; saleFrom?: string | null; saleTo?: string | null; onSale?: boolean }>;
 }
 
 export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
@@ -42,16 +52,58 @@ export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
     originalPrice: product.originalPrice,
     discountPercent: product.discountPercent ?? 0,
   };
-  const active = product.variants?.filter((variant) => variant.isActive !== false);
-  const defaultVariant = active?.find((v) => v.isDefault) ?? active?.[0];
+  const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
+  // P2(c) pick order: store default → product isDefault → first active
+  // priced variant. A candidate only counts when it has a priced entry.
+  const priced = (v: { id: string }) => {
+    const vp = product.variantPrices?.[v.id];
+    return vp != null && vp.price != null && Number.isFinite(vp.price);
+  };
+  const defaultVariant =
+    (product.storeDefaultVariantId ? active.find((v) => v.id === product.storeDefaultVariantId && priced(v)) : undefined)
+    ?? active.find((v) => v.isDefault && priced(v))
+    ?? active.find(priced);
   if (!defaultVariant) return fallback;
-  const variantPrice = product.variantPrices?.[defaultVariant.id];
-  if (!variantPrice || variantPrice.price == null) return fallback;
-  const price = variantPrice.price;
-  const originalPrice = variantPrice.originalPrice ?? fallback.originalPrice;
-  let discountPercent = variantPrice.discountPercent ?? 0;
+  const variantPrice = product.variantPrices![defaultVariant.id];
+  // P1(c): a valid sale replaces the resolved price (never stacks).
+  const sale = variantSaleOf(variantPrice);
+  const price = sale ? sale.price : variantPrice.price;
+  const originalPrice = sale ? sale.originalPrice : (variantPrice.originalPrice ?? fallback.originalPrice);
+  let discountPercent = sale ? sale.discountPercent : (variantPrice.discountPercent ?? 0);
   if (!(discountPercent > 0) && originalPrice > price) {
     discountPercent = Math.round((1 - price / originalPrice) * 100);
   }
   return { price, originalPrice, discountPercent };
+};
+
+// P1(a) price range: a SECONDARY line under the card's main price, never
+// a replacement (Nov 5 default-variant price untouched). The backend's
+// priceMin/priceMax win when present; otherwise the range is computed
+// from the active priced variants' effective (post-sale) prices.
+// hasRange only for variable products with >=2 distinctly-priced
+// active variants.
+export interface CardPriceRange { min: number; max: number; hasRange: boolean; }
+
+export const cardPriceRangeOf = (product: CardPriceSource): CardPriceRange => {
+  const noRange: CardPriceRange = { min: 0, max: 0, hasRange: false };
+  if (product.productType !== 'variable') return noRange;
+  let min: number | undefined;
+  let max: number | undefined;
+  if (product.priceMin != null && product.priceMax != null) {
+    min = product.priceMin;
+    max = product.priceMax;
+  } else {
+    const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
+    const prices = active
+      .map((v) => product.variantPrices?.[v.id])
+      .filter((vp): vp is NonNullable<typeof vp> => vp != null && Number.isFinite(vp.price) && vp.price > 0)
+      .map((vp) => variantSaleOf(vp)?.price ?? vp.price);
+    if (prices.length < 2) return noRange;
+    min = Math.min(...prices);
+    max = Math.max(...prices);
+  }
+  // min !== max already implies >=2 distinctly-priced variants (the
+  // backend range is computed over the same candidate set).
+  if (min == null || max == null || min === max) return noRange;
+  return { min, max, hasRange: true };
 };

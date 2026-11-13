@@ -2,7 +2,7 @@ import { apiRequest, tokenStore, getApiBase } from './apiClient';
 import type { ProductSchema } from '../types/productSchema';
 
 export interface SupplierSKUIdentity { variantId?: string; variantName?: string; variantSpnc?: string; }
-export interface SupplierProductVariantDto { id: string; variant_name: string; spnc: string; stock: number; selection?: Record<string,string>; attributes?: Record<string,string>; is_default?: boolean; is_active?: boolean; inventory_mode?: 'legacy'|'tracked'; combination_key?: string; min_cart_qty?: number|null; max_cart_qty?: number|null; supplier_base_cost?: number|null; }
+export interface SupplierProductVariantDto { id: string; variant_name: string; spnc: string; stock: number; selection?: Record<string,string>; attributes?: Record<string,string>; is_default?: boolean; is_active?: boolean; inventory_mode?: 'legacy'|'tracked'; combination_key?: string; min_cart_qty?: number|null; max_cart_qty?: number|null; supplier_base_cost?: number|null; images?: string[]; image_url?: string | null; weight_grams?: number | null; length_mm?: number | null; width_mm?: number | null; height_mm?: number | null; sale_price?: number | null; sale_from?: string | null; sale_to?: string | null; shipping_class?: string | null; tax_class?: string | null; }
 export interface SupplierOrderItemDto extends SupplierSKUIdentity { orderItemId?: string; productId: string; productTitle: string; quantity: number; }
 
 export interface TapinBoxDto { id: string; title: string; lengthCm: number; widthCm: number; heightCm: number; maxWeightGrams?: number | null; isActive: boolean; sort: number }
@@ -284,6 +284,47 @@ export const supplierApi = {
     const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/images`, { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.images ?? []);
   },
+  // P0: single variant-image upload (POST /upload/product-image, the
+  // same endpoint the propose form uses). Returns the stored URL.
+  uploadVariantImage: async (file: File, sessionToken?: string): Promise<{ imageUrl: string }> => {
+    const form = new FormData();
+    form.append('image', file);
+    const token = sessionToken ?? tokenStore.getToken();
+    const res = await fetch(`${getApiBase()}/upload/product-image`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصویر');
+    if (!(data as any)?.success || !(data as any)?.imageUrl) throw new Error((data as any)?.error || 'خطا در آپلود تصویر');
+    return data as { imageUrl: string };
+  },
+  // P0: variant gallery (product_variant_images, cap 4/variant).
+  getVariantImages: async (productId: string, variantId: string): Promise<any[]> => {
+    const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/images`, { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.images ?? []);
+  },
+  uploadVariantImages: async (productId: string, variantId: string, files: File[]): Promise<any> => {
+    const form = new FormData();
+    files.forEach((f) => form.append('images', f));
+    const token = tokenStore.getToken();
+    const res = await fetch(`${getApiBase()}/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/images`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر تنوع');
+    return data;
+  },
+  deleteVariantImage: (productId: string, variantId: string, imageId: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/images/${encodeURIComponent(imageId)}`, { method: 'DELETE', auth: true }),
+  reorderVariantImages: (productId: string, variantId: string, orderedIds: string[]) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/images/reorder`, { method: 'PUT', auth: true, body: JSON.stringify({ orderedIds }) }),
+  // P0: post-publish physicals edit (null clears back to inherit).
+  updateVariantPhysical: (productId: string, variantId: string, payload: { weightGrams?: number | null; lengthMm?: number | null; widthMm?: number | null; heightMm?: number | null }) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/physical`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
+  // P1(c): post-publish sale edit (salePrice null clears the whole sale).
+  updateVariantSale: (productId: string, variantId: string, payload: { salePrice?: number | null; saleFrom?: string | null; saleTo?: string | null }) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/sale`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
   uploadProductImages: async (productId: string, files: File[]): Promise<any> => {
     const form = new FormData();
     files.forEach((f) => form.append('images', f));

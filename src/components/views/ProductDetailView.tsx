@@ -38,6 +38,8 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     products,
     openProductDetail,
     routeStoreSlug,
+    routeStoreResolved,
+    routeStoreInvalid,
     stores,
   } = useStore();
   const { success, info, error } = useToast();
@@ -55,6 +57,21 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   // exact copy (real "۱۸ ماه گارانتی شرکتی" warranty, single image,
   // empty specs — the detail DTO has no images/specs keys, like live).
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  // P0-2: a scoped detail fetch that fails must surface, never silently
+  // keep the unscoped product prop as if it were store-priced.
+  const [detailFailed, setDetailFailed] = useState(false);
+  const [detailNonce, setDetailNonce] = useState(0);
+  // M6 (round 2): the PDP loading gate must never spin forever — if
+  // the routed store stays unresolved for 15s, show an error with a
+  // retry instead of an infinite spinner (a full reload recovers:
+  // cold load re-resolves the slug).
+  const [storeResolveTimedOut, setStoreResolveTimedOut] = useState(false);
+  useEffect(() => {
+    setStoreResolveTimedOut(false);
+    if (!routeStoreSlug || routeStoreResolved) return;
+    const t = setTimeout(() => setStoreResolveTimedOut(true), 15000);
+    return () => clearTimeout(t);
+  }, [routeStoreSlug, routeStoreResolved]);
   // PDP store scope: the route scope (a /store/<slug>/product/ URL or
   // a storefront click) wins; otherwise a dropshipper current store
   // scopes its own PDP. Derived BEFORE the detail fetch so a cold
@@ -68,18 +85,22 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       : null);
   useEffect(() => {
     setDetailProduct(null);
+    setDetailFailed(false);
     let cancelled = false;
     // ISO-E: the detail endpoint is store-priced (?storeSlug): the
     // unscoped fetch showed the central price on every storefront
     // (staging prod-vitamin-serum: 462000/32% unscoped vs
     // 483000/29% for storeSlug=mone). Re-fetch when the store
     // changes, even for the same product id.
+    // Anonymous-safe by construction: catalogApi attaches an
+    // Authorization header only when a token exists, and the detail
+    // route is OptionalAuth (curl-proven 200 anonymous, 2026-11-13).
     catalogApi.getProductById(product.id, scopedStoreSlug ?? currentStore?.slug)
       .then((dto) => { if (!cancelled) setDetailProduct(mapBackendProduct(dto)); })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) setDetailFailed(true); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.id, scopedStoreSlug, currentStore?.slug]);
+  }, [product.id, scopedStoreSlug, currentStore?.slug, detailNonce]);
 
   // Related-rail scope: when this PDP is bound to a store (the scope
   // derived above), the rail must be priced by THAT store. The
@@ -125,7 +146,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   useEffect(() => {
     let spnc: string | null = null;
     try { spnc = new URLSearchParams(window.location.search).get('spnc'); } catch {}
-    const next = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, spnc);
+    const next = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, spnc, displayBase.storeDefaultVariantId);
     setSelectedVariantId(next?.id ?? null);
     setQty(next ? purchaseLimits(displayBase, next).minQty : 1);
   }, [displayBase.id, displayBase.variants]);
@@ -133,7 +154,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   const wishlisted = isWishlisted(product.id, pdpStore);
   const showVariantSelector = variants.length > 1 || displayBase.productType === 'variable';
-  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase);
+  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, null, displayBase.storeDefaultVariantId);
   const displayProduct = productForVariant(displayBase, selectedVariant);
   const { minQty, maxQty } = purchaseLimits(displayBase, selectedVariant);
   const purchase = resolvePurchase(displayBase, selectedVariant?.id);
@@ -172,6 +193,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   const publishedInCurrentStore = isProductPublishedInStore(currentStore, product.id);
   const handleAddToCart = () => {
+    // P0-2: never add while the routed store is still resolving — the
+    // line would be stamped with the wrong store's cart bucket.
+    if (routeStoreSlug && currentStore?.slug !== routeStoreSlug) return;
     if (!publishedInCurrentStore) {
       error(`این کالا در «${currentStore?.name}» عرضه نمی‌شود.`);
       return;
@@ -189,6 +213,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   const handleBuyNow = () => {
     if (!purchase || !cartQuantityAllowed([], purchase, qty)) return;
     if (!currentStore) return;
+    // P0-2: same guard as add-to-cart — a direct buy must not be
+    // staged under the wrong store while the route store resolves.
+    if (routeStoreSlug && currentStore.slug !== routeStoreSlug) return;
     if (!publishedInCurrentStore) {
       error(`این کالا در «${currentStore.name}» عرضه نمی‌شود.`);
       return;
@@ -204,6 +231,64 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     });
     setBuyNowModalOpen(true);
   };
+
+  // P0-2: render gates for a store-scoped PDP. While the routed store
+  // is unresolved the page must show a loading state — header, price
+  // and add-to-cart included — never the central store's chrome with
+  // central prices. A terminally failed resolve (unknown/suspended
+  // slug) renders the invalid-store view, never a central PDP.
+  if (routeStoreSlug && routeStoreInvalid) {
+    return <NotFoundView variant="store" onBack={onBack} />;
+  }
+  if (routeStoreSlug && !routeStoreResolved) {
+    if (storeResolveTimedOut) {
+      return (
+        <div role="alert" className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+          <p className="text-sm font-bold text-slate-700">بارگذاری فروشگاه انجام نشد.</p>
+          <p className="text-xs text-slate-500">فروشگاه مورد نظر در دسترس نیست؛ لطفاً دوباره تلاش کنید.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-full bg-brand px-4 py-2 text-xs font-bold text-white hover:bg-brand-deep transition-colors"
+          >
+            تلاش دوباره
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">
+        در حال بارگذاری فروشگاه…
+      </div>
+    );
+  }
+  // P0-2: while the scoped detail fetch has not succeeded, the
+  // unscoped product prop must not stand in as the store-priced PDP
+  // (its price is the central one). Show a loading state for the
+  // price/add-to-cart area instead; on failure, an explicit error
+  // with a retry — never a silent central-priced render.
+  if (scopedStoreSlug && detailFailed) {
+    return (
+      <div role="alert" className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+        <p className="text-sm font-bold text-slate-700">بارگذاری مشخصات کالا انجام نشد.</p>
+        <p className="text-xs text-slate-500">قیمت فروشگاه دریافت نشد؛ لطفاً دوباره تلاش کنید.</p>
+        <button
+          type="button"
+          onClick={() => setDetailNonce((n) => n + 1)}
+          className="rounded-full bg-brand px-4 py-2 text-xs font-bold text-white hover:bg-brand-deep transition-colors"
+        >
+          تلاش دوباره
+        </button>
+      </div>
+    );
+  }
+  if (scopedStoreSlug && !detailProduct) {
+    return (
+      <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">
+        در حال بارگذاری کالا…
+      </div>
+    );
+  }
 
   // Store-scoped route, wrong store: the URL names a store that does
   // not publish this product. Render the store 404 (bare shell, no
@@ -282,6 +367,9 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         title={displayProduct.title}
         discountPercent={displayProduct.discountPercent}
         fashion={fashion}
+        fallbackImage={displayBase.image}
+        saleEndsAt={displayProduct.saleTo}
+        saleStartsAt={displayProduct.saleFrom}
       />
       </div>
 

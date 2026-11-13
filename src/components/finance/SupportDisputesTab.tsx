@@ -60,7 +60,12 @@ export const SupportDisputesTab: React.FC = () => {
         });
         fetchDisputes();
       } catch (err: any) {
+        // B1 (round 2): a failed backend resolve must NOT toast success
+        // and must NOT flip local state — the dispute stays pending and
+        // the admin is told the resolution did not happen.
         console.warn('Backend dispute resolve notice:', err);
+        error(err?.message || 'ثبت حکم داوری در سرور انجام نشد؛ پرونده همچنان در انتظار رسیدگی است.');
+        return;
       }
     }
 

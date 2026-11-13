@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -47,7 +48,23 @@ func applyStoreDiscounts(ctx context.Context, storeRepo *repository.StoreReposit
 	return pricing.ApplySellerDiscounts(res, campaign, codeInput)
 }
 
-// Public discount quote: same server-side math as order creation, but
+// applyVariantSaleToCharge applies a variant's sale to a charge-path
+// resolution with the SAME shared helper and order as the display path
+// (campaigns first, then sale: lowest wins, floor R). It runs AFTER
+// applyStoreDiscounts in both order creation and the discount quote,
+// so display == charge on the same fixture. Returns the adjusted
+// resolution and the extra discount amount the sale gave up (0 when
+// the sale is inert or suspended).
+func applyVariantSaleToCharge(res pricing.ReferenceResolution, v *domain.ProductVariant) (pricing.ReferenceResolution, int64) {
+	if v == nil || v.SalePrice == nil {
+		return res, 0
+	}
+	after, onSale := pricing.ApplyVariantSale(res, v.SalePrice, time.Now(), v.SaleFrom, v.SaleTo)
+	if !onSale {
+		return res, 0
+	}
+	return after, res.FinalPrice - after.FinalPrice
+}
 // read-only. It never creates an order and never consumes a code use.
 // An invalid/expired code returns discountCodeValid=false with the
 // campaign-only totals, so checkout can show a clear error; placing
@@ -135,6 +152,7 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 			}
 		}
 		var res pricing.ReferenceResolution
+		var chosen *domain.ProductVariant
 		if variantID := strings.TrimSpace(itemReq.VariantID); variantID != "" {
 			// Same variant resolution as handleCreateOrder: the
 			// variant must belong to this product, its own cost
@@ -147,7 +165,6 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 				http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
 				return
 			}
-			var chosen *domain.ProductVariant
 			for _, v := range variants {
 				if v.ID == variantID {
 					vv := v
@@ -158,6 +175,17 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 			if chosen == nil {
 				http.Error(w, `{"error":"Variant not found for product"}`, http.StatusBadRequest)
 				return
+			}
+			// P2(a): a variant hidden in this store cannot be
+			// quoted for it — the quote must predict checkout.
+			if store.OwnerType == "dropshipper" {
+				if visible, verr := storeRepo.IsVariantVisibleInStore(ctx, store.ID, chosen.ID); verr != nil {
+					http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
+					return
+				} else if !visible {
+					http.Error(w, fmt.Sprintf(`{"error":"Variant %s is not available in this store"}`, itemReq.VariantID), http.StatusBadRequest)
+					return
+				}
 			}
 			cost := p.SupplierBaseCost
 			if chosen.SupplierBaseCost != nil {
@@ -180,6 +208,12 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 		res, widgetDiscountAmount := applyDealsWidgetDiscount(store, widgetCfg, p.ID, res)
 		d := applyStoreDiscounts(ctx, storeRepo, store, p, itemReq.VariantID, res, code)
 		d.DiscountAmount += widgetDiscountAmount
+		// P1(c) charge path: the sale applies after campaigns, with
+		// the same shared helper as the display path.
+		if saleRes, saleAmount := applyVariantSaleToCharge(d.Resolution, chosen); saleAmount > 0 {
+			d.Resolution = saleRes
+			d.DiscountAmount += saleAmount
+		}
 		if d.Code != "" {
 			codeApplied = true
 		}

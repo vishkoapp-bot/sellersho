@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useStore, useActiveStoreCategorySlugs, expandCategorySlugsWithAncestors } from '../context/StoreContext';
 import { ChevronLeft, Coins, Gem, Home, Plug, Shirt, ShoppingBag, Smartphone, Sparkles } from 'lucide-react';
+import { FallbackImage } from './common/FallbackImage';
 
 // Live category-icon map (live bundle A5: Smartphone, Shirt, Sparkles,
 // Home, Coins, Plug, Gem). Default for an empty/unknown iconName is
@@ -140,21 +141,20 @@ export const CategoriesBar: React.FC = () => {
                   >
                     <div className="transition-transform duration-200 group-hover:scale-105 group-active:scale-90">
                       <div className="w-[70px] h-[70px] xl:w-[100px] xl:h-[100px] rounded-full bg-[#faf9ff] p-[3px] ring-[1.5px] ring-brand/30 shadow-[0_2px_12px_rgba(93,68,248,0.10)]">
-                        {cat.image ? (
-                          <img
-                            src={cat.image}
-                            alt=""
-                            className="w-full h-full rounded-full object-cover"
-                            loading="lazy"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <div className={`w-full h-full rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center`}>
-                            <FallbackIcon className="w-8 h-8 xl:w-11 xl:h-11 text-white" strokeWidth={1.8} />
-                          </div>
-                        )}
+                        {/* P1-13: shared FallbackImage — a broken category
+                            image falls through to the existing gradient +
+                            icon node instead of an empty white circle. */}
+                        <FallbackImage
+                          srcs={[cat.image]}
+                          alt=""
+                          className="w-full h-full rounded-full object-cover"
+                          loading="lazy"
+                          fallback={
+                            <div className={`w-full h-full rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center`}>
+                              <FallbackIcon className="w-8 h-8 xl:w-11 xl:h-11 text-white" strokeWidth={1.8} />
+                            </div>
+                          }
+                        />
                       </div>
                     </div>
 

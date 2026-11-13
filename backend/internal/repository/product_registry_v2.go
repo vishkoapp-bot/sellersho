@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/lib/pq"
 )
 
@@ -165,8 +166,8 @@ func ValidateProductProposalTx(ctx context.Context, tx *sql.Tx, data map[string]
 	if slug == "" {
 		slug, _ = data["category"].(string)
 	}
-	var category string
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM categories WHERE slug=$1 OR id=$1 LIMIT 1 FOR SHARE`, slug).Scan(&category); err != nil {
+	var category, categorySlug string
+	if err = tx.QueryRowContext(ctx, `SELECT id, slug FROM categories WHERE slug=$1 OR id=$1 LIMIT 1 FOR SHARE`, slug).Scan(&category, &categorySlug); err != nil {
 		return fmt.Errorf("invalid product category: %w", err)
 	}
 	definitions, err := loadCategoryProductAttributes(ctx, tx, category)
@@ -176,7 +177,191 @@ func ValidateProductProposalTx(ctx context.Context, tx *sql.Tx, data map[string]
 	if err = validateLocalProductOptionOwnershipTx(ctx, tx, schema); err != nil {
 		return err
 	}
-	return validateV2Registry(schema, definitions)
+	if err = validateV2Registry(schema, definitions); err != nil {
+		return err
+	}
+	// M1 (2026-11-13): sale R/S floor at proposal/review time —
+	// runs last, after validateProductV2 has normalised the sale
+	// fields (rules 1/4/5 + expired-sale normalisation).
+	return validateVariantSaleFloorsTx(ctx, tx, data, categorySlug)
+}
+
+// loadPlatformPricingSettingsTx loads the platform pricing settings
+// inside a validation transaction (M1 sale-floor check). It mirrors
+// PricingRepository.GetPlatformPricingSettings, including its
+// degrade-to-defaults behaviour: a missing settings row, missing
+// ladder/ceiling tables, or any other load error yields the code
+// defaults rather than failing validation — the same fallback the
+// live sale endpoint uses via loadPricingSettings. It reads settings
+// only; no price formula is changed here.
+func loadPlatformPricingSettingsTx(ctx context.Context, tx *sql.Tx) *pricing.PlatformPricingSettings {
+	s := &pricing.PlatformPricingSettings{
+		ProductPlatformPcts:  map[string]float64{},
+		CategoryPlatformPcts: map[string]float64{},
+		ProductMarginCeilings: map[string]float64{},
+	}
+	var earlyWithdrawalFeePct sql.NullFloat64
+	err := tx.QueryRowContext(ctx, `
+		SELECT platform_pct, central_profit_pct, increase_cap_pct, increase_locked,
+		       max_profit_margin, min_profit_margin, default_margin, central_store_markup_percent,
+		       referral_is_enabled, referral_commission_percent,
+		       settlement_day, early_withdrawal_fee_pct, wallet_min_withdrawal,
+		       wallet_spend_enabled, wallet_withdraw_enabled
+		FROM platform_settings WHERE id = 1
+	`).Scan(
+		&s.PlatformPct, &s.CentralProfitPct, &s.IncreaseCapPct, &s.IncreaseLocked,
+		&s.MaxProfitMargin, &s.MinProfitMargin, &s.DefaultMargin, &s.CentralStoreMarkupPercent,
+		&s.ReferralIsEnabled, &s.ReferralCommissionPercent,
+		&s.SettlementDay, &earlyWithdrawalFeePct, &s.WalletMinWithdrawal,
+		&s.WalletSpendEnabled, &s.WalletWithdrawEnabled,
+	)
+	if err != nil {
+		return pricing.DefaultPlatformPricingSettings()
+	}
+	s.EarlyWithdrawalFeePct = earlyWithdrawalFeePct.Float64
+	// The ladder tables may be absent on a database that has not run
+	// their migration; the engine then degrades to the global
+	// platform_pct instead of failing (same as GetPlatformPricingSettings).
+	if rows, lerr := tx.QueryContext(ctx, `SELECT product_id, pct FROM platform_pct_products`); lerr == nil {
+		for rows.Next() {
+			var id string
+			var pct float64
+			if rows.Scan(&id, &pct) == nil {
+				s.ProductPlatformPcts[id] = pct
+			}
+		}
+		rows.Close()
+	}
+	if rows, lerr := tx.QueryContext(ctx, `SELECT category_slug, pct FROM platform_pct_categories`); lerr == nil {
+		for rows.Next() {
+			var slug string
+			var pct float64
+			if rows.Scan(&slug, &pct) == nil {
+				s.CategoryPlatformPcts[slug] = pct
+			}
+		}
+		rows.Close()
+	}
+	if rows, lerr := tx.QueryContext(ctx, `SELECT product_id, max_margin_pct FROM product_margin_ceilings`); lerr == nil {
+		for rows.Next() {
+			var id string
+			var pct float64
+			if rows.Scan(&id, &pct) == nil {
+				s.ProductMarginCeilings[id] = pct
+			}
+		}
+		rows.Close()
+	}
+	return s
+}
+
+// validateVariantSaleFloorsTx enforces the P1(c) sale rules 2/3
+// (S > R, S < P_central) at proposal/review time (M1), using the
+// same engine as the live sale endpoint: R and P_central come from
+// pricing.ResolveReferencePricingForStoreProductVariantWithCost
+// resolved as the central store, from the variant's proposed cost C
+// and the platform-pct ladder. It runs inside
+// ValidateProductProposalTx, so it covers propose, correction, and
+// approval/publication re-validation — and bulk-add, where only the
+// incoming variants are checked (see the stored-row skip below). A
+// bad sale is therefore rejected before it can publish; it can no
+// longer sail through review and suspend silently at display/charge
+// time. The documented deviation stands: an EXPIRED sale never
+// reaches here — validateProductV2 normalises it away first — so it
+// is still dropped, not rejected.
+//
+// Stored-row skip: variants that already exist as stored rows for
+// this product are NOT re-checked. Their sales were validated at
+// write time (live endpoint) and a later governed cost rise only
+// suspends them at runtime (inert). Re-checking them here would
+// block an unrelated bulk-add for a sale that has simply gone
+// stale — the same philosophy as the expired-sale normalisation
+// (D1). data carries product_id only on the bulk-add /
+// re-publication paths; propose-time payloads have none, so every
+// row is checked there.
+//
+// Costless variants: a variant with no positive own cost (inactive,
+// NULL) inherits the product cost at read time, so the check uses
+// that inherited cost — the stored product cost on the add path,
+// else the proposal's aggregate product cost
+// (data["supplierBaseCost"], set by validateProductV2 as the min
+// active submitted cost and stored as the product cost at publish).
+// The runtime suspension remains the backstop for any residual
+// mismatch.
+func validateVariantSaleFloorsTx(ctx context.Context, tx *sql.Tx, data map[string]interface{}, categorySlug string) error {
+	raw, ok := data["variants"].([]interface{})
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	skip := map[string]bool{}
+	productID, _ := data["product_id"].(string)
+	if productID != "" {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM product_variants WHERE product_id=$1`, productID)
+		if err == nil {
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					skip[id] = true
+				}
+			}
+			rows.Close()
+		}
+	}
+	var settings *pricing.PlatformPricingSettings
+	var storedProductCost *int64
+	central := domain.Store{ID: "store-central", Slug: "central", OwnerType: "central"}
+	for _, entry := range raw {
+		v, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := v["id"].(string)
+		if skip[id] {
+			continue
+		}
+		sale, hasSale := jsonNumber(v["sale_price"])
+		if !hasSale || sale <= 0 {
+			continue
+		}
+		cost, _ := jsonNumber(v["supplier_base_cost"])
+		if cost <= 0 {
+			// No own cost: inherit the product cost (see doc above).
+			if productID != "" {
+				if storedProductCost == nil {
+					var c int64
+					if err := tx.QueryRowContext(ctx, `SELECT supplier_base_cost FROM products WHERE id=$1`, productID).Scan(&c); err == nil {
+						storedProductCost = &c
+					} else {
+						zero := int64(0)
+						storedProductCost = &zero
+					}
+				}
+				cost = float64(*storedProductCost)
+			} else {
+				aggregate, _ := jsonNumber(data["supplierBaseCost"])
+				cost = aggregate
+			}
+		}
+		if cost <= 0 {
+			// Unresolvable cost (no product cost anywhere): the sale
+			// cannot be floor-checked here; runtime suspension is the
+			// backstop (a sale at/below R is inert, never money-losing).
+			continue
+		}
+		if settings == nil {
+			settings = loadPlatformPricingSettingsTx(ctx, tx)
+		}
+		prod := domain.Product{ID: productID, CategorySlug: categorySlug, SupplierBaseCost: int64(cost)}
+		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(prod, int64(cost), id, central, settings, nil, nil)
+		s := int64(sale)
+		if s <= res.BaseCost {
+			return fmt.Errorf("salePrice must be above the reference cost %d", res.BaseCost)
+		}
+		if s >= res.FinalPrice {
+			return fmt.Errorf("salePrice must be below the central price %d", res.FinalPrice)
+		}
+	}
+	return nil
 }
 
 func validateLocalProductOptionOwnershipTx(ctx context.Context, tx *sql.Tx, schema *domain.ProductSchema) error {

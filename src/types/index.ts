@@ -18,6 +18,22 @@ export interface ProductVariant {
   isDefault: boolean;
   minCartQty: number;
   maxCartQty: number | null;
+  // Variant systems P0/P1/P2 (Nov 13, 2026): all optional — old DTOs
+  // without them keep working. Backend contract: images live in the
+  // product_variant_images table (cap 4/variant, images[0] is the hero);
+  // physicals are mm/g, NULL = inherit from the product; sale fields
+  // use the backend's saleFrom/saleTo naming (P1(c)).
+  imageUrl?: string | null; // hero image; derived from images[0] when absent
+  images?: string[]; // variant gallery (hero first, max 3 more); empty = product gallery
+  weightGrams?: number | null; // null = inherit Product.weightGrams
+  lengthMm?: number | null; // dims are all-or-none: all three set or all inherit
+  widthMm?: number | null;
+  heightMm?: number | null;
+  shippingClass?: string | null; // null = inherit product class (stored only, P2(b))
+  taxClass?: string | null; // null = inherit product class (stored only, P2(b))
+  salePrice?: number | null; // configured sale price (Toman); see VariantPrice for the resolved one
+  saleFrom?: string | null;
+  saleTo?: string | null;
 }
 
 export interface VariantPrice {
@@ -25,6 +41,25 @@ export interface VariantPrice {
   originalPrice: number;
   discountPercent: number;
   campaignName?: string;
+  // P1(c) sale: salePrice is the CONFIGURED sale price S; price is
+  // already the post-sale final when onSale is true (sale REPLACES the
+  // resolved final price, never stacks; floor R enforced server-side).
+  salePrice?: number;
+  saleFrom?: string | null;
+  saleTo?: string | null;
+  onSale?: boolean; // true iff the sale determined this final price
+}
+
+// P2(a)/P2(c): per-store variant settings, edited only in
+// SellerProductPricingModal. visibleInStore=false hides the variant in
+// this store only (global isActive untouched); at most one variant per
+// (store, product) is the store default.
+export interface StoreVariantSetting {
+  storeId: string;
+  productId: string;
+  variantId: string;
+  visibleInStore: boolean;
+  isStoreDefault: boolean;
 }
 
 // FIX 14b: live PDP addon card (see catalogApi ProductAddonDto).
@@ -71,6 +106,22 @@ export interface Product {
   isActive?: boolean;
   discountEligible?: boolean;
   storeCount?: number;
+  // Variant systems P0/P1/P2: product-level physicals (the variant
+  // fallback target — the propose form requires them, but they were
+  // dropped by mapBackendProduct until now) and the per-store price
+  // range + store default (P1(a)/P2(c), *int64 omitempty server-side).
+  weightGrams?: number;
+  lengthMm?: number;
+  widthMm?: number;
+  heightMm?: number;
+  priceMin?: number;
+  priceMax?: number;
+  storeDefaultVariantId?: string | null;
+  // Resolved sale window of the currently selected variant (set by
+  // productForVariant from its VariantPrice entry; drives the PDP
+  // countdown). Not a stored product field.
+  saleFrom?: string | null;
+  saleTo?: string | null;
   description: string;
   warehouse: string; // e.g. "انبار مرکزی تهران"
   preparationDays: number;

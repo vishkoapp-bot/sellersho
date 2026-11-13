@@ -23,6 +23,20 @@ export interface ProductVariantDto {
   inventoryMode?: 'legacy' | 'tracked';
   isActive?: boolean;
   supplierBaseCost?: number;
+  // Variant systems P0/P1/P2 (backend names, camelCase on the wire):
+  // images from product_variant_images (images[0] = hero), physicals
+  // mm/g omitempty (null = inherit product), sale + classes (P1(c)/P2(b)).
+  imageUrl?: string | null;
+  images?: string[];
+  weightGrams?: number | null;
+  lengthMm?: number | null;
+  widthMm?: number | null;
+  heightMm?: number | null;
+  shippingClass?: string | null;
+  taxClass?: string | null;
+  salePrice?: number | null;
+  saleFrom?: string | null;
+  saleTo?: string | null;
   // FIX 14b: field order is live's (id, name, variantName, spnc,
   // attributes, isDefault, stock, minCartQty, maxCartQty).
   id: string;
@@ -40,6 +54,13 @@ export interface VariantPriceDto {
   price: number;
   originalPrice: number;
   discountPercent: number;
+  campaignName?: string;
+  // P1(c): configured sale price + window; onSale true iff the sale
+  // determined this price (price is already the post-sale final then).
+  salePrice?: number;
+  saleFrom?: string | null;
+  saleTo?: string | null;
+  onSale?: boolean;
 }
 
 // FIX 14b: live PDP addon card (live bundle mapper: addons +
@@ -123,6 +144,16 @@ export interface ProductDto {
   isActive?: boolean;
   brand?: string;
   storeCount?: number;
+  // P0: product-level physicals (variant fallback target).
+  weightGrams?: number;
+  lengthMm?: number;
+  widthMm?: number;
+  heightMm?: number;
+  // P1(a): per-store price range (*int64 omitempty server-side).
+  priceMin?: number;
+  priceMax?: number;
+  // P2(c): this store's default variant (store-scoped DTOs only).
+  storeDefaultVariantId?: string | null;
   variants?: ProductVariantDto[];
   variantPrices?: Record<string, VariantPriceDto>;
   addons?: ProductAddonDto[];

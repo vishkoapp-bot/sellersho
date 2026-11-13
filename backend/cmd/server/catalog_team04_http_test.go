@@ -35,11 +35,12 @@ func team04HTTPRepos(t *testing.T) (*repository.CatalogRepository, *repository.S
 	}
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
-		`DROP TABLE IF EXISTS search_queries, store_products, product_images, product_variants, product_niches, pending_approvals, products CASCADE`,
-		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`DROP TABLE IF EXISTS search_queries, store_products, product_images, product_variant_images, product_variants, product_niches, pending_approvals, products CASCADE`,
+		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE product_niches (product_id VARCHAR(50) NOT NULL, niche_id VARCHAR(50) NOT NULL, PRIMARY KEY (product_id, niche_id))`,
-		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'x', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'x', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE product_images (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE product_variant_images (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), variant_id UUID NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE store_products (store_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, position INT NOT NULL DEFAULT 0, PRIMARY KEY (store_id, product_id))`,
 		`CREATE TABLE search_queries (id BIGSERIAL PRIMARY KEY, term_normalized TEXT NOT NULL, store_slug TEXT NOT NULL, result_count INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE pending_approvals (id VARCHAR(50) PRIMARY KEY, entity_type VARCHAR(50) NOT NULL, target_id VARCHAR(50) NOT NULL, title TEXT NOT NULL, requested_data JSONB NOT NULL DEFAULT '{}', requested_by VARCHAR(50) NOT NULL, status VARCHAR(50) NOT NULL, rejection_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), reviewed_at TIMESTAMPTZ)`,
@@ -52,8 +53,8 @@ func team04HTTPRepos(t *testing.T) (*repository.CatalogRepository, *repository.S
 	seed := []string{
 		`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,image_url,specs,description,warehouse_name,preparation_days,supplier_warranty,is_featured,is_special_deal,fulfillment_method,supply_option,is_active,brand,spn_number,length_mm,width_mm,height_mm,weight_grams) VALUES ('prod-active-1','دستبند طلا','gold-bracelet','gold-silver','sup-1',72500000,58000000,0,TRUE,5,'img','{"power":"1450 وات"}','desc','انبار مرکزی تهران',1,'۱۸ ماه گارانتی شرکتی',FALSE,FALSE,'warehouse','1day',TRUE,'نشر دمو',10000002,120,80,40,500)`,
 		`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,image_url,description,warehouse_name,preparation_days,supplier_warranty,is_featured,is_special_deal,fulfillment_method,supply_option,is_active,brand,spn_number) VALUES ('prod-inactive-1','گوشی تست','test-phone','mobile','sup-1',1000000,800000,0,TRUE,0,'img','desc','انبار مرکزی تهران',1,'گارانتی',FALSE,FALSE,'warehouse','1day',FALSE,'نشر دمو',10000004)`,
-		`INSERT INTO product_variants VALUES ('11111111-1111-1111-1111-111111111111','prod-active-1','FE16A2E1',20000001,'پیش‌فرض','{}',TRUE,5,NULL,NOW())`,
-		`INSERT INTO product_variants VALUES ('22222222-2222-2222-2222-222222222222','prod-active-1','55F08797',20000002,'نگین‌دار','{"style":"نگین‌دار"}',FALSE,2,64000000,NOW())`,
+		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('11111111-1111-1111-1111-111111111111','prod-active-1','FE16A2E1',20000001,'پیش‌فرض','{}',TRUE,5,NULL,NOW())`,
+		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('22222222-2222-2222-2222-222222222222','prod-active-1','55F08797',20000002,'نگین‌دار','{"style":"نگین‌دار"}',FALSE,2,64000000,NOW())`,
 		`INSERT INTO product_images VALUES ('33333333-3333-3333-3333-333333333333','prod-active-1','img1',0,NOW())`,
 		`INSERT INTO store_products VALUES ('store-a','prod-active-1',0)`,
 	}
@@ -82,7 +83,8 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 		handleProductsList(w, r, ctx, catalogRepo, storeRepo, nil)
 	}
 
-	// List: active only, 19 keys, variant prices differ per variant.
+	// List: active only, 23 keys (21 always-present + priceMin/priceMax,
+	// P1(a)), variant prices differ per variant.
 	rec := team04Get(t, listHandler, "/api/v1/products")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body %s", rec.Code, rec.Body.String())
@@ -94,8 +96,8 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list len = %d, want 1 active only", len(list))
 	}
-	if len(list[0]) != 19 {
-		t.Fatalf("list item keys = %d, want exactly 19", len(list[0]))
+	if len(list[0]) != 23 {
+		t.Fatalf("list item keys = %d, want exactly 23", len(list[0]))
 	}
 	for _, forbidden := range []string{"supplierId", "supplierName", "baseCostB", "profitToman", "marginPercent", "installmentPrice"} {
 		if _, ok := list[0][forbidden]; ok {
@@ -112,6 +114,18 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	}
 	if vp["11111111-1111-1111-1111-111111111111"]["originalPrice"] != 72500000 {
 		t.Fatalf("variantPrices originalPrice = %v, want 72500000", vp)
+	}
+	// P1(a): price range = min/max of priced active variants; the
+	// card price (Price) is unchanged by the range.
+	var priceMin, priceMax int64
+	if err := json.Unmarshal(list[0]["priceMin"], &priceMin); err != nil || priceMin != 63800000 {
+		t.Fatalf("priceMin = %d, want 63800000", priceMin)
+	}
+	if err := json.Unmarshal(list[0]["priceMax"], &priceMax); err != nil || priceMax != 70400000 {
+		t.Fatalf("priceMax = %d, want 70400000", priceMax)
+	}
+	if _, ok := list[0]["storeDefaultVariantId"]; ok {
+		t.Fatalf("storeDefaultVariantId must be omitted with no default row")
 	}
 
 	// Brand exact match through HTTP.
@@ -146,8 +160,15 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	}
 	var detail map[string]json.RawMessage
 	_ = json.Unmarshal(rec.Body.Bytes(), &detail)
-	if len(detail) != 23 {
-		t.Fatalf("detail keys = %d, want 20 live + 3 extensions", len(detail))
+	if len(detail) != 25 {
+		t.Fatalf("detail keys = %d, want 20 live + 5 extensions", len(detail))
+	}
+	// P1(a): zero-variant legacy product => range = product price.
+	var dMin, dMax int64
+	_ = json.Unmarshal(detail["priceMin"], &dMin)
+	_ = json.Unmarshal(detail["priceMax"], &dMax)
+	if dMin != 880000 || dMax != 880000 {
+		t.Fatalf("zero-variant detail priceMin/priceMax = %d/%d, want 880000/880000", dMin, dMax)
 	}
 	var isActive bool
 	_ = json.Unmarshal(detail["isActive"], &isActive)

@@ -47,9 +47,31 @@ export const selectionReviewChoices = (key: string, proposal: any): { label: str
   if (path[0] !== 'variants' || path[2] !== 'selection' || path.length !== 4) return [];
   return proposal?.productSchema?.attributes.find((attribute: any) => attribute.id === path[3])?.values.map((value: any) => ({ label: value.label, value: value.id })) ?? [];
 };
+const mmToCm = (mm: any): string => mm == null || mm === '' ? '' : String(Number(mm) / 10);
+const isoToLocal = (iso: any): string => { if (!iso) return ''; const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 16); };
 export const proposalDraftRows = (proposal: any): DraftProductSKU[] => (proposal.variants ?? []).map((variant: any) => ({
   id: variant.id, selection: { ...variant.selection }, name: skuReviewLabel(proposal, variant),
   cost: String(variant.supplier_base_cost ?? variant.supplierBaseCost ?? ''), stock: String(variant.stock ?? ''), active: variant.is_active !== false && variant.isActive !== false,
+  // Variant systems P0/P1(c)/P2(b): carry the draft details through the
+  // correction editor so a structural correction does not silently drop
+  // them (they are only *edited* when the whole variants group is
+  // rejected — see correctionPermissions below).
+  selected: true,
+  // B2: carry the product-level default pick through the correction
+  // editor (proposal stores it as is_default; serializeProductDraft
+  // resolves the effective default the same way — see productModel.ts).
+  isDefault: variant.is_default ?? variant.isDefault ?? false,
+  imageUrl: variant.image_url ?? variant.imageUrl ?? '',
+  images: [...(variant.image_urls ?? variant.images ?? [])],
+  weightGrams: variant.weight_grams != null ? String(variant.weight_grams) : (variant.weightGrams != null ? String(variant.weightGrams) : ''),
+  lengthCm: mmToCm(variant.length_mm ?? variant.lengthMm),
+  widthCm: mmToCm(variant.width_mm ?? variant.widthMm),
+  heightCm: mmToCm(variant.height_mm ?? variant.heightMm),
+  salePrice: variant.sale_price != null ? String(variant.sale_price) : (variant.salePrice != null ? String(variant.salePrice) : ''),
+  saleFrom: isoToLocal(variant.sale_from ?? variant.saleFrom),
+  saleTo: isoToLocal(variant.sale_to ?? variant.saleTo),
+  shippingClass: variant.shipping_class ?? variant.shippingClass ?? '',
+  taxClass: variant.tax_class ?? variant.taxClass ?? '',
 }));
 export const correctionPermissions = (proposal: any, fields: Decision[]) => {
   const rejected = new Set(fields.filter(field => field.decision === 'rejected').map(field => field.field_key));
@@ -61,8 +83,13 @@ export const correctionPermissions = (proposal: any, fields: Decision[]) => {
     variantsEditable,
     attributeEditable: (id: string) => root || rejected.has(`/productSchema/attributes/${pointerEscape(id)}`),
     canEditSKUSelection: (id: string, attributeID: string) => variantsEditable || rejected.has(`/variants/${pointerEscape(id)}/selection/${pointerEscape(attributeID)}`),
-    canEditSKUValue: (id: string, leaf: 'stock' | 'supplier_base_cost') =>
-      rejected.has(`/variants/${pointerEscape(id)}/${leaf}`) || (variantsEditable && !proposal.variants?.some((variant: any) => variant.id === id)),
+    // New variant-detail leaves (image/physical/sale/classes) have no
+    // per-leaf review keys in the dossier, so they are editable only
+    // when the whole variants group was rejected (wholesale replace).
+    canEditSKUValue: (id: string, leaf: 'stock' | 'supplier_base_cost' | 'weight_grams' | 'dimensions' | 'sale_price' | 'image' | 'shipping_class' | 'tax_class') =>
+      leaf === 'stock' || leaf === 'supplier_base_cost'
+        ? rejected.has(`/variants/${pointerEscape(id)}/${leaf}`) || (variantsEditable && !proposal.variants?.some((variant: any) => variant.id === id))
+        : variantsEditable,
   };
 };
 const canonical = (value: any): string => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -123,9 +150,32 @@ export const buildStructuralCorrection = (proposal: any, fields: Decision[], sch
       }
     }
     return { id: row.id, selection: row.selection, variant_name: skuReviewLabel({ productSchema: schema }, row), attributes: Object.fromEntries(axes.map(attribute => [attribute.name, attribute.values.find(value => value.id === row.selection[attribute.id])?.label ?? ''])), supplier_base_cost: cost, stock, is_active: row.active,
+      // Variant details ride along on a wholesale variants replace so
+      // they are not dropped by a structural correction (same snake_case
+      // mapping as serializeProductDraft).
+      // F1: backend reads ONLY v["images"] (hero first) — the old
+      // image_url/image_urls keys were silently dropped at publication.
+      // B2: is_default rides along; normalised to exactly one default
+      // (explicit pick among active rows, else first active) below.
+      is_default: row.isDefault ?? false,
+      images: row.imageUrl.trim() ? [row.imageUrl.trim(), ...row.images.filter(u => u.trim() !== '')] : row.images.filter(u => u.trim() !== ''),
+      weight_grams: row.weightGrams.trim() === '' ? null : Number(row.weightGrams),
+      length_mm: row.lengthCm.trim() === '' ? null : Number(row.lengthCm) * 10,
+      width_mm: row.widthCm.trim() === '' ? null : Number(row.widthCm) * 10,
+      height_mm: row.heightCm.trim() === '' ? null : Number(row.heightCm) * 10,
+      sale_price: row.salePrice.trim() === '' ? null : Number(row.salePrice),
+      sale_from: row.saleFrom.trim() === '' ? null : new Date(row.saleFrom).toISOString(),
+      sale_to: row.saleTo.trim() === '' ? null : new Date(row.saleTo).toISOString(),
+      shipping_class: row.shippingClass.trim() || null,
+      tax_class: row.taxClass.trim() || null,
       ...(original ? { min_cart_qty: original.min_cart_qty ?? 1, max_cart_qty: original.max_cart_qty ?? null } : {}),
     };
   });
+  // B2: exactly one is_default among the active rows in a wholesale
+  // replace — explicit pick wins, else the first active row (same rule
+  // as serializeProductDraft).
+  const defaultId = fullRows.find(r => r.is_default && r.is_active)?.id ?? fullRows.find(r => r.is_active)?.id;
+  for (const r of fullRows) r.is_default = r.id === defaultId;
   if (!rows.some(row => row.active)) throw Error('حداقل یک ترکیب فعال لازم است.');
   if (replacingStructure) patch['/variants'] = fullRows;
   return patch;

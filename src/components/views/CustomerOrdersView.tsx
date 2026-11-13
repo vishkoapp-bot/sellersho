@@ -7,7 +7,7 @@ import { orderApi, CustomerReturnDto, ReturnDestinationInfo } from '../../servic
 import { ArrowRight, Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle } from 'lucide-react';
 
 export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { currentStore, customerUser, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery } = useStore();
+  const { currentStore, customerUser, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
   const { success, error: toastError } = useToast();
   const { orders, fetchMyOrders } = useOrders();
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[]>([]);
@@ -282,22 +282,28 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
-                      onClick={() => {
-                        confirmOrderDelivery(ord.id);
-                        success(`تحویل مرسوله سفارش ${ord.orderNumber} تایید شد و سود سفارش در کیف پول سلر آزاد گردید.`);
+                      disabled={busyOrderId === ord.id}
+                      onClick={async () => {
+                        try {
+                          await confirmOrderDelivery(ord.id);
+                          success('تحویل مرسوله تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ سود فروشنده پس از پایان مهلت آزاد می‌شود.');
+                        } catch (e: any) { toastError(e?.message || 'تأیید تحویل انجام نشد.'); }
                       }}
-                      className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg transition-colors flex items-center justify-center gap-1 shadow-2xs"
+                      className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>کالا را دریافت کردم</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        disputeOrderDelivery(ord.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
-                        success(`گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.`);
+                      disabled={busyOrderId === ord.id}
+                      onClick={async () => {
+                        try {
+                          const res = await disputeOrderDelivery(ord.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
+                          success(res?.id ? `گزارش عدم دریافت کالا ثبت شد (شماره پیگیری: ${res.id}). سفارش تا بررسی پشتیبانی، تأیید خودکار نمی‌شود.` : 'گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.');
+                        } catch (e: any) { toastError(e?.message || 'ثبت گزارش عدم دریافت انجام نشد.'); }
                       }}
-                      className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-lg border border-rose-200 transition-colors flex items-center justify-center gap-1"
+                      className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-lg border border-rose-200 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
                     >
                       <AlertCircle className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>هنوز دریافت نکرده‌ام</span>
@@ -319,7 +325,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 <div className="p-2 bg-emerald-50 border border-emerald-200/80 rounded-xl text-[10px] text-emerald-800 flex items-center justify-between">
                   <div className="flex items-center gap-1 font-bold">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
-                    <span>دریافت کالا توسط شما تایید شده و تسویه تکمیل گردید.</span>
+                    <span>دریافت کالا توسط شما تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ تسویه پس از پایان مهلت انجام می‌شود.</span>
                   </div>
                   {ord.confirmedAt && (
                     <span className="text-[9px] text-slate-400 font-mono">{ord.confirmedAt}</span>

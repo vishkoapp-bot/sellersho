@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { ArrowLeft, ImageOff } from 'lucide-react';
 import type { Product } from '../../types';
-import { cardPriceOf } from '../../utils/cardPrice';
+import { cardPriceOf, cardPriceRangeOf } from '../../utils/cardPrice';
 import { formatPrice, toPersianDigits } from '../../utils/formatters';
 import './templates/fashion.css';
 
 export const FashionProductCard: React.FC<{ product: Product; onOpen: (p: Product) => void }> = ({ product, onOpen }) => {
   const price = cardPriceOf(product);
+  const priceRange = cardPriceRangeOf(product);
   const [previewRequested, setPreviewRequested] = useState(false);
   const [readyPreview, setReadyPreview] = useState('');
   const [failedSources, setFailedSources] = useState<string[]>([]);
@@ -35,6 +36,9 @@ export const FashionProductCard: React.FC<{ product: Product; onOpen: (p: Produc
       <div className="fashion-price"><span>{formatPrice(price.price)} <small>تومان</small></span>
         {price.discountPercent > 0 && price.originalPrice > price.price && <del>{formatPrice(price.originalPrice)}</del>}
       </div>
+      {priceRange.hasRange && (
+        <span data-testid="price-range" className="fashion-price-range">از {formatPrice(priceRange.min)} تا {formatPrice(priceRange.max)} تومان</span>
+      )}
       {(product.variants?.length || 0) > 1 && <span className="fashion-variants">{toPersianDigits(product.variants!.length)} تنوع</span>}
     </div>
   </button>;

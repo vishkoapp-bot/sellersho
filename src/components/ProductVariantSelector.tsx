@@ -45,6 +45,10 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   const selectedStyle = { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' };
   if (product && axes.length > 0) {
     const selection = activeProductVariants(product).find((variant) => variant.id === selectedId)?.selection ?? {};
+    // P2(c): the selected variant is this store's default — a quiet line
+    // under the chips (the global isDefault carries no extra label).
+    const selectedVariantV2 = activeProductVariants(product).find((variant) => variant.id === selectedId);
+    const isStoreDefaultV2 = !!product.storeDefaultVariantId && selectedVariantV2?.id === product.storeDefaultVariantId;
     return <div data-testid="variant-selector" className="space-y-4">
       {axes.map((axis) => <fieldset key={axis.id} className="space-y-2" data-axis-id={axis.id}>
         <legend className={`text-xs font-bold ${fashion ? 'text-[#1c1c1a]' : 'text-slate-800'}`}>{axis.name}</legend>
@@ -52,14 +56,26 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
           {axis.values.map((value) => {
             const target = axisOptionVariant(product, selectedId, axis.id, value.id);
             const selected = selection[axis.id] === value.id;
+            // P0: on the colour axis only, a chip whose target variant
+            // has a photo carries a 20×20 thumbnail (an indicator — the
+            // main gallery still swaps on selection).
+            const thumb = axis.id === 'color'
+              ? (target?.imageUrl ?? target?.images?.[0] ?? null)
+              : null;
             return <button key={value.id} type="button" aria-pressed={selected}
               disabled={!target} onClick={() => target && onSelect(target.id)}
               className={chipClass(selected, !target)} style={selected ? selectedStyle : undefined}>
-              {value.label}
+              <span className="flex items-center gap-1.5">
+                {thumb && <img src={thumb} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />}
+                <span>{value.label}</span>
+              </span>
             </button>;
           })}
         </div>
       </fieldset>)}
+      {isStoreDefaultV2 && (
+        <p className="text-[10px] text-slate-400">پیش‌فرض این فروشگاه</p>
+      )}
     </div>;
   }
   if (visibleVariants.length < 2) return null;
@@ -103,6 +119,10 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
         {visibleVariants.map((variant) => {
           const selected = variant.id === selectedId;
           const unavailable = variant.isActive === false || (product ? purchaseLimits(product, variant).maxQty < purchaseLimits(product, variant).minQty : variant.inventoryMode === 'tracked' && variant.stock <= 0);
+          // P0: legacy colour variants get the same thumbnail indicator
+          // as the V2 colour axis (only when a colour attribute exists).
+          const isColourVariant = Object.keys(variant.attributes || {}).some((k) => k === 'رنگ' || k.toLowerCase() === 'color');
+          const thumb = isColourVariant ? (variant.imageUrl ?? variant.images?.[0] ?? null) : null;
           return (
             <button
               key={variant.id}
@@ -125,11 +145,17 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
               }`}
               style={selected ? { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' } : undefined}
             >
-              <span className="block">{labelOf(variant)}</span>
+              <span className="flex items-center gap-1.5">
+                {thumb && <img src={thumb} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />}
+                <span className="block">{labelOf(variant)}</span>
+              </span>
             </button>
           );
         })}
       </div>
+      {product?.storeDefaultVariantId && selectedVariant?.id === product.storeDefaultVariantId && (
+        <p className="text-[10px] text-slate-400">پیش‌فرض این فروشگاه</p>
+      )}
       {selectedVariant && selectedVariant.stock > 0 && selectedVariant.stock <= 3 && (
         <p className="text-[10px] font-bold text-rose-600">
           {storeCount > 0

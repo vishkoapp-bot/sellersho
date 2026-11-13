@@ -24,9 +24,9 @@ it('renders named independent axes, selected values, and disabled unavailable co
   assert.equal((html.match(/<fieldset/g) ?? []).length, 2);
   assert.match(html, /<legend[^>]*>Color<\/legend>/);
   assert.match(html, /<legend[^>]*>Size<\/legend>/);
-  assert.match(html, /aria-pressed="true"[^>]*>Red<\/button>/);
-  assert.match(html, /disabled=""[^>]*>Medium<\/button>/);
-  assert.doesNotMatch(html, /disabled=""[^>]*>Blue<\/button>/);
+  assert.match(html, /aria-pressed="true"[^>]*><span[^>]*><span>Red<\/span>/);
+  assert.match(html, /disabled=""[^>]*><span[^>]*><span>Medium<\/span>/);
+  assert.doesNotMatch(html, /disabled=""[^>]*><span[^>]*><span>Blue<\/span>/);
 });
 
 it('keeps a normal selectable legacy default SKU and omits inactive SKU chips', () => {

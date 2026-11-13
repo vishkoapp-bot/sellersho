@@ -308,6 +308,23 @@ func resolveQuoteLines(ctx context.Context, catalogRepo interface {
 			}
 		}
 	}
+	// P0: one batched load of variant physicals for the whole quote.
+	// A loader error / unknown variant keeps the product values — a
+	// quote must never fail because a variant row is unreadable.
+	variantPhysicals := map[string]domain.ProductVariant{}
+	if supplierRepo != nil {
+		var variantIDs []string
+		for _, it := range items {
+			if strings.TrimSpace(it.VariantID) != "" {
+				variantIDs = append(variantIDs, it.VariantID)
+			}
+		}
+		if len(variantIDs) > 0 {
+			if phys, perr := supplierRepo.GetVariantPhysicalsByIDs(ctx, variantIDs); perr == nil {
+				variantPhysicals = phys
+			}
+		}
+	}
 	lines := make([]shippingQuoteLine, 0, len(items))
 	for i, it := range items {
 		prod := products[i]
@@ -336,6 +353,24 @@ func resolveQuoteLines(ctx context.Context, catalogRepo interface {
 		}
 		if prod.HeightMM != nil {
 			line.HeightMM = *prod.HeightMM
+		}
+		// P0: variant physicals override the product's — weight field
+		// by field, dims as an all-or-none triple (validation
+		// guarantees a stored triple is complete; a partial triple
+		// falls back wholesale to the product dims). M2/F3: the row
+		// is applied ONLY when it belongs to this line's product —
+		// a cross-product variant ID keeps the product values (the
+		// spec's "row belongs to another product: ignore" rule).
+		// The order-time recompute needs no such check: it loads the
+		// variant via GetProductVariants(p.ID), which is scoped by
+		// construction.
+		if phys, ok := variantPhysicals[it.VariantID]; ok && phys.ProductID == it.ProductID {
+			if phys.WeightGrams != nil {
+				line.WeightG = *phys.WeightGrams
+			}
+			if phys.LengthMM != nil && phys.WidthMM != nil && phys.HeightMM != nil {
+				line.LengthMM, line.WidthMM, line.HeightMM = *phys.LengthMM, *phys.WidthMM, *phys.HeightMM
+			}
 		}
 		lines = append(lines, line)
 	}

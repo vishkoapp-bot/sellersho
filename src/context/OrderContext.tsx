@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { Order, CartItem, Store, Product } from '../types';
 import { initialOrders } from '../data/initialOrders';
-import { BackendOrderDto, orderApi } from '../services/orderApi';
+import { BackendOrderDto, DisputeDeliveryResponse, orderApi } from '../services/orderApi';
 import { stageAddressSelection, takeStagedAddressSelection } from '../services/addressApi';
 import { paymentApi } from '../services/paymentApi';
 import { isMockMode } from '../services/apiClient';
@@ -30,10 +30,11 @@ export interface OrderContextType {
   isTrackingModalOpen: boolean;
   setIsTrackingModalOpen: (open: boolean) => void;
   placeOrder: (params: CreateOrderParams) => Promise<Order>;
-  fetchMyOrders: () => Promise<void>;
+  fetchMyOrders: () => Promise<Order[]>; // returns the fresh list so callers can check post-refetch state
   trackOrder: (trackingCode: string) => Promise<Order | null>;
-  confirmOrderDelivery: (orderId: string) => void;
-  disputeOrderDelivery: (orderId: string, reason?: string) => void;
+  confirmOrderDelivery: (orderId: string) => Promise<void>;
+  disputeOrderDelivery: (orderId: string, reason?: string) => Promise<DisputeDeliveryResponse | null>;
+  busyOrderId: string | null;
   adminResolveDeliveryDispute: (
     orderId: string,
     action: 'release_to_seller' | 'refund_to_customer',
@@ -129,6 +130,18 @@ const mapOrderCreateError = (message: string): string => {
   if (message.includes('Missing required order information')) {
     return 'اطلاعات سفارش ناقص است؛ لطفاً اطلاعات گیرنده را کامل کنید.';
   }
+  // P1-3: shipping-quote failures from the backend gate/recompute.
+  // shipping_quote_required is the new fail-closed gate (no quoteId);
+  // the other two already existed at the quote endpoint.
+  if (message.includes('shipping_quote_required')) {
+    return 'هزینه ارسال محاسبه نشده است؛ لطفاً هزینه ارسال را محاسبه کنید و دوباره تلاش کنید.';
+  }
+  if (message.includes('shipping_quote_changed')) {
+    return 'هزینه ارسال تغییر کرده است؛ لطفاً هزینه به‌روز را بررسی و دوباره تلاش کنید.';
+  }
+  if (message.includes('shipping_unavailable')) {
+    return 'قیمت ارسال در دسترس نیست؛ لطفاً چند لحظه دیگر دوباره تلاش کنید.';
+  }
   if (message.includes('Wallet payment is not available')) {
     return 'پرداخت با کیف پول در حال حاضر فعال نیست.';
   }
@@ -150,14 +163,20 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [isCreatingOrder, setIsCreatingOrder] = useState<boolean>(false);
   const [trackingOrder, setTrackingOrder] = useState<Order | null>(null);
   const [isTrackingModalOpen, setIsTrackingModalOpen] = useState(false);
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const ordersRef = useRef<Order[]>(orders);
+  useEffect(() => { ordersRef.current = orders; }, [orders]);
 
-  const fetchMyOrders = async () => {
-    if (isMockMode()) return;
+  const fetchMyOrders = async (): Promise<Order[]> => {
+    if (isMockMode()) return ordersRef.current;
     try {
       const data = await orderApi.getCustomerOrders();
-      setOrders((data || []).map(mapBackendOrder));
+      const mapped = (data || []).map(mapBackendOrder);
+      setOrders(mapped);
+      return mapped;
     } catch (err: any) {
       console.warn('Failed to fetch orders:', err.message);
+      return ordersRef.current;
     }
   };
 
@@ -416,16 +435,59 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     return null;
   };
 
-  const confirmOrderDelivery = (orderId: string) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status: 'delivered', profitReleased: true } : o))
-    );
+  // P0-1: confirm / dispute hit the real backend; the server is the
+  // source of truth. Confirm does NOT release profit — it only starts
+  // the 7-day return window (profit releases when the window closes).
+  // Local state is therefore never set to legacy 'delivered' and
+  // profitReleased is never set true here; the refetch carries the
+  // server status (delivered_confirmed) and timestamps.
+  const confirmOrderDelivery = async (orderId: string) => {
+    const order = ordersRef.current.find((o) => o.id === orderId || o.orderNumber === orderId);
+    if (!order || busyOrderId === orderId) return;
+    if (isMockMode()) {
+      // Demo mode has no backend: mirror the server transition locally.
+      setOrders((prev) => prev.map((o) => (o.id === order.id ? { ...o, status: 'delivered_confirmed' } : o)));
+      return;
+    }
+    setBusyOrderId(orderId);
+    try {
+      await orderApi.confirmDelivery(order.orderNumber || order.id);
+      await fetchMyOrders();
+    } catch (err: any) {
+      // Idempotent double-submit: the backend 404s a second confirm.
+      // Refetch; if the order is now delivered_confirmed, the first
+      // call already won and the 404 is swallowed as already-confirmed.
+      const fresh = await fetchMyOrders();
+      if (fresh.find((o) => o.id === order.id)?.status === 'delivered_confirmed') return;
+      throw err; // call site shows the error toast; local state untouched
+    } finally {
+      setBusyOrderId(null);
+    }
   };
 
-  const disputeOrderDelivery = (orderId: string, reason?: string) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status: 'delivery_disputed', disputeReason: reason } : o))
-    );
+  const disputeOrderDelivery = async (orderId: string, reason?: string): Promise<DisputeDeliveryResponse | null> => {
+    const order = ordersRef.current.find((o) => o.id === orderId || o.orderNumber === orderId);
+    if (!order || busyOrderId === orderId) return null;
+    const disputeReason = (reason ?? '').trim() || 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.';
+    if (isMockMode()) {
+      // Demo mode has no backend: mirror the server transition locally.
+      // No dispute id exists in mock mode, so the toast prints none.
+      setOrders((prev) => prev.map((o) => (o.id === order.id ? { ...o, status: 'delivery_disputed', disputeReason } : o)));
+      return null;
+    }
+    setBusyOrderId(orderId);
+    try {
+      const res = await orderApi.disputeDelivery(order.orderNumber || order.id, {
+        type: 'delivery_undelivered',
+        claimAmount: Math.round(order.payableAmount),
+        reason: disputeReason,
+        ...(order.items?.[0]?.product?.title ? { productTitle: order.items[0].product.title } : {}),
+      });
+      await fetchMyOrders();
+      return res;
+    } finally {
+      setBusyOrderId(null);
+    }
   };
 
   const adminResolveDeliveryDispute = (
@@ -465,6 +527,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     trackOrder,
     confirmOrderDelivery,
     disputeOrderDelivery,
+    busyOrderId,
     adminResolveDeliveryDispute,
     getOrderById,
   };

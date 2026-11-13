@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
@@ -42,7 +43,7 @@ func setupPriceGovFixture(t *testing.T) *priceGovFixture {
 	repo := repository.NewSupplierRepository(db)
 	pricingRepo := repository.NewPricingRepository(db)
 	suffix := uuid.NewString()[:8]
-	owner, supplier, err := repo.RegisterSupplier(ctx, "Gov Test "+suffix, "Owner", "gov-"+suffix, "TestGovPassword!", "", "", "Tehran")
+	owner, supplier, err := repo.RegisterSupplier(ctx, "Gov Test "+suffix, "Owner", "gov-"+suffix, "TestGovPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
 	if err != nil {
 		t.Fatal(err)
 	}

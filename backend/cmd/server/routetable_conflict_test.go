@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,79 @@ func TestRouteTableNoConflicts(t *testing.T) {
 			}()
 			mux.HandleFunc(pattern, noop)
 		}()
+	}
+}
+
+// TestManualDispatchOrderingInvariants extends the route-table gate
+// to the manual sub-path dispatch inside single mux patterns, which
+// TestRouteTableNoConflicts cannot see (2026-11-13, variants P0/P1/P2
+// critic finding 8). Those branches are plain if-chains on the URL
+// suffix/shape, so they cannot be registered in a ServeMux — but the
+// two failure classes that matter there are statically checkable:
+//   - ORDER: a variant-scoped branch must precede the product-level
+//     branch that would otherwise swallow the same suffix (a variant
+//     images path also ends in "/images"); the check is the source
+//     order of the two handler calls inside the
+//     /api/v1/supplier/products/ block.
+//   - DISJOINTNESS: the seller visibility branch (6 parts) and the
+//     default-variant branch (4 parts) match on different part
+//     counts, so no path can match both; likewise the variant DELETE
+//     (5 parts, "variants"/"images") vs the product DELETE (3 parts,
+//     "images").
+// The assertions are source-position checks on main.go and fail
+// loudly (like the extraction count above) if a refactor moves or
+// renames a branch, so a human re-verifies the dispatch instead of
+// the gate silently going blind. They do NOT execute the dispatch —
+// a live boot test against real PG+Redis is still required before
+// deploy (Nov 5 rule).
+func TestManualDispatchOrderingInvariants(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(src)
+	index := func(marker string) int {
+		i := strings.Index(text, marker)
+		if i < 0 {
+			t.Fatalf("manual-dispatch marker %q not found in main.go; the dispatch was refactored — update this gate, do not delete it", marker)
+		}
+		return i
+	}
+	// Supplier block: every variant branch must precede its
+	// product-level sibling. Markers include the call-site "(w, r,"
+	// so a COMMENT that merely names the product handler (e.g. the
+	// P0 ordering comment above the variant branch) cannot satisfy
+	// — or break — the position check; bare handler names are not
+	// unique in main.go.
+	variantFirst := [][2]string{
+		{"HandleReorderVariantImages(w, r,", "HandleReorderProductImages(w, r,"},
+		{"HandleGetVariantImages(w, r,", "HandleGetProductImages(w, r,"},
+		{"HandleUploadVariantImages(w, r,", "HandleUploadProductImages(w, r,"},
+		{"HandleDeleteVariantImage(w, r,", "HandleDeleteProductImage(w, r,"},
+	}
+	for _, pair := range variantFirst {
+		if index(pair[0]) > index(pair[1]) {
+			t.Errorf("manual dispatch order: %s must precede %s in main.go (the variant branch would otherwise be swallowed by the product branch)", pair[0], pair[1])
+		}
+	}
+	// Seller block: the two branches must exist with different part
+	// counts (disjoint shapes). Scoped to the
+	// /api/v1/seller/stores/ block so identically-shaped branches in
+	// other blocks cannot satisfy the check by accident.
+	sellerMarker := `mux.HandleFunc("/api/v1/seller/stores/",`
+	sellerStart := index(sellerMarker)
+	sellerRest := text[sellerStart+len(sellerMarker):]
+	sellerEnd := strings.Index(sellerRest, "mux.HandleFunc(")
+	if sellerEnd < 0 {
+		t.Fatal("seller stores block has no following mux.HandleFunc; cannot scope the disjointness check")
+	}
+	seller := sellerRest[:sellerEnd]
+	for _, want := range []string{
+		`len(parts) == 6 && parts[1] == "products" && parts[3] == "variants" && parts[5] == "visibility"`,
+		`len(parts) == 4 && parts[1] == "products" && parts[3] == "default-variant"`,
+	} {
+		if !strings.Contains(seller, want) {
+			t.Errorf("seller stores dispatch is missing branch %q (visibility and default-variant must match on disjoint part counts)", want)
+		}
 	}
 }

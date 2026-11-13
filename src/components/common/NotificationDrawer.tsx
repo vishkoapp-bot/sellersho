@@ -27,9 +27,9 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
   isOpen,
   onClose,
 }) => {
-  const { currentStore, confirmOrderDelivery } = useStore();
+  const { currentStore, confirmOrderDelivery, busyOrderId } = useStore();
   const { setUnreadNotificationCount } = useStoreManager();
-  const { success } = useToast();
+  const { success, error } = useToast();
   const [notifications, setNotifications] = useState<NotificationItem[]>(initialNotifications);
 
   // Fetch persistent released bonus notifications for current seller store.
@@ -80,11 +80,15 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
   };
 
-  const handleConfirmDeliveryAction = (item: NotificationItem) => {
+  const handleConfirmDeliveryAction = async (item: NotificationItem) => {
     if (item.orderId || item.orderNumber) {
-      confirmOrderDelivery(item.orderId || item.orderNumber!);
-      setNotifications(prev => prev.map(n => n.id === item.id ? { ...n, read: true, message: 'تحویل کالا با موفقیت توسط شما تأیید شد و سود به فروشنده آزاد گردید.' } : n));
-      success('تحویل سفارش تأیید گردید و آزادسازی مالی تکمیل شد.');
+      try {
+        await confirmOrderDelivery(item.orderId || item.orderNumber!);
+        setNotifications(prev => prev.map(n => n.id === item.id ? { ...n, read: true, message: 'تحویل کالا توسط شما تأیید شد؛ مهلت مرجوعی آغاز شد.' } : n));
+        success('تحویل مرسوله تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ سود فروشنده پس از پایان مهلت آزاد می‌شود.');
+      } catch (e: any) {
+        error(e?.message || 'تأیید تحویل انجام نشد.');
+      }
     }
   };
 
@@ -163,11 +167,12 @@ export const NotificationDrawer: React.FC<{ isOpen: boolean; onClose: () => void
               {item.actionType === 'confirm_delivery' && !item.read && (
                 <div className="pt-2 pr-5">
                   <button
+                    disabled={busyOrderId === (item.orderId || item.orderNumber)}
                     onClick={() => handleConfirmDeliveryAction(item)}
                     className="w-full py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-colors"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                    <span>تأیید دریافت کالا (ترخیص نهایی)</span>
+                    <span>تأیید دریافت کالا</span>
                   </button>
                 </div>
               )}

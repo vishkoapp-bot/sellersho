@@ -21,8 +21,27 @@ const mapBackendSpecs = (specs: ProductDto['specs']): { [key: string]: string } 
   return out;
 };
 
+// Variant systems P0: the backend serves variant images as images[]
+// (images[0] = hero) with no separate imageUrl — derive imageUrl from
+// images[0] so the PDP/selector can use one field.
+const mapBackendVariant = (variant: NonNullable<ProductDto['variants']>[number]) => ({
+  ...variant,
+  imageUrl: variant.imageUrl ?? variant.images?.[0] ?? null,
+});
+
 export const mapBackendProduct = (product: ProductDto): Product => ({
   id: product.id,
+  // P0 fix: product-level weight/dims were dropped here even though the
+  // propose form requires them and the dossier shows them; variants
+  // inherit from these, so they must survive the mapping.
+  weightGrams: product.weightGrams,
+  lengthMm: product.lengthMm,
+  widthMm: product.widthMm,
+  heightMm: product.heightMm,
+  // P1(a) price range + P2(c) store default (omitted server-side when absent).
+  priceMin: product.priceMin,
+  priceMax: product.priceMax,
+  storeDefaultVariantId: product.storeDefaultVariantId ?? null,
   productType: product.productType,
   schemaVersion: product.schemaVersion,
   productSchema: product.productSchema,
@@ -53,7 +72,7 @@ export const mapBackendProduct = (product: ProductDto): Product => ({
   discountEligible: product.discountEligible,
   campaignName: product.campaignName,
   storeCount: product.storeCount,
-  variants: product.variants,
+  variants: product.variants?.map(mapBackendVariant),
   variantPrices: product.variantPrices,
   addons: product.addons,
   addonSectionTitle: product.addonSectionTitle,

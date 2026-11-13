@@ -29,6 +29,7 @@ import {
   DeliveryConfirmationSettings,
   PendingApprovalItem,
 } from '../types';
+import { DisputeDeliveryResponse } from '../services/orderApi';
 
 // Worker A (buy-now): live direct-buy state types (index-MERGED.js
 // StoreProvider). The payload mirrors live's startDirectBuy arg
@@ -293,8 +294,9 @@ export interface StoreContextType {
   setReferredStoreSlug: (slug: string | null) => void;
 
   // Order Delivery Confirmation & Dispute System (Section 4)
-  confirmOrderDelivery: (orderId: string) => void;
-  disputeOrderDelivery: (orderId: string, reason?: string) => void;
+  confirmOrderDelivery: (orderId: string) => Promise<void>;
+  disputeOrderDelivery: (orderId: string, reason?: string) => Promise<DisputeDeliveryResponse | null>;
+  busyOrderId: string | null;
   adminResolveDeliveryDispute: (
     orderId: string,
     action: 'release_to_seller' | 'refund_to_customer',
@@ -375,6 +377,9 @@ export interface StoreContextType {
   // Store scope of a product opened from inside a seller storefront
   // (null = unscoped product route, i.e. the central PDP).
   routeStoreSlug: string | null;
+  // P0-2: routed-store resolution gate (see StoreContext).
+  routeStoreResolved: boolean;
+  routeStoreInvalid: boolean;
   formatPrice: (price: number) => string;
   toPersianDigits: (strOrNum: string | number) => string;
 }

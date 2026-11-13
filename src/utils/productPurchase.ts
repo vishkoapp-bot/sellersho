@@ -1,5 +1,6 @@
-import type { Product, ProductVariant, CartItem } from '../types';
+import type { Product, ProductVariant, VariantPrice, CartItem } from '../types';
 import { cartItemKey, cartKeyOf } from './cartKey';
+import { toPersianDigits } from './formatters';
 
 export interface PurchaseResolution {
   product: Product;
@@ -35,6 +36,83 @@ export const purchaseLimits = (product: Product, variant?: ProductVariant) => {
   return { minQty, maxQty };
 };
 
+// P1(c) sale resolution (shared by PDP, cards and quick view so the
+// sale is never applied twice). The backend already folds an active
+// sale into VariantPrice.price (onSale=true, price=S, originalPrice=P);
+// the frontend only applies the sale itself when the backend has NOT
+// (no onSale flag and salePrice below the resolved price). A sale is
+// never stacked on a campaign: when onSale=false the campaign/resolved
+// price stands, and a configured sale outside its window is ignored.
+export interface ResolvedSale {
+  price: number;
+  originalPrice: number;
+  discountPercent: number;
+  saleFrom: string | null;
+  saleTo: string | null;
+  onSale: boolean;
+}
+
+export const variantSaleOf = (vp?: VariantPrice, now: Date = new Date()): ResolvedSale | null => {
+  if (!vp || vp.salePrice == null || vp.salePrice <= 0) return null;
+  const from = vp.saleFrom ?? null;
+  const to = vp.saleTo ?? null;
+  if (from && new Date(from).getTime() > now.getTime()) return null; // not started yet
+  if (to && new Date(to).getTime() <= now.getTime()) return null; // window ended
+  if (vp.onSale === false) return null; // backend: campaign won, or sale suspended (S < R)
+  if (vp.onSale === true) {
+    return { price: vp.price, originalPrice: vp.originalPrice, discountPercent: vp.discountPercent, saleFrom: from, saleTo: to, onSale: true };
+  }
+  // No onSale flag (pre-sale backend): apply client-side only when the
+  // configured sale is actually below the resolved price.
+  if (!(vp.salePrice < vp.price)) return null;
+  const originalPrice = vp.price;
+  return {
+    price: vp.salePrice,
+    originalPrice,
+    discountPercent: Math.round((1 - vp.salePrice / originalPrice) * 100),
+    saleFrom: from,
+    saleTo: to,
+    onSale: true,
+  };
+};
+
+// Variant image/weight/dims inheritance (P0): a variant photo replaces
+// the product gallery (never merges into it); a variant without photos
+// falls back to the product gallery. Weight inherits per-field; dims
+// inherit as an all-or-none triple — a partial variant triple never
+// mixes with the product's dims.
+export const variantImageOf = (variant: ProductVariant, product: Product): { image: string; images: string[] } => {
+  const variantImages = (variant.images ?? []).filter((src): src is string => typeof src === 'string' && src.trim().length > 0);
+  const hero = (typeof variant.imageUrl === 'string' && variant.imageUrl.trim() ? variant.imageUrl : null) ?? variantImages[0] ?? null;
+  if (!hero) return { image: product.image, images: product.images };
+  return { image: hero, images: variantImages.length > 0 ? variantImages : [hero] };
+};
+
+// Display string for the effective weight/dims, e.g.
+// «۱٬۲۰۰ گرم · ۴۰×۳۰×۲۰ سانتی‌متر». null when neither the variant nor
+// the product carries any of them (the row is then not rendered).
+const formatCm = (mm: number): string => {
+  const cm = mm / 10;
+  return toPersianDigits(Number.isInteger(cm) ? String(cm) : cm.toFixed(1)).replace('.', '٫');
+};
+
+export const variantWeightLabel = (variant: ProductVariant | undefined, product: Product): string | null => {
+  const weight = variant?.weightGrams ?? product.weightGrams;
+  const variantDims = variant && variant.lengthMm != null && variant.widthMm != null && variant.heightMm != null
+    ? [variant.lengthMm, variant.widthMm, variant.heightMm] : null;
+  const productDims = product.lengthMm != null && product.widthMm != null && product.heightMm != null
+    ? [product.lengthMm, product.widthMm, product.heightMm] : null;
+  const dims = variantDims ?? productDims;
+  const parts: string[] = [];
+  if (weight != null && weight > 0) parts.push(`${toPersianDigits(weight.toLocaleString('en-US')).replace(/,/g, '٬')} گرم`);
+  if (dims) parts.push(`${formatCm(dims[0])}×${formatCm(dims[1])}×${formatCm(dims[2])} سانتی‌متر`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+};
+
+// The PDP/quick-view info boxes receive the already variant-adjusted
+// displayProduct, so its own fields ARE the effective ones.
+export const productWeightLabel = (product: Product): string | null => variantWeightLabel(undefined, product);
+
 // A snapshot always carries the same SKU price as the selection. Legacy
 // snapshots are left as supplied when there is no authoritative SKU price.
 export const productForVariant = (product: Product, variant?: ProductVariant): Product => {
@@ -48,9 +126,24 @@ export const productForVariant = (product: Product, variant?: ProductVariant): P
   } : product;
   if (!variant) return base;
   const price = product.variantPrices?.[variant.id];
+  const sale = variantSaleOf(price);
+  const { image, images } = variantImageOf(variant, base);
+  const dimsComplete = variant.lengthMm != null && variant.widthMm != null && variant.heightMm != null;
   return {
     ...base,
-    ...(price ? { price: price.price, originalPrice: price.originalPrice, discountPercent: price.discountPercent, campaignName: price.campaignName ?? product.campaignName } : {}),
+    ...(price ? {
+      price: sale ? sale.price : price.price,
+      originalPrice: sale ? sale.originalPrice : price.originalPrice,
+      discountPercent: sale ? sale.discountPercent : price.discountPercent,
+      campaignName: price.campaignName ?? product.campaignName,
+    } : {}),
+    ...(sale ? { saleFrom: sale.saleFrom, saleTo: sale.saleTo } : {}),
+    image,
+    images,
+    weightGrams: variant.weightGrams ?? base.weightGrams,
+    lengthMm: dimsComplete ? variant.lengthMm! : base.lengthMm,
+    widthMm: dimsComplete ? variant.widthMm! : base.widthMm,
+    heightMm: dimsComplete ? variant.heightMm! : base.heightMm,
     stock: purchaseLimits(product, variant).maxQty,
   };
 };
@@ -79,10 +172,17 @@ export const resolvePurchase = (product: Product, variantId?: string): PurchaseR
   return { product: productForVariant(product, variant), variant, ...limits };
 };
 
-export const initialPurchaseVariant = (product: Product, spnc?: string | null): ProductVariant | undefined => {
+// P2(c) fallback chain (single source of truth, shared with cardPriceOf):
+// ?spnc= → store default → product isDefault → first purchasable → first.
+// A store default that is hidden/inactive/unpriced falls through silently.
+export const initialPurchaseVariant = (product: Product, spnc?: string | null, storeDefaultVariantId?: string | null): ProductVariant | undefined => {
   const variants = activeProductVariants(product);
   const linked = spnc ? variants.find((variant) => variant.spnc === spnc) : undefined;
-  return linked ?? variants.find((variant) => variant.isDefault && variantPurchasable(product, variant))
+  const storeDefault = storeDefaultVariantId
+    ? variants.find((variant) => variant.id === storeDefaultVariantId && variantPurchasable(product, variant))
+    : undefined;
+  return linked ?? storeDefault
+    ?? variants.find((variant) => variant.isDefault && variantPurchasable(product, variant))
     ?? variants.find((variant) => variantPurchasable(product, variant)) ?? variants[0];
 };
 

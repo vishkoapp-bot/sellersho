@@ -69,8 +69,27 @@ func TestProposeProductRejectsMissingMeasurements(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Physical validation follows the V2 publication contract. Keep the
+			// intended missing parent measurements, but provide a valid simple
+			// schema and SKU so the request reaches that validation boundary.
+			var payload map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.body), &payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["schemaVersion"] = 2
+			payload["productType"] = "simple"
+			payload["productSchema"] = map[string]interface{}{"version": 2, "type": "simple", "attributes": []interface{}{}}
+			payload["nicheIds"] = []string{"niche-measurement-fixture"}
+			payload["variants"] = []interface{}{map[string]interface{}{
+				"id": "00000000-0000-4000-8000-000000000001", "is_active": true,
+				"selection": map[string]string{}, "supplier_base_cost": 100000, "stock": 5,
+			}}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
 			rec := httptest.NewRecorder()
-			h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", tc.body))
+			h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", string(body)))
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 			}
@@ -81,6 +100,21 @@ func TestProposeProductRejectsMissingMeasurements(t *testing.T) {
 				t.Errorf("error body %q does not state the requirement", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestProposeProductRequiresV2BeforeMeasurementValidation(t *testing.T) {
+	h := NewSupplierHandlers(nil, auth.NewJWTService("gaps-test"), false)
+	for _, body := range []string{
+		`{"title":"Legacy product","supplierBaseCost":100000,"stock":5}`,
+		`{"schemaVersion":1,"title":"Legacy product","supplierBaseCost":100000,"stock":5}`,
+		`{"schemaVersion":3,"title":"Future product","supplierBaseCost":100000,"stock":5}`,
+	} {
+		rec := httptest.NewRecorder()
+		h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", body))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Product schema version 2 is required") {
+			t.Fatalf("publication schema gate: status %d, body %s", rec.Code, rec.Body.String())
+		}
 	}
 }
 

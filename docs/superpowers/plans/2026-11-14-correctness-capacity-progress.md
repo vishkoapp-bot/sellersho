@@ -48,7 +48,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | TODO | — | — |
-| TEST-02 | TODO | — | — |
+| TEST-02 | Checkpoint OPEN | Unit fixture checkpoint | [V2 measurement fixture](../../../backend/cmd/server/supplier_product_gaps_test.go) |
 | OPS-01 | TODO | — | — |
 | REL-01 | TODO | — | — |
 | BAK-01 | TODO | — | — |
@@ -196,3 +196,22 @@ Final exact staged-source verification excludes all uncommitted FIN-001 changes:
 Ruling: INV-11 closes the atomic creation contract; INV-02 reservations must join the concrete caller transaction before that lifecycle is enabled. Production historical review and capacity remain open. The broader frontend baseline remains 270 tests / 268 pass / 2 known CatalogView provider failures; the broad backend run remains red with 143 failure names retained for TEST-02 triage. These are not a green full-suite claim. No production access or deployment occurred.
 
 FIN-012 verification addendum from independent root review: `TestSellerCampaignLifecycleAndIsolation` and `TestStoreWidgetPersistenceAndOwnership` both passed against its exact financial-only staged snapshot (0.38s/0.23s; package 1.134s), with all 180 migrations and verified cleanup. Prior shared-fixture failures did not reproduce in isolation; no source fix was required. Evidence: `releases/fin012-existing-isolated.log`.
+
+## TEST-02 — V2 fixture and default unit baseline checkpoint
+
+The remaining default Go failure was a stale measurement fixture, not a changed
+publication rule. Its three bodies omitted schemaVersion=2, productSchema and the
+mandatory active SKU/niche, so the existing V2 schema gate rejected them before
+measurement validation. The original three cases failed in
+`logs/test02-product-fixture-red.log`. Their fixtures now provide a valid simple
+V2 definition while retaining the missing parent weight/dimensions and all
+original Persian missing-field assertions. A separate regression rejects absent,
+legacy and future schema versions before measurement validation. No production
+handler or business rule was changed.
+
+Independent reviewer: remaining_backlog. Focused existing/new helper tests passed
+in 0.570s. An isolated archive of committed HEAD plus only this fixture passed
+`go test ./... -count=1`; raw output is
+`releases/test02-exact-unit-baseline.log`. Database integration tests intentionally
+skip without explicit disposable opt-ins. This proves the default unit baseline,
+not the required integrated/race/CI/capacity gates. TEST-02 remains checkpoint OPEN.

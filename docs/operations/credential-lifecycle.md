@@ -74,3 +74,10 @@ shell restores official data ownership and privilege dropping; the same test now
 passes without network access or reused data. Container removal checks its exact
 unique test name and sellersho.test-run label. Official entrypoint reference:
 https://raw.githubusercontent.com/redis/docker-library-redis/master/7.4/alpine/docker-entrypoint.sh.
+
+Startup diagnostic follow-up: malformed database/Redis URLs can contain secret
+material in third-party parser errors. Constructors now return value-free
+initialization diagnostics and close clients after failed startup probes. The
+regression first reproduced both leaks, then passed without any database
+connection. Independent root review validated the exact three-file change against
+committed HEAD. PostgreSQL startup Ping still needs the OPS deadline work.

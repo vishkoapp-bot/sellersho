@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,7 +20,7 @@ type RedisClient struct {
 func NewRedisClient(redisURL string) (*RedisClient, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse redis url: %w", err)
+		return nil, errors.New("REDIS_URL initialization failed; configuration value withheld")
 	}
 
 	client := redis.NewClient(opts)
@@ -29,7 +30,8 @@ func NewRedisClient(redisURL string) (*RedisClient, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to ping redis: %w", err)
+		client.Close()
+		return nil, errors.New("Redis connection failed; dependency details withheld")
 	}
 
 	return &RedisClient{Client: client}, nil

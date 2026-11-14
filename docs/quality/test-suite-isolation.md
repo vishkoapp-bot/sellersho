@@ -57,3 +57,17 @@ also asserts the exact event identity and retries the same parcel under a new
 request key while retaining one financial event and one ledger debit. The full
 default Go suite passes with integration opt-ins absent. Logs:
 `logs/test02-return-charge-final.log`, `logs/test02-stage3-default.log`.
+
+## Public catalog/store fixtures
+
+Store campaign/subscriber fixtures now insert the real owner before creating a
+store, preserving the canonical foreign key instead of depending on earlier
+tests having dropped it. Category JSON asserts the current eight-field shape,
+including the direct active-product count. The obsolete
+`TestTeam05PublicStoreListServesSuspended` is replaced by
+`TestTeam05PublicStoreListExcludesSuspendedAndPreservesDetail`, matching the
+existing FIX 9 rule in `handleStoresList`: active stores appear in the public
+directory, while suspended store detail retains its status. It also verifies
+the 15 public fields and absence of private margin data. All four isolated tests
+passed without skips. No catalog or store business behavior changed.
+Evidence: `logs/test02-catalog-fixtures-final.log`.

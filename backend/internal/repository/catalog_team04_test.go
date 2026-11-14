@@ -171,17 +171,21 @@ func TestTeam04CatalogRepo(t *testing.T) {
 			t.Fatalf("cat-gold parentId = %v, want nil", c.ParentID)
 		}
 	}
-	// Category JSON shape: exactly the 7 live keys.
+	// Category JSON includes the direct active-product count.
 	b, _ := json.Marshal(cats[0])
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(b, &m)
-	if len(m) != 7 {
-		t.Fatalf("category JSON keys = %v, want exactly 7", m)
+	if len(m) != 8 {
+		t.Fatalf("category JSON keys = %v, want exactly 8", m)
 	}
-	for _, k := range []string{"id", "title", "slug", "iconName", "gradient", "imageUrl", "parentId"} {
+	for _, k := range []string{"id", "title", "slug", "iconName", "gradient", "imageUrl", "parentId", "productCount"} {
 		if _, ok := m[k]; !ok {
 			t.Fatalf("category JSON missing key %q", k)
 		}
+	}
+	var categoryCount int
+	if err := json.Unmarshal(m["productCount"], &categoryCount); err != nil || categoryCount != 0 {
+		t.Fatalf("category count=%d error=%v, want zero for category without directly assigned products", categoryCount, err)
 	}
 	// D43: search logging writes the normalised term + catalog count,
 	// and the ensure step added catalog_result_count.

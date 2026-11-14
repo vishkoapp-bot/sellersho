@@ -5,11 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drup/platform/internal/testdb"
 
@@ -156,6 +158,9 @@ func team05TestDB(t *testing.T) *sql.DB {
 
 func team05TestStore(t *testing.T, db *sql.DB, owner, slug, status string) string {
 	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role,is_active) VALUES($1,$2,'Team05 owner','seller',TRUE) ON CONFLICT(id) DO NOTHING`, owner, fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9)); err != nil {
+		t.Fatal("seed store owner", err)
+	}
 	id := "s-" + uuid.NewString()
 	_, err := db.ExecContext(context.Background(),
 		`INSERT INTO stores (id, name, slug, owner_type, owner_name, owner_user_id, panel_config, tagline, description, status, active_categories) VALUES ($1, $2, $3, 'dropshipper', 'Owner', $4, $5, 'tag', 'desc', $6, $7)`,
@@ -339,12 +344,14 @@ func TestTeam05SellerSubscribers(t *testing.T) {
 	}
 }
 
-func TestTeam05PublicStoreListServesSuspended(t *testing.T) {
+func TestTeam05PublicStoreListExcludesSuspendedAndPreservesDetail(t *testing.T) {
 	db := team05TestDB(t)
 	repo := repository.NewStoreRepository(db)
 	owner := uuid.NewString()
 	slug := "t05-" + uuid.NewString()[:20]
 	team05TestStore(t, db, owner, slug, "suspended")
+	activeSlug := "t05-" + uuid.NewString()[:20]
+	team05TestStore(t, db, owner, activeSlug, "active")
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/stores", nil)
 	w := httptest.NewRecorder()
 	handleStoresList(w, r, context.Background(), repo)
@@ -358,23 +365,33 @@ func TestTeam05PublicStoreListServesSuspended(t *testing.T) {
 	var found map[string]json.RawMessage
 	for _, item := range list {
 		if string(item["slug"]) == `"`+slug+`"` {
+			t.Fatal("suspended store exposed in active public directory")
+		}
+		if string(item["slug"]) == `"`+activeSlug+`"` {
 			found = item
 		}
 	}
 	if found == nil {
-		t.Fatalf("suspended store %s missing from public list: %s", slug, w.Body.String())
+		t.Fatalf("active store %s missing from public list", activeSlug)
 	}
-	if len(found) != 12 {
-		t.Fatalf("public list item has %d keys, want 12: %s", len(found), w.Body.String())
+	if len(found) != 15 {
+		t.Fatalf("public list item has %d keys, want 15: %s", len(found), w.Body.String())
 	}
-	if string(found["status"]) != `"suspended"` {
-		t.Fatalf("suspended status not served in list: %s", w.Body.String())
+	if string(found["status"]) != `"active"` {
+		t.Fatalf("active status not served in list: %s", w.Body.String())
 	}
 	if string(found["activeCategories"]) != `["c-1","c-2"]` {
 		t.Fatalf("activeCategories not served: %s", w.Body.String())
 	}
 	if _, ok := found["profitMarginPercent"]; ok {
 		t.Fatalf("public list leaks profit margin: %s", w.Body.String())
+	}
+	suspended, err := repo.GetStoreBySlug(context.Background(), slug)
+	if err != nil || suspended == nil || suspended.Status != "suspended" {
+		t.Fatalf("suspended store detail lost: %v", err)
+	}
+	if team05PublicStoreView(suspended).Status != "suspended" {
+		t.Fatal("public detail must preserve suspended status")
 	}
 }
 

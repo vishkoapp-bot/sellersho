@@ -105,24 +105,6 @@ func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID
 	return true, err
 }
 
-func putawayTrackedSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, quantity int, sourceLocation, binCode, taskID, actor string) error {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_movements WHERE idempotency_key=$1)`, "putaway:"+taskID).Scan(&exists); err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-	if err := moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, "physical", "sellable", sourceLocation, "bin", "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor); err != nil {
-		return err
-	}
-	var warehouse string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warehouse_id,'') FROM warehouse_bins WHERE bin_code=$1`, binCode).Scan(&warehouse); err != nil {
-		return err
-	}
-	return creditStoragePositionTx(ctx, tx, productID, supplierID, warehouse, "", quantity)
-}
-
 func moveSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, qty int, fromStatus, toStatus, source, locationType, destination, referenceType, referenceID, key, actor string) error {
 	if qty <= 0 {
 		return nil

@@ -138,7 +138,8 @@ func TestINV09PartialAcceptanceSourceGuardAndConcurrentReplay(t *testing.T) {
 	tx.Rollback()
 }
 
-func TestINV09TrackedReceiptUsesSameExactPutaway(t *testing.T) {
+func inv09ReceiveTracked(t *testing.T, quantity int) (*sql.DB, opsFixture, string, string, string, string) {
+	t.Helper()
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	ctx := context.Background()
@@ -146,25 +147,33 @@ func TestINV09TrackedReceiptUsesSameExactPutaway(t *testing.T) {
 	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'p','c')`, warehouse)
 	opsExec(t, db, `INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,$1,'p','c')`, source, f.supplier)
 	opsExec(t, db, `UPDATE products SET schema_version=2,product_type='variable',attribute_schema='{}',origin_supplier_warehouse_id=$1 WHERE id=$2`, source, f.product)
-	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode,stock) VALUES($1,$2,$3,'tracked',10),($4,$2,$5,'tracked',3)`, red, f.product, "R"+red[:10], blue, "B"+blue[:10])
+	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode,stock) VALUES($1,$2,$3,'tracked',$6),($4,$2,$5,'tracked',3)`, red, f.product, "R"+red[:10], blue, "B"+blue[:10], quantity)
 	for _, lot := range []struct {
 		id       string
 		quantity int
-	}{{red, 10}, {blue, 3}} {
+	}{{red, quantity}, {blue, 3}} {
 		opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,supplier_warehouse_id) VALUES($1,$2,$3,$4,'supplier','supplier',$5,'sellable',$6,$7)`, uuid.NewString(), f.product, f.supplier, lot.id, "supplier-warehouse:"+source, lot.quantity, source)
 	}
-	sup, wh := NewSupplierRepository(db), NewWarehouseRepository(db)
-	shipment, err := sup.CreateCartonShipment(ctx, f.supplier, []CartonShipmentItem{{VariantID: red, ExpectedQty: 10}}, warehouse, "inv09-tracked")
+	sup := NewSupplierRepository(db)
+	shipment, err := sup.CreateCartonShipment(ctx, f.supplier, []CartonShipmentItem{{VariantID: red, ExpectedQty: quantity}}, warehouse, "inv09-tracked")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = sup.ChangeCartonDispatch(ctx, f.supplier, shipment.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = sup.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 10, QCStatus: "pass"}}); err != nil {
+	if _, err = sup.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: quantity, QCStatus: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = wh.RecordQCPass(ctx, f.product, shipment.ID, f.user, 10); err != nil {
+	return db, f, warehouse, shipment.ID, red, blue
+}
+
+func TestINV09TrackedReceiptUsesSameExactPutaway(t *testing.T) {
+	db, f, warehouse, shipment, red, blue := inv09ReceiveTracked(t, 10)
+	ctx := context.Background()
+	wh := NewWarehouseRepository(db)
+	var err error
+	if err = wh.RecordQCPass(ctx, f.product, shipment, f.user, 10); err != nil {
 		t.Fatal(err)
 	}
 	order, token := opsOrder(t, db, f, false)
@@ -174,7 +183,7 @@ func TestINV09TrackedReceiptUsesSameExactPutaway(t *testing.T) {
 	if _, err = orders.MarkPaymentPaid(ctx, token, "pre-tracked", "mask"); !errors.Is(err, ErrInsufficientInventory) {
 		t.Fatalf("unplaced SKU captured: %v", err)
 	}
-	inv09PlacePending(t, db, f, shipment.ID, warehouse)
+	inv09PlacePending(t, db, f, shipment, warehouse)
 	if _, err = orders.MarkPaymentPaid(ctx, token, "R"+red[:20], "mask"); err != nil {
 		t.Fatal(err)
 	}

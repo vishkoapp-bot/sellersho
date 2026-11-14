@@ -13,13 +13,7 @@ import (
 )
 
 var ErrInboundProvenance = errors.New("inbound provenance conflict or reconciliation required")
-var ErrInboundLifecycleClosed = errors.New("receipt QC/putaway activation requires integrated INV-02/04/09")
-
-// Full compatibility acceptance remains open while retained downstream probes
-// are integrated. Exact QC now creates isolated acceptance/putaway allocations;
-// only ConfirmPutaway makes those units sellable. The obsolete fail-only QC
-// endpoint remains closed; cumulative CompleteQC is the disposition entry point.
-const InboundFullReceiptLifecycleEnabled = false
+var ErrInboundLifecycleClosed = errors.New("use cumulative receipt-line QC disposition instead of the obsolete fail-only operation")
 
 type InventoryOrigin struct{ Type, SupplierID, WarehouseID, SupplierWarehouseID string }
 type InboundTransferLine struct {

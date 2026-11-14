@@ -303,3 +303,23 @@ zero failed/skipped; production build passed; default Go suite passed. Logs:
 `logs/inv09-frontend-test.log`, `logs/inv09-frontend-build.log`,
 `logs/inv09-default-final.log`. A fresh complete immutable-source run is required
 to confirm the full failure count; TEST-02 and INV-09 remain open.
+
+## First zero-failure immutable integration snapshot
+
+Committed source 6c9632c67721a0c80e96168bee46f89fbcbbd3f1 completed all 567
+discovered top-level tests with zero failures and verified disposable cleanup.
+This removes the original 109-failure baseline, but is not 567 passing assertions:
+five top-level skips include one subprocess-only migration helper, one OTP test
+without disposable Redis, and three inventory compatibility tests. Four nested
+legacy-source branches also stopped at the old compatibility checkpoint.
+Evidence: `logs/test02-exact-6c9632c-full.log`.
+
+The inventory compatibility branches now use canonical migrated fixtures and
+actual receipt/QC/assignment/confirmation/payment APIs, retaining exact return
+restoration/replay and physical shipping coverage. They no longer skip. Cleared
+mutable source headers and already-debited source balances exercise immutable
+receipt lineage without a second debit. The obsolete physical-to-sellable helper
+and compatibility marker were removed; the fail-only endpoint remains refused.
+All 57 affected inventory top-level tests passed with no skips in
+`logs/inv09-all-inventory-integrated.log`. TEST-02 remains open for disposable
+Redis/OTP coverage and its broader CI/dependency/domain acceptance requirements.

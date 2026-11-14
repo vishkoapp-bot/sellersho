@@ -213,7 +213,7 @@ func TestInboundTransferExternalReferenceAndUnknownSource(t *testing.T) {
 	}
 }
 
-func TestInboundTransferQCActivationGate(t *testing.T) {
+func TestInboundTransferQCRequiresExactReceiptProvenance(t *testing.T) {
 	_, schema, red, _ := skuInventoryFixture(t)
 	db := inboundFixtureDB(t, schema)
 	tx, err := db.Begin()
@@ -221,9 +221,6 @@ func TestInboundTransferQCActivationGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if InboundFullReceiptLifecycleEnabled {
-		t.Fatal("INV04/09 integration evidence must accompany gate activation")
-	}
 	if err := NewWarehouseRepository(db).RecordQCPass(context.Background(), "p", "unintegrated", "", 1); err != ErrInboundProvenance {
 		t.Fatalf("QC without exact receipt provenance enabled: %v", err)
 	}

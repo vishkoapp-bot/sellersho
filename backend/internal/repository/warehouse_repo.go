@@ -601,18 +601,9 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 
 // RecordQCFail records quality defect
 func (r *WarehouseRepository) RecordQCFail(ctx context.Context, productID, inboundID, inspectorUserID, reason string, qty int) error {
-	if !InboundFullReceiptLifecycleEnabled {
-		return ErrInboundLifecycleClosed
-	}
-	if qty <= 0 {
-		qty = 1
-	}
-	resID := fmt.Sprintf("QC-FAIL-%d", time.Now().UnixMilli()%100000)
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO qc_results (id, product_id, inbound_id, inspector_user_id, status, defect_reason, quantity_failed, created_at)
-		VALUES ($1, $2, $3, $4, 'failed', $5, $6, NOW())
-	`, resID, productID, inboundID, inspectorUserID, reason, qty)
-	return err
+	// This obsolete endpoint cannot identify a cumulative pass/fail partition or
+	// exact receipt line. CompleteQC records failures through conserved disposition.
+	return ErrInboundLifecycleClosed
 }
 
 // ErrQCDiscrepancyMissingIdentity is returned when a QC discrepancy is filed

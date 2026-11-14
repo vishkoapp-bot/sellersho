@@ -33,11 +33,15 @@ storage cohorts/receipt-age charging and placement departure occupancy still
 belong to INV-10/FIN-006/INV-06. This checkpoint does not close those tasks or
 INV-08's effective verified SKU measurement requirement.
 
-The full compatibility marker remains false: seven retained downstream branches
-still need integration with explicit QC/task sources. The obsolete fail-only QC
-entry point stays closed; cumulative CompleteQC handles failed quantities. INV-09
-is a checkpoint, not DONE, until those branches and the complete immutable source
-suite have been executed successfully.
+The seven retained downstream branches now run against canonical migrated
+databases through actual receipt, QC, assignment and confirmation. The SKU return
+probe also verifies exact restored capture and replay. Legacy birth-origin modes
+include a cleared mutable header and an already-debited supplier source: QC
+consumes the immutable received allocation and never debits the supplier twice.
+The obsolete compatibility marker and unused physical-to-sellable helper have
+been removed. The fail-only QC endpoint still refuses requests; cumulative
+CompleteQC handles failures through the conserved disposition protocol. INV-09
+remains open pending the complete combined inventory/source acceptance evidence.
 
 Evidence: `logs/inv09-before.log` demonstrates both legacy QC endpoints produced
 no tasks before the fix. `logs/inv09-checkpoint-final.log` ran 23 focused top-level

@@ -287,32 +287,14 @@ func TestInventoryOriginTapinRegistrationReadsPersistedSplits(t *testing.T) {
 }
 
 func TestInventoryOriginPutawayCreatesShippingCoverage(t *testing.T) {
-	db, schema, red, _ := skuInventoryFixture(t)
-	tx := skuTestTx(t, db, schema)
-	defer tx.Rollback()
-	shipment := uuid.NewString()
-
-	if _, err := tx.Exec(`INSERT INTO shipment_items(shipment_id,variant_id,expected_qty) VALUES($1,$2,1)`, shipment, red); err != nil {
+	db, f, warehouse, shipment, _, _ := inv09ReceiveTracked(t, 1)
+	if err := NewWarehouseRepository(db).RecordQCPass(context.Background(), f.product, shipment, f.user, 1); err != nil {
 		t.Fatal(err)
 	}
-	bookFixtureInbound(t, context.Background(), tx, shipment, red, 1, "sw1")
-	if _, err := ReceiveTrackedSKUShipmentItemTx(context.Background(), tx, shipment, red, 1, "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if !InboundFullReceiptLifecycleEnabled {
-		t.Skip("INV04/09 integration gate: retained positive putaway/storage coverage requires integrated activation")
-	}
-	var line string
-	tx.QueryRow(`SELECT id FROM inbound_inventory_lines WHERE shipment_id=$1`, shipment).Scan(&line)
-
-	for i := 0; i < 2; i++ {
-		if err := putawayTrackedSKUInventoryTx(context.Background(), tx, "p", "s", red, 1, "inbound-line:"+line, "A-1", "coverage-task", ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var qty int
-	if err := tx.QueryRow(`SELECT COALESCE(SUM(qty),0) FROM warehouse_storage_positions WHERE warehouse_id='w1'`).Scan(&qty); err != nil || qty != 1 {
-		t.Fatalf("putaway shipping coverage=%d err=%v", qty, err)
+	inv09PlacePending(t, db, f, shipment, warehouse)
+	var qty, asnReferences int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(qty),0),COUNT(inbound_id) FROM warehouse_storage_positions WHERE warehouse_id=$1 AND product_id=$2`, warehouse, f.product).Scan(&qty, &asnReferences); err != nil || qty != 1 || asnReferences != 0 {
+		t.Fatalf("carton coverage=%d invalid ASN references=%d err=%v", qty, asnReferences, err)
 	}
 }
 
@@ -384,7 +366,7 @@ func TestInventoryOriginCartonCreationPersistsSourceThroughReceipt(t *testing.T)
 }
 
 func TestInventoryOriginLegacyInboundPreservesBirthSource(t *testing.T) {
-	for _, mode := range []string{"record", "complete", "unknown", "short"} {
+	for _, mode := range []string{"record", "complete", "header-source-cleared", "source-empty-after-reservation"} {
 		t.Run(mode, func(t *testing.T) {
 			db := operationsDB(t)
 			f := opsFixtureNew(t, db)
@@ -422,23 +404,16 @@ func TestInventoryOriginLegacyInboundPreservesBirthSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := wh.CompleteInbound(ctx, inbound, f.user); err != nil {
-				if errors.Is(err, ErrInboundLifecycleClosed) && !InboundFullReceiptLifecycleEnabled {
-					t.Skip("INV04/09 integration gate: retained positive ASN QC debit/source invariants require integrated activation")
-				}
 				t.Fatal(err)
 			}
-			if !InboundFullReceiptLifecycleEnabled {
-				var quarantined int
-				if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1 AND status='quarantine'`, f.product).Scan(&quarantined); err != nil || quarantined != 2 {
-					t.Fatalf("receipt staging=%d err=%v", quarantined, err)
-				}
-				t.Skip("INV04/09 integration gate: positive ASN QC/source invariants retained below; staging is conserved, QC activation pending")
-			}
-			if mode == "unknown" {
+			if mode == "header-source-cleared" {
 				opsExec(t, db, `UPDATE inbound_shipments SET supplier_warehouse_id=NULL WHERE id=$1`, inbound)
 			}
-			if mode == "short" {
-				opsExec(t, db, `UPDATE inventory_balances SET quantity=0 WHERE product_id=$1 AND supplier_warehouse_id=$2`, f.product, old)
+			if mode == "source-empty-after-reservation" {
+				var original int
+				if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1 AND supplier_warehouse_id=$2`, f.product, old).Scan(&original); err != nil || original != 0 {
+					t.Fatalf("booking source=%d err=%v; want already debited", original, err)
+				}
 			}
 			qc := func() error {
 				if mode == "complete" {
@@ -447,22 +422,14 @@ func TestInventoryOriginLegacyInboundPreservesBirthSource(t *testing.T) {
 				return wh.RecordQCPass(ctx, f.product, inbound, f.user, 2)
 			}
 			err = qc()
-			if mode == "unknown" || mode == "short" {
-				if !errors.Is(err, ErrInsufficientInventory) {
-					t.Fatalf("unresolved inbound source accepted: %v", err)
-				}
-				var sellable, physical, qcRows int
-				if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER(WHERE warehouse_id=$2 AND status='sellable'),0),COALESCE(SUM(quantity) FILTER(WHERE status='physical'),0) FROM inventory_balances WHERE product_id=$1`, f.product, warehouse).Scan(&sellable, &physical); err != nil || sellable != 0 || physical != 2 {
-					t.Fatalf("failed QC mutated physical=%d sellable=%d err=%v", physical, sellable, err)
-				}
-				if err := db.QueryRow(`SELECT COUNT(*) FROM qc_results WHERE inbound_id=$1`, inbound).Scan(&qcRows); err != nil || qcRows != 0 {
-					t.Fatalf("failed QC committed row=%d err=%v", qcRows, err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
+			var staged, available int
+			if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER(WHERE status='qc_accepted'),0),COALESCE(SUM(quantity) FILTER(WHERE status='sellable' AND warehouse_id=$2),0) FROM inventory_balances WHERE product_id=$1`, f.product, warehouse).Scan(&staged, &available); err != nil || staged != 2 || available != 0 {
+				t.Fatalf("QC staging=%d warehouse sellable=%d err=%v", staged, available, err)
+			}
+			inv09PlacePending(t, db, f, inbound, warehouse)
 			var oldQty, nextQty, warehouseQty, total int
 			if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER(WHERE supplier_warehouse_id=$2),0),COALESCE(SUM(quantity) FILTER(WHERE supplier_warehouse_id=$3),0),COALESCE(SUM(quantity) FILTER(WHERE warehouse_id=$4 AND status='sellable'),0),COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1`, f.product, old, next, warehouse).Scan(&oldQty, &nextQty, &warehouseQty, &total); err != nil || oldQty != 0 || nextQty != 3 || warehouseQty != 2 || total != 5 {
 				t.Fatalf("inbound duplicated or redirected stock old=%d next=%d warehouse=%d total=%d err=%v", oldQty, nextQty, warehouseQty, total, err)

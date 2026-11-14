@@ -454,56 +454,61 @@ func TestSKUInventoryDuplicateLinesAndInactiveReject(t *testing.T) {
 }
 
 func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
-	db, schema, red, blue := skuInventoryFixture(t)
-	tx := skuTestTx(t, db, schema)
-	defer tx.Rollback()
+	db, f, warehouse, shipment, red, blue := inv09ReceiveTracked(t, 1)
 	ctx := context.Background()
-	shipment := uuid.NewString()
-	if _, err := tx.Exec(`INSERT INTO shipment_items(shipment_id,variant_id,expected_qty) VALUES($1,$2,1)`, shipment, red); err != nil {
+	var code string
+	if err := db.QueryRow(`SELECT shipment_code FROM shipments WHERE id=$1`, shipment).Scan(&code); err != nil {
 		t.Fatal(err)
 	}
-	bookFixtureInbound(t, ctx, tx, shipment, red, 1, "sw1")
 	for i := 0; i < 2; i++ {
-		if handled, err := ReceiveTrackedSKUShipmentItemTx(ctx, tx, shipment, red, 1, "passed"); err != nil || !handled {
-			t.Fatalf("receipt %v %v", handled, err)
+		if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{red, 1, "pass"}}); err != nil {
+			t.Fatal(err)
 		}
 	}
 	var r, b, tasks int
-	tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&r)
-	tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, blue).Scan(&b)
-	tx.QueryRow(`SELECT COUNT(*) FROM putaway_tasks`).Scan(&tasks)
-	if r != 0 || b != 3 || tasks != 0 {
-		t.Fatalf("receipt duplicated/mixed stock red=%d blue=%d tasks=%d", r, b, tasks)
-	}
-	if !InboundFullReceiptLifecycleEnabled {
-		t.Skip("INV04/09 integration gate: receipt is quarantined; retained positive putaway/capture/return assertions require integrated activation")
-	}
-	var line string
-	tx.QueryRow(`SELECT id FROM inbound_inventory_lines WHERE shipment_id=$1`, shipment).Scan(&line)
-
-	if err := putawayTrackedSKUInventoryTx(ctx, tx, "p", "s", red, 1, "inbound-line:"+line, "A-1", "return-fixture-putaway", ""); err != nil {
+	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&r); err != nil {
 		t.Fatal(err)
 	}
-	orderItem := uuid.NewString()
-	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'returned','p',$2,1)`, orderItem, red); err != nil {
+	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, blue).Scan(&b); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`UPDATE order_item_origins SET origin_type='warehouse',warehouse_id='w1',supplier_warehouse_id=NULL WHERE order_item_id=$1`, orderItem); err != nil {
-		t.Fatal(err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM putaway_tasks WHERE inbound_id=$1`, shipment).Scan(&tasks); err != nil || r != 0 || b != 3 || tasks != 0 {
+		t.Fatalf("receipt mixed stock red=%d blue=%d tasks=%d err=%v", r, b, tasks, err)
 	}
-	if _, err := captureOrderInventoryTx(ctx, tx, "returned"); err != nil {
-		t.Fatal(err)
-	}
+	wh := NewWarehouseRepository(db)
 	for i := 0; i < 2; i++ {
-		if handled, err := restoreCapturedReturnTx(ctx, tx, "return-item", orderItem, "p", "s", 1, "ok", "warehouse:w", ""); err != nil || !handled {
-			t.Fatalf("return %v %v", handled, err)
+		if err := wh.RecordQCPass(ctx, f.product, shipment, f.user, 1); err != nil {
+			t.Fatal(err)
 		}
 	}
-	tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&r)
-	if r != 1 {
-		t.Fatalf("return replay minted stock=%d", r)
+	inv09PlacePending(t, db, f, shipment, warehouse)
+	order, token := opsOrder(t, db, f, false)
+	opsExec(t, db, `UPDATE order_items SET variant_id=$2 WHERE order_id=$1`, order, red)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
+	if _, err := NewOrderRepository(db).MarkPaymentPaid(ctx, token, "R"+red[:20], "mask"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := restoreCapturedReturnTx(ctx, tx, "second-return-item", orderItem, "p", "s", 1, "ok", "warehouse:w", ""); err == nil {
+	var orderItem string
+	if err := db.QueryRow(`SELECT id::text FROM order_items WHERE order_id=$1`, order).Scan(&orderItem); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := 0; i < 2; i++ {
+		if handled, err := restoreCapturedReturnTx(ctx, tx, "return-item", orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err != nil || !handled {
+			t.Fatalf("return handled=%v err=%v", handled, err)
+		}
+	}
+	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&r); err != nil || r != 1 {
+		t.Fatalf("return replay stock=%d err=%v", r, err)
+	}
+	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, blue).Scan(&b); err != nil || b != 3 {
+		t.Fatalf("return touched sibling=%d err=%v", b, err)
+	}
+	if _, err := restoreCapturedReturnTx(ctx, tx, "second-return-item", orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err == nil {
 		t.Fatal("returned more than captured")
 	}
 	var raw []byte
@@ -511,65 +516,39 @@ func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var allocations []skuAllocation
-	if err := json.Unmarshal(raw, &allocations); err != nil || len(allocations) != 1 {
-		t.Fatalf("missing exact capture allocation %s %v", raw, err)
+	if err := json.Unmarshal(raw, &allocations); err != nil || len(allocations) != 1 || allocations[0].Quantity != 1 || allocations[0].OriginID == "" {
+		t.Fatalf("missing exact capture allocation %s err=%v", raw, err)
 	}
 }
 
 func TestSKUInventoryReceiptCannotSellBeforeExactPutaway(t *testing.T) {
-	db, schema, red, _ := skuInventoryFixture(t)
-	tx := skuTestTx(t, db, schema)
-	defer tx.Rollback()
+	db, f, warehouse, shipment, red, _ := inv09ReceiveTracked(t, 2)
 	ctx := context.Background()
-	shipment := uuid.NewString()
-	if err := SetTrackedSKUStockTx(ctx, tx, "p", "s", red, 2, "receipt fixture", "s"); err != nil {
+	wh := NewWarehouseRepository(db)
+	if err := wh.RecordQCPass(ctx, f.product, shipment, f.user, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO shipment_items(shipment_id,variant_id,expected_qty) VALUES($1,$2,2)`, shipment, red); err != nil {
+	order, token := opsOrder(t, db, f, false)
+	opsExec(t, db, `UPDATE order_items SET variant_id=$2 WHERE order_id=$1`, order, red)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
+	orders := NewOrderRepository(db)
+	if _, err := orders.MarkPaymentPaid(ctx, token, "before-placement", "mask"); !errors.Is(err, ErrInsufficientInventory) {
+		t.Fatalf("staging purchased: %v", err)
+	}
+	inv09PlacePending(t, db, f, shipment, warehouse)
+	if _, err := orders.MarkPaymentPaid(ctx, token, "R"+red[:20], "mask"); err != nil {
 		t.Fatal(err)
 	}
-	bookFixtureInbound(t, ctx, tx, shipment, red, 2, "sw1")
-	if _, err := ReceiveTrackedSKUShipmentItemTx(ctx, tx, shipment, red, 2, "passed"); err != nil {
+	var staged, sellable int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE variant_id=$1 AND status IN ('physical','qc_accepted','quarantine')`, red).Scan(&staged); err != nil {
 		t.Fatal(err)
 	}
-	item := uuid.NewString()
-	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'staged','p',$2,1)`, item, red); err != nil {
-		t.Fatal(err)
+	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&sellable); err != nil || staged != 0 || sellable != 1 {
+		t.Fatalf("stranded staged=%d sellable=%d err=%v", staged, sellable, err)
 	}
-	if _, err := tx.Exec(`UPDATE order_item_origins SET origin_type='warehouse',warehouse_id='w1',supplier_warehouse_id=NULL WHERE order_item_id=$1`, item); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureOrderInventoryTx(ctx, tx, "staged"); !errors.Is(err, ErrInsufficientInventory) {
-		t.Fatalf("staging became purchasable: %v", err)
-	}
-	if !InboundFullReceiptLifecycleEnabled {
-		t.Skip("INV04/09 integration gate: retained positive exact putaway/capture invariants require integrated activation")
-	}
-	var line string
-	tx.QueryRow(`SELECT id FROM inbound_inventory_lines WHERE shipment_id=$1`, shipment).Scan(&line)
-
-	if err := putawayTrackedSKUInventoryTx(ctx, tx, "p", "s", red, 2, "inbound-line:"+line, "A-1", "putaway-stage", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureOrderInventoryTx(ctx, tx, "staged"); err != nil {
-		t.Fatalf("putaway SKU not purchasable: %v", err)
-	}
-	var physical, sellable int
-	if err := tx.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE variant_id=$1 AND status='physical'`, red).Scan(&physical); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&sellable); err != nil {
-		t.Fatal(err)
-	}
-	if physical != 0 || sellable != 1 {
-		t.Fatalf("stranded/oversold putaway physical=%d sellable=%d", physical, sellable)
-	}
-	var source string
-	if err := tx.QueryRow(`SELECT ib.location_key FROM order_inventory_captures ic CROSS JOIN LATERAL jsonb_array_elements(ic.allocations) a JOIN inventory_balances ib ON ib.id=a->>'balanceId' WHERE ic.order_item_id=$1`, item).Scan(&source); err != nil {
-		t.Fatal(err)
-	}
-	if source != "bin:A-1" {
-		t.Fatalf("captured non-bin allocation: %s", source)
+	var origin, location string
+	if err := db.QueryRow(`SELECT ib.warehouse_id,ib.location_type FROM order_inventory_captures ic CROSS JOIN LATERAL jsonb_array_elements(ic.allocations) a JOIN inventory_balances ib ON ib.id=a->>'balanceId' WHERE ic.order_id=$1`, order).Scan(&origin, &location); err != nil || origin != warehouse || location != "bin" {
+		t.Fatalf("capture origin=%s location=%s err=%v", origin, location, err)
 	}
 }
 

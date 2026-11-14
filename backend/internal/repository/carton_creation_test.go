@@ -18,7 +18,6 @@ func cartonFixture(t *testing.T) (*sql.DB, *SupplierRepository, string, string) 
 
 		`DROP INDEX carton_creation_key_unique`,
 		`ALTER TABLE shipments DROP COLUMN creation_key, DROP COLUMN request_fingerprint`,
-		`ALTER TABLE shipment_items ADD COLUMN id UUID PRIMARY KEY DEFAULT gen_random_uuid()`,
 		`CREATE TABLE inventory_reservations(id TEXT PRIMARY KEY)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -32,6 +31,7 @@ func cartonFixture(t *testing.T) (*sql.DB, *SupplierRepository, string, string) 
 	if _, err := db.Exec(string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	db = inboundFixtureDB(t, schema)
 	return db, NewSupplierRepository(db), red, blue
 }
 
@@ -41,8 +41,8 @@ func assertCartonCounts(t *testing.T, db *sql.DB, headers, lines int) {
 	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM shipments),(SELECT COUNT(*) FROM shipment_items),(SELECT COUNT(*) FROM inventory_reservations),(SELECT COUNT(*) FROM inventory_movements)`).Scan(&h, &l, &res, &movements); err != nil {
 		t.Fatal(err)
 	}
-	if h != headers || l != lines || res != 0 || movements != 0 {
-		t.Fatalf("writes: headers=%d lines=%d reservations=%d movements=%d; want %d/%d/0/0", h, l, res, movements, headers, lines)
+	if h != headers || l != lines || res != 0 || movements != lines {
+		t.Fatalf("writes: headers=%d lines=%d reservations=%d movements=%d; want %d/%d/0/booking-lines", h, l, res, movements, headers, lines)
 	}
 }
 

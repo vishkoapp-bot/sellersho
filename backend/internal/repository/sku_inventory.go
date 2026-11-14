@@ -91,74 +91,15 @@ func creditSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 // item to its existing receipt implementation. Cumulative received counts may
 // increase, but cannot be rewritten after they have entered the physical ledger.
 func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID, variantID string, receivedQty int, qcStatus string) (bool, error) {
-	var productID, supplierID, mode string
-	if err := tx.QueryRowContext(ctx, `SELECT pv.product_id,COALESCE(p.supplier_id,''),COALESCE(to_jsonb(pv)->>'inventory_mode','legacy') FROM product_variants pv JOIN products p ON p.id=pv.product_id WHERE pv.id=$1`, variantID).Scan(&productID, &supplierID, &mode); err != nil {
-		return false, err
-	}
-	if mode != "tracked" {
-		return false, nil
-	}
-	if err := lockSKUProductTx(ctx, tx, productID, variantID); err != nil {
-		return true, err
-	}
-	var lineCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM shipment_items WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID).Scan(&lineCount); err != nil {
-		return true, err
-	}
-	if lineCount != 1 {
-		return true, fmt.Errorf("shipment must contain exactly one line per tracked SKU")
-	}
-	var expected, accounted int
-	var oldQC string
-	if err := tx.QueryRowContext(ctx, `SELECT expected_qty,inventory_received_qty,qc_status FROM shipment_items WHERE shipment_id=$1 AND variant_id=$2 FOR UPDATE`, shipmentID, variantID).Scan(&expected, &accounted, &oldQC); err != nil {
-		return true, err
-	}
-	if receivedQty < accounted || receivedQty > expected || (accounted > 0 && qcStatus != oldQC) {
-		return true, fmt.Errorf("received SKU quantity/QC cannot rewrite accounted inventory")
+	var line string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM inbound_inventory_lines WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID).Scan(&line); err != nil {
+		return true, ErrInboundProvenance
 	}
 	if qcStatus != "passed" && qcStatus != "failed" {
-		return true, fmt.Errorf("invalid QC status")
+		return true, ErrInboundProvenance
 	}
-	delta := receivedQty - accounted
-	if delta > 0 {
-		// Transfer only the carton's persisted supplier source. A catalog origin
-		// edit cannot redirect receipt or authorize minting a missing source.
-		var sourceWarehouse string
-		err := tx.QueryRowContext(ctx, `SELECT sw.id FROM shipments sh JOIN supplier_warehouses sw ON sw.id=sh.supplier_warehouse_id WHERE sh.id=$1::uuid AND sh.supplier_id=$2 AND sw.supplier_id=$2`, shipmentID, supplierID).Scan(&sourceWarehouse)
-		location := "supplier-warehouse:" + sourceWarehouse
-		if err != nil {
-			return true, err
-		}
-		var source string
-		var available int
-		err = tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, location).Scan(&source, &available)
-		if err != nil && err != sql.ErrNoRows {
-			return true, err
-		}
-		debit := delta
-		if debit > available {
-			return true, fmt.Errorf("%w: carton source stock is unavailable", ErrInsufficientInventory)
-		}
-		// Accepted receipts remain physical staging until the complete
-		// putaway task places this exact SKU into a bin. Payment must never
-		// consume units promised to an outstanding putaway task.
-		status := "physical"
-		if qcStatus == "failed" {
-			status = "quarantine"
-		}
-		key := fmt.Sprintf("sku-receipt:%s:%s:%d", shipmentID, variantID, receivedQty)
-		if debit > 0 {
-			if err := moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, debit, "sellable", status, location, "warehouse", "shipment:"+shipmentID, "sku_receipt", shipmentID, key+":transfer", ""); err != nil {
-				return true, err
-			}
-		}
-
-		if qcStatus == "passed" {
-			_, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks(id,product_id,variant_id,inventory_source_location_key,quantity,status,created_at,warehouse_id) VALUES($1,$2,$3,$4,$5,'pending',NOW(),(SELECT warehouse_id FROM shipments WHERE id=$6::uuid))`, "PT-"+uuid.NewString(), productID, variantID, "shipment:"+shipmentID, delta, shipmentID)
-			if err != nil {
-				return true, err
-			}
-		}
+	if err := receiveInboundLineTx(ctx, tx, line, receivedQty, ""); err != nil {
+		return true, err
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE shipment_items SET received_qty=$3,inventory_received_qty=$3,qc_status=$4 WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID, receivedQty, qcStatus)
 	return true, err

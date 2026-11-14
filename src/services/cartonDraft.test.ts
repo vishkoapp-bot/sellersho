@@ -71,3 +71,20 @@ test('an ambiguous HTTP 200 carton response rejects and retains its creation key
     } finally { fetch.mock.restore(); }
   }
 });
+
+test('carton source evidence is sent exactly and changing its business reference rotates the retry key', async () => {
+  const calls: any[] = [];
+  const fetch = mock.method(globalThis, 'fetch', async (_url: any, init: RequestInit) => {
+    calls.push(JSON.parse(String(init.body)));
+    return new Response(JSON.stringify({shipment: {id: 'one', shipment_code: 'CARTON12'}}), {status: 200, headers: {'Content-Type': 'application/json'}});
+  });
+  try {
+    const draft = createCartonDraftOperation();
+    const payload = {warehouse_id: 'w', items: [{variant_id: 'sku', expected_qty: 1}], source: {source_kind: 'external_replenishment', external_reference: 'note-1', reason: 'counted purchase'}};
+    await draft.submit(payload); await draft.submit(payload);
+    assert.deepEqual(calls[0].source, payload.source);
+    assert.equal(calls[0].creation_key, calls[1].creation_key);
+    await draft.submit({...payload, source: {...payload.source, external_reference: 'note-2'}});
+    assert.notEqual(calls[2].creation_key, calls[1].creation_key);
+  } finally {fetch.mock.restore();}
+});

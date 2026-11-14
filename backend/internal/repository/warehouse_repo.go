@@ -257,26 +257,46 @@ func (r *WarehouseRepository) ScanItem(ctx context.Context, inboundID string, it
 
 // CompleteInbound completes inbound receiving and queues items for QC
 func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, staffUserID string) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	now := time.Now()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE inbound_shipments
-		SET status = 'received', completed_at = $1
-		WHERE id = $2 AND status IN ('receiving', 'pending', 'in_transit')
-	`, now, inboundID)
-	if err != nil {
+	if err := lockInboundShipmentTx(ctx, tx, inboundID); err != nil {
 		return err
 	}
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("محموله ورودی یافت نشد: %s", inboundID)
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM inbound_shipments WHERE id=$1`, inboundID).Scan(&current); err != nil {
+		return err
+	}
+	if current != "receiving" && current != "pending" && current != "in_transit" && current != "received" {
+		return ErrInboundProvenance
+	}
+	var before int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(received_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inboundID).Scan(&before); err != nil {
+		return err
 	}
 	if err := applyInboundInventoryTx(ctx, tx, inboundID, staffUserID); err != nil {
+		return err
+	}
+	var outstanding, received int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(dispatched_quantity-received_quantity),0),COALESCE(SUM(received_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inboundID).Scan(&outstanding, &received); err != nil {
+		return err
+	}
+	status := "received"
+	if outstanding > 0 {
+		status = "receiving"
+	}
+	// A completed replay has already validated every cumulative quantity above.
+	// Acknowledge without rewriting timestamps or appending another completion.
+	if before == received && ((current == "received" && outstanding == 0) || (current == "receiving" && outstanding > 0)) {
+		return tx.Commit()
+	}
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE inbound_shipments SET status=$2::text,completed_at=CASE WHEN $2::text='received' THEN COALESCE(completed_at,$3) ELSE completed_at END WHERE id=$1`, inboundID, status, now); err != nil {
 		return err
 	}
 
@@ -357,6 +377,9 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 // birth source. Unknown legacy origins or incomplete source stock require
 // reconciliation; today's product origin never supplies missing provenance.
 func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, productID, inboundID string, qty int, referenceType, referenceID, actorUserID, toLocationKey string) error {
+	if !InboundFullReceiptLifecycleEnabled {
+		return ErrInboundLifecycleClosed
+	}
 	if qty <= 0 {
 		return nil
 	}
@@ -394,6 +417,9 @@ func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, produc
 }
 
 func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int) error {
+	if !InboundFullReceiptLifecycleEnabled {
+		return ErrInboundLifecycleClosed
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -471,6 +497,9 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 }
 
 func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string) error {
+	if !InboundFullReceiptLifecycleEnabled {
+		return ErrInboundLifecycleClosed
+	}
 	if strings.TrimSpace(productID) == "" || strings.TrimSpace(inboundID) == "" || passed < 0 || failed < 0 || shortage < 0 || passed+failed == 0 || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("valid QC quantities and reason are required")
 	}
@@ -540,91 +569,49 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 }
 
 func applyInboundInventoryTx(ctx context.Context, tx *sql.Tx, inboundID, actor string) error {
-	var supplierID string
-	var items []byte
-	var scanned []byte
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,COALESCE(items,'[]'::jsonb),COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments WHERE id=$1 FOR UPDATE`, inboundID).Scan(&supplierID, &items, &scanned); err != nil {
+	lines, err := inboundLinesTx(ctx, tx, inboundID)
+	if err != nil {
 		return err
 	}
-	var entries []struct {
-		ProductID       string `json:"productId"`
-		ProductIDLegacy string `json:"product_id"`
-		Quantity        int    `json:"quantity"`
+	if len(lines) == 0 {
+		return ErrInboundProvenance
 	}
-	if err := json.Unmarshal(items, &entries); err != nil {
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments WHERE id=$1`, inboundID).Scan(&raw); err != nil {
 		return err
 	}
-	// Aggregate verified scans per product (both key spellings). Only
-	// physically scanned units may enter canonical inventory — the declared
-	// manifest quantities are never booked blindly (Fix 7).
-	scannedQty := map[string]int{}
 	var scans []struct {
-		ProductID       string `json:"productId"`
-		ProductIDLegacy string `json:"product_id"`
-		Quantity        int    `json:"quantity"`
+		Product  string `json:"productId"`
+		Legacy   string `json:"product_id"`
+		Quantity int    `json:"quantity"`
 	}
-	if err := json.Unmarshal(scanned, &scans); err != nil {
+	if err := json.Unmarshal(raw, &scans); err != nil {
 		return err
 	}
-	totalScanned := 0
-	for _, s := range scans {
-		pid := s.ProductID
+	quantities := map[string]int{}
+	known := map[string]bool{}
+	for _, l := range lines {
+		if l.Variant != "" {
+			return ErrInboundProvenance
+		}
+		known[l.Product] = true
+	}
+	for _, scan := range scans {
+		pid := scan.Product
 		if pid == "" {
-			pid = s.ProductIDLegacy
+			pid = scan.Legacy
 		}
-		if pid == "" || s.Quantity <= 0 {
-			continue
+		if !known[pid] || scan.Quantity <= 0 || scan.Quantity > 2147483647-quantities[pid] {
+			return ErrInboundProvenance
 		}
-		scannedQty[pid] += s.Quantity
-		totalScanned += s.Quantity
+		quantities[pid] += scan.Quantity
 	}
-	// Fail-closed: completing a receipt with zero verified scans books
-	// nothing. The warehouse must scan what physically arrived.
-	if totalScanned == 0 {
-		return fmt.Errorf("هیچ کالایی اسکن نشده است؛ تکمیل دریافت بدون اسکن واقعی مجاز نیست")
+	if len(quantities) == 0 {
+		return ErrInboundProvenance
 	}
-	for _, entry := range entries {
-		productID := entry.ProductID
-		if productID == "" {
-			productID = entry.ProductIDLegacy
-		}
-		if productID == "" || entry.Quantity <= 0 {
-			continue
-		}
-		verified := scannedQty[productID]
-		// Fail-closed: more scanned than declared is a data anomaly —
-		// crediting it would corrupt canonical inventory. Nothing is
-		// booked; the whole completion rolls back for investigation.
-		if verified > entry.Quantity {
-			return fmt.Errorf("تعداد اسکن‌شده کالای %s (%d) از تعداد اعلامی مانیفست (%d) بیشتر است؛ مغایرت باید بررسی شود", productID, verified, entry.Quantity)
-		}
-		if verified > 0 {
-			// Canonical-coverage bootstrap (Team 4, 2026-10-19): a product
-			// that has never touched the canonical ledger still carries its
-			// stock in the legacy products.stock column. moveInventoryTx
-			// below would flip it to canonical authority with a zero
-			// sellable balance, and syncProductStockTx would then WIPE the
-			// legacy stock (e.g. 50 -> 0). Migrate the legacy quantity into
-			// the canonical sellable balance first, in the same transaction,
-			// so no unit is ever lost in the transition.
-			if err := ensureCanonicalCoverageTx(ctx, tx, productID, supplierID); err != nil {
-				return err
-			}
-			if err := ensureInboundSourceBalanceTx(ctx, tx, productID, supplierID, inboundID, verified); err != nil {
-				return err
-			}
-			if err := moveInventoryTx(ctx, tx, productID, supplierID, verified, "in_transit", "physical", "inbound:"+inboundID, "inbound:"+inboundID, "inbound_received", inboundID, "inbound:"+inboundID+":"+productID, actor, `{}`); err != nil {
-				return err
-			}
-		}
-		// Shortage (declared but unscanned) never becomes phantom stock:
-		// only the verified quantity was booked above, and the shortfall
-		// is filed as an open QC discrepancy for the supplier/finance
-		// trail instead of silently vanishing.
-		if verified < entry.Quantity {
-			if err := fileInboundShortageTx(ctx, tx, inboundID, supplierID, productID, entry.Quantity, verified); err != nil {
-				return err
-			}
+	for _, l := range lines {
+		if err := receiveInboundLineTx(ctx, tx, l.ID, quantities[l.Product], actor); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -673,15 +660,6 @@ func ensureCanonicalCoverageTx(ctx context.Context, tx *sql.Tx, productID, suppl
 		VALUES ($1,$2,$3,'supplier','warehouse','warehouse:legacy_migration','sellable',$4,TRUE)
 		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
 		"INV-"+uuid.NewString(), productID, supplierID, legacyStock)
-	return err
-}
-
-func ensureInboundSourceBalanceTx(ctx context.Context, tx *sql.Tx, productID, supplierID, inboundID string, quantity int) error {
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
-		VALUES ($1,$2,$3,'supplier','in_transit',$4,'in_transit',$5,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
-		"INV-"+uuid.NewString(), productID, supplierID, "inbound:"+inboundID, quantity)
 	return err
 }
 
@@ -747,6 +725,9 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 
 // RecordQCFail records quality defect
 func (r *WarehouseRepository) RecordQCFail(ctx context.Context, productID, inboundID, inspectorUserID, reason string, qty int) error {
+	if !InboundFullReceiptLifecycleEnabled {
+		return ErrInboundLifecycleClosed
+	}
 	if qty <= 0 {
 		qty = 1
 	}

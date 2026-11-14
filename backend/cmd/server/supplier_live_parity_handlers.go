@@ -864,19 +864,35 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 	var body struct {
 		WarehouseID string                          `json:"warehouse_id"`
 		CreationKey string                          `json:"creation_key"`
+		Action      string                          `json:"action"`
+		ShipmentID  string                          `json:"shipment_id"`
+		Source      repository.CartonInboundSource  `json:"source"`
 		Items       []repository.CartonShipmentItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
+	if body.Action != "" {
+		if (body.Action != "dispatch" && body.Action != "cancel") || body.ShipmentID == "" {
+			http.Error(w, `{"error":"invalid shipment action"}`, 400)
+			return
+		}
+		if err := h.supplierRepo.ChangeCartonDispatch(r.Context(), supplierID, body.ShipmentID, body.Action == "cancel"); err != nil {
+			http.Error(w, `{"error":"inbound provenance or physical state conflict"}`, 409)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
 	if strings.TrimSpace(body.CreationKey) == "" {
 		http.Error(w, `{"error":"creation_key is required"}`, http.StatusBadRequest)
 		return
 	}
-	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items, body.WarehouseID, body.CreationKey)
+	out, err := h.supplierRepo.CreateCartonShipmentFromSource(r.Context(), supplierID, body.Items, body.Source, body.WarehouseID, body.CreationKey)
 	if err != nil {
-		if errors.Is(err, repository.ErrCartonCreationConflict) {
+		if errors.Is(err, repository.ErrCartonCreationConflict) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
 			http.Error(w, `{"error":"creation_key belongs to a different shipment payload"}`, http.StatusConflict)
 			return
 		}

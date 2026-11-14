@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -91,6 +92,10 @@ func handleCompleteInbound(w http.ResponseWriter, r *http.Request, ctx context.C
 	}
 	staffID := getCallerUserID(ctx)
 	if err := repo.CompleteInbound(ctx, id, staffID); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -134,6 +139,10 @@ func handlePassQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	staffID := getCallerUserID(ctx)
 	if err := repo.RecordQCPass(ctx, productID, req.InboundID, staffID, req.Quantity); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -158,6 +167,10 @@ func handleFailQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	staffID := getCallerUserID(ctx)
 	if err := repo.RecordQCFail(ctx, productID, req.InboundID, staffID, req.DefectReason, req.Quantity); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -187,6 +200,10 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -754,7 +771,7 @@ func handleReceiveWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, `{"error":"Shipment not found"}`, http.StatusNotFound)
 		return
 	}
-	if err != nil && err.Error() == "shipment already received" {
+	if err != nil && (errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) || err.Error() == "shipment already received") {
 		http.Error(w, `{"error":"Shipment already received"}`, http.StatusConflict)
 		return
 	}

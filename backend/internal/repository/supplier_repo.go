@@ -2724,6 +2724,13 @@ var ErrInboundProductForbidden = errors.New("این کالا متعلق به ت�
 
 // CreateInbound registers a new ASN shipment to the warehouse
 func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID string, data map[string]interface{}) (string, error) {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	sourceKind, _ := data["sourceKind"].(string)
+	if sourceKind != "" && sourceKind != "transfer" {
+		return "", ErrInboundProvenance
+	}
+	sourceRequested, _ := data["supplierWarehouseId"].(string)
 	inboundID := "INB-" + uuid.NewString()
 	carrier, _ := data["carrier"].(string)
 	if carrier == "" {
@@ -2760,7 +2767,7 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 					return "", fmt.Errorf("%w: برای کالای دارای SKU از مسیر محموله کارتن و انتخاب تنوع استفاده کنید", ErrInboundInput)
 				}
 				var source string
-				if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM products p JOIN supplier_warehouses w ON w.id=p.origin_supplier_warehouse_id AND w.supplier_id=p.supplier_id AND w.is_active WHERE p.id=$1 AND p.supplier_id=$2`, productID, supplierID).Scan(&source); err != nil {
+				if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM products p JOIN supplier_warehouses w ON w.id=COALESCE(NULLIF($3,''),p.origin_supplier_warehouse_id) AND w.supplier_id=p.supplier_id AND w.is_active WHERE p.id=$1 AND p.supplier_id=$2`, productID, supplierID, sourceRequested).Scan(&source); err != nil {
 					return "", fmt.Errorf("%w: explicit owned inbound source is required", ErrInboundInput)
 				}
 				if sourceWarehouse != "" && sourceWarehouse != source {
@@ -2827,8 +2834,34 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 		INSERT INTO inbound_shipments (id, supplier_id, supplier_name, warehouse_id, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, notes, items, dispatch_at, created_at,supplier_warehouse_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'scheduled', $10, $11, $12, NOW(),$13)
 	`
-	_, err = r.db.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt, sourceWarehouse)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	transferLines := []InboundTransferLine{}
+	parents := []inventoryCaptureItem{}
+	for _, raw := range itemsList {
+		m := raw.(map[string]interface{})
+		pid := m["product_id"].(string)
+		q := int(m["quantity"].(float64))
+		parents = append(parents, inventoryCaptureItem{ProductID: pid})
+		transferLines = append(transferLines, InboundTransferLine{ProductID: pid, Quantity: q, SourceKind: "transfer", Source: InventoryOrigin{Type: "supplier", SupplierID: supplierID, SupplierWarehouseID: sourceWarehouse}})
+	}
+	if err := LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}); err != nil {
+		return "", err
+	}
+	if err := lockInventoryParentsTx(ctx, tx, parents); err != nil {
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt, sourceWarehouse)
+	if err != nil {
+		return "", err
+	}
+	if err := reserveInboundTransferTx(ctx, tx, inboundID, supplierID, warehouseID, transferLines); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	// P0-15 (best-effort): inbound created - warehouse staff.
@@ -2926,45 +2959,73 @@ func (r *SupplierRepository) enrichInboundItems(ctx context.Context, list []Inbo
 // dispatched_at (live's tn «ارسال شد» button). Only the owning supplier's
 // scheduled row moves; anything else is sql.ErrNoRows.
 func (r *SupplierRepository) DispatchInbound(ctx context.Context, supplierID, inboundID string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE inbound_shipments SET status = 'in_transit', dispatched_at = NOW()
-		WHERE id = $1 AND supplier_id = $2 AND status = 'scheduled'
-	`, inboundID, supplierID)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	// P0-15 (best-effort): inbound dispatched, in transit - warehouse staff.
-	supName := supplierID
-	if sup, serr := r.GetSupplierByID(ctx, supplierID); serr == nil && sup != nil {
-		supName = sup.Name
-	}
-	notifyInbound(ctx, r.db, inboundID, supName, true)
-	return nil
+	return r.changeInboundTransfer(ctx, supplierID, inboundID, false)
 }
-
-// CancelInbound moves a scheduled inbound to cancelled (live's tn «لغو»
-// button), with the same ownership/state guard as DispatchInbound.
 func (r *SupplierRepository) CancelInbound(ctx context.Context, supplierID, inboundID string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE inbound_shipments SET status = 'cancelled'
-		WHERE id = $1 AND supplier_id = $2 AND status = 'scheduled'
-	`, inboundID, supplierID)
+	return r.changeInboundTransfer(ctx, supplierID, inboundID, true)
+}
+func (r *SupplierRepository) changeInboundTransfer(ctx context.Context, supplier, inbound string, cancel bool) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
+	defer tx.Rollback()
+	if err := lockInboundShipmentTx(ctx, tx, inbound); err != nil {
+		return err
+	}
+	var owner string
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id FROM inbound_shipments WHERE id=$1`, inbound).Scan(&owner); err != nil {
+		return err
+	}
+	if owner != supplier {
+		return ErrInboundProvenance
+	}
+	if !cancel {
+		var pending, cancelled int
+		if err := tx.QueryRowContext(ctx, `SELECT SUM(quantity-dispatched_quantity-cancelled_quantity),SUM(cancelled_quantity) FROM inbound_inventory_lines WHERE shipment_id=$1`, inbound).Scan(&pending, &cancelled); err != nil {
+			return err
+		}
+		if cancelled > 0 {
+			return ErrInboundProvenance
+		}
+		if pending == 0 {
+			return tx.Commit()
+		}
+	}
+	if cancel {
+		err = cancelInboundTransferTx(ctx, tx, inbound)
+	} else {
+		err = dispatchInboundTransferTx(ctx, tx, inbound)
+	}
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		return sql.ErrNoRows
+	status := "in_transit"
+	if cancel {
+		var dispatched int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(dispatched_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inbound).Scan(&dispatched); err != nil {
+			return err
+		}
+		if dispatched == 0 {
+			status = "cancelled"
+		} else {
+			return tx.Commit()
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE inbound_shipments SET status=$2::text,dispatched_at=CASE WHEN $2::text='in_transit' THEN COALESCE(dispatched_at,NOW()) ELSE dispatched_at END WHERE id=$1`, inbound, status); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if !cancel {
+		supName := supplier
+		if sup, err := r.GetSupplierByID(ctx, supplier); err == nil && sup != nil {
+			supName = sup.Name
+		}
+		notifyInbound(ctx, r.db, inbound, supName, true)
 	}
 	return nil
 }
@@ -3110,6 +3171,8 @@ type WarehouseReceiveItem struct {
 // live's UI). An already-'received' shipment is rejected, matching live's
 // UI disabling the form for received shipments.
 func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code string, items []WarehouseReceiveItem) (string, error) {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	if len(items) == 0 {
 		return "", fmt.Errorf("at least one received item is required")
 	}
@@ -3119,12 +3182,38 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 	}
 	defer tx.Rollback()
 	var shipmentID, status string
-	err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1) FOR UPDATE`, code).Scan(&shipmentID, &status)
+	err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1)`, code).Scan(&shipmentID, &status)
 	if err != nil {
 		return "", err
 	}
-	if status == "received" {
-		return "", fmt.Errorf("shipment already received")
+	var provenance bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inbound_inventory_lines WHERE shipment_id=$1)`, shipmentID).Scan(&provenance); err != nil {
+		return "", err
+	}
+	if !provenance {
+		// Already-accounted history can be acknowledged without recreating a source.
+		// Every submitted cumulative quantity and QC state must match that old effect.
+		for _, item := range items {
+			var accounted int
+			var oldQC string
+			if err := tx.QueryRowContext(ctx, `SELECT inventory_received_qty,qc_status FROM shipment_items WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, item.VariantID).Scan(&accounted, &oldQC); err != nil {
+				return "", ErrInboundProvenance
+			}
+			qc := item.QCStatus
+			if qc == "pass" {
+				qc = "passed"
+			}
+			if qc == "fail" {
+				qc = "failed"
+			}
+			if accounted <= 0 || accounted != item.ReceivedQty || qc != oldQC {
+				return "", ErrInboundProvenance
+			}
+		}
+		return status, tx.Commit()
+	}
+	if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
+		return "", err
 	}
 	for _, item := range items {
 		var stored string
@@ -3166,7 +3255,7 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 	if total > 0 && fully == total {
 		newStatus = "received"
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = NOW() WHERE id = $2`, newStatus, shipmentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = COALESCE(received_at,NOW()) WHERE id = $2`, newStatus, shipmentID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {

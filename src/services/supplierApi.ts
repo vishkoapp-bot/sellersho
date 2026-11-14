@@ -307,7 +307,7 @@ export const supplierApi = {
   createPriceIncreaseExceptionTicket: (productId: string, newReference: number, message?: string) => apiRequest<{ success: boolean; ticketId: string }>('/supplier/price-increases/exception-ticket', { method: 'POST', auth: true, body: JSON.stringify({ productId, newReference, message }) }),
   updateSupplyOption: (productId: string, supplyOption: SupplierProductDto['supplyOption']) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/supply-option`, { method: 'PUT', auth: true, body: JSON.stringify({ supply_option: supplyOption }) }),
   getInbounds: () => apiRequest<SupplierInboundDto[]>('/supplier/inbounds', { method: 'GET', auth: true }),
-  createInbound: (payload: { items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  createInbound: (payload: { sourceKind?: 'transfer'; supplierWarehouseId?: string; items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   getShipments: async (): Promise<any[]> => {
     const data = await apiRequest<any>('/supplier/shipments', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.shipments ?? []);
@@ -394,11 +394,13 @@ export const supplierApi = {
   },
   getCatalogReview: (proposalId: string) => apiRequest<any>(`/supplier/catalog/review/${encodeURIComponent(proposalId)}`, { method: 'GET', auth: true }),
   resubmitCatalogReview: (proposalId: string, data: Record<string, unknown>) => apiRequest(`/supplier/catalog/review/${encodeURIComponent(proposalId)}/resubmit`, { method: 'POST', auth: true, body: JSON.stringify({ data }) }),
-  createShipment: async (payload: { creation_key: string; warehouse_id: string; items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+  createShipment: async (payload: { creation_key: string; warehouse_id: string; source?: {source_kind: string; supplier_warehouse_id?: string; external_reference?: string; reason?: string}; items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
     if (!payload.creation_key?.trim() || payload.creation_key.length > 128) throw new Error('Shipment creation key is required');
     const data = await apiRequest<any>('/supplier/shipments', { method: 'POST', auth: true, body: JSON.stringify(payload) });
     return data?.shipment ?? data;
   },
+  changeShipmentDispatch: (shipment_id: string, action: 'dispatch' | 'cancel') => apiRequest<{success: boolean}>('/supplier/shipments', {method: 'POST', auth: true, body: JSON.stringify({shipment_id, action})}),
+
   getCentralWarehouses: async (): Promise<any[]> => {
     const data = await apiRequest<any>('/supplier/warehouses/central', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : [];

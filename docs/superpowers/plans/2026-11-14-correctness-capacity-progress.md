@@ -16,7 +16,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | MIG-01 | DONE | 9093c5f | [Migration contract](../../../backend/internal/migrations/README.md) |
 | INV-05 | DONE | efb37fc | [Origin contract](../../architecture/inventory-origins.md) |
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
-| INV-02 | TODO | — | — |
+| INV-02 | Checkpoint OPEN | Transfer provenance checkpoint | [Inbound transfers](../../architecture/inbound-transfers.md) |
 | INV-03 | TODO | — | — |
 | INV-04 | TODO | — | — |
 | INV-08 | TODO | — | — |
@@ -55,7 +55,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | MIG-02 | TODO | — | — |
 | FIN-014 | TODO | — | — |
 | CHECKOUT-03 | TODO | — | — |
-| PERF-01 | Checkpoint OPEN | a5187bd | [Paging contract](../../architecture/catalog-pagination.md) |
+| PERF-01 | Checkpoint OPEN | a5187bd / 41904d0 | [Paging contract](../../architecture/catalog-pagination.md) |
 | PERF-02 | TODO | — | — |
 | PERF-03 | TODO | — | — |
 | PERF-04 | TODO | — | — |
@@ -267,3 +267,14 @@ Added unwired `GetProductCandidatePageTx`: N+1 lightweight source keys and at mo
 The shared guarded suite passed10 top-level protocol/candidate tests without skips, including three migrated private-schema cases enumerating248 of250 products exactly once through tied/nullable keys, filter-before-limit behavior, two store assortments, inactive picked products, supplier suspension, original/stock predicates, bound search text and price-index gating. Protocol/repository go vet passed. No public route/consumer uses the primitive. Authoritative scope revision, priced eligibility, exact public price ordering/bounds, page-only hydration and complete UI migration remain activation gates; PERF-01 stays OPEN.
 
 Candidate checkpoint independent review approved the four code/test paths with no Important/Critical finding. Exact staged source tree `84c3a78a20d7238e600505ed1b3fd0c0f8d9b954` (based on pushedff4ff13, excluding concurrent INV02/CAP-harness work) passed the same10 top-level tests0skip, repository0.760s, verified disposable cleanup and both package vet checks. Logs: `logs/perf01-candidates-exact.log`, `logs/perf01-candidates-exact-vet.log`.
+
+
+## INV-02 — conserved transfer provenance checkpoint; coupled lifecycle OPEN
+
+Atomic carton and legacy ASN booking now reserve exact named supplier source allocations; explicit dispatch moves those same units to transit, and cumulative receipt stages only its counted delta in quarantine. Undispatched cancellation releases original balance IDs once. Explicit external replenishment requires independent unique evidence and cannot reuse transfer allocations. Additive migration 202611140006 records immutable line provenance and monotone counters; historical unknown stock is reported for reconciliation, without invented replenishment or automatic repair. Both inbound UIs expose actual source/destination and carton dispatch/cancel.
+
+Fresh review found three Important issues: partial ASN receipt closed too early, physical balances were acquired per product rather than one global bytewise order, and external SKU discovery was not revalidated after guards. Each had an actual guarded PostgreSQL RED and was fixed; scoped re-review approved all three fixes with no new Critical/Important finding. ASN 2 -> 5 -> 5 conserves five units, six is rejected, and unchanged partial replay preserves completion metadata. Controlled blocking/NOWAIT tests prove global balance acquisition, and changed discovery rolls back without a header.
+
+The exact reviewed source tree e6e27bdd7a38603d55c0f676f4de0e5b2bbdc49f, based on ff4ff13, excluded concurrent PERF/CAP changes. Its guarded affected run executed 47 top-level backend cases successfully (repository 28.203s; server 1.520s), with disposable cleanup verified. Exactly seven retained positive QC/putaway integration cases remain explicitly skipped: three tracked/origin putaway cases and four legacy inbound mode cases. These skips are pending integration evidence, not passing end-to-end acceptance. Five client tests passed without skips; typecheck, frontend production build and default Go suite passed. Default DB fixtures intentionally skip without opt-in configuration. Proof: releases/inv02-staged-proof.json; logs/inv02-exact-{affected,client,typecheck,build,default}.log.
+
+Ruling: commit this reviewed transfer infrastructure as Checkpoint OPEN, because INV-04 disposition and INV-09 exact putaway must consume the same physical allocations before the seven retained positive branches execute without skips. The current full receipt lifecycle remains gated; no QC-created sellable stock or silent second supplier debit is enabled. A fresh INV-04 implementer is continuing the coupled work immediately. No production data, reconciliation, service or deployment changed; intended-hardware capacity stays OPEN under the user's local-only ruling.

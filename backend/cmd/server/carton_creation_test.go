@@ -31,7 +31,7 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 		t.Fatal("invalid disposable URL")
 	}
 	q := u.Query()
-	q.Set("search_path", schema+",public")
+	q.Set("search_path", schema)
 	u.RawQuery = q.Encode()
 	db, err := testdb.Open(t, u.String())
 	if err != nil {
@@ -46,6 +46,9 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 		`CREATE TABLE shipments(id UUID PRIMARY KEY,shipment_code TEXT UNIQUE,supplier_id TEXT,status TEXT,warehouse_id TEXT,supplier_warehouse_id TEXT,created_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE shipment_items(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),shipment_id UUID REFERENCES shipments(id),variant_id UUID REFERENCES product_variants(id),expected_qty INT CHECK(expected_qty>0),received_qty INT DEFAULT 0)`,
 		`CREATE TABLE inventory_reservations(id TEXT PRIMARY KEY)`,
+		`CREATE TABLE inbound_shipments(id TEXT PRIMARY KEY,status TEXT)`,
+		`CREATE TABLE inventory_balances(LIKE public.inventory_balances INCLUDING ALL)`,
+		`CREATE TABLE inventory_movements(LIKE public.inventory_movements INCLUDING ALL)`,
 		`INSERT INTO suppliers VALUES('s'); INSERT INTO warehouses VALUES('w',TRUE); INSERT INTO supplier_warehouses VALUES('sw','s',TRUE); INSERT INTO products VALUES('p','s','sw')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -59,9 +62,21 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 	if _, err := db.Exec(string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	provenance, err := os.ReadFile("../../migrations/202611140006_inventory_transfer_provenance.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(provenance)); err != nil {
+		t.Fatal(err)
+	}
 	red, blue := uuid.NewString(), uuid.NewString()
 	if _, err := db.Exec(`INSERT INTO product_variants VALUES($1,'p'),($2,'p')`, red, blue); err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []string{red, blue} {
+		if _, err := db.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled,supplier_warehouse_id) VALUES($1,'p','s',$2,'supplier','supplier','supplier-warehouse:sw','sellable',1,TRUE,'sw')`, uuid.NewString(), id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h := &SupplierHandlers{supplierRepo: repository.NewSupplierRepository(db)}
 	call := func(key string, items []repository.CartonShipmentItem) *httptest.ResponseRecorder {

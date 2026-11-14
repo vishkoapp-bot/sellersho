@@ -790,6 +790,10 @@ func (h *SupplierHandlers) HandleCreateInbound(w http.ResponseWriter, r *http.Re
 			t01WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if errors.Is(err, repository.ErrInboundInput) {
 			t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -842,6 +846,10 @@ func (h *SupplierHandlers) HandleDispatchInbound(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 	if err := h.supplierRepo.DispatchInbound(r.Context(), supplierID, inboundID); err != nil {
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"inbound not found or not scheduled"}`, http.StatusNotFound)
 			return
@@ -858,6 +866,10 @@ func (h *SupplierHandlers) HandleCancelInbound(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 	if err := h.supplierRepo.CancelInbound(r.Context(), supplierID, inboundID); err != nil {
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"inbound not found or not scheduled"}`, http.StatusNotFound)
 			return

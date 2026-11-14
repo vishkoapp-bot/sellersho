@@ -71,15 +71,47 @@ func cartonReplayTx(ctx context.Context, tx *sql.Tx, supplier, key, fingerprint 
 	return &out, nil
 }
 
+type CartonInboundSource struct {
+	Kind                string `json:"source_kind"`
+	SupplierWarehouseID string `json:"supplier_warehouse_id"`
+	ExternalReference   string `json:"external_reference"`
+	Reason              string `json:"reason"`
+}
+
 func (r *SupplierRepository) createCartonShipment(ctx context.Context, supplier string, items []CartonShipmentItem, destination ...string) (*CartonShipment, error) {
+	return r.CreateCartonShipmentFromSource(ctx, supplier, items, CartonInboundSource{Kind: "transfer"}, destination...)
+}
+func (r *SupplierRepository) CreateCartonShipmentFromSource(ctx context.Context, supplier string, items []CartonShipmentItem, sourceRequest CartonInboundSource, destination ...string) (*CartonShipment, error) {
 	lines, warehouse, key, fingerprint, err := normalizeCartonRequest(items, destination)
 	if err != nil {
 		return nil, err
 	}
+	sourceRequest.Kind = strings.TrimSpace(sourceRequest.Kind)
+	sourceRequest.SupplierWarehouseID = strings.TrimSpace(sourceRequest.SupplierWarehouseID)
+	sourceRequest.ExternalReference = strings.TrimSpace(sourceRequest.ExternalReference)
+	sourceRequest.Reason = strings.TrimSpace(sourceRequest.Reason)
+	if len(sourceRequest.ExternalReference) > 128 || len(sourceRequest.Reason) > 1000 {
+		return nil, ErrInboundProvenance
+	}
+	if sourceRequest.Kind == "" {
+		sourceRequest.Kind = "transfer"
+	}
+	if sourceRequest.Kind != "transfer" && sourceRequest.Kind != "external_replenishment" {
+		return nil, ErrInboundProvenance
+	}
+	if sourceRequest.Kind == "transfer" && (sourceRequest.ExternalReference != "" || sourceRequest.Reason != "") {
+		return nil, ErrInboundProvenance
+	}
+	if sourceRequest.Kind == "external_replenishment" && (len(lines) != 1 || sourceRequest.ExternalReference == "" || sourceRequest.Reason == "" || sourceRequest.SupplierWarehouseID != "") {
+		return nil, ErrInboundProvenance
+	}
+	sourceCanonical, _ := json.Marshal(sourceRequest)
+	sourceDigest := sha256.Sum256(append([]byte(fingerprint), sourceCanonical...))
+	fingerprint = hex.EncodeToString(sourceDigest[:])
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for attempt := 0; attempt < 3; attempt++ {
-		out, err := r.createCartonShipmentAttempt(ctx, supplier, warehouse, key, fingerprint, lines)
+		out, err := r.createCartonShipmentAttempt(ctx, supplier, warehouse, key, fingerprint, lines, sourceRequest)
 		var state interface{ SQLState() string }
 		retryable := errors.Is(err, errCartonDiscoveryChanged) || (errors.As(err, &state) && (state.SQLState() == "40001" || state.SQLState() == "40P01" || state.SQLState() == "55P03"))
 		if err == nil || !retryable || attempt == 2 || ctx.Err() != nil {
@@ -98,7 +130,7 @@ func (r *SupplierRepository) createCartonShipment(ctx context.Context, supplier 
 	panic("unreachable carton retry loop")
 }
 
-func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, supplier, warehouse, key, fingerprint string, lines []CartonShipmentItem) (*CartonShipment, error) {
+func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, supplier, warehouse, key, fingerprint string, lines []CartonShipmentItem, sourceRequest CartonInboundSource) (*CartonShipment, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -144,8 +176,20 @@ func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, su
 	}
 	source := ""
 	for _, line := range lines {
-		var product, ownedSource string
-		err := tx.QueryRowContext(ctx, `SELECT p.id,w.id FROM product_variants v JOIN products p ON p.id=v.product_id JOIN supplier_warehouses w ON w.id=p.origin_supplier_warehouse_id AND w.supplier_id=p.supplier_id AND w.is_active WHERE v.id=$1 AND p.supplier_id=$2 FOR SHARE OF w`, line.VariantID, supplier).Scan(&product, &ownedSource)
+		var product, ownedSource, actualSupplier string
+		if err := tx.QueryRowContext(ctx, `SELECT v.product_id,COALESCE(p.supplier_id,'') FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=$1`, line.VariantID).Scan(&product, &actualSupplier); err != nil {
+			return nil, err
+		}
+		if product != products[line.VariantID] {
+			return nil, errCartonDiscoveryChanged
+		}
+		if actualSupplier != supplier {
+			return nil, sql.ErrNoRows
+		}
+		if sourceRequest.Kind == "external_replenishment" {
+			continue
+		}
+		err := tx.QueryRowContext(ctx, `SELECT p.id,w.id FROM product_variants v JOIN products p ON p.id=v.product_id JOIN supplier_warehouses w ON w.id=COALESCE(NULLIF($3,''),p.origin_supplier_warehouse_id) AND w.supplier_id=p.supplier_id AND w.is_active WHERE v.id=$1 AND p.supplier_id=$2 FOR SHARE OF w`, line.VariantID, supplier, sourceRequest.SupplierWarehouseID).Scan(&product, &ownedSource)
 		if err != nil {
 			return nil, fmt.Errorf("explicit owned carton source is required: %w", err)
 		}
@@ -157,7 +201,7 @@ func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, su
 		}
 		source = ownedSource
 	}
-	out, err := createCartonShipmentTx(ctx, tx, supplier, warehouse, source, key, fingerprint, lines)
+	out, err := createCartonShipmentTx(ctx, tx, supplier, warehouse, source, key, fingerprint, lines, sourceRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -168,11 +212,13 @@ func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, su
 }
 
 // createCartonShipmentTx writes only through the caller transaction, under its
-// preheld supplier/product/SKU guards. INV-02 must reserve the exact persisted
-// source here, in this same transaction, before it returns; a separately committed
-// reservation helper cannot make carton creation atomic. Reservations are not
-// enabled by this change.
-func createCartonShipmentTx(ctx context.Context, tx *sql.Tx, supplier, warehouse, source, key, fingerprint string, lines []CartonShipmentItem) (*CartonShipment, error) {
+// preheld supplier/product/SKU guards. Exact persisted source reservation is
+// committed atomically with its header and immutable line provenance.
+func createCartonShipmentTx(ctx context.Context, tx *sql.Tx, supplier, warehouse, source, key, fingerprint string, lines []CartonShipmentItem, sources ...CartonInboundSource) (*CartonShipment, error) {
+	sourceRequest := CartonInboundSource{Kind: "transfer"}
+	if len(sources) > 0 {
+		sourceRequest = sources[0]
+	}
 	var out CartonShipment
 	inserted := false
 	for attempt := 0; attempt < 5; attempt++ {
@@ -180,7 +226,7 @@ func createCartonShipmentTx(ctx context.Context, tx *sql.Tx, supplier, warehouse
 		if code == "" {
 			return nil, fmt.Errorf("could not generate shipment code")
 		}
-		err := tx.QueryRowContext(ctx, `INSERT INTO shipments(id,shipment_code,supplier_id,status,warehouse_id,supplier_warehouse_id,creation_key,request_fingerprint) VALUES($1,$2,$3,'draft',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id,shipment_code,status,created_at`, uuid.NewString(), code, supplier, warehouse, source, key, fingerprint).Scan(&out.ID, &out.ShipmentCode, &out.Status, &out.CreatedAt)
+		err := tx.QueryRowContext(ctx, `INSERT INTO shipments(id,shipment_code,supplier_id,status,warehouse_id,supplier_warehouse_id,creation_key,request_fingerprint) VALUES($1,$2,$3,'draft',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id,shipment_code,status,created_at`, uuid.NewString(), code, supplier, warehouse, sql.NullString{String: source, Valid: source != ""}, key, fingerprint).Scan(&out.ID, &out.ShipmentCode, &out.Status, &out.CreatedAt)
 		if err == nil {
 			inserted = true
 			break
@@ -203,6 +249,17 @@ func createCartonShipmentTx(ctx context.Context, tx *sql.Tx, supplier, warehouse
 		if _, err := tx.ExecContext(ctx, `INSERT INTO shipment_items(shipment_id,variant_id,expected_qty) VALUES($1,$2,$3)`, out.ID, line.VariantID, line.ExpectedQty); err != nil {
 			return nil, err
 		}
+	}
+	transferLines := make([]InboundTransferLine, 0, len(lines))
+	for _, line := range lines {
+		var product string
+		if err := tx.QueryRowContext(ctx, `SELECT product_id FROM product_variants WHERE id=$1`, line.VariantID).Scan(&product); err != nil {
+			return nil, err
+		}
+		transferLines = append(transferLines, InboundTransferLine{ProductID: product, VariantID: line.VariantID, Quantity: line.ExpectedQty, SourceKind: sourceRequest.Kind, ExternalReference: sourceRequest.ExternalReference, Reason: sourceRequest.Reason, Source: InventoryOrigin{Type: "supplier", SupplierID: supplier, SupplierWarehouseID: source}})
+	}
+	if err := reserveInboundTransferTx(ctx, tx, out.ID, supplier, warehouse, transferLines); err != nil {
+		return nil, err
 	}
 	out.ItemCount = len(lines)
 	return &out, nil

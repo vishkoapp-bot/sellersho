@@ -68,7 +68,7 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 		id, location, kind string
 		quantity           int
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND variant_id=$3 AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY reconciled DESC,updated_at,id FOR UPDATE`, productID, supplierID, variantID)
+	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND variant_id=$3 AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY id COLLATE "C" FOR UPDATE`, productID, supplierID, variantID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +196,18 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 		quantity     int
 	}
 	var reservations []reservation
+	// Physical balances precede inventory_reservations in the shared CORE order.
+	balanceRows, err := tx.QueryContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 ORDER BY id COLLATE "C" FOR UPDATE`, productID, variant)
+	if err != nil {
+		return true, err
+	}
+	for balanceRows.Next() {
+	}
+	err = balanceRows.Err()
+	balanceRows.Close()
+	if err != nil {
+		return true, err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND variant_id=$2 AND status='active' ORDER BY id FOR UPDATE`, returnID, variant)
 	if err != nil {
 		return true, err

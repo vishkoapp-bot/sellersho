@@ -21,14 +21,7 @@ New supplier declarations use an active owned product origin and a location key
 containing that immutable ID. Changing the product origin does not move old lots.
 New carton shipments persist their verified owned supplier source (`supplier_warehouse_id`)
 and require an explicit active central destination (`warehouse_id`),
-selected by the supplier UI from the authenticated central-warehouse list. SKU receipt debits the persisted carton source even after a product origin edit,
-rejects unknown/insufficient source history, and copies the destination to the putaway task; bins must have the matching immutable
-warehouse ID before putaway. New legacy inbounds similarly snapshot their verified supplier source at creation,
-then the existing QC debit transfers exactly that recorded source; later product
-origin edits affect future declarations only. Unknown or insufficient source history
-rolls back QC instead of minting extra sellable stock. Existing historical inbound
-sources remain unknown unless immutable evidence identifies them. The inbound
-reservation/dispatch lifecycle remains INV-02; failed-QC accounting remains INV-04. Unknown bins are never identified from their current display names.
+selected by the supplier UI from the authenticated central-warehouse list. INV-02 now reserves the persisted source atomically at booking and explicitly dispatches it before cumulative receipt. Receipt moves only allocated transit quantities into quarantine and never debits today's catalog source. New legacy inbounds use the same reservation/dispatch/staging contract without guessing a SKU. Unknown historical sources require reconciliation. QC/putaway activation remains closed pending integrated INV-04/09; see the [inbound transfer checkpoint](inbound-transfers.md). Unknown bins are never identified from their current display names.
 
 ## Reconciliation and release prerequisite
 

@@ -52,13 +52,7 @@ rolled-back attempt with fresh discovery and the original operation key, at most
 three attempts under one ten-second deadline. The transaction-local lock timeout
 is 1500 ms. These bounds do not establish a production capacity result.
 
-Current carton creation does **not** enable INV-02 stock reservations. Its actual
-write path, `createCartonShipmentTx`, is called under the repository-owned
-transaction and preheld supplier/product/SKU guards. Future exact-source
-reservation integration must run there before commit, using that same caller
-transaction and the full additional guard plan. A helper with an independently
-committed reservation cannot satisfy this contract. Historical stock sources or
-reservations must not be invented to make a transfer succeed.
+Carton creation now reserves the exact persisted source in the same caller transaction through INV-02. Receipt stages allocated units in quarantine. The coupled QC/putaway lifecycle remains deliberately closed pending INV-04/09; see [inbound transfer checkpoint](inbound-transfers.md) for executed coverage, retained positive integration gates and historical reconciliation requirements.
 
 ## Historical preflight before release
 

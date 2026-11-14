@@ -45,3 +45,15 @@ passed in separate clones; the registration email/null round-trip passed too.
 Remaining publication and inbound lifecycle failures retain their assertions and
 are tracked separately. Logs: `logs/test02-supplier-access-green.log` and
 `logs/test02-registration-green.log`.
+
+## Return parcel charge SQL
+
+The isolated canonical-schema lifecycle reproduced PostgreSQL 42P08 while
+confirming sender-paid parcel charges. One SQL parameter appeared both as the
+varchar parcel ID and as a text concatenation operand. Bind the immutable event
+identity separately from the parcel-ID parameter. Both real return lifecycles
+and the focused finance business-event test now pass (3/3, no skips); verification
+also asserts the exact event identity and retries the same parcel under a new
+request key while retaining one financial event and one ledger debit. The full
+default Go suite passes with integration opt-ins absent. Logs:
+`logs/test02-return-charge-final.log`, `logs/test02-stage3-default.log`.

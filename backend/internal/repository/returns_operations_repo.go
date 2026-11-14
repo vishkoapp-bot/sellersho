@@ -247,7 +247,7 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES ($1,$2,$3,'supplier','debit',$4,$5,$6,$7)`, ledgerID, now, supplierID, amount, fmt.Sprintf("هزینه حمل مرجوعی %s / مرسوله %s", returnID, parcelID), actorUserID, returnID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_financial_events (id,return_request_id,parcel_id,supplier_id,operation,amount,payment_method,ledger_entry_id,idempotency_key,reason,actor_user_id,event_identity) VALUES ($1,$2,$3,$4,'debit',$5,$6,$7,$8,$9,$10,'return-parcel-charge:' || $3)`, "RET-FIN-"+uuid.NewString(), returnID, parcelID, supplierID, amount, method, ledgerID, idempotencyKey, fmt.Sprintf("carrier charge for %s", parcelID), actorUserID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_financial_events (id,return_request_id,parcel_id,supplier_id,operation,amount,payment_method,ledger_entry_id,idempotency_key,reason,actor_user_id,event_identity) VALUES ($1,$2,$3,$4,'debit',$5,$6,$7,$8,$9,$10,$11)`, "RET-FIN-"+uuid.NewString(), returnID, parcelID, supplierID, amount, method, ledgerID, idempotencyKey, fmt.Sprintf("carrier charge for %s", parcelID), actorUserID, "return-parcel-charge:"+parcelID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=$2 WHERE id=$3 AND status IN ('draft','confirmed')`, actorUserID, now, parcelID); err != nil {

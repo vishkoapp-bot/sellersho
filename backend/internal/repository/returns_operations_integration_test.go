@@ -371,6 +371,13 @@ func TestSupplierReturnNegativeBalanceAndChargeIdempotency(t *testing.T) {
 	if after.ReturnCharges != charge || after.Available != -charge {
 		t.Fatalf("after charge balance=%+v, want returnCharges=%d available=%d", after, charge, -charge)
 	}
+	if err := repo.ConfirmReturnParcelCharge(ctx, returnID, parcel.ID, "negative-test", "alternate-charge:"+suffix); err != nil {
+		t.Fatal("same parcel replay under a new request key", err)
+	}
+	var identity string
+	if err := db.QueryRowContext(ctx, `SELECT event_identity FROM supplier_return_financial_events WHERE parcel_id=$1`, parcel.ID).Scan(&identity); err != nil || identity != "return-parcel-charge:"+parcel.ID {
+		t.Fatalf("parcel charge identity=%q error=%v", identity, err)
+	}
 	var financialCount, ledgerCount int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM supplier_return_financial_events WHERE return_request_id=$1`, returnID).Scan(&financialCount); err != nil {
 		t.Fatal(err)

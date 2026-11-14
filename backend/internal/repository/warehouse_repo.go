@@ -32,14 +32,21 @@ type WarehouseInbound struct {
 }
 
 type QCQueueItem struct {
-	ID               string    `json:"id"`
-	ProductID        string    `json:"productId"`
-	ProductTitle     string    `json:"productTitle"`
-	InboundID        string    `json:"inboundId"`
-	SupplierName     string    `json:"supplierName"`
-	ExpectedQuantity int       `json:"expectedQuantity"`
-	ReceivedQuantity int       `json:"receivedQuantity"`
-	CreatedAt        time.Time `json:"createdAt"`
+	ReconciliationRequired bool      `json:"reconciliationRequired"`
+	ReceiptLineID          string    `json:"receiptLineId"`
+	VariantID              string    `json:"variantId,omitempty"`
+	PassedQuantity         int       `json:"passedQuantity"`
+	FailedQuantity         int       `json:"failedQuantity"`
+	ShortageQuantity       int       `json:"shortageQuantity"`
+	RemainingQuantity      int       `json:"remainingQuantity"`
+	ID                     string    `json:"id"`
+	ProductID              string    `json:"productId"`
+	ProductTitle           string    `json:"productTitle"`
+	InboundID              string    `json:"inboundId"`
+	SupplierName           string    `json:"supplierName"`
+	ExpectedQuantity       int       `json:"expectedQuantity"`
+	ReceivedQuantity       int       `json:"receivedQuantity"`
+	CreatedAt              time.Time `json:"createdAt"`
 }
 
 type PutawayQueueItem struct {
@@ -315,32 +322,50 @@ func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, st
 // GetQCQueue returns items pending quality check inspection
 func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, error) {
 	query := `
-		SELECT i.id || ':' || COALESCE(item->>'productId', item->>'product_id'),
-		       COALESCE(item->>'productId', item->>'product_id'), COALESCE(p.title, ''),
-		       i.id, i.supplier_name, COALESCE((item->>'quantity')::int, 0),
-		       COALESCE(scanned.received_quantity, 0), i.created_at
-		FROM inbound_shipments i
-		CROSS JOIN LATERAL jsonb_array_elements(COALESCE(i.items, '[]'::jsonb)) item
-		JOIN products p ON p.id = COALESCE(item->>'productId', item->>'product_id')
-		LEFT JOIN LATERAL (
-			SELECT COALESCE(SUM(COALESCE((scan->>'quantity')::int, 0)), 0) AS received_quantity
-			FROM jsonb_array_elements(COALESCE(i.scanned_items, '[]'::jsonb)) scan
-			WHERE COALESCE(scan->>'productId', scan->>'product_id') = COALESCE(item->>'productId', item->>'product_id')
-		) scanned ON TRUE
-		WHERE i.status = 'received'
-		  AND NOT EXISTS (
-			-- Fix P3-15: a 'passed' qc_result means the item already went
-			-- through QC (RecordQCPass is now a full pass with inventory
-			-- movement). Keeping it in the queue let the dual QC paths run
-			-- on the same item and double-credit inventory.
-			SELECT 1 FROM qc_results q
-			WHERE q.inbound_id = i.id
-			  AND q.product_id = COALESCE(item->>'productId', item->>'product_id')
-			  AND q.status IN ('passed', 'completed')
-		  )
-		ORDER BY i.created_at DESC
-		LIMIT 20
-	`
+        WITH queue(id,product_id,title,inbound_id,supplier_name,expected,received,created_at,line_id,variant_id,passed,failed,shortage,remaining,reconciliation_required) AS (
+            SELECT l.id,l.product_id,COALESCE(p.title,''),l.shipment_id,h.supplier_name,
+                   l.quantity,l.received_quantity,h.created_at,l.id,l.variant_id,
+                   COALESCE(d.quantity_passed,0),COALESCE(d.quantity_failed,0),
+                   COALESCE(d.quantity_shortage,0),l.received_quantity-COALESCE(d.cumulative_disposed,0),
+                   EXISTS(SELECT 1 FROM qc_results q WHERE q.inbound_id=l.shipment_id AND q.product_id=l.product_id AND NOT EXISTS(SELECT 1 FROM inbound_qc_dispositions evidence WHERE evidence.id=q.id))
+            FROM inbound_inventory_lines l
+            JOIN products p ON p.id=l.product_id
+            JOIN (
+                SELECT id::text AS id,COALESCE(supplier_name,'') AS supplier_name,created_at FROM inbound_shipments WHERE status IN ('receiving','received')
+                UNION ALL
+                SELECT id::text,'' AS supplier_name,created_at FROM shipments WHERE status IN ('received','partially_received')
+            ) h ON h.id=l.shipment_id
+            LEFT JOIN LATERAL (
+                SELECT quantity_passed,quantity_failed,quantity_shortage,cumulative_disposed
+                FROM inbound_qc_dispositions WHERE receipt_line_id=l.id ORDER BY cumulative_disposed DESC LIMIT 1
+            ) d ON TRUE
+            WHERE l.received_quantity>COALESCE(d.cumulative_disposed,0)
+            UNION ALL
+            -- Preserve unallocated history as an explicit, unactionable exception.
+            -- Scan quantities are evidence to review, never stock to credit.
+            SELECT 'legacy:'||i.id||':'||COALESCE(item->>'productId',item->>'product_id'),
+                   COALESCE(item->>'productId',item->>'product_id'),COALESCE(p.title,''),i.id,COALESCE(i.supplier_name,''),
+                   COALESCE((item->>'quantity')::int,0),scanned.received_quantity,i.created_at,'','',0,0,0,scanned.received_quantity,TRUE
+            FROM inbound_shipments i
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(i.items,'[]'::jsonb)) item
+            LEFT JOIN products p ON p.id=COALESCE(item->>'productId',item->>'product_id')
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(SUM(COALESCE((scan->>'quantity')::int,0)),0)::int AS received_quantity
+                FROM jsonb_array_elements(COALESCE(i.scanned_items,'[]'::jsonb)) scan
+                WHERE COALESCE(scan->>'productId',scan->>'product_id')=COALESCE(item->>'productId',item->>'product_id')
+            ) scanned
+            WHERE i.status IN ('receiving','received') AND NOT EXISTS(
+                SELECT 1 FROM inbound_inventory_lines l WHERE l.shipment_id=i.id AND l.product_id=COALESCE(item->>'productId',item->>'product_id'))
+            UNION ALL
+            SELECT 'legacy:'||s.id::text||':'||si.variant_id::text,COALESCE(v.product_id,''),COALESCE(p.title,''),s.id::text,'',
+                   si.expected_qty,si.received_qty,s.created_at,'',si.variant_id::text,0,0,0,si.received_qty,TRUE
+            FROM shipments s JOIN shipment_items si ON si.shipment_id=s.id
+            LEFT JOIN product_variants v ON v.id=si.variant_id LEFT JOIN products p ON p.id=v.product_id
+            WHERE s.status IN ('received','partially_received') AND si.received_qty>0 AND NOT EXISTS(
+                SELECT 1 FROM inbound_inventory_lines l WHERE l.shipment_id=s.id::text AND l.variant_id=si.variant_id::text)
+        )
+        SELECT * FROM queue ORDER BY created_at DESC,id COLLATE "C" LIMIT 20
+    `
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -353,6 +378,7 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 		if err := rows.Scan(
 			&item.ID, &item.ProductID, &item.ProductTitle,
 			&item.InboundID, &item.SupplierName, &item.ExpectedQuantity, &item.ReceivedQuantity, &item.CreatedAt,
+			&item.ReceiptLineID, &item.VariantID, &item.PassedQuantity, &item.FailedQuantity, &item.ShortageQuantity, &item.RemainingQuantity, &item.ReconciliationRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -361,209 +387,58 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 	return list, nil
 }
 
-// RecordQCPass records successful quality inspection and enqueues putaway.
-// (Fix P3-15) Hardened against the dual-QC double-credit hazard:
-//  1. Idempotency guard: an existing 'passed'/'completed' qc_result for the
-//     item makes a re-run a silent no-op — a QC pass can never credit the
-//     same item twice (no duplicate putaway task, no second movement). The
-//     shipment row is locked FOR UPDATE so concurrent passes serialize.
-//  2. Inventory movement: this used to leave goods stranded in 'physical'
-//     forever (never sellable). It now performs the same physical→sellable
-//     movement as CompleteQC, with a DETERMINISTIC movement idempotency key
-//     ("qc-pass:<inbound>:<product>") so even a guard bypass could not
-//     double-credit balances.
-//
-// debitSupplierSellableForQCReceiptTx transfers only the inbound's persisted
-// birth source. Unknown legacy origins or incomplete source stock require
-// reconciliation; today's product origin never supplies missing provenance.
-func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, productID, inboundID string, qty int, referenceType, referenceID, actorUserID, toLocationKey string) error {
-	if !InboundFullReceiptLifecycleEnabled {
-		return ErrInboundLifecycleClosed
-	}
-	if qty <= 0 {
-		return nil
-	}
-	var supplier, source string
-	if err := tx.QueryRowContext(ctx, `SELECT i.supplier_id,w.id FROM inbound_shipments i JOIN products p ON p.id=$2 AND p.supplier_id=i.supplier_id JOIN supplier_warehouses w ON w.id=i.supplier_warehouse_id AND w.supplier_id=i.supplier_id WHERE i.id=$1`, inboundID, productID).Scan(&supplier, &source); err != nil {
-		return fmt.Errorf("%w: inbound source reconciliation required: %w", ErrInsufficientInventory, err)
-	}
-	location := "supplier-warehouse:" + source
-	key := "inbound-qc-source:" + inboundID + ":" + productID
-	var recorded int
-	var from, to string
-	err := tx.QueryRowContext(ctx, `SELECT quantity,from_location_key,to_location_key FROM inventory_movements WHERE idempotency_key=$1`, key).Scan(&recorded, &from, &to)
-	if err == nil {
-		if recorded != qty || from != location || to != toLocationKey {
-			return fmt.Errorf("%w: inbound source event changed", ErrInsufficientInventory)
-		}
-		return nil
-	}
-	if err != sql.ErrNoRows {
-		return err
-	}
-	var balance string
-	var available int
-	if err := tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND supplier_warehouse_id=$3 AND warehouse_id IS NULL AND variant_id IS NULL AND owner_type='supplier' AND location_type='supplier' AND location_key=$4 AND status='sellable' FOR UPDATE`, productID, supplier, source, location).Scan(&balance, &available); err != nil {
-		return fmt.Errorf("%w: inbound source stock is missing: %w", ErrInsufficientInventory, err)
-	}
-	if available < qty {
-		return fmt.Errorf("%w: inbound source stock is incomplete", ErrInsufficientInventory)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$2,updated_at=NOW() WHERE id=$1`, balance, qty); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,$4,'sellable','sellable',$5,$6,$7,$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), productID, supplier, qty, location, toLocationKey, referenceType, referenceID, key, actorUserID)
-	return err
+// RecordQCPass accepts cumulative all-passed counts through the same durable
+// receipt-line identity as CompleteQC. Accepted stock awaits exact putaway.
+func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int, receiptLineID ...string) error {
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, qty, 0, 0, "", receiptLineID...)
 }
 
-func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int) error {
-	if !InboundFullReceiptLifecycleEnabled {
-		return ErrInboundLifecycleClosed
+// CompleteQC accepts cumulative disposition counts, never a second source debit.
+func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("QC reason is required")
 	}
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, passed, failed, shortage, strings.TrimSpace(reason), receiptLineID...)
+}
+
+func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, productID, shipmentID, actor string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+	if len(receiptLineID) > 1 || (len(receiptLineID) == 1 && strings.TrimSpace(receiptLineID[0]) == "") {
+		return ErrInboundProvenance
+	}
+	if strings.TrimSpace(productID) == "" || strings.TrimSpace(shipmentID) == "" || passed < 0 || failed < 0 || shortage < 0 || int64(passed)+int64(failed) <= 0 || int64(passed)+int64(failed) > 2147483647 || int64(shortage) > 2147483647 {
+		return ErrInboundProvenance
+	}
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	if qty <= 0 {
-		return fmt.Errorf("positive QC quantity required")
-	}
-	// Serialize concurrent passes on the shipment row (mirrors CompleteQC).
-	var supplierID string
-	var warehouseID string
-	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
+	if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
 		return err
 	}
-	if qty > received {
-		return fmt.Errorf("QC quantity exceeds physically received quantity")
-	}
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM qc_results WHERE inbound_id=$1 AND product_id=$2 AND status IN ('passed','completed')`, inboundID, productID).Scan(&existing); err == nil {
-		return tx.Commit()
-	}
-
-	resID := "QC-" + uuid.NewString()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO qc_results (id, product_id, inbound_id, inspector_user_id, status, quantity_passed, created_at)
-		VALUES ($1, $2, $3, $4, 'passed', $5, NOW())
-	`, resID, productID, inboundID, inspectorUserID, qty)
+	lines, err := inboundLinesTx(ctx, tx, shipmentID)
 	if err != nil {
 		return err
 	}
-
-	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
-	if err != nil {
-		return err
-	}
-	if err := moveInventoryTx(ctx, tx, productID, supplierID, qty, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", resID, "qc-pass:"+inboundID+":"+productID, inspectorUserID, `{}`); err != nil {
-		return err
-	}
-
-	// P0 2026-10-20: true-transfer debit — QC-pass mints sellable at the
-	// warehouse, so the supplier's canonical sellable row is debited in the
-	// same tx (cf. C3 in the SKU receive path); otherwise every pass
-	// inflates the pool. Runs after the move so its products.stock re-sync
-	// (inside moveInventoryTx) already covered the credit; re-sync again
-	// for the debit leg.
-	if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, inboundID, qty, "inbound_qc_pass_transfer", resID, inspectorUserID, "warehouse:"+inboundID); err != nil {
-		return err
-	}
-	if err := syncProductStockTx(ctx, tx, productID); err != nil {
-		return err
-	}
-
-	putID := "PUT-" + uuid.NewString()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO putaway_tasks (id, product_id, inbound_id, bin_location, quantity, status, created_at,warehouse_id)
-		VALUES ($1, $2, $3::text, NULL, $4, 'pending', NOW(),(SELECT warehouse_id FROM inbound_shipments WHERE id=$3::text))
-	`, putID, productID, inboundID, qty)
-	if err != nil {
-		return err
-	}
-
-	// Storage-fee position (gap 7 lifecycle): this pass minted the
-	// sellable warehouse stock above, so the same quantity joins the
-	// position ledger in this transaction (skipped when an earlier
-	// QC path already credited this inbound's sellable move).
-	if !qcCredited {
-		if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, qty); err != nil {
-			return err
+	// The legacy endpoint names a product, not a SKU. Never spread a QC
+	// decision across multiple SKU lines or infer one from today's catalog.
+	var selected *inboundPersistedLine
+	for i := range lines {
+		if lines[i].Product != productID || (len(receiptLineID) == 1 && lines[i].ID != receiptLineID[0]) {
+			continue
 		}
+		if selected != nil {
+			return ErrInboundProvenance
+		}
+		selected = &lines[i]
 	}
-
-	return tx.Commit()
-}
-
-func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string) error {
-	if !InboundFullReceiptLifecycleEnabled {
-		return ErrInboundLifecycleClosed
+	if selected == nil {
+		return ErrInboundProvenance
 	}
-	if strings.TrimSpace(productID) == "" || strings.TrimSpace(inboundID) == "" || passed < 0 || failed < 0 || shortage < 0 || passed+failed == 0 || strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("valid QC quantities and reason are required")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
+	if err := dispositionInboundLineTx(ctx, tx, *selected, actor, passed, failed, shortage, reason); err != nil {
 		return err
-	}
-	defer tx.Rollback()
-	var supplierID string
-	var warehouseID string
-	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
-		return err
-	}
-	if passed+failed > received {
-		return fmt.Errorf("QC quantities exceed physically received quantity")
-	}
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM qc_results WHERE inbound_id=$1 AND product_id=$2 AND status='completed'`, inboundID, productID).Scan(&existing); err == nil {
-		return tx.Commit()
-	}
-	qcID := "QC-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO qc_results (id,product_id,inbound_id,inspector_user_id,status,defect_reason,quantity_passed,quantity_failed,created_at) VALUES ($1,$2,$3,$4,'completed',$5,$6,$7,NOW())`, qcID, productID, inboundID, inspectorUserID, reason, passed, failed); err != nil {
-		return err
-	}
-	if shortage > 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO qc_discrepancies (id,inbound_id,supplier_id,product_id,expected_quantity,received_quantity,defect_count,reason,status,created_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,'open',NOW()`, "DISP-QC-"+uuid.NewString(), inboundID, supplierID, productID, received+shortage, received, failed, reason); err != nil {
-			return err
-		}
-	}
-	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
-	if err != nil {
-		return err
-	}
-	if passed > 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,inbound_id,bin_location,quantity,status,created_at,warehouse_id) VALUES ($1,$2,$3::text,NULL,$4,'pending',NOW(),(SELECT warehouse_id FROM inbound_shipments WHERE id=$3::text))`, "PUT-"+uuid.NewString(), productID, inboundID, passed); err != nil {
-			return err
-		}
-		if err := moveInventoryTx(ctx, tx, productID, supplierID, passed, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", qcID, "qc:"+qcID+":passed", inspectorUserID, `{"failed":%d,"shortage":%d}`, failed, shortage); err != nil {
-			return err
-		}
-		// P0 2026-10-20: true-transfer debit, same as RecordQCPass above —
-		// only the passed units become sellable, so only they are debited
-		// from the supplier's canonical sellable row (failed units go to
-		// 'damaged' and never enter the sellable pool).
-		if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, inboundID, passed, "inbound_qc_pass_transfer", qcID, inspectorUserID, "warehouse:"+inboundID); err != nil {
-			return err
-		}
-		if err := syncProductStockTx(ctx, tx, productID); err != nil {
-			return err
-		}
-		// Storage-fee position (gap 7 lifecycle): same rule as
-		// RecordQCPass — the passed quantity joins the position
-		// ledger in this transaction, once per inbound QC credit.
-		if !qcCredited {
-			if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, passed); err != nil {
-				return err
-			}
-		}
-	}
-	if failed > 0 {
-		if err := moveInventoryTx(ctx, tx, productID, supplierID, failed, "physical", "damaged", "inbound:"+inboundID, "quarantine:"+inboundID, "qc_failed", qcID, "qc:"+qcID+":failed", inspectorUserID, `{"reason":%q}`, reason); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

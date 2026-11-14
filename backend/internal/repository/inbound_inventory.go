@@ -15,8 +15,9 @@ import (
 var ErrInboundProvenance = errors.New("inbound provenance conflict or reconciliation required")
 var ErrInboundLifecycleClosed = errors.New("receipt QC/putaway activation requires integrated INV-02/04/09")
 
-// Explicit closed release gate: receipts remain quarantined and create no QC or
-// putaway entitlement. INV-04/09 must replace this gate in their integrated release.
+// Full receipt/putaway activation remains closed. Safe QC disposition may move
+// exact quarantine units to qc_accepted/damaged; neither becomes sellable or
+// creates a putaway/storage entitlement until INV-09 is integrated.
 const InboundFullReceiptLifecycleEnabled = false
 
 type InventoryOrigin struct{ Type, SupplierID, WarehouseID, SupplierWarehouseID string }
@@ -29,6 +30,98 @@ type inboundPersistedLine struct {
 	ID, Shipment, Supplier, Warehouse, Product, Variant, Kind, Source, External, Reason string
 	Quantity, Dispatched, Received, Cancelled                                           int
 	Allocations                                                                         []skuAllocation
+}
+
+// Caller holds the complete supplier/product/SKU/work/balance plan through
+// lockInboundShipmentTx. Dispositions are append-only subordinate event metadata,
+// serialized by the existing shipment guard, never late independent row guards.
+// Counts are cumulative: (line,total disposed) is a durable business identity.
+func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, actor string, passed, failed, shortage int, reason string) error {
+	total := passed + failed // bounded by the public caller before arithmetic
+	if total <= 0 || total > l.Received {
+		return ErrInboundProvenance
+	}
+	var oldPassed, oldFailed, oldShortage int
+	var oldReason string
+	err := tx.QueryRowContext(ctx, `SELECT quantity_passed,quantity_failed,quantity_shortage,reason FROM inbound_qc_dispositions WHERE receipt_line_id=$1 AND cumulative_disposed=$2`, l.ID, total).Scan(&oldPassed, &oldFailed, &oldShortage, &oldReason)
+	if err == nil {
+		// RecordQCPass has no reason field; an opposite-endpoint all-pass
+		// replay acknowledges the original event without changing its details.
+		if oldPassed != passed || oldFailed != failed || oldShortage != shortage || (reason != "" && oldReason != "" && reason != oldReason) {
+			return ErrInboundProvenance
+		}
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	var priorTotal, priorPassed, priorFailed, priorShortage int
+	err = tx.QueryRowContext(ctx, `SELECT cumulative_disposed,quantity_passed,quantity_failed,quantity_shortage FROM inbound_qc_dispositions WHERE receipt_line_id=$1 ORDER BY cumulative_disposed DESC LIMIT 1`, l.ID).Scan(&priorTotal, &priorPassed, &priorFailed, &priorShortage)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if total <= priorTotal || passed < priorPassed || failed < priorFailed || shortage > l.Quantity-l.Received {
+		return ErrInboundProvenance
+	}
+	// Historical QC evidence cannot be mapped to this new allocation by
+	// guessing. No legacy damage-based subtraction or automatic repair.
+	var historical bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM qc_results q WHERE q.inbound_id=$1 AND q.product_id=$2 AND NOT EXISTS(SELECT 1 FROM inbound_qc_dispositions d WHERE d.id=q.id))`, l.Shipment, l.Product).Scan(&historical); err != nil {
+		return err
+	}
+	if historical {
+		return ErrInboundProvenance
+	}
+	deltaPassed, deltaFailed := passed-priorPassed, failed-priorFailed
+	// Verify every existing state row belongs to the exact persisted origin.
+	// All these rows have already been locked globally, before this read.
+	var invalid bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND location_key=$3 AND (supplier_id IS DISTINCT FROM $4 OR warehouse_id IS DISTINCT FROM $5 OR owner_type<>'supplier' OR location_type<>'warehouse'))`, l.Product, l.Variant, "inbound-line:"+l.ID, l.Supplier, l.Warehouse).Scan(&invalid); err != nil {
+		return err
+	}
+	if invalid {
+		return ErrInboundProvenance
+	}
+	var undisposed int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND location_key=$3 AND status='quarantine'`, l.Product, l.Variant, "inbound-line:"+l.ID).Scan(&undisposed); err != nil {
+		return err
+	}
+	if undisposed != l.Received-priorTotal {
+		return ErrInboundProvenance
+	}
+	qcID := "QC-" + uuid.NewString()
+	for _, move := range []struct {
+		status   string
+		quantity int
+	}{{"qc_accepted", deltaPassed}, {"damaged", deltaFailed}} {
+		if move.quantity == 0 {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$4,updated_at=NOW() WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND location_key=$3 AND status='quarantine' AND quantity >=$4`, l.Product, l.Variant, "inbound-line:"+l.ID, move.quantity)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			return ErrInboundProvenance
+		}
+		if err := inboundCreditTx(ctx, tx, l.ID, l.Supplier, l.Warehouse, l.Product, l.Variant, move.status, move.quantity); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$7,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, move.quantity, move.status, "inbound-line:"+l.ID, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO qc_results(id,product_id,inbound_id,inspector_user_id,status,defect_reason,quantity_passed,quantity_failed,created_at) VALUES($1,$2,$3,NULLIF($4,''),'completed',$5,$6,$7,NOW())`, qcID, l.Product, l.Shipment, actor, reason, deltaPassed, deltaFailed); err != nil {
+		return err
+	}
+	if shortage > priorShortage {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO qc_discrepancies(id,inbound_id,supplier_id,product_id,expected_quantity,received_quantity,defect_count,reason,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW())`, "DISP-QC-"+uuid.NewString(), l.Shipment, l.Supplier, l.Product, l.Received+shortage, l.Received, deltaFailed, reason); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO inbound_qc_dispositions(id,receipt_line_id,cumulative_disposed,received_quantity,quantity_passed,quantity_failed,quantity_shortage,passed_delta,failed_delta,reason,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, qcID, l.ID, total, l.Received, passed, failed, shortage, deltaPassed, deltaFailed, reason, actor)
+	return err
 }
 
 // Caller owns the transaction and preholds supplier, all products/SKUs and the

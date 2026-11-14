@@ -41,6 +41,14 @@ export interface InboundShipmentDto {
 }
 
 export interface QCQueueItemDto {
+  reconciliationRequired?: boolean;
+  /** Exact immutable allocation; required when one product has multiple SKU lines. */
+  receiptLineId: string;
+  variantId?: string;
+  passedQuantity: number;
+  failedQuantity: number;
+  shortageQuantity: number;
+  remainingQuantity: number;
   id: string;
   productId: string;
   productTitle: string;
@@ -109,7 +117,11 @@ export const wmsApi = {
   scanInboundItem: (inboundId: string, payload: { productId?: string; barcode?: string; quantity: number }) => apiRequest<{ success: boolean; scannedCount: number }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/scan-item`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   completeReceiving: (inboundId: string) => apiRequest<{ success: boolean; status: string }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/complete`, { method: 'POST', auth: true }),
   getQCQueue: () => apiRequest<{ success: boolean; queue: QCQueueItemDto[] }>('/warehouse/qc/queue', { method: 'GET', auth: true }),
-  completeQC: (productId: string, payload: { inboundId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string }) => apiRequest<{ success: boolean; status: string }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  completeQC: async (productId: string, payload: { inboundId: string; receiptLineId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string }) => {
+    const result = await apiRequest<{ success: boolean; status: string }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) });
+    if (result?.success !== true || result.status !== 'completed') throw new Error('پاسخ ثبت QC کامل نیست؛ همان نتیجه را دوباره ارسال کنید.');
+    return result;
+  },
 
   getManifests: async (): Promise<ShippingManifestDto[]> => {
     return apiRequest<ShippingManifestDto[]>('/warehouse/manifests', {

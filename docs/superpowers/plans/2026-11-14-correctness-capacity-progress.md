@@ -18,7 +18,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
 | INV-02 | Checkpoint OPEN | bb61fae | [Inbound transfers](../../architecture/inbound-transfers.md) |
 | INV-03 | TODO | — | — |
-| INV-04 | TODO | — | — |
+| INV-04 | Checkpoint OPEN | Conserved QC checkpoint | [QC disposition](../../architecture/inbound-qc-disposition.md) |
 | INV-08 | TODO | — | — |
 | INV-09 | TODO | — | — |
 | INV-06 | TODO | — | — |
@@ -301,3 +301,16 @@ Moved existing variant/widget/campaign composition and public variant-price JSON
 Independent coordinator review approved all seven pricing source paths and two deployment guard paths. Root-only frozen source tree48d2c3b908117419e19e7d8823f0de8a3adfb4b2 passed full default Go suite (DB opt-ins absent) and frontend production build. Separate guarded pricing/service/P1/P2/wire suite passed13 top-level cases without skips and verified cleanup. Logs: release-freeze-go.log, release-freeze-build.log, catalogpricing-service-integration.log under ignored logs/.
 
 User requested freezing current work, pushing it and deploying production. Read-only server preflight found191 legacy migration rows, no checksum column,12 extra legacy aliases and8 pending current migrations. Prefix202610190003 has two canonical candidates; no history has been deleted or guessed. Added early read-only checksum adoption guard in deploy.ps1 before builds/uploads/service changes, and unknown-history guard in deploy_remote.py before replacement. A reviewed isolated history-adoption/upgrade rehearsal is required for this production database. Existing backend health returnedHTTP200. Final intended-hardware capacity remains open per user.
+
+
+## INV-04 — conserved public QC disposition checkpoint; putaway OPEN
+
+Both real QC entry points now consume exact persisted receipt allocations through one bounded transaction, without the obsolete second supplier debit. Cumulative passed/failed decisions have immutable receipt-line/business identities; partial receipt/disposition, delayed exact retry, opposite-endpoint replay and selected SKU conserve stock. Passed units remain qc_accepted, failed units damaged, and undisposed units quarantine: none become sellable before INV-09 exact putaway. Shortage is an audit snapshot, never inventory credit. Additive migration202611140008 protects append-only event evidence; historical unmapped receipts remain visible as reconciliation exceptions and cannot be silently repaired.
+
+Fresh independent review found one Important UI issue: same-product SKU rows were visually indistinguishable. A real mounted regression failed before visible SKU/receipt identity was added and then passed. Scoped re-review approved both fixed files with no new finding; backend conservation/replay review found no blocker. The current UI preserves cumulative progress and exact retry payload after ambiguous acknowledgments.
+
+Final source tree43768dd8f48ed27466d5a28150f1429429fe146c is based on9221c89 and excludes CAP working changes. Its complete backend subtree is identical to separately tested tree87d1ef687f2f8ae1c9ce3e54cb2fc5cef0ac13b0. Guarded affected verification passed58 top-level cases (repository36.239s/server2.249s), with verified disposable cleanup and exactly seven retained positive INV-09 integration skips. Three final client/browser tests passed without skips; typecheck, frontend production build and default Go suite passed. Default DB opt-ins remain absent and are not integration evidence. Proof: releases/inv04-staged-proof.json; logs/inv04-exact-{affected,client,typecheck,build,default}.log.
+
+The separate broad all-opt-in Go suite FAILED with109 named top-level failures and verified cleanup. The sanitized complete name list and scope are committed in docs/quality/inv04-broad-integration-failures.txt. They require TEST-02 fixture/domain triage and are not all proven harmless. No unrelated fixture repair or business-rule weakening was performed during the user's release freeze.
+
+Ruling: this is Checkpoint OPEN, not full INV-02/04/09 lifecycle completion. The seven positive putaway/capture/storage branches remain retained but skipped, pending INV-09 integration. The user has now requested freezing/pushing current changes and a guarded deployment attempt; FIN-003 was never started. No production migration or data change was performed by this checkpoint.

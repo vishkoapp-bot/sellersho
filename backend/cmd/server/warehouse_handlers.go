@@ -133,12 +133,20 @@ func handlePassQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID string `json:"inboundId"`
-		Quantity  int    `json:"quantity"`
+		InboundID     string  `json:"inboundId"`
+		Quantity      int     `json:"quantity"`
+		ReceiptLineID *string `json:"receiptLineId"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+	var receiptLine []string
+	if req.ReceiptLineID != nil {
+		receiptLine = append(receiptLine, *req.ReceiptLineID)
+	}
 	staffID := getCallerUserID(ctx)
-	if err := repo.RecordQCPass(ctx, productID, req.InboundID, staffID, req.Quantity); err != nil {
+	if err := repo.RecordQCPass(ctx, productID, req.InboundID, staffID, req.Quantity, receiptLine...); err != nil {
 		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
@@ -189,17 +197,22 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID string `json:"inboundId"`
-		Passed    int    `json:"passedQuantity"`
-		Failed    int    `json:"failedQuantity"`
-		Shortage  int    `json:"shortageQuantity"`
-		Reason    string `json:"defectReason"`
+		InboundID     string  `json:"inboundId"`
+		Passed        int     `json:"passedQuantity"`
+		Failed        int     `json:"failedQuantity"`
+		Shortage      int     `json:"shortageQuantity"`
+		Reason        string  `json:"defectReason"`
+		ReceiptLineID *string `json:"receiptLineId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
 		return
 	}
-	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason); err != nil {
+	var receiptLine []string
+	if req.ReceiptLineID != nil {
+		receiptLine = append(receiptLine, *req.ReceiptLineID)
+	}
+	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason, receiptLine...); err != nil {
 		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return

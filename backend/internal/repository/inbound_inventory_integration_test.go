@@ -224,8 +224,8 @@ func TestInboundTransferQCActivationGate(t *testing.T) {
 	if InboundFullReceiptLifecycleEnabled {
 		t.Fatal("INV04/09 integration evidence must accompany gate activation")
 	}
-	if err := debitSupplierSellableForQCReceiptTx(context.Background(), tx, "p", "unintegrated", 1, "qc", "qc", "", "warehouse:w1"); err != ErrInboundLifecycleClosed {
-		t.Fatalf("old QC debit enabled: %v", err)
+	if err := NewWarehouseRepository(db).RecordQCPass(context.Background(), "p", "unintegrated", "", 1); err != ErrInboundProvenance {
+		t.Fatalf("QC without exact receipt provenance enabled: %v", err)
 	}
 	var n int
 	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&n); err != nil || n != 1 {

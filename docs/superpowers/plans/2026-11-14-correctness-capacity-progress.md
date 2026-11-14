@@ -41,3 +41,8 @@ Environment issue: Docker engine reports `Docker Desktop is unable to start`. Th
 All other 53 tasks remain TODO. No production deployment or capacity certification has occurred.
 
 Checkpoint review: independent reviewer review_test_safety found one incompatible legacy exact-name guard in supplierFlowDB; removed it in favor of the shared verified identity guard. Focused suites rerun. Frontend npm run build PASS. Docker became available after user startup; disposable harness and canonical migration preparation are now running as separate tasks permitted by the supplied execution plan.
+
+## TEST-01 disposable harness stage — acceptance passed
+
+Evidence and exact commands: docs/test-environment.md. Nine Python lifecycle/credential-isolation regressions PASS; live sentinel/default-suite zero connections with unchanged schema/data PASS; unmarked refusal PASS; setup/test-failure cleanup PASS; all ten existing SKU tests PASS; complete schema-only seeder package PASS. Docker now runs locally. Ruling: seeder test uses a schema-only disposable copy to avoid migration demo-user ID collisions; intact append-only ledger must refuse CleanDev/ResetDev, replacing obsolete assertions expecting forbidden truncation. No production seeder changes. Reviewer: mig01 (independent harness review). Strict canonical bootstrap was jointly validated against pending MIG-01, whose separate commit follows; final task closure uses that integrated revision. POSIX wrapper still awaits a POSIX host check, PowerShell wrapper ran successfully.
+

@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 )
@@ -36,14 +37,7 @@ func loadDealsWidgetConfig(store *domain.Store) *pricing.DealsWidgetConfig {
 // order totals keep their catalog-original semantics, exactly as
 // with the DB discount layers.
 func applyDealsWidgetDiscount(store *domain.Store, cfg *pricing.DealsWidgetConfig, productID string, res pricing.ReferenceResolution) (pricing.ReferenceResolution, int64) {
-	if store == nil || cfg == nil || store.OwnerType != "dropshipper" {
-		return res, 0
-	}
-	pct, ok := cfg.DiscountFor(productID, time.Now())
-	if !ok {
-		return res, 0
-	}
-	return pricing.ApplyDealsWidgetDiscount(res, pct)
+	return catalogpricing.ApplyWidgetAt(store, cfg, productID, res, time.Now())
 }
 
 // applyDealsWidgetDiscountForDisplay is the storefront variant: when
@@ -53,9 +47,5 @@ func applyDealsWidgetDiscount(store *domain.Store, cfg *pricing.DealsWidgetConfi
 // when the catalog OriginalPrice sits elsewhere. When no discount
 // applies, the resolution is returned exactly as resolved.
 func applyDealsWidgetDiscountForDisplay(store *domain.Store, cfg *pricing.DealsWidgetConfig, productID string, res pricing.ReferenceResolution) pricing.ReferenceResolution {
-	out, amount := applyDealsWidgetDiscount(store, cfg, productID, res)
-	if amount > 0 {
-		out.OriginalPrice = res.FinalPrice
-	}
-	return out
+	return catalogpricing.ApplyWidgetForDisplayAt(store, cfg, productID, res, time.Now())
 }

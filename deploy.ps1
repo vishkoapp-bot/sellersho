@@ -11,7 +11,7 @@ Set-Location -LiteralPath $root
 if ($Target -ne '/opt/drup') { throw 'This deployment supports the verified /opt/drup installation only.' }
 if ($MoveXray443 -and -not $EnableSSL) { throw 'MoveXray443 requires EnableSSL.' }
 function Run-Git([string[]]$GitArgs) {
-    $result = & git -c "safe.directory=$($root.Replace('\','/'))" @GitArgs
+    $result = & git -c "safe.directory=$($root.Replace('\','/'))" -c core.autocrlf=false @GitArgs
     if ($LASTEXITCODE -ne 0) { throw "Git failed: $($GitArgs[0])" }
     return $result
 }
@@ -25,6 +25,21 @@ $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
+# The strict runner cannot adopt an unverified legacy history at application
+# startup. Check before building/uploading or touching live services.
+Remote @'
+set -eu
+ready=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='schema_migrations' AND column_name='checksum'")
+if [ "$ready" != "1" ]; then
+  echo 'DEPLOYMENT BLOCKED: production migration history needs reviewed legacy adoption and an isolated upgrade rehearsal.' >&2
+  exit 1
+fi
+missing=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM schema_migrations WHERE checksum IS NULL OR checksum=''")
+if [ "$missing" != "0" ]; then
+  echo 'DEPLOYMENT BLOCKED: production migration checksums have not been adopted.' >&2
+  exit 1
+fi
+'@
 # Slow/unreliable client uploads can use the server's authenticated Git origin.
 # Both applications still build from the exact pushed commit in an isolated release.
 if ($BuildOnServer) {

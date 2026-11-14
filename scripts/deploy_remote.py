@@ -50,6 +50,9 @@ if json.loads((release / 'release.json').read_text())['commit'] != commit:
 applied = set(run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db', '-Atc',
                   'SELECT version FROM schema_migrations', capture=True).splitlines())
 pending = [p for p in sorted((release / 'backend/migrations').glob('*.up.sql')) if p.name not in applied]
+unknown_history = applied - {p.name for p in (release / 'backend/migrations').glob('*.up.sql')}
+if unknown_history:
+    raise SystemExit('Production migration history contains unreviewed aliases/unknown entries; isolated adoption rehearsal required')
 print('Pending migrations:', [p.name for p in pending], flush=True)
 # Reviewed live gap: attribution table is absent; its idempotent backfill
 # derives customer/store links without changing users, orders or balances.

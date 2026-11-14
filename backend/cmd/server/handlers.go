@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
@@ -62,19 +63,7 @@ type ProductVariantResponse struct {
 
 // VariantPriceResponse is one entry of variantPrices, keyed by variant
 // ID (UUID) exactly as live serves it (FIX 4, team 04 G1 / team 02 G6).
-type VariantPriceResponse struct {
-	PricingError    string `json:"pricingError,omitempty"`
-	Price           int64  `json:"price"`
-	OriginalPrice   int64  `json:"originalPrice"`
-	DiscountPercent int    `json:"discountPercent"`
-	CampaignName    string `json:"campaignName,omitempty"`
-	// P1(c): configured sale price + window (echoed whenever set, any
-	// window state); OnSale is true iff the sale determined this price.
-	SalePrice *int64     `json:"salePrice,omitempty"`
-	SaleFrom  *time.Time `json:"saleFrom,omitempty"`
-	SaleTo    *time.Time `json:"saleTo,omitempty"`
-	OnSale    bool       `json:"onSale,omitempty"`
-}
+type VariantPriceResponse = catalogpricing.VariantPrice
 
 // ProductResponse is the FROZEN live list shape (D21): 21 always-present
 // keys, in this order, plus three appended omitempty extensions:
@@ -491,54 +480,17 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 // This function never touches pricing internals: it only calls the
 // resolver Team 02 supplies.
 func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride, campaigns []domain.SellerDiscountCampaign) map[string]VariantPriceResponse {
-	out := make(map[string]VariantPriceResponse, len(variants))
-	widgetCfg := loadDealsWidgetConfig(&store)
-	for _, v := range variants {
-		if v.InventoryMode == "tracked" && !v.IsActive {
-			continue
-		}
-		cost := p.SupplierBaseCost
-		if v.SupplierBaseCost != nil {
-			cost = *v.SupplierBaseCost
-		}
-		var ov *pricing.StoreVariantOverride
-		if o, ok := overrides[p.ID+"/"+v.ID]; ok {
-			oc := o
-			ov = &oc
-		}
-		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(p, cost, v.ID, store, settings, locks, ov)
-		res = applyDealsWidgetDiscountForDisplay(&store, widgetCfg, p.ID, res)
-		vname := ""
-		if camp := pickDisplayCampaign(campaigns, p, v.ID); camp != nil && !displayCampaignLocked(store, locks, p, v.ID) {
-			d := applyDisplayCampaign(res, camp)
-			res = d.Resolution
-			vname = d.CampaignName
-		}
-		// P1(c): sale AFTER campaigns (shared helper — the charge
-		// path calls the same one). Lowest wins; floor R; a sale
-		// below R suspends. When the sale wins, no campaign name.
-		onSale := false
-		if v.SalePrice != nil {
-			var saleRes pricing.ReferenceResolution
-			saleRes, onSale = pricing.ApplyVariantSale(res, v.SalePrice, time.Now(), v.SaleFrom, v.SaleTo)
-			res = saleRes
-			if onSale {
-				vname = ""
-			}
-		}
-		out[v.ID] = VariantPriceResponse{
-			PricingError:    res.PricingError,
-			Price:           res.FinalPrice,
-			OriginalPrice:   res.OriginalPrice,
-			DiscountPercent: deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
-			CampaignName:    vname,
-			SalePrice:       v.SalePrice,
-			SaleFrom:        v.SaleFrom,
-			SaleTo:          v.SaleTo,
-			OnSale:          onSale,
-		}
+	// Legacy callers explicitly keep their established nil-settings default.
+	// Index builders must supply validated settings and one source asOf directly.
+	prices, err := catalogpricing.ResolveVariantsAt(catalogpricing.VariantInput{
+		Product: p, Variants: variants, Store: store, Settings: pricing.OrDefault(settings),
+		Locks: locks, Overrides: overrides, ActiveCampaigns: campaigns,
+		Widget: loadDealsWidgetConfig(&store), AsOf: time.Now(),
+	})
+	if err != nil {
+		return map[string]VariantPriceResponse{}
 	}
-	return out
+	return prices
 }
 
 // loadVariantOverridesForStore loads a store's variant overrides once

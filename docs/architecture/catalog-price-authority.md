@@ -39,3 +39,5 @@ authoritative index. Those implementations, complete temporal snapshot/expiry
 handling, public paging/filter/bounds adoption and capacity gates remain open.
 Local ignored evidence: `logs/catalog-price-wire-*.log` and
 `logs/catalog-card-price-tests.log`.
+
+The reusable internal/catalogpricing composition now owns the public variant-price type and its JSON marshaler. Existing HTTP helper names delegate to the shared implementation; legacy nil-settings defaults stay in those wrappers. The reusable service requires explicit settings and one AsOf, shared by all variant sale/widget checks. Campaign lists must already belong to that same source snapshot; DB loading and complete price-index activation remain open. Deterministic inclusive-start/exclusive-end boundary tests, the actual guarded P1/P2 display/quote cases and the suspended-sale wire regression passed after extraction.

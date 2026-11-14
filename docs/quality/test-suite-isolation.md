@@ -173,3 +173,15 @@ tests now supply the same explicit source and clone their owned warehouse table;
 all six top-level tests passed without skips. The default Go suite passed with
 integration opt-ins absent. Evidence: `logs/test02-publication-origin-red.log`,
 `logs/test02-model-publication.log`, `logs/test02-stage11-default.log`.
+
+## Supplier flow source/destination conservation
+
+Supplier flow fixtures now seed explicit owned source warehouses and canonical
+sellable balances rather than product projections alone. Granular publication
+submits and reviews the source ID. Scheduled inbound tests seed a distinct active
+destination and test the current provenance-conflict response for cross-supplier
+dispatch. Cancelling a fully dispatched transfer is an idempotent no-op preserving
+in_transit; cancelling an undispatched reservation restores its source exactly.
+The final assertion requires 18 sellable + 2 transit = 20 physical units. Eight
+flow/publication/ownership/permission/tracking tests passed without skips.
+Evidence: `logs/test02-flow-provenance.log`.

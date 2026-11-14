@@ -23,6 +23,7 @@ func TestGranularFullPublication(t *testing.T) {
 		variants = append(variants, map[string]interface{}{"variant_name": "color: " + color, "attributes": map[string]interface{}{"color": color}, "stock": float64(i + 1), "supplier_base_cost": float64(1000 + i*100)})
 	}
 	data := map[string]interface{}{"title": "Granular publication test", "productType": "variable", "categorySlug": "digital", "description": "Synthetic product for isolated review tests only", "supplierBaseCost": float64(1000), "stock": float64(15), "variants": variants, "imageUrls": []interface{}{"/static/test-a.png", "/static/test-b.png"}, "imageUrl": "/static/test-a.png", "weightGrams": float64(100), "lengthMm": float64(100), "widthMm": float64(100), "heightMm": float64(100)}
+	data["supplierWarehouseId"] = owner.warehouse
 	id, e := repo.ProposeProduct(ctx, owner.supplier, data)
 	if e != nil {
 		t.Fatal(e)

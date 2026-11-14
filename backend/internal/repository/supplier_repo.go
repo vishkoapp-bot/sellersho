@@ -3003,103 +3003,11 @@ func newCartonShipmentCode() string {
 	return string(b[:])
 }
 
-// CreateCartonShipment inserts a carton shipment (status 'draft', the
-// only fresh state the source CHECK allows; live's an map also covers
-// draft as «پیش‌نویس») with its variant lines. Variants must belong to
-// this supplier's products. Idempotency is per-call: live's client sends
-// no key for createShipment, so no replay handling is added.
+// CreateCartonShipment creates one atomic carton. The optional second argument is
+// a supplier-scoped creation key; HTTP callers must supply it. Legacy internal
+// callers without a key receive a new operation identity on each invocation.
 func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierID string, items []CartonShipmentItem, destination ...string) (*CartonShipment, error) {
-	if len(destination) != 1 || destination[0] == "" {
-		return nil, fmt.Errorf("explicit destination warehouse is required")
-	}
-	var active bool
-	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM warehouses WHERE id=$1 AND is_active)`, destination[0]).Scan(&active); err != nil {
-		return nil, err
-	}
-	if !active {
-		return nil, fmt.Errorf("destination warehouse is inactive or unknown")
-	}
-
-	if len(items) == 0 {
-		return nil, fmt.Errorf("at least one variant line is required")
-	}
-	seen := map[string]bool{}
-	for _, it := range items {
-		if it.VariantID == "" || it.ExpectedQty <= 0 || seen[it.VariantID] {
-			return nil, fmt.Errorf("shipment requires unique SKU lines and positive quantities")
-		}
-		seen[it.VariantID] = true
-	}
-	for _, it := range items {
-		if it.VariantID == "" || it.ExpectedQty <= 0 {
-			return nil, fmt.Errorf("invalid shipment line")
-		}
-		var owned bool
-		if err := r.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM product_variants pv
-				JOIN products p ON p.id = pv.product_id
-				WHERE pv.id = $1 AND p.supplier_id = $2)
-		`, it.VariantID, supplierID).Scan(&owned); err != nil {
-			return nil, err
-		}
-		if !owned {
-			return nil, sql.ErrNoRows
-		}
-	}
-	sourceWarehouse := ""
-	for _, it := range items {
-		var source string
-		if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM product_variants pv JOIN products p ON p.id=pv.product_id JOIN supplier_warehouses w ON w.id=p.origin_supplier_warehouse_id AND w.supplier_id=p.supplier_id AND w.is_active WHERE pv.id=$1 AND p.supplier_id=$2`, it.VariantID, supplierID).Scan(&source); err != nil {
-			return nil, fmt.Errorf("explicit owned carton source is required: %w", err)
-		}
-		if sourceWarehouse != "" && sourceWarehouse != source {
-			return nil, fmt.Errorf("carton lines require a single source warehouse")
-		}
-		sourceWarehouse = source
-	}
-	var id, code string
-	inserted := false
-	for attempt := 0; attempt < 5; attempt++ {
-		code = newCartonShipmentCode()
-		if code == "" {
-			return nil, fmt.Errorf("could not generate shipment code")
-		}
-		id = uuid.NewString()
-		_, err := r.db.ExecContext(ctx, `
-			INSERT INTO shipments (id, shipment_code, supplier_id, status,warehouse_id,supplier_warehouse_id)
-			VALUES ($1, $2, $3, 'draft',$4,$5)
-		`, id, code, supplierID, destination[0], sourceWarehouse)
-		if err == nil {
-			inserted = true
-			break
-		}
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			continue
-		}
-		return nil, err
-	}
-	if !inserted {
-		return nil, fmt.Errorf("could not generate a unique shipment code")
-	}
-	for _, it := range items {
-		if _, err := r.db.ExecContext(ctx, `
-			INSERT INTO shipment_items (shipment_id, variant_id, expected_qty)
-			VALUES ($1, $2, $3)
-		`, id, it.VariantID, it.ExpectedQty); err != nil {
-			return nil, err
-		}
-	}
-	var out CartonShipment
-	err := r.db.QueryRowContext(ctx, `
-		SELECT s.id, s.shipment_code,
-			(SELECT COUNT(*) FROM shipment_items WHERE shipment_id = s.id),
-			s.status, s.created_at
-		FROM shipments s WHERE s.id = $1
-	`, id).Scan(&out.ID, &out.ShipmentCode, &out.ItemCount, &out.Status, &out.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return r.createCartonShipment(ctx, supplierID, items, destination...)
 }
 
 // ListCartonShipments returns this supplier's carton shipments, newest

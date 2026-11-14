@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -292,6 +293,7 @@ func (h *SupplierHandlers) HandleTapinBoxes(w http.ResponseWriter, r *http.Reque
 //   - 332 (token not found) and every other envelope failure:
 //     ok:false with the upstream Persian message verbatim.
 //   - transport failure: 502, unreachable.
+//
 // The token and shop id never appear in any response or log line.
 func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -861,15 +863,31 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 	}
 	var body struct {
 		WarehouseID string                          `json:"warehouse_id"`
+		CreationKey string                          `json:"creation_key"`
 		Items       []repository.CartonShipmentItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
-	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items, body.WarehouseID)
+	if strings.TrimSpace(body.CreationKey) == "" {
+		http.Error(w, `{"error":"creation_key is required"}`, http.StatusBadRequest)
+		return
+	}
+	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items, body.WarehouseID, body.CreationKey)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, repository.ErrCartonCreationConflict) {
+			http.Error(w, `{"error":"creation_key belongs to a different shipment payload"}`, http.StatusConflict)
+			return
+		}
+		var state interface{ SQLState() string }
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+			(errors.As(err, &state) && (state.SQLState() == "40001" || state.SQLState() == "40P01" || state.SQLState() == "55P03")) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, `{"error":"shipment creation is busy; retry with the same creation_key"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, `{"error":"variant not found or not yours"}`, http.StatusNotFound)
 			return
 		}
@@ -1351,6 +1369,7 @@ func (h *SupplierHandlers) HandleUpdateVariantPhysical(w http.ResponseWriter, r 
 //   - S < P_central, the central-store resolved price at write time
 //   - saleFrom < saleTo when both set; saleTo strictly in the future
 //   - admin-locked variants (variant/product admin_set lock) => 409
+//
 // A sale may be set on an inactive variant (inert until activation).
 // Setting a sale needs no supplier_price_increases row: a sale is a
 // final-price DECREASE. If a later governed cost increase pushes R

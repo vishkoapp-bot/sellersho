@@ -44,6 +44,8 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		t.Fatal(err)
 	}
 	for _, ddl := range []string{
+		`CREATE TABLE suppliers(id TEXT PRIMARY KEY)`,
+		`INSERT INTO suppliers VALUES('s')`,
 		`CREATE TABLE products(id VARCHAR(50) PRIMARY KEY,supplier_id VARCHAR(50),stock INT NOT NULL,schema_version INT NOT NULL DEFAULT 0,product_type TEXT NOT NULL DEFAULT 'legacy',origin_supplier_warehouse_id TEXT DEFAULT 'sw1',updated_at TIMESTAMPTZ DEFAULT NOW(),title TEXT DEFAULT 'product',weight_grams INT DEFAULT 100,fulfillment_method TEXT DEFAULT 'warehouse')`,
 		`CREATE TABLE product_variants(id UUID PRIMARY KEY,product_id TEXT,stock INT NOT NULL,inventory_mode TEXT NOT NULL DEFAULT 'legacy',is_active BOOL NOT NULL DEFAULT TRUE,min_cart_qty INT DEFAULT 1,max_cart_qty INT)`,
 		`CREATE TABLE inventory_balances(id VARCHAR(80) PRIMARY KEY,product_id VARCHAR(50),supplier_id VARCHAR(50),variant_id UUID,owner_type VARCHAR(20),location_type VARCHAR(20),location_key VARCHAR(150),status VARCHAR(30),warehouse_id TEXT,supplier_warehouse_id TEXT,quantity INT NOT NULL CHECK(quantity>=0),reconciled BOOL,updated_at TIMESTAMPTZ DEFAULT NOW(),bin_code VARCHAR(30))`,
@@ -55,7 +57,8 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE TABLE warehouse_storage_positions(id TEXT PRIMARY KEY,product_id TEXT,supplier_id TEXT,warehouse_id TEXT,inbound_id TEXT,goods_class TEXT,qty INT,stocked_at TIMESTAMPTZ DEFAULT NOW(),original_stocked_at TIMESTAMPTZ,closed_at TIMESTAMPTZ,updated_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE warehouse_bins(bin_code TEXT PRIMARY KEY,warehouse_id TEXT)`,
 		`INSERT INTO warehouse_bins VALUES('A-1','w1')`,
-		`CREATE TABLE shipments(id UUID PRIMARY KEY,warehouse_id TEXT,supplier_warehouse_id TEXT DEFAULT 'sw1',shipment_code TEXT UNIQUE,supplier_id TEXT DEFAULT 's',status TEXT,created_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE shipments(id UUID PRIMARY KEY,warehouse_id TEXT,supplier_warehouse_id TEXT DEFAULT 'sw1',shipment_code TEXT UNIQUE,supplier_id TEXT DEFAULT 's',status TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),creation_key TEXT,request_fingerprint TEXT)`,
+		`CREATE UNIQUE INDEX carton_creation_key_unique ON shipments(supplier_id,creation_key)`,
 		`CREATE TABLE order_item_origins(id TEXT PRIMARY KEY,order_id TEXT,order_item_id UUID,leg_index INT,origin_type TEXT,supplier_id TEXT,warehouse_id TEXT,supplier_warehouse_id TEXT,quantity INT)`,
 		`INSERT INTO warehouses VALUES('w1',TRUE),('w2',TRUE)`,
 		`INSERT INTO supplier_warehouses VALUES('sw1','s',TRUE),('sw2','s',TRUE)`,
@@ -63,7 +66,8 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE TABLE inventory_movements(id VARCHAR(80),product_id VARCHAR(50),supplier_id VARCHAR(50),variant_id UUID,quantity INT,from_status VARCHAR(30),to_status VARCHAR(30),from_location_key VARCHAR(150),to_location_key VARCHAR(150),reference_type VARCHAR(40),reference_id VARCHAR(80),idempotency_key VARCHAR(150) UNIQUE,actor_user_id VARCHAR(80),metadata JSONB)`,
 		`CREATE TABLE order_items(id UUID PRIMARY KEY,order_id TEXT,product_id TEXT,variant_id UUID,quantity INT,final_unit_price BIGINT DEFAULT 100,variant_name TEXT,variant_spnc TEXT)`,
 		`CREATE TRIGGER fixture_origin AFTER INSERT ON order_items FOR EACH ROW EXECUTE FUNCTION fixture_origin()`,
-		`CREATE TABLE orders(id TEXT PRIMARY KEY,order_number TEXT,status TEXT,payment_status TEXT,payment_expires_at TIMESTAMPTZ,shipped_at TIMESTAMPTZ,inventory_captured BOOL DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE orders(id TEXT PRIMARY KEY,order_number TEXT,status TEXT,payment_status TEXT,payment_expires_at TIMESTAMPTZ,shipped_at TIMESTAMPTZ,inventory_captured BOOL DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW(),store_id TEXT,referrer_seller_id TEXT)`,
+		`CREATE TABLE referral_bonuses(referrer_store_id TEXT,referred_store_id TEXT)`,
 		`CREATE TABLE payment_transactions(id TEXT,order_id TEXT,order_number TEXT,gateway_token TEXT UNIQUE,rrn TEXT,card_mask TEXT,amount BIGINT,status TEXT,created_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE order_inventory_captures(order_item_id TEXT PRIMARY KEY,order_id TEXT,product_id TEXT,variant_id UUID,quantity INT,variant_quantity INT,restored_quantity INT NOT NULL DEFAULT 0,inventory_mode TEXT,allocations JSONB)`,
 		`CREATE TABLE order_inventory_returns(return_item_id TEXT PRIMARY KEY,order_item_id TEXT,quantity INT)`,

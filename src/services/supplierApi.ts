@@ -393,7 +393,8 @@ export const supplierApi = {
   },
   getCatalogReview: (proposalId: string) => apiRequest<any>(`/supplier/catalog/review/${encodeURIComponent(proposalId)}`, { method: 'GET', auth: true }),
   resubmitCatalogReview: (proposalId: string, data: Record<string, unknown>) => apiRequest(`/supplier/catalog/review/${encodeURIComponent(proposalId)}/resubmit`, { method: 'POST', auth: true, body: JSON.stringify({ data }) }),
-  createShipment: async (payload: { warehouse_id: string; items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+  createShipment: async (payload: { creation_key: string; warehouse_id: string; items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+    if (!payload.creation_key?.trim() || payload.creation_key.length > 128) throw new Error('Shipment creation key is required');
     const data = await apiRequest<any>('/supplier/shipments', { method: 'POST', auth: true, body: JSON.stringify(payload) });
     return data?.shipment ?? data;
   },

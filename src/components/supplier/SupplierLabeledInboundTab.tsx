@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { supplierApi } from '../../services/supplierApi';
+import { createCartonDraftOperation } from '../../services/cartonDraft';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { Package, Truck, CheckCircle2, Printer, RefreshCw, X, Tag } from 'lucide-react';
@@ -49,7 +50,7 @@ const printCartonLabel = (shipment: any) => {
 };
 
 export const SupplierLabeledInboundTab: React.FC = () => {
-  const { toPersianDigits } = useStore();
+  const { toPersianDigits, supplierSession } = useStore();
   const { success, error } = useToast();
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
@@ -63,6 +64,15 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   const [shipmentsLoading, setShipmentsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<any | null>(null);
+  const draftOperation = useRef(createCartonDraftOperation());
+  const submittingRef = useRef(false);
+  useEffect(() => {
+    draftOperation.current.reset();
+    setLines([]);
+    setCreated(null);
+    setProductId('');
+    setWarehouseId('');
+  }, [supplierSession?.supplierId, supplierSession?.token]);
   const loadProducts = useCallback(async () => {
     setProductsLoading(true);
     try { setProducts(await supplierApi.getProducts()); }
@@ -90,18 +100,21 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   };
   const removeVariant = (id: string) => { setLines((prev) => prev.filter((l) => l.variant.id !== id)); };
   const submit = async () => {
+    if (submittingRef.current) return;
     if (!warehouseId || !(warehouses.data || []).some((w: any) => w.id === warehouseId)) { error("انبار مقصد را انتخاب کن."); return; }
-    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) })).filter((l) => Number.isSafeInteger(l.expected_qty) && l.expected_qty > 0);
-    if (items.length === 0) { error("حداقل یک مدل با تعداد درست اضافه کن."); return; }
+    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) }));
+    if (items.length === 0 || items.some(l => !Number.isSafeInteger(l.expected_qty) || l.expected_qty <= 0 || l.expected_qty > 2147483647)) { error("تعداد همه مدل‌ها باید درست و حداکثر ۲۱۴۷۴۸۳۶۴۷ باشد."); return; }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
-      const shipment = await supplierApi.createShipment({ items, warehouse_id: warehouseId });
+      const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId });
+      draftOperation.current.reset();
       setCreated(shipment);
       setLines([]);
       success("محموله ثبت شد. کدش را روی کارتن بنویس.");
       await loadShipments();
     } catch (cause: unknown) { error(cause instanceof Error ? cause.message : "ثبت محموله انجام نشد."); }
-    finally { setSubmitting(false); }
+    finally { submittingRef.current = false; setSubmitting(false); }
   };
   return (
     <div className="space-y-3.5 pb-6">

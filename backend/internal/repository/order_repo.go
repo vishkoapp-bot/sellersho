@@ -687,6 +687,23 @@ func (r *OrderRepository) SetPaymentStatus(ctx context.Context, orderID, status 
 
 // UpdateOrderFulfillment updates status, tracking code, and shipped_at for an order
 func (r *OrderRepository) UpdateOrderFulfillment(ctx context.Context, orderID, status, trackingCode string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var canonicalID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+		return err
+	}
+	if err := lockFulfillmentOrderTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
+	if status == "shipped" || status == "delivered" {
+		if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID); err != nil {
+			return err
+		}
+	}
 	now := time.Now()
 	query := `
 		UPDATE orders
@@ -694,10 +711,20 @@ func (r *OrderRepository) UpdateOrderFulfillment(ctx context.Context, orderID, s
 		    tracking_code = CASE WHEN $2 <> '' THEN $2 ELSE tracking_code END,
 		    shipped_at = CASE WHEN $1 = 'shipped' AND shipped_at IS NULL THEN $3 ELSE shipped_at END,
 		    updated_at = $3
-		WHERE id = $4 OR order_number = $4
+		WHERE (id = $4 OR order_number = $4) AND status <> 'cancelled'
 	`
-	_, err := r.db.ExecContext(ctx, query, status, trackingCode, now, orderID)
-	return err
+	res, err := tx.ExecContext(ctx, query, status, trackingCode, now, canonicalID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrShipmentState
+	}
+	return tx.Commit()
 }
 
 type PaymentTransaction struct {
@@ -1092,6 +1119,8 @@ var ErrReturnWindowClosed = fmt.Errorf("return window has closed")
 // (migration 202610250009): restoring on any other order would mint
 // phantom stock for orders whose stock was never captured.
 func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerUserID string, isAdmin bool) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1114,10 +1143,19 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&orderID, &status, &captured); err != nil {
 		return err
 	}
+	if err := assertOrderCancellationAllowedTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	if status == "cancelled" {
+		return tx.Commit()
+	}
+	if err := lockCancellationInventoryTx(ctx, tx, orderID); err != nil {
+		return err
+	}
 	switch status {
 	case "processing", "pending", "picking", "picked", "packed":
 	default:
-		return fmt.Errorf("order in status %s cannot be cancelled", status)
+		return fmt.Errorf("%w: %s", ErrOrderCancellationState, status)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'cancelled', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
 		return err
@@ -1187,6 +1225,9 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 				}
 			}
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET inventory_captured=false WHERE id=$1`, orderID); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err

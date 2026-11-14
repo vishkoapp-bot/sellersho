@@ -36,11 +36,31 @@ func (r *SupplierShipmentRepository) CreateShipment(ctx context.Context, shipmen
 
 	query := `
 		INSERT INTO supplier_shipments (
-			id, order_id, supplier_id, shipping_address, customer_phone, customer_name, status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+			id, order_id, supplier_id, shipping_address, customer_phone, customer_name, status, shipped_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 IN ('shipped','in_transit','delivered') THEN NOW() ELSE NULL END, NOW(), NOW())
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := lockFulfillmentOrderTx(ctx, tx, shipment.OrderID); err != nil {
+		return err
+	}
+	var orderStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, shipment.OrderID).Scan(&orderStatus); err != nil {
+		return err
+	}
+	if orderStatus == "cancelled" {
+		return ErrShipmentState
+	}
+	if shipment.Status == "shipped" || shipment.Status == "in_transit" || shipment.Status == "delivered" {
+		if err := assertOrderDispatchAllowedTx(ctx, tx, shipment.OrderID); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, query,
 		shipment.ID,
 		shipment.OrderID,
 		shipment.SupplierID,
@@ -53,7 +73,7 @@ func (r *SupplierShipmentRepository) CreateShipment(ctx context.Context, shipmen
 		return fmt.Errorf("failed to insert supplier shipment: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // GetPendingShipments returns pending shipments for a given supplier (or all if empty/admin)
@@ -304,57 +324,38 @@ func (r *SupplierShipmentRepository) GetShipmentByOrderIDForUser(ctx context.Con
 
 // MarkShipped updates shipment status to 'shipped' with carrier and tracking number
 func (r *SupplierShipmentRepository) MarkShipped(ctx context.Context, shipmentID, carrier, trackingNumber string, notes *string) error {
-	query := `
-		UPDATE supplier_shipments
-		SET status = 'shipped',
-		    carrier = $2,
-		    tracking_number = $3,
-		    shipped_at = NOW(),
-		    supplier_notes = $4,
-		    updated_at = NOW()
-		WHERE id = $1
-	`
-
-	result, err := r.db.ExecContext(ctx, query, shipmentID, carrier, trackingNumber, notes)
-	if err != nil {
-		return fmt.Errorf("failed to update shipment status: %w", err)
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
+	return r.markShippedGuarded(ctx, "", shipmentID, carrier, trackingNumber, notes)
 }
-
 func (r *SupplierShipmentRepository) MarkShippedForSupplier(ctx context.Context, supplierID, shipmentID, carrier, trackingNumber string, notes *string) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE supplier_shipments
-		SET status = 'shipped', carrier = $3, tracking_number = $4,
-		    shipped_at = NOW(), supplier_notes = $5, updated_at = NOW()
-		WHERE id = $1 AND supplier_id = $2 AND status IN ('pending', 'processing')
-	`, shipmentID, supplierID, carrier, trackingNumber, notes)
-	if err != nil {
-		return fmt.Errorf("failed to update shipment status: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 1 {
-		return nil
-	}
-
-	var currentStatus, currentTracking string
-	err = r.db.QueryRowContext(ctx, `SELECT status, COALESCE(tracking_number, '') FROM supplier_shipments WHERE id = $1 AND supplier_id = $2`, shipmentID, supplierID).Scan(&currentStatus, &currentTracking)
-	if err == sql.ErrNoRows {
-		return sql.ErrNoRows
-	}
+	return r.markShippedGuarded(ctx, supplierID, shipmentID, carrier, trackingNumber, notes)
+}
+func (r *SupplierShipmentRepository) markShippedGuarded(ctx context.Context, supplierID, shipmentID, carrier, trackingNumber string, notes *string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if currentStatus == "shipped" && currentTracking == trackingNumber {
-		return nil
+	defer tx.Rollback()
+	var orderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE id=$1 AND ($2='' OR supplier_id=$2)`, shipmentID, supplierID).Scan(&orderID); err != nil {
+		return err
 	}
-	return ErrShipmentState
+	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	var status, currentTracking string
+	if err := tx.QueryRowContext(ctx, `SELECT status,COALESCE(tracking_number,'') FROM supplier_shipments WHERE id=$1 AND order_id=$2 AND ($3='' OR supplier_id=$3) FOR UPDATE`, shipmentID, orderID, supplierID).Scan(&status, &currentTracking); err != nil {
+		return err
+	}
+	if status == "shipped" && currentTracking == trackingNumber {
+		return tx.Commit()
+	}
+	if status != "pending" && status != "processing" {
+		return ErrShipmentState
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status='shipped',carrier=$2,tracking_number=$3,shipped_at=now(),supplier_notes=$4,updated_at=now() WHERE id=$1`, shipmentID, carrier, trackingNumber, notes); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateShipmentStatus updates status via tracking number (e.g., from carrier webhook)
@@ -362,10 +363,23 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 	if status != "shipped" && status != "in_transit" && status != "delivered" && status != "failed" {
 		return nil, ErrShipmentState
 	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var orderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE tracking_number=$1`, trackingNumber).Scan(&orderID); err != nil {
+		return nil, err
+	}
+	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
+		return nil, err
+	}
 	var s domain.SupplierShipment
-	err := r.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE supplier_shipments
 		SET status = $2,
+ shipped_at = CASE WHEN $2 IN ('shipped','in_transit','delivered') OR status IN ('shipped','in_transit','delivered') THEN COALESCE(shipped_at,now()) ELSE shipped_at END,
 		    delivered_at = CASE WHEN $2 = 'delivered' THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
 		    updated_at = NOW()
 		WHERE tracking_number = $1
@@ -389,6 +403,9 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 		return nil, err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return &s, nil
 }
 

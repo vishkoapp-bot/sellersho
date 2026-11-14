@@ -1139,6 +1139,10 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 			http.Error(w, `{"error":"Order not found or not owned by user"}`, http.StatusNotFound)
 			return
 		}
+		if errors.Is(err, repository.ErrOrderPartiallyDispatched) || errors.Is(err, repository.ErrOrderCancellationState) {
+			http.Error(w, `{"error":"Order cannot be cancelled"}`, http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "cannot be cancelled") {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 			return

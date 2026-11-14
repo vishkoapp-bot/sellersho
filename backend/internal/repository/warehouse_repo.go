@@ -1315,6 +1315,16 @@ func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, t
 		return err
 	}
 	defer tx.Rollback()
+	var canonicalID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+		return err
+	}
+	if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
+	if err := lockWarehouseDispatchInventoryTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
 	var updatedID, orderNumber, customerUserID string
 	var storeID sql.NullString
 	err = tx.QueryRowContext(ctx, `
@@ -1336,7 +1346,7 @@ func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, t
 	if err == sql.ErrNoRows {
 		// Fail-closed: unpaid, supplier-direct-only, missing, or
 		// out-of-sequence (not packed) orders can never ship.
-		return fmt.Errorf("سفارش یافت نشد، هنوز پرداخت نشده است، روش ارسال آن مستقیم است، در مرحله بسته‌بندی (packed) نیست یا سفارش ترکیبی (mixed) هنوز محموله مستقیم ارسال‌نشده دارد: %s", orderID)
+		return fmt.Errorf("%w: order %s is unpaid, cancelled, not packed, or has pending direct legs", ErrShipmentState, orderID)
 	}
 	if err != nil {
 		return err

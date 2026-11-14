@@ -27,6 +27,9 @@ func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplie
 	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE (id = $1 OR order_id = $1) AND supplier_id = $2 LIMIT 1`, id, supplierID).Scan(&orderID); err != nil {
 		return err
 	}
+	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
+		return err
+	}
 	var orderStatus, paymentStatus string
 	if err := tx.QueryRowContext(ctx, `SELECT status, payment_status FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&orderStatus, &paymentStatus); err != nil {
 		return err

@@ -465,7 +465,7 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 			continue
 		}
 		if c.restored != 0 {
-			return true, fmt.Errorf("partially returned order cannot be cancelled")
+			return true, fmt.Errorf("%w: partially returned order", ErrOrderCancellationState)
 		}
 		var allocations []skuAllocation
 		if err := json.Unmarshal(c.raw, &allocations); err != nil {

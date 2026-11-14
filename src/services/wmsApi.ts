@@ -80,6 +80,7 @@ export interface ShippingManifestDto {
 }
 
 export interface PutawayTaskDto {
+  reconciliationRequired?: boolean;
   id: string;
   productId: string;
   title: string;

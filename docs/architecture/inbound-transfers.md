@@ -1,6 +1,6 @@
 # Inbound provenance checkpoint (INV-02)
 
-This local checkpoint implements booking, explicit dispatch, cumulative physical receipt and cancellation. It is not the completed INV-02/04/09 lifecycle or a production/capacity certification. `InboundFullReceiptLifecycleEnabled` is deliberately false. QC pass/fail/completion return `ErrInboundLifecycleClosed`; receipts create quarantine balances and no putaway tasks or sellable entitlement. INV-04 and INV-09 must adopt the same allocated units, remove the old QC supplier debit, preserve business identity through disposition/putaway, execute the retained positive integration tests without skips, and review the combined release before activation.
+This checkpoint implements booking, explicit dispatch, cumulative physical receipt and cancellation. Receipts create quarantine balances. [INV-04](inbound-qc-disposition.md) adds cumulative disposition without a second supplier debit, and the [INV-09 checkpoint](exact-inbound-putaway.md) adds isolated acceptance tasks and exact putaway into sellable bins. The obsolete fail-only QC operation remains closed. `InboundFullReceiptLifecycleEnabled` is still false because the retained downstream compatibility branches require integration; this is not completed INV-02/04/09 acceptance or a hardware capacity certification.
 
 ## Caller transaction contract
 

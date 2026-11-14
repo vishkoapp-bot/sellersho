@@ -14,6 +14,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func storagePositionSeed(t *testing.T, db *sql.DB) {
@@ -115,32 +117,38 @@ func openPositions(t *testing.T, db *sql.DB, productID string) []positionState {
 }
 
 func TestStoragePositionCreatedByQCPassAndToppedUp(t *testing.T) {
-	db := team04TestDB(t)
-	storagePositionSeed(t, db)
+	db := operationsDB(t)
+	f := opsFixtureNew(t, db)
+	warehouse := "w-" + uuid.NewString()
 	ctx := context.Background()
 	repo := NewWarehouseRepository(db)
 
-	seedInboundForQC(t, db, "INB-1", "prod-measured", "wh-1", 10)
-	if err := repo.RecordQCPass(ctx, "prod-measured", "INB-1", "inspector-1", 6); err != nil {
+	first := inv09ReceiveLegacy(t, db, f, warehouse, 10)
+	if err := repo.RecordQCPass(ctx, f.product, first, f.user, 6); err != nil {
 		t.Fatalf("RecordQCPass #1: %v", err)
 	}
-	positions := openPositions(t, db, "prod-measured")
+	if positions := openPositions(t, db, f.product); len(positions) != 0 {
+		t.Fatalf("QC alone created storage position: %+v", positions)
+	}
+	inv09PlacePending(t, db, f, first, warehouse)
+	positions := openPositions(t, db, f.product)
 	if len(positions) != 1 {
 		t.Fatalf("positions after first QC pass = %d, want 1", len(positions))
 	}
 	p := positions[0]
-	if p.qty != 6 || p.closed || p.inboundID != "INB-1" {
+	if p.qty != 6 || p.closed || p.inboundID != first {
 		t.Fatalf("position = %+v, want qty 6, open, inbound INB-1", p)
 	}
 	firstOriginal := p.originalStockedAt
 
 	// A second inbound for the same triple tops the SAME position up;
 	// the free-window clock (original_stocked_at) must not move.
-	seedInboundForQC(t, db, "INB-2", "prod-measured", "wh-1", 5)
-	if err := repo.RecordQCPass(ctx, "prod-measured", "INB-2", "inspector-1", 5); err != nil {
+	second := inv09ReceiveLegacy(t, db, f, warehouse, 5)
+	if err := repo.RecordQCPass(ctx, f.product, second, f.user, 5); err != nil {
 		t.Fatalf("RecordQCPass #2: %v", err)
 	}
-	positions = openPositions(t, db, "prod-measured")
+	inv09PlacePending(t, db, f, second, warehouse)
+	positions = openPositions(t, db, f.product)
 	if len(positions) != 1 {
 		t.Fatalf("positions after top-up = %d, want 1 (merged)", len(positions))
 	}
@@ -150,62 +158,66 @@ func TestStoragePositionCreatedByQCPassAndToppedUp(t *testing.T) {
 	if !positions[0].originalStockedAt.Equal(firstOriginal) {
 		t.Fatalf("original_stocked_at moved on top-up: %v -> %v", firstOriginal, positions[0].originalStockedAt)
 	}
-	if positions[0].inboundID != "INB-1" {
+	if positions[0].inboundID != first {
 		t.Fatalf("inbound_id after top-up = %q, want INB-1 (the opener)", positions[0].inboundID)
 	}
 
 	// Replay of the same QC pass must not double-count the position.
-	if err := repo.RecordQCPass(ctx, "prod-measured", "INB-2", "inspector-1", 5); err != nil {
+	if err := repo.RecordQCPass(ctx, f.product, second, f.user, 5); err != nil {
 		t.Fatalf("RecordQCPass replay: %v", err)
 	}
-	positions = openPositions(t, db, "prod-measured")
+	positions = openPositions(t, db, f.product)
 	if len(positions) != 1 || positions[0].qty != 11 {
 		t.Fatalf("after replay positions = %+v, want one position of 11", positions)
 	}
 }
 
 func TestStoragePositionCreatedByCompleteQC(t *testing.T) {
-	db := team04TestDB(t)
-	storagePositionSeed(t, db)
+	db := operationsDB(t)
+	f := opsFixtureNew(t, db)
+	warehouse := "w-" + uuid.NewString()
 	ctx := context.Background()
 	repo := NewWarehouseRepository(db)
 
-	seedInboundForQC(t, db, "INB-3", "prod-b", "wh-1", 4)
-	if err := repo.CompleteQC(ctx, "prod-b", "INB-3", "inspector-1", 4, 0, 0, "ok"); err != nil {
+	inbound := inv09ReceiveLegacy(t, db, f, warehouse, 4)
+	if err := repo.CompleteQC(ctx, f.product, inbound, f.user, 4, 0, 0, "ok"); err != nil {
 		t.Fatalf("CompleteQC: %v", err)
 	}
-	positions := openPositions(t, db, "prod-b")
+	if positions := openPositions(t, db, f.product); len(positions) != 0 {
+		t.Fatalf("QC alone created storage position: %+v", positions)
+	}
+	inv09PlacePending(t, db, f, inbound, warehouse)
+	positions := openPositions(t, db, f.product)
 	if len(positions) != 1 || positions[0].qty != 4 || positions[0].closed {
 		t.Fatalf("positions = %+v, want one open position of 4", positions)
 	}
 	// Replay: CompleteQC's own completed-guard makes it a no-op.
-	if err := repo.CompleteQC(ctx, "prod-b", "INB-3", "inspector-1", 4, 0, 0, "ok"); err != nil {
+	if err := repo.CompleteQC(ctx, f.product, inbound, f.user, 4, 0, 0, "ok"); err != nil {
 		t.Fatalf("CompleteQC replay: %v", err)
 	}
-	positions = openPositions(t, db, "prod-b")
+	positions = openPositions(t, db, f.product)
 	if len(positions) != 1 || positions[0].qty != 4 {
 		t.Fatalf("after replay positions = %+v, want one position of 4", positions)
 	}
 }
 
-func TestStoragePositionSkippedWhenInboundHasNoWarehouse(t *testing.T) {
+func TestStoragePositionQCWithoutWarehouseFailsClosed(t *testing.T) {
 	db := team04TestDB(t)
 	storagePositionSeed(t, db)
 	ctx := context.Background()
 	repo := NewWarehouseRepository(db)
 
 	seedInboundForQC(t, db, "INB-4", "prod-b", "", 3)
-	if err := repo.RecordQCPass(ctx, "prod-b", "INB-4", "inspector-1", 3); err != nil {
+	if err := repo.RecordQCPass(ctx, "prod-b", "INB-4", "inspector-1", 3); !errors.Is(err, ErrInboundProvenance) {
 		t.Fatalf("RecordQCPass (no warehouse): %v", err)
 	}
 	if positions := openPositions(t, db, "prod-b"); len(positions) != 0 {
 		t.Fatalf("positions = %+v, want none (inbound has no warehouse to attribute)", positions)
 	}
-	// The sellable credit itself still happened — only the fee
-	// ledger skips unattributable stock.
+	// Missing immutable origin requires reconciliation and no credit.
 	var sellable int
-	if err := db.QueryRow(`SELECT COALESCE(quantity, 0) FROM inventory_balances WHERE product_id = 'prod-b' AND status = 'sellable' AND location_key = 'warehouse:INB-4'`).Scan(&sellable); err != nil || sellable != 3 {
-		t.Fatalf("sellable balance = %d (err %v), want 3", sellable, err)
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity), 0) FROM inventory_balances WHERE product_id = 'prod-b' AND status = 'sellable'`).Scan(&sellable); err != nil || sellable != 0 {
+		t.Fatalf("sellable balance = %d (err %v), want 0", sellable, err)
 	}
 }
 
@@ -337,22 +349,25 @@ func TestStoragePositionHandoverReturnDecrement(t *testing.T) {
 }
 
 func TestStoragePositionPutawayAgedPositionIsChargedByEngine(t *testing.T) {
-	db := team04TestDB(t)
-	storagePositionSeed(t, db)
+	db := operationsDB(t)
+	f := opsFixtureNew(t, db)
+	warehouse := "w-" + uuid.NewString()
+	opsExec(t, db, `UPDATE products SET length_mm=500,width_mm=400,height_mm=300,weight_grams=1500 WHERE id=$1`, f.product)
 	ctx := context.Background()
 	warehouseRepo := NewWarehouseRepository(db)
 	supplierRepo := NewSupplierRepository(db)
 
-	// Stock arrives through the real QC-pass path, creating the
+	// Stock arrives through the real receipt/QC/putaway path, creating the
 	// position; then the position is aged to 31 days (seeded
 	// timestamps) so the engine's free window has exactly one
 	// chargeable day.
-	seedInboundForQC(t, db, "INB-OLD", "prod-measured", "wh-1", 2)
-	if err := warehouseRepo.RecordQCPass(ctx, "prod-measured", "INB-OLD", "inspector-1", 2); err != nil {
+	inbound := inv09ReceiveLegacy(t, db, f, warehouse, 2)
+	if err := warehouseRepo.RecordQCPass(ctx, f.product, inbound, f.user, 2); err != nil {
 		t.Fatalf("RecordQCPass: %v", err)
 	}
+	inv09PlacePending(t, db, f, inbound, warehouse)
 	aged := storageStockedAt(31)
-	if _, err := db.Exec(`UPDATE warehouse_storage_positions SET stocked_at = $1, original_stocked_at = $1 WHERE product_id = 'prod-measured'`, aged); err != nil {
+	if _, err := db.Exec(`UPDATE warehouse_storage_positions SET stocked_at = $1, original_stocked_at = $1 WHERE product_id = $2`, aged, f.product); err != nil {
 		t.Fatalf("age position: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE platform_settings SET storage_fee_enabled = true WHERE id = 1`); err != nil {

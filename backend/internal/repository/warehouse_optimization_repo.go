@@ -19,8 +19,8 @@ type BinSuggestion struct {
 
 func (r *WarehouseRepository) SuggestBins(ctx context.Context, taskID string, origin warehouseopt.Point) ([]BinSuggestion, error) {
 	var l, w, h, g, q int64
-	var verified, warehouse string
-	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),pt.quantity,p.measurement_status,COALESCE(i.warehouse_name,p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id LEFT JOIN inbound_shipments i ON i.id=pt.inbound_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned')`, taskID).Scan(&l, &w, &h, &g, &q, &verified, &warehouse)
+	var verified, warehouse, warehouseID string
+	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),pt.quantity,p.measurement_status,COALESCE(wh.name,i.warehouse_name,p.warehouse_name,''),COALESCE(a.warehouse_id,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id LEFT JOIN inbound_shipments i ON i.id=pt.inbound_id LEFT JOIN inbound_putaway_allocations a ON a.task_id=pt.id LEFT JOIN warehouses wh ON wh.id=a.warehouse_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned')`, taskID).Scan(&l, &w, &h, &g, &q, &verified, &warehouse, &warehouseID)
 	if err != nil {
 		return nil, err
 	}
@@ -34,8 +34,8 @@ func (r *WarehouseRepository) SuggestBins(ctx context.Context, taskID string, or
 	rows, err := r.db.QueryContext(ctx, `SELECT b.bin_code,b.position_x,b.position_y,b.position_z,
  b.capacity_volume_cm3-b.occupied_volume_cm3-COALESCE(SUM(r.volume_cm3),0),b.max_weight_grams-b.occupied_weight_grams-COALESCE(SUM(r.weight_grams),0)
  FROM warehouse_bins b LEFT JOIN putaway_capacity_reservations r ON r.bin_code=b.bin_code AND r.status='active' AND r.task_id<>$1
- WHERE b.capacity_status='verified' AND b.warehouse_name=$2 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND b.max_weight_grams IS NOT NULL
- GROUP BY b.bin_code HAVING b.capacity_volume_cm3-b.occupied_volume_cm3-COALESCE(SUM(r.volume_cm3),0)>=$3 AND b.max_weight_grams-b.occupied_weight_grams-COALESCE(SUM(r.weight_grams),0)>=$4`, taskID, warehouse, volume, weight)
+ WHERE b.capacity_status='verified' AND (($5::text<>'' AND b.warehouse_id=$5) OR ($5::text='' AND b.warehouse_name=$2)) AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND b.max_weight_grams IS NOT NULL
+ GROUP BY b.bin_code HAVING b.capacity_volume_cm3-b.occupied_volume_cm3-COALESCE(SUM(r.volume_cm3),0)>=$3 AND b.max_weight_grams-b.occupied_weight_grams-COALESCE(SUM(r.weight_grams),0)>=$4`, taskID, warehouse, volume, weight, warehouseID)
 	if err != nil {
 		return nil, err
 	}

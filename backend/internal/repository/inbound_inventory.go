@@ -15,9 +15,10 @@ import (
 var ErrInboundProvenance = errors.New("inbound provenance conflict or reconciliation required")
 var ErrInboundLifecycleClosed = errors.New("receipt QC/putaway activation requires integrated INV-02/04/09")
 
-// Full receipt/putaway activation remains closed. Safe QC disposition may move
-// exact quarantine units to qc_accepted/damaged; neither becomes sellable or
-// creates a putaway/storage entitlement until INV-09 is integrated.
+// Full compatibility acceptance remains open while retained downstream probes
+// are integrated. Exact QC now creates isolated acceptance/putaway allocations;
+// only ConfirmPutaway makes those units sellable. The obsolete fail-only QC
+// endpoint remains closed; cumulative CompleteQC is the disposition entry point.
 const InboundFullReceiptLifecycleEnabled = false
 
 type InventoryOrigin struct{ Type, SupplierID, WarehouseID, SupplierWarehouseID string }
@@ -105,10 +106,16 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 		if n != 1 {
 			return ErrInboundProvenance
 		}
-		if err := inboundCreditTx(ctx, tx, l.ID, l.Supplier, l.Warehouse, l.Product, l.Variant, move.status, move.quantity); err != nil {
+		destination := "inbound-line:" + l.ID
+		if move.status == "qc_accepted" {
+			if err := createInboundPutawayTx(ctx, tx, l, qcID, move.quantity); err != nil {
+				return err
+			}
+			destination = "qc-accepted:" + qcID
+		} else if err := inboundCreditTx(ctx, tx, l.ID, l.Supplier, l.Warehouse, l.Product, l.Variant, move.status, move.quantity); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$7,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, move.quantity, move.status, "inbound-line:"+l.ID, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$11,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, move.quantity, move.status, "inbound-line:"+l.ID, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor, destination); err != nil {
 			return err
 		}
 	}

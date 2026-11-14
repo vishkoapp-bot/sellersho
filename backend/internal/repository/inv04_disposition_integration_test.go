@@ -120,6 +120,13 @@ func TestINV04DispositionEvidenceAndRollbackGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	putawayDown, err := os.ReadFile("../../migrations/202611140009_exact_inbound_putaway.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(putawayDown)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(string(down)); err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +190,13 @@ func inv04Migrate(t *testing.T, db *sql.DB) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(string(ddl)); err != nil {
+		t.Fatal(err)
+	}
+	putaway, err := os.ReadFile("../../migrations/202611140009_exact_inbound_putaway.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(putaway)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -322,11 +336,15 @@ func inv04Quantities(t *testing.T, db *sql.DB, variant string, wantTotal, wantAc
 	if err := db.QueryRow(`SELECT SUM(quantity),COALESCE(SUM(quantity) FILTER(WHERE status='qc_accepted'),0),COALESCE(SUM(quantity) FILTER(WHERE status='damaged'),0),COALESCE(SUM(quantity) FILTER(WHERE status='quarantine'),0),COALESCE(SUM(quantity) FILTER(WHERE status='sellable'),0) FROM inventory_balances WHERE variant_id=$1`, variant).Scan(&total, &accepted, &failed, &quarantine, &sellable); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM putaway_tasks`).Scan(&tasks); err != nil {
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM putaway_tasks WHERE variant_id=$1`, variant).Scan(&tasks); err != nil {
 		t.Fatal(err)
 	}
-	if total != wantTotal || accepted != wantAccepted || failed != wantFailed || quarantine != wantQuarantine || sellable != 0 || tasks != 0 {
+	if total != wantTotal || accepted != wantAccepted || failed != wantFailed || quarantine != wantQuarantine || sellable != 0 || tasks != wantAccepted {
 		t.Fatalf("physical=%d accepted=%d failed=%d quarantine=%d sellable=%d tasks=%d", total, accepted, failed, quarantine, sellable, tasks)
+	}
+	var unmatched int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM putaway_tasks pt LEFT JOIN inbound_putaway_allocations a ON a.task_id=pt.id LEFT JOIN inventory_balances b ON b.location_key=a.source_location_key AND b.status='qc_accepted' AND b.variant_id=pt.variant_id WHERE pt.variant_id=$1 AND (a.task_id IS NULL OR pt.quantity IS DISTINCT FROM a.quantity OR b.quantity IS DISTINCT FROM a.quantity)`, variant).Scan(&unmatched); err != nil || unmatched != 0 {
+		t.Fatalf("putaway lacks exact accepted units: %d err=%v", unmatched, err)
 	}
 	// The supplier origin persisted on the order cannot claim failed,
 	// accepted-but-unplaced, or undisposed receipt stock.

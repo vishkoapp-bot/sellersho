@@ -20,7 +20,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-03 | TODO | — | — |
 | INV-04 | Checkpoint OPEN | 1e86ad2 | [QC disposition](../../architecture/inbound-qc-disposition.md) |
 | INV-08 | TODO | — | — |
-| INV-09 | TODO | — | — |
+| INV-09 | Checkpoint OPEN | exact acceptance/task checkpoint | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
 | INV-06 | TODO | — | — |
 | INV-07 | TODO | — | — |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |

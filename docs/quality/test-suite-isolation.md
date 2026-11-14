@@ -288,3 +288,18 @@ positive shipment still passes. All three cases passed without skips; production
 inventory or shipment rules were not relaxed. Four original QC/putaway-dependent
 storage cases still require the integrated INV-09 lifecycle.
 Evidence: `logs/test02-storage-departure-final.log`.
+
+## Exact acceptance/putaway implementation checkpoint
+
+The four remaining original storage lifecycle scenarios now exercise actual
+canonical receipt/QC/putaway or assert refusal for unattributable history. QC
+alone grants neither sellable stock nor a storage position; exact confirmation
+creates the position, preserves top-up age and feeds the real storage fee engine.
+[Implementation and remaining acceptance](../architecture/exact-inbound-putaway.md).
+Twenty-three focused top-level cases passed with no skips; four final INV-09
+cases passed again after the assigned-state guard was added. Frontend: 285 passed,
+zero failed/skipped; production build passed; default Go suite passed. Logs:
+`logs/inv09-checkpoint-final.log`, `logs/inv09-final-four.log`,
+`logs/inv09-frontend-test.log`, `logs/inv09-frontend-build.log`,
+`logs/inv09-default-final.log`. A fresh complete immutable-source run is required
+to confirm the full failure count; TEST-02 and INV-09 remain open.

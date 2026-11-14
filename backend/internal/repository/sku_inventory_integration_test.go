@@ -76,7 +76,7 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE TABLE shipment_items(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),shipment_id UUID,variant_id UUID,expected_qty INT,received_qty INT DEFAULT 0,inventory_received_qty INT DEFAULT 0,qc_status TEXT DEFAULT 'pending')`,
 		`CREATE FUNCTION fixture_shipment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO shipments(id,warehouse_id) VALUES(NEW.shipment_id,'w1') ON CONFLICT DO NOTHING; RETURN NEW; END $$`,
 		`CREATE TRIGGER fixture_shipment BEFORE INSERT ON shipment_items FOR EACH ROW EXECUTE FUNCTION fixture_shipment()`,
-		`CREATE TABLE putaway_tasks(id TEXT,product_id TEXT,variant_id UUID,inventory_source_location_key TEXT,quantity INT,status TEXT,created_at TIMESTAMPTZ,warehouse_id TEXT)`,
+		`CREATE TABLE putaway_tasks(id TEXT PRIMARY KEY,product_id TEXT,variant_id UUID,inventory_source_location_key TEXT,quantity INT,status TEXT,created_at TIMESTAMPTZ,warehouse_id TEXT,inbound_id TEXT)`,
 		`CREATE TRIGGER sync_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`,
 	} {
 		if _, err := tx.Exec(ddl); err != nil {

@@ -24,7 +24,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-06 | TODO | — | — |
 | INV-07 | TODO | — | — |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
-| FIN-001 | DONE | Reviewed code checkpoint | [Financial contract](../../architecture/financial-balances.md) |
+| FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
 | FIN-006 | TODO | — | — |
 | INV-10 | TODO | — | — |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
@@ -48,7 +48,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | TODO | — | — |
-| TEST-02 | Checkpoint OPEN | 8302d23 | [V2 measurement fixture](../../../backend/cmd/server/supplier_product_gaps_test.go) |
+| TEST-02 | Checkpoint OPEN | 8302d23 / Frontend checkpoint | [Frontend baseline](../../frontend-test-baseline.md) |
 | OPS-01 | TODO | — | — |
 | REL-01 | TODO | — | — |
 | BAK-01 | TODO | — | — |
@@ -226,3 +226,13 @@ Independent reviewer `review_fin001` found four Important issues: blank-party re
 Exact staged-source verification excluded every CAP and root test-runner working change:29 focused tests,31 existing regressions,35 migrated SKU/origin/carton/callback cases,2 actual keyed endpoint cases and1 treasury-read case all passed without skips, each in a fresh guarded Docker database with verified cleanup. Actual client tests9/9, typecheck, frontend production build, Linux amd64 build and default Go suite passed. Default DB integrations intentionally skip without opt-in; the guarded cases supply the domain evidence. Proof: `releases/fin001-staged-proof.json`, counts in `releases/fin001-staged-counts.json`, local logs `logs/fin001-staged-*.log`. The earlier UUID timestamp-prefix test flake remains recorded for TEST-02 and is not declared resolved by a passing rerun.
 
 Ruling: known immutable financial principal errors were fixed in this task; unknown legacy liabilities remain a FIN-014 reconciliation gate. New request receipts are final append-only metadata after the guarded domain effect, with no independent earlier-row FK lock. Paid-cancellation/provider compensation (FIN-003/010), remaining referral/storage/payout policies, full statements, historical cutover and capacity/deployment still require their own gates. No production access, rotation or deployment occurred.
+
+## TEST-02 — complete frontend runner and real-provider catalog checkpoint
+
+Added `npm test` using the existing Node/tsx runner, recursively collecting all source `.test.ts`/`.test.tsx` files without new dependencies. Catalog regression tests now mount the actual provider stack in a local browser. A layout recorder checks the first committed DOM before the store-guard navigation effect; actual store navigation replaces the old source-text assertion. No production view/provider behavior was changed.
+
+Fixed the intermittent order-ID smoke test: a legitimate random UUID beginning `179` must not be rejected as a timestamp. The test now checks RFC4122 v4 format and includes that deterministic vector. This is a format/sampled-uniqueness smoke check, not a claim about full endpoint or cryptographic correctness.
+
+Independent review by `remaining_backlog` approved all six code/test paths. Root-only archived tree `775651fdef7092a725acd2cba659c6dabe384dcd` passed all271 frontend tests with zero failures/skips, production frontend build and20 repetitions of the order-ID/quantity smoke. The shared integrated frontend tree including FIN-001 passed277 tests without skips. An intentional disabled render guard in the source archive failed with2 central rows instead of0; restoring the original bytes returned4/4 focused passes. Evidence: `docs/frontend-test-baseline.md`. The commit adds documentation to those verified code files on top of pushed FIN-001 `64d235c`; it does not reuse the older private index to overwrite the financial commit.
+
+TEST-02 remains OPEN for the full supplied integration/race/CI/dependency gates and domain prerequisites. No deployment, production history or intended-hardware capacity claim follows from this checkpoint.

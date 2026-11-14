@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Test 4: Verify Order ID generation produces cryptographically non-monotonic IDs
+// This is a format/uniqueness smoke test, not a proof of cryptographic randomness.
 func TestOrderIdentifiers_NonMonotonicity(t *testing.T) {
 	seenIDs := make(map[string]bool)
 	seenNumbers := make(map[string]bool)
@@ -16,6 +16,10 @@ func TestOrderIdentifiers_NonMonotonicity(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		orderUUID := uuid.New()
+		if i == 0 {
+			// The old prefix assertion intermittently rejected this valid v4 UUID.
+			orderUUID = uuid.MustParse("179c81c5-3e26-4d7e-bbda-56da013549f1")
+		}
 		orderID := fmt.Sprintf("ord-%s", orderUUID.String())
 		orderNumber := fmt.Sprintf("ORD-%s", strings.ToUpper(orderUUID.String()[:8]))
 		trackingUUID := uuid.New()
@@ -31,9 +35,9 @@ func TestOrderIdentifiers_NonMonotonicity(t *testing.T) {
 			t.Fatalf("duplicate trackingCode generated: %s", trackingCode)
 		}
 
-		// Ensure it does not have time-based sequential millisecond Unix timestamp prefix
-		if strings.HasPrefix(orderID, "ord-179") {
-			t.Fatalf("orderID should not have monotonic timestamp prefix, got: %s", orderID)
+		parsed, err := uuid.Parse(strings.TrimPrefix(orderID, "ord-"))
+		if err != nil || parsed.Version() != 4 || parsed.Variant() != uuid.RFC4122 {
+			t.Fatalf("orderID should contain an RFC4122 v4 UUID, got: %s", orderID)
 		}
 
 		seenIDs[orderID] = true

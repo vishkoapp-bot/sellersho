@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node scripts/test-frontend.mjs",
     "dev": "vite",
     "dev:all": "node start-dev.cjs",
     "build": "tsc && vite build",

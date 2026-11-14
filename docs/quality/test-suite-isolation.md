@@ -133,3 +133,15 @@ node_modules. After resolving paths and refusing live backend/frontend mounts,
 only those dependency directories were removed. Backups, committed source,
 binaries and dist were retained; available disk increased from 1.9 to 3.5 GB and
 backend health passed. Dependencies can be recreated from each release lockfile.
+
+## Worker and suspension finance fixtures
+
+The staged delivery/profit worker now runs against canonical migrated orders,
+account tables and job history. It seeds valid customers and five complete
+orders rather than dropping the orders table and reconstructing an outdated
+subset. Confirmation and closed-window release counts, untouched open/null
+windows, and one durable job record all passed. The supplier-suspension payout
+test records the immutable delivered-line supplier snapshot before requesting
+settlement; the approved payout passes, suspension blocks the next payout, and
+earned balance remains unchanged. Both tests passed in guarded isolated clones.
+Evidence: `logs/test02-worker-canonical.log`, `logs/test02-supplier-freeze.log`.

@@ -556,6 +556,10 @@ func TestSupplierSuspensionSettlementFreeze(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost) VALUES (gen_random_uuid(), 'ord-paid-1', 'prod-b1', 1, 500000)`); err != nil {
 		t.Fatalf("seed order item: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,origin_type,supplier_id,quantity)
+		SELECT 'suspension-origin',order_id,id,'legacy','sup-b',quantity FROM order_items WHERE order_id='ord-paid-1'`); err != nil {
+		t.Fatalf("seed immutable supplier earnings origin: %v", err)
+	}
 
 	if _, err := repo.RequestSettlement(ctx, "sup-b", 100000, "IR000000000000000000000000", "بانک", "مالک ب"); err != nil {
 		t.Fatalf("settlement while approved: %v", err)

@@ -80,3 +80,37 @@ func TestEveryDatabaseTestUsesGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRedisIntegrationFixturesRequireDisposableGuard(t *testing.T) {
+	err := filepath.WalkDir("../..", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(path)
+		if d.IsDir() || !strings.HasSuffix(path, "_test.go") || strings.Contains(name, "/testdb/") || strings.Contains(name, "/testredis/") || strings.HasSuffix(name, "/credential_errors_test.go") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, call := range []string{"NewRedisClient(", "redis.NewClient("} {
+			if strings.Contains(string(body), call) {
+				t.Errorf("%s bypasses the disposable Redis guard", path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"../repository/redis_inventory_test.go", "../../cmd/server/supplier_otp_state_test.go"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "NewRedisClient(") || !strings.Contains(string(body), "testredis.Open(") {
+			t.Errorf("%s must use an explicit marker-verified disposable Redis target", path)
+		}
+	}
+}

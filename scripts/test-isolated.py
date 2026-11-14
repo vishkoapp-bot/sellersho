@@ -60,7 +60,8 @@ class DisposableDatabase:
         self.empty_schema = False
 
     def redact(self, value):
-        for secret in (self.dsn, self.password):
+        cache = getattr(self, 'redis', None)
+        for secret in (self.dsn, self.password, getattr(cache, 'dsn', None), getattr(cache, 'password', None)):
             if secret:
                 value = value.replace(secret, '[redacted]')
         return value
@@ -129,13 +130,16 @@ class DisposableDatabase:
     def environment(self):
         # Discard inherited DB/provider credentials; do not consume repository .env.
         env = {k: v for k, v in os.environ.items() if not (
-            k.endswith(('_DATABASE_URL', '_DSN')) or
+            k.endswith(('_DATABASE_URL', '_DSN', '_REDIS_URL', '_REDIS_TOKEN')) or
             any(part in k for part in ('PASSWORD', 'SECRET', 'API_KEY', 'PRIVATE_KEY', 'ACCESS_TOKEN')) or
             k.startswith(('PG', 'POSTGRES_', 'IPPANEL_', 'PAYMENT_', 'TEAM04_', 'TEST_DATABASE', 'SELLERSHO_TEST_')) or
             k in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'TRACKING_WEBHOOK_SECRET'))}
         for key in ('DATABASE_URL', *TEST_URL_KEYS):
             env[key] = self.dsn
         env.update(APP_ENV='test', JWT_SECRET=secrets.token_hex(32), PAYMENT_GATEWAY_MODE='mock')
+        cache = getattr(self, 'redis', None)
+        if cache:
+            env.update(SELLERSHO_TEST_REDIS_URL=cache.dsn, SELLERSHO_TEST_REDIS_TOKEN=cache.token)
         if self.empty_schema:
             env['SELLERSHO_TEST_SCHEMA_ONLY'] = '1'
         return env
@@ -205,6 +209,52 @@ class DisposableDatabase:
         self.close()
 
 
+class DisposableRedis(DisposableDatabase):
+    """Separate loopback-only, authenticated tmpfs cache; never host Redis."""
+    def __init__(self):
+        super().__init__()
+        self.name = 'sellersho-test-redis-' + self.token
+
+    def cli(self, *args, check=True):
+        env = dict(os.environ, REDISCLI_AUTH=self.password)
+        return self.docker('exec', '--env', 'REDISCLI_AUTH', self.container_id,
+                           'redis-cli', '-n', '15', '--raw', *args, check=check, env=env)
+
+    def start(self):
+        created = self.docker('create', '--name', self.name, '--label', LABEL + '=' + self.token,
+                              '--publish', '127.0.0.1::6379', '--mount', 'type=tmpfs,destination=/data',
+                              'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no',
+                              '--requirepass', self.password)
+        self.container_id = created.stdout.strip()
+        self.verify(self.inspect())
+        self.docker('start', self.container_id)
+        deadline = time.monotonic() + 30
+        while self.cli('PING', check=False).stdout.strip() != 'PONG':
+            if time.monotonic() > deadline:
+                raise SafetyError('Disposable Redis startup timed out')
+            time.sleep(0.2)
+        info = self.inspect()
+        self.verify(info)
+        ports = info['NetworkSettings']['Ports']['6379/tcp']
+        if len(ports) != 1 or ports[0]['HostIp'] != '127.0.0.1':
+            raise SafetyError('Disposable Redis must bind only IPv4 loopback')
+        self.dsn = f'redis://:{self.password}@127.0.0.1:{int(ports[0]["HostPort"])}/15'
+        if self.cli('SET', 'sellersho:test-guard', self.token).stdout.strip() != 'OK':
+            raise SafetyError('Cannot provision disposable Redis marker')
+        print('Disposable Redis ready in ' + self.name, flush=True)
+
+    def reset(self):
+        # Only the runner's verified container and DB15 may be cleared between
+        # tests. Check the marker before clearing; tests cannot provision it.
+        self.verify(self.inspect())
+        if self.cli('GET', 'sellersho:test-guard').stdout.strip() != self.token:
+            raise SafetyError('Redis disposable marker mismatch; reset refused')
+        if self.cli('FLUSHDB').stdout.strip() != 'OK':
+            raise SafetyError('Cannot reset disposable Redis fixture')
+        if self.cli('SET', 'sellersho:test-guard', self.token).stdout.strip() != 'OK':
+            raise SafetyError('Cannot restore disposable Redis marker')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--schema-only', action='store_true', help='Use empty migrated schema for seeder lifecycle tests, preserving all triggers')
@@ -218,7 +268,8 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupt)
     try:
-        with DisposableDatabase() as db:
+        with DisposableDatabase() as db, DisposableRedis() as cache:
+            db.redis = cache
             status = db.command(['go', 'run', './cmd/migrate', '-dir', 'migrations'])
             if status:
                 return status

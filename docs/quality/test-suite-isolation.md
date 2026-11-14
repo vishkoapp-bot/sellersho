@@ -323,3 +323,31 @@ and compatibility marker were removed; the fail-only endpoint remains refused.
 All 57 affected inventory top-level tests passed with no skips in
 `logs/inv09-all-inventory-integrated.log`. TEST-02 remains open for disposable
 Redis/OTP coverage and its broader CI/dependency/domain acceptance requirements.
+
+## Disposable Redis and OTP coverage
+
+The earlier zero-failure snapshot isolated PostgreSQL only: two legacy Redis
+inventory probes still used an existing local cache, while OTP skipped without
+its separate target. It is not complete Redis-isolation evidence. Both Redis
+inventory probes and supplier OTP now require `internal/testredis.Open` with an
+explicit loopback DB15 URL, unique credentials and a runner-created server marker.
+Application Redis configuration is ignored. Invalid/unreachable/unmarked explicit
+targets fail rather than skip. Source guards reject future direct Redis client
+construction in integration tests; the malformed-URL credential error unit test
+is the documented parser-only exception.
+
+Both runners provision a separate authenticated tmpfs Redis container, bind only
+random IPv4 loopback ports, scrub inherited cache URLs/tokens, redact generated
+credentials and verify container identity before cleanup. The per-test runner
+checks its cache marker before resetting its own DB15 between tests. No host cache
+is cleared. Seven focused cases passed: real OTP states, hold window, concurrent
+last-unit hold, URL validation, no-connection sentinel, live marker refusal and
+source guard. Eleven runner lifecycle regressions passed. A forced child exit7
+remained exit7 and both containers were verified removed. Default Go suite passed
+with explicit integration opt-out and no local Redis fallback.
+
+Evidence: `logs/test02-redis-guard-before.log` (red),
+`logs/test02-disposable-redis-final.log`, `logs/test02-redis-runner-unit.log`,
+`logs/test02-redis-single-wrapper-failure.log`,
+`logs/test02-redis-guard-final-unit.log`, `logs/test02-default-redis-safe.log`.
+A new complete immutable-source run is required for combined acceptance.

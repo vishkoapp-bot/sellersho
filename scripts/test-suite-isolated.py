@@ -23,7 +23,8 @@ spec.loader.exec_module(isolated)
 def run_suite(packages, pattern):
     failures = []
     total = 0
-    with isolated.DisposableDatabase() as db, tempfile.TemporaryDirectory(prefix='sellersho-suite-') as build:
+    with isolated.DisposableDatabase() as db, isolated.DisposableRedis() as cache, tempfile.TemporaryDirectory(prefix='sellersho-suite-') as build:
+        db.redis = cache
         if db.command(['go', 'run', './cmd/migrate', '-dir', 'migrations']):
             return 1
         seeded_name, seeded_dsn = db.database, db.dsn
@@ -56,6 +57,7 @@ def run_suite(packages, pattern):
                     db.database = clone
                     db.dsn = template_dsn.replace('/' + template + '?', '/' + clone + '?')
                     db.empty_schema = schema_only
+                    cache.reset()
                     print('ISOLATED TEST ' + package + ':' + test, flush=True)
                     if db.command([str(binary), '-test.run', '^' + test + '$', '-test.v', '-test.timeout', '3m'], cwd=directory):
                         failures.append(package + ':' + test)

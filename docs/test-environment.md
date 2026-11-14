@@ -85,3 +85,15 @@ source under `C:\Users\LENOVO\AppData\Local\Temp\`:
 No labeled disposable containers remained after these checks. The harness does
 not attempt to certify capacity, production migration lock durations, historical
 data reconciliation, or unrelated integration/business regressions.
+# Redis isolation follow-up
+
+Redis integration uses `internal/testredis.Open` and the runner-provisioned
+`SELLERSHO_TEST_REDIS_URL` / `SELLERSHO_TEST_REDIS_TOKEN`. Do not supply application
+cache credentials. The guard accepts only the dedicated loopback DB15 endpoint
+with generated credentials and verifies the server marker before any test write.
+Absent opt-in skips; explicit invalid/unreachable/unmarked targets fail. Both
+Python runners provision authenticated Redis in tmpfs and perform identity-checked
+cleanup alongside PostgreSQL. The per-test runner verifies and resets only its
+owned cache DB15 between tests. The supplier OTP test seeds codes directly and
+never sends SMS. See [combined evidence](quality/test-suite-isolation.md).
+

@@ -13,6 +13,28 @@ spec.loader.exec_module(runner)
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_parent_redis_targets_are_scrubbed_and_only_owned_cache_is_exported(self):
+        db = runner.DisposableDatabase()
+        db.dsn = 'disposable-postgres'
+        with patch.dict('os.environ', {'GAP19B_TEST_REDIS_URL': 'external', 'SELLERSHO_TEST_REDIS_URL': 'external', 'SELLERSHO_TEST_REDIS_TOKEN': 'external'}):
+            env = db.environment()
+            self.assertNotIn('GAP19B_TEST_REDIS_URL', env)
+            self.assertNotIn('SELLERSHO_TEST_REDIS_URL', env)
+            db.redis = runner.DisposableRedis()
+            db.redis.dsn = 'disposable-cache'
+            env = db.environment()
+            self.assertEqual(env['SELLERSHO_TEST_REDIS_URL'], 'disposable-cache')
+            self.assertEqual(env['SELLERSHO_TEST_REDIS_TOKEN'], db.redis.token)
+            self.assertEqual(db.redact(db.redis.password), '[redacted]')
+
+    def test_redis_reset_refuses_marker_mismatch_without_clearing(self):
+        cache = runner.DisposableRedis()
+        with patch.object(cache, 'inspect'), patch.object(cache, 'verify'), patch.object(cache, 'cli') as cli:
+            cli.return_value.stdout = 'other-marker'
+            with self.assertRaises(runner.SafetyError):
+                cache.reset()
+            cli.assert_called_once_with('GET', 'sellersho:test-guard')
+
     def test_schema_only_opt_in_is_not_inherited_from_parent(self):
         db = runner.DisposableDatabase()
         db.dsn = 'disposable-child-only'

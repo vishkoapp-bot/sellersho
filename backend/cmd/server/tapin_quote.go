@@ -54,7 +54,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/shippingquote"
 	"github.com/drup/platform/internal/tapin"
 )
 
@@ -141,11 +143,48 @@ func tapinLineWeightGrams(line shippingQuoteLine) int {
 // rialToToman converts Rials to Tomans rounded half-up — the same
 // conversion shippingquote.LegFareToman applies to formula fares.
 func rialToToman(rial int64) int64 {
-	fare := (rial + 5) / 10
-	if fare < 0 {
-		fare = 0
+	if rial < 0 {
+		return 0
+	}
+	fare := rial / 10
+	if rial%10 >= 5 {
+		fare++
 	}
 	return fare
+}
+
+func checkedTapinGoods(lines []shippingQuoteLine) ([]tapin.TipaxProduct, int64, int64, error) {
+	products := make([]tapin.TipaxProduct, 0, len(lines))
+	var weight, value int64
+	for _, line := range lines {
+		if err := validateOrderItemQuantity(line.Quantity); err != nil || line.WeightG < 0 {
+			return nil, 0, 0, pricing.ErrInvalidMoney
+		}
+		w := tapinLineWeightGrams(line)
+		partWeight, err := pricing.CheckedMultiply(int64(w), int64(line.Quantity))
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		weight, err = pricing.CheckedAdd(weight, partWeight)
+		if err != nil || weight > pricing.MaxTransportMoney {
+			return nil, 0, 0, pricing.ErrInvalidMoney
+		}
+		// Tapin's existing adapter contract uses integer rials. Convert once here.
+		amount, err := pricing.CheckedMultiply(line.UnitPriceToman, 10)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		partValue, err := pricing.CheckedMultiply(amount, int64(line.Quantity))
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		value, err = pricing.CheckedAdd(value, partValue)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		products = append(products, tapin.TipaxProduct{AmountPerCount: amount, DiscountPerCount: 0, WeightPerCount: w, Count: line.Quantity})
+	}
+	return products, weight, value, nil
 }
 
 // priceTapinQuoteLegs reprices the connected suppliers' legs of an
@@ -153,6 +192,9 @@ func rialToToman(rial int64) int64 {
 // total + quoteId when at least one leg changed. See the file
 // header for the fail-closed and parity rules.
 func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, lines []shippingQuoteLine, dest shippingQuoteDestination) error {
+	if quote != nil && quote.PricingError != nil {
+		return quote.PricingError
+	}
 	if db == nil || quote == nil {
 		return nil
 	}
@@ -202,7 +244,9 @@ func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, 
 	}
 	var total int64
 	for _, leg := range quote.Legs {
-		total += leg.Fare
+		if err := pricing.AccumulateMoney(&total, leg.Fare, 1); err != nil {
+			return err
+		}
 	}
 	quote.TotalShipping = total
 	quote.QuoteID = shippingQuoteIDFor(quote.Legs, total, quoteDestinationKey(dest))
@@ -230,21 +274,11 @@ func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client 
 	if origin.TapinCityID == destCityID {
 		serviceType = 7 // intra-city
 	}
-	products := make([]tapin.TipaxProduct, 0, len(legLines))
-	var goodsWeight int64
-	var goodsValueRial int64
-	for _, line := range legLines {
-		w := tapinLineWeightGrams(line)
-		goodsWeight += int64(w) * int64(line.Quantity)
-		amount := line.UnitPriceToman * 10 // Toman -> Rial
-		goodsValueRial += amount * int64(line.Quantity)
-		products = append(products, tapin.TipaxProduct{
-			AmountPerCount:   amount,
-			DiscountPerCount: 0,
-			WeightPerCount:   w,
-			Count:            line.Quantity,
-		})
+	products, goodsWeight, goodsValueRial, goodsErr := checkedTapinGoods(legLines)
+	if goodsErr != nil {
+		return 0, goodsErr
 	}
+
 	// Guide rule (pp.3, 20): a Tipax parcel's total weight is at
 	// least 1kg — lighter parcels are entered as 1kg. The padding is
 	// carried in package_weight so the goods lines stay truthful.
@@ -310,7 +344,10 @@ func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client 
 		}
 		return 0, &tapinQuoteError{Message: tapinMsgUnreachable}
 	}
-	fare := rialToToman(res.TotalSendPrice)
+	fare, err := shippingquote.CheckedLegFareToman(0, shippingquote.Rates{BaseRateRial: res.TotalSendPrice})
+	if err != nil || fare > pricing.MaxTransportMoney {
+		return 0, pricing.ErrInvalidMoney
+	}
 	tapinFareCachePut(cacheKey, fare)
 	return fare, nil
 }

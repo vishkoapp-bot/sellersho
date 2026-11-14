@@ -5707,6 +5707,9 @@ func (r *SupplierRepository) ListSupplierAddons(ctx context.Context, supplierID 
 // — this is what live's staged toast describes. Edits to pending/rejected
 // addons apply in place.
 func (r *SupplierRepository) CreateSupplierAddon(ctx context.Context, supplierID string, a *SupplierAddon) (*SupplierAddon, error) {
+	if err := validateAddonMoney(a); err != nil {
+		return nil, err
+	}
 	a.ID = "addon-" + uuid.NewString()[:12]
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO product_addons (id, owner_type, owner_supplier_id, title, description, kind, price_mode, price_value, cap_toman, approval_status, is_active, sort_order, linked_product_id)
@@ -5736,6 +5739,9 @@ func (r *SupplierRepository) GetSupplierAddon(ctx context.Context, supplierID, a
 }
 
 func (r *SupplierRepository) UpdateSupplierAddonInPlace(ctx context.Context, supplierID string, a *SupplierAddon) error {
+	if err := validateAddonMoney(a); err != nil {
+		return err
+	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE product_addons SET title = $1, description = $2, kind = $3, price_mode = $4, price_value = $5, cap_toman = $6, sort_order = $7, linked_product_id = $8, updated_at = NOW()
 		WHERE id = $9 AND owner_type = 'supplier' AND owner_supplier_id = $10
@@ -5754,6 +5760,9 @@ func (r *SupplierRepository) UpdateSupplierAddonInPlace(ctx context.Context, sup
 }
 
 func (r *SupplierRepository) StageSupplierAddonUpdate(ctx context.Context, supplierID string, a *SupplierAddon) error {
+	if err := validateAddonMoney(a); err != nil {
+		return err
+	}
 	data, err := json.Marshal(map[string]interface{}{
 		"title": a.Title, "description": a.Description, "kind": a.Kind, "priceMode": a.PriceMode,
 		"priceValue": a.PriceValue, "capToman": a.CapToman, "sortOrder": a.SortOrder, "linkedProductId": a.LinkedProductID,

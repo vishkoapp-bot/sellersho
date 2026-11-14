@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/shippingquote"
 	"github.com/google/uuid"
 )
@@ -95,34 +96,18 @@ type returnItemShare struct {
 // last part takes it (defensive; billable weights are never zero in
 // practice because unknown weights fall back to the platform default).
 func allocateProRata(total int64, weights []int64) []int64 {
-	out := make([]int64, len(weights))
-	if total <= 0 || len(weights) == 0 {
-		return out
-	}
-	var sum int64
-	last := -1
+	// Legacy caller semantics treat nonpositive weights as absent. Allocation
+	// itself uses arbitrary precision products and sums to prevent int64 wrap.
+	clean := make([]int64, len(weights))
 	for i, w := range weights {
 		if w > 0 {
-			sum += w
-			last = i
+			clean[i] = w
 		}
 	}
-	if sum == 0 {
-		out[len(weights)-1] = total
-		return out
+	if total <= 0 {
+		return make([]int64, len(weights))
 	}
-	var allocated int64
-	for i, w := range weights {
-		if w <= 0 {
-			continue
-		}
-		if i == last {
-			out[i] = total - allocated
-		} else {
-			out[i] = total * w / sum
-			allocated += out[i]
-		}
-	}
+	out, _ := pricing.AllocateMoney(total, clean)
 	return out
 }
 
@@ -176,7 +161,12 @@ func spreadItemOverOriginLegs(ctx context.Context, tx *sql.Tx, orderItemID strin
 		}
 		remaining -= partQty
 		key := "origin:" + originType + ":" + warehouseID + ":" + supplierWarehouseID + ":" + originSupplierID
-		parts = append(parts, originLegPart{legKey: key, label: originLabel, weight: billablePerUnit * int64(partQty)})
+		weight, err := pricing.CheckedMultiply(billablePerUnit, int64(partQty))
+		if err != nil || weight > pricing.MaxTransportMoney {
+			originRows.Close()
+			return nil, pricing.ErrInvalidMoney
+		}
+		parts = append(parts, originLegPart{legKey: key, label: originLabel, weight: weight})
 	}
 	if err := originRows.Err(); err != nil {
 		originRows.Close()
@@ -197,7 +187,11 @@ func spreadItemOverOriginLegs(ctx context.Context, tx *sql.Tx, orderItemID strin
 		} else if label == "" {
 			label = "انبار مرکزی"
 		}
-		parts = append(parts, originLegPart{legKey: "fallback:" + key, label: label, weight: billablePerUnit * int64(remaining)})
+		weight, err := pricing.CheckedMultiply(billablePerUnit, int64(remaining))
+		if err != nil || weight > pricing.MaxTransportMoney {
+			return nil, pricing.ErrInvalidMoney
+		}
+		parts = append(parts, originLegPart{legKey: "fallback:" + key, label: label, weight: weight})
 	}
 	return parts, nil
 }
@@ -259,14 +253,21 @@ func (r *OrderRepository) ComputeReturnQuoteLegs(ctx context.Context, orderID st
 		if err != nil {
 			return nil, 0, err
 		}
-		billable := shippingquote.BillableWeightGrams(int(weight), int(lengthMM), int(widthMM), int(heightMM), rates)
+		billable, err := shippingquote.CheckedBillableWeightGrams(int(weight), int(lengthMM), int(widthMM), int(heightMM), rates)
+		if err != nil {
+			return nil, 0, err
+		}
 		itemParts, err := spreadItemOverOriginLegs(ctx, tx, itemID, qty, billable, fulfillment, supplierID, originSupplierWH, warehouseName)
 		if err != nil {
 			return nil, 0, err
 		}
 		for _, ip := range itemParts {
 			if idx, ok := legIndex[ip.legKey]; ok {
-				legs[idx].WeightGrams += ip.weight
+				var err error
+				legs[idx].WeightGrams, err = pricing.CheckedAdd(legs[idx].WeightGrams, ip.weight)
+				if err != nil || legs[idx].WeightGrams > pricing.MaxTransportMoney {
+					return nil, 0, pricing.ErrInvalidMoney
+				}
 				continue
 			}
 			legIndex[ip.legKey] = len(legs)
@@ -275,8 +276,14 @@ func (r *OrderRepository) ComputeReturnQuoteLegs(ctx context.Context, orderID st
 	}
 	var total int64
 	for i := range legs {
-		legs[i].Fare = shippingquote.LegFareToman(legs[i].WeightGrams, rates)
-		total += legs[i].Fare
+		var err error
+		legs[i].Fare, err = shippingquote.CheckedLegFareToman(legs[i].WeightGrams, rates)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err = pricing.AccumulateMoney(&total, legs[i].Fare, 1); err != nil {
+			return nil, 0, err
+		}
 	}
 	return legs, total, nil
 }
@@ -293,7 +300,7 @@ func (r *OrderRepository) ComputeReturnQuoteLegs(ctx context.Context, orderID st
 // quantity); a remainder with no origin coverage (legacy orders
 // without origin rows) falls back to one leg derived from the
 // product's fulfillment origin. Each leg is priced with
-// shippingquote.LegFareToman and the leg fare is allocated across the
+// shippingquote.CheckedLegFareToman and the leg fare is allocated across the
 // leg's parts pro-rata to billable weight x qty, the last part
 // absorbing the rounding remainder.
 func computeReturnShippingShares(ctx context.Context, tx *sql.Tx, returnID string, rates shippingquote.Rates) ([]returnItemShare, int64, error) {
@@ -330,7 +337,11 @@ func computeReturnShippingShares(ctx context.Context, tx *sql.Tx, returnID strin
 			rows.Close()
 			return nil, 0, err
 		}
-		it.billable = shippingquote.BillableWeightGrams(weightG, lengthMM, widthMM, heightMM, rates)
+		it.billable, err = shippingquote.CheckedBillableWeightGrams(weightG, lengthMM, widthMM, heightMM, rates)
+		if err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -375,21 +386,34 @@ func computeReturnShippingShares(ctx context.Context, tx *sql.Tx, returnID strin
 			legWeights = append(legWeights, 0)
 			legParts = append(legParts, nil)
 		}
-		legWeights[li] += pt.weight
+		var err error
+		legWeights[li], err = pricing.CheckedAdd(legWeights[li], pt.weight)
+		if err != nil {
+			return nil, 0, err
+		}
 		legParts[li] = append(legParts[li], pi)
 	}
 	itemAmounts := make([]int64, len(items))
 	var totalFare int64
 	for li := range legKeys {
-		fare := shippingquote.LegFareToman(legWeights[li], rates)
-		totalFare += fare
+		fare, err := shippingquote.CheckedLegFareToman(legWeights[li], rates)
+		if err != nil {
+			return nil, 0, err
+		}
+		err = pricing.AccumulateMoney(&totalFare, fare, 1)
+		if err != nil {
+			return nil, 0, err
+		}
 		weights := make([]int64, len(legParts[li]))
 		for k, pi := range legParts[li] {
 			weights[k] = parts[pi].weight
 		}
 		shares := allocateProRata(fare, weights)
 		for k, pi := range legParts[li] {
-			itemAmounts[parts[pi].itemIdx] += shares[k]
+			itemAmounts[parts[pi].itemIdx], err = pricing.CheckedAdd(itemAmounts[parts[pi].itemIdx], shares[k])
+			if err != nil {
+				return nil, 0, err
+			}
 		}
 	}
 

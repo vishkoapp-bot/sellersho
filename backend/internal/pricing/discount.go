@@ -16,49 +16,13 @@ package pricing
 //	F = R - C (platform fee portion; 0 while platform_pct = 0)
 //	P = final price; D = P - R (dropshipper margin)
 //
-// User rules (non-negotiable, 2026-11-03):
-//
-//   - A discount comes ONLY out of the dropshipper's own margin D.
-//     Wholesale cost C and platform fee F are never touched: this
-//     file copies WholesaleCost, PlatformFee, ReferenceCost and
-//     BaseCost unchanged and only lowers FinalPrice/SellerMargin.
-//   - Margin floor is zero: the final price never goes below R
-//     (= C + F). With pct = 0 that floor is C itself.
-//   - Campaign: scope product > niche > store, most recent wins,
-//     admin margin lock blocks (enforced by the repository lookup,
-//     not here). A campaign sets an ABSOLUTE TARGET MARGIN: mode
-//     'percent' means that percent of base cost B (= R), mode
-//     'fixed' means that many Tomans. The campaign REPLACES the
-//     normal margin.
-//   - Code: percent of the (possibly campaign-discounted) final
-//     price, or a fixed Toman amount; capped at the remaining
-//     margin. Stacking order is campaign first, then code, so the
-//     total discount can never exceed the original margin.
-//
-// Adaptation notes vs the old feature/dropshipper-discounts branch
-// (which assumed price = C + fixed fee + margin, B = C + F):
-//
-//   - The campaign-percent formula is unchanged in form
-//     (target = B * value / 100) because B is now R by definition.
-//     What changed is what B means, not the arithmetic shape.
-//   - The old branch's code discount subtracted an unrounded amount
-//     from the final price; here the discounted final price is
-//     rounded with RoundTo100 like every other live price, then
-//     clamped to the [R, original final] interval, so a discounted
-//     price is always a multiple of 100 and never below the floor.
-//   - The old branch let a campaign whose target margin EXCEEDED the
-//     current margin RAISE the price (DiscountAmount was floored at
-//     0 but FinalPrice still rose). A "discount" must never raise
-//     the price, so the target margin is clamped at the original
-//     margin here: such a campaign is a no-op, not a price hike.
-//   - Settlement pays the reduced profit because the order handler
-//     snapshots the discounted SellerMargin/FinalUnitPrice plus the
-//     per-item and per-order discount amounts (see order_handlers.go
-//     and the seller_discount_codes migration).
-//
-// The returned MarginPercent is recomputed from the discounted
-// margin (SellerMargin / BaseCost * 100) so the resolution stays
-// self-consistent after discounting.
+// Current policy (owner decision 2026-11-06): campaigns and codes subtract
+// a percentage of the CURRENT final price, or fixed integer toman. Campaigns
+// apply before codes; each is capped at remaining seller margin. Wholesale,
+// reference cost and platform fee remain unchanged. Round the discounted final
+// price once to nearest100 (half up), then clamp to [BaseCost, original final].
+// Older target-margin comments/tests predate that decision and are obsolete.
+// Display MarginPercent is derived and never reused as an exact money input.
 
 // DiscountCampaignInput is the minimal campaign data the pricing
 // layer needs. The repository resolves scope priority and windows.
@@ -97,93 +61,31 @@ func discountedMarginPercent(res ReferenceResolution) float64 {
 	return float64(res.SellerMargin) / float64(res.BaseCost) * 100.0
 }
 
-// ApplyCampaignDiscount replaces the resolution's margin with the
-// campaign's absolute target margin, clamped to [0, original margin].
+// ApplyCampaignDiscount subtracts current-price percent-off or fixed money.
 func ApplyCampaignDiscount(res ReferenceResolution, c DiscountCampaignInput) DiscountResult {
-	if c.Mode != "percent" && c.Mode != "fixed" {
+	final, err := DiscountedPrice(res.FinalPrice, res.BaseCost, c.Mode, c.Value)
+	if err != nil || res.PricingError != "" {
 		return DiscountResult{Resolution: res}
 	}
-	var discount float64
-	if c.Mode == "percent" {
-		// True percent-off the current final price, so a campaign of 5
-		// shows as 5% on the storefront (user decision, 2026-11-06).
-		discount = float64(res.FinalPrice) * c.Value / 100.0
-	} else {
-		discount = c.Value
-	}
-	if discount > float64(res.SellerMargin) {
-		// A discount never eats into the platform share (header note).
-		discount = float64(res.SellerMargin)
-	}
-	if discount < 0 {
-		discount = 0
-	}
-	originalFinal := res.FinalPrice
-	final := RoundTo100(float64(originalFinal) - discount)
-	if final < res.BaseCost {
-		final = res.BaseCost
-	}
-	if final > originalFinal {
-		final = originalFinal
-	}
-	out := res
-	out.FinalPrice = final
-	out.SellerMargin = final - out.BaseCost
-	if out.SellerMargin < 0 {
-		out.SellerMargin = 0
-	}
-	out.MarginPercent = discountedMarginPercent(out)
-	actual := originalFinal - final
-	if actual < 0 {
-		actual = 0
-	}
-	return DiscountResult{Resolution: out, DiscountAmount: actual, CampaignID: c.ID, CampaignName: c.Name}
+	out := discountedResolution(res, final)
+	return DiscountResult{Resolution: out, DiscountAmount: res.FinalPrice - final, CampaignID: c.ID, CampaignName: c.Name}
 }
 
-// ApplyCodeDiscount subtracts a code discount from the final price,
-// capped at the remaining seller margin. The discounted price is
-// rounded to a multiple of 100 and floored at the base cost R.
 func ApplyCodeDiscount(res ReferenceResolution, c DiscountCodeInput) DiscountResult {
-	if c.Mode != "percent" && c.Mode != "fixed" {
+	final, err := DiscountedPrice(res.FinalPrice, res.BaseCost, c.Mode, c.Value)
+	if err != nil || res.PricingError != "" {
 		return DiscountResult{Resolution: res}
 	}
-	if res.SellerMargin <= 0 {
-		// No margin left to discount from; the code was still
-		// validated, so it is recorded even though it gives 0.
-		return DiscountResult{Resolution: res, Code: c.Code}
-	}
-	var discount float64
-	if c.Mode == "percent" {
-		discount = float64(res.FinalPrice) * c.Value / 100.0
-	} else {
-		discount = c.Value
-	}
-	if discount > float64(res.SellerMargin) {
-		discount = float64(res.SellerMargin)
-	}
-	if discount < 0 {
-		discount = 0
-	}
-	originalFinal := res.FinalPrice
-	final := RoundTo100(float64(originalFinal) - discount)
-	if final < res.BaseCost {
-		final = res.BaseCost
-	}
-	if final > originalFinal {
-		final = originalFinal
-	}
+	out := discountedResolution(res, final)
+	return DiscountResult{Resolution: out, DiscountAmount: res.FinalPrice - final, Code: c.Code}
+}
+
+func discountedResolution(res ReferenceResolution, final int64) ReferenceResolution {
 	out := res
 	out.FinalPrice = final
 	out.SellerMargin = final - out.BaseCost
-	if out.SellerMargin < 0 {
-		out.SellerMargin = 0
-	}
 	out.MarginPercent = discountedMarginPercent(out)
-	actual := originalFinal - final
-	if actual < 0 {
-		actual = 0
-	}
-	return DiscountResult{Resolution: out, DiscountAmount: actual, Code: c.Code}
+	return out
 }
 
 // ApplySellerDiscounts applies a campaign first, then a code, in that

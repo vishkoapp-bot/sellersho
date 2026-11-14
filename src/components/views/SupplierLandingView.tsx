@@ -1,3 +1,4 @@
+import { markedUpPrice } from '../../utils/money';
 import React, { useState } from 'react';
 import { ArrowRight, ArrowLeft, Building2, CheckCircle2, ChevronDown, HelpCircle, Package, Sparkles, TrendingUp } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
@@ -19,7 +20,7 @@ export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ companyName:'', managerName:'', username:'', password:'', phone:'', email:'', warehouseCity:'تهران' });
   const pct = platformSettings.platformPct ?? 0;
-  const C = 1200000, B = roundTo100(C * (1 + pct / 100)), fee = B - C, D = 200000, P = B + D;
+  const C = 1200000, B = markedUpPrice(C, pct), fee = B - C, D = 200000, P = B + D;
   const update = (key: keyof typeof form, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();

@@ -269,7 +269,7 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeMoneyJSON(r.Body, &payload, true); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -686,7 +686,7 @@ func (h *SupplierHandlers) HandleUpdatePricing(w http.ResponseWriter, r *http.Re
 		NewSupplierBaseCost int64  `json:"new_supplier_base_cost"`
 		Reason              string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewSupplierBaseCost <= 0 {
+	if err := decodeMoneyJSON(r.Body, &req, true); err != nil || req.NewSupplierBaseCost <= 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}

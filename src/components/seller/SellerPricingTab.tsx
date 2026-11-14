@@ -1,7 +1,7 @@
+import { markedUpPrice } from '../../utils/money';
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Calculator, Sparkles } from 'lucide-react';
-import { roundTo100 } from '../../utils/pricingEngine';
 
 // "سود من" tab: there is NO store-wide default margin anymore (owner
 // rule) — margins exist only per product / per variant, and wherever the
@@ -23,7 +23,8 @@ export const SellerPricingTab: React.FC = () => {
   const numBase = Number(baseCostR) || 0;
   const numProfit = Number(profitInput) || 0;
 
-  const finalPriceP = roundTo100(numBase * (1 + numProfit / 100));
+  let finalPriceP = numBase;
+  try { finalPriceP = markedUpPrice(numBase, numProfit); } catch { /* incomplete or invalid calculator draft */ }
 
   const netProfitToman = finalPriceP - numBase;
 

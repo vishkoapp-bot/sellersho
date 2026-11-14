@@ -281,6 +281,8 @@ type PlatformSettings struct {
 
 // OrderItem represents a line item in an order with snapshot financials
 type OrderItem struct {
+	PricingPolicyVersion string `json:"pricingPolicyVersion,omitempty" db:"pricing_policy_version"`
+
 	ID             string `json:"id" db:"id"`
 	OrderID        string `json:"orderId" db:"order_id"`
 	ProductID      string `json:"productId" db:"product_id"`

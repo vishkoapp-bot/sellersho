@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/drup/platform/internal/pricing"
 	"math"
 	"strings"
 	"time"
@@ -319,7 +320,7 @@ func (r *StoreRepository) SaveOwnedPricing(ctx context.Context, ownerID, slug, k
 			return err
 		}
 	}
-	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1000000000 {
+	if _, err := pricing.ParsePercent(value); err != nil {
 		return ErrStoreInput
 	}
 	settings, err := r.GetPlatformSettings(ctx)
@@ -575,7 +576,7 @@ func team05ValidateCampaign(name, scope, mode string, value float64, starts, end
 	if mode != "percent" && mode != "fixed" {
 		return ErrStoreInput
 	}
-	if value < 0 {
+	if err := pricing.ValidateDiscount(mode, value); err != nil {
 		return ErrStoreInput
 	}
 	if !ends.After(starts) {

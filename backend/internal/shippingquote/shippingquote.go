@@ -19,8 +19,9 @@ package shippingquote
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"math"
+	"math/big"
 )
 
 // Rates are the admin tariff inputs for the quote formula.
@@ -69,33 +70,61 @@ func LoadRates(ctx context.Context, q Querier) (Rates, error) {
 // BillableWeightGrams is one unit's billable weight: max(actual
 // weight, volumetric weight), where an unknown actual weight falls
 // back to the platform default (500g unless the admin set one).
+// Deprecated: active quote/settlement writers use CheckedBillableWeightGrams.
 func BillableWeightGrams(weightG, lengthMM, widthMM, heightMM int, rates Rates) int64 {
+	weight, _ := CheckedBillableWeightGrams(weightG, lengthMM, widthMM, heightMM, rates)
+	return weight
+}
+
+var ErrInvalidShippingAmount = errors.New("shipping weight or fare exceeds supported bounds")
+
+func CheckedBillableWeightGrams(weightG, lengthMM, widthMM, heightMM int, rates Rates) (int64, error) {
+	if weightG < 0 || lengthMM < 0 || widthMM < 0 || heightMM < 0 || rates.DefaultWeightG < 0 || rates.VolumetricDiv < 0 {
+		return 0, ErrInvalidShippingAmount
+	}
 	actual := int64(weightG)
-	if actual <= 0 {
+	if actual == 0 {
 		actual = rates.DefaultWeightG
 	}
 	billable := actual
 	if rates.VolumetricDiv > 0 && lengthMM > 0 && widthMM > 0 && heightMM > 0 {
-		// Volumetric grams = volume(mm^3) / divisor: volume in cm^3
-		// is mm^3/1000 and kg is cm^3/divisor, so grams is mm^3/divisor.
-		vol := (int64(lengthMM) * int64(widthMM) * int64(heightMM)) / rates.VolumetricDiv
-		if vol > billable {
-			billable = vol
+		volume := new(big.Int).Mul(big.NewInt(int64(lengthMM)), big.NewInt(int64(widthMM)))
+		volume.Mul(volume, big.NewInt(int64(heightMM)))
+		volume.Quo(volume, big.NewInt(rates.VolumetricDiv))
+		if !volume.IsInt64() {
+			return 0, ErrInvalidShippingAmount
+		}
+		if v := volume.Int64(); v > billable {
+			billable = v
 		}
 	}
-	return billable
+	return billable, nil
 }
 
-// LegFareToman prices one leg: base rate + per-kilo rate x ceil of
-// the leg's total billable kilograms, converted Rials -> Tomans
-// (rounded half-up) and clamped at zero.
+// Deprecated: active quote/settlement writers use CheckedLegFareToman and
+// propagate its error. The compatibility wrapper is retained for old readers.
 func LegFareToman(totalBillableGrams int64, rates Rates) int64 {
-	billableKg := int64(math.Ceil(float64(totalBillableGrams) / 1000.0))
-	fareRial := rates.BaseRateRial + rates.PerKgRial*billableKg
-	// Rials -> Tomans, rounded half-up.
-	fare := (fareRial + 5) / 10
-	if fare < 0 {
-		fare = 0
-	}
+	fare, _ := CheckedLegFareToman(totalBillableGrams, rates)
 	return fare
+}
+
+// CheckedLegFareToman preserves per-leg ceil kilograms and half-up rial-to-toman
+// conversion exactly once. Arbitrary precision intermediates prevent overflow
+// even when the final toman amount fits; an unrepresentable result is rejected.
+func CheckedLegFareToman(totalBillableGrams int64, rates Rates) (int64, error) {
+	if totalBillableGrams < 0 || rates.BaseRateRial < 0 || rates.PerKgRial < 0 {
+		return 0, ErrInvalidShippingAmount
+	}
+	kg := totalBillableGrams / 1000
+	if totalBillableGrams%1000 != 0 {
+		kg++
+	}
+	rial := new(big.Int).Mul(big.NewInt(kg), big.NewInt(rates.PerKgRial))
+	rial.Add(rial, big.NewInt(rates.BaseRateRial))
+	rial.Add(rial, big.NewInt(5))
+	rial.Quo(rial, big.NewInt(10))
+	if !rial.IsInt64() {
+		return 0, ErrInvalidShippingAmount
+	}
+	return rial.Int64(), nil
 }

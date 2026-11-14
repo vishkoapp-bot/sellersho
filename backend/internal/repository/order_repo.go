@@ -139,13 +139,21 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 			variant_id, variant_name, variant_spnc
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
+	// Legacy repository callers do not claim a modern policy. New priced
+	// snapshots append the policy in the same INSERT/transaction.
+	queryItemVersion := strings.Replace(queryItem, "variant_id, variant_name, variant_spnc", "variant_id, variant_name, variant_spnc, pricing_policy_version", 1)
+	queryItemVersion = strings.Replace(queryItemVersion, "$10, $11, $12)", "$10, $11, $12, $13)", 1)
 	for _, item := range order.Items {
 		itemID := uuid.New().String()
-		_, err := tx.ExecContext(ctx, queryItem,
-			itemID, order.ID, item.ProductID, item.Quantity,
+		itemArgs := []interface{}{itemID, order.ID, item.ProductID, item.Quantity,
 			item.WholesaleCost, item.PlatformFee, item.SellerMargin, item.FinalUnitPrice, item.DiscountAmount,
-			orderNullString(item.VariantID), orderNullString(item.VariantName), orderNullString(item.VariantSPNC),
-		)
+			orderNullString(item.VariantID), orderNullString(item.VariantName), orderNullString(item.VariantSPNC)}
+		insertItem := queryItem
+		if item.PricingPolicyVersion != "" {
+			insertItem = queryItemVersion
+			itemArgs = append(itemArgs, item.PricingPolicyVersion)
+		}
+		_, err := tx.ExecContext(ctx, insertItem, itemArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to insert order item: %w", err)
 		}
@@ -504,7 +512,7 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 	itemQuery := `
 		SELECT oi.id, oi.order_id, oi.product_id, p.title, oi.quantity,
 		       oi.wholesale_cost, oi.platform_fee, oi.seller_margin, oi.final_unit_price, COALESCE(oi.discount_amount, 0),
-		       oi.variant_id, oi.variant_name, oi.variant_spnc
+		       oi.variant_id, oi.variant_name, oi.variant_spnc, COALESCE(to_jsonb(oi)->>'pricing_policy_version', 'legacy-unversioned')
 		FROM order_items oi
 		LEFT JOIN products p ON oi.product_id = p.id
 		WHERE oi.order_id = $1
@@ -517,7 +525,7 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 			if err := rows.Scan(
 				&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity,
 				&it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount,
-				&it.VariantID, &it.VariantName, &it.VariantSPNC,
+				&it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion,
 			); err == nil {
 				o.Items = append(o.Items, it)
 			}
@@ -579,7 +587,7 @@ func (r *OrderRepository) loadItemsByOrderIDs(ctx context.Context, orderIDs []st
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT oi.id, oi.order_id, oi.product_id, COALESCE(p.title, ''), oi.quantity,
 		       oi.wholesale_cost, oi.platform_fee, oi.seller_margin, oi.final_unit_price, COALESCE(oi.discount_amount, 0),
-		       oi.variant_id, oi.variant_name, oi.variant_spnc
+		       oi.variant_id, oi.variant_name, oi.variant_spnc, COALESCE(to_jsonb(oi)->>'pricing_policy_version', 'legacy-unversioned')
 		FROM order_items oi
 		LEFT JOIN products p ON oi.product_id = p.id
 		WHERE oi.order_id IN (`+strings.Join(ph, ", ")+`)
@@ -594,7 +602,7 @@ func (r *OrderRepository) loadItemsByOrderIDs(ctx context.Context, orderIDs []st
 		if err := rows.Scan(
 			&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity,
 			&it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount,
-			&it.VariantID, &it.VariantName, &it.VariantSPNC,
+			&it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion,
 		); err != nil {
 			return nil, err
 		}

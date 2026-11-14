@@ -22,11 +22,11 @@ func testPercentRes() ReferenceResolution {
 
 func TestCampaignDiscountOnlyFromMargin(t *testing.T) {
 	r := ApplyCampaignDiscount(testPercentRes(), DiscountCampaignInput{ID: "c1", Mode: "percent", Value: 10})
-	// Target margin = 10% of B (= R) = 80,000; final = 880,000.
+	// Current policy: 10% off 970,000 = 97,000, within seller margin.
 	if r.Resolution.WholesaleCost != 800000 || r.Resolution.PlatformFee != 0 || r.Resolution.BaseCost != 800000 {
 		t.Fatalf("wholesale/fee/base changed: %+v", r.Resolution)
 	}
-	if r.Resolution.FinalPrice != 880000 || r.Resolution.SellerMargin != 80000 || r.DiscountAmount != 90000 {
+	if r.Resolution.FinalPrice != 873000 || r.Resolution.SellerMargin != 73000 || r.DiscountAmount != 97000 {
 		t.Fatalf("campaign percent: %+v", r)
 	}
 	if r.CampaignID != "c1" {
@@ -34,19 +34,17 @@ func TestCampaignDiscountOnlyFromMargin(t *testing.T) {
 	}
 }
 
-func TestCampaignFixedAndFloor(t *testing.T) {
+func TestCampaignZeroFixedDiscountIsNoop(t *testing.T) {
 	r := ApplyCampaignDiscount(testPercentRes(), DiscountCampaignInput{ID: "c1", Mode: "fixed", Value: 0})
-	if r.Resolution.FinalPrice != 800000 || r.Resolution.SellerMargin != 0 || r.DiscountAmount != 170000 {
-		t.Fatalf("campaign zero margin floor: %+v", r)
+	if r.Resolution.FinalPrice != 970000 || r.Resolution.SellerMargin != 170000 || r.DiscountAmount != 0 {
+		t.Fatalf("campaign zero discount: %+v", r)
 	}
 }
 
 func TestCampaignNeverRaisesPrice(t *testing.T) {
-	// Target 30% of R = 240,000 exceeds the 170,000 margin. The old
-	// branch would have raised the price to 1,040,000; here the
-	// campaign is a no-op instead.
+	// 30% off current price exceeds margin: cap at 170,000 and floor at R.
 	r := ApplyCampaignDiscount(testPercentRes(), DiscountCampaignInput{ID: "c1", Mode: "percent", Value: 30})
-	if r.Resolution.FinalPrice != 970000 || r.Resolution.SellerMargin != 170000 || r.DiscountAmount != 0 {
+	if r.Resolution.FinalPrice != 800000 || r.Resolution.SellerMargin != 0 || r.DiscountAmount != 170000 {
 		t.Fatalf("campaign above margin: %+v", r)
 	}
 }
@@ -83,9 +81,9 @@ func TestCodePercentOfFinalPrice(t *testing.T) {
 
 func TestDiscountWithNonZeroPlatformPctFeeUntouched(t *testing.T) {
 	// C = 800,000, platform_pct = 10% so R = 880,000 and F = 80,000;
-	// margin 15% of R = 132,000, final = 1,012,000. A zero-target
-	// campaign must floor at R (880,000), NOT at C, and the fee
-	// portion must survive untouched.
+	// margin 15% of R = 132,000, final = 1,012,000. An oversized fixed
+	// discount must floor at R (880,000); the wholesale cost and fee
+	// portion survive untouched.
 	res := ReferenceResolution{
 		WholesaleCost: 800000,
 		ReferenceCost: 880000,
@@ -95,7 +93,7 @@ func TestDiscountWithNonZeroPlatformPctFeeUntouched(t *testing.T) {
 		FinalPrice:    1012000,
 		MarginPercent: 15,
 	}
-	r := ApplyCampaignDiscount(res, DiscountCampaignInput{ID: "c1", Mode: "fixed", Value: 0})
+	r := ApplyCampaignDiscount(res, DiscountCampaignInput{ID: "c1", Mode: "fixed", Value: 99999999})
 	if r.Resolution.FinalPrice != 880000 || r.Resolution.SellerMargin != 0 || r.DiscountAmount != 132000 {
 		t.Fatalf("non-zero pct campaign: %+v", r)
 	}

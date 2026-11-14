@@ -2,7 +2,8 @@ package main
 
 import (
 	"database/sql"
-	"math"
+	"github.com/drup/platform/internal/pricing"
+	"github.com/drup/platform/internal/repository"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -165,7 +166,8 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 		MaxMarginPct   *float64 `json:"maxMarginPct"`
 		ClearMaxMargin bool     `json:"clearMaxMargin"`
 	}
-	if !t01DecodeJSON(w, r, &req) {
+	if err := decodeMoneyJSON(r.Body, &req); err != nil {
+		http.Error(w, `{"error":"Unsupported pricing precision or bounds"}`, http.StatusBadRequest)
 		return
 	}
 	// Per-product margin ceiling (ISO-C margin model), independent of the
@@ -173,9 +175,35 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 	// it (global MaxProfitMargin binds again). A ceiling-only request
 	// (no markup fields) is valid and returns without touching markup.
 	ceilingTouched := req.ClearMaxMargin || req.MaxMarginPct != nil
-	if req.MaxMarginPct != nil && (math.IsNaN(*req.MaxMarginPct) || math.IsInf(*req.MaxMarginPct, 0) || *req.MaxMarginPct < 0 || *req.MaxMarginPct > 1000) {
-		http.Error(w, `{"error":"maxMarginPct must be between 0 and 1000"}`, http.StatusBadRequest)
+	if req.MaxMarginPct != nil {
+		if _, err := pricing.ParsePercent(*req.MaxMarginPct); err != nil {
+			http.Error(w, `{"error":"maxMarginPct must be between 0 and 1000 with at most two decimal places"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if req.MarkupType == "" && req.MarkupValue == nil && !req.Clear && !ceilingTouched {
+		http.Error(w, `{"error":"nothing to update"}`, http.StatusBadRequest)
 		return
+	}
+	if req.MarkupType == "" && req.MarkupValue != nil {
+		http.Error(w, `{"error":"markupType must be fixed or percent"}`, http.StatusBadRequest)
+		return
+	}
+	if req.MarkupType != "" && req.MarkupType != "fixed" && req.MarkupType != "percent" {
+		http.Error(w, `{"error":"markupType must be fixed or percent"}`, http.StatusBadRequest)
+		return
+	}
+	if req.MarkupValue != nil {
+		var err error
+		if req.MarkupType == "percent" {
+			_, err = pricing.ParsePercent(*req.MarkupValue)
+		} else {
+			_, err = pricing.MoneyFromNumber(*req.MarkupValue)
+		}
+		if err != nil {
+			http.Error(w, `{"error":"Unsupported markup precision or bounds"}`, http.StatusBadRequest)
+			return
+		}
 	}
 	if ceilingTouched {
 		var prodExists bool
@@ -193,7 +221,7 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 				return
 			}
 		} else if req.MaxMarginPct != nil {
-			if _, err := db.ExecContext(r.Context(), `INSERT INTO product_margin_ceilings (product_id, max_margin_pct, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (product_id) DO UPDATE SET max_margin_pct = EXCLUDED.max_margin_pct, updated_at = NOW()`, id, *req.MaxMarginPct); err != nil {
+			if err := repository.NewPricingRepository(db).SetProductMarginCeiling(r.Context(), id, *req.MaxMarginPct); err != nil {
 				writeInternalError(w, err)
 				return
 			}
@@ -212,22 +240,7 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": id, "cleared": true})
 		return
 	}
-	if req.MarkupType == "" && req.MarkupValue == nil && !req.Clear && !ceilingTouched {
-		http.Error(w, `{"error":"nothing to update"}`, http.StatusBadRequest)
-		return
-	}
-	if req.MarkupType == "" && req.MarkupValue != nil {
-		http.Error(w, `{"error":"markupType must be fixed or percent"}`, http.StatusBadRequest)
-		return
-	}
-	if req.MarkupType != "" && req.MarkupType != "fixed" && req.MarkupType != "percent" {
-		http.Error(w, `{"error":"markupType must be fixed or percent"}`, http.StatusBadRequest)
-		return
-	}
-	if req.MarkupValue != nil && *req.MarkupValue < 0 {
-		http.Error(w, `{"error":"markupValue must be >= 0"}`, http.StatusBadRequest)
-		return
-	}
+
 	if req.MarkupType == "" {
 		// Ceiling-only request: markup untouched.
 		var mmOut interface{}

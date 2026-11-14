@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/pricing"
 	"github.com/google/uuid"
 )
 
@@ -204,6 +205,9 @@ func (r *FinanceRepository) GetWalletBreakdown(ctx context.Context, storeID stri
 }
 
 func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUserID, storeID string, gross int64, shaba, bankName string) (*EarlyWithdrawal, error) {
+	if gross > pricing.MaxTransportMoney {
+		return nil, pricing.ErrInvalidMoney
+	}
 	if gross < EarlyWithdrawalMinimumToman {
 		return nil, ErrEarlyWithdrawalTooSmall
 	}
@@ -239,7 +243,10 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	if !feePct.Valid {
 		return nil, ErrEarlyWithdrawalFeeUnset
 	}
-	feeAmount := int64(float64(gross) * feePct.Float64 / 100.0)
+	feeAmount, err := pricing.TruncatedPercent(gross, feePct.Float64)
+	if err != nil || feeAmount > gross || feePct.Float64 > 100 {
+		return nil, pricing.ErrInvalidMoney
+	}
 	net := gross - feeAmount
 	if net <= 0 {
 		return nil, fmt.Errorf("net amount must be positive")

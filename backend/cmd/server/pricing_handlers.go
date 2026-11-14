@@ -91,8 +91,12 @@ func handleAdminPricingSettings(w http.ResponseWriter, r *http.Request, pricingR
 		})
 	case http.MethodPut, http.MethodPost:
 		var req pricing.PlatformPricingSettings
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeMoneyJSON(r.Body, &req); err != nil {
 			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+			return
+		}
+		if err := pricing.ValidateSettings(&req); err != nil {
+			http.Error(w, `{"error":"Percentages must be in range and have at most two decimal places"}`, http.StatusBadRequest)
 			return
 		}
 		if req.PlatformPct < 0 || req.PlatformPct > 1000 {
@@ -167,7 +171,7 @@ func handleAdminPlatformPct(w http.ResponseWriter, r *http.Request, pricingRepo 
 			ID    string  `json:"id"`
 			Pct   float64 `json:"pct"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeMoneyJSON(r.Body, &req); err != nil || req.ID == "" {
 			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 			return
 		}
@@ -271,7 +275,7 @@ func handleAdminMarginLocks(w http.ResponseWriter, r *http.Request, pricingRepo 
 			Mode    string   `json:"mode"`
 			Value   *float64 `json:"value"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.StoreID == "" || req.ScopeID == "" {
+		if err := decodeMoneyJSON(r.Body, &req); err != nil || req.StoreID == "" || req.ScopeID == "" {
 			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 			return
 		}
@@ -320,11 +324,11 @@ func handleSellerPricingSettings(w http.ResponseWriter, r *http.Request, pricing
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"platformPct":     s.PlatformPct,
+		"platformPct":      s.PlatformPct,
 		"centralProfitPct": s.CentralProfitPct,
-		"minProfitMargin": s.MinProfitMargin,
-		"maxProfitMargin": s.MaxProfitMargin,
-		"defaultMargin":   s.DefaultMargin,
+		"minProfitMargin":  s.MinProfitMargin,
+		"maxProfitMargin":  s.MaxProfitMargin,
+		"defaultMargin":    s.DefaultMargin,
 	})
 }
 
@@ -377,7 +381,7 @@ func handleSellerVariantOverrides(w http.ResponseWriter, r *http.Request, pricin
 		writePricingJSON(w, map[string]interface{}{"overrides": overrides})
 	case http.MethodPut, http.MethodPost:
 		var req pricing.StoreVariantOverride
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.StoreID == "" || req.ProductID == "" || req.VariantID == "" {
+		if err := decodeMoneyJSON(r.Body, &req); err != nil || req.StoreID == "" || req.ProductID == "" || req.VariantID == "" {
 			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 			return
 		}

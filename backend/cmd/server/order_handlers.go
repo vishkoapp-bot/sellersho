@@ -515,6 +515,10 @@ func handleCreateOrder(
 		} else {
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
+		if res.PricingError != "" {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 		// The timed-deals widget discount (margin percentage points
 		// from the store's widget config) is the first discount
 		// layer: it is the advertised campaign price, so it is what
@@ -545,23 +549,29 @@ func handleCreateOrder(
 		if discounted.Code != "" {
 			discountCodeApplied = true
 		}
-		sellerDiscountTotal += discounted.DiscountAmount * int64(qty)
+		if err := pricing.AccumulateMoney(&sellerDiscountTotal, discounted.DiscountAmount, int64(qty)); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 		res = discounted.Resolution
 		// TODO U14: order-path split unverified in live; see function doc.
 		split := pricing.ReferenceProfitSplit(res, store.OwnerType != "dropshipper")
 
-		lineItemSellingPrice := res.FinalPrice * int64(qty)
-		lineItemPlatformFee := split.PlatformFeeAmount * int64(qty)
-		lineItemSellerMargin := split.DropshipperMargin * int64(qty)
-
-		totalAmount += res.OriginalPrice * int64(qty)
-		payableAmount += lineItemSellingPrice
-
-		if store.OwnerType == "dropshipper" {
-			dropshipperProfit += lineItemSellerMargin
-			platformProfit += lineItemPlatformFee
-		} else {
-			platformProfit += split.PlatformTotal * int64(qty)
+		// Validate every aggregate before snapshotting or reserving inventory.
+		lineItemSellingPrice, e1 := pricing.CheckedMultiply(res.FinalPrice, int64(qty))
+		lineItemPlatformFee, e2 := pricing.CheckedMultiply(split.PlatformFeeAmount, int64(qty))
+		lineItemSellerMargin, e3 := pricing.CheckedMultiply(split.DropshipperMargin, int64(qty))
+		e4 := pricing.AccumulateMoney(&totalAmount, res.OriginalPrice, int64(qty))
+		e5 := pricing.AccumulateMoney(&payableAmount, lineItemSellingPrice, 1)
+		e6 := pricing.AccumulateMoney(&dropshipperProfit, lineItemSellerMargin, 1)
+		platformUnit := lineItemPlatformFee
+		if store.OwnerType != "dropshipper" {
+			platformUnit, e2 = pricing.CheckedMultiply(split.PlatformTotal, int64(qty))
+		}
+		e7 := pricing.AccumulateMoney(&platformProfit, platformUnit, 1)
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil || e6 != nil || e7 != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
 		}
 
 		// Fix69 M1: the variant snapshot travels to the order line
@@ -584,17 +594,18 @@ func handleCreateOrder(
 			originLabel = "ارسال مستقیم تأمین‌کننده"
 		}
 		item := domain.OrderItem{
-			ProductID:      p.ID,
-			ProductTitle:   p.Title,
-			Quantity:       qty,
-			WholesaleCost:  res.WholesaleCost,
-			PlatformFee:    res.PlatformFee,
-			SellerMargin:   res.SellerMargin,
-			FinalUnitPrice: res.FinalPrice,
-			DiscountAmount: discounted.DiscountAmount,
-			Routing:        itemRouting,
-			OriginLabel:    originLabel,
-			SupplierID:     p.SupplierID,
+			PricingPolicyVersion: res.MoneyPolicyVersion,
+			ProductID:            p.ID,
+			ProductTitle:         p.Title,
+			Quantity:             qty,
+			WholesaleCost:        res.WholesaleCost,
+			PlatformFee:          res.PlatformFee,
+			SellerMargin:         res.SellerMargin,
+			FinalUnitPrice:       res.FinalPrice,
+			DiscountAmount:       discounted.DiscountAmount,
+			Routing:              itemRouting,
+			OriginLabel:          originLabel,
+			SupplierID:           p.SupplierID,
 		}
 		// ISO-PURCHASE: resolve addonIds against product_addons
 		// (active + approved only) AND scoped to this (store, product),
@@ -668,19 +679,33 @@ func handleCreateOrder(
 					found[aid] = true
 					var fee int64
 					if mode == "percent" {
-						fee = int64(float64(res.FinalPrice) * priceVal / 100.0)
+						fee, err = pricing.TruncatedPercent(res.FinalPrice, priceVal)
 					} else {
-						fee = int64(priceVal)
+						fee, err = pricing.MoneyFromNumber(priceVal)
+					}
+					if err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Addon pricing is unavailable"}`, http.StatusConflict)
+						return
 					}
 					if cap > 0 && fee > cap {
 						fee = cap
 					}
 					if owner == "supplier" {
-						supplierAddonTotal += fee * int64(qty)
+						err = pricing.AccumulateMoney(&supplierAddonTotal, fee, int64(qty))
 					} else {
-						platformAddonTotal += fee * int64(qty)
+						err = pricing.AccumulateMoney(&platformAddonTotal, fee, int64(qty))
 					}
-					addonLineTotal += fee * int64(qty)
+					if err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+						return
+					}
+					if err = pricing.AccumulateMoney(&addonLineTotal, fee, int64(qty)); err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+						return
+					}
 				}
 				rows.Close()
 				if err := rows.Err(); err != nil {
@@ -691,7 +716,10 @@ func handleCreateOrder(
 					http.Error(w, `{"error":"Addon not available for this store or product"}`, http.StatusBadRequest)
 					return
 				}
-				payableAmount += addonLineTotal
+				if err := pricing.AccumulateMoney(&payableAmount, addonLineTotal, 1); err != nil {
+					http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+					return
+				}
 			}
 		}
 		if chosenVariant != nil {
@@ -829,7 +857,12 @@ func handleCreateOrder(
 		if percent <= 0 {
 			percent = 2.0
 		}
-		referralCommission = int64(float64(platformProfit) * (percent / 100.0))
+		var err error
+		referralCommission, err = pricing.TruncatedPercent(platformProfit, percent)
+		if err != nil || referralCommission > platformProfit {
+			http.Error(w, `{"error":"Referral pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 	}
 
 	if len(directSupplierIDs) > 0 {
@@ -872,6 +905,10 @@ func handleCreateOrder(
 			Address: req.CustomerInfo.Address, PostalCode: req.CustomerInfo.PostalCode,
 		}
 		quote := computeShippingQuote(quoteLines, rates, quoteDestinationKey(quoteDest))
+		if quote.PricingError != nil {
+			http.Error(w, `{"error":"shipping_amount_out_of_range"}`, http.StatusBadRequest)
+			return
+		}
 		// Tapin repricing (tapin_quote.go): the identical step the
 		// quote endpoint ran, over lines built from the same product
 		// reads — a Tapin-priced quote re-derives the same quoteId
@@ -887,7 +924,10 @@ func handleCreateOrder(
 		}
 		shippingCost = quote.TotalShipping
 		shippingQuoteID = quote.QuoteID
-		payableAmount += shippingCost
+		if err := pricing.AccumulateMoney(&payableAmount, shippingCost, 1); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	// FIX 14: DiscountAmount is original-minus-final merchandise

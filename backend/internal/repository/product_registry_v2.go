@@ -196,8 +196,8 @@ func ValidateProductProposalTx(ctx context.Context, tx *sql.Tx, data map[string]
 // only; no price formula is changed here.
 func loadPlatformPricingSettingsTx(ctx context.Context, tx *sql.Tx) *pricing.PlatformPricingSettings {
 	s := &pricing.PlatformPricingSettings{
-		ProductPlatformPcts:  map[string]float64{},
-		CategoryPlatformPcts: map[string]float64{},
+		ProductPlatformPcts:   map[string]float64{},
+		CategoryPlatformPcts:  map[string]float64{},
 		ProductMarginCeilings: map[string]float64{},
 	}
 	var earlyWithdrawalFeePct sql.NullFloat64
@@ -353,7 +353,13 @@ func validateVariantSaleFloorsTx(ctx context.Context, tx *sql.Tx, data map[strin
 		}
 		prod := domain.Product{ID: productID, CategorySlug: categorySlug, SupplierBaseCost: int64(cost)}
 		res := pricing.ResolveReferencePricingForStoreProductVariantWithCost(prod, int64(cost), id, central, settings, nil, nil)
-		s := int64(sale)
+		if res.PricingError != "" {
+			return pricing.ErrInvalidMoney
+		}
+		s, err := pricing.MoneyFromNumber(sale)
+		if err != nil {
+			return err
+		}
 		if s <= res.BaseCost {
 			return fmt.Errorf("salePrice must be above the reference cost %d", res.BaseCost)
 		}

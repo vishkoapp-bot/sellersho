@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/drup/platform/internal/pricing"
 	"net/http"
 )
 
@@ -71,6 +73,12 @@ func t01SettingsPut(w http.ResponseWriter, r *http.Request, db *sql.DB, fields [
 	if !t01DecodeJSON(w, r, &body) {
 		return
 	}
+	rawBody, _ := json.Marshal(body)
+	var exactBody any
+	if err := decodeMoneyJSON(bytes.NewReader(rawBody), &exactBody); err != nil {
+		http.Error(w, `{"error":"Unsupported monetary precision or bounds"}`, http.StatusBadRequest)
+		return
+	}
 	byKey := map[string]t01SettingField{}
 	for _, f := range fields {
 		byKey[f.JSONKey] = f
@@ -115,6 +123,12 @@ func t01SettingsPut(w http.ResponseWriter, r *http.Request, db *sql.DB, fields [
 			if err := json.Unmarshal(raw, &v); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"Setting %s must be a number"}`, k), http.StatusBadRequest)
 				return
+			}
+			if k == "earlyWithdrawalFeePct" {
+				if _, err := pricing.ParsePercent(v); err != nil {
+					http.Error(w, `{"error":"Fee percent supports at most two decimal places"}`, http.StatusBadRequest)
+					return
+				}
 			}
 			if (f.HasMin && v < f.Min) || (f.HasMax && v >= f.Max) {
 				http.Error(w, fmt.Sprintf(`{"error":"Setting %s out of range"}`, k), http.StatusBadRequest)

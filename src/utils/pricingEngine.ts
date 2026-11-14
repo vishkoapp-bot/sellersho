@@ -1,12 +1,13 @@
 import { Product, Store, PlatformSettings, PackagingTariff } from '../types/index';
+import { markedUpPrice, roundMoneyTo100 } from './money';
 import { getProductNicheIds } from '../data/niches';
 
 /**
- * Universal Price Rounding:
- * Prices in Tomans are always rounded to the nearest multiple of 100 Tomans.
+ * Legacy display helper. New money calculations use money.ts scaled integers.
+ * Exact refunds and allocations do not round to 100.
  */
 export const roundTo100 = (val: number): number => {
-  return Math.round(val / 100) * 100;
+  return roundMoneyTo100(val);
 };
 
 /**
@@ -45,7 +46,15 @@ export const resolveBaseCostR = (
   settings?: PlatformSettings
 ): number => {
   const pct = resolvePlatformPct(product, settings);
-  return roundTo100(product.supplierBaseCost * (1 + pct / 100));
+  // A server-reported fee already contains intermediate rounding. Do not
+  // reverse-engineer an approximate percent and round the same money twice.
+  if (settings?.platformPct === undefined && product.platformMargin !== undefined && product.platformMargin >= 0) {
+    if (!Number.isSafeInteger(product.supplierBaseCost) || product.supplierBaseCost < 0 || !Number.isSafeInteger(product.platformMargin)) throw new RangeError("Invalid server money");
+    const base = product.supplierBaseCost + product.platformMargin;
+    if (!Number.isSafeInteger(base) || base < product.supplierBaseCost) throw new RangeError("Invalid server base cost");
+    return base;
+  }
+  return markedUpPrice(product.supplierBaseCost, pct);
 };
 
 export interface PricingResolution {
@@ -88,12 +97,10 @@ export const resolvePricing = (
   platformSettings?: PlatformSettings
 ): PricingResolution => {
   const wholesaleCost = product.supplierBaseCost;
-  const pct = resolvePlatformPct(product, platformSettings);
-  const baseCost = roundTo100(wholesaleCost * (1 + pct / 100));
+  const baseCost = resolveBaseCostR(product, platformSettings);
   const platformFee = baseCost - wholesaleCost;
   const pNiches = product.nicheIds || getProductNicheIds(product);
 
-  let rawFinalPrice = baseCost;
   let activeTier: 'product' | 'niche' | 'category' | 'default' = 'default';
 
   // Final fallback (owner rule): no store-wide default margin — where
@@ -110,13 +117,13 @@ export const resolvePricing = (
     if (store.isMarginLockedByAdmin && store.customStoreMarginOverride !== undefined) {
       activeTier = 'default';
       marginValue = store.customStoreMarginOverride;
-      rawFinalPrice = baseCost * (1 + marginValue / 100);
+
     } else {
       // Priority 1: Product-specific override (percent only)
       if (store.productPriceOverrides && store.productPriceOverrides[product.id] !== undefined) {
         activeTier = 'product';
         marginValue = store.productPriceOverrides[product.id];
-        rawFinalPrice = baseCost * (1 + marginValue / 100);
+
       }
       // Priority 2: Niche-specific override (percent only)
       else if (store.nichePriceOverrides) {
@@ -124,7 +131,7 @@ export const resolvePricing = (
         if (matchedNicheId) {
           activeTier = 'niche';
           marginValue = store.nichePriceOverrides[matchedNicheId];
-          rawFinalPrice = baseCost * (1 + marginValue / 100);
+
         }
       }
 
@@ -132,22 +139,22 @@ export const resolvePricing = (
       if (activeTier === 'default' && store.categoryPriceOverrides && store.categoryPriceOverrides[product.category] !== undefined) {
         activeTier = 'category';
         marginValue = store.categoryPriceOverrides[product.category];
-        rawFinalPrice = baseCost * (1 + marginValue / 100);
+
       }
 
       // Priority 4: nothing set — maximum allowed margin, automatically
       if (activeTier === 'default') {
-        rawFinalPrice = baseCost * (1 + marginValue / 100);
+
       }
     }
   } else {
     // Central store: the platform's own margin on the base price.
     const centralPct = platformSettings?.centralProfitPct ?? 10;
     marginValue = centralPct;
-    rawFinalPrice = baseCost * (1 + centralPct / 100);
+
   }
 
-  const finalPrice = roundTo100(rawFinalPrice);
+  const finalPrice = markedUpPrice(baseCost, marginValue);
   const sellerMargin = finalPrice - baseCost;
   // Server rule (not final * 1.15): the anchor is the stored original,
   // raised to the final price when the final price exceeds it.

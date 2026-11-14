@@ -675,7 +675,7 @@ func (h *SupplierHandlers) HandleSupplierPriceIncreaseExceptionTicket(w http.Res
 		NewReference int64  `json:"newReference"`
 		Message      string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ProductID) == "" || req.NewReference <= 0 {
+	if err := decodeMoneyJSON(r.Body, &req, true); err != nil || strings.TrimSpace(req.ProductID) == "" || req.NewReference <= 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -1360,7 +1360,7 @@ func (h *SupplierHandlers) HandleUpdateVariantSale(w http.ResponseWriter, r *htt
 		return
 	}
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	if err := decodeMoneyJSON(r.Body, &raw, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1452,6 +1452,10 @@ func (h *SupplierHandlers) HandleUpdateVariantSale(w http.ResponseWriter, r *htt
 		central := domain.Store{ID: "store-central", Slug: "central", OwnerType: "central"}
 		prod := domain.Product{ID: productID, CategorySlug: categorySlug, SupplierBaseCost: costC}
 		centralRes := pricing.ResolveReferencePricingForStoreProductVariantWithCost(prod, costC, variantID, central, settings, nil, nil)
+		if centralRes.PricingError != "" {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 		refCost := centralRes.BaseCost
 		if *salePrice <= refCost {
 			http.Error(w, fmt.Sprintf(`{"error":"salePrice must be above the reference cost %d"}`, refCost), http.StatusBadRequest)
@@ -1505,7 +1509,7 @@ func (h *SupplierHandlers) HandleCreateProductVariant(w http.ResponseWriter, r *
 		VariantName      string            `json:"variant_name"`
 		Attributes       map[string]string `json:"attributes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1556,7 +1560,7 @@ func (h *SupplierHandlers) HandleCreateProductVariantsBulk(w http.ResponseWriter
 	var body struct {
 		Variants []json.RawMessage `json:"variants"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1661,7 +1665,7 @@ func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *
 		Clear               bool   `json:"clear"`
 		Reason              string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -1859,7 +1863,7 @@ func (h *SupplierHandlers) HandleResubmitCatalogReview(w http.ResponseWriter, r 
 	var body struct {
 		Data map[string]interface{} `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}

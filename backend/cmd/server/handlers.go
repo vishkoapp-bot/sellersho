@@ -63,10 +63,11 @@ type ProductVariantResponse struct {
 // VariantPriceResponse is one entry of variantPrices, keyed by variant
 // ID (UUID) exactly as live serves it (FIX 4, team 04 G1 / team 02 G6).
 type VariantPriceResponse struct {
-	Price           int64      `json:"price"`
-	OriginalPrice   int64      `json:"originalPrice"`
-	DiscountPercent int        `json:"discountPercent"`
-	CampaignName    string     `json:"campaignName,omitempty"`
+	PricingError    string `json:"pricingError,omitempty"`
+	Price           int64  `json:"price"`
+	OriginalPrice   int64  `json:"originalPrice"`
+	DiscountPercent int    `json:"discountPercent"`
+	CampaignName    string `json:"campaignName,omitempty"`
 	// P1(c): configured sale price + window (echoed whenever set, any
 	// window state); OnSale is true iff the sale determined this price.
 	SalePrice *int64     `json:"salePrice,omitempty"`
@@ -86,6 +87,7 @@ type VariantPriceResponse struct {
 // a response key), profitToman, marginPercent, installmentPrice
 // (installments were deleted by user decision).
 type ProductResponse struct {
+	PricingError  string                `json:"pricingError,omitempty"`
 	ProductType   string                `json:"productType"`
 	SchemaVersion int                   `json:"schemaVersion"`
 	ProductSchema *domain.ProductSchema `json:"productSchema,omitempty"`
@@ -121,8 +123,8 @@ type ProductResponse struct {
 	// legacy products: both = product-level price. Variable products
 	// with no priced variant: both omitted (nil), never 0 and never
 	// the product price. P2(c): this store view's default variant.
-	PriceMin             *int64  `json:"priceMin,omitempty"`
-	PriceMax             *int64  `json:"priceMax,omitempty"`
+	PriceMin              *int64  `json:"priceMin,omitempty"`
+	PriceMax              *int64  `json:"priceMax,omitempty"`
 	StoreDefaultVariantID *string `json:"storeDefaultVariantId,omitempty"`
 }
 
@@ -159,28 +161,28 @@ type ProductDetailResponse struct {
 	ID               string `json:"id"`
 	Image            string `json:"image"`
 	// Flagged extensions (see type comment above).
-	Images           []string                        `json:"images,omitempty"`
-	IsActive         bool                            `json:"isActive"`
-	IsOriginal       bool                            `json:"isOriginal"`
-	NicheIDs         []string                        `json:"nicheIds"`
-	OriginalPrice    int64                           `json:"originalPrice"`
-	PlatformFeeF     int64                           `json:"platformFeeF"`
-	Price            int64                           `json:"price"`
-	Slug             string                          `json:"slug"`
-	Specs            map[string]interface{}          `json:"specs,omitempty"`
-	SpnNumber        *int64                          `json:"spnNumber"`
-	Stock            int                             `json:"stock"`
-	StoreCount       int                             `json:"storeCount"`
-	SupplierID       *string                         `json:"supplierId,omitempty"`
-	SupplierName     *string                         `json:"supplierName,omitempty"`
-	SupplierWarranty string                          `json:"supplierWarranty"`
-	Title            string                          `json:"title"`
-	VariantPrices    map[string]VariantPriceResponse `json:"variantPrices"`
-	Variants         []ProductVariantResponse        `json:"variants"`
-	Warehouse        string                          `json:"warehouse"`
-	PriceMin         *int64                          `json:"priceMin,omitempty"`
-	PriceMax         *int64                          `json:"priceMax,omitempty"`
-	StoreDefaultVariantID *string                    `json:"storeDefaultVariantId,omitempty"`
+	Images                []string                        `json:"images,omitempty"`
+	IsActive              bool                            `json:"isActive"`
+	IsOriginal            bool                            `json:"isOriginal"`
+	NicheIDs              []string                        `json:"nicheIds"`
+	OriginalPrice         int64                           `json:"originalPrice"`
+	PlatformFeeF          int64                           `json:"platformFeeF"`
+	Price                 int64                           `json:"price"`
+	Slug                  string                          `json:"slug"`
+	Specs                 map[string]interface{}          `json:"specs,omitempty"`
+	SpnNumber             *int64                          `json:"spnNumber"`
+	Stock                 int                             `json:"stock"`
+	StoreCount            int                             `json:"storeCount"`
+	SupplierID            *string                         `json:"supplierId,omitempty"`
+	SupplierName          *string                         `json:"supplierName,omitempty"`
+	SupplierWarranty      string                          `json:"supplierWarranty"`
+	Title                 string                          `json:"title"`
+	VariantPrices         map[string]VariantPriceResponse `json:"variantPrices"`
+	Variants              []ProductVariantResponse        `json:"variants"`
+	Warehouse             string                          `json:"warehouse"`
+	PriceMin              *int64                          `json:"priceMin,omitempty"`
+	PriceMax              *int64                          `json:"priceMax,omitempty"`
+	StoreDefaultVariantID *string                         `json:"storeDefaultVariantId,omitempty"`
 }
 
 // deriveDiscountPercent derives discountPercent exactly as Team 02
@@ -188,10 +190,7 @@ type ProductDetailResponse struct {
 // whole percent. It is NOT a seller discount campaign (D48, U04): no
 // campaign is applied anywhere in this file.
 func deriveDiscountPercent(originalPrice, price int64) int {
-	if originalPrice <= 0 || price >= originalPrice {
-		return 0
-	}
-	return int(math.Round(float64(originalPrice-price) / float64(originalPrice) * 100))
+	return int(pricing.DiscountPercent(originalPrice, price))
 }
 
 // normalizeSearchTerm normalises a search term for logging (D43,
@@ -337,6 +336,23 @@ func StoreDefaultVariantForResponse(variants []domain.ProductVariant, storeDefau
 // rule beyond that observation was proven, so no narrower rule is
 // invented here.
 func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, variants []domain.ProductVariant, variantPrices map[string]VariantPriceResponse, storeDefaultVariantID ...string) ProductResponse {
+	// Quarantined variants are absent from both selectable variants and prices.
+	// Preserve inactive tracked variants' established response semantics.
+	availableVariants := make([]domain.ProductVariant, 0, len(variants))
+	availablePrices := make(map[string]VariantPriceResponse, len(variantPrices))
+	for id, price := range variantPrices {
+		if price.PricingError == "" {
+			availablePrices[id] = price
+		}
+	}
+	for _, variant := range variants {
+		if price, ok := variantPrices[variant.ID]; !ok || price.PricingError == "" {
+			availableVariants = append(availableVariants, variant)
+		}
+	}
+	variants = availableVariants
+	variantPrices = availablePrices
+
 	if variants == nil {
 		variants = []domain.ProductVariant{}
 	}
@@ -438,28 +454,29 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		p.NicheIDs = []string{}
 	}
 	return ProductResponse{
-		ProductType: productTypeForResponse(p), SchemaVersion: p.SchemaVersion, ProductSchema: p.ProductSchema,
-		ID:               p.ID,
-		Title:            p.Title,
-		Slug:             p.Slug,
-		Category:         p.CategorySlug,
-		OriginalPrice:    res.OriginalPrice,
-		DiscountEligible: true,
-		DiscountPercent:  deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
-		Price:            res.FinalPrice,
-		PlatformFeeF:     res.PlatformFee,
-		IsOriginal:       p.IsOriginal,
-		Stock:            p.Stock,
-		Image:            p.ImageURL,
-		Description:      p.Description,
-		Warehouse:        p.WarehouseName,
-		NicheIDs:         p.NicheIDs,
-		IsActive:         p.IsActive,
-		Brand:            p.Brand,
-		Variants:         vresp,
-		VariantPrices:    variantPrices,
-		PriceMin:         priceMin,
-		PriceMax:         priceMax,
+		PricingError: res.PricingError,
+		ProductType:  productTypeForResponse(p), SchemaVersion: p.SchemaVersion, ProductSchema: p.ProductSchema,
+		ID:                    p.ID,
+		Title:                 p.Title,
+		Slug:                  p.Slug,
+		Category:              p.CategorySlug,
+		OriginalPrice:         res.OriginalPrice,
+		DiscountEligible:      true,
+		DiscountPercent:       deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
+		Price:                 res.FinalPrice,
+		PlatformFeeF:          res.PlatformFee,
+		IsOriginal:            p.IsOriginal,
+		Stock:                 p.Stock,
+		Image:                 p.ImageURL,
+		Description:           p.Description,
+		Warehouse:             p.WarehouseName,
+		NicheIDs:              p.NicheIDs,
+		IsActive:              p.IsActive,
+		Brand:                 p.Brand,
+		Variants:              vresp,
+		VariantPrices:         variantPrices,
+		PriceMin:              priceMin,
+		PriceMax:              priceMax,
 		StoreDefaultVariantID: storeDefaultID,
 	}
 }
@@ -510,6 +527,7 @@ func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant
 			}
 		}
 		out[v.ID] = VariantPriceResponse{
+			PricingError:    res.PricingError,
 			Price:           res.FinalPrice,
 			OriginalPrice:   res.OriginalPrice,
 			DiscountPercent: deriveDiscountPercent(res.OriginalPrice, res.FinalPrice),
@@ -708,6 +726,9 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	var resp []ProductResponse
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+		if res.PricingError != "" {
+			continue
+		}
 		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
 		displayCampaignName := ""
 		if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
@@ -761,6 +782,9 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 	}
 	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
 	res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+	if res.PricingError != "" {
+		return ProductDetailResponse{}, pricing.ErrInvalidMoney
+	}
 	res = applyDealsWidgetDiscountForDisplay(store, loadDealsWidgetConfig(store), p.ID, res)
 	pdpCampaignName := ""
 	if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
@@ -830,37 +854,37 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 	}
 	return ProductDetailResponse{
 		ProductType: base.ProductType, SchemaVersion: base.SchemaVersion, ProductSchema: base.ProductSchema,
-		ID:                base.ID,
-		Title:             base.Title,
-		Slug:              base.Slug,
-		Category:          base.Category,
-		OriginalPrice:     base.OriginalPrice,
-		DiscountEligible:  base.DiscountEligible,
-		DiscountPercent:   base.DiscountPercent,
-		Price:             base.Price,
-		PlatformFeeF:      platformFeeF,
-		IsOriginal:        base.IsOriginal,
-		Stock:             base.Stock,
-		Image:             base.Image,
-		Description:       base.Description,
-		Warehouse:         base.Warehouse,
-		SupplierWarranty:  supplierWarranty,
-		NicheIDs:          base.NicheIDs,
-		IsActive:          base.IsActive,
-		StoreCount:        storeCount,
-		Variants:          base.Variants,
-		VariantPrices:     base.VariantPrices,
-		PriceMin:          base.PriceMin,
-		PriceMax:          base.PriceMax,
+		ID:                    base.ID,
+		Title:                 base.Title,
+		Slug:                  base.Slug,
+		Category:              base.Category,
+		OriginalPrice:         base.OriginalPrice,
+		DiscountEligible:      base.DiscountEligible,
+		DiscountPercent:       base.DiscountPercent,
+		Price:                 base.Price,
+		PlatformFeeF:          platformFeeF,
+		IsOriginal:            base.IsOriginal,
+		Stock:                 base.Stock,
+		Image:                 base.Image,
+		Description:           base.Description,
+		Warehouse:             base.Warehouse,
+		SupplierWarranty:      supplierWarranty,
+		NicheIDs:              base.NicheIDs,
+		IsActive:              base.IsActive,
+		StoreCount:            storeCount,
+		Variants:              base.Variants,
+		VariantPrices:         base.VariantPrices,
+		PriceMin:              base.PriceMin,
+		PriceMax:              base.PriceMax,
 		StoreDefaultVariantID: base.StoreDefaultVariantID,
-		Specs:             specs,
-		Images:            images,
-		Addons:            pdpAddons,
-		AddonSectionTitle: addonSectionTitle,
-		SpnNumber:         p.SpnNumber,
-		SupplierID:        supplierID,
-		SupplierName:      supplierName,
-		BaseCostB:         baseCostB,
+		Specs:                 specs,
+		Images:                images,
+		Addons:                pdpAddons,
+		AddonSectionTitle:     addonSectionTitle,
+		SpnNumber:             p.SpnNumber,
+		SupplierID:            supplierID,
+		SupplierName:          supplierName,
+		BaseCostB:             baseCostB,
 	}, nil
 }
 
@@ -948,6 +972,10 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 
 	detail, derr := assembleProductDetail(ctx, catalogRepo, pricingRepo, storeRepo, store, settings, *p, showSupplier)
 	if derr != nil {
+		if errors.Is(derr, pricing.ErrInvalidMoney) {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 		http.Error(w, derr.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1078,6 +1106,9 @@ func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx contex
 	prices := make([]int64, 0, len(products))
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
+		if res.PricingError != "" {
+			continue
+		}
 		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
 		prices = append(prices, res.FinalPrice)
 	}

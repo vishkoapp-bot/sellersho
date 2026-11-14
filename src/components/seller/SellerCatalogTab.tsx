@@ -1,3 +1,4 @@
+import { markedUpPrice } from '../../utils/money';
 import React, { useEffect, useRef, useState } from 'react';
 import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
@@ -181,9 +182,9 @@ export const SellerCatalogTab: React.FC = () => {
       const pctR = resolvePlatformPct(product, platformSettings);
       const rowsV = rowVariants.map((v) => {
         const costV = v.supplierBaseCost ?? product.supplierBaseCost ?? 0;
-        const baseV = roundTo100(costV * (1 + pctR / 100));
+        const baseV = markedUpPrice(costV, pctR);
         const pct = ovMap[v.id] ?? pricing.marginPercent;
-        const finV = roundTo100(baseV * (1 + pct / 100));
+        const finV = markedUpPrice(baseV, pct);
         return { pct, finV, profitV: finV - baseV, baseV };
       }).filter((r) => r.baseV > 0);
       if (rowsV.length > 0) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/drup/platform/internal/pricing"
 	"strings"
 	"time"
 
@@ -65,7 +66,7 @@ func (r *StoreRepository) CreateDiscountCode(ctx context.Context, storeID string
 	if c.Mode != "percent" && c.Mode != "fixed" {
 		return nil, fmt.Errorf("invalid mode")
 	}
-	if c.Value < 0 {
+	if err := pricing.ValidateDiscount(c.Mode, c.Value); err != nil {
 		return nil, fmt.Errorf("discount value must be non-negative")
 	}
 	if err := validateDiscountWindow(c.StartsAt, c.EndsAt); err != nil {

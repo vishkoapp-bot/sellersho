@@ -1,3 +1,4 @@
+import { parsePercent } from '../../utils/money';
 import React, { useState, useEffect } from 'react';
 import { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
@@ -128,7 +129,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // per-product ceiling, when set by the platform, is enforced
   // server-side and surfaced by the save error path).
   const maxAllowed = platformSettings.maxProfitMargin ?? 35;
-  const isProfitValid = profitVal !== '' && !isNaN(numVal) && numVal >= minAllowed && numVal <= maxAllowed;
+  let validPrecision = false;
+  try { parsePercent(numVal); validPrecision = true; } catch { /* invalid draft */ }
+  const isProfitValid = profitVal !== '' && validPrecision && numVal >= minAllowed && numVal <= maxAllowed;
   // Wherever no percent is set, the maximum allowed margin applies
   // automatically (platform max; a per-product ceiling, when the
   // platform sets one, is enforced server-side and surfaced via the
@@ -153,10 +156,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // Priority 2.1: Use Canonical resolvePricing from pricingEngine
   const simulatedStore = {
     ...currentStore,
-    productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: fallbackPct },
+    productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: previewValid ? fallbackPct : maxAllowed },
   };
   const simulatedPricing = resolvePricing(pricingProduct, simulatedStore as any, platformSettings);
-  const finalPriceP = previewValid ? simulatedPricing.finalPrice : roundTo100(baseCostR);
+  const finalPriceP = previewValid ? simulatedPricing.finalPrice : baseCostR;
   const netProfitToman = finalPriceP - baseCostR;
   // Displayed margin is the applied input margin (server definition), not
   // profit/final — so the number shown matches the number typed.

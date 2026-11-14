@@ -47,6 +47,7 @@ import (
 	"strings"
 
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/routing"
 	"github.com/drup/platform/internal/shippingquote"
@@ -115,6 +116,7 @@ type shippingQuoteAllocation struct {
 // shippingQuote is the computed quote: deterministic quoteId, legs,
 // allocations and the total in Tomans.
 type shippingQuote struct {
+	PricingError error `json:"-"`
 	QuoteID       string                    `json:"quoteId"`
 	Legs          []shippingQuoteLeg        `json:"legs"`
 	TotalShipping int64                     `json:"totalShipping"`
@@ -162,8 +164,8 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 	legOf := map[string]int{}
 	allocs := []shippingQuoteAllocation{}
 	for _, line := range lines {
-		if line.Quantity <= 0 {
-			continue
+		if err := validateOrderItemQuantity(line.Quantity); err != nil {
+			return shippingQuote{PricingError: err}
 		}
 		key, label := legOrigin(line)
 		idx, ok := legOf[key]
@@ -172,7 +174,21 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 			legOf[key] = idx
 			legs = append(legs, legAgg{key: key, label: label})
 		}
-		legs[idx].weight += billableWeightGrams(line, rates) * int64(line.Quantity)
+		if int64(line.LengthMM) > pricing.MaxTransportMoney || int64(line.WidthMM) > pricing.MaxTransportMoney || int64(line.HeightMM) > pricing.MaxTransportMoney {
+			return shippingQuote{PricingError: shippingquote.ErrInvalidShippingAmount}
+		}
+		unitWeight, err := shippingquote.CheckedBillableWeightGrams(line.WeightG, line.LengthMM, line.WidthMM, line.HeightMM, rates)
+		if err != nil || unitWeight > pricing.MaxTransportMoney {
+			return shippingQuote{PricingError: shippingquote.ErrInvalidShippingAmount}
+		}
+		weight, err := pricing.CheckedMultiply(unitWeight, int64(line.Quantity))
+		if err != nil {
+			return shippingQuote{PricingError: err}
+		}
+		legs[idx].weight, err = pricing.CheckedAdd(legs[idx].weight, weight)
+		if err != nil || legs[idx].weight > pricing.MaxTransportMoney {
+			return shippingQuote{PricingError: shippingquote.ErrInvalidShippingAmount}
+		}
 		allocs = append(allocs, shippingQuoteAllocation{
 			ProductID: line.ProductID, VariantID: line.VariantID,
 			Quantity: line.Quantity, LegIndex: idx,
@@ -181,8 +197,13 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 	out := shippingQuote{Legs: []shippingQuoteLeg{}, Allocations: allocs}
 	var total int64
 	for i, lg := range legs {
-		fare := shippingquote.LegFareToman(lg.weight, rates)
-		total += fare
+		fare, err := shippingquote.CheckedLegFareToman(lg.weight, rates)
+		if err != nil {
+			return shippingQuote{PricingError: err}
+		}
+		if err = pricing.AccumulateMoney(&total, fare, 1); err != nil {
+			return shippingQuote{PricingError: err}
+		}
 		out.Legs = append(out.Legs, shippingQuoteLeg{
 			LegIndex: i, Index: i, OriginID: lg.key, OriginLabel: lg.label,
 			Fare: fare, WeightGrams: lg.weight,
@@ -429,6 +450,10 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 	quote := computeShippingQuote(lines, rates, quoteDestinationKey(*req.Destination))
+	if quote.PricingError != nil {
+		http.Error(w, `{"error":"shipping_amount_out_of_range"}`, http.StatusBadRequest)
+		return
+	}
 	// Tapin-connected supplier legs are priced by Tapin's live price
 	// inquiry, not the formula (owner directive, gaps 1-3). The step
 	// fails closed: an inquiry error fails the whole quote with the

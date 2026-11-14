@@ -9,8 +9,8 @@ import (
 //
 // A dropshipper configures the storefront timed-deals widget
 // (stores.seller_deals_widget_config) with a per-product DISCOUNT
-// PERCENT. Unlike the DB campaigns in discount.go — which set an
-// absolute target margin — a widget discount is expressed in margin
+// PERCENT. Unlike the percent-off-price campaigns in discount.go,
+// a widget discount is expressed in margin
 // PERCENTAGE POINTS and is carved out of the seller's own resolved
 // margin:
 //
@@ -87,7 +87,7 @@ func (c *DealsWidgetConfig) DiscountFor(productID string, now time.Time) (float6
 		return 0, false
 	}
 	pct, ok := c.Discounts[productID]
-	if !ok || pct <= 0 {
+	if _, err := ParsePercent(pct); !ok || err != nil || pct <= 0 || pct > 100 {
 		return 0, false
 	}
 	for _, id := range c.ProductIDs {
@@ -119,11 +119,19 @@ func ApplyDealsWidgetDiscount(res ReferenceResolution, discountPct float64) (Ref
 	if res.SellerMargin <= 0 || res.MarginPercent <= 0 {
 		return res, 0
 	}
-	effective := res.MarginPercent - discountPct
+	marginBps, err := ParsePercent(res.MarginPercent)
+	discountBps, discountErr := ParsePercent(discountPct)
+	if err != nil || discountErr != nil || res.PricingError != "" {
+		return res, 0
+	}
+	effective := marginBps - discountBps
 	if effective < 0 {
 		effective = 0
 	}
-	final := RoundTo100(float64(res.ReferenceCost) * (1.0 + effective/100.0))
+	final, err := markedUpPriceBPS(res.ReferenceCost, effective)
+	if err != nil {
+		return res, 0
+	}
 	if final < res.ReferenceCost {
 		final = res.ReferenceCost
 	}

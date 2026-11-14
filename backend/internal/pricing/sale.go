@@ -28,7 +28,7 @@ import "time"
 // discount quote) MUST both call this helper with the same inputs, in
 // the same order (after campaigns), or display != charge.
 func ApplyVariantSale(res ReferenceResolution, salePrice *int64, now time.Time, from, to *time.Time) (ReferenceResolution, bool) {
-	if salePrice == nil || *salePrice <= 0 {
+	if salePrice == nil || *salePrice <= 0 || *salePrice > MaxTransportMoney || res.PricingError != "" {
 		return res, false
 	}
 	if from != nil && now.Before(*from) {

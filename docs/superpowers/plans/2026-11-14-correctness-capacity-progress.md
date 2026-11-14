@@ -28,7 +28,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-006 | TODO | — | — |
 | INV-10 | TODO | — | — |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
-| CAP-01 | IN PROGRESS | — | Implementation and verification in progress |
+| CAP-01 | IN PROGRESS | ff4ff13 | Test-gated adapters; harness/qualification gates remain open |
 | FIN-003 | TODO | — | — |
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
@@ -259,3 +259,11 @@ The isolated harness can now select a no-network verification double and a priva
 Independent coordinator review approved the five-file integration. Its exact staged-source snapshot excludes all uncommitted INV-02/PERF/harness changes: eight tests passed without skips (payment1.823s/server0.353s), and Linux amd64 server build passed. Proof: `releases/cap01-adapters-proof.json`; logs: `logs/cap01-adapters-staged-{tests,build}.log`.
 
 Ruling: these are explicit test adapters, not provider certification or CAP-01 closure. They simulate verification only; carrier registration, provider inquiry/refund/process-loss behavior and real Zarinpal sandbox checks remain separate gates. The independent full harness, realistic fixture, all journeys/fault profiles, complete financial conservation and final hardware qualification remain open. Failed local workload baselines stay failed; no production service, credential or deployment changed.
+
+## PERF-01 — stable bounded source-key SQL checkpoint
+
+Added unwired `GetProductCandidatePageTx`: N+1 lightweight source keys and at mostN returned, SQL keyset ordering with unique-ID ties, direct store assortment join and actual owner/type check, all supported non-price source filters beforeLIMIT, suspended-supplier exclusion, and explicit refusal of price sorting/filtering until the authoritative public-price index exists. It does not load whole assortments, supplier costs or product/variant DTOs. A small `catalogpage.Validate` entry validates first-page requests/decoded keys. Actual `store_products.position` is a signed SQL integer without a nonnegative constraint; a RED regression led to supporting its complete signed range in store-position cursors.
+
+The shared guarded suite passed10 top-level protocol/candidate tests without skips, including three migrated private-schema cases enumerating248 of250 products exactly once through tied/nullable keys, filter-before-limit behavior, two store assortments, inactive picked products, supplier suspension, original/stock predicates, bound search text and price-index gating. Protocol/repository go vet passed. No public route/consumer uses the primitive. Authoritative scope revision, priced eligibility, exact public price ordering/bounds, page-only hydration and complete UI migration remain activation gates; PERF-01 stays OPEN.
+
+Candidate checkpoint independent review approved the four code/test paths with no Important/Critical finding. Exact staged source tree `84c3a78a20d7238e600505ed1b3fd0c0f8d9b954` (based on pushedff4ff13, excluding concurrent INV02/CAP-harness work) passed the same10 top-level tests0skip, repository0.760s, verified disposable cleanup and both package vet checks. Logs: `logs/perf01-candidates-exact.log`, `logs/perf01-candidates-exact-vet.log`.

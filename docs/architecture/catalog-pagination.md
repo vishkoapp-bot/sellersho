@@ -49,7 +49,38 @@ Local checks so far:
   rejection also has a deterministic regression.
 - `go vet ./internal/catalogpage` passed.
 
-Local evidence is in ignored `logs/perf01-cursor-*.log`. SQL page
+Local evidence is in ignored `logs/perf01-cursor-*.log`. Public priced SQL page
 selection, pricing only page-sized data, complete indexed search/bounds,
 consumer migrations and 10k/100k query/load evidence are outstanding. Final
 intended-hardware capacity certification remains open under the user's ruling.
+
+## Unwired source-key selection checkpoint
+
+`CatalogRepository.GetProductCandidatePageTx` selects at most N+1 lightweight
+source keys in SQL and returns at most N. It runs in the caller's transaction,
+joins the canonical store ID/type, directly joins the selected store's assortment,
+and applies active/suspended supplier, category/niche, brand, originality, stock,
+search and legacy numeric attribute predicates before LIMIT. It does not load the
+whole assortment or product/variant DTOs. Featured/newest/store-position ordering
+includes a unique product-ID tie breaker. Nullable featured flags mean false;
+existing signed SQL integer store positions, including negative values, remain
+pageable.
+
+This is a source-key primitive, **not the final public product page**. Scope
+revision and authoritative priced eligibility must join candidate selection
+before public adoption. Price sorting/filtering currently returns an explicit
+`ErrCatalogPriceIndexRequired`; it never substitutes protected supplier cost.
+No public handler or frontend consumer calls it yet.
+
+Migrated private-schema regressions use 250 products and enumerate all 248
+eligible products once through tied keys, exercise filtered one-item pages,
+assortment/owner separation, inactive chosen products, suspension, stock,
+originality, SQL-bound search and price-work refusal. Protocol plus candidate
+validation passed 10 top-level tests with zero skips; repository/protocol vet
+passed. Logs: `logs/perf01-candidates-*.log`. Expected missing-implementation and
+signed-position failures were captured before their implementations.
+
+Independent review approved the four-file code/test delta. Exact staged tree
+`84c3a78a20d7238e600505ed1b3fd0c0f8d9b954` passed the same 10 tests without
+skips (repository 0.760s), verified disposable cleanup and both package vet checks.
+It excludes simultaneous inbound/CAP harness work.

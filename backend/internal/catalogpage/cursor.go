@@ -201,10 +201,15 @@ func unique[T comparable](values []T) []T {
 }
 
 func validateKey(filter Filter, key Key) error {
-	if key.ID == "" || !validText(key.ID, 50) || key.Price < 0 || key.Price > pricing.MaxTransportMoney || key.Discount < 0 || key.Discount > 100 || key.Position < 0 {
+	if key.ID == "" || !validText(key.ID, 50) || key.Price < 0 || key.Price > pricing.MaxTransportMoney || key.Discount < 0 || key.Discount > 100 {
 		return ErrInvalid
 	}
 	if filter.StorePosition {
+		// store_products.position is a signed PostgreSQL integer, with no
+		// nonnegative constraint. Existing negative positions remain pageable.
+		if key.Position < -2147483648 || key.Position > 2147483647 {
+			return ErrInvalid
+		}
 		if key.Featured || !key.CreatedAt.IsZero() || key.Price != 0 || key.Discount != 0 {
 			return ErrInvalid
 		}
@@ -228,6 +233,16 @@ func validateKey(filter Filter, key Key) error {
 		}
 	}
 	return nil
+}
+
+// Validate checks the independently resolved first-page request, or an already
+// decoded key, without creating a token. It does not authorize a scope/revision.
+func Validate(scope Scope, filter Filter, key *Key) error {
+	_, normalized, err := bind(scope, filter)
+	if err != nil || key == nil {
+		return err
+	}
+	return validateKey(normalized, *key)
 }
 
 func Encode(scope Scope, filter Filter, key Key) (string, error) {

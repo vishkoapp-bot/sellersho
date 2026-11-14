@@ -188,3 +188,24 @@ func TestCursorRejectsCaseFoldedJSONAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestCursorSupportsSignedDatabaseStorePositions(t *testing.T) {
+	scope := Scope{ID: "store-A", OwnerType: "dropshipper", Revision: 1}
+	filter := Filter{StorePosition: true}
+	for _, position := range []int64{-2147483648, -1, 0, 2147483647} {
+		key := Key{ID: "p-1", Position: position}
+		token, err := Encode(scope, filter, key)
+		if err != nil {
+			t.Fatalf("valid SQL integer position%d rejected: %v", position, err)
+		}
+		got, err := Decode(token, scope, filter)
+		if err != nil || got != key {
+			t.Fatalf("position round trip: %+v %v", got, err)
+		}
+	}
+	for _, position := range []int64{-2147483649, 2147483648} {
+		if _, err := Encode(scope, filter, Key{ID: "p-1", Position: position}); !errors.Is(err, ErrInvalid) {
+			t.Fatal("out-of-range position accepted")
+		}
+	}
+}

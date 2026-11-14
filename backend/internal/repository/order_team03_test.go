@@ -143,7 +143,7 @@ func team03InsertOrder(t *testing.T, db *sql.DB, id, customerID, status string, 
 		t.Fatal(err)
 	}
 	_, err := db.Exec(`INSERT INTO orders (id, customer_user_id, order_number, store_id, store_name, payable_amount, payment_method, payment_status, customer_full_name, customer_phone, customer_province, customer_city, customer_address, customer_postal_code, status, tracking_code, dropshipper_profit, profit_released, shipped_at, created_at, updated_at)
-		VALUES ($1, $2::uuid, $3, 'store-1', 'Store 1', 100000, 'cash', 'paid', 'Test Customer', '09120000000', 'Tehran', 'Tehran', 'Test St 1', '1234567890', $4, 'TRK-1', $5, FALSE, NOW() - INTERVAL '1 day', NOW(), NOW())`,
+		VALUES ($1, $2::uuid, $3, 'store-1', 'Store 1', 100000, 'cash', 'paid', 'Test Customer', '09120000000', 'Tehran', 'Tehran', 'Test St 1', '1234567890', $4, 'TRK-1', $5, FALSE, CASE WHEN $4 IN ('shipped','delivered','delivered_confirmed') THEN NOW() - INTERVAL '1 day' END, NOW(), NOW())`,
 		id, customerID, "ORD-"+id, status, profit)
 	if err != nil {
 		t.Fatalf("insert order: %v", err)
@@ -281,6 +281,12 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 
 	// Returns flow.
 	orderID := "ord-team03-ret"
+	if _, err := db.Exec(`CREATE TABLE suppliers(id TEXT PRIMARY KEY); INSERT INTO suppliers(id) VALUES('sup-return'); CREATE TABLE supplier_shipments(id TEXT PRIMARY KEY,order_id TEXT,status TEXT,shipped_at TIMESTAMPTZ,delivered_at TIMESTAMPTZ)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO products(id,title,stock,weight_grams,supplier_id) VALUES('prod-1','Purchased return product',0,500,'sup-return')`); err != nil {
+		t.Fatal(err)
+	}
 	team03InsertOrder(t, db, orderID, customerID, "delivered_confirmed", 6000)
 	if _, err := db.Exec(`UPDATE orders SET return_window_ends_at = NOW() + INTERVAL '7 days', confirmed_at = NOW() WHERE id = $1`, orderID); err != nil {
 		t.Fatalf("seed window: %v", err)
@@ -288,6 +294,12 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	var itemID string
 	if err := db.QueryRow(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, platform_fee, seller_margin, final_unit_price) VALUES ($1, $2, 'prod-1', 2, 10000, 0, 4000, 20000) RETURNING id`, uuid.NewString(), orderID).Scan(&itemID); err != nil {
 		t.Fatalf("seed item: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO warehouses(id,name,province_name,city_name,is_active) VALUES('wh-return','Return warehouse','Tehran','Tehran',TRUE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'warehouse','sup-return','wh-return','Purchased origin',2)`, uuid.NewString(), orderID, itemID); err != nil {
+		t.Fatal(err)
 	}
 	ret, err := repo.CreateCustomerReturn(ctx, customerID, orderID, "wrong size", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}}, CustomerReturnOptions{})
 	if err != nil {

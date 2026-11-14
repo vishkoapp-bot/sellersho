@@ -255,3 +255,24 @@ migrated databases, including reactivation and frozen settlement. Minimal fixtur
 recipient IDs still produce explicit optional notification diagnostics; this is
 not notification-delivery evidence. Production checkout gates are unchanged.
 Evidence: `logs/test02-suspension-current.log`.
+
+## Payment/cancellation, returns and capacity fixture parity
+
+The payment capture/cancel regression uses the complete migrated schema, an
+explicit plain-product lot and two exact tracked SKU lots (5 purchased SKU + 3
+untouched sibling). It verifies paid capture, callback replay, cancellation
+restoration, unpaid no-restore and sibling preservation. Finance return fixtures
+now include the purchased product, actual supplier and immutable origin, with
+undispatched cancellation orders having no shipped timestamp. Capacity contention
+provides matching warehouse names and a verified bin sized for exactly one
+1000cm3/500g unit, instead of an oversized bin with no usable weight limit.
+All five focused cases passed. Optional notification failures remain visible in
+the private finance DTO schema and do not count as delivery evidence.
+Evidence: `logs/test02-capture-returns-capacity-stage18.log`; default Go suite:
+`logs/test02-default-stage18.log` (database tests opt out in that default run).
+
+Immutable source 9333c1264faa3631081c4baa3f43eba5bf09c52c completed 563 tests
+with 10 failures and verified cleanup. This snapshot precedes the suspension and
+payment/return/capacity fixture fixes above. Six storage lifecycle failures remain
+to investigate; current full-suite success has not been demonstrated.
+Evidence: `logs/test02-exact-9333c12-full.log`.

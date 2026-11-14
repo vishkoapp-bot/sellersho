@@ -44,6 +44,9 @@ func openCancellationDB(t *testing.T) *sql.DB {
 		`CREATE TABLE supplier_shipments(id text PRIMARY KEY,order_id text,supplier_id text,status text,shipped_at timestamptz,delivered_at timestamptz,carrier text,tracking_number text,supplier_notes text,created_at timestamptz DEFAULT now(),updated_at timestamptz)`,
 		`CREATE TABLE supplier_shipment_audit_logs(id text,shipment_id text,actor_user_id text,action text,timestamp timestamptz)`,
 		`CREATE TABLE notification_outbox(recipient_user_id text,kind text,title text,body text,payload jsonb)`,
+		`ALTER TABLE orders ADD COLUMN referrer_seller_id text`,
+		`ALTER TABLE products ADD COLUMN supplier_id text DEFAULT '', ADD COLUMN fulfillment_method text DEFAULT 'warehouse'`,
+		`CREATE TABLE order_item_origins(id text,order_item_id text,supplier_id text,origin_type text,warehouse_id text,leg_index int,quantity int)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -54,7 +57,7 @@ func openCancellationDB(t *testing.T) *sql.DB {
 func seedCancellation(t *testing.T, db *sql.DB, id, method string) {
 	t.Helper()
 	for _, q := range []string{
-		`INSERT INTO orders VALUES($1,$1,'00000000-0000-0000-0000-000000000001','packed','paid',true,NULL,now(),'` + method + `',NULL,NULL,NULL,NULL)`,
+		`INSERT INTO orders(id,order_number,customer_user_id,status,payment_status,inventory_captured,shipped_at,updated_at,fulfillment_method,tracking_code,tracking_number,carrier,store_id) VALUES($1,$1,'00000000-0000-0000-0000-000000000001','packed','paid',true,NULL,now(),'` + method + `',NULL,NULL,NULL,NULL)`,
 		`INSERT INTO products(id,stock) VALUES($1,7)`,
 		`INSERT INTO order_items VALUES($1,$1,$1,3,NULL)`,
 		`INSERT INTO order_inventory_captures VALUES($1,$1,$1,NULL,3,0,0,'legacy','[]')`,
@@ -94,11 +97,12 @@ func TestAuditOrderPartiallyShippedCannotRestoreShippedStock(t *testing.T) {
 
 func TestCancellationDispatchRaces(t *testing.T) {
 	db := openCancellationDB(t)
+	if _, err := db.Exec(`INSERT INTO suppliers(id,name) VALUES('s1','Cancellation fixture supplier') ON CONFLICT(id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	// Warehouse storage rows are deliberately present; dispatch exercises the
 	// actual storage decrement as well as the shared order guard.
 	for _, ddl := range []string{
-		`ALTER TABLE products ADD COLUMN supplier_id text DEFAULT '', ADD COLUMN fulfillment_method text DEFAULT 'warehouse'`,
-		`CREATE TABLE order_item_origins(order_item_id text,origin_type text,warehouse_id text,leg_index int)`,
 		`CREATE TABLE warehouse_storage_positions(id text PRIMARY KEY,product_id text,supplier_id text,warehouse_id text,qty int,stocked_at timestamptz,closed_at timestamptz,updated_at timestamptz)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -107,13 +111,43 @@ func TestCancellationDispatchRaces(t *testing.T) {
 	}
 	for _, method := range []string{"mixed", "warehouse"} {
 		t.Run(method, func(t *testing.T) {
+			seedPosition := func(id string) {
+				t.Helper()
+				for _, query := range []string{
+					`INSERT INTO order_item_origins VALUES($1,$1,'s1','warehouse','wh',0,3)`,
+					`INSERT INTO warehouse_storage_positions VALUES($1,$1,'s1','wh',3,now(),NULL,now())`,
+				} {
+					if _, err := db.Exec(query, id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			// Prove dispatch can win in this fixture before testing contention.
+			// Otherwise a broken dispatch fixture could let cancellation win
+			// every iteration and falsely satisfy the exactly-one-winner check.
+			control := "dispatch-control-" + method
+			seedCancellation(t, db, control, method)
+			if method == "warehouse" {
+				seedPosition(control)
+				if err := NewWarehouseRepository(db).ShipOrder(context.Background(), control, "post", control); err != nil {
+					t.Fatal("warehouse dispatch control", err)
+				}
+			} else {
+				if _, err := db.Exec(`INSERT INTO supplier_shipments(id,order_id,supplier_id,status) VALUES($1,$1,'s1','pending')`, control); err != nil {
+					t.Fatal(err)
+				}
+				if err := NewSupplierShipmentRepository(db).SubmitShipping(context.Background(), "s1", control, "post", control, "actor"); err != nil {
+					t.Fatal("supplier dispatch control", err)
+				}
+			}
+			if err := NewOrderRepository(db).CancelOrder(context.Background(), control, "", true); !errors.Is(err, ErrOrderPartiallyDispatched) {
+				t.Fatalf("dispatched control cancellation=%v", err)
+			}
 			for i := 0; i < 100; i++ {
 				id := fmt.Sprintf("race-%s-%d", method, i)
 				seedCancellation(t, db, id, method)
 				if method == "warehouse" {
-					if _, err := db.Exec(`INSERT INTO warehouse_storage_positions VALUES($1,$1,'','wh',3,now(),NULL,now())`, id); err != nil {
-						t.Fatal(err)
-					}
+					seedPosition(id)
 				}
 				if _, err := db.Exec(`INSERT INTO supplier_shipments(id,order_id,supplier_id,status) VALUES($1,$1,'s1','pending')`, id); err != nil {
 					t.Fatal(err)

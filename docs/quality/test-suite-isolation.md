@@ -94,3 +94,25 @@ in one guarded migrated database (10 successful cases). Assertions still require
 two callbacks to observe one paid transaction, one inventory debit, no premature
 profit release, and expired payment refusal. Evidence:
 `logs/test02-payment-provenance.log`, `logs/test02-payment-repeat.log`.
+
+## Carrier/cancellation fixture coverage
+
+Carrier webhook coverage now owns its matching origin relation and the referrer
+field required by financial account discovery. Its actual failed/delivered HTTP
+flow passes, retaining repeated-webhook recipient assertions. Cancellation's
+private schema likewise supplies current account-discovery fields and owns its
+origin table rather than falling back to unrelated public rows. The race test
+now explicitly proves each supplier/warehouse dispatch can succeed and then
+reject cancellation before running its 200 concurrent cancellation/dispatch
+iterations. Warehouse cases seed conserved origin quantities and matching storage
+positions. Three cancellation tests and the carrier HTTP test passed separately;
+the optional notification writer on the intentionally minimal cancellation
+fixture still logs missing payable-amount metadata. Notification acceptance is
+provided by the separate 16 writer cases, not these skipped optional writes.
+Evidence: `logs/test02-cancellation-fixtures-final.log`,
+`logs/test02-carrier-fixture.log`.
+
+A subsequent full working-tree run reported 565 tests / 51 failures while the
+payment fixture work was being prepared; it is diagnostic evidence, not a claim
+that a pristine committed source passed. The remaining integration baseline is
+still failing and required downstream lifecycle skips remain open.

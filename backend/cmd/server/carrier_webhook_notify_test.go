@@ -24,7 +24,7 @@ import (
 )
 
 const carrierWebhookNotifyDDL = `
-DROP TABLE IF EXISTS notification_outbox, supplier_shipment_audit_logs, supplier_shipments, order_items, orders, products, stores, suppliers, users CASCADE;
+DROP TABLE IF EXISTS order_item_origins, notification_outbox, supplier_shipment_audit_logs, supplier_shipments, order_items, orders, products, stores, suppliers, users CASCADE;
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	mobile VARCHAR(15) UNIQUE NOT NULL,
@@ -55,6 +55,7 @@ CREATE TABLE orders (
 	customer_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	order_number VARCHAR(30) NOT NULL DEFAULT '',
 	store_id VARCHAR(50) REFERENCES stores(id),
+	referrer_seller_id VARCHAR(50),
 	status VARCHAR(30) NOT NULL DEFAULT 'pending',
 	payment_status VARCHAR(30) NOT NULL DEFAULT 'pending',
 	payable_amount BIGINT NOT NULL DEFAULT 0,
@@ -82,6 +83,10 @@ CREATE TABLE supplier_shipments (
 	delivered_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE order_item_origins (
+	order_item_id VARCHAR(50),
+	supplier_id VARCHAR(50)
 );
 CREATE TABLE supplier_shipment_audit_logs (
 	id VARCHAR(50) PRIMARY KEY,

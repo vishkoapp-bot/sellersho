@@ -10,8 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +20,7 @@ import (
 	"github.com/drup/platform/internal/database/seeder"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/ippanel"
+	"github.com/drup/platform/internal/migrations"
 	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
@@ -69,88 +68,22 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 
 func runAutoMigrations(db *sql.DB) {
 	dirs := []string{"migrations", "../migrations", "./backend/migrations", "/app/migrations"}
-	var migrationDir string
-	for _, d := range dirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			migrationDir = d
-			break
+	migrationDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationDir == "" {
+		for _, dir := range dirs {
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				migrationDir = dir
+				break
+			}
 		}
 	}
 	if migrationDir == "" {
-		log.Println("[INFO] No migrations directory found, skipping auto-migration")
-		return
+		log.Fatal("[FATAL] Required migrations directory missing (fail-closed)")
 	}
-
-	// 1. Ensure schema_migrations table exists (Fail-Closed)
-	createSchemaTable := `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version VARCHAR(255) PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-	`
-	if _, err := db.Exec(createSchemaTable); err != nil {
-		log.Fatalf("[FATAL] Failed to initialize schema_migrations table: %v (fail-closed)", err)
-	}
-
-	// 2. Load already applied migrations
-	rows, err := db.Query("SELECT version FROM schema_migrations")
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to read schema_migrations: %v (fail-closed)", err)
-	}
-	defer rows.Close()
-
-	applied := make(map[string]bool)
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err == nil {
-			applied[v] = true
-		}
-	}
-
-	entries, err := os.ReadDir(migrationDir)
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to read migrations directory %s: %v (fail-closed)", migrationDir, err)
-	}
-
-	var upFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".up.sql") {
-			upFiles = append(upFiles, filepath.Join(migrationDir, entry.Name()))
-		}
-	}
-	sort.Strings(upFiles)
-
-	for _, file := range upFiles {
-		version := filepath.Base(file)
-		if applied[version] {
-			continue
-		}
-
-		content, err := os.ReadFile(file)
-		if err != nil {
-			log.Fatalf("[FATAL] Failed to read migration file %s: %v (fail-closed)", version, err)
-		}
-
-		tx, err := db.Begin()
-		if err != nil {
-			log.Fatalf("[FATAL] Failed to begin transaction for migration %s: %v (fail-closed)", version, err)
-		}
-
-		if _, err := tx.Exec(string(content)); err != nil {
-			tx.Rollback()
-			log.Fatalf("[FATAL] Migration %s failed: %v (fail-closed)", version, err)
-		}
-
-		if _, err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, NOW()) ON CONFLICT (version) DO NOTHING", version); err != nil {
-			tx.Rollback()
-			log.Fatalf("[FATAL] Failed to record migration %s in schema_migrations: %v (fail-closed)", version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Fatalf("[FATAL] Failed to commit migration %s: %v (fail-closed)", version, err)
-		}
-
-		log.Printf("[INFO] Auto-applied migration: %s", version)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if _, err := migrations.Run(ctx, db, migrations.Options{Dir: migrationDir, Logf: log.Printf}); err != nil {
+		log.Fatalf("[FATAL] Database migration failed: %v (fail-closed)", err)
 	}
 	log.Println("[INFO] Database schema verified and up-to-date")
 }

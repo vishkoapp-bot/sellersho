@@ -330,3 +330,11 @@ Ruling: this is a reviewed partial environment checkpoint, not CAP-01 closure or
 
 
 Final combined frontend verification at the release freeze: npm test passed285/285 with zero failures or skips (147.27s), including the final QC mounted regressions. Log: logs/final-freeze-frontend.log. This frontend result does not turn the109-failure broad backend integration run or failed capacity/browser results into passes.
+
+## Production deployment attempt — 2026-11-14
+
+At user request all current reviewed work was frozen and pushed through code commit01cbcba (INV04:1e86ad2; CAP harness:01cbcba). Tracked source/index were clean; HEAD/origin divergence0/0; only standing-excluded backend/internal/networkreward/ remained untracked. No new FIN003 work was started.
+
+Executed deploy.ps1 -BuildOnServer. The read-only preflight returned: DEPLOYMENT BLOCKED: production migration history needs reviewed legacy adoption and an isolated upgrade rehearsal. This happened before builds/uploads/traffic changes. Production was NOT deployed or migrated; no rollback was required. Subsequent backend health returnedHTTP200 and the existing frontend answered its internal root probe successfully. Raw local output: logs/production-deploy-request.log. Production history reconciliation/adoption and isolated rehearsal remain required; no checksum/alias guard was bypassed.
+
+Final delivery count:11 DONE local task gates,7 partial checkpoints,36 TODO. Combined frontend285/285 passed without skips; default Go/build checks passed with DB opt-ins absent; the broad required integration baseline still has109 named failures, and capacity qualifications remain failed/open. These facts do not establish production readiness.

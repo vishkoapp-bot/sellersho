@@ -1,10 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, ReactNode } from 'react';
 import { Order, CartItem, Store, Product } from '../types';
-import { initialOrders } from '../data/initialOrders';
 import { BackendOrderDto, DisputeDeliveryResponse, orderApi } from '../services/orderApi';
 import { stageAddressSelection, takeStagedAddressSelection } from '../services/addressApi';
 import { paymentApi } from '../services/paymentApi';
-import { isMockMode } from '../services/apiClient';
+import { isMockMode, tokenStore } from '../services/apiClient';
+import { useAuth } from './AuthContext';
 
 export interface CreateOrderParams {
   customerInfo: Order['customerInfo'];
@@ -158,29 +158,83 @@ const newIdempotencyKey = (): string =>
     : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [orders, setOrders] = useState<Order[]>(() => isMockMode() ? initialOrders : []);
+  const { currentUser, authToken, isSessionReady } = useAuth();
+  // Private order, tracking, checkout/address and panel state below this boundary
+  // belongs to one verified immutable account/tenant. A new key discards it before
+  // children render. CartProvider is above this boundary: guest product carts are
+  // deliberately retained, never order history, contacts or saved addresses.
+  const scope = JSON.stringify([authToken ? currentUser?.id ?? null : null, currentUser?.storeId ?? null, isSessionReady]);
+  return <OrderSessionProvider key={scope}>{children}</OrderSessionProvider>;
+};
+
+const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { currentUser, authToken, isSessionReady } = useAuth();
+  const mounted = useRef(true);
+  const captureSession = () => {
+    const generation = tokenStore.getGeneration();
+    const credential = authToken;
+    return () => mounted.current && generation === tokenStore.getGeneration() && credential === tokenStore.getToken();
+  };
+  useLayoutEffect(() => {
+    mounted.current = true;
+    stageAddressSelection(null);
+    localStorage.removeItem('drup_orders'); // discard unused legacy unscoped history
+    return () => { mounted.current = false; stageAddressSelection(null); };
+  }, []);
+  // Demo data has no immutable customer IDs. It is never an ownership source.
+  const [orders, setOrders] = useState<Order[]>([]);
   const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
   const [isCreatingOrder, setIsCreatingOrder] = useState<boolean>(false);
   const [trackingOrder, setTrackingOrder] = useState<Order | null>(null);
   const [isTrackingModalOpen, setIsTrackingModalOpen] = useState(false);
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const creatingOperations = useRef(new Set<symbol>());
+  const deliveryOperations = useRef(new Map<symbol, string>());
+  const beginCreation = () => {
+    const operation = Symbol();
+    creatingOperations.current.add(operation);
+    setIsCreatingOrder(true);
+    return () => {
+      creatingOperations.current.delete(operation);
+      // Busy state belongs to mounted operations, not credential generations.
+      // A rejected replacement login invalidates data responses but keeps this
+      // account mounted; every settled operation must still release its own flag.
+      if (mounted.current) setIsCreatingOrder(creatingOperations.current.size > 0);
+    };
+  };
+  const beginDelivery = (orderId: string) => {
+    const operation = Symbol();
+    deliveryOperations.current.set(operation, orderId);
+    setBusyOrderId(orderId);
+    return () => {
+      deliveryOperations.current.delete(operation);
+      if (mounted.current) setBusyOrderId([...deliveryOperations.current.values()].at(-1) ?? null);
+    };
+  };
   const ordersRef = useRef<Order[]>(orders);
   useEffect(() => { ordersRef.current = orders; }, [orders]);
 
   const fetchMyOrders = async (): Promise<Order[]> => {
+    const isCurrent = captureSession();
+    if (!isCurrent() || !isSessionReady || !currentUser?.id || !authToken) return [];
     if (isMockMode()) return ordersRef.current;
     try {
       const data = await orderApi.getCustomerOrders();
+      if (!isCurrent()) return [];
       const mapped = (data || []).map(mapBackendOrder);
       setOrders(mapped);
       return mapped;
     } catch (err: any) {
+      if (!isCurrent()) return [];
       console.warn('Failed to fetch orders:', err.message);
       return ordersRef.current;
     }
   };
 
   const placeOrder = async (params: CreateOrderParams): Promise<Order> => {
+    const isCurrent = captureSession();
+    const requireCurrent = () => { if (!isCurrent()) throw new Error('Session changed during order request'); };
+    requireCurrent();
     const { customerInfo, paymentMethod, cartItems, currentStore, customerPhone, referredStoreSlug, stores, discountCode, shippingQuoteId, addressId, saveAddress } = params;
     // ISO-B store attribution: the order belongs to the store the cart
     // lines were added under, NOT to whichever store the session
@@ -200,7 +254,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         ? firstCartStoreId
         : undefined;
     const orderStore = (cartStoreId ? stores?.find((s) => s.id === cartStoreId) : undefined) ?? currentStore;
-    setIsCreatingOrder(true);
+    const finishCreation = beginCreation();
     try {
       if (!isMockMode()) {
         // Staged cart-checkout address (CartCheckoutForm/addressApi),
@@ -250,9 +304,11 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           // Preserve the staged selection for a retry: the form only
           // re-stages on a field change, so a bare retry would
           // otherwise silently lose the saved-address choice.
+          requireCurrent();
           stageAddressSelection(stagedAddress);
           throw new Error(mapOrderCreateError(err?.message || ''));
         }
+        requireCurrent();
 
         // The order already exists at this point and its success
         // screen states payment is still pending ("به‌زودی"). A
@@ -268,6 +324,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
             amount: backendOrder.payableAmount,
             redirectUrl: `${window.location.origin}/payment/callback`,
           });
+          requireCurrent();
 
           if (import.meta.env.DEV || import.meta.env.VITE_USE_MOCK === 'true') {
             await paymentApi.processShaparakCallback({
@@ -278,6 +335,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         } catch (tokenErr: any) {
           console.warn('Payment token step failed; order remains pending payment:', tokenErr?.message || tokenErr);
         }
+        requireCurrent();
 
         const order: Order = {
           id: backendOrder.id,
@@ -387,16 +445,19 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setTrackingOrder(newOrder);
       return newOrder;
     } finally {
-      setIsCreatingOrder(false);
+      finishCreation();
     }
   };
 
   const trackOrder = async (trackingCode: string): Promise<Order | null> => {
+    const isCurrent = captureSession();
+    if (!isCurrent()) return null;
     const local = orders.find((o) => o.trackingCode === trackingCode || o.orderNumber === trackingCode);
     if (local) return local;
     if (!isMockMode()) {
       try {
         const backendOrder = await orderApi.trackOrder(trackingCode);
+        if (!isCurrent()) return null;
         return {
           id: backendOrder.id,
           customerInfo: {
@@ -442,18 +503,22 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   // profitReleased is never set true here; the refetch carries the
   // server status (delivered_confirmed) and timestamps.
   const confirmOrderDelivery = async (orderId: string) => {
+    const isCurrent = captureSession();
+    if (!isCurrent()) return;
     const order = ordersRef.current.find((o) => o.id === orderId || o.orderNumber === orderId);
-    if (!order || busyOrderId === orderId) return;
+    if (!order || [...deliveryOperations.current.values()].includes(orderId)) return;
     if (isMockMode()) {
       // Demo mode has no backend: mirror the server transition locally.
       setOrders((prev) => prev.map((o) => (o.id === order.id ? { ...o, status: 'delivered_confirmed' } : o)));
       return;
     }
-    setBusyOrderId(orderId);
+    const finishDelivery = beginDelivery(orderId);
     try {
       await orderApi.confirmDelivery(order.orderNumber || order.id);
+      if (!isCurrent()) return;
       await fetchMyOrders();
     } catch (err: any) {
+      if (!isCurrent()) return;
       // Idempotent double-submit: the backend 404s a second confirm.
       // Refetch; if the order is now delivered_confirmed, the first
       // call already won and the 404 is swallowed as already-confirmed.
@@ -461,13 +526,15 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       if (fresh.find((o) => o.id === order.id)?.status === 'delivered_confirmed') return;
       throw err; // call site shows the error toast; local state untouched
     } finally {
-      setBusyOrderId(null);
+      finishDelivery();
     }
   };
 
   const disputeOrderDelivery = async (orderId: string, reason?: string): Promise<DisputeDeliveryResponse | null> => {
+    const isCurrent = captureSession();
+    if (!isCurrent()) return null;
     const order = ordersRef.current.find((o) => o.id === orderId || o.orderNumber === orderId);
-    if (!order || busyOrderId === orderId) return null;
+    if (!order || [...deliveryOperations.current.values()].includes(orderId)) return null;
     const disputeReason = (reason ?? '').trim() || 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.';
     if (isMockMode()) {
       // Demo mode has no backend: mirror the server transition locally.
@@ -475,7 +542,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setOrders((prev) => prev.map((o) => (o.id === order.id ? { ...o, status: 'delivery_disputed', disputeReason } : o)));
       return null;
     }
-    setBusyOrderId(orderId);
+    const finishDelivery = beginDelivery(orderId);
     try {
       const res = await orderApi.disputeDelivery(order.orderNumber || order.id, {
         type: 'delivery_undelivered',
@@ -483,10 +550,12 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         reason: disputeReason,
         ...(order.items?.[0]?.product?.title ? { productTitle: order.items[0].product.title } : {}),
       });
+      if (!isCurrent()) return null;
       await fetchMyOrders();
+      if (!isCurrent()) return null;
       return res;
     } finally {
-      setBusyOrderId(null);
+      finishDelivery();
     }
   };
 

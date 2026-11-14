@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback, ReactNode } from 'react';
 import { Product, Category, Niche } from '../types';
 import { mockCategories, mockProducts } from '../data/mockData';
 import { catalogApi, ProductDto } from '../services/catalogApi';
-import { isMockMode } from '../services/apiClient';
+import { isMockMode, tokenStore } from '../services/apiClient';
 import { useAuth } from './AuthContext';
 import { wishlistApi } from '../services/wishlistApi';
 
@@ -160,7 +160,9 @@ const EMPTY_WISHLIST_IDS: string[] = [];
 
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
 export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const { customerUser } = useAuth();
+  const { customerUser, currentUser, authToken, isSessionReady } = useAuth();
+  const wishlistOwner = currentUser && authToken ? JSON.stringify([currentUser.id, currentUser.storeId ?? null, authToken]) : 'guest';
+  const wishlistOwnerRef = useRef(wishlistOwner);
   const [backendCatalogProducts, setBackendCatalogProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>(() => isMockMode() ? mockCategories : []);
   const [niches, setNiches] = useState<Niche[]>([]);
@@ -205,25 +207,36 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // that store's list only. Guests persist the map in localStorage;
   // logged-in customers hydrate each store's list from the API and
   // write mutations through to it.
-  const [wishlists, setWishlists] = useState<Record<string, string[]>>(() => {
-    if (typeof window !== 'undefined') {
+  const [wishlistCache, setWishlistCache] = useState<{ owner: string; lists: Record<string, string[]> }>(() => {
+    if (typeof window !== 'undefined' && !tokenStore.getToken()) {
       try {
-        const saved = localStorage.getItem('drup_wishlists');
+        const saved = localStorage.getItem('drup_guest_wishlists');
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (parsed && typeof parsed === 'object') return parsed as Record<string, string[]>;
+          if (parsed && typeof parsed === 'object') return { owner: wishlistOwner, lists: parsed as Record<string, string[]> };
         }
       } catch {}
     }
-    return {};
+    return { owner: wishlistOwner, lists: {} };
   });
+  // Signed-in responses stay in memory under immutable account + tenant. Only
+  // genuinely anonymous product IDs may persist and merge into the next login.
+  const wishlists = wishlistCache.owner === wishlistOwner ? wishlistCache.lists : {};
+  const setWishlists = (update: React.SetStateAction<Record<string, string[]>>) => {
+    const generation = tokenStore.getGeneration();
+    setWishlistCache((previous) => {
+      if (wishlistOwnerRef.current !== wishlistOwner || tokenStore.getGeneration() !== generation) return previous;
+      const lists = previous.owner === wishlistOwner ? previous.lists : {};
+      return { owner: wishlistOwner, lists: typeof update === 'function' ? update(lists) : update };
+    });
+  };
   const [wishlistScope, setWishlistScopeState] = useState<{ storeId: string; storeSlug: string }>({
     storeId: 'store-central',
     storeSlug: 'central',
   });
   const wishlistsRef = useRef(wishlists);
+  const guestMergeListsRef = useRef<Record<string, string[]>>({});
   const mergedGuestScopesRef = useRef<Set<string>>(new Set());
-  const wasLoggedInRef = useRef(false);
   // Store id -> slug for every store this device has scoped a
   // wishlist to, persisted next to drup_wishlists: a guest list
   // written inside a store the shopper is not currently in must
@@ -265,25 +278,30 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   // The map is the persistence unit: mirror it to the ref (toggle
   // reads membership synchronously) and to localStorage (guest
-  // reload persistence; AuthContext clears the key on logout).
+  // reload persistence; authenticated lists never enter this guest-only key).
   useEffect(() => {
     wishlistsRef.current = wishlists;
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && wishlistOwner === 'guest' && !tokenStore.getToken()) {
       try {
-        localStorage.setItem('drup_wishlists', JSON.stringify(wishlists));
+        localStorage.setItem('drup_guest_wishlists', JSON.stringify(wishlists));
       } catch {}
     }
-  }, [wishlists]);
+  }, [wishlists, wishlistOwner]);
 
-  // Logout: guest lists die with the session (the server lists are
-  // re-fetched on the next login).
-  useEffect(() => {
-    if (wasLoggedInRef.current && !customerUser.isLoggedIn) {
-      setWishlists({});
-      mergedGuestScopesRef.current.clear();
-    }
-    wasLoggedInRef.current = customerUser.isLoggedIn;
-  }, [customerUser.isLoggedIn]);
+  useLayoutEffect(() => {
+    // Older builds persisted authenticated and guest lists under the same key;
+    // their owner cannot be recovered safely, so discard that legacy cache.
+    localStorage.removeItem('drup_wishlists');
+    if (wishlistOwner !== 'guest') localStorage.removeItem('drup_guest_wishlists');
+    if (wishlistOwnerRef.current === wishlistOwner) return;
+    const previousOwner = wishlistOwnerRef.current;
+    wishlistOwnerRef.current = wishlistOwner;
+    mergedGuestScopesRef.current.clear();
+    guestMergeListsRef.current = previousOwner === 'guest' && wishlistOwner !== 'guest' ? wishlistCache.lists : {};
+    setWishlistCache((previous) => ({ owner: wishlistOwner, lists: previousOwner === 'guest' && wishlistOwner !== 'guest' ? previous.lists : {} }));
+    // A signed-in list is never serialized into the guest key.
+    localStorage.removeItem('drup_guest_wishlists');
+  }, [wishlistOwner]);
 
   // Login / store-switch hydration. On login, the guest lists of
   // EVERY locally stored scope are merged into the account - each
@@ -296,11 +314,14 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // pass, so later store switches just hydrate. API failures leave
   // the local list untouched.
   useEffect(() => {
-    if (isMockMode() || !customerUser.isLoggedIn) return;
+    if (isMockMode() || !isSessionReady || !currentUser?.id || !authToken || wishlistCache.owner !== wishlistOwner) return;
     const { storeId, storeSlug } = wishlistScope;
     let cancelled = false;
+    const generation = tokenStore.getGeneration();
+    const isCurrent = () => !cancelled && wishlistOwnerRef.current === wishlistOwner && generation === tokenStore.getGeneration();
     (async () => {
-      for (const [guestStoreId, guestIds] of Object.entries(wishlistsRef.current)) {
+      for (const [guestStoreId, guestIds] of Object.entries(guestMergeListsRef.current)) {
+        if (!isCurrent()) return;
         if (!guestIds || guestIds.length === 0) continue;
         if (mergedGuestScopesRef.current.has(guestStoreId)) continue;
         const guestSlug =
@@ -308,20 +329,22 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
         if (!guestSlug) continue;
         mergedGuestScopesRef.current.add(guestStoreId);
         for (const pid of guestIds) {
+          if (!isCurrent()) return;
           try {
             await wishlistApi.add(pid, guestSlug);
           } catch {}
         }
         try {
           const res = await wishlistApi.getWishlist(guestSlug);
-          if (!cancelled && res && Array.isArray(res.wishlist)) {
+          if (isCurrent() && res && Array.isArray(res.wishlist)) {
             setWishlists((prev) => ({ ...prev, [guestStoreId]: res.wishlist }));
           }
         } catch {}
       }
+      if (!isCurrent()) return;
       try {
         const res = await wishlistApi.getWishlist(storeSlug);
-        if (!cancelled && res && Array.isArray(res.wishlist)) {
+        if (isCurrent() && res && Array.isArray(res.wishlist)) {
           setWishlists((prev) => ({ ...prev, [storeId]: res.wishlist }));
         }
       } catch {}
@@ -329,12 +352,16 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     return () => {
       cancelled = true;
     };
-  }, [customerUser.isLoggedIn, wishlistScope]);
+  }, [wishlistOwner, wishlistCache.owner, wishlistScope, isSessionReady]);
   const [productOriginalityOverrides, setProductOriginalityOverrides] = useState<Record<string, boolean>>(
     () => isMockMode() ? ({ 'prod-3': false } as Record<string, boolean>) : {}
   );
 
   const [customApprovedProducts, setCustomApprovedProducts] = useState<Product[]>(() => {
+    if (!isMockMode()) {
+      localStorage.removeItem('drup_custom_approved_products');
+      return [];
+    }
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('drup_custom_approved_products');
@@ -345,6 +372,8 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   });
 
   const addProduct = (product: Product) => {
+    // Local draft approvals are a demo feature. Live visibility is server-owned.
+    if (!isMockMode()) return;
     setCustomApprovedProducts((prev) => {
       const filtered = prev.filter((p) => p.id !== product.id);
       const updated = [product, ...filtered];

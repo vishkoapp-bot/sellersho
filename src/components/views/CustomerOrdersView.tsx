@@ -7,7 +7,7 @@ import { orderApi, CustomerReturnDto, ReturnDestinationInfo } from '../../servic
 import { ArrowRight, Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle } from 'lucide-react';
 
 export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { currentStore, customerUser, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
+  const { currentStore, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
   const { success, error: toastError } = useToast();
   const { orders, fetchMyOrders } = useOrders();
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[]>([]);
@@ -24,17 +24,16 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   const [cancelBusy, setCancelBusy] = useState(false);
 
   useEffect(() => {
+    let active = true;
     void fetchMyOrders();
-    orderApi.getMyReturns().then(setMyReturns).catch(() => setMyReturns([]));
+    orderApi.getMyReturns().then((rows) => { if (active) setMyReturns(rows); }).catch(() => { if (active) setMyReturns([]); });
+    return () => { active = false; ++returnQuoteSeq.current; };
   }, []);
   const [filter, setFilter] = useState<'all' | 'processing' | 'shipped' | 'delivered'>('all');
 
-  // Strict privacy filter: only show orders placed by this customer identity
-  const userPhone = (customerUser.mobile || '').replace(/\D/g, '').slice(-10);
-  const myOrders = orders.filter((o) => {
-    const orderPhone = (o.customerInfo?.phone || '').replace(/\D/g, '').slice(-10);
-    return (userPhone && orderPhone === userPhone) || o.customerInfo?.fullName === customerUser.fullName;
-  });
+  // The authenticated backend selects ownership by immutable user ID. Recipient
+  // names and phones are editable shipping details, never ownership selectors.
+  const myOrders = orders;
 
   // Fix82: per-store buyer panels. One account may hold panels at
   // central, mone and other dropshippers, but each panel shows ONLY

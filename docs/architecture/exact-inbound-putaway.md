@@ -1,4 +1,4 @@
-# Exact inbound putaway checkpoint (INV-09)
+# Exact inbound putaway (INV-09)
 
 Every new positive QC acceptance delta creates one immutable putaway allocation,
 one task and one isolated `qc_accepted` balance at `qc-accepted:<disposition ID>`.
@@ -41,7 +41,11 @@ consumes the immutable received allocation and never debits the supplier twice.
 The obsolete compatibility marker and unused physical-to-sellable helper have
 been removed. The fail-only QC endpoint still refuses requests; cumulative
 CompleteQC handles failures through the conserved disposition protocol. INV-09
-remains open pending the complete combined inventory/source acceptance evidence.
+has completed its coupled local acceptance in committed source3aaacc4: the full
+suite discovered572 top-level tests with zero failures and only the intentional
+migration subprocess helper skip. All seven retained inventory branches executed.
+This closes INV-02/04/09 local gates, not the separately listed SKU measurement,
+receipt-age/fee, occupancy departure or intended-hardware capacity tasks.
 
 Evidence: `logs/inv09-before.log` demonstrates both legacy QC endpoints produced
 no tasks before the fix. `logs/inv09-checkpoint-final.log` ran 23 focused top-level

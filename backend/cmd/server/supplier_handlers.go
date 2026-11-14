@@ -654,20 +654,36 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		NewStock  int    `json:"new_stock"`
 		Reason    string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 || int64(req.NewStock) > 2147483647 || len(req.Reason) > 2000 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.Reason) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "علت اصلاح موجودی را وارد کنید؛ اگر این فیلد را نمی‌بینید صفحه را به‌روز کنید"})
+		return
+	}
 
-	err := h.supplierRepo.UpdateProductStockForVariant(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
+	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, repository.ErrStockAdjustmentInput), errors.Is(err, repository.ErrStockSKURequired):
+			status = http.StatusBadRequest
+		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrInsufficientInventory):
+			status = http.StatusConflict
+		case errors.Is(err, repository.ErrStockOwnership), errors.Is(err, sql.ErrNoRows):
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"stock":   req.NewStock,
+		"success":      true,
+		"stock":        result.Stock,
+		"productStock": result.ProductStock,
 	})
 }
 

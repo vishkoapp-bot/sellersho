@@ -66,7 +66,7 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 			}
 		})
 	}
-	if err := repo.UpdateProductStock(ctx, supplier.ID, productID, 0, ""); err != nil {
+	if err := repo.UpdateProductStock(ctx, supplier.ID, productID, 0, "Counted empty panel fixture"); err != nil {
 		t.Fatal(err)
 	}
 	var stock int
@@ -135,6 +135,69 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	report, err := repo.GetSalesReport(ctx, supplier.ID, "", "")
 	if err != nil || report.TotalRevenue != 0 {
 		t.Fatalf("empty report: %v %v", report, err)
+	}
+}
+
+func TestSupplierStockAggregateHTTPReturnsVerifiedQuantity(t *testing.T) {
+	db := setupTestPostgresDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	repo := repository.NewSupplierRepository(db)
+	suffix := uuid.NewString()[:8]
+	owner, supplier, err := repo.RegisterSupplier(ctx, "Stock test", "Owner", "stock-"+suffix, "TestStockPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
+	if err != nil {
+		t.Fatal(err)
+	}
+	product, warehouse := "stock-"+suffix, "stock-wh-"+suffix
+	if err = repo.CreateDirectProduct(ctx, domain.Product{ID: product, Slug: product, Title: "Stock product", CategorySlug: "digital", SupplierID: supplier.ID, SupplierBaseCost: 1000, Stock: 5}); err != nil {
+		t.Fatal(err)
+	}
+	source := panelSourceFixture(t, db, supplier.ID)
+	if err = repo.UpdateProductOrigin(ctx, supplier.ID, product, source); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		args []interface{}
+	}{
+		{`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'p','c')`, []interface{}{warehouse}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,supplier_warehouse_id) VALUES($1,$2,$3,'supplier','supplier',$4,'sellable',5,$5)`, []interface{}{uuid.NewString(), product, supplier.ID, "supplier-warehouse:" + source, source}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,$3,'supplier','warehouse',$4,'sellable',5,$5)`, []interface{}{uuid.NewString(), product, supplier.ID, "warehouse:" + warehouse, warehouse}},
+	} {
+		if _, err = db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := NewSupplierHandlers(repo, auth.NewJWTService("stock-fixture"), false)
+	request := func(payload string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/supplier/products/"+product+"/stock", strings.NewReader(payload))
+		contextWithSupplier := context.WithValue(r.Context(), supplierIDKey, supplier.ID)
+		r = r.WithContext(context.WithValue(contextWithSupplier, userClaimsKey, &auth.UserClaims{UserID: owner.ID}))
+		w := httptest.NewRecorder()
+		h.HandleUpdateStock(w, r)
+		return w
+	}
+	if w := request(`{"new_stock":10}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := request(`{"new_stock":4,"reason":"below held"}`); w.Code != http.StatusConflict {
+		t.Fatalf("below held status=%d body=%s", w.Code, w.Body.String())
+	}
+	w := request(`{"new_stock":8,"reason":"counted correction"}`)
+	var result struct {
+		Stock        int `json:"stock"`
+		ProductStock int `json:"productStock"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK || result.Stock != 8 || result.ProductStock != 8 {
+		t.Fatalf("verified response status=%d result=%+v err=%v", w.Code, result, err)
+	}
+	var local, held int
+	var actor string
+	if err = db.QueryRow(`SELECT SUM(quantity) FILTER(WHERE supplier_warehouse_id=$2),SUM(quantity) FILTER(WHERE warehouse_id=$3) FROM inventory_balances WHERE product_id=$1 AND status='sellable'`, product, source, warehouse).Scan(&local, &held); err != nil || local != 3 || held != 5 {
+		t.Fatalf("HTTP balances=%d/%d err=%v", local, held, err)
+	}
+	if err = db.QueryRow(`SELECT actor_user_id FROM inventory_movements WHERE product_id=$1 AND reference_type='legacy_stock_adjustment'`, product).Scan(&actor); err != nil || actor != owner.ID {
+		t.Fatal("HTTP stock actor missing")
 	}
 }
 

@@ -1411,31 +1411,35 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	queryProduct := `
 		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, length_mm, width_mm, height_mm, weight_grams, shipping_class, tax_class, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20, $21, $22, $23, $24, $25, NOW(), NOW())
-		ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, supplier_base_cost = EXCLUDED.supplier_base_cost, image_url = EXCLUDED.image_url, description = EXCLUDED.description, specs = EXCLUDED.specs, brand = EXCLUDED.brand,
-		                               barcode = CASE WHEN EXCLUDED.barcode IS NOT NULL THEN EXCLUDED.barcode ELSE products.barcode END
+		ON CONFLICT (id) DO NOTHING
 	`
 	originalPrice := int64(float64(baseCost) * 1.25)
-	// Fix 9: distinguish a first approval (sync the full gallery) from a
-	// re-approval (leave the supplier-curated gallery untouched).
-	var existedBefore bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&existedBefore); err != nil {
-		return "", fmt.Errorf("failed to check product existence: %w", err)
+	// Derive first publication from the atomic insert, not an unlocked EXISTS:
+	// distinct historical proposals may name the same future product identity.
+	productInsert, err := tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight, shipClass, taxClass)
+	if err != nil {
+		return "", fmt.Errorf("failed to insert product: %w", err)
 	}
-	if existedBefore && IsProductV2(data) {
-		return "", fmt.Errorf("published SKU identity and inventory require an explicit product amendment")
+	inserted, err := productInsert.RowsAffected()
+	if err != nil {
+		return "", err
 	}
+	existedBefore := inserted == 0
 	if existedBefore {
 		var owner string
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id=$1`, productID).Scan(&owner); err != nil {
+		var version int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,''),COALESCE((to_jsonb(p)->>'schema_version')::int,0),stock FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&owner, &version, &stock); err != nil {
 			return "", err
 		}
 		if owner != requestedBy {
 			return "", fmt.Errorf("product belongs to another supplier")
 		}
-	}
-	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight, shipClass, taxClass)
-	if err != nil {
-		return "", fmt.Errorf("failed to insert product: %w", err)
+		if version >= 2 || IsProductV2(data) {
+			return "", fmt.Errorf("published SKU identity and inventory require an explicit product amendment")
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE products SET supplier_base_cost=$2,image_url=$3,description=$4,specs=$5,brand=$6,barcode=COALESCE(NULLIF($7,''),barcode) WHERE id=$1`, productID, baseCost, imgURL, desc, specsBytes, brand, barcode); err != nil {
+			return "", err
+		}
 	}
 	// The reviewed source selection must be attached before initial stock is
 	// allocated. A source label/current profile is never evidence of ownership.
@@ -1647,8 +1651,8 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	// keeps the products.stock projection in sync), and create a default
 	// variant so the SKU engine can see it. Re-approvals are idempotent
 	// (upsert + EXISTS guard).
-	if requestedBy != "" && !IsProductV2(data) {
-		if err := setSupplierSellableTotalTx(ctx, tx, productID, requestedBy, stock); err != nil {
+	if !existedBefore && requestedBy != "" && !IsProductV2(data) {
+		if err := seedSupplierInitialStockTx(ctx, tx, productID, requestedBy, stock); err != nil {
 			return "", fmt.Errorf("failed to seed supplier inventory for %s: %w", productID, err)
 		}
 	}
@@ -1868,11 +1872,11 @@ func (r *SupplierRepository) GetSupplierProducts(ctx context.Context, supplierID
 	return products, nil
 }
 
-// setSupplierSellableTotalTx sets future declared legacy stock at the product's
-// explicitly owned active supplier warehouse. Existing unknown lots and lots at
-// other warehouses retain their quantities and identities; an origin edit never
-// relocates history. Tracked products use SKU-specific declarations instead.
-func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
+// First publication seeds a declared lot independently from later aggregate edits.
+func seedSupplierInitialStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
+	if total < 0 || int64(total) > 2147483647 {
+		return ErrStockAdjustmentInput
+	}
 	var version int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&version); err != nil {
 		return err
@@ -1883,9 +1887,6 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supp
 	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
 	if err != nil {
 		return err
-	}
-	if total < 0 {
-		total = 0
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id, product_id, supplier_id, owner_type, location_type, location_key, status, quantity, reconciled)
@@ -1898,41 +1899,11 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supp
 	return syncProductStockTx(ctx, tx, productID)
 }
 
-// UpdateProductStock updates inventory for a product through the canonical
-// inventory_balances ledger: the supplier-owned sellable balance is adjusted so
-// the canonical sellable total equals newStock, and the products.stock
-// projection is re-synced. Warehouse-held sellable stock is never reduced by a
-// supplier edit (the supplier row is clamped at zero); in that case the stored
-// projection legitimately exceeds newStock.
-func (r *SupplierRepository) UpdateProductStock(ctx context.Context, supplierID, productID string, newStock int, reason string) error {
-	if newStock < 0 {
-		return fmt.Errorf("stock cannot be negative")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM products WHERE id = $1 AND supplier_id = $2)`,
-		productID, supplierID).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("product %s not found", productID)
-	}
-	if err := setSupplierSellableTotalTx(ctx, tx, productID, supplierID, newStock); err != nil {
-		return err
-	}
-	// P2-9: persist the caller-supplied reason in audit_logs instead of
-	// silently dropping it — «who changed stock/price and why» must be traceable.
-	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_stock_update", map[string]interface{}{
-		"product_id": productID, "new_stock": newStock, "reason": reason,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit()
+// UpdateProductStock retains the legacy aggregate API; HTTP uses AdjustProductStock
+// to retain the actor and return the verified committed projection.
+func (r *SupplierRepository) UpdateProductStock(ctx context.Context, supplier, product string, total int, reason string) error {
+	_, err := r.AdjustProductStock(ctx, supplier, product, "", total, reason, "")
+	return err
 }
 
 type SupplierReturnRequest struct {

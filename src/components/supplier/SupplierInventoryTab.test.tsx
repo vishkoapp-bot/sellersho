@@ -101,6 +101,7 @@ const renderView = (props: Partial<SupplierInventoryViewProps> = {}) =>
       saving={false}
       onEditVariantChange={() => {}}
       onEditStockChange={() => {}}
+      onEditReasonChange={() => {}}
       onSaveEdit={() => {}}
       onCancelEdit={() => {}}
       onOpenEdit={() => {}}
@@ -220,7 +221,7 @@ it('edit form opens pre-filled with the selected variant stock', () => {
   ], 'v-blue'), '7');
   assert.equal(variantPrefillStock([{ id: 'v-red', variant_name: 'قرمز / کوچک', stock: 0, spnc: 'SPNC-B' }], 'v-blue'), '');
   const html = renderView({
-    editing: { product: variable, variantId: 'v-blue', stock: '7' },
+    editing: { product: variable, variantId: 'v-blue', stock: '7', reason: 'counted' },
     editVariants: {
       rows: [{ id: 'v-blue', variant_name: 'آبی / بزرگ', stock: 7, spnc: 'SPNC-A' }],
       loading: false, error: '', reload: () => {},
@@ -229,6 +230,8 @@ it('edit form opens pre-filled with the selected variant stock', () => {
   assert.match(html, /تغییر موجودی: پیراهن/);
   assert.match(html, /value="۷"/);
   assert.match(html, /ذخیره موجودی/);
+  assert.match(html, /علت اصلاح موجودی/);
+  assert.match(html, /موجودی کل قابل فروش/);
 });
 
 it('keeps Persian-digit formatting for stock inputs', () => {
@@ -240,13 +243,13 @@ it('keeps Persian-digit formatting for stock inputs', () => {
   assert.equal(parseDigits(''), '');
 });
 
-it('save calls updateStock with the same payload shape as before', async () => {
+it('save sends the absolute total with the counted reason and selected SKU', async () => {
   const calls: Array<[string, number, unknown, unknown]> = [];
   const api = { updateStock: async (id: string, value: number, reason: unknown, variantId: unknown) => { calls.push([id, value, reason, variantId]); } };
-  await saveStockEdit(api as never, variable, '7', 'v-blue', [{ id: 'v-blue', variant_name: 'آبی', stock: 4, spnc: 'SPNC-A' }]);
-  assert.deepEqual(calls, [['p4', 7, undefined, 'v-blue']]);
-  await saveStockEdit(api as never, healthy, '3', '', []);
-  assert.deepEqual(calls[1], ['p1', 3, undefined, undefined]);
+  await saveStockEdit(api as never, variable, '7', 'v-blue', [{ id: 'v-blue', variant_name: 'آبی', stock: 4, spnc: 'SPNC-A' }], ' counted SKU ');
+  assert.deepEqual(calls, [['p4', 7, 'counted SKU', 'v-blue']]);
+  await saveStockEdit(api as never, healthy, '3', '', [], 'legacy recount');
+  assert.deepEqual(calls[1], ['p1', 3, 'legacy recount', undefined]);
 });
 
 it('save still enforces the variant-required validation and non-negative integers', async () => {
@@ -256,6 +259,8 @@ it('save still enforces the variant-required validation and non-negative integer
   await assert.rejects(saveStockEdit(api as never, healthy, '', '', []), /موجودی را با عدد وارد کن/);
   await assert.rejects(saveStockEdit(api as never, healthy, '-1', '', []), /موجودی را با عدد وارد کن/);
   await assert.rejects(saveStockEdit(api as never, healthy, '1.5', '', []), /موجودی را با عدد وارد کن/);
+  await assert.rejects(saveStockEdit(api as never, healthy, '2147483648', '', [], 'counted'), /موجودی را با عدد وارد کن/);
+  await assert.rejects(saveStockEdit(api as never, healthy, '5', '', [], ' '), /علت اصلاح موجودی/);
 });
 
 it('return validation keeps the variant, max-quantity and reason guards', () => {

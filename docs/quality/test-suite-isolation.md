@@ -351,3 +351,21 @@ Evidence: `logs/test02-redis-guard-before.log` (red),
 `logs/test02-redis-single-wrapper-failure.log`,
 `logs/test02-redis-guard-final-unit.log`, `logs/test02-default-redis-safe.log`.
 A new complete immutable-source run is required for combined acceptance.
+
+## Combined PostgreSQL/Redis acceptance
+
+Committed source3aaacc4ed256c39051bb7c958bddb4ac794fa5f9 completed572 discovered
+top-level tests with zero failures. The only top-level skip is the intentional
+TestMigrationProcessHelper subprocess entry; its parent migration tests execute.
+OTP, both Redis inventory probes and all seven retained positive inbound branches
+executed. Both owned containers were verified removed. This closes the original
+109-failure triage priority and the coupled INV-02/04/09 local gates. It does not
+close TEST-02's remaining CI/race/dependency/domain prerequisites or capacity.
+Evidence: `logs/test02-exact-3aaacc4-full.log`.
+
+INV-03 follows with the [absolute stock contract](../architecture/legacy-aggregate-stock.md).
+Affected35 cases passed, followed by23 final review-fix cases, including atomic
+first-publication concurrency and bounded complete reconciliation paging.
+Frontend285/285 passed without skips; focused19 cases and the production frontend
+build passed. Default Go suite passed with explicit DB/cache opt-out. Full combined
+source verification must be repeated after this new stock implementation.

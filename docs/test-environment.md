@@ -96,4 +96,3 @@ Python runners provision authenticated Redis in tmpfs and perform identity-check
 cleanup alongside PostgreSQL. The per-test runner verifies and resets only its
 owned cache DB15 between tests. The supplier OTP test seeds codes directly and
 never sends SMS. See [combined evidence](quality/test-suite-isolation.md).
-

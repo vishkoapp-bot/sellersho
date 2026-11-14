@@ -94,6 +94,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   // state های جدید برای ویرایش موجودی و همگام‌سازی لحظه‌ای
   const [editingStockProduct, setEditingStockProduct] = useState<SupplierProductDto | null>(null);
   const [editedStock, setEditedStock] = useState('');
+  const [stockReason, setStockReason] = useState('');
   const [stockVariantId, setStockVariantId] = useState('');
   const stockVariants = useSupplierVariants(editingStockProduct);
   const [editingSupplyProduct, setEditingSupplyProduct] = useState<SupplierProductDto | null>(null);
@@ -369,26 +370,29 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     label="تنوع برای اصلاح موجودی" loading={stockVariants.loading} error={stockVariants.error} retry={stockVariants.reload} disabled={saving}
                     onSelect={id => { setStockVariantId(id); const variant = stockVariants.rows.find(row => row.id === id); setEditedStock(variant ? String(variant.stock) : ''); }} />}
                   <input
-                    aria-label="موجودی جدید کالا" type="text" inputMode="numeric"
+                    aria-label="موجودی کل قابل فروش" type="text" inputMode="numeric"
                     value={editedStock}
                     onChange={(e) => setEditedStock(e.target.value)}
-                    placeholder="موجودی جدید"
+                    placeholder="موجودی کل قابل فروش"
                     className="flex-1 text-xs p-1.5 rounded-lg bg-slate-50 border border-slate-200 font-bold font-mono"
                   />
+                  <input aria-label="علت اصلاح موجودی" value={stockReason} onChange={event => setStockReason(event.target.value)} maxLength={500} placeholder="علت اصلاح موجودی" className="flex-1 text-xs p-1.5 rounded-lg bg-slate-50 border border-slate-200" />
+                  <p className="w-full text-[10px] text-slate-500">این تعداد شامل موجودی قابل فروش در انبارهای دیگر هم هست.</p>
                   <button
                     type="button"
                     disabled={saving}
                     onClick={async () => {
                       const newStock = Number(editedStock.replace(/[۰-۹]/g, digit => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit))));
                       if (product.schemaVersion === 2 && (!stockVariantId || !stockVariants.rows.some(row => row.id === stockVariantId))) { error('تنوع دقیق کالا را انتخاب کنید.'); return; }
-                      if (editedStock.trim() === '' || !Number.isSafeInteger(newStock) || newStock < 0) {
-                        error('موجودی باید عدد مثبت باشد.');
+                      if (editedStock.trim() === '' || !Number.isSafeInteger(newStock) || newStock < 0 || newStock > 2147483647) {
+                        error('موجودی باید عدد صحیح از صفر تا ۲۱۴۷۴۸۳۶۴۷ باشد.');
                         return;
                       }
+                      if (!stockReason.trim()) { error('علت اصلاح موجودی را وارد کنید.'); return; }
 
                       if (saving) return;
                       setSaving(true);
-                      try { await supplierApi.updateStock(product.id, newStock, undefined, product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setEditedStock(''); await productsResource.reload(); }
+                      try { await supplierApi.updateStock(product.id, newStock, stockReason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setEditedStock(''); setStockReason(''); await productsResource.reload(); }
                       catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'ذخیره موجودی انجام نشد.'); }
                       finally { setSaving(false); }
                     }}
@@ -401,6 +405,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     onClick={() => {
                       setEditingStockProduct(null);
                       setEditedStock('');
+                      setStockReason('');
                     }}
                     className="px-2 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-300"
                   >
@@ -416,6 +421,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     type="button"
                     onClick={() => {
                       setEditingStockProduct(product);
+                      setStockReason('');
                       setStockVariantId('');
                       setEditedStock(product.schemaVersion === 2 ? '' : effectiveStock.toString());
                     }}

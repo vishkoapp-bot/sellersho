@@ -300,7 +300,7 @@ export const supplierApi = {
   },
   markNotificationsRead: (ids?: string[]) => apiRequest<{ success?: boolean; updated?: number; unreadCount?: number }>('/supplier/notifications/read', { method: 'POST', auth: true, body: JSON.stringify(ids?.length ? { ids } : {}) }),
   proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
-  updateStock: (productId: string, newStock: number, reason?: string, variantId?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
+  updateStock: (productId: string, newStock: number, reason: string, variantId?: string) => apiRequest<{ success: boolean; stock: number; productStock: number }>(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
   updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest<UpdatePricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
   // Gap 11 — price-increase governance: own request history + exception tickets.
   getPriceIncreases: () => apiRequest<SupplierPriceIncreaseDto[]>('/supplier/price-increases', { method: 'GET', auth: true }),

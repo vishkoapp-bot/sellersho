@@ -252,7 +252,7 @@ func TestInventoryOriginLegacyDeclarationUsesNamedFutureLot(t *testing.T) {
 	if _, err := tx.Exec(`INSERT INTO products(id,supplier_id,stock,schema_version,origin_supplier_warehouse_id) VALUES('legacy','s',0,0,'sw2');INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity) VALUES('old-unknown','legacy','s','supplier','supplier','supplier:s','sellable',3)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := setSupplierSellableTotalTx(context.Background(), tx, "legacy", "s", 2); err != nil {
+	if _, err := setSupplierSellableTotalTx(context.Background(), tx, "legacy", "s", 5, "absolute aggregate declaration", ""); err != nil {
 		t.Fatal(err)
 	}
 	var oldQty, newQty int

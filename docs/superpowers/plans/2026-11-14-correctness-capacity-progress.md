@@ -16,11 +16,11 @@ DONE refers to the task-specific local gate described below. It does not certify
 | MIG-01 | DONE | 9093c5f | [Migration contract](../../../backend/internal/migrations/README.md) |
 | INV-05 | DONE | efb37fc | [Origin contract](../../architecture/inventory-origins.md) |
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
-| INV-02 | Checkpoint OPEN | bb61fae | [Inbound transfers](../../architecture/inbound-transfers.md) |
-| INV-03 | TODO | — | — |
-| INV-04 | Checkpoint OPEN | 1e86ad2 | [QC disposition](../../architecture/inbound-qc-disposition.md) |
+| INV-02 | DONE | bb61fae / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
+| INV-03 | DONE | absolute-stock implementation | [Aggregate edits](../../architecture/legacy-aggregate-stock.md) |
+| INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
 | INV-08 | TODO | — | — |
-| INV-09 | Checkpoint OPEN | exact acceptance/task checkpoint | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
+| INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
 | INV-06 | TODO | — | — |
 | INV-07 | TODO | — | — |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
@@ -337,4 +337,31 @@ At user request all current reviewed work was frozen and pushed through code com
 
 Executed deploy.ps1 -BuildOnServer. The read-only preflight returned: DEPLOYMENT BLOCKED: production migration history needs reviewed legacy adoption and an isolated upgrade rehearsal. This happened before builds/uploads/traffic changes. Production was NOT deployed or migrated; no rollback was required. Subsequent backend health returnedHTTP200 and the existing frontend answered its internal root probe successfully. Raw local output: logs/production-deploy-request.log. Production history reconciliation/adoption and isolated rehearsal remain required; no checksum/alias guard was bypassed.
 
-Final delivery count:11 DONE local task gates,7 partial checkpoints,36 TODO. Combined frontend285/285 passed without skips; default Go/build checks passed with DB opt-ins absent; the broad required integration baseline still has109 named failures, and capacity qualifications remain failed/open. These facts do not establish production readiness.
+Historical delivery count at the earlier release freeze:11 DONE local gates,7 partial checkpoints,36 TODO. That snapshot had109 backend failures. It is superseded by the execution evidence below; retained capacity qualification failures remain open.
+
+## Continued implementation and full integration triage
+
+Committed source3aaacc4ed256c39051bb7c958bddb4ac794fa5f9 ran572 discovered
+top-level tests with zero failures in individually cloned migrated PostgreSQL
+databases and a separately authenticated disposable Redis cache. The single
+intentional subprocess helper skip does not omit a domain gate. The original109
+failures were resolved through isolation, current-policy fixture corrections and
+scoped domain fixes; no blanket business-rule weakening or history deletion.
+Full evidence and each stage: [integration record](../../quality/test-suite-isolation.md).
+Every prior stage was committed/pushed and deployed using deploy.ps1; runtime
+credentials, backups, unrelated services and the standing excluded paths were
+preserved. Migration-history adoption was separately rehearsed before its earlier
+production upgrade; migration202611140009 adds exact putaway provenance without backfill.
+
+Coupled INV-02/04/09 acceptance now executes all retained positive branches without
+skips, including canonical legacy/SKU receipt -> QC -> exact putaway -> capture,
+source conservation, failed/partial QC, source/capacity refusal, replay and storage
+coverage. These three local task gates are DONE. INV-08, INV-06, INV-10 and FIN-006
+are distinct remaining measurement/occupancy/age/fee tasks.
+
+INV-03's scoped absolute aggregate, reason/actor, INT bounds, API/UI, controlled
+capture/update and atomic publication requirements passed real isolated tests.
+The reviewer approved the final race/report fixes. [Stock evidence](../../architecture/legacy-aggregate-stock.md).
+Current ledger:15 DONE local gates,5 partial checkpoints,34 TODO. This is not a
+production readiness or intended-hardware1000-user/100-RPS certificate. TEST-02
+remains partial for CI/race/dependency and other listed domain prerequisites.

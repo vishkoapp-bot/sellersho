@@ -165,9 +165,9 @@ class DisposableDatabase:
         self.empty_schema = True
         print('Verified empty current-schema fixture with non-superuser role and intact triggers', flush=True)
 
-    def command(self, args, env=None):
+    def command(self, args, env=None, cwd=None):
         # Stream redacted output, including failures, without echoing command/env secrets.
-        with subprocess.Popen(args, cwd=BACKEND, env=env if env is not None else self.environment(), text=True,
+        with subprocess.Popen(args, cwd=cwd if cwd is not None else BACKEND, env=env if env is not None else self.environment(), text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace') as child:
             try:
                 for line in child.stdout:

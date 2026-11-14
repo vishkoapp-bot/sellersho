@@ -145,3 +145,13 @@ test records the immutable delivered-line supplier snapshot before requesting
 settlement; the approved payout passes, suspension blocks the next payout, and
 earned balance remains unchanged. Both tests passed in guarded isolated clones.
 Evidence: `logs/test02-worker-canonical.log`, `logs/test02-supplier-freeze.log`.
+
+## Public detail response contract
+
+The SPN HTTP regression now follows the existing explicit FIX 12 contract in
+assembleProductDetail: public responses omit dossier specs/gallery while the
+repository preserves the stored specs. The test asserts both the omitted public
+keys and the exact stored power value rather than deleting its data-preservation
+check. It passed alongside both public-response key regressions (3/3, no skips).
+Production serialization was not changed. Evidence:
+`logs/test02-catalog-public-contract.log`.

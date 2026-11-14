@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/repository"
 	"time"
 )
@@ -159,7 +160,7 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 	}
 
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(observability.NewContext(context.Background()), 30*time.Second)
 	defer cancel()
 
 	// Stage 1 (confirmed): 20-day auto-confirm. This step changes
@@ -267,6 +268,11 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 // runner skips silently in that case) does not fail the cycle.
 // A failed insert is logged, never fatal to the worker loop.
 func (w *BackgroundWorker) recordJobRun(ctx context.Context, started time.Time, released, confirmed int64, runErr error) {
+	outcome := "success"
+	if runErr != nil {
+		outcome = "error"
+	}
+	observability.LogOperation(ctx, "worker", "settlement", outcome, time.Since(started))
 	if w.db == nil {
 		return
 	}

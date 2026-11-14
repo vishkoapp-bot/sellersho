@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/observability"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -22,6 +23,7 @@ func NewRedisClient(redisURL string) (*RedisClient, error) {
 	}
 
 	client := redis.NewClient(opts)
+	client.AddHook(observability.RedisHook{Registry: observability.Default})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

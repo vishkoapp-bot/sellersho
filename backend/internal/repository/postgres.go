@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/lib/pq"
+	"github.com/drup/platform/internal/observability"
 )
 
 // PostgresDB manages the PostgreSQL database connection pool
@@ -14,7 +14,7 @@ type PostgresDB struct {
 
 // NewPostgresDB initializes and tests connection to PostgreSQL
 func NewPostgresDB(databaseURL string) (*PostgresDB, error) {
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := observability.OpenPostgres(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open postgres connection: %w", err)
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/ippanel"
 	"github.com/drup/platform/internal/migrations"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
@@ -150,6 +151,7 @@ func main() {
 	} else {
 		gatewayClient = payment.NewMockPaymentGatewayClient(true)
 	}
+	gatewayClient = payment.ObserveGateway(gatewayClient)
 
 	if db != nil {
 		catalogRepo = repository.NewCatalogRepository(db.DB)
@@ -2410,6 +2412,21 @@ func main() {
 		HandleProductImageUpload(w, r, cfg.UploadDir)
 	}))
 
+	if db != nil {
+		observability.Default.SetDB(db.DB)
+	}
+	metricsServer, metricsErr := observability.Default.Start("127.0.0.1:9090")
+	if metricsErr != nil {
+		log.Fatalf("metrics listener failed: %v", metricsErr)
+	}
+	defer metricsServer.Close()
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	defer stopMetrics()
+	if redisClient != nil {
+		go observability.Default.PollDependencies(metricsCtx, redisClient.Client)
+	} else {
+		go observability.Default.PollDependencies(metricsCtx, nil)
+	}
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("==================================================")
 	log.Printf("Drup Platform — Go Backend Core v1.0.0")
@@ -2418,7 +2435,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      enableCORS(mux, cfg),
+		Handler:      observability.Default.HTTP(mux, enableCORS(mux, cfg)),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

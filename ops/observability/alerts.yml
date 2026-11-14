@@ -1,0 +1,28 @@
+groups:
+  - name: sellersho
+    rules:
+      - alert: SellershoAPIErrors
+        expr: sum(rate(sellersho_http_duration_seconds_count{class="api",status=~"5.."}[5m])) / clamp_min(sum(rate(sellersho_http_duration_seconds_count{class="api"}[5m])), 0.001) > 0.001
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Unexpected API error budget exceeded"}
+      - alert: SellershoDependencyLost
+        expr: sellersho_postgres_up == 0 or sellersho_redis_up == 0 or absent(sellersho_postgres_up) or absent(sellersho_redis_up)
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "Database or Redis unavailable or telemetry missing"}
+      - alert: SellershoExpiryStalled
+        expr: time() - sellersho_worker_expiry_last_success_timestamp_seconds > 180 or absent(sellersho_worker_expiry_last_success_timestamp_seconds)
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "No recent successful expiry worker cycle"}
+      - alert: SellershoDiskPressure
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Host disk free space below 15 percent"}
+      - alert: SellershoBackupStale
+        expr: time() - sellersho_backup_last_success_timestamp_seconds > 93600 or absent(sellersho_backup_last_success_timestamp_seconds)
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "No proven successful backup within 26 hours"}

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/repository"
 	"log"
 	"time"
@@ -43,9 +44,18 @@ func (w *BackgroundWorker) RunOperationsCycle() {
 		{"supplier-sla", func(ctx context.Context) (int64, error) { return repository.RefreshSupplierSLA(ctx, w.db) }},
 	}
 	for _, j := range jobs {
-		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		ctx, cancel := context.WithTimeout(observability.NewContext(context.Background()), 40*time.Second)
 		started := time.Now()
 		n, e := j.run(ctx)
+		outcome := "success"
+		if e != nil {
+			outcome = "error"
+		}
+		operation := "reconciliation"
+		if j.name == "unpaid-order-expiry" {
+			operation = "expiry"
+		}
+		observability.LogOperation(ctx, "worker", operation, outcome, time.Since(started))
 		cancel()
 		logCtx, logCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		repository.RecordOperationsJob(logCtx, w.db, j.name, started, n, e)

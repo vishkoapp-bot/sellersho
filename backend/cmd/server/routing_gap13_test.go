@@ -124,6 +124,16 @@ func gap13Setup(t *testing.T) *gap13Repos {
 			t.Fatalf("DDL/seed failed: %v\n%s", err, q)
 		}
 	}
+	prepareShippingInventoryFixture(t, db)
+	for _, row := range [][2]string{{"swh-direct-only", "sup-direct-only"}, {"swh-both", "sup-both"}} {
+		if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,'انبار تأمین‌کننده','تهران','تهران')`, row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedShippingInventoryFixtureLot(t, db, "p-wh-directonly", "sup-direct-only", "", "swh-direct-only", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-direct-both", "sup-both", "", "swh-both", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-direct-none", "sup-none", "wh-central", "", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-wh-none", "sup-none", "wh-central", "", 10)
 	return &gap13Repos{
 		db:           db,
 		orderRepo:    repository.NewOrderRepository(db),
@@ -311,8 +321,8 @@ func TestGap13QuoteOrderParity(t *testing.T) {
 	for _, leg := range quote.Legs {
 		origins[leg.OriginID] = true
 	}
-	if !origins["supplier:sup-direct-only"] || !origins["warehouse"] {
-		t.Fatalf("quote leg origins = %v, want supplier:sup-direct-only + warehouse", origins)
+	if !origins["supplier-warehouse:swh-direct-only"] || !origins["warehouse:wh-central"] {
+		t.Fatalf("quote leg origins = %v, want the exact supplier and central warehouse IDs", origins)
 	}
 
 	rec := gap13CreateOrder(t, rp, gap13OrderBody(items, quote.QuoteID))

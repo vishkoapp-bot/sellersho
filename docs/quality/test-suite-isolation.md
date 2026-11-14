@@ -225,3 +225,23 @@ Full immutable source snapshot 94ef32b421af83ecb418f671769e175ae1267488 complete
 network-reward package was excluded by git archive. This remains a failing
 integration baseline; subsequent focused fixes require a new complete run.
 Evidence: `logs/test02-exact-94ef32b-full.log`.
+
+## Shipping/Tapin explicit physical fixtures
+
+Minimal shipping DTO tables now expose the columns required by the retained
+canonical inventory triggers and pricing-policy snapshots. Fixtures seed exact
+supplier/central warehouse lots instead of relying on products.stock. Tapin
+registration orders record their purchased supplier-origin line. Formula quote
+expectations resolve the same explicit physical IDs before hashing; routing tests
+require supplier-warehouse and central-warehouse IDs, not collapsed supplier/name
+keys. All 23 selected Tapin/routing tests passed, including real httptest provider
+requests, envelope errors, service-disabled formula fallback, overweight refusal,
+unknown registration outcome and quote/order parity. No real carrier was called.
+
+Supplier-order role fixtures now record the origin line's quantity and supplier
+at fixture birth. All seven customer/admin/no-scope/accept/ship tests passed.
+Optional notification writes in these minimal fixtures still emit explicit
+invalid/missing recipient or metadata diagnostics; the 16 separate writer cases
+provide notification evidence. No production shipping or authorization behavior
+was changed. Logs: `logs/test02-shipping-provenance-final.log`,
+`logs/test02-shipping-role-fixtures.log`.

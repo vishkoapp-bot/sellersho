@@ -236,6 +236,14 @@ func tapinTestSetup(t *testing.T) *tapinRepos {
 			t.Fatalf("DDL/seed failed: %v\n%s", err, q)
 		}
 	}
+	prepareShippingInventoryFixture(t, db)
+	if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name,tapin_province_id,tapin_city_id) VALUES('swh-plain','sup-plain','انبار تأمین‌کننده','تهران','تهران',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	seedShippingInventoryFixtureLot(t, db, "p-tapin", "sup-tapin", "", "swh-tapin", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-heavy", "sup-tapin", "", "swh-tapin", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-plain", "sup-plain", "", "swh-plain", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-central", "sup-plain", "wh-central", "", 10)
 	return &tapinRepos{
 		db:           db,
 		orderRepo:    repository.NewOrderRepository(db),
@@ -449,6 +457,10 @@ func TestTapinQuoteServiceNotActivatedFallsBackToFormula(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve lines: %v", err)
 	}
+	lines, err = resolveQuoteOrigins(ctx, rp.db, lines)
+	if err != nil {
+		t.Fatal("resolve exact formula origins", err)
+	}
 	rates, err := loadShippingRates(ctx, rp.db)
 	if err != nil {
 		t.Fatalf("load rates: %v", err)
@@ -491,6 +503,10 @@ func TestTapinQuoteUnconnectedLegKeepsFormula(t *testing.T) {
 	lines, err := resolveQuoteLines(ctx, rp.catalogRepo, rp.supplierRepo, []shippingQuoteItemReq{{ProductID: "p-plain", Quantity: 1}})
 	if err != nil {
 		t.Fatalf("resolve lines: %v", err)
+	}
+	lines, err = resolveQuoteOrigins(ctx, rp.db, lines)
+	if err != nil {
+		t.Fatal("resolve exact formula origins", err)
 	}
 	rates, err := loadShippingRates(ctx, rp.db)
 	if err != nil {
@@ -564,6 +580,9 @@ func tapinSeedOrder(t *testing.T, rp *tapinRepos, orderID, itemProductID string,
 		if _, err := rp.db.Exec(q); err != nil {
 			t.Fatalf("seed order: %v\n%s", err, q)
 		}
+	}
+	if _, err := rp.db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,supplier_warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'supplier','sup-tapin','swh-tapin','انبار تأمین‌کننده',$4)`, "origin-"+orderID, orderID, "oi-"+orderID, qty); err != nil {
+		t.Fatal(err)
 	}
 }
 

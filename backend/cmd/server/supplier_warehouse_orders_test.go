@@ -98,6 +98,10 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 			t.Fatalf("seed failed: %v", err)
 		}
 	}
+	if _, err := db.Exec(`ALTER TABLE order_item_origins ADD COLUMN quantity INT, ADD COLUMN supplier_id TEXT;
+		UPDATE order_item_origins x SET quantity=oi.quantity,supplier_id=p.supplier_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.id=x.order_item_id`); err != nil {
+		t.Fatal(err)
+	}
 	return db, repository.NewSupplierShipmentRepository(db)
 }
 

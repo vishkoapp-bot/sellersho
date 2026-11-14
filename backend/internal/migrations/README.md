@@ -57,6 +57,16 @@ operation, never an automatic HTTP-startup action:
    legacy file requires investigation and a reviewed reconciliation; do not edit
    the manifest merely to suppress a refusal.
 
+The production ledger also contains 12 preserved duplicate aliases written by a
+pre-canonical runner. `legacy-aliases.json` pins each alias to the canonical row
+that was subsequently recorded. Adoption accepts an alias only when its canonical
+target is present in the same ledger and still matches `historical-checksums.json`.
+The alias row is retained and receives the target checksum; it never substitutes
+for missing canonical history. Unknown aliases remain fatal. The ambiguous numeric
+alias `202610190003` maps to `202610190003_supplier_approval.up.sql`: production
+timestamps place both on 18 October, while the other same-prefix return-window
+migration was not applied until 1 November.
+
 ## Transaction boundaries and nontransactional DDL
 
 All 179 historical files support transactional execution. Top-level transaction

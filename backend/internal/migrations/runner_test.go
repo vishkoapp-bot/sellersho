@@ -238,6 +238,61 @@ func TestLegacyAdoptionRequiresVerifiedManifest(t *testing.T) {
 	}
 }
 
+func TestLegacyAliasAdoptionPreservesLedgerRows(t *testing.T) {
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	name := "202610190003_supplier_approval.up.sql"
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrationFile(t, dir, name, string(body))
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (
+		version VARCHAR(255) PRIMARY KEY,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	); INSERT INTO schema_migrations(version) VALUES
+		('202610190003'),
+		('202610190003_supplier_approval.up.sql')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(context.Background(), db, Options{Dir: dir, AdoptLegacy: true}); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 2 {
+		t.Fatal("legacy alias row was not preserved")
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations WHERE length(checksum) = 64`) != 2 {
+		t.Fatal("canonical and alias checksums were not adopted")
+	}
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatalf("strict verification after alias adoption: %v", err)
+	}
+}
+
+func TestLegacyAliasCannotReplaceCanonicalHistory(t *testing.T) {
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	name := "202610190003_supplier_approval.up.sql"
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrationFile(t, dir, name, string(body))
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (
+		version VARCHAR(255) PRIMARY KEY,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	); INSERT INTO schema_migrations(version) VALUES ('202610190003')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), db, Options{Dir: dir, AdoptLegacy: true}); err == nil {
+		t.Fatal("legacy alias replaced its missing canonical history row")
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 1 {
+		t.Fatal("failed alias adoption changed migration history")
+	}
+}
+
 func TestBackdatedMigrationRefused(t *testing.T) {
 	db, _ := fixtureDB(t)
 	dir := t.TempDir()

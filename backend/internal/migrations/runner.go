@@ -26,6 +26,13 @@ import (
 //go:embed historical-checksums.json
 var historicalJSON []byte
 
+// legacyAliases records duplicate rows written by the production server's
+// pre-canonical migrator. The alias and its canonical target must both remain
+// present; aliases never stand in for a missing canonical migration.
+//
+//go:embed legacy-aliases.json
+var legacyAliasesJSON []byte
+
 // Global to this PostgreSQL database, shared by every schema/replica/entrypoint.
 const advisoryLockID int64 = 0x53454c4c45524d
 
@@ -308,16 +315,32 @@ func prepareHistory(ctx context.Context, conn *sql.Conn, files []migration, opti
 	for _, file := range files {
 		known[file.name] = file
 	}
+	var historical map[string]string
+	if err := json.Unmarshal(historicalJSON, &historical); err != nil {
+		return nil, errors.New("invalid embedded historical migration manifest")
+	}
+	var aliases map[string]string
+	if err := json.Unmarshal(legacyAliasesJSON, &aliases); err != nil {
+		return nil, errors.New("invalid embedded legacy migration aliases")
+	}
+	resolved := make(map[string]migration, len(checksums))
 	var lastApplied string
 	for name, checksum := range checksums {
 		file, ok := known[name]
 		if !ok {
-			return nil, fmt.Errorf("applied migration %s missing from required directory", name)
+			targetName, aliasOK := aliases[name]
+			target, targetOK := known[targetName]
+			_, targetApplied := checksums[targetName]
+			if !aliasOK || !targetOK || !targetApplied || historical[targetName] != target.checksum {
+				return nil, fmt.Errorf("applied migration %s missing from required directory", name)
+			}
+			file = target
 		}
 		if checksum != "" && checksum != file.checksum {
 			return nil, fmt.Errorf("checksum drift for applied migration %s", name)
 		}
-		if name > lastApplied {
+		resolved[name] = file
+		if _, canonical := known[name]; canonical && name > lastApplied {
 			lastApplied = name
 		}
 	}
@@ -330,17 +353,18 @@ func prepareHistory(ctx context.Context, conn *sql.Conn, files []migration, opti
 		if !options.AdoptLegacy {
 			return nil, errors.New("legacy migration history has no checksums; verify the documented baseline and run migrate -adopt-legacy explicitly")
 		}
-		var historical map[string]string
-		if err := json.Unmarshal(historicalJSON, &historical); err != nil {
-			return nil, errors.New("invalid embedded historical migration manifest")
-		}
 		for _, name := range legacy {
-			if expected, ok := historical[name]; !ok || expected != known[name].checksum {
+			file := resolved[name]
+			manifestName := name
+			if target, ok := aliases[name]; ok {
+				manifestName = target
+			}
+			if expected, ok := historical[manifestName]; !ok || expected != file.checksum {
 				return nil, fmt.Errorf("legacy migration %s does not match verified historical manifest; adoption refused", name)
 			}
 		}
 		for _, name := range legacy {
-			if _, err := tx.ExecContext(historyCtx, `UPDATE schema_migrations SET checksum = $1 WHERE version = $2`, known[name].checksum, name); err != nil {
+			if _, err := tx.ExecContext(historyCtx, `UPDATE schema_migrations SET checksum = $1 WHERE version = $2`, resolved[name].checksum, name); err != nil {
 				return nil, err
 			}
 		}

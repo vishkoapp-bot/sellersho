@@ -25,18 +25,13 @@ $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
-# The strict runner cannot adopt an unverified legacy history at application
-# startup. Check before building/uploading or touching live services.
+# The release runner performs reviewed legacy adoption only after its verified
+# database backup. This early check is deliberately read-only.
 Remote @'
 set -eu
-ready=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='schema_migrations' AND column_name='checksum'")
+ready=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='schema_migrations'")
 if [ "$ready" != "1" ]; then
-  echo 'DEPLOYMENT BLOCKED: production migration history needs reviewed legacy adoption and an isolated upgrade rehearsal.' >&2
-  exit 1
-fi
-missing=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM schema_migrations WHERE checksum IS NULL OR checksum=''")
-if [ "$missing" != "0" ]; then
-  echo 'DEPLOYMENT BLOCKED: production migration checksums have not been adopted.' >&2
+  echo 'DEPLOYMENT BLOCKED: production migration history is unavailable.' >&2
   exit 1
 fi
 '@
@@ -57,7 +52,7 @@ git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
 test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
 docker run --rm -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:20-alpine sh -c 'npm ci --no-audit --no-fund && npm run build'
-docker run --rm -e CGO_ENABLED=0 -v "`$release/backend:/app" -v sellersho-go-build-cache:/root/.cache/go-build -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server'
+docker run --rm -e CGO_ENABLED=0 -v "`$release/backend:/app" -v sellersho-go-build-cache:/root/.cache/go-build -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
 python3 -c 'import json,datetime,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))' "`$release/release.json"
 python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
 "@
@@ -84,6 +79,8 @@ try {
     # The archive has no .git directory; release.json records its exact commit.
     & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/server-linux ./cmd/server
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
+    & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/migrate-linux ./cmd/migrate
+    if ($LASTEXITCODE -ne 0) { throw 'Migration runner build failed.' }
 } finally {
     Pop-Location
     $env:GOOS = $previousGoOS; $env:GOARCH = $previousGoArch; $env:CGO_ENABLED = $previousCGO

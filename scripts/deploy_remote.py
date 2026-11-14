@@ -14,6 +14,8 @@ import sys
 import time
 import urllib.request
 
+from migration_history import classify_history
+
 root = Path(sys.argv[1]).resolve()
 commit, ssl, move_xray = sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'
 if root != Path('/opt/drup') or not re.fullmatch(r'[a-f0-9]{40}', commit):
@@ -49,11 +51,14 @@ if json.loads((release / 'release.json').read_text())['commit'] != commit:
     raise SystemExit('Release manifest mismatch')
 applied = set(run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db', '-Atc',
                   'SELECT version FROM schema_migrations', capture=True).splitlines())
-pending = [p for p in sorted((release / 'backend/migrations').glob('*.up.sql')) if p.name not in applied]
-unknown_history = applied - {p.name for p in (release / 'backend/migrations').glob('*.up.sql')}
-if unknown_history:
-    raise SystemExit('Production migration history contains unreviewed aliases/unknown entries; isolated adoption rehearsal required')
-print('Pending migrations:', [p.name for p in pending], flush=True)
+canonical = {p.name for p in (release / 'backend/migrations').glob('*.up.sql')}
+aliases = json.loads((release / 'backend/internal/migrations/legacy-aliases.json').read_text())
+try:
+    pending_names, accepted_aliases = classify_history(applied, canonical, aliases)
+except ValueError as error:
+    raise SystemExit(str(error)) from error
+pending = [release / 'backend/migrations' / name for name in pending_names]
+print('Pending migrations:', pending_names, 'reviewed legacy aliases:', len(accepted_aliases), flush=True)
 # Reviewed live gap: attribution table is absent; its idempotent backfill
 # derives customer/store links without changing users, orders or balances.
 reviewed_historical = {'202611050001_customer_store_links.up.sql'}
@@ -110,6 +115,7 @@ with open(backup / 'postgres.dump', 'rb') as dump:
 print('Backup:', backup, flush=True)
 xray_path = xray_previous = None
 dist_saved = changed = False
+migration_stage = '/tmp/sellersho-migrate-' + commit[:12]
 
 
 def health():
@@ -126,6 +132,19 @@ def health():
 
 
 try:
+    run('docker', 'exec', 'drup_backend', 'mkdir', '-p', migration_stage + '/migrations')
+    run('docker', 'cp', str(release / 'backend/bin/migrate-linux'), 'drup_backend:' + migration_stage + '/migrate')
+    run('docker', 'cp', str(release / 'backend/migrations') + '/.', 'drup_backend:' + migration_stage + '/migrations')
+    run('docker', 'exec', 'drup_backend', migration_stage + '/migrate',
+        '-dir', migration_stage + '/migrations', '-adopt-legacy')
+    run('docker', 'exec', 'drup_backend', migration_stage + '/migrate',
+        '-dir', migration_stage + '/migrations')
+    run('docker', 'exec', 'drup_backend', 'rm', '-rf', migration_stage)
+    missing_checksums = run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db',
+                            '-Atc', "SELECT count(*) FROM schema_migrations WHERE checksum IS NULL OR checksum=''",
+                            capture=True).strip()
+    if missing_checksums != '0':
+        raise RuntimeError('Migration checksum adoption incomplete')
     changed = True
     runtime_file.write_text(json.dumps(runtime))
     for name in ['Caddyfile', 'docker-compose.ssl.yml']:
@@ -197,6 +216,8 @@ try:
 except Exception:
     print('Deployment failed; restoring previous code and runtime configuration.', flush=True)
     try:
+        subprocess.run(['docker', 'exec', 'drup_backend', 'rm', '-rf', migration_stage],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if ssl and changed:
             # A configuration validation error must not prevent rollback.
             for edge in run('docker', 'ps', '--filter', 'label=com.docker.compose.project=drup',

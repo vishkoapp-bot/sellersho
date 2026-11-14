@@ -207,3 +207,21 @@ actual shared publication pipeline and duplicate-review refusal. The fixture has
 no real supplier recipient, so optional approval notification skips remain
 visible and are not notification acceptance. Evidence:
 `logs/test02-approval-route-fixtures.log` (2/2, no test skips).
+
+## Supplier panel and unpublished typed proposal
+
+Panel fixtures now select an owned origin through the real origin API, explicitly
+declare stock before reserving an inbound and use a distinct active destination.
+The proposal HTTP case sends the supported V2 simple SKU shape, a registered
+niche and its source. It checks that no supplier product exists after submission
+or a refused unreviewed approval, then records all field reviews and verifies the
+actual publication ID returned by ApproveProposal. The provisional HTTP preview
+ID is not treated as a published product identity. Both tests passed without
+skips, retaining foreign-owner/negative-stock/price gates and stock-zero checks.
+Evidence: `logs/test02-supplier-panel-current.log`.
+
+Full immutable source snapshot 94ef32b421af83ecb418f671769e175ae1267488 completed
+563 top-level tests with 34 failures and verified cleanup. The paused untracked
+network-reward package was excluded by git archive. This remains a failing
+integration baseline; subsequent focused fixes require a new complete run.
+Evidence: `logs/test02-exact-94ef32b-full.log`.

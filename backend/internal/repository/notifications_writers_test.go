@@ -21,7 +21,7 @@ import (
 )
 
 const notifyWritersDDL = `
-DROP TABLE IF EXISTS referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+DROP TABLE IF EXISTS order_item_origins, referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
 CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT,status TEXT,released_at TIMESTAMPTZ);
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -178,8 +178,13 @@ CREATE TABLE supplier_shipments (
 	carrier VARCHAR(100) DEFAULT '',
 	tracking_number VARCHAR(100) DEFAULT '',
 	shipped_at TIMESTAMPTZ,
+	delivered_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE order_item_origins (
+	order_item_id VARCHAR(50),
+	supplier_id VARCHAR(50)
 );
 CREATE TABLE supplier_shipment_audit_logs (
 	id VARCHAR(50) PRIMARY KEY,

@@ -71,3 +71,14 @@ directory, while suspended store detail retains its status. It also verifies
 the 15 public fields and absence of private margin data. All four isolated tests
 passed without skips. No catalog or store business behavior changed.
 Evidence: `logs/test02-catalog-fixtures-final.log`.
+
+## Notification writer fixture boundaries
+
+The minimal notification fixture used varchar item IDs but accidentally joined
+the migrated public UUID origin table left behind by its DDL. It now explicitly
+owns an empty origin relation with matching fixture item-ID types and includes
+the shipment delivery timestamp used by cancellation guards. Five failing writer
+cases passed, followed by all 16 tests in that fixture without skips. Assertions
+still exercise real cancellation, disputes, return COD refusal, customer/supplier
+recipients and replay counts. Production notification code was not changed.
+Evidence: `logs/test02-notification-fixtures-final.log`.

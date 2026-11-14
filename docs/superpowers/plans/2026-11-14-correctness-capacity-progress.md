@@ -16,7 +16,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | MIG-01 | DONE | 9093c5f | [Migration contract](../../../backend/internal/migrations/README.md) |
 | INV-05 | DONE | efb37fc | [Origin contract](../../architecture/inventory-origins.md) |
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
-| INV-02 | Checkpoint OPEN | Transfer provenance checkpoint | [Inbound transfers](../../architecture/inbound-transfers.md) |
+| INV-02 | Checkpoint OPEN | bb61fae | [Inbound transfers](../../architecture/inbound-transfers.md) |
 | INV-03 | TODO | — | — |
 | INV-04 | TODO | — | — |
 | INV-08 | TODO | — | — |
@@ -278,3 +278,12 @@ Fresh review found three Important issues: partial ASN receipt closed too early,
 The exact reviewed source tree e6e27bdd7a38603d55c0f676f4de0e5b2bbdc49f, based on ff4ff13, excluded concurrent PERF/CAP changes. Its guarded affected run executed 47 top-level backend cases successfully (repository 28.203s; server 1.520s), with disposable cleanup verified. Exactly seven retained positive QC/putaway integration cases remain explicitly skipped: three tracked/origin putaway cases and four legacy inbound mode cases. These skips are pending integration evidence, not passing end-to-end acceptance. Five client tests passed without skips; typecheck, frontend production build and default Go suite passed. Default DB fixtures intentionally skip without opt-in configuration. Proof: releases/inv02-staged-proof.json; logs/inv02-exact-{affected,client,typecheck,build,default}.log.
 
 Ruling: commit this reviewed transfer infrastructure as Checkpoint OPEN, because INV-04 disposition and INV-09 exact putaway must consume the same physical allocations before the seven retained positive branches execute without skips. The current full receipt lifecycle remains gated; no QC-created sellable stock or silent second supplier debit is enabled. A fresh INV-04 implementer is continuing the coupled work immediately. No production data, reconciliation, service or deployment changed; intended-hardware capacity stays OPEN under the user's local-only ruling.
+
+
+## QUAL-01 / CAP-01 discovery — supplier warehouse geography schema checkpoint
+
+The guarded carrier fixture exposed a real canonical-schema defect: existing Tapin supplier-origin lookups selected province/city provider IDs absent from every supplier warehouse migration. Actual fresh migrated PostgreSQL reads failed with undefined-column 42703. Additive migration 202611140007 supplies nullable INTEGER columns matching central warehouse types, with no default, inferred geography or backfill. Existing unmapped responses remain zero; recorded explicit IDs round-trip. Down refuses any recorded mapping.
+
+Independent coordinator review approved the three source/test files. Exact source tree 702d8c0f6f63c27b714db80c1cb4b53203eaaffe (base bb61fae) excluded uncommitted harness, QC and catalog work. The focused guarded migrated-schema regression passed without skips (0.411s), including unknown-null compatibility, column shape, both real repository lookup paths, and rollback refusal tested in an always-rolled-back transaction. Disposable cleanup verified. Proof: releases/geo-staged-proof.json; log: logs/geo-exact.log. Contract: docs/architecture/supplier-warehouse-geography.md.
+
+Ruling: repair this application-schema contract through a normal migration rather than adding fixture-only columns, because the real supplier carrier path otherwise fails on a fresh canonical database. QUAL-01 and CAP-01 remain OPEN; this does not certify carrier behavior or capacity. The same conserved 140k-line financial cohort now measures five supplier reads at 1667/1616/1644/1733/2035ms after the native-UUID lookup fix, improved from the observed 503.61s scan but still outside the read-latency target. Those measurements remain failed performance evidence for FIN-013/PERF work. No production data or service changed.

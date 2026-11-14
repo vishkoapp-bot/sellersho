@@ -55,7 +55,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | MIG-02 | TODO | — | — |
 | FIN-014 | TODO | — | — |
 | CHECKOUT-03 | TODO | — | — |
-| PERF-01 | Checkpoint OPEN | Cursor protocol checkpoint | [Paging contract](../../architecture/catalog-pagination.md) |
+| PERF-01 | Checkpoint OPEN | a5187bd | [Paging contract](../../architecture/catalog-pagination.md) |
 | PERF-02 | TODO | — | — |
 | PERF-03 | TODO | — | — |
 | PERF-04 | TODO | — | — |
@@ -244,3 +244,11 @@ Added the standalone, currently unwired `internal/catalogpage` protocol: default
 Independent review by `remaining_backlog` found case aliases could bypass duplicate detection because Go JSON field names are case-insensitive. New `v`/`V` and `price`/`Price` tests reproduced the failure, then Unicode EqualFold rejection fixed it. Unit tests,10-second fuzz passes (151330 initial /49100 final inputs) and go vet passed. Contract: `docs/architecture/catalog-pagination.md`; raw logs `logs/perf01-cursor-*.log`.
 
 Architecture review rejected routine full-catalog invalidation/rebuild/cold503. Next integration requires a lean price index, transaction-coupled affected writes, prepared broad policy/time transitions, page-only dependency hydration, stable SQL cursors, exact search/bounds and all maintained frontend consumers. Existing owner-approved card default-variant semantics determine public sort/filter price, and displayed integer discount determines discount sort. No public route behavior or measured bottleneck was changed by this package. PERF-01 remains OPEN; CAP-02 intended-hardware certification stays open per user.
+
+## FIN-001 — measured native-ID index follow-up
+
+The large synthetic CAP setup exposed a supplier-origin correlated scan; converting canonical UUID join/lookup columns to text prevented the existing origin index from serving an equality Index Cond. Five SQL predicate changes now use the matching native ID types in authority, ambiguity candidates, account discovery and single-item lookups. The quantity/order/nonblank-single-party immutable authority checks are unchanged. This does not guess from mutable catalog ownership, alter historical rows, or add a schema/index migration.
+
+New `TestSupplierOriginAuthorityUsesCanonicalUUIDIndex` copies actual migrated UUID tables/indexes into a rolled-back private schema, seeds5000 origins, proves an index condition is possible, and checks earned500000. Old code failed the index assertion; new code passed. Forced `enable_seqscan=off` is explicitly only an index-eligibility diagnostic, not a production plan or latency claim.
+
+Independent review by `remaining_backlog` approved the three code/test paths. Exact root-only tree `12a78b63542220670dfe184efebe15f033983461` (basea5187bd, no concurrent INV/CAP source) passed55 top-level finance/origin/returns/storage tests without skips in22.551s, with verified disposable cleanup; repository go vet passed. Shared-tree55/55 also passed. Evidence: `docs/architecture/finance-origin-lookup.md`, ignored `logs/finance-origin-index-*.log`. Same-cohort large-data retiming and repeated treasury-query work remain CAP/FIN-013 gates; no100-RPS or intended-hardware claim.

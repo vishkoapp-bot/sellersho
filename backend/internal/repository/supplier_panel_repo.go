@@ -74,7 +74,7 @@ type SupplierBalance struct {
 const (
 	// Earned: per-item wholesale-cost snapshots over paid + delivered
 	// orders. No release hold — supplier money is owed from delivery.
-	supplierOriginAuthority = `(SELECT CASE WHEN COUNT(*)>0 AND SUM(src.quantity)=oi.quantity AND BOOL_AND(COALESCE(src.quantity,0)>0 AND COALESCE(src.order_id,'')=oi.order_id AND COALESCE(src.supplier_id,'')<>'') AND COUNT(DISTINCT src.supplier_id)=1 THEN MIN(src.supplier_id) END FROM order_item_origins src WHERE src.order_item_id::text=oi.id::text)`
+	supplierOriginAuthority = `(SELECT CASE WHEN COUNT(*)>0 AND SUM(src.quantity)=oi.quantity AND BOOL_AND(COALESCE(src.quantity,0)>0 AND COALESCE(src.order_id,'')=oi.order_id AND COALESCE(src.supplier_id,'')<>'') AND COUNT(DISTINCT src.supplier_id)=1 THEN MIN(src.supplier_id) END FROM order_item_origins src WHERE src.order_item_id=oi.id)`
 	supplierTermEarned      = `COALESCE((SELECT SUM(oi.wholesale_cost::numeric * oi.quantity) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE ` + supplierOriginAuthority + ` = $SUP AND o.payment_status='paid' AND o.status IN ('delivered','delivered_confirmed')),0)`
 	// Reserved: payout requests still awaiting review.
 	supplierTermReserved = `COALESCE((SELECT SUM(amount) FROM payout_requests WHERE supplier_id = $SUP AND status = 'pending'), 0)`
@@ -239,7 +239,7 @@ func (r *SupplierRepository) SumAllSuppliersAvailable(ctx context.Context) (int6
 func unresolvedSupplierEarningsExpr(supplierExpr string) string {
 	candidate := ""
 	if supplierExpr != "" {
-		candidate = ` AND (p.supplier_id=` + supplierExpr + ` OR EXISTS(SELECT 1 FROM order_item_origins candidate WHERE candidate.order_item_id::text=oi.id::text AND candidate.supplier_id=` + supplierExpr + `) OR COALESCE(p.supplier_id,'')='')`
+		candidate = ` AND (p.supplier_id=` + supplierExpr + ` OR EXISTS(SELECT 1 FROM order_item_origins candidate WHERE candidate.order_item_id=oi.id AND candidate.supplier_id=` + supplierExpr + `) OR COALESCE(p.supplier_id,'')='')`
 	}
 	return `COALESCE((SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id=oi.order_id LEFT JOIN products p ON p.id=oi.product_id WHERE oi.wholesale_cost>0 AND o.payment_status='paid' AND o.status IN ('delivered','delivered_confirmed') AND ` + supplierOriginAuthority + ` IS NULL` + candidate + `),0)`
 }

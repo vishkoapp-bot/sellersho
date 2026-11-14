@@ -299,7 +299,7 @@ func discoverOrderFinanceAccountsTx(ctx context.Context, tx *sql.Tx, orderID str
  UNION SELECT 'seller',referrer_seller_id FROM orders WHERE id=$1 AND COALESCE(referrer_seller_id,'')<>''
  UNION SELECT 'seller',b.referrer_store_id FROM referral_bonuses b JOIN orders o ON o.store_id=b.referred_store_id WHERE o.id=$1 AND COALESCE(b.referrer_store_id,'')<>''
  UNION SELECT 'supplier',p.supplier_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=$1 AND COALESCE(p.supplier_id,'')<>''
- UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id::text=o.order_item_id::text WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
+ UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id=o.order_item_id WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -351,10 +351,10 @@ func lockPayoutAccountsTx(ctx context.Context, tx *sql.Tx, id string) error {
 func immutableOrderItemSupplierTx(ctx context.Context, tx *sql.Tx, itemID string) (string, error) {
 	var orderID string
 	var quantity int
-	if err := tx.QueryRowContext(ctx, `SELECT order_id,COALESCE(quantity,0) FROM order_items WHERE id::text=$1`, itemID).Scan(&orderID, &quantity); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT order_id,COALESCE(quantity,0) FROM order_items WHERE id=$1`, itemID).Scan(&orderID, &quantity); err != nil {
 		return "", err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(order_id,''),COALESCE(supplier_id,''),COALESCE(quantity,0) FROM order_item_origins WHERE order_item_id::text=$1 ORDER BY id`, itemID)
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(order_id,''),COALESCE(supplier_id,''),COALESCE(quantity,0) FROM order_item_origins WHERE order_item_id=$1 ORDER BY id`, itemID)
 	if err != nil {
 		return "", err
 	}

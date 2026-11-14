@@ -1437,6 +1437,26 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	if err != nil {
 		return "", fmt.Errorf("failed to insert product: %w", err)
 	}
+	// The reviewed source selection must be attached before initial stock is
+	// allocated. A source label/current profile is never evidence of ownership.
+	// Existing publications retain their origin; later edits use their own API.
+	if !existedBefore {
+		if rawSource, exists := data["supplierWarehouseId"]; exists && rawSource != nil {
+			source, ok := rawSource.(string)
+			if !ok {
+				return "", fmt.Errorf("invalid supplier publication origin")
+			}
+			if source = strings.TrimSpace(source); source != "" {
+				var ownedSource string
+				if err := tx.QueryRowContext(ctx, `SELECT id FROM supplier_warehouses WHERE id=$1 AND supplier_id=$2 AND is_active FOR SHARE`, source, requestedBy).Scan(&ownedSource); err != nil {
+					return "", fmt.Errorf("publication requires an active owned supplier origin: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE products SET origin_supplier_warehouse_id=$1 WHERE id=$2`, ownedSource, productID); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
 
 	// Fix 9: persist the proposal's full gallery into product_images so it
 	// is no longer dropped during promotion (only images[0] reached

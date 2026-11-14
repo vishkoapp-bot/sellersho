@@ -155,3 +155,21 @@ keys and the exact stored power value rather than deleting its data-preservation
 check. It passed alongside both public-response key regressions (3/3, no skips).
 Production serialization was not changed. Evidence:
 `logs/test02-catalog-public-contract.log`.
+
+## Product publication explicit source
+
+A new canonical-schema regression reproduced both legacy and typed publication
+rejecting their supplied, reviewed supplierWarehouseId because initial stock was
+seeded before the product retained that ID. First publication now verifies active
+ownership under a shared warehouse-row lock and attaches the exact selected ID
+inside the publication transaction, before SKU/legacy stock seeding. Existing
+product origins are not rewritten by this change. No profile/name inference or
+historical stock backfill is introduced.
+
+The real-schema regression passes for both publication models, asserts three
+sellable units at exactly the selected warehouse, and rejects inactive, foreign
+and unknown sources with product/status rollback checks. Five existing V2 model
+tests now supply the same explicit source and clone their owned warehouse table;
+all six top-level tests passed without skips. The default Go suite passed with
+integration opt-ins absent. Evidence: `logs/test02-publication-origin-red.log`,
+`logs/test02-model-publication.log`, `logs/test02-stage11-default.log`.

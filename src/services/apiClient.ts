@@ -18,19 +18,24 @@ export class ApiError extends Error {
 // Token Storage and Session Management
 const TOKEN_KEY = 'seler_sho_jwt_token';
 let onUnauthorizedCallback: (() => void) | null = null;
+let sessionGeneration = 0;
 
 export const tokenStore = {
+  getGeneration: (): number => sessionGeneration,
+  invalidateRequests: (): void => { sessionGeneration++; },
   getToken: (): string | null => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem(TOKEN_KEY);
   },
   setToken: (token: string): void => {
     if (typeof window === 'undefined') return;
+    sessionGeneration++;
     localStorage.setItem(TOKEN_KEY, token);
     window.dispatchEvent(new Event('drup-session-changed'));
   },
   clearToken: (): void => {
     if (typeof window === 'undefined') return;
+    sessionGeneration++;
     localStorage.removeItem(TOKEN_KEY);
   },
   onUnauthorized: (callback: () => void): void => {
@@ -63,6 +68,7 @@ export async function apiRequest<T>(
     'Content-Type': 'application/json',
     ...(headers as Record<string, string>),
   };
+  const requestGeneration = tokenStore.getGeneration();
 
   if (auth) {
     const token = tokenStore.getToken();
@@ -91,8 +97,9 @@ export async function apiRequest<T>(
 
   if (response.status === 401) {
     const requestToken = reqHeaders['Authorization']?.replace(/^Bearer\s+/, '');
-    if (auth && requestToken && requestToken === tokenStore.getToken()) {
+    if (auth && requestToken && requestToken === tokenStore.getToken() && requestGeneration === tokenStore.getGeneration()) {
       tokenStore.clearToken();
+      window.dispatchEvent(new Event('drup-session-expired'));
       if (onUnauthorizedCallback) {
         onUnauthorizedCallback();
       }

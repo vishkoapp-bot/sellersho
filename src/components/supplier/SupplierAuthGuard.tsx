@@ -1,9 +1,9 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
 import { SupplierAccountStateScreen, SupplierAccountStateInfo, supplierAccountStateFromError } from './SupplierAccountStateScreen';
-import { tokenStore } from '../../services/apiClient';
 import { Building2, KeyRound, ArrowRight, ShieldCheck, X, CheckCircle2, FileText } from 'lucide-react';
 
 interface SupplierAuthGuardProps {
@@ -47,6 +47,7 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
   children,
 }) => {
   const { supplierSession, setSupplierSession, platformSettings, toPersianDigits } = useStore();
+  const { authenticate } = useAuth();
   const { success, error } = useToast();
 
   const [selectedSupplierId, setSelectedSupplierId] = useState(OFFICIAL_SUPPLIERS[0].supplierId);
@@ -106,6 +107,7 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
     }
 
     setIsSubmitting(true);
+    let requestIsCurrent = () => true;
     try {
       if (!otpSent) {
         const res = await authApi.sendOTP(mobile.trim());
@@ -117,9 +119,11 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
         return;
       }
 
-      const res = await authApi.verifyOTP(mobile.trim(), otp.trim(), 'supplier');
-      tokenStore.setToken(res.token);
+      const res = await authenticate(() => authApi.verifyOTP(mobile.trim(), otp.trim(), 'supplier'));
+      requestIsCurrent = res.isCurrent;
+      if (!requestIsCurrent()) return;
       const profile = await authApi.getSupplierProfile();
+      if (!requestIsCurrent()) return;
       setSupplierSession({
         token: res.token,
         supplierId: profile.id,
@@ -134,6 +138,7 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
       setIsSubmitting(false);
       success(`ورود با حساب «${profile.company_name}» انجام شد.`);
     } catch (err: any) {
+      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
       setIsSubmitting(false);
       // GAP 19b: if the login response carries a supplier
       // account-state code (pending/rejected), show the dedicated
@@ -144,6 +149,8 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
         return;
       }
       error(err.message || 'احراز هویت یا دریافت پروفایل تأمین‌کننده با خطا مواجه شد.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

@@ -3,7 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminRole } from '../../context/storeContextTypes';
 import { authApi } from '../../services/authApi';
-import { tokenStore } from '../../services/apiClient';
+import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
 import { isValidIranianMobile, normalizeIranianMobile } from '../../utils/validators';
 import {
   ShieldCheck,
@@ -18,6 +18,7 @@ interface AdminLoginPageProps {
 
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomerSite }) => {
   const { setAdminSession, toPersianDigits } = useStore();
+  const { authenticate } = useAuth();
   const { success, error } = useToast();
 
   const [mobile, setMobile] = useState('');
@@ -74,9 +75,11 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
       return;
     }
     setIsSubmitting(true);
+    let requestIsCurrent = () => true;
     try {
-      const res = await authApi.passwordLogin(normalizeIranianMobile(mobile), password);
-      tokenStore.setToken(res.token);
+      const res = await authenticate(() => authApi.passwordLogin(normalizeIranianMobile(mobile), password));
+      requestIsCurrent = res.isCurrent;
+      if (!requestIsCurrent()) return;
       const roleMap: Record<string, { role: AdminRole; label: string }> = {
         admin: { role: 'admin', label: 'مدیر پلتفرم' },
         super_admin: { role: 'super_admin', label: 'مدیر ارشد پلتفرم' },
@@ -95,6 +98,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
       setAdminSession({ token: res.token, username: res.user.mobile, fullName: res.user.fullName || 'مدیر ارشد پلتفرم', role: resolved.role, roleLabel: resolved.label, loginAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) });
       success(`ورود با نقش «${resolved.label}» انجام شد.`);
     } catch (err: any) {
+      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
       error(err.message || 'نام کاربری یا رمز عبور نادرست است.');
     } finally {
       setIsSubmitting(false);
@@ -109,9 +113,11 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
     }
     const clean = normalizeIranianMobile(mobile);
     setIsSubmitting(true);
+    let requestIsCurrent = () => true;
     try {
-      const res = await authApi.verifyOTP(clean, otp.trim());
-      tokenStore.setToken(res.token);
+      const res = await authenticate(() => authApi.verifyOTP(clean, otp.trim()));
+      requestIsCurrent = res.isCurrent;
+      if (!requestIsCurrent()) return;
 
       const roleMap: Record<string, { role: AdminRole; label: string }> = {
         admin: { role: 'admin', label: 'مدیر پلتفرم' },
@@ -140,6 +146,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
       });
       success(`ورود با نقش «${resolved.label}» انجام شد.`);
     } catch (err: any) {
+      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
       error(err.message || 'کد تایید نامعتبر یا منقضی شده است.');
     } finally {
       setIsSubmitting(false);

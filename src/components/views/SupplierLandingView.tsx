@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { ArrowRight, ArrowLeft, Building2, CheckCircle2, ChevronDown, HelpCircle, Package, Sparkles, TrendingUp } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
+import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
 import { roundTo100 } from '../../utils/pricingEngine';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
-import { isMockMode, tokenStore } from '../../services/apiClient';
+import { isMockMode } from '../../services/apiClient';
 
 interface Props { onBack: () => void; }
 const steps = [['۱','ثبت‌نام و پیشنهاد محصولات','محصولات خود را با قیمت عمده و مشخصات کامل پیشنهاد دهید.'],['۲','تأیید مدیر و انتشار','تیم ما محصولات را بررسی و در کاتالوگ مرکزی منتشر می‌کند.'],['۳','سفارش‌ها و تسویه','دراپ‌شیپرها می‌فروشند، شما ارسال می‌کنید و تسویه انجام می‌شود.']];
@@ -12,6 +13,7 @@ const faqs = [['چطور قیمت‌گذاری پلکانی تعریف کنم؟'
 
 export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
   const { platformSettings, formatPrice, toPersianDigits, setActiveView, setSupplierSession } = useStore();
+  const { authenticate } = useAuth();
   const { success, error } = useToast();
   const [faq, setFaq] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -25,16 +27,26 @@ export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
     // B2 (round 2): the phone is the supplier's login identity (OTP re-login) — required and format-validated (09xxxxxxxxx). Never register without a real mobile.
     if (!/^09\d{9}$/.test(form.phone.replace(/[\s-]/g, ''))) return error('شماره تماس معتبر وارد کنید (۱۱ رقم، با ۰۹ شروع شود).');
     setLoading(true);
+    let requestIsCurrent = () => true;
     try {
       if (isMockMode()) setSupplierSession({ token:'mock-supplier-token', supplierId:`sup-${form.username}`, companyName:form.companyName, managerName:form.managerName || form.companyName, warehouseCity:form.warehouseCity, loginAt:new Date().toISOString(), signedContractVersion:platformSettings.contracts.supplierContractVersion });
-      else { const result = await authApi.registerSupplier({ company_name:form.companyName, contact_person:form.managerName || form.companyName, username:form.username, password:form.password, phone:form.phone, email:form.email, warehouse_city:form.warehouseCity }); if (!result.success || !result.supplier?.id || !result.token) throw new Error('پاسخ ثبت‌نام معتبر نیست. لطفاً دوباره تلاش کنید.'); // Owner decision 28 Oct 2026: no supplier-account approval gate —
-      // registration activates immediately, so store the issued token and
-      // enter the supplier dashboard exactly like the mock branch does.
-      tokenStore.setToken(result.token);
-      setSupplierSession({ token: result.token, supplierId: result.supplier.id, companyName: result.supplier?.name || form.companyName, managerName: form.managerName || form.companyName, warehouseCity: result.supplier?.warehouseCity || form.warehouseCity, loginAt: new Date().toISOString(), signedContractVersion: platformSettings.contracts.supplierContractVersion });
-      success('ثبت‌نام انجام شد. به پنل تأمین‌کننده خوش آمدید.'); setActiveView('supplier_dashboard'); return; }
+      else {
+        const result = await authenticate(async () => {
+          const response = await authApi.registerSupplier({ company_name:form.companyName, contact_person:form.managerName || form.companyName, username:form.username, password:form.password, phone:form.phone, email:form.email, warehouse_city:form.warehouseCity });
+          if (!response.success || !response.supplier?.id || !response.token) throw new Error('پاسخ ثبت‌نام معتبر نیست. لطفاً دوباره تلاش کنید.');
+          return response;
+        });
+        requestIsCurrent = result.isCurrent;
+        if (!requestIsCurrent()) return;
+        // Registration activates immediately under the shared auth lifetime.
+        setSupplierSession({ token: result.token, supplierId: result.supplier.id, companyName: result.supplier?.name || form.companyName, managerName: form.managerName || form.companyName, warehouseCity: result.supplier?.warehouseCity || form.warehouseCity, loginAt: new Date().toISOString(), signedContractVersion: platformSettings.contracts.supplierContractVersion });
+        success('ثبت‌نام انجام شد. به پنل تأمین‌کننده خوش آمدید.'); setActiveView('supplier_dashboard'); return;
+      }
       success('درخواست همکاری با موفقیت ثبت شد.'); setActiveView('supplier_dashboard');
-    } catch (e: any) { error(e?.message || 'ثبت‌نام انجام نشد.'); } finally { setLoading(false); }
+    } catch (e: any) {
+      if (e instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
+      error(e?.message || 'ثبت‌نام انجام نشد.');
+    } finally { setLoading(false); }
   };
   const scrollToForm = () => document.getElementById('supplier-form')?.scrollIntoView({ behavior:'smooth' });
   return <div dir="rtl" className="flex-1 min-h-screen bg-slate-50 text-slate-800 pb-20">

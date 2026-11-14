@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import { 
   SupplierSession, 
   WarehouseSession 
@@ -66,7 +66,17 @@ export interface CustomerUser {
   isLoggedIn: boolean;
 }
 
+export interface AuthenticationResponse {
+  token: string;
+  user: { id: string; mobile: string; fullName: string; role: string; capabilities?: string[] };
+}
+
+export class AuthRequestSupersededError extends Error {
+  constructor() { super('Session changed during authentication'); this.name = 'AuthRequestSupersededError'; }
+}
+
 export interface AuthContextType {
+  authenticate: <T extends AuthenticationResponse>(request: () => Promise<T>) => Promise<T & { isCurrent: () => boolean }>;
   currentUser: AuthUser | null;
   authToken: string | null;
   isAuthenticated: boolean;
@@ -101,6 +111,16 @@ export interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const authGeneration = useRef(0);
+  const profileSequence = useRef(0);
+  const mounted = useRef(true);
+  const ownsRequest = (generation: number, credential: string | null, sequence?: number) =>
+    mounted.current && generation === authGeneration.current && credential === tokenStore.getToken() &&
+    (sequence === undefined || sequence === profileSequence.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; authGeneration.current += 1; };
+  }, []);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('drup_current_user');
@@ -126,10 +146,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const restore = async () => {
       const token = tokenStore.getToken();
       if (!token || isMockMode()) return;
+      const generation = authGeneration.current;
+      const sequence = ++profileSequence.current;
       setIsSessionReady(false);
       try {
         const claims = await authApi.getMe();
-        if (cancelled) return;
+        if (cancelled || !ownsRequest(generation, token, sequence)) return;
         setAuthToken(token);
         setCurrentUser({
           id: claims.userId,
@@ -139,24 +161,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           capabilities: claims.capabilities || [],
         });
       } catch {
-        if (!cancelled) {
-          tokenStore.clearToken();
-          localStorage.removeItem('drup_auth_token');
-          localStorage.removeItem('drup_current_user');
-          setAuthToken(null);
-          setCurrentUser(null);
-          // ISO-E: a failed restore (expired/revoked token) must not leave
-          // the previous user panel sessions in memory for the next
-          // render; the identity effect below also clears them, this is
-          // the immediate path. Cart keys are NOT touched here (Fix72).
-          setSupplierSession(null);
-          setSellerSession(null);
-          setAdminSession(null);
-          setWarehouseSession(null);
-          setCustomerUser({ fullName: '', mobile: '', nationalCode: '', isLoggedIn: false });
-        }
+        if (!cancelled && ownsRequest(generation, token, sequence)) logoutUser();
       } finally {
-        if (!cancelled) setIsSessionReady(true);
+        if (!cancelled && ownsRequest(generation, token, sequence)) setIsSessionReady(true);
       }
     };
     restore();
@@ -227,9 +234,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     if (!isSessionReady || !currentUser || !authToken) return;
+    let active = true;
+    const generation = authGeneration.current;
+    const canApply = () => active && ownsRequest(generation, authToken);
     setPanelSessionError(null);
     if (currentUser.capabilities?.includes('supplier') && !supplierSession) {
-      authApi.getSupplierProfile().then((profile) => setSupplierSession({
+      authApi.getSupplierProfile().then((profile) => { if (!canApply()) return; setSupplierSession({
         token: authToken,
         supplierId: profile.id,
         companyName: profile.company_name,
@@ -241,10 +251,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         permissions: profile.permissions || [],
         loginAt: new Date().toISOString(),
         signedContractVersion: profile.signedContractVersion ?? 0,
-      })).catch((error: Error) => setPanelSessionError(error.message || 'بارگذاری پروفایل تأمین‌کننده ناموفق بود.'));
+      }); }).catch((error: Error) => { if (canApply()) setPanelSessionError(error.message || 'بارگذاری پروفایل تأمین‌کننده ناموفق بود.'); });
     }
     if (currentUser.capabilities?.includes('seller') && !sellerSession) {
-      storeApi.getOwnedStores().then((stores) => setSellerSession({ token: authToken, mobile: currentUser.mobile, fullName: currentUser.fullName, status: stores.length ? 'active' : 'onboarding', storeId: stores[0]?.id, loginAt: new Date().toISOString() })).catch((error: Error) => setPanelSessionError(error.message || 'بارگذاری فروشگاه ناموفق بود.'));
+      storeApi.getOwnedStores().then((stores) => { if (!canApply()) return; setSellerSession({ token: authToken, mobile: currentUser.mobile, fullName: currentUser.fullName, status: stores.length ? 'active' : 'onboarding', storeId: stores[0]?.id, loginAt: new Date().toISOString() }); }).catch((error: Error) => { if (canApply()) setPanelSessionError(error.message || 'بارگذاری فروشگاه ناموفق بود.'); });
     }
     if (currentUser.capabilities?.some((capability) => ['warehouse_staff', 'logistics_specialist'].includes(capability)) && !warehouseSession) {
       setWarehouseSession({ token: authToken, staffId: currentUser.id, staffName: currentUser.fullName, warehouseId: 'WH-TEH-CENTRAL', warehouseName: 'انبار مرکزی', role: currentUser.role === 'logistics_specialist' ? 'logistics_specialist' : 'warehouse_staff', loginAt: new Date().toISOString() });
@@ -258,6 +268,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (currentUser.capabilities?.includes('customer')) {
       setCustomerUser((previous) => ({ ...previous, fullName: currentUser.fullName, mobile: currentUser.mobile, isLoggedIn: true }));
     }
+    return () => { active = false; };
   }, [authToken, currentUser, isSessionReady, supplierSession, sellerSession, warehouseSession, adminSession, panelRetry]);
 
   useEffect(() => {
@@ -278,134 +289,92 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [currentUser]);
 
-  const logoutCustomer = () => {
-    setCustomerUser({
-      fullName: '',
-      mobile: '',
-      nationalCode: '',
-      isLoggedIn: false,
-    });
-    // Clear the shared session regardless of which login path created it.
-    setCurrentUser(null);
-    setAuthToken(null);
+  // Every panel shares one credential. Logout is independent of base role
+  // and invalidates pending work before clearing any identity-bound state.
+  const logoutUser = useCallback(() => {
+    authGeneration.current += 1;
     tokenStore.clearToken();
-    // پاک کردن localStorage
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('drup_auth_token');
-      localStorage.removeItem('drup_current_user');
-      localStorage.removeItem('drup_customer_user');
-      localStorage.removeItem('drup_cart');
-      localStorage.removeItem('drup_carts');
-      localStorage.removeItem('drup_wishlists');
-      localStorage.removeItem('drup_orders');
+    for (const key of ['drup_auth_token', 'drup_current_user', 'drup_customer_user',
+      'drup_wishlists', 'drup_orders']) {
+      localStorage.removeItem(key);
     }
-  };
-
-  const logoutAdmin = () => {
-    setAdminSession(null);
-    if (currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'finance_specialist') {
-      setCurrentUser(null);
-      setAuthToken(null);
-    }
-  };
-
-  const logoutSeller = () => {
-    setSellerSession(null);
-    if (currentUser?.role === 'seller') {
-      setCurrentUser(null);
-      setAuthToken(null);
-    }
-  };
-
-  const logoutSupplier = () => {
-    setSupplierSession(null);
-    if (currentUser?.role === 'supplier' || supplierSession) {
-      setCurrentUser(null);
-      setAuthToken(null);
-      tokenStore.clearToken();
-      localStorage.removeItem('drup_auth_token');
-    }
-  };
-
-  const logoutWarehouse = () => {
-    setWarehouseSession(null);
-    if (currentUser?.role === 'warehouse_staff') {
-      setCurrentUser(null);
-      setAuthToken(null);
-    }
-  };
-
-  const logoutUser = () => {
-    setCurrentUser(null);
     setAuthToken(null);
-    logoutCustomer();
-    logoutAdmin();
-    logoutSeller();
-    logoutSupplier();
-    logoutWarehouse();
+    setCurrentUser(null);
+    setCustomerUser({ fullName: '', mobile: '', nationalCode: '', isLoggedIn: false });
+    setAdminSession(null);
+    setSellerSession(null);
+    setSupplierSession(null);
+    setWarehouseSession(null);
+    setPanelSessionError(null);
+    setIsLoading(false);
+    setIsSessionReady(true);
+  }, []);
+
+  // Logout in one tab revokes the shared browser session in every tab.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.storageArea === localStorage &&
+          (event.key === null || event.key === 'seler_sho_jwt_token') && event.newValue === null) {
+        logoutUser();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('drup-session-expired', logoutUser);
+    return () => { window.removeEventListener('storage', onStorage); window.removeEventListener('drup-session-expired', logoutUser); };
+  }, [logoutUser]);
+
+  const logoutCustomer = logoutUser;
+  const logoutAdmin = logoutUser;
+  const logoutSeller = logoutUser;
+  const logoutSupplier = logoutUser;
+  const logoutWarehouse = logoutUser;
+
+  const authenticate = async <T extends AuthenticationResponse,>(request: () => Promise<T>): Promise<T & { isCurrent: () => boolean }> => {
+    const generation = ++authGeneration.current;
+    const credential = tokenStore.getToken();
+    ++profileSequence.current;
+    tokenStore.invalidateRequests();
+    setIsLoading(true);
+    try {
+      let result: T;
+      try { result = await request(); }
+      catch (error) {
+        if (!ownsRequest(generation, credential)) throw new AuthRequestSupersededError();
+        throw error;
+      }
+      if (!ownsRequest(generation, credential)) throw new AuthRequestSupersededError();
+      const user: AuthUser = { ...result.user, capabilities: result.user.capabilities || [] };
+      setAuthToken(result.token);
+      setCurrentUser(user);
+      tokenStore.setToken(result.token);
+      localStorage.setItem('drup_auth_token', result.token);
+      localStorage.setItem('drup_current_user', JSON.stringify(user));
+      return { ...result, isCurrent: () => ownsRequest(generation, result.token) };
+    } finally {
+      if (mounted.current && generation === authGeneration.current) setIsLoading(false);
+    }
   };
 
   const loginUser = async (username: string, password: string): Promise<AuthUser> => {
-    setIsLoading(true);
-    try {
-      const res = await authApi.passwordLogin(username, password);
-      const user: AuthUser = {
-        id: res.user.id,
-        mobile: res.user.mobile,
-        fullName: res.user.fullName,
-        role: res.user.role,
-        capabilities: res.user.capabilities || [],
-        username,
-      };
-      setAuthToken(res.token);
-      setCurrentUser(user);
-      tokenStore.setToken(res.token);
-      localStorage.setItem('drup_auth_token', res.token);
-      localStorage.setItem('drup_current_user', JSON.stringify(user));
-      return user;
-    } finally {
-      setIsLoading(false);
-    }
+    const result = await authenticate(() => authApi.passwordLogin(username, password));
+    return { ...result.user, username };
   };
 
   const loginWithOTP = async (mobile: string, otp: string, storeSlug?: string): Promise<AuthUser> => {
-    setIsLoading(true);
-    try {
-      const res = await authApi.verifyOTP(mobile, otp, undefined, storeSlug);
-      const user: AuthUser = {
-        id: res.user.id,
-        mobile: res.user.mobile,
-        fullName: res.user.fullName,
-        role: res.user.role,
-        capabilities: res.user.capabilities || [],
-      };
-      setAuthToken(res.token);
-      setCurrentUser(user);
-      tokenStore.setToken(res.token);
-      localStorage.setItem('drup_auth_token', res.token);
-      localStorage.setItem('drup_current_user', JSON.stringify(user));
-      if (user.role === 'customer') {
-        setCustomerUser({
-          fullName: user.fullName,
-          mobile: user.mobile,
-          nationalCode: '0012345678',
-          isLoggedIn: true,
-        });
-      }
-      return user;
-    } finally {
-      setIsLoading(false);
-    }
+    const result = await authenticate(() => authApi.verifyOTP(mobile, otp, undefined, storeSlug));
+    return result.user;
   };
 
   const registerUser = async (userData: { mobile: string; fullName: string; role?: string }) => {
+    const generation = authGeneration.current;
+    const credential = tokenStore.getToken();
     setIsLoading(true);
     try {
       if (!isMockMode()) {
         await authApi.sendOTP(userData.mobile);
       }
     } finally {
-      setIsLoading(false);
+      if (ownsRequest(generation, credential)) setIsLoading(false);
     }
   };
 
@@ -424,7 +393,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const token = tokenStore.getToken();
     if (!token || isMockMode()) return;
 
+    const generation = authGeneration.current;
+    const sequence = ++profileSequence.current;
+    try {
     const claims = await authApi.getMe();
+    if (!ownsRequest(generation, token, sequence)) return;
     const user: AuthUser = {
       id: claims.userId,
       mobile: claims.mobile,
@@ -436,9 +409,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCurrentUser(user);
     localStorage.setItem('drup_auth_token', token);
     localStorage.setItem('drup_current_user', JSON.stringify(user));
+    } catch (error) {
+      if (ownsRequest(generation, token, sequence)) throw error;
+    } finally {
+      if (ownsRequest(generation, token, sequence)) setIsSessionReady(true);
+    }
   };
 
+  const guardedSessionSetter = <T extends { token: string },>(setter: React.Dispatch<React.SetStateAction<T | null>>): React.Dispatch<React.SetStateAction<T | null>> =>
+    (next) => setter(previous => {
+      const value = typeof next === 'function' ? next(previous) : next;
+      return isMockMode() || value === null || value.token === tokenStore.getToken() ? value : previous;
+    });
+
   const value: AuthContextType = {
+    authenticate,
     currentUser,
     authToken,
     isAuthenticated: !!authToken,
@@ -450,16 +435,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCustomerUser,
     logoutCustomer,
     adminSession,
-    setAdminSession,
+    setAdminSession: guardedSessionSetter(setAdminSession),
     logoutAdmin,
     sellerSession,
-    setSellerSession,
+    setSellerSession: guardedSessionSetter(setSellerSession),
     logoutSeller,
     supplierSession,
-    setSupplierSession,
+    setSupplierSession: guardedSessionSetter(setSupplierSession),
     logoutSupplier,
     warehouseSession,
-    setWarehouseSession,
+    setWarehouseSession: guardedSessionSetter(setWarehouseSession),
     logoutWarehouse,
     loginUser,
     loginWithOTP,

@@ -196,3 +196,14 @@ the variant-price set/read/clear/ownership case pass (3/3, no skips), retaining
 measurements, first-value registry mapping, gallery/default variants and pricing
 audit assertions. The review gate was not weakened to accept unreviewed fields.
 Evidence: `logs/test02-legacy-approval-fixtures.log`.
+
+## Dedicated and generic approval routes
+
+The legacy approval-route fixture now provides current publication columns,
+nullable SKU identity and variant activity, and records an explicit synthetic
+source plus reviewed canonical payload leaves. Both route tests passed: the
+dedicated approved/rejected flag and the generic inbox still exercise their
+actual shared publication pipeline and duplicate-review refusal. The fixture has
+no real supplier recipient, so optional approval notification skips remain
+visible and are not notification acceptance. Evidence:
+`logs/test02-approval-route-fixtures.log` (2/2, no test skips).

@@ -4,6 +4,67 @@ Source contract: [the supplied 54-task backlog](2026-11-14-correctness-capacity-
 Baseline: `07aff40ffc8914a9deaa153aa7894b9d3fd73400`.
 Execution branch: `codex/correctness-capacity`. Implementer: Codex.
 
+## Current task status
+
+DONE refers to the task-specific local gate described below. It does not certify production history, payment-provider operation, deployment or hardware capacity. Checkpoint OPEN means required acceptance is still outstanding. The original supplied backlog remains verbatim.
+
+| Task | Status | Commit | Evidence |
+| --- | --- | --- | --- |
+| TEST-01 | DONE | 1b988ac / 7cb9b77 | [Test environment](../../test-environment.md) |
+| CORE-01 | DONE | cf69d11 | [Transaction contract](../../architecture/transaction-contract.md) |
+| INV-01 | DONE | 45c1bf1 | [Read-only audit](../../../scripts/audit-cancelled-dispatched.sql) |
+| MIG-01 | DONE | 9093c5f | [Migration contract](../../../backend/internal/migrations/README.md) |
+| INV-05 | DONE | efb37fc | [Origin contract](../../architecture/inventory-origins.md) |
+| INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
+| INV-02 | TODO | — | — |
+| INV-03 | TODO | — | — |
+| INV-04 | TODO | — | — |
+| INV-08 | TODO | — | — |
+| INV-09 | TODO | — | — |
+| INV-06 | TODO | — | — |
+| INV-07 | TODO | — | — |
+| FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
+| FIN-001 | IN PROGRESS | — | Implementation and verification in progress |
+| FIN-006 | TODO | — | — |
+| INV-10 | TODO | — | — |
+| OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
+| CAP-01 | IN PROGRESS | — | Implementation and verification in progress |
+| FIN-003 | TODO | — | — |
+| AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
+| AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
+| AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
+| CHECKOUT-01 | TODO | — | — |
+| OPS-02 | TODO | — | — |
+| FIN-002 | TODO | — | — |
+| JOB-01 | TODO | — | — |
+| SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
+| FIN-010 | TODO | — | — |
+| INV-12 | TODO | — | — |
+| FIN-004 | TODO | — | — |
+| FIN-005 | TODO | — | — |
+| FIN-007 | TODO | — | — |
+| FIN-008 | TODO | — | — |
+| FIN-011 | TODO | — | — |
+| FIN-009 | TODO | — | — |
+| FIN-013 | TODO | — | — |
+| CHECKOUT-02 | TODO | — | — |
+| TEST-02 | TODO | — | — |
+| OPS-01 | TODO | — | — |
+| REL-01 | TODO | — | — |
+| BAK-01 | TODO | — | — |
+| MIG-02 | TODO | — | — |
+| FIN-014 | TODO | — | — |
+| CHECKOUT-03 | TODO | — | — |
+| PERF-01 | TODO | — | — |
+| PERF-02 | TODO | — | — |
+| PERF-03 | TODO | — | — |
+| PERF-04 | TODO | — | — |
+| EDGE-01 | TODO | — | — |
+| REL-02 | TODO | — | — |
+| QUAL-01 | TODO | — | — |
+| CAP-02 | TODO | — | — |
+| GO-01 | TODO | — | — |
+
 ## Delivery and dependency rules
 
 - Execute each task's acceptance contract before marking it DONE; push reviewable checkpoints separately.
@@ -16,65 +77,90 @@ Execution branch: `codex/correctness-capacity`. Implementer: Codex.
 - Ruling: old exact database-name checks are superseded by a common unique-name + server-side marker check; legacy opt-in variable names remain supported. Old unmarked databases are intentionally rejected.
 - Shared interfaces: CORE-01 lock order governs all inventory/finance writers; MIG-01 runner is shared by CLI/server/release; AUTH-01 generation invalidation is consumed by AUTH-02/03; FIN-012 monetary units govern FIN-010 conversion. Preserve the integration decisions in the source contract.
 
-## TEST-01 — IN PROGRESS
+## TEST-01 — initial checkpoint (historically IN PROGRESS)
 
-First checkpoint: remove application database defaults from all PostgreSQL test entry points.
+The first checkpoint removed application database defaults from every PostgreSQL test entry point. `internal/testdb.Open` skips an absent explicit DSN before opening a connection. It rejects malformed URLs, application database names, libpq override parameters and duplicate URL parameters before connecting. An explicit unreachable or unmarked target fails instead of silently skipping. Before fixture writes, the guard verifies `current_database()` and the server-side marker against the explicit unique `sellersho_test_` name, with cleanup registered first.
 
-- Added `internal/testdb.Open`: an absent explicit DSN skips before initializing a connection. Malformed URLs, application database names, libpq override parameters and duplicate URL parameters are rejected before connecting. An explicit integration target that is unreachable or lacks the marker fails, rather than silently skipping.
-- Before fixture writes, verify `current_database()` and `public.sellersho_test_guard.database_name` against the explicit URL's unique `sellersho_test_` name. Connection cleanup is registered before verification.
-- Updated all 47 PostgreSQL test opens in 46 files, including seeder, payment concurrency, capacity, returns and supply-tier fixtures. Removed application configuration loading and hardcoded application targets.
-- Added a source guard and real TCP-listener subprocess checks: default opt-out and unsafe explicit targets make zero application endpoint connections. The source regression was executed against the original referral fixture and failed, then passed with the fix.
+All 47 PostgreSQL opens in 46 files were updated, including seeder, payment concurrency, capacity, returns and supply-tier fixtures. A source guard and real TCP-listener subprocess tests proved zero application endpoint connections for default opt-out and unsafe explicit targets. The source regression first failed against the original referral fixture and then passed. Verification used Windows and the local Go toolchain, without application credentials.
 
-Verification environment: Windows, local Go toolchain. No application credentials used.
+Initial commands and results:
 
-Commands/results:
+- `go test ./internal/testdb -count=1`: passed, including sentinel and unsafe-target checks.
+- `go test ./internal/testdb ./internal/database/seeder ./internal/repository ./internal/worker -count=1`: passed with DB integration explicitly skipped because no disposable DSN existed.
+- `go test ./cmd/server -run '^Test.*(SupplyOption|ReferralBonus|PriceIncrease|PriceGov)' -count=1`: passed, with DB-gated tests skipping without opt-in.
+- `go test ./... -count=1`: failed in the five known baseline tests: `TestProposeProductRejectsMissingMeasurements`, `TestCampaignDiscountOnlyFromMargin`, `TestCampaignFixedAndFloor`, `TestCampaignNeverRaisesPrice`, and `TestDiscountWithNonZeroPlatformPctFeeUntouched`. Local output: `logs/correctness-baseline.log`.
 
-- `go test ./internal/testdb -count=1`: PASS, including sentinel and unsafe-target checks.
-- `go test ./internal/testdb ./internal/database/seeder ./internal/repository ./internal/worker -count=1`: PASS with DB integration explicitly skipped because no disposable DSN exists.
-- `go test ./cmd/server -run '^Test.*(SupplyOption|ReferralBonus|PriceIncrease|PriceGov)' -count=1`: PASS (DB-gated tests skip without opt-in).
-- `go test ./... -count=1`: FAIL with the five known baseline top-level failures: `TestProposeProductRejectsMissingMeasurements`, `TestCampaignDiscountOnlyFromMargin`, `TestCampaignFixedAndFloor`, `TestCampaignNeverRaisesPrice`, `TestDiscountWithNonZeroPlatformPctFeeUntouched`. Raw local output: `logs/correctness-baseline.log` (ignored).
+At that checkpoint, live unmarked-target rejection, migrated disposable lifecycle/cleanup, complete default-suite sentinel schema/data proof, and integration/chaos target protection remained open. No completion was claimed from skipped tests. Docker initially could not start; production PostgreSQL was not substituted. The other 53 tasks were still TODO at that time, and no deployment or capacity certification had occurred.
 
-Remaining gates: executed unmarked-database rejection, migrated disposable database lifecycle and failure cleanup; sentinel application database schema/data proof for the complete default suite; integration/chaos runner target protection. No task is marked DONE on skip-only evidence.
-
-Environment issue: Docker engine reports `Docker Desktop is unable to start`. The user is preparing local Docker. Do not substitute production PostgreSQL for integration verification.
-
-All other 53 tasks remain TODO. No production deployment or capacity certification has occurred.
-
-Checkpoint review: independent reviewer review_test_safety found one incompatible legacy exact-name guard in supplierFlowDB; removed it in favor of the shared verified identity guard. Focused suites rerun. Frontend npm run build PASS. Docker became available after user startup; disposable harness and canonical migration preparation are now running as separate tasks permitted by the supplied execution plan.
+Independent reviewer `review_test_safety` found a conflicting legacy exact-name guard in `supplierFlowDB`; it was removed in favor of the shared verified guard, and focused suites were rerun. The frontend build passed. Docker became available after user startup, allowing the separate disposable harness and canonical migration stages below.
 
 ## TEST-01 disposable harness stage — acceptance passed
 
-Evidence and exact commands: docs/test-environment.md. Nine Python lifecycle/credential-isolation regressions PASS; live sentinel/default-suite zero connections with unchanged schema/data PASS; unmarked refusal PASS; setup/test-failure cleanup PASS; all ten existing SKU tests PASS; complete schema-only seeder package PASS. Docker now runs locally. Ruling: seeder test uses a schema-only disposable copy to avoid migration demo-user ID collisions; intact append-only ledger must refuse CleanDev/ResetDev, replacing obsolete assertions expecting forbidden truncation. No production seeder changes. Reviewer: mig01 (independent harness review). Strict canonical bootstrap was jointly validated against pending MIG-01, whose separate commit follows; final task closure uses that integrated revision. POSIX wrapper still awaits a POSIX host check, PowerShell wrapper ran successfully.
+Evidence and commands: `docs/test-environment.md`. Nine Python lifecycle/credential-isolation regressions passed. The live sentinel/default-suite check proved zero connections and unchanged schema/data. Unmarked-target refusal, setup/test-failure cleanup, all ten existing SKU tests, and the complete schema-only seeder package passed. Docker runs locally; the PowerShell wrapper ran successfully. The POSIX wrapper still needs a POSIX host check.
+
+Ruling: seeder tests use a schema-only disposable copy to avoid migration demo-user ID collisions. An intact append-only ledger must refuse `CleanDev`/`ResetDev`, replacing obsolete assertions that expected forbidden truncation. Production seeder behavior was not changed. Reviewer `mig01` independently reviewed the harness. Strict bootstrap was jointly validated with MIG-01; final TEST-01 closure uses that integrated revision.
 
 ## MIG-01 — DONE
 
-Shared runner now serves CLI and HTTP startup. Dedicated session advisory lock, ordered filename identities, immutable SHA256 history, explicit reviewed legacy adoption, transactional DDL plus ledger record, bounded deadlines and nonzero failure are implemented. All179 migration bootstrap, 178-to179 upgrade preserving data, concurrent runners, injected failure/retry, drift/missing-dir/missing-file, timeout and killed-child rollback/unlock tests PASS. Reviewer test01_runner found a SQL-string transaction-boundary escape; fixed with standard-conforming/E-string-aware lexer and regressions. Dollar-sign identifiers also have regression coverage. Nontransactional mode explicitly refused (none required by existing179); production-scale rehearsal and legacy adoption remain final release gates. Exact checks and operational contract: backend/internal/migrations/README.md. This integrated migration stage closes TEST-01's canonical-bootstrap dependency; TEST-01 is DONE with the evidence in docs/test-environment.md. Baseline5 application failures remain for owning tasks.
+The shared runner serves CLI and HTTP startup. It uses a dedicated session advisory lock, ordered filename identities, immutable SHA256 history, explicit reviewed legacy adoption, transactional DDL plus ledger recording, bounded deadlines and nonzero failure exits.
+
+All 179-migration bootstrap, 178-to-179 data-preserving upgrade, concurrent-runner, injected failure/retry, drift/missing-directory/missing-file, timeout, and killed-child rollback/unlock tests passed. Reviewer `test01_runner` found a SQL-string transaction-boundary escape; a standard-conforming/E-string-aware lexer and regressions fixed it. Dollar-sign identifiers also have coverage.
+
+Nontransactional mode is explicitly refused; none of the existing 179 migrations required it. Production-scale rehearsal and legacy adoption remain release gates. Contract: `backend/internal/migrations/README.md`. This stage closed TEST-01's bootstrap dependency, so TEST-01 is DONE with `docs/test-environment.md` evidence. The five application baseline failures remained assigned to their owning tasks at this stage.
 
 ## CORE-01 — DONE
 
-Global row-lock contract and caller-owned lock-plan helper added, with writer map292 repository symbols/41files plus43 direct HTTP/worker SQL writers and6Redis mutators. Existing inverted callers are explicitly assigned to INV/FIN/JOB owners; this does not claim repaired domain flows. Root review caught nonexistent future placement relation in helper; removed it from executable allowlist and added actual migrated-catalog validation for every allowed table/PK plus regression refusing future placement name. Typed account guards use stores, suppliers and users rows; every monetary authorizer must adopt the same contract. Command: python scripts/test-isolated.py -- go test ./internal/repository -run '^TestTransaction(LockOrder|Contract)' -count=3 -v => PASS14.865s, no skips,18 two-connection flow runs, bounded lock waits, rollback/retry and independent-account concurrency, verified cleanup. Reviewed root independently of implementer core01. No historical data writes. Contract and detailed evidence: docs/architecture/transaction-contract.md.
+Added the global row-lock contract and caller-owned lock-plan helper, with a writer map covering 292 repository symbols in 41 files, 43 direct HTTP/worker SQL writers, and six Redis mutators. Existing inverted callers are assigned to INV/FIN/JOB owners; the prerequisite does not claim those domain flows are repaired.
 
-## INV-01 — stock and dispatch gate DONE; financial/history release gates retained
+Root review caught a nonexistent future placement relation in the helper. It was removed from the executable allowlist, and catalog validation now checks every allowed table/primary key plus rejection of that future name. Typed account guards use stores, suppliers and users; every monetary authorizer must adopt this contract.
 
-Original six customer/admin mixed/two-supplier/legacy cases reproduced cancellation restoring dispatched stock7to10. Shared aggregate-order lock now serializes cancellation and all dispatch writers; any dispatched supplier leg/warehouse custody evidence refuses whole-order cancellation with typed409.100supplier and100warehouse races PASS; replay restores once, partial-return captures fail atomically. Independent reviewer review_test_safety found2issues: directsql.Open fixtures bypassed TEST01, and audit TEXT/UUID join failed42883. Both fixed and regressions executed. Final guarded command includes TestEveryDatabaseTestUsesGuard, TestCancellationAuditReportMigratedSchema, six audit cases, races/replay/alternatewriters/carrierlegacy/API409 tests => PASS (testdb2.091s repo34.344s server0.681s), verifiedcleanup. Full delivered read-only audit SQL executed on actual migrated schema seeded with two anomalies andcontrol; expected itemized rows returned and before/after JSON state unchanged. Raw local evidence inv01-review-fixes.log. Remaining production historical report execution belongs final FIN014/release rehearsal; no production stock correction performed. FIN003 still must atomically record paid-cancellation refund liability before release. Existing payment fixture missing payment_expires_at is recorded for TEST02, not silently fixed in this task.
+`python scripts/test-isolated.py -- go test ./internal/repository -run '^TestTransaction(LockOrder|Contract)' -count=3 -v` passed in 14.865s without skips. It exercised 18 two-connection flows, bounded lock waits, rollback/retry and independent-account concurrency, with verified cleanup. Root reviewed independently of implementer `core01`. No historical data was written. Contract and evidence: `docs/architecture/transaction-contract.md`.
+
+## INV-01 — stock and dispatch gate DONE; financial/history gates retained
+
+Six customer/admin mixed, two-supplier and legacy cases reproduced cancellation restoring dispatched stock from 7 to 10. The shared aggregate-order lock now serializes cancellation with every dispatch writer. Any dispatched supplier leg or warehouse custody evidence rejects whole-order cancellation with typed 409. One hundred supplier races and 100 warehouse races passed; replay restores once and partial-return captures fail atomically.
+
+Reviewer `review_test_safety` found two defects: direct `sql.Open` fixtures bypassed TEST-01, and a TEXT/UUID audit join failed with 42883. Both were fixed and regressed. The final guarded gate included `TestEveryDatabaseTestUsesGuard`, `TestCancellationAuditReportMigratedSchema`, six audit cases, races/replay/alternate writers/carrier legacy/API409 tests. It passed (testdb 2.091s, repository 34.344s, server 0.681s) with cleanup verified.
+
+The delivered read-only audit SQL ran against the actual migrated schema with two seeded anomalies and a control; expected itemized rows appeared and before/after JSON state was unchanged. Local evidence: `inv01-review-fixes.log`. Production historical execution remains FIN-014/release work. No stock correction was performed. FIN-003 must still atomically record paid-cancellation refund liability before release. The older payment fixture missing `payment_expires_at` is recorded for TEST-02.
 
 ## AUTH-01 / AUTH-02 — DONE (ship with AUTH-03)
 
-Shared all-role/capability logout clears credentials and role sessions synchronously, broadcasts via storage deletion; public per-store guest product carts intentionally retained consistently in memory/storage. Authenticate owns generation+expectedcredential installation; all5real panel entry paths adopted guard, later profile/store success+failure checked. API401 includes generation check; current expiry signals commonlogout and completes readiness; obsolete401 during newpendinglogin cannot clearB. Mounted regression first reproduced3rolelogout failures, stale refresh/restore corruption and actual401readiness failure. Reviewercore01 caught direct panel bypass/current401/readiness supersession; fixed with dedicated scenarios and productioncaller adoption. Final browser+existing auth/routing+entrypointcontract41tests PASS0skips; npm runbuild PASS. Includes late supplierprofile success/error, raw stale setter rejection, currentrefresh replacingrestore, two refresh ordering, unmount,two-tabs,reload,real subsequent headerabsence. Details docs/auth-session-lifecycle.md. AUTH03 privatecache isolation remains separategate; no serverJWT revocation or real-provider certification claimed. Panels unchanged money-preview hunks staged separately forFIN012.
+Shared logout clears credentials and all role/capability sessions synchronously and broadcasts storage deletion. Public per-store guest product carts are retained consistently in memory and storage. Authentication owns generation/expected-credential installation; all five real panel entry paths guard later profile/store success and failure. API 401 handling checks generation. Current expiry triggers common logout and completes readiness; an obsolete 401 during a new pending login cannot clear account B.
+
+Mounted regressions first reproduced three role-logout failures, stale refresh/restore corruption and actual 401 readiness failure. Reviewer `core01` caught direct panel bypass, current 401 and readiness supersession issues; dedicated scenarios and production caller adoption fixed them. The final browser/auth/routing/entry-point contract suite passed 41 tests with no skips; the frontend build passed.
+
+Coverage includes late supplier-profile success/error, stale raw setters, refresh replacing restore, refresh ordering, unmount, two tabs, reload and absent authorization headers after logout. Details: `docs/auth-session-lifecycle.md`. AUTH-03 private-cache isolation was a separate gate at this stage. No server JWT revocation or real-provider certification was claimed. Existing money-preview panel hunks were staged separately for FIN-012.
 
 ## AUTH-03 — DONE
 
-Verified immutable account/tenant boundary resets private Order/Store/UI caches; asynccredentialgeneration guards preventoldpayloads. Backend alreadyselectsclaims.UserID, UI fullname/recipientphone ownershipfilterremoved. Privatewishlists/supplierdraftscoped, legacyunownedlocalcatalogauthorityremoved; publicguestcartsretained. Independentreviewreview_auth03 reproducedpendingcreate/confirm/dispute busyflagsstuckafterrejectedreplacementlogin (sameA); fixedper-mountedoperationownershipwhilepreservingprivateguards andneweroperationbusy.26mountedbrowsercasesPASS+3existingProductContexttestsPASS+tscPASS. ActualSellerOTPguardnavigation passeswhileinputpreservedduringpendingauth.1000canaryidentitiesdefined10stores,20sequentialbrowseridentitiesexercised; NOT1000activecapacityproof. UserexplicitlychooselocaltestsandkeepfinalhardwarecapacitygateOPEN. Details docs/auth-cache-isolation.md. Unknownlegacycacheownershipnotguessed; no backendmoney/orderownershipruleschanged.
+Verified immutable account/tenant boundaries reset private Order/Store/UI caches. Credential-generation guards reject old asynchronous payloads. The backend already uses `claims.UserID`; UI full-name/recipient-phone ownership filters were removed. Private wishlists and supplier drafts are scoped, legacy unowned catalog authority is removed, and public guest carts remain available.
+
+Reviewer `review_auth03` reproduced stuck create/confirm/dispute busy flags after a rejected replacement login for the same account A. Per-mounted-operation ownership fixed the flags while preserving private-data guards and newer operations. All 26 mounted browser cases, three existing ProductContext tests and TypeScript passed. Actual seller OTP guard navigation passed while preserving input during pending authentication.
+
+The fixture defines 1,000 canary identities across 10 stores; 20 sequential browser identities were exercised. This is not 1,000 active capacity evidence. The user chose local tests and left hardware capacity certification OPEN. Details: `docs/auth-cache-isolation.md`. Unknown legacy ownership was not guessed, and backend money/order ownership rules were unchanged.
 
 ## FIN-012 — DONE (internal arithmetic/policy gate)
 
-Exact toman/basis-point integer policy now versioned, nearest100half-up plus nonnegativecostfloors, earlyfeetruncation and exactremainder/cumulativeallocation helpers. Fourstalecampaignexpectations aligncurrentpercent-offcontract. RawJSONprecision validatedbeforefloat/DB (128chars, boundedexponents, casefoldaliases, duplicatefinancialkeyrejection); adminceil directwriter fixed after reviewer reproduced400-versus200 unsafepersist. Public invalidcurrentprices failclosed; historyunchangedwithlegacy-unversionedpolicydefault. Checked quote/order/addon/return/shipping/Tapin integerweights,volumes,fees,unitconversions andoverflow; last-gramloss/rial+5wrap reproducedfixed. Independentreviewer review_fin012 foundalias/directSQLgaps, fixedRED/GREENwithrealHTTPno-writeassertions. Zerofixedhelper now no-op1249->1249 (documentedhelpercontract; checkoutreachabilityunconfirmed). Exactfinancial-onlystagedtree caught hiddenINVoriginreference inTapinquote; corrected variant preserveslegacyoriginlookupbeforethiscommit. That exacttree passedpricing/shippingquote/testdb units, fullservercompile, realPG focusedserver0.465s andpolicy/return/repo2.299s, all180migrations, verifiedcleanup; exactstagedfrontendbuildPASS. Localproof releases/fin012-exact-staged-*.log plusauthorfocusedlogs; policy docs/architecture/money-policy.md. Actualrefundtransactionintegration FIN003, PSP FIN010 andrealhistoryFIN014 stillrequired. Defaultbroadintegrationfixtures remainTEST02work, notclaimedgreen.
+Integer toman/basis-point policy is versioned: nearest 100 half-up rounding, nonnegative cost floors, early-fee truncation, and exact remainder/cumulative allocation. Four stale campaign assertions now match the current percent-off contract. Raw JSON precision is validated before float/database conversion, including 128-character limits, bounded exponents, case-folded aliases and duplicate financial-key rejection. Review reproduced an unsafe direct admin-ceiling write returning 200 instead of 400; the writer was fixed.
 
-Userdecisions: finalhardwarecapacitycertificationOPEN/localonly; PSP implementationtargetZarinpal (officialcontractinputs docs/architecture/zarinpal-contract-input.md; sandboxusesgeneratedUUID); operatoralertchannelinsideadminpanel, noexternalwebhook. No productiondeploymentyet.
+Invalid current public prices fail closed. History remains unchanged with the legacy-unversioned default. Quote/order/addon/return/shipping/Tapin paths use checked integer weights, volumes, fees, conversions and overflow handling. Last-gram loss and rial-plus-five overflow were reproduced and fixed. Reviewer `review_fin012` found alias/direct-SQL gaps; real HTTP no-write regressions proved the fixes. A zero fixed helper is now a documented no-op (1249→1249); checkout reachability remains unconfirmed.
+
+The exact financial-only staged tree caught a hidden INV origin reference in Tapin quoting; its corrected variant preserves legacy origin lookup. That tree passed pricing/shippingquote/testdb units, full server compilation, focused migrated server tests 0.465s and policy/return/repository tests 2.299s, all 180 migrations, and verified cleanup. Its exact frontend build passed. Local evidence: `releases/fin012-exact-staged-*.log`; policy: `docs/architecture/money-policy.md`.
+
+Actual refund integration (FIN-003), PSP integration (FIN-010) and real history (FIN-014) remain required. Broad integration fixtures remain TEST-02 work and are not claimed green.
+
+User decisions: final hardware certification stays OPEN with local tests only; PSP implementation targets Zarinpal using the official contract inputs in `docs/architecture/zarinpal-contract-input.md` and a generated sandbox UUID; operator alerts go to the admin panel, with no external webhook. No production deployment has occurred.
 
 ## INV-05 — exact origin identity/allocation gate DONE
 
-Persisted supplier/central-warehouse identities now govern eligible-stock planning, immutable checkout splits, capture and restoration. Destination+birthsource persist on cartons/inbounds; explicit carton destination UI/API wired. Unknown history enters reconciliation views instead ofguessed backfill. Independentreviewreview_test_safety identified4caller gaps: first-origin-only storage departure, mutable carton receipt source, unattributed future legacy declarations, Tapinregistration usingcurrentproduct/defaultpickup. All4reproducedREDthenfixed. Actuallegacyinbound lifecycle afterSW1->SW2catalogedit originally minted7from5; source-at-birth QCdebit nowconserves5 andpreservesnewSW2lot; unknownsource/shortage rollbackproved. Warehousemultioriginsplits consumeexactpositions; unsupported multiplesupplierpickups rejectbeforePSP consistentlywithone-parcel/suppliermodel. Truecartoncreate->originchange->receipt andidempotentputawaypositiontestsPASS. Rootexactstagedtree passedguardedTestAuditSupplyWarehouseOrigin|TestInventoryOrigin|TestSKUInventory|TestGap13Warehouse -count=2 =>26.380s with181migrations+verifiedcleanup; exactfrontendproductionbuildPASS; shipping/quote/TapintestsPASS. Localproof releases/inv05-exact-staged-*.log. Deploymentstillrequiresrealoriginreconciliation, inboundreservationINV02/QCINV04/integratedINV12, moneyshortagecompensationFIN003/010, capacityfinalOPENbyuserdecision. Details docs/architecture/inventory-origins.md. No productiondatamovesorautomaticnegativebalancecorrections.
+Persisted supplier and central-warehouse identities govern eligible-stock planning, immutable checkout splits, capture and restoration. Cartons/inbounds persist destination and source-at-birth; explicit carton destination is wired through the UI/API. Unknown history enters reconciliation views rather than a guessed backfill.
+
+Reviewer `review_test_safety` identified four caller gaps: first-origin-only storage departure, mutable carton receipt source, unattributed future legacy declarations, and Tapin registration using current product/default pickup. Each had a RED/GREEN reproduction. A legacy inbound lifecycle after an SW1→SW2 catalog edit originally minted 7 units from 5; source-at-birth QC debit now conserves 5 and preserves the new SW2 lot. Unknown source and shortage roll back. Warehouse multi-origin splits consume exact positions; multiple unsupported supplier pickups reject before PSP under the one-parcel-per-supplier model.
+
+Actual carton creation→origin edit→receipt and idempotent putaway-position tests passed. The exact staged tree passed guarded `TestAuditSupplyWarehouseOrigin|TestInventoryOrigin|TestSKUInventory|TestGap13Warehouse` with `-count=2` in 26.380s, all 181 migrations and verified cleanup. Its frontend production build and shipping/quote/Tapin tests passed. Local evidence: `releases/inv05-exact-staged-*.log`; contract: `docs/architecture/inventory-origins.md`.
+
+Deployment still needs real origin reconciliation, INV-02 reservations, INV-04 QC, integrated INV-12, FIN-003/010 shortage compensation and the final capacity gate left OPEN by the user. No production data was moved or negative balance automatically corrected.
 
 ## OBS-01 — infrastructure checkpoint; acceptance remains OPEN
 
@@ -101,12 +187,12 @@ A unit regression reproduced PostgreSQL and Redis constructors returning malform
 Independent root review approved the 13-line change and tested the three proposed files against an isolated committed-HEAD backend snapshot: repository regression PASS 0.328s and configuration suite PASS. This avoided unrelated in-progress FIN compilation. No caller relies on wrapped startup error classification. Existing unbounded PostgreSQL Ping remains assigned to OPS-01/02; this change does not close that gate or SEC-01. Only the two constructors, regression, runbook and this ledger are included in the follow-up commit.
 ## INV-11 — DONE (atomic, retry-safe carton creation; INV-02 integration retained)
 
-One guarded transaction now validates the complete draft and integer bounds, locks supplier/products/SKUs in CORE order, rechecks exact owned source/destination, and writes the header and all lines. Supplier-scoped creation keys bind canonical payload fingerprints. Replay returns the committed shipment; changed payload returns409. Code collisions and bounded whole-transaction retries leave no partial rows. The actual supplier component/API retains one key after ambiguous failure and rearms only after validated completion or changed draft/session.
+One guarded transaction now validates the complete draft and integer bounds, locks supplier/products/SKUs in CORE order, rechecks exact owned source/destination, and writes the header and all lines. Supplier-scoped creation keys bind canonical payload fingerprints. Replay returns the committed shipment; changed payload returns 409. Code collisions and bounded whole-transaction retries leave no partial rows. The actual supplier component/API retains one key after ambiguous failure and rearms only after validated completion or changed draft/session.
 
-Regressions reproduced second-line2147483648 leaving a partial header/line, cumulative overflow, injected-line failure, missing keys and lock-retry failure. Fresh review `review_inv11` found two further defects: truncated200/missing shipment identity incorrectly acknowledged success, and reused keys with changed nonexistent SKU returned404 before fingerprint comparison. Both had behavioral RED/GREEN regressions; scoped re-review marked both ADDRESSED with no new blockers.
+Regressions reproduced second-line 2147483648 leaving a partial header/line, cumulative overflow, injected-line failure, missing keys and lock-retry failure. Fresh review `review_inv11` found two further defects: truncated 200/missing shipment identity incorrectly acknowledged success, and reused keys with changed nonexistent SKU returned 404 before fingerprint comparison. Both had behavioral RED/GREEN regressions; scoped re-review marked both ADDRESSED with no new blockers.
 
-Final exact staged-source verification excludes all uncommitted FIN-001 changes: canonical migrated Docker suite34/34 passed (repository88.743s/server2.640s), actual client tests4/4 passed, and typecheck passed. Cleanup was verified. Source snapshot proof is `releases/inv11-staged-proof.json`; local logs `logs/inv11-staged-{source,client,typecheck}.log`. The earlier shared-tree affected suite also passed34/34. Migration up/down/up, uniqueness refusal and executable read-only orphan/duplicate/physical-claim preflight passed without deleting or merging historical quantities. Contract: `docs/architecture/carton-creation.md`.
+Final exact staged-source verification excludes all uncommitted FIN-001 changes: canonical migrated Docker suite 34/34 passed (repository88.743s/server2.640s), actual client tests 4/4 passed, and typecheck passed. Cleanup was verified. Source snapshot proof is `releases/inv11-staged-proof.json`; local logs `logs/inv11-staged-{source,client,typecheck}.log`. The earlier shared-tree affected suite also passed 34/34. Migration up/down/up, uniqueness refusal and executable read-only orphan/duplicate/physical-claim preflight passed without deleting or merging historical quantities. Contract: `docs/architecture/carton-creation.md`.
 
-Ruling: INV-11 closes the atomic creation contract; INV-02 reservations must join the concrete caller transaction before that lifecycle is enabled. Production historical review and capacity remain open. The broader frontend baseline remains270 tests/268 pass/2 known CatalogView provider failures; the broad backend run remains red with143 failure names retained for TEST-02 triage. These are not a green full-suite claim. No production access or deployment occurred.
+Ruling: INV-11 closes the atomic creation contract; INV-02 reservations must join the concrete caller transaction before that lifecycle is enabled. Production historical review and capacity remain open. The broader frontend baseline remains 270 tests / 268 pass / 2 known CatalogView provider failures; the broad backend run remains red with 143 failure names retained for TEST-02 triage. These are not a green full-suite claim. No production access or deployment occurred.
 
-FIN-012 verification addendum from independent root review: `TestSellerCampaignLifecycleAndIsolation` and `TestStoreWidgetPersistenceAndOwnership` both passed against its exact financial-only staged snapshot (0.38s/0.23s; package1.134s), with all180 migrations and verified cleanup. Prior shared-fixture failures did not reproduce in isolation; no source fix was required. Evidence: `releases/fin012-existing-isolated.log`.
+FIN-012 verification addendum from independent root review: `TestSellerCampaignLifecycleAndIsolation` and `TestStoreWidgetPersistenceAndOwnership` both passed against its exact financial-only staged snapshot (0.38s/0.23s; package 1.134s), with all 180 migrations and verified cleanup. Prior shared-fixture failures did not reproduce in isolation; no source fix was required. Evidence: `releases/fin012-existing-isolated.log`.

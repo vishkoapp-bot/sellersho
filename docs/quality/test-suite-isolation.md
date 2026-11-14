@@ -245,3 +245,13 @@ invalid/missing recipient or metadata diagnostics; the 16 separate writer cases
 provide notification evidence. No production shipping or authorization behavior
 was changed. Logs: `logs/test02-shipping-provenance-final.log`,
 `logs/test02-shipping-role-fixtures.log`.
+
+## Supplier suspension checkout fixture
+
+The suspension order gate now seeds explicit central-warehouse lots and obtains
+a real shipping quote for permitted carts. The suspended cart still exercises
+the refusal before quote creation. All seven suspension tests passed in separate
+migrated databases, including reactivation and frozen settlement. Minimal fixture
+recipient IDs still produce explicit optional notification diagnostics; this is
+not notification-delivery evidence. Production checkout gates are unchanged.
+Evidence: `logs/test02-suspension-current.log`.

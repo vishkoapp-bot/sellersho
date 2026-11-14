@@ -19,10 +19,10 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-02 | DONE | bb61fae / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
 | INV-03 | DONE | 0209449 | [Aggregate edits](../../architecture/legacy-aggregate-stock.md) |
 | INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
-| INV-08 | DONE | verified-measurement implementation | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
+| INV-08 | DONE | d4e6399 | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
 | INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
 | INV-06 | TODO | — | — |
-| INV-07 | TODO | — | — |
+| INV-07 | DONE | stock-input implementation | [Stock API](../../architecture/stock-adjustment-api.md) |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
 | FIN-006 | TODO | — | — |
@@ -362,7 +362,7 @@ are distinct remaining occupancy/age/fee tasks.
 INV-03's scoped absolute aggregate, reason/actor, INT bounds, API/UI, controlled
 capture/update and atomic publication requirements passed real isolated tests.
 The reviewer approved the final race/report fixes. [Stock evidence](../../architecture/legacy-aggregate-stock.md).
-Current ledger:16 DONE local gates,5 partial checkpoints,33 TODO. This is not a
+Current ledger:17 DONE local gates,5 partial checkpoints,32 TODO. This is not a
 production readiness or intended-hardware1000-user/100-RPS certificate. TEST-02
 remains partial for CI/race/dependency and other listed domain prerequisites.
 
@@ -393,3 +393,36 @@ migration,full-integrated,frontend-full,frontend-build}.log. Contract:
 [verified SKU capacity](../../architecture/sku-measurement-capacity.md).
 This closes the local INV-08 gate; occupancy release remains INV-06. Paused
 networkreward and docs/fa remain excluded from source delivery.
+
+
+INV-08 delivery: commitd4e639984dc97c21381a3f0343200a0a4ca8426a was pushed
+and deployed with deploy.ps1 -BuildOnServer. Backup, migration010, backend/frontend
+health and root/nginx checks succeeded. Evidence: logs/inv08-production-deploy.log.
+
+## INV-07 — stock reasons and safe SKU inputs
+
+The exact-SKU form already supplied the reason after INV-03; its mounted browser
+regression now proves blank/missing-SKU/invalid quantities send no request,
+409 retains selected SKU/quantity/reason, Persian zero is accepted, and the
+refreshed authoritative product total is displayed. The API requires an explicit
+non-null quantity; omission can no longer zero stock. UUID validation and typed
+held/origin/ownership/projection errors produce400/409/404 before mutation.
+Reasons are trimmed and retain the authenticated actor in movement/audit records.
+
+Real PostgreSQL RED tests reproduced missing quantity changing sibling stock,
+malformed-SKU500, held-stock500, and aggregate INT overflow500. The final gate
+covers missing/null quantity, missing and foreign SKU, numeric bounds, exact
+INT_MAX aggregate success, one-over rejection, no mutation/movement after invalid
+requests, held locations, zero, reason/actor and inactive origin.
+
+The release-eligible full suite completed589 top-level tests with zero failures
+and verified PostgreSQL/Redis cleanup. The final upper-bound review fix was made
+after its server binary had compiled; all185 server tests were therefore rerun
+from final source and passed, including the expanded regression. Repository tests
+in the full run compiled after that fix. No paused networkreward package was
+selected. The single intentional migration subprocess helper skip remains.
+Frontend287/287 passed with no skips, production build and repository/server vet
+passed. Focused final HTTP3/3 passed. Independent final review found no unresolved
+Critical/Important issue. Logs: inv07-{http-before,overflow-before,final-http,
+full-integrated,final-server-full,ui,frontend-full,frontend-build}.log under logs/.
+Contract: [stock API](../../architecture/stock-adjustment-api.md).

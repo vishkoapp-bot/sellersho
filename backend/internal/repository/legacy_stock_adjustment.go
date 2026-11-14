@@ -16,6 +16,7 @@ var ErrStockBelowHeld = errors.New("موجودی کل نباید از موجود
 var ErrStockSKURequired = errors.New("برای اصلاح موجودی این کالا، تنوع دقیق را انتخاب کنید")
 var ErrStockOriginRequired = errors.New("برای اعلام موجودی جدید، انبار فعال متعلق به تأمین‌کننده را مشخص کنید")
 var ErrStockOwnership = errors.New("کالای متعلق به این تأمین‌کننده یافت نشد")
+var ErrStockProjectionLimit = errors.New("مجموع موجودی تنوع‌های فعال از سقف مجاز بیشتر می‌شود؛ تعداد کمتری وارد کنید")
 
 // Caller preholds supplier/product guards. Balance IDs are locked bytewise;
 // only the named local legacy pool changes. Every other sellable lot is held.

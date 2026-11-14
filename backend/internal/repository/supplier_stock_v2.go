@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func (r *SupplierRepository) UpdateProductStockForVariant(ctx context.Context, supplierID, productID, variantID string, newStock int, reason, actor string) error {
@@ -21,6 +23,14 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return result, ErrStockAdjustmentInput
 	}
+	if variant != "" {
+		parsed, err := uuid.Parse(variant)
+		if err != nil {
+			return result, ErrStockAdjustmentInput
+		}
+		variant = parsed.String()
+	}
+	reason = strings.TrimSpace(reason)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := r.db.BeginTx(ctx, nil)

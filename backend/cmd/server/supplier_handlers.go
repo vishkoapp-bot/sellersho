@@ -651,10 +651,10 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 
 	var req struct {
 		VariantID string `json:"variantId"`
-		NewStock  int    `json:"new_stock"`
+		NewStock  *int   `json:"new_stock"`
 		Reason    string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 || int64(req.NewStock) > 2147483647 || len(req.Reason) > 2000 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock == nil || *req.NewStock < 0 || int64(*req.NewStock) > 2147483647 || len(req.Reason) > 2000 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -664,13 +664,13 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
+	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, *req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
 		case errors.Is(err, repository.ErrStockAdjustmentInput), errors.Is(err, repository.ErrStockSKURequired):
 			status = http.StatusBadRequest
-		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrInsufficientInventory):
+		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrStockProjectionLimit), errors.Is(err, repository.ErrInsufficientInventory):
 			status = http.StatusConflict
 		case errors.Is(err, repository.ErrStockOwnership), errors.Is(err, sql.ErrNoRows):
 			status = http.StatusNotFound

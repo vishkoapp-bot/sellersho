@@ -185,3 +185,14 @@ in_transit; cancelling an undispatched reservation restores its source exactly.
 The final assertion requires 18 sellable + 2 transit = 20 physical units. Eight
 flow/publication/ownership/permission/tracking tests passed without skips.
 Evidence: `logs/test02-flow-provenance.log`.
+
+## Legacy proposal approval fixtures
+
+Product-gap fixtures clone the current field-review/history and supplier warehouse
+relations into their private schema, carry origin/schema/nullable legacy SKU
+columns, normalize legacy payload aliases and explicitly review every submitted
+leaf. Their synthetic source is owned and active. Two legacy approval cases and
+the variant-price set/read/clear/ownership case pass (3/3, no skips), retaining
+measurements, first-value registry mapping, gallery/default variants and pricing
+audit assertions. The review gate was not weakened to accept unreviewed fields.
+Evidence: `logs/test02-legacy-approval-fixtures.log`.

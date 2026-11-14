@@ -48,14 +48,14 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | TODO | — | — |
-| TEST-02 | Checkpoint OPEN | 8302d23 / Frontend checkpoint | [Frontend baseline](../../frontend-test-baseline.md) |
+| TEST-02 | Checkpoint OPEN | 8302d23 / 1ef7092 | [Frontend baseline](../../frontend-test-baseline.md) |
 | OPS-01 | TODO | — | — |
 | REL-01 | TODO | — | — |
 | BAK-01 | TODO | — | — |
 | MIG-02 | TODO | — | — |
 | FIN-014 | TODO | — | — |
 | CHECKOUT-03 | TODO | — | — |
-| PERF-01 | TODO | — | — |
+| PERF-01 | Checkpoint OPEN | Cursor protocol checkpoint | [Paging contract](../../architecture/catalog-pagination.md) |
 | PERF-02 | TODO | — | — |
 | PERF-03 | TODO | — | — |
 | PERF-04 | TODO | — | — |
@@ -236,3 +236,11 @@ Fixed the intermittent order-ID smoke test: a legitimate random UUID beginning `
 Independent review by `remaining_backlog` approved all six code/test paths. Root-only archived tree `775651fdef7092a725acd2cba659c6dabe384dcd` passed all271 frontend tests with zero failures/skips, production frontend build and20 repetitions of the order-ID/quantity smoke. The shared integrated frontend tree including FIN-001 passed277 tests without skips. An intentional disabled render guard in the source archive failed with2 central rows instead of0; restoring the original bytes returned4/4 focused passes. Evidence: `docs/frontend-test-baseline.md`. The commit adds documentation to those verified code files on top of pushed FIN-001 `64d235c`; it does not reuse the older private index to overwrite the financial commit.
 
 TEST-02 remains OPEN for the full supplied integration/race/CI/dependency gates and domain prerequisites. No deployment, production history or intended-hardware capacity claim follows from this checkpoint.
+
+## PERF-01 — bounded cursor protocol checkpoint; route/index gates OPEN
+
+Added the standalone, currently unwired `internal/catalogpage` protocol: default24/max100, no unbounded or repeated offset-page request, versioned bounded cursors with public-only sort keys and exact product tie breakers. Canonical filter/store/owner/revision bindings distinguish a required restart from malformed input; binding is not authorization and future SQL must independently apply scope/visibility/revision checks. Nil/default/set-order normalization does not mutate caller collections. Strict decoding rejects oversized, malformed, unknown, duplicate and invalid-UTF8 input.
+
+Independent review by `remaining_backlog` found case aliases could bypass duplicate detection because Go JSON field names are case-insensitive. New `v`/`V` and `price`/`Price` tests reproduced the failure, then Unicode EqualFold rejection fixed it. Unit tests,10-second fuzz passes (151330 initial /49100 final inputs) and go vet passed. Contract: `docs/architecture/catalog-pagination.md`; raw logs `logs/perf01-cursor-*.log`.
+
+Architecture review rejected routine full-catalog invalidation/rebuild/cold503. Next integration requires a lean price index, transaction-coupled affected writes, prepared broad policy/time transitions, page-only dependency hydration, stable SQL cursors, exact search/bounds and all maintained frontend consumers. Existing owner-approved card default-variant semantics determine public sort/filter price, and displayed integer discount determines discount sort. No public route behavior or measured bottleneck was changed by this package. PERF-01 remains OPEN; CAP-02 intended-hardware certification stays open per user.

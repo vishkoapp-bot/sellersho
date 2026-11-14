@@ -1,0 +1,1959 @@
+{
+  "certified": false,
+  "scope": "LOCAL focused100-customer hot SKU; five units",
+  "contenders": 100,
+  "paid": 5,
+  "conflicts": 95,
+  "wrongAmount": 0,
+  "failures": 0,
+  "duplicateCallbacks": 10,
+  "failed_gates": [
+    "initiate_latency",
+    "callback_latency"
+  ],
+  "requests_raw": [
+    {
+      "principal": 0,
+      "route_class": "initiate",
+      "status": 200,
+      "latency_ms": 343.426891000001
+    },
+    {
+      "principal": 1,
+      "route_class": "initiate",
+      "status": 200,
+      "latency_ms": 786.8911200000002
+    },
+    {
+      "principal": 21,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 874.4095500000003
+    },
+    {
+      "principal": 6,
+      "route_class": "initiate",
+      "status": 200,
+      "latency_ms": 927.2689879999998
+    },
+    {
+      "principal": 90,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 859.0290640000003
+    },
+    {
+      "principal": 13,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 968.2341489999999
+    },
+    {
+      "principal": 19,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 971.9363140000005
+    },
+    {
+      "principal": 50,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 942.908010000001
+    },
+    {
+      "principal": 73,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 922.7571580000003
+    },
+    {
+      "principal": 96,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 906.8068640000001
+    },
+    {
+      "principal": 23,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 998.1091930000002
+    },
+    {
+      "principal": 53,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 991.340314000001
+    },
+    {
+      "principal": 36,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1032.0630069999988
+    },
+    {
+      "principal": 34,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1046.518365
+    },
+    {
+      "principal": 47,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1037.4861710000005
+    },
+    {
+      "principal": 41,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1049.5194679999986
+    },
+    {
+      "principal": 26,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1073.4728149999992
+    },
+    {
+      "principal": 67,
+      "route_class": "initiate",
+      "status": 200,
+      "latency_ms": 1044.7983649999987
+    },
+    {
+      "principal": 24,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1100.079065
+    },
+    {
+      "principal": 8,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1140.2092350000003
+    },
+    {
+      "principal": 12,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1128.6732769999999
+    },
+    {
+      "principal": 79,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1063.6853220000012
+    },
+    {
+      "principal": 22,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1136.817465
+    },
+    {
+      "principal": 91,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1059.2183210000003
+    },
+    {
+      "principal": 88,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1066.7986799999999
+    },
+    {
+      "principal": 9,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1169.577095999999
+    },
+    {
+      "principal": 16,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1160.5748289999992
+    },
+    {
+      "principal": 64,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1102.4764340000002
+    },
+    {
+      "principal": 60,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1119.080804000001
+    },
+    {
+      "principal": 52,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1133.4500659999994
+    },
+    {
+      "principal": 45,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1167.7985070000013
+    },
+    {
+      "principal": 31,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1186.9250520000005
+    },
+    {
+      "principal": 49,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1160.7645510000002
+    },
+    {
+      "principal": 98,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1109.8459989999992
+    },
+    {
+      "principal": 39,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1201.3944039999988
+    },
+    {
+      "principal": 72,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1161.315917
+    },
+    {
+      "principal": 38,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1220.1608750000014
+    },
+    {
+      "principal": 35,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1227.5976500000015
+    },
+    {
+      "principal": 10,
+      "route_class": "initiate",
+      "status": 200,
+      "latency_ms": 1263.0058690000005
+    },
+    {
+      "principal": 76,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1184.9973840000002
+    },
+    {
+      "principal": 63,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1208.6292940000003
+    },
+    {
+      "principal": 17,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1264.7423020000006
+    },
+    {
+      "principal": 2,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1295.7640470000006
+    },
+    {
+      "principal": 40,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1244.511333999999
+    },
+    {
+      "principal": 15,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1274.999737
+    },
+    {
+      "principal": 89,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1194.2152839999999
+    },
+    {
+      "principal": 4,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1306.363349000001
+    },
+    {
+      "principal": 66,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1224.4406130000007
+    },
+    {
+      "principal": 82,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1214.1557359999988
+    },
+    {
+      "principal": 84,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1213.0844980000002
+    },
+    {
+      "principal": 14,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1304.3564830000014
+    },
+    {
+      "principal": 37,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1282.7737980000002
+    },
+    {
+      "principal": 11,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1310.0773959999988
+    },
+    {
+      "principal": 7,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1322.820004000001
+    },
+    {
+      "principal": 20,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1301.5880460000008
+    },
+    {
+      "principal": 44,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1274.1497120000004
+    },
+    {
+      "principal": 94,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1220.6129700000001
+    },
+    {
+      "principal": 99,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1215.1689740000002
+    },
+    {
+      "principal": 93,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1231.1030999999984
+    },
+    {
+      "principal": 74,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1255.7195340000017
+    },
+    {
+      "principal": 5,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1348.0030429999988
+    },
+    {
+      "principal": 59,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1279.790153
+    },
+    {
+      "principal": 71,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1274.9655349999994
+    },
+    {
+      "principal": 58,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1289.082405000001
+    },
+    {
+      "principal": 46,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1304.0605930000002
+    },
+    {
+      "principal": 48,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1300.6159559999996
+    },
+    {
+      "principal": 55,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1299.2327689999984
+    },
+    {
+      "principal": 86,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1268.8898050000007
+    },
+    {
+      "principal": 85,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1276.265805000001
+    },
+    {
+      "principal": 83,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1278.089116000001
+    },
+    {
+      "principal": 28,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1352.0009360000004
+    },
+    {
+      "principal": 54,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1317.4533800000008
+    },
+    {
+      "principal": 30,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1352.3544419999998
+    },
+    {
+      "principal": 87,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1293.3165839999983
+    },
+    {
+      "principal": 51,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1331.5483700000004
+    },
+    {
+      "principal": 29,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1362.6762820000004
+    },
+    {
+      "principal": 32,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1365.2938330000015
+    },
+    {
+      "principal": 92,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1295.2265939999997
+    },
+    {
+      "principal": 65,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1323.3018309999989
+    },
+    {
+      "principal": 56,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1341.9004029999996
+    },
+    {
+      "principal": 78,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1321.1771879999997
+    },
+    {
+      "principal": 18,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1393.3174820000004
+    },
+    {
+      "principal": 43,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1365.3377560000008
+    },
+    {
+      "principal": 42,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1368.1594299999997
+    },
+    {
+      "principal": 27,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1388.5245439999999
+    },
+    {
+      "principal": 25,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1394.4090070000002
+    },
+    {
+      "principal": 81,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1328.3800520000004
+    },
+    {
+      "principal": 3,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1430.813075
+    },
+    {
+      "principal": 61,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1358.8809459999993
+    },
+    {
+      "principal": 57,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1369.1621479999994
+    },
+    {
+      "principal": 95,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1339.340413
+    },
+    {
+      "principal": 80,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1368.7169270000013
+    },
+    {
+      "principal": 69,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1380.3077080000003
+    },
+    {
+      "principal": 62,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1389.268818999999
+    },
+    {
+      "principal": 97,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1356.0739630000007
+    },
+    {
+      "principal": 75,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1384.1714410000004
+    },
+    {
+      "principal": 68,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1399.0326430000005
+    },
+    {
+      "principal": 77,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1392.955802999999
+    },
+    {
+      "principal": 70,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1410.9794029999994
+    },
+    {
+      "principal": 33,
+      "route_class": "initiate",
+      "status": 409,
+      "latency_ms": 1468.0967550000005
+    },
+    {
+      "principal": 0,
+      "route_class": "callback",
+      "status": 200,
+      "latency_ms": 387.19776100000126
+    },
+    {
+      "principal": 0,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 32.601794000000154
+    },
+    {
+      "principal": 0,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 32.51401199999964
+    },
+    {
+      "principal": 1,
+      "route_class": "callback",
+      "status": 200,
+      "latency_ms": 561.7771460000004
+    },
+    {
+      "principal": 1,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 30.63100999999915
+    },
+    {
+      "principal": 1,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 31.064355000000432
+    },
+    {
+      "principal": 6,
+      "route_class": "callback",
+      "status": 200,
+      "latency_ms": 728.5988300000008
+    },
+    {
+      "principal": 6,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 59.14683800000057
+    },
+    {
+      "principal": 6,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 60.129423999998835
+    },
+    {
+      "principal": 10,
+      "route_class": "callback",
+      "status": 200,
+      "latency_ms": 886.5525629999993
+    },
+    {
+      "principal": 67,
+      "route_class": "callback",
+      "status": 200,
+      "latency_ms": 1017.468386999999
+    },
+    {
+      "principal": 10,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 155.771068
+    },
+    {
+      "principal": 10,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 155.94821500000035
+    },
+    {
+      "principal": 67,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 156.01515699999982
+    },
+    {
+      "principal": 67,
+      "route_class": "duplicate_callback",
+      "status": 200,
+      "latency_ms": 156.38689499999964
+    }
+  ],
+  "helper_requests_raw": [
+    {
+      "principal": 0,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 251.543474
+    },
+    {
+      "principal": 0,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 265.312299
+    },
+    {
+      "principal": 1,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.988229000000047
+    },
+    {
+      "principal": 1,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 154.76273099999992
+    },
+    {
+      "principal": 2,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.310000999999943
+    },
+    {
+      "principal": 2,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 129.071421
+    },
+    {
+      "principal": 3,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.809003000000075
+    },
+    {
+      "principal": 3,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 80.45049900000004
+    },
+    {
+      "principal": 4,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.817029000000048
+    },
+    {
+      "principal": 4,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 91.05026099999986
+    },
+    {
+      "principal": 5,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.773959999999988
+    },
+    {
+      "principal": 5,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 79.21272699999986
+    },
+    {
+      "principal": 6,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.303462999999965
+    },
+    {
+      "principal": 6,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 78.683538
+    },
+    {
+      "principal": 7,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.20711499999993
+    },
+    {
+      "principal": 7,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 80.56560300000001
+    },
+    {
+      "principal": 8,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.081042000000025
+    },
+    {
+      "principal": 8,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 76.01425399999994
+    },
+    {
+      "principal": 9,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.46721700000012
+    },
+    {
+      "principal": 9,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 92.18082400000003
+    },
+    {
+      "principal": 10,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 28.735963999999967
+    },
+    {
+      "principal": 10,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 72.95536300000003
+    },
+    {
+      "principal": 11,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.949770999999828
+    },
+    {
+      "principal": 11,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 82.36704099999997
+    },
+    {
+      "principal": 12,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 32.351705000000265
+    },
+    {
+      "principal": 12,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 80.4750509999999
+    },
+    {
+      "principal": 13,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.595116999999846
+    },
+    {
+      "principal": 13,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 88.63515499999994
+    },
+    {
+      "principal": 14,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.292351000000053
+    },
+    {
+      "principal": 14,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 88.58356999999978
+    },
+    {
+      "principal": 15,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 42.14884200000006
+    },
+    {
+      "principal": 15,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 76.8604250000003
+    },
+    {
+      "principal": 16,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.844366000000264
+    },
+    {
+      "principal": 16,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 78.59560599999986
+    },
+    {
+      "principal": 17,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.026420000000144
+    },
+    {
+      "principal": 17,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 71.2529199999999
+    },
+    {
+      "principal": 18,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.499135000000024
+    },
+    {
+      "principal": 18,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.97612799999979
+    },
+    {
+      "principal": 19,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.4082599999997
+    },
+    {
+      "principal": 19,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 91.21899100000019
+    },
+    {
+      "principal": 20,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 30.160562000000027
+    },
+    {
+      "principal": 20,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 143.0760540000001
+    },
+    {
+      "principal": 21,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 28.192749999999705
+    },
+    {
+      "principal": 21,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 158.7557740000002
+    },
+    {
+      "principal": 22,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.182788000000073
+    },
+    {
+      "principal": 22,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 156.203978
+    },
+    {
+      "principal": 23,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 35.75306900000032
+    },
+    {
+      "principal": 23,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 145.5665509999999
+    },
+    {
+      "principal": 24,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 63.39362800000026
+    },
+    {
+      "principal": 24,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 238.12849199999982
+    },
+    {
+      "principal": 25,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 57.11060400000042
+    },
+    {
+      "principal": 25,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 193.28968099999975
+    },
+    {
+      "principal": 26,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 54.74231000000054
+    },
+    {
+      "principal": 26,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 168.864286
+    },
+    {
+      "principal": 27,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 49.519194999999854
+    },
+    {
+      "principal": 27,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 108.76313500000015
+    },
+    {
+      "principal": 28,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.570614000000205
+    },
+    {
+      "principal": 28,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 113.95700400000078
+    },
+    {
+      "principal": 29,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 36.21133900000041
+    },
+    {
+      "principal": 29,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 108.49377699999968
+    },
+    {
+      "principal": 30,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 28.283591000000342
+    },
+    {
+      "principal": 30,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 142.45350299999973
+    },
+    {
+      "principal": 31,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.571904999999788
+    },
+    {
+      "principal": 31,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 83.26789399999961
+    },
+    {
+      "principal": 32,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.471833999999944
+    },
+    {
+      "principal": 32,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 92.21284300000025
+    },
+    {
+      "principal": 33,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.824171999999635
+    },
+    {
+      "principal": 33,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 91.24332199999935
+    },
+    {
+      "principal": 34,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.587225999999646
+    },
+    {
+      "principal": 34,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 118.51379600000018
+    },
+    {
+      "principal": 35,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.513349999999264
+    },
+    {
+      "principal": 35,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 83.55879699999969
+    },
+    {
+      "principal": 36,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.9489480000002
+    },
+    {
+      "principal": 36,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 75.98539999999957
+    },
+    {
+      "principal": 37,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.463001000000077
+    },
+    {
+      "principal": 37,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.18559599999935
+    },
+    {
+      "principal": 38,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.45168199999989
+    },
+    {
+      "principal": 38,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 87.8658260000002
+    },
+    {
+      "principal": 39,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.882301000000552
+    },
+    {
+      "principal": 39,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 94.80391999999938
+    },
+    {
+      "principal": 40,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 34.12765099999979
+    },
+    {
+      "principal": 40,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 92.55970900000011
+    },
+    {
+      "principal": 41,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.460011000000122
+    },
+    {
+      "principal": 41,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 92.79054800000085
+    },
+    {
+      "principal": 42,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 44.24548099999993
+    },
+    {
+      "principal": 42,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 87.78657199999998
+    },
+    {
+      "principal": 43,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.0005029999993
+    },
+    {
+      "principal": 43,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 88.88727000000017
+    },
+    {
+      "principal": 44,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.880817999999636
+    },
+    {
+      "principal": 44,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 72.77305400000023
+    },
+    {
+      "principal": 45,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.34639900000002
+    },
+    {
+      "principal": 45,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 109.68623799999932
+    },
+    {
+      "principal": 46,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 33.27118200000041
+    },
+    {
+      "principal": 46,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 105.36297300000024
+    },
+    {
+      "principal": 47,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 31.9380029999993
+    },
+    {
+      "principal": 47,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 128.42619899999954
+    },
+    {
+      "principal": 48,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 33.886414000000514
+    },
+    {
+      "principal": 48,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 140.7272380000004
+    },
+    {
+      "principal": 49,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.03313999999955
+    },
+    {
+      "principal": 49,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 121.01479500000005
+    },
+    {
+      "principal": 50,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.280279999999948
+    },
+    {
+      "principal": 50,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 109.91743600000063
+    },
+    {
+      "principal": 51,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 39.79396600000018
+    },
+    {
+      "principal": 51,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 149.67811600000005
+    },
+    {
+      "principal": 52,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 41.7031420000003
+    },
+    {
+      "principal": 52,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 211.54694699999982
+    },
+    {
+      "principal": 53,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 38.32539599999927
+    },
+    {
+      "principal": 53,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 143.03259199999957
+    },
+    {
+      "principal": 54,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 43.80893600000036
+    },
+    {
+      "principal": 54,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 127.42857299999923
+    },
+    {
+      "principal": 55,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.093117000000348
+    },
+    {
+      "principal": 55,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 78.7764330000009
+    },
+    {
+      "principal": 56,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.713380000001052
+    },
+    {
+      "principal": 56,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.55544200000077
+    },
+    {
+      "principal": 57,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.762915000001158
+    },
+    {
+      "principal": 57,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 79.43669299999965
+    },
+    {
+      "principal": 58,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.404442999999446
+    },
+    {
+      "principal": 58,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 93.71267400000033
+    },
+    {
+      "principal": 59,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 27.698374999999942
+    },
+    {
+      "principal": 59,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 74.3743140000006
+    },
+    {
+      "principal": 60,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.690560999999434
+    },
+    {
+      "principal": 60,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 64.61105899999893
+    },
+    {
+      "principal": 61,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.840487999999823
+    },
+    {
+      "principal": 61,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 80.92791500000021
+    },
+    {
+      "principal": 62,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.584414000000834
+    },
+    {
+      "principal": 62,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 73.04589499999929
+    },
+    {
+      "principal": 63,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.416317999999592
+    },
+    {
+      "principal": 63,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 69.47993200000019
+    },
+    {
+      "principal": 64,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.836262000000715
+    },
+    {
+      "principal": 64,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 78.77754300000015
+    },
+    {
+      "principal": 65,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 19.424831999998787
+    },
+    {
+      "principal": 65,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.6485900000007
+    },
+    {
+      "principal": 66,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 20.7702019999997
+    },
+    {
+      "principal": 66,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.8937619999997
+    },
+    {
+      "principal": 67,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.227646000001187
+    },
+    {
+      "principal": 67,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.87760700000035
+    },
+    {
+      "principal": 68,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.083252000000357
+    },
+    {
+      "principal": 68,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 94.72121300000072
+    },
+    {
+      "principal": 69,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 29.179951000000074
+    },
+    {
+      "principal": 69,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 72.22326599999906
+    },
+    {
+      "principal": 70,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.854387000001225
+    },
+    {
+      "principal": 70,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 74.81726999999955
+    },
+    {
+      "principal": 71,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.213732000000164
+    },
+    {
+      "principal": 71,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 76.75782100000106
+    },
+    {
+      "principal": 72,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.210415999999896
+    },
+    {
+      "principal": 72,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 73.85281899999973
+    },
+    {
+      "principal": 73,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.94350300000042
+    },
+    {
+      "principal": 73,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 72.3014779999994
+    },
+    {
+      "principal": 74,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 20.959270000001197
+    },
+    {
+      "principal": 74,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 74.73371700000098
+    },
+    {
+      "principal": 75,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.325636999999915
+    },
+    {
+      "principal": 75,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 75.08383099999992
+    },
+    {
+      "principal": 76,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.41144599999825
+    },
+    {
+      "principal": 76,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 79.97115400000075
+    },
+    {
+      "principal": 77,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.744502999999895
+    },
+    {
+      "principal": 77,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 74.14602500000001
+    },
+    {
+      "principal": 78,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.457925999999134
+    },
+    {
+      "principal": 78,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 112.21113700000024
+    },
+    {
+      "principal": 79,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.557835000001432
+    },
+    {
+      "principal": 79,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 69.72617299999911
+    },
+    {
+      "principal": 80,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.882062000000587
+    },
+    {
+      "principal": 80,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 65.38543199999913
+    },
+    {
+      "principal": 81,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.91547399999945
+    },
+    {
+      "principal": 81,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 74.6434109999991
+    },
+    {
+      "principal": 82,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.64457399999992
+    },
+    {
+      "principal": 82,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 67.17078399999991
+    },
+    {
+      "principal": 83,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.225581000000602
+    },
+    {
+      "principal": 83,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.19390299999941
+    },
+    {
+      "principal": 84,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.97832500000004
+    },
+    {
+      "principal": 84,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 76.63111600000047
+    },
+    {
+      "principal": 85,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.883943999999246
+    },
+    {
+      "principal": 85,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 68.88308200000029
+    },
+    {
+      "principal": 86,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.426579999999376
+    },
+    {
+      "principal": 86,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 80.75595799999974
+    },
+    {
+      "principal": 87,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 24.01970699999947
+    },
+    {
+      "principal": 87,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 73.40056799999911
+    },
+    {
+      "principal": 88,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 19.009023000000525
+    },
+    {
+      "principal": 88,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.9980830000004
+    },
+    {
+      "principal": 89,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.48825500000021
+    },
+    {
+      "principal": 89,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 71.73445600000014
+    },
+    {
+      "principal": 90,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.998711000000185
+    },
+    {
+      "principal": 90,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.1880970000002
+    },
+    {
+      "principal": 91,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 20.561482999999498
+    },
+    {
+      "principal": 91,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 79.83894799999871
+    },
+    {
+      "principal": 92,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 26.23158400000102
+    },
+    {
+      "principal": 92,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 73.52338699999927
+    },
+    {
+      "principal": 93,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 22.75665900000058
+    },
+    {
+      "principal": 93,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.74590200000057
+    },
+    {
+      "principal": 94,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 23.064714000000095
+    },
+    {
+      "principal": 94,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 78.77146199999879
+    },
+    {
+      "principal": 95,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 25.458190999999715
+    },
+    {
+      "principal": 95,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 70.37608
+    },
+    {
+      "principal": 96,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 20.946765000000596
+    },
+    {
+      "principal": 96,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.81230700000015
+    },
+    {
+      "principal": 97,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 19.876753000000463
+    },
+    {
+      "principal": 97,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 108.99959599999966
+    },
+    {
+      "principal": 98,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 21.195873000000574
+    },
+    {
+      "principal": 98,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 66.76337599999897
+    },
+    {
+      "principal": 99,
+      "route_class": "prepare_quote",
+      "status": 200,
+      "latency_ms": 20.35092900000018
+    },
+    {
+      "principal": 99,
+      "route_class": "prepare_order",
+      "status": 201,
+      "latency_ms": 73.28377499999988
+    },
+    {
+      "principal": 0,
+      "route_class": "post_owner_read",
+      "status": 200,
+      "latency_ms": 56.94024399999944
+    },
+    {
+      "principal": 1,
+      "route_class": "post_owner_read",
+      "status": 200,
+      "latency_ms": 56.42109000000164
+    },
+    {
+      "principal": 6,
+      "route_class": "post_owner_read",
+      "status": 200,
+      "latency_ms": 61.430538999999044
+    },
+    {
+      "principal": 10,
+      "route_class": "post_owner_read",
+      "status": 200,
+      "latency_ms": 40.500819999999294
+    },
+    {
+      "principal": 67,
+      "route_class": "post_owner_read",
+      "status": 200,
+      "latency_ms": 36.21964099999968
+    }
+  ],
+  "elapsed_seconds": 2.7241391700000004,
+  "route_metrics": {
+    "initiate": {
+      "requests": 100,
+      "p95_ms": 1393.3174820000004,
+      "p99_ms": 1430.813075
+    },
+    "callback": {
+      "requests": 5,
+      "p95_ms": 1017.468386999999,
+      "p99_ms": 1017.468386999999
+    },
+    "duplicate_callback": {
+      "requests": 10,
+      "p95_ms": 156.38689499999964,
+      "p99_ms": 156.38689499999964
+    }
+  },
+  "requests": 115,
+  "helper_api_calls": 205,
+  "distinct_principals": 100
+}

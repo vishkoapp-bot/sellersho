@@ -18,7 +18,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
 | INV-02 | Checkpoint OPEN | bb61fae | [Inbound transfers](../../architecture/inbound-transfers.md) |
 | INV-03 | TODO | — | — |
-| INV-04 | Checkpoint OPEN | Conserved QC checkpoint | [QC disposition](../../architecture/inbound-qc-disposition.md) |
+| INV-04 | Checkpoint OPEN | 1e86ad2 | [QC disposition](../../architecture/inbound-qc-disposition.md) |
 | INV-08 | TODO | — | — |
 | INV-09 | TODO | — | — |
 | INV-06 | TODO | — | — |
@@ -28,7 +28,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-006 | TODO | — | — |
 | INV-10 | TODO | — | — |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
-| CAP-01 | IN PROGRESS | ff4ff13 | Test-gated adapters; harness/qualification gates remain open |
+| CAP-01 | Checkpoint OPEN | ff4ff13 / Harness checkpoint | [Harness and failed evidence](../../../load-tests/README.txt) |
 | FIN-003 | TODO | — | — |
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
@@ -314,3 +314,19 @@ Final source tree43768dd8f48ed27466d5a28150f1429429fe146c is based on9221c89 and
 The separate broad all-opt-in Go suite FAILED with109 named top-level failures and verified cleanup. The sanitized complete name list and scope are committed in docs/quality/inv04-broad-integration-failures.txt. They require TEST-02 fixture/domain triage and are not all proven harmless. No unrelated fixture repair or business-rule weakening was performed during the user's release freeze.
 
 Ruling: this is Checkpoint OPEN, not full INV-02/04/09 lifecycle completion. The seven positive putaway/capture/storage branches remain retained but skipped, pending INV-09 integration. The user has now requested freezing/pushing current changes and a guarded deployment attempt; FIN-003 was never started. No production migration or data change was performed by this checkpoint.
+
+
+## CAP-01 — frozen disposable harness and realistic fixture checkpoint OPEN
+
+The coherent51-file checkpoint supplies a guarded disposable stack, 1000 independent principals, the fixed100 API-RPS mix, valid lifecycle queues, protocol drivers, private SMS/carrier/payment doubles, frontend/browser preparation and synthetic historical/stock/fee fixtures. Source, binary, migration, image and selected raw evidence hashes identify the actual measured inputs; HEAD alone is never asserted to identify an uncommitted snapshot. The representative fixture has100000 historical orders/140000 lines, immutable conserved origin/financial snapshots, actual release/replay, payout reservation/replay, statement deltas and aged fee/stock reconciliation. The retained full-fixture run passed337.80s; it included the explicitly recorded then-uncommitted0008 migration and is not an exact-clean-HEAD capacity claim.
+
+Fresh review rejected three Important harness defects: container network names were not joined to attachment IDs, recursive temporary cleanup lacked a resolved ownership check, and overdue arrivals silently caught up. Actual focused RED/GREEN fixes now pin immutable network IDs before start and validate attachments afterward/at cleanup, verify canonical temporary path and file identity before recursive deletion, and drop missed schedule slots under a documented10ms tolerance while reporting actual rates/lag separately from planned rates. A bounded real unique internal-network create/start/cleanup check passed. Scoped re-review approved all three findings with no new blocker.
+
+Final archive tree37764bc2465c2c2f70133199eeac371702b1f4b8 is based on1e86ad2. All51 archived file SHA-256 values match the reviewed frozen bytes, including evidence. Its Python helpers passed15 tests and Node helpers passed26 without skips. The existing Go/SQL fixture sources were unchanged by review fixes; no six-minute fixture/load/browser retest was substituted for the retained measurements. Proof: releases/cap01-staged-proof.json; helper logs: logs/cap01-exact-{python,python-extra,node}.log. Its complete default Go suite also passed; DB opt-ins are intentionally absent and are not full integration evidence (logs/cap01-exact-default.log). PowerShell entry-point syntax validation passed.
+
+Retained hot-SKU evidence proves five paid captures from five units,95 explicit prepayment stock conflicts,10 duplicate callbacks,320 matched API/domain calls and zero stock/amount mismatch. Latency still FAILED: token p95 1393.317ms and callback p95 1017.468ms. Browser setup FAILED with zero rendered pages and zero HTTP/domain/API requests. Earlier dropped/timeout/self-throttling failures remain failed. Pre-fix timing runs are additionally qualified by their old missed-schedule limitation; no raw measurement was rewritten to imply a new-scheduler pass.
+
+Ruling: this is a reviewed partial environment checkpoint, not CAP-01 closure or CAP-02 intended-hardware certification. Full independent pricing/refund/ledger oracle, successful browser/static paths, expiry/device/fault/recovery/staff/hot-account/cold-cache work, full-duration qualification and application latency remain OPEN. The user's explicit release freeze supersedes continuing implementation; FIN-003 was never started. Raw evidence is preserved byte-for-byte; the frozen script's cosmetic final blank line is deferred. No production service, provider or customer data changed.
+
+
+Final combined frontend verification at the release freeze: npm test passed285/285 with zero failures or skips (147.27s), including the final QC mounted regressions. Log: logs/final-freeze-frontend.log. This frontend result does not turn the109-failure broad backend integration run or failed capacity/browser results into passes.

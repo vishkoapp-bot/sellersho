@@ -1,0 +1,31 @@
+{
+  "status": "SYNTHETIC_HISTORY_ASSERTED_NOT_QUALIFIED",
+  "seed": "backend/cmd/capacity-fixture/seed.sql",
+  "guard": "internal/testdb.Open via explicitly named Go test",
+  "products": 10101,
+  "skus": 50001,
+  "historical_orders": 100000,
+  "stores": 100,
+  "suppliers": 100,
+  "customers": 1000,
+  "synthetic_variant_units": 5000000,
+  "stock_limitation": "Five million canonical sellable supplier-origin units plus distinct2000aged central units; historical receipts and captures separately conserved",
+  "history_limitation": "Synthetic status/line/quantity skew with immutable origins and snapshots;100 real releases,100 pending payout reservations,current/prior-month canonical reconciliation;not historical production correctness or full returns oracle",
+  "queues": {
+    "create": "rolling bounded2000",
+    "initiate": "rolling bounded2000",
+    "callback": "rolling bounded2000"
+  },
+  "two_hour_required_each_write_queue": 28800,
+  "required_total_write_stock_lower_bound": 86400,
+  "session_limitation": "1000distinct customer sessions;actual OTP and paced checkout drivers implemented;expiry/device acceptance pending",
+  "canonical_saleable_units": 5000000,
+  "origin_warehouses": 100,
+  "historical_lines": 140000,
+  "historical_paid_orders": 80000,
+  "historical_delivered_orders": 60000,
+  "aged_positions": 100,
+  "aged_physical_units": 2000,
+  "hot_sku_units": 5,
+  "staff_sessions": 20
+}

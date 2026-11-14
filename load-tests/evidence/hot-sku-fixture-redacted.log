@@ -1,0 +1,10 @@
+=== RUN   TestCapacityDataFloor
+    main_test.go:53: aged cohort100positions/2000units ages10..110days;fee-enabled disposable variant charged13811200Toman across3320days;replay0;flag restoredOFF
+    main_test.go:53: CAPACITY_METRIC supplier_balance sample=1 duration_ms=1882
+    main_test.go:53: CAPACITY_METRIC supplier_balance sample=20 duration_ms=2187
+    main_test.go:53: CAPACITY_METRIC supplier_balance sample=40 duration_ms=1794
+    main_test.go:53: CAPACITY_METRIC supplier_balance sample=60 duration_ms=1620
+    main_test.go:53: CAPACITY_METRIC supplier_balance sample=100 duration_ms=1971
+    main_test.go:53: synthetic history:100000 orders,140000 lines,80000 paid,60000 delivered;100 real releases and100 idempotent payout reservations; origin/stock/posted/reserved assertions passed
+--- PASS: TestCapacityDataFloor (337.80s)
+PASS

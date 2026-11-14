@@ -1,0 +1,123 @@
+{
+  "certified": false,
+  "scope": "LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification;loopback raw TLS relay functional evidence only",
+  "requests_raw": [
+    {
+      "principal": 0,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 1,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 2,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 8,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 4,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 9,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 5,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 3,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 6,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    },
+    {
+      "principal": 7,
+      "phase": "cold",
+      "path": "/",
+      "kind": "other",
+      "status": 0,
+      "from_cache": false
+    }
+  ],
+  "pages": [],
+  "failed_gates": [
+    "navigation_0",
+    "navigation_1",
+    "navigation_2",
+    "navigation_8",
+    "navigation_4",
+    "navigation_9",
+    "navigation_5",
+    "navigation_3",
+    "navigation_7",
+    "navigation_6",
+    "network_or_ui_errors",
+    "incomplete_cold_warm_cohort"
+  ],
+  "blocked_external": 0,
+  "page_errors": 0,
+  "tls": "exception pinned to this ephemeral CA public-key hash only;no global certificate bypass",
+  "generator_cpu_scope": "host Chrome CPU unmeasured;not capacity evidence",
+  "timing_qualification": "EXCLUDED: Docker exec relay and shared host browser timings",
+  "browser_version": "Chrome/157.0.8103.52",
+  "requests": 10,
+  "network_responses": 10,
+  "counts": {
+    "cold": {
+      "api": 0,
+      "asset": 0,
+      "document": 0,
+      "other": 10
+    },
+    "warm": {
+      "api": 0,
+      "asset": 0,
+      "document": 0,
+      "other": 0
+    }
+  }
+}

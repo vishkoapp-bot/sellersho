@@ -76,6 +76,8 @@ func TestConcurrentPaymentCallbacksConsumeInventoryOnce(t *testing.T) {
 	})
 
 	repo := NewOrderRepository(db)
+	warehouse := seedCanonicalWarehouseStock(t, db, productID, "sup-ali", 1)
+	seedCanonicalWarehouseOrderOrigins(t, db, orderID, warehouse)
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var wg sync.WaitGroup

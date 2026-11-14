@@ -82,3 +82,15 @@ cases passed, followed by all 16 tests in that fixture without skips. Assertions
 still exercise real cancellation, disputes, return COD refusal, customer/supplier
 recipients and replay counts. Production notification code was not changed.
 Evidence: `logs/test02-notification-fixtures-final.log`.
+
+## Payment fixture physical provenance
+
+Two migrated payment races declared product stock without a physical lot or
+immutable checkout split. They now seed a distinct active warehouse, its exact
+sellable balance and each order line's matching origin before starting competing
+operations. This exercises current capture rules without relaxing reconciliation
+refusals. Both isolated tests passed, followed by five repetitions of both tests
+in one guarded migrated database (10 successful cases). Assertions still require
+two callbacks to observe one paid transaction, one inventory debit, no premature
+profit release, and expired payment refusal. Evidence:
+`logs/test02-payment-provenance.log`, `logs/test02-payment-repeat.log`.

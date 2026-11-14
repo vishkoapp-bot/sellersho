@@ -70,6 +70,9 @@ func TestOperationsOrderExpiryAndPaymentRace(t *testing.T) {
 	r := NewOrderRepository(db)
 	expired, expiredToken := opsOrder(t, db, f, false)
 	paid, token := opsOrder(t, db, f, false)
+	warehouse := seedCanonicalWarehouseStock(t, db, f.product, f.supplier, 100)
+	seedCanonicalWarehouseOrderOrigins(t, db, expired, warehouse)
+	seedCanonicalWarehouseOrderOrigins(t, db, paid, warehouse)
 	opsExec(t, db, `UPDATE orders SET payment_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, expired)
 	var wg sync.WaitGroup
 	var expiryErr, paymentErr error

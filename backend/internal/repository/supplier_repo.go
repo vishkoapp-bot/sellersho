@@ -17,6 +17,7 @@ import (
 
 	"github.com/drup/platform/internal/domain"
 	phoneutil "github.com/drup/platform/internal/phone"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -4317,19 +4318,33 @@ func (r *SupplierRepository) RespondDiscrepancy(ctx context.Context, supplierID,
 }
 
 // RequestSettlement submits payout request
-func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID string, amount int64, shaba, bankName, accountHolder string) (string, error) {
-	if amount <= 0 {
+func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID string, amount int64, shaba, bankName, accountHolder string, clientKeys ...string) (string, error) {
+	if amount <= 0 || amount > pricing.MaxTransportMoney {
 		return "", fmt.Errorf("settlement amount must be positive")
+	}
+	command, err := newFinanceCommand(FinancialAccount{Type: "supplier", ID: supplierID}, "payout-request-v1", clientKeys, []interface{}{amount, shaba, bankName, accountHolder})
+	if err != nil {
+		return "", err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "supplier", ID: supplierID}); err != nil {
+		return "", err
+	}
 	var locked string
 	var approvalStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT id, approval_status FROM suppliers WHERE id = $1 FOR UPDATE`, supplierID).Scan(&locked, &approvalStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id, approval_status FROM suppliers WHERE id = $1`, supplierID).Scan(&locked, &approvalStatus); err != nil {
 		return "", err
+	}
+	var original string
+	if replay, err := command.replayTx(ctx, tx, &original); err != nil {
+		return "", err
+	} else if replay {
+		return original, nil
 	}
 	// Gap 12: a suspended supplier cannot request NEW settlements
 	// (already-pending requests stay admin-reviewable). The balance
@@ -4337,11 +4352,11 @@ func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID s
 	if approvalStatus == "suspended" {
 		return "", ErrSupplierSuspended
 	}
-	var balance SupplierBalance
-	if err := scanSupplierBalance(ctx, tx, supplierID, &balance); err != nil {
+	available, err := BalanceTx(ctx, tx, FinancialAccount{Type: "supplier", ID: supplierID})
+	if err != nil {
 		return "", err
 	}
-	if amount > balance.Available {
+	if amount > available {
 		return "", fmt.Errorf("insufficient settlement balance")
 	}
 	requestID := "pay-" + uuid.NewString()
@@ -4351,6 +4366,9 @@ func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID s
 	`
 	_, err = tx.ExecContext(ctx, query, requestID, supplierID, accountHolder, shaba, bankName, amount)
 	if err != nil {
+		return "", err
+	}
+	if err := command.recordTx(ctx, tx, requestID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {

@@ -191,7 +191,7 @@ func (r *FinanceRepository) GetWalletBreakdown(ctx context.Context, storeID stri
 	// Guarded like GetStoreBalance (D31): a database without the
 	// seller_early_withdrawals table (pre-202611020002) still works.
 	var earlyPending int64
-	if err := r.db.QueryRowContext(ctx, `SELECT CASE WHEN to_regclass('public.seller_early_withdrawals') IS NOT NULL THEN COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='pending'),0) ELSE 0 END`, storeID).Scan(&earlyPending); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT CASE WHEN to_regclass('seller_early_withdrawals') IS NOT NULL THEN COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='pending'),0) ELSE 0 END`, storeID).Scan(&earlyPending); err != nil {
 		return nil, err
 	}
 	settings, err := r.GetSettlementSettings(ctx)
@@ -204,7 +204,7 @@ func (r *FinanceRepository) GetWalletBreakdown(ctx context.Context, storeID stri
 	}, nil
 }
 
-func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUserID, storeID string, gross int64, shaba, bankName string) (*EarlyWithdrawal, error) {
+func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUserID, storeID string, gross int64, shaba, bankName string, clientKeys ...string) (*EarlyWithdrawal, error) {
 	if gross > pricing.MaxTransportMoney {
 		return nil, pricing.ErrInvalidMoney
 	}
@@ -214,23 +214,38 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	if shaba == "" || bankName == "" {
 		return nil, fmt.Errorf("shaba and bank_name are required")
 	}
+	command, err := newFinanceCommand(FinancialAccount{Type: "seller", ID: storeID}, "early-withdrawal-v1", clientKeys, []interface{}{ownerUserID, gross, shaba, bankName})
+	if err != nil {
+		return nil, err
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "seller", ID: storeID}); err != nil {
+		return nil, err
+	}
 	var lockedID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2 AND owner_type='dropshipper' FOR UPDATE`, storeID, ownerUserID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2 AND owner_type='dropshipper'`, storeID, ownerUserID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrStoreForbidden
 		}
 		return nil, err
 	}
+	var original EarlyWithdrawal
+	if replay, err := command.replayTx(ctx, tx, &original); err != nil {
+		return nil, err
+	} else if replay {
+		original.fillDeadline()
+		return &original, nil
+	}
 	// sellerAvailableSQL (live-parity, D31) already subtracts pending
 	// early withdrawals, pending/approved payouts and service
 	// purchases, so the same profit cannot be requested twice.
-	var available int64
-	if err := tx.QueryRowContext(ctx, sellerAvailableSQL, storeID).Scan(&available); err != nil {
+	available, balanceErr := BalanceTx(ctx, tx, FinancialAccount{Type: "seller", ID: storeID})
+	if err := balanceErr; err != nil {
 		return nil, err
 	}
 	if gross > available {
@@ -257,6 +272,9 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 		return nil, err
 	}
 	out.fillDeadline()
+	if err := command.recordTx(ctx, tx, out); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -372,11 +390,8 @@ func settlementWindowPeriod(now time.Time, configuredDay int) (string, int, bool
 // recipient, the fee-free pending payout, the
 // skipped_no_bank_details item, and the cycle totals (which count
 // skipped stores and their amounts) all match the manual run, so a
-// cycle means the same thing whichever trigger created it. Balances
-// are read through GetStoreBalance before the write transaction,
-// exactly like the manual run (same read/write race window; a
-// balance change between the read and the cycle insert is not
-// re-checked, and a later cycle never re-sweeps the same period).
+// cycle means the same thing whichever trigger created it. Balances are authorized through the canonical transaction projection
+// under the common seller guards. FIN-002 owns bounded per-store cycle work.
 func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.Time, createdBy string) (*MonthlySettlementCycle, error) {
 	settings, err := r.GetSettlementSettings(ctx)
 	if err != nil {
@@ -408,12 +423,6 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 			storeRows.Close()
 			return nil, err
 		}
-		bal, err := r.GetStoreBalance(ctx, c.id)
-		if err != nil {
-			storeRows.Close()
-			return nil, err
-		}
-		c.available = bal.AvailableAmount
 		candidates = append(candidates, c)
 	}
 	storeRows.Close()
@@ -425,6 +434,15 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 		return nil, err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	accounts := make([]FinancialAccount, 0, len(candidates))
+	for _, c := range candidates {
+		accounts = append(accounts, FinancialAccount{Type: "seller", ID: c.id})
+	}
+	if err := LockAccountsTx(ctx, tx, &accountLocks, accounts...); err != nil {
+		return nil, err
+	}
+
 	// FIX 14: serialize concurrent sweep runs for this period (the
 	// cycle-PK already enforces one settlement per month; the lock
 	// closes the check-then-insert race so a duplicate run waits
@@ -457,11 +475,17 @@ func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.T
 	}
 	var skippedNotifies, createdNotifies []settlementNotify
 	for _, c := range candidates {
+		available, err := BalanceTx(ctx, tx, FinancialAccount{Type: "seller", ID: c.id})
+		if err != nil {
+			return nil, err
+		}
+		c.available = available
+
 		if c.available <= 0 {
 			continue
 		}
 		var shaba, bankName string
-		err := tx.QueryRowContext(ctx, `SELECT shaba, bank_name FROM payout_requests WHERE store_id = $1 ORDER BY created_at DESC LIMIT 1`, c.id).Scan(&shaba, &bankName)
+		err = tx.QueryRowContext(ctx, `SELECT shaba, bank_name FROM payout_requests WHERE store_id = $1 ORDER BY created_at DESC LIMIT 1`, c.id).Scan(&shaba, &bankName)
 		if err == sql.ErrNoRows || shaba == "" {
 			// Never invent bank details: record the skip, keep balance.
 			if _, err := tx.ExecContext(ctx, `INSERT INTO monthly_settlement_items(id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status) VALUES($1,$2,$3,$4,0,$4,NULL,'skipped_no_bank_details')`, "msi-"+uuid.NewString(), period, c.id, c.available); err != nil {

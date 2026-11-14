@@ -106,7 +106,7 @@ export const SellerWalletTab: React.FC = () => {
 
   const handleServicePurchase = async (type: 'plan_renewal' | 'catalog_upgrade', cost: number, title: string) => {
     if (!isMockMode()) {
-      try { await storeApi.purchaseService(currentStore.slug, type === 'plan_renewal' ? 'standard' : type); setServerBalance(await storeApi.getOwnedBalance(currentStore.slug)); success('خدمت ثبت و مبلغ از کیف پول کسر شد.'); }
+      try { await storeApi.purchaseService(currentStore.slug, type === 'plan_renewal' ? 'standard' : type, currentStore.id); success('خدمت ثبت و مبلغ از کیف پول کسر شد.'); try { setServerBalance(await storeApi.getOwnedBalance(currentStore.slug)); } catch { info('خرید ثبت شد؛ برای دیدن موجودی تازه، صفحه را دوباره بارگذاری کن.'); } }
       catch (err: any) { error(err.message || 'تراکنش انجام نشد.'); }
       return;
     }
@@ -149,12 +149,15 @@ export const SellerWalletTab: React.FC = () => {
       if (isVerifying) return;
       setIsVerifying(true);
       try {
-        await storeApi.requestEarlyWithdrawal(currentStore.slug, amountNum, shabaNumber);
+        await storeApi.requestEarlyWithdrawal(currentStore.slug, amountNum, shabaNumber, currentStore.id);
+        success('درخواست برداشت زودهنگام ثبت شد؛ تسویه حداکثر تا ۲۴ ساعت آینده انجام می‌شود.');
+        setWithdrawAmount('');
+        try {
         setServerBalance(await storeApi.getOwnedBalance(currentStore.slug));
         setServerPayouts(await storeApi.getPayouts(currentStore.slug));
         setWalletBreakdown(await storeApi.getWalletBreakdown(currentStore.slug));
         setEarlyWithdrawals(await storeApi.getEarlyWithdrawals(currentStore.slug));
-        success('درخواست برداشت زودهنگام ثبت شد؛ تسویه حداکثر تا ۲۴ ساعت آینده انجام می‌شود.');
+        } catch { info('درخواست ثبت شد؛ برای دیدن مانده و وضعیت تازه، صفحه را دوباره بارگذاری کن.'); }
       }
       catch (err: any) { error(err.message || 'ثبت برداشت انجام نشد.'); }
       finally { setIsVerifying(false); }

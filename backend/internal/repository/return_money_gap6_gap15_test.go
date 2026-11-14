@@ -24,8 +24,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/drup/platform/internal/testdb"
-
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
@@ -36,19 +34,24 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := testdb.Open(t, databaseURL)
+	db := openPrivateFinanceFixture(t, databaseURL)
+	var err error
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
 	ctx := context.Background()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS order_inventory_returns, order_inventory_captures, seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
+		`CREATE TABLE finance_command_requests(principal_type TEXT,principal_id TEXT,operation TEXT,client_key TEXT,fingerprint TEXT,result JSONB,PRIMARY KEY(principal_type,principal_id,operation,client_key))`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 7, 100000, 20000, NULL, NULL)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -142,7 +145,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		)`,
 		`CREATE TABLE inventory_balances (
 			id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, owner_type TEXT,
-			location_type TEXT, location_key TEXT, status TEXT, quantity INT NOT NULL DEFAULT 0,
+			location_type TEXT, location_key TEXT, status TEXT, variant_id UUID, quantity INT NOT NULL DEFAULT 0,
 			reconciled BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (product_id, owner_type, location_type, location_key, status)
 		)`,
@@ -203,6 +206,9 @@ func gmBalance(t *testing.T, db *sql.DB, productID, supplierID, locationKey stri
 
 func gmOrder(t *testing.T, db *sql.DB, id, customerID, storeID string, captured, profitReleased bool, dropshipperProfit int64) {
 	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Finance fixture') ON CONFLICT(id) DO NOTHING`, customerID, "f"+customerID[:12]); err != nil {
+		t.Fatal(err)
+	}
 	if storeID == "" {
 		storeID = "central"
 	}
@@ -224,6 +230,9 @@ func gmItem(t *testing.T, db *sql.DB, orderID, productID string, qty int, wholes
 		VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8::uuid)`,
 		itemID, orderID, productID, qty, wholesale, margin, price, variantArg); err != nil {
 		t.Fatalf("seed order item: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity) SELECT $1,$2,$3,0,'warehouse',supplier_id,'wh-1','انبار مرکزی',$4 FROM products WHERE id=$5`, "fixture-origin-"+itemID, orderID, itemID, qty, productID); err != nil {
+		t.Fatal(err)
 	}
 	return itemID
 }

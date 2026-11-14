@@ -148,6 +148,9 @@ func wr69AdminPayoutConfirm(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 		stored = true
 	}
 	if err := finRepo.ConfirmManualTransferWithDate(ctx, id, ref, wr69Operator(r), transferDateArg); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not approved") {
 			http.Error(w, `{"error":"Payout is not approved"}`, http.StatusConflict)
 			return
@@ -215,14 +218,14 @@ func wr69AdminPaymentRefund(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 	var paymentID, orderID string
 	var paidAmount int64
 	var payStatus string
-	err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE id = $1 FOR UPDATE`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
+	err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE id = $1`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
 	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
+		err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
 	}
 	if err == sql.ErrNoRows {
 		var resolvedOrder string
 		if oerr := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id = $1 OR order_number = $1`, id).Scan(&resolvedOrder); oerr == nil {
-			err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, resolvedOrder).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
+			err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1`, resolvedOrder).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
 		} else if oerr == sql.ErrNoRows {
 			err = sql.ErrNoRows
 		} else {
@@ -235,6 +238,14 @@ func wr69AdminPaymentRefund(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 		return
 	}
 	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := repository.LockOrderAccountsTx(ctx, tx, orderID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT order_id,amount,status FROM payment_transactions WHERE id=$1 FOR UPDATE`, paymentID).Scan(&orderID, &paidAmount, &payStatus); err != nil {
 		writeInternalError(w, err)
 		return
 	}

@@ -1789,6 +1789,14 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		}
 		settlement, err := orderRepo.ReceiveCustomerReturn(ctx, id, qc, claims.UserID)
 		if err != nil {
+			if writeFinanceBusy(w, err) {
+				return
+			}
+			if errors.Is(err, repository.ErrFinancePrincipalUnresolved) || errors.Is(err, repository.ErrFinanceAccountChanged) {
+				http.Error(w, `{"error":"Immutable financial principal requires reconciliation"}`, http.StatusConflict)
+				return
+			}
+
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return or item not found, or return not approved"}`, http.StatusNotFound)
 				return
@@ -1814,6 +1822,14 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		}
 		amount, settlement, err := orderRepo.RefundCustomerReturn(ctx, id, claims.UserID)
 		if err != nil {
+			if writeFinanceBusy(w, err) {
+				return
+			}
+			if errors.Is(err, repository.ErrFinancePrincipalUnresolved) || errors.Is(err, repository.ErrFinanceAccountChanged) {
+				http.Error(w, `{"error":"Immutable financial principal requires reconciliation"}`, http.StatusConflict)
+				return
+			}
+
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return not found"}`, http.StatusNotFound)
 				return

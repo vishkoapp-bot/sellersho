@@ -1015,6 +1015,10 @@ func (h *SupplierHandlers) HandleRespondDiscrepancy(w http.ResponseWriter, r *ht
 // 19. POST /api/v1/supplier/settlement/request
 func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	requestKey, ok := requireFinanceRequestKey(w, r)
+	if !ok {
+		return
+	}
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
 	var req struct {
@@ -1023,7 +1027,7 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 		BankName      string `json:"bank_name"`
 		AccountHolder string `json:"account_holder"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeMoneyJSON(r.Body, &req); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -1037,8 +1041,19 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 	if !strings.HasPrefix(req.Shaba, "IR") {
 		req.Shaba = "IR" + req.Shaba
 	}
-	reqID, err := h.supplierRepo.RequestSettlement(r.Context(), supplierID, req.Amount, req.Shaba, verification.BankName, req.AccountHolder)
+	reqID, err := h.supplierRepo.RequestSettlement(r.Context(), supplierID, req.Amount, req.Shaba, verification.BankName, req.AccountHolder, requestKey)
 	if err != nil {
+		if errors.Is(err, repository.ErrFinancePrincipalUnresolved) {
+			sellerError(w, err)
+			return
+		}
+		if writeFinanceBusy(w, err) {
+			return
+		}
+		if errors.Is(err, repository.ErrFinanceCommandConflict) {
+			http.Error(w, `{"error":"Financial request payload conflict"}`, http.StatusConflict)
+			return
+		}
 		// Gap 12: new settlement requests are frozen while the
 		// supplier is suspended (409, like the balance conflict).
 		if errors.Is(err, repository.ErrSupplierSuspended) {

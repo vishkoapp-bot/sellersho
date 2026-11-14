@@ -291,6 +291,13 @@ func (r *OrderRepository) ConfirmOrderDelivery(ctx context.Context, idOrNumber, 
 		return err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	// D35: window = confirmed_at + return_window_days from
@@ -351,6 +358,13 @@ func (r *OrderRepository) ConfirmOrderDeliverySystem(ctx context.Context, idOrNu
 		return err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	// D34/D35: staged, exactly like ConfirmOrderDelivery: status +
@@ -421,6 +435,18 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 		return fmt.Errorf("unsupported carrier status transition: %s", status)
 	}
 
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
 	query := `
 		UPDATE orders
 		SET status = $2,
@@ -434,13 +460,16 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 			WHERE order_id = orders.id AND status <> 'delivered'
 		  ))
 	`
-	result, err := r.db.ExecContext(ctx, query, idOrNumber, targetStatus)
+	result, err := tx.ExecContext(ctx, query, idOrNumber, targetStatus)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	// P1-5 (best-effort): carrier 'failed' flips the order to
 	// delivery_disputed - the customer is told.
@@ -485,6 +514,18 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		return r.GetOrderByID(ctx, existingID)
 	}
 
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE tracking_number=$1 AND fulfillment_method IN ('warehouse','mixed')`, trackingNumber).Scan(&financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return nil, err
+	}
 	var orderID string
 	query := `
 		UPDATE orders
@@ -501,7 +542,11 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		  )
 		RETURNING id
 	`
-	if err := r.db.QueryRowContext(ctx, query, trackingNumber, targetStatus).Scan(&orderID); err != nil {
+	if err := tx.QueryRowContext(ctx, query, trackingNumber, targetStatus).Scan(&orderID); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
@@ -859,6 +904,10 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		return nil, ErrPaymentExpired
 	}
 
+	if err := lockOrderFinanceTx(ctx, dbTx, lockedOrderID); err != nil {
+		return nil, err
+	}
+
 	var payment PaymentTransaction
 	err = dbTx.QueryRowContext(ctx, `
 		SELECT id, order_id, order_number, gateway_token, rrn, card_mask, amount, status, created_at
@@ -1069,10 +1118,15 @@ func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	rows.Close()
 	var released int64
 	for _, c := range candidates {
 		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
+			return released, err
+		}
+		if err := lockOrderFinanceTx(ctx, tx, c.id); err != nil {
+			tx.Rollback()
 			return released, err
 		}
 		res, err := tx.ExecContext(ctx, `
@@ -1172,6 +1226,9 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	}
 	if status == "cancelled" {
 		return tx.Commit()
+	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+		return err
 	}
 	if err := lockCancellationInventoryTx(ctx, tx, orderID); err != nil {
 		return err
@@ -1292,6 +1349,9 @@ func (r *OrderRepository) ApplyDisputeRefundEffect(ctx context.Context, disputeI
 	}
 	if !strings.HasPrefix(action, "refund") || !orderID.Valid || orderID.String == "" {
 		return false, nil
+	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID.String); err != nil {
+		return false, err
 	}
 	orderRes, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'refunded', updated_at = NOW() WHERE id = $1 AND status <> 'cancelled'`, orderID.String)
 	if err != nil {
@@ -2151,6 +2211,13 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return nil, err
+	}
 	var status string
 	var orderID string
 	var prepaid bool
@@ -2364,7 +2431,7 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 // a database without the canonical inventory tables.
 func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) error {
 	var hasInventory bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.inventory_movements') IS NOT NULL AND to_regclass('public.inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('inventory_movements') IS NOT NULL AND to_regclass('inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
 		return err
 	}
 	if !hasInventory {
@@ -2481,7 +2548,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 // whole block is a no-op on a database without the events table.
 func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.Tx, returnID, orderID, actorUserID string) error {
 	var hasReturnEvents bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.customer_return_financial_events') IS NOT NULL`).Scan(&hasReturnEvents); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('customer_return_financial_events') IS NOT NULL`).Scan(&hasReturnEvents); err != nil {
 		return err
 	}
 	if !hasReturnEvents {
@@ -2500,26 +2567,25 @@ func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.T
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT ri.id::text, ri.qty, oi.wholesale_cost, oi.seller_margin, COALESCE(p.supplier_id, '')
+		SELECT ri.id::text, ri.qty, oi.wholesale_cost, oi.seller_margin, oi.id::text
 		FROM return_items ri
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
-		JOIN products p ON p.id = oi.product_id
 		WHERE ri.return_id = $1 AND ri.received_at IS NOT NULL AND ri.qc_status IN ('ok', 'defective')
 	`, returnID)
 	if err != nil {
 		return err
 	}
 	type refundedItem struct {
-		id         string
-		qty        int
-		unitCost   int64
-		unitMargin int64
-		supplierID string
+		id          string
+		qty         int
+		unitCost    int64
+		unitMargin  int64
+		orderItemID string
 	}
 	var items []refundedItem
 	for rows.Next() {
 		var it refundedItem
-		if err := rows.Scan(&it.id, &it.qty, &it.unitCost, &it.unitMargin, &it.supplierID); err != nil {
+		if err := rows.Scan(&it.id, &it.qty, &it.unitCost, &it.unitMargin, &it.orderItemID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2531,11 +2597,22 @@ func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.T
 	}
 	rows.Close()
 	for _, it := range items {
-		if it.supplierID != "" {
+		supplierID := ""
+		if it.unitCost > 0 {
+			var err error
+			supplierID, err = immutableOrderItemSupplierTx(ctx, tx, it.orderItemID)
+			if err != nil {
+				return err
+			}
+			if supplierID == "" {
+				return ErrFinancePrincipalUnresolved
+			}
+		}
+		if supplierID != "" {
 			if amount := it.unitCost * int64(it.qty); amount > 0 {
 				reason := fmt.Sprintf("برگشت هزینه کالا — مرجوعی مشتری %s / قلم %s", returnID, it.id)
 				if err := insertReturnReversalTx(ctx, tx, returnID, it.id, orderID,
-					it.supplierID, "", "product_cost", "supplier", it.supplierID,
+					supplierID, "", "product_cost", "supplier", supplierID,
 					amount, "crcb:"+returnID+":"+it.id, reason, actorUserID); err != nil {
 					return err
 				}
@@ -2604,6 +2681,13 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		return 0, nil, err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&financeOrderID); err != nil {
+		return 0, nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID, true); err != nil {
+		return 0, nil, err
+	}
 	var customerID string
 	var orderID string
 	var status string
@@ -2614,6 +2698,13 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		FROM customer_returns WHERE id = $1 FOR UPDATE
 	`, id).Scan(&customerID, &orderID, &status, &shippingAmount, &shippingBearer); err != nil {
 		return 0, nil, err
+	}
+	var originalCustomer sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT customer_user_id::text FROM orders WHERE id=$1`, financeOrderID).Scan(&originalCustomer); err != nil {
+		return 0, nil, err
+	}
+	if orderID != financeOrderID || !originalCustomer.Valid || customerID != originalCustomer.String {
+		return 0, nil, ErrFinancePrincipalUnresolved
 	}
 	if status != "received" {
 		return 0, nil, fmt.Errorf("only a received return can be refunded (status is %s)", status)

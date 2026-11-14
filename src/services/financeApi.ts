@@ -1,3 +1,4 @@
+import { financeOperation } from './financeOperation';
 import { apiRequest } from './apiClient';
 
 export interface LedgerEntryDto {
@@ -90,17 +91,11 @@ export const financeApi = {
     });
   },
 
-  // P0-3: POST /finance/adjustments. Success is HTTP 200 {success, docId}.
-  // There is no idempotency key: the backend ignores extra fields, so a
-  // repeated submit creates a second, distinct document. The UI's
-  // single-flight disable-while-submitting is the only duplicate guard.
-  createAdjustment: async (payload: CreateAdjustmentPayload): Promise<CreateAdjustmentResponse> => {
-    return apiRequest<CreateAdjustmentResponse>('/finance/adjustments', {
-      method: 'POST',
-      auth: true,
-      body: JSON.stringify(payload),
-    });
-  },
+  // Durable keyed adjustment; ambiguous responses retain the operation identity.
+  createAdjustment: async (payload: CreateAdjustmentPayload): Promise<CreateAdjustmentResponse> =>
+    financeOperation<CreateAdjustmentResponse>('/finance/adjustments', payload,
+      `${payload.targetKind}:${payload.targetId}:adjustment`,
+      value => value.success === true && typeof value.docId === 'string' && !!value.docId),
 
   getCashPosition: async (days = 30): Promise<CashPositionDto> => {
     return apiRequest<CashPositionDto>(`/finance/treasury/cash-position?days=${days}`, {

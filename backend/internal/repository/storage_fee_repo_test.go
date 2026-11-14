@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ import (
 func storageFeeSeed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ddl := []string{
-		`DROP TABLE IF EXISTS warehouse_storage_fee_charges, warehouse_storage_positions, customer_return_shipping_charges, supplier_return_financial_events, customer_return_financial_events, ledger_entries, payout_requests, order_items, orders, products, warehouses, suppliers, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS order_item_origins,warehouse_storage_fee_charges, warehouse_storage_positions, customer_return_shipping_charges, supplier_return_financial_events, customer_return_financial_events, ledger_entries, payout_requests, order_items, orders, products, warehouses, suppliers, platform_settings CASCADE`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, storage_fee_enabled BOOLEAN NOT NULL DEFAULT false, storage_fee_free_days INT NOT NULL DEFAULT 30, storage_fee_per_kg_day BIGINT NOT NULL DEFAULT 2000, storage_fee_per_m3_day BIGINT NOT NULL DEFAULT 8000)`,
 		`INSERT INTO platform_settings (id) VALUES (1)`,
 		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY)`,
@@ -34,6 +35,7 @@ func storageFeeSeed(t *testing.T, db *sql.DB) {
 		`CREATE TABLE warehouse_storage_fee_charges (id TEXT PRIMARY KEY, position_id TEXT NOT NULL, supplier_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, warehouse_id TEXT NOT NULL, fee_date DATE NOT NULL, qty INT NOT NULL, fee_unit_day_toman BIGINT NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman > 0), goods_class VARCHAR(20) NOT NULL, estimated BOOLEAN NOT NULL DEFAULT FALSE, journal_debit_id TEXT, journal_credit_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (position_id, fee_date))`,
 		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, payment_status VARCHAR(20), status VARCHAR(30))`,
 		`CREATE TABLE order_items (id VARCHAR(50) PRIMARY KEY, order_id VARCHAR(50), product_id VARCHAR(50), wholesale_cost BIGINT, quantity INT)`,
+		`CREATE TABLE order_item_origins(id TEXT PRIMARY KEY,order_id TEXT,order_item_id TEXT,supplier_id TEXT,quantity INT)`,
 		`CREATE TABLE payout_requests (id VARCHAR(50) PRIMARY KEY, supplier_id VARCHAR(50), amount BIGINT, status VARCHAR(20))`,
 		`CREATE TABLE supplier_return_financial_events (supplier_id VARCHAR(50), operation VARCHAR(10), amount BIGINT)`,
 		`CREATE TABLE customer_return_shipping_charges (supplier_id VARCHAR(50), bearer VARCHAR(20), amount BIGINT)`,
@@ -80,7 +82,7 @@ func storageChargeCount(t *testing.T, db *sql.DB) int {
 }
 
 func TestStorageFeeSettingsDefaults(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	repo := NewSupplierRepository(db)
 	settings, err := repo.GetStorageFeeSettings(context.Background())
@@ -97,7 +99,7 @@ func TestStorageFeeSettingsDefaults(t *testing.T) {
 }
 
 func TestStorageFeeRunRefusesWhileDisabled(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	storageInsertPosition(t, db, "WSP-old", "prod-measured", 1, 60)
 	repo := NewSupplierRepository(db)
@@ -110,7 +112,7 @@ func TestStorageFeeRunRefusesWhileDisabled(t *testing.T) {
 }
 
 func TestStorageFeeFreeWindowChargesNothing(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	storageEnable(t, db)
 	storageInsertPosition(t, db, "WSP-young", "prod-measured", 3, 10)
@@ -128,7 +130,7 @@ func TestStorageFeeFreeWindowChargesNothing(t *testing.T) {
 }
 
 func TestStorageFeeDay31ChargesExactlyOneDayAndDropsBalance(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	storageEnable(t, db)
 	// Earned baseline: one paid+delivered order, 500000 x 2 = 1,000,000.
@@ -137,6 +139,9 @@ func TestStorageFeeDay31ChargesExactlyOneDayAndDropsBalance(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, wholesale_cost, quantity) VALUES ('oi-1', 'ord-1', 'prod-measured', 500000, 2)`); err != nil {
 		t.Fatalf("seed order item: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,supplier_id,quantity) VALUES('origin-fee-1','ord-1','oi-1','sup-1',2)`); err != nil {
+		t.Fatal(err)
 	}
 	// Position stocked 31 days ago, qty 2: day 31 is the first
 	// chargeable elapsed day (30 free); exactly 1 day x 3480 x 2.
@@ -194,7 +199,7 @@ func TestStorageFeeDay31ChargesExactlyOneDayAndDropsBalance(t *testing.T) {
 }
 
 func TestStorageFeeUnmeasuredPositionSkipped(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	storageEnable(t, db)
 	storageInsertPosition(t, db, "WSP-nomeasure", "prod-unmeasured", 5, 60)
@@ -212,7 +217,7 @@ func TestStorageFeeUnmeasuredPositionSkipped(t *testing.T) {
 }
 
 func TestStorageFeeTariffOverrideRespected(t *testing.T) {
-	db := team04TestDB(t)
+	db := openPrivateFinanceFixture(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
 	storageFeeSeed(t, db)
 	storageEnable(t, db)
 	if _, err := db.Exec(`UPDATE platform_settings SET storage_fee_per_kg_day = 5000 WHERE id = 1`); err != nil {

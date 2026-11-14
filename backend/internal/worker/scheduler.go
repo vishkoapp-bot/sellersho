@@ -187,31 +187,51 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 			windowDays = days
 		}
 	}
-	confirmRows, confirmErr := w.db.QueryContext(ctx, `
-		UPDATE orders
-		SET status = 'delivered_confirmed',
-		    confirmed_at = NOW(),
-		    return_window_ends_at = NOW() + ($1 * INTERVAL '1 day'),
-		    updated_at = NOW()
-		WHERE status IN ('shipped', 'delivered_unconfirmed')
-		  AND shipped_at IS NOT NULL
-		  AND shipped_at <= NOW() - INTERVAL '20 days'
-		  AND profit_released = FALSE
-		RETURNING id
-	`, windowDays)
+	confirmRows, confirmErr := w.db.QueryContext(ctx, `SELECT id FROM orders WHERE status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE ORDER BY id`)
 	if confirmErr != nil {
 		w.recordJobRun(ctx, started, 0, 0, confirmErr)
 		return 0, 0, confirmErr
 	}
-	var confirmedOrderIDs []string
-	if confirmRows != nil {
-		for confirmRows.Next() {
-			var oid string
-			if err := confirmRows.Scan(&oid); err == nil && oid != "" {
-				confirmedOrderIDs = append(confirmedOrderIDs, oid)
-			}
+	var candidateIDs []string
+	for confirmRows.Next() {
+		var id string
+		if err := confirmRows.Scan(&id); err != nil {
+			confirmRows.Close()
+			return 0, 0, err
 		}
-		confirmRows.Close()
+		candidateIDs = append(candidateIDs, id)
+	}
+	confirmErr = confirmRows.Err()
+	confirmRows.Close()
+	if confirmErr != nil {
+		return 0, 0, confirmErr
+	}
+	var confirmedOrderIDs []string
+	for _, id := range candidateIDs {
+		tx, err := w.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, int64(len(confirmedOrderIDs)), err
+		}
+		if err := repository.LockOrderAccountsTx(ctx, tx, id); err != nil {
+			tx.Rollback()
+			return 0, int64(len(confirmedOrderIDs)), err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+($1*INTERVAL '1 day'),updated_at=NOW() WHERE id=$2 AND status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE`, windowDays, id)
+		if err != nil {
+			tx.Rollback()
+			return 0, int64(len(confirmedOrderIDs)), err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			tx.Rollback()
+			return 0, int64(len(confirmedOrderIDs)), err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, int64(len(confirmedOrderIDs)), err
+		}
+		if n == 1 {
+			confirmedOrderIDs = append(confirmedOrderIDs, id)
+		}
 	}
 	confirmed = int64(len(confirmedOrderIDs))
 	// P1-3 (best-effort): 20-day auto-confirm — customer + store owner
@@ -231,23 +251,7 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 		// so it can never double-write.
 		released, releaseErr = w.orderRepo.ReleaseClosedReturnWindows(ctx)
 	} else {
-		// Fallback: flag-only release (Team 09 behaviour).
-		releaseRes, err := w.db.ExecContext(ctx, `
-			UPDATE orders
-			SET profit_released = TRUE,
-			    profit_released_at = NOW(),
-			    referral_commission_released = TRUE,
-			    updated_at = NOW()
-			WHERE status = 'delivered_confirmed'
-			  AND profit_released = FALSE
-			  AND return_window_ends_at IS NOT NULL
-			  AND return_window_ends_at <= NOW()
-		`)
-		if err != nil {
-			releaseErr = err
-		} else if releaseRes != nil {
-			released, _ = releaseRes.RowsAffected()
-		}
+		released, releaseErr = repository.NewOrderRepository(w.db).ReleaseClosedReturnWindows(ctx)
 	}
 	if releaseErr != nil {
 		w.recordJobRun(ctx, started, 0, confirmed, releaseErr)

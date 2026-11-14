@@ -199,9 +199,18 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 		return err
 	}
 	defer tx.Rollback()
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM supplier_return_financial_events WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing); err == nil {
-		return tx.Commit()
+	var chargeSupplierID string
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id FROM supplier_return_requests WHERE id=$1`, returnID).Scan(&chargeSupplierID); err != nil {
+		return err
+	}
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "supplier", ID: chargeSupplierID}); err != nil {
+		return err
+	}
+	bounded, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	if err := LockTransactionRowsTx(bounded, tx, &accountLocks, TransactionRowLock{Table: "supplier_return_requests", ID: returnID}, TransactionRowLock{Table: "supplier_return_parcels", ID: parcelID}); err != nil {
+		return err
 	}
 	var amount int64
 	var method, supplierID string
@@ -211,6 +220,18 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT supplier_id FROM supplier_return_requests WHERE id=$1 FOR UPDATE`, returnID).Scan(&supplierID); err != nil {
 		return err
+	}
+	var oldParcel, oldMethod string
+	var oldAmount int64
+	duplicateErr := tx.QueryRowContext(ctx, `SELECT parcel_id,payment_method,amount FROM supplier_return_financial_events WHERE idempotency_key=$1 OR (parcel_id=$2 AND operation='debit') LIMIT 1`, idempotencyKey, parcelID).Scan(&oldParcel, &oldMethod, &oldAmount)
+	if duplicateErr == nil {
+		if oldParcel != parcelID || oldMethod != method || oldAmount != amount {
+			return ErrFinanceCommandConflict
+		}
+		return tx.Commit()
+	}
+	if duplicateErr != sql.ErrNoRows {
+		return duplicateErr
 	}
 	if method == "receiver_pays" {
 		if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=NOW() WHERE id=$2 AND status IN ('draft','confirmed')`, actorUserID, parcelID); err != nil {
@@ -226,7 +247,7 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES ($1,$2,$3,'supplier','debit',$4,$5,$6,$7)`, ledgerID, now, supplierID, amount, fmt.Sprintf("هزینه حمل مرجوعی %s / مرسوله %s", returnID, parcelID), actorUserID, returnID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_financial_events (id,return_request_id,parcel_id,supplier_id,operation,amount,payment_method,ledger_entry_id,idempotency_key,reason,actor_user_id) VALUES ($1,$2,$3,$4,'debit',$5,$6,$7,$8,$9,$10)`, "RET-FIN-"+uuid.NewString(), returnID, parcelID, supplierID, amount, method, ledgerID, idempotencyKey, fmt.Sprintf("carrier charge for %s", parcelID), actorUserID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_financial_events (id,return_request_id,parcel_id,supplier_id,operation,amount,payment_method,ledger_entry_id,idempotency_key,reason,actor_user_id,event_identity) VALUES ($1,$2,$3,$4,'debit',$5,$6,$7,$8,$9,$10,'return-parcel-charge:' || $3)`, "RET-FIN-"+uuid.NewString(), returnID, parcelID, supplierID, amount, method, ledgerID, idempotencyKey, fmt.Sprintf("carrier charge for %s", parcelID), actorUserID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=$2 WHERE id=$3 AND status IN ('draft','confirmed')`, actorUserID, now, parcelID); err != nil {

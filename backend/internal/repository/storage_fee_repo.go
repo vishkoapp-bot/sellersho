@@ -199,6 +199,34 @@ func (r *SupplierRepository) RunStorageFeeAssessment(ctx context.Context) (Stora
 	}
 	rows.Close()
 
+	// Discover the whole prefix before taking any position locks. Re-read the
+	// assessment input after principal/product/position guards are all held.
+	var plan []TransactionRowLock
+	for _, p := range positions {
+		plan = append(plan, TransactionRowLock{Table: "suppliers", ID: p.supplierID}, TransactionRowLock{Table: "products", ID: p.productID}, TransactionRowLock{Table: "warehouse_storage_positions", ID: p.id})
+	}
+	bounded, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	if err := LockTransactionRowsTx(bounded, tx, &TransactionLockSet{}, plan...); err != nil {
+		return summary, err
+	}
+	refreshed := make([]storagePositionRow, 0, len(positions))
+	for _, p := range positions {
+		oldSupplier, oldProduct := p.supplierID, p.productID
+		err := tx.QueryRowContext(ctx, `SELECT p.supplier_id,p.product_id,p.warehouse_id,p.goods_class,p.qty,p.original_stocked_at,p.last_fee_date,p.last_assessed_date,pr.weight_grams,pr.length_mm,pr.width_mm,pr.height_mm FROM warehouse_storage_positions p JOIN products pr ON pr.id=p.product_id WHERE p.id=$1 AND p.closed_at IS NULL AND p.qty>0`, p.id).Scan(&p.supplierID, &p.productID, &p.warehouseID, &p.goodsClass, &p.qty, &p.originalStockedAt, &p.lastFeeDate, &p.lastAssessedDate, &p.weightGrams, &p.lengthMM, &p.widthMM, &p.heightMM)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return summary, err
+		}
+		if oldSupplier != p.supplierID || oldProduct != p.productID {
+			return summary, ErrFinanceAccountChanged
+		}
+		refreshed = append(refreshed, p)
+	}
+	positions = refreshed
+
 	// P0-16 notify totals per supplier, sent only after the run commits.
 	chargedBySupplier := map[string]int64{}
 	positionsBySupplier := map[string]int{}

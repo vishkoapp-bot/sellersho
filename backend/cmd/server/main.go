@@ -53,10 +53,10 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", matchedOrigin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, Idempotency-Key")
 		} else if isDev && reqOrigin == "" {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, Idempotency-Key")
 		}
 
 		if r.Method == http.MethodOptions {
@@ -422,7 +422,7 @@ func main() {
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/categories/")
 		handleCategoryFacets(w, r, catalogRepo, subPath)
 	})
-    mux.HandleFunc("/api/v1/admin/product-field-reviews/", RequireRoles(jwtService,"admin")(func(w http.ResponseWriter,r *http.Request){ handleProductFieldReview(w,r,supplierRepo) }))
+	mux.HandleFunc("/api/v1/admin/product-field-reviews/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleProductFieldReview(w, r, supplierRepo) }))
 	mux.HandleFunc("/api/v1/admin/catalog/review/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/catalog/review/")
 		handleCatalogReviewDossier(w, r, catalogRepo, id)

@@ -19,7 +19,7 @@ type skuAllocation struct {
 
 func hasSKUInventoryTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var enabled bool
-	err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.order_inventory_captures') IS NOT NULL`).Scan(&enabled)
+	err := tx.QueryRowContext(ctx, `SELECT to_regclass('order_inventory_captures') IS NOT NULL`).Scan(&enabled)
 	return enabled, err
 }
 

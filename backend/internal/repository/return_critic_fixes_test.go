@@ -213,9 +213,9 @@ func TestReturnQuoteLegsMatchSettlementWithOriginFlagDisagreement(t *testing.T) 
 		t.Fatal(err)
 	}
 	origins := []struct {
-		item        string
+		item         string
 		typ, wh, swh string
-		label       string
+		label        string
 	}{
 		{orderItemOf(itemIDs[0]), "supplier_direct", "", "swh-9", "انبار تأمین‌کننده"},
 		{orderItemOf(itemIDs[1]), "warehouse", "wh-rs", "", "انبار مرکزی"},
@@ -223,6 +223,10 @@ func TestReturnQuoteLegsMatchSettlementWithOriginFlagDisagreement(t *testing.T) 
 	}
 	quantities := map[string]int{}
 	for _, o := range origins {
+		if _, err := db.Exec(`DELETE FROM order_item_origins WHERE order_item_id=$1`, o.item); err != nil {
+			t.Fatal(err)
+		}
+
 		if _, err := db.Exec(`INSERT INTO order_item_origins (id, order_id, order_item_id, leg_index, origin_type, supplier_id, warehouse_id, supplier_warehouse_id, origin_label, quantity) VALUES ($1, $2, $3, 0, $4, 'sup-1', $5, $6, $7, 1)`,
 			uuid.NewString(), orderID, o.item, o.typ, sql.NullString{String: o.wh, Valid: o.wh != ""}, sql.NullString{String: o.swh, Valid: o.swh != ""}, o.label); err != nil {
 			t.Fatalf("seed origin: %v", err)

@@ -1,3 +1,4 @@
+import { financeOperation } from './financeOperation';
 import { apiRequest, tokenStore, getApiBase } from './apiClient';
 import type { ProductSchema } from '../types/productSchema';
 
@@ -407,7 +408,7 @@ export const supplierApi = {
   getDiscrepancies: () => apiRequest<SupplierDiscrepancyDto[]>('/supplier/discrepancies', { method: 'GET', auth: true }),
   respondDiscrepancy: (id: string, response: string, resolutionOffer: string) => apiRequest(`/supplier/discrepancies/${encodeURIComponent(id)}/respond`, { method: 'POST', auth: true, body: JSON.stringify({ response, resolution_offer: resolutionOffer }) }),
   getSalesReport: (startDate?: string, endDate?: string) => apiRequest<SupplierReportDto>(`/supplier/sales-report${startDate || endDate ? `?start_date=${encodeURIComponent(startDate || '')}&end_date=${encodeURIComponent(endDate || '')}` : ''}`, { method: 'GET', auth: true }),
-  requestSettlement: (amount: number, shaba: string, bankName: string, accountHolder: string) => apiRequest('/supplier/settlement/request', { method: 'POST', auth: true, body: JSON.stringify({ amount, shaba, bank_name: bankName, account_holder: accountHolder }) }),
+  requestSettlement: (amount: number, shaba: string, bankName: string, accountHolder: string) => financeOperation('/supplier/settlement/request', { amount, shaba, bank_name: bankName, account_holder: accountHolder }, 'supplier:settlement', value => value.success === true && typeof value.id === 'string' && !!value.id && value.payout_request_id === value.id),
   getSettlementHistory: () => apiRequest<SupplierPayoutDto[]>('/supplier/settlement/history', { method: 'GET', auth: true }),
   getStorageFeeCharges: () => apiRequest<{ charges: SupplierStorageFeeCharge[] }>('/supplier/settlement/storage-fees', { method: 'GET', auth: true }),
   getSupplierProfileFull: () => apiRequest<SupplierProfileFull>('/supplier/profile', { method: 'GET', auth: true }),

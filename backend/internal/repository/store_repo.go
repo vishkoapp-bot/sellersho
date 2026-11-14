@@ -333,6 +333,12 @@ func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Sto
 	}
 	defer tx.Rollback()
 
+	if referrerStoreID != "" {
+		var set TransactionLockSet
+		if err := LockAccountsTx(ctx, tx, &set, FinancialAccount{Type: "seller", ID: referrerStoreID}); err != nil {
+			return err
+		}
+	}
 	queryStore := `
 		INSERT INTO stores (
 			id, name, slug, owner_type, owner_name, owner_user_id, profit_margin_percent,

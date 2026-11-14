@@ -37,7 +37,7 @@ func (h *SupplierHandlers) HandleSettlementBalance(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	balance, err := h.supplierRepo.GetSettlementBalance(r.Context(), getSupplierIDFromContext(r, h.supplierRepo))
 	if err != nil {
-		writeInternalError(w, err)
+		sellerError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(balance)

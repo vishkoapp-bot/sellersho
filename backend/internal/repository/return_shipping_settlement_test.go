@@ -24,8 +24,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/drup/platform/internal/testdb"
-
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
@@ -36,7 +34,8 @@ func openReturnSettlementDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := testdb.Open(t, dsn)
+	db := openPrivateFinanceFixture(t, dsn)
+	var err error
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
@@ -45,14 +44,20 @@ func openReturnSettlementDB(t *testing.T) *sql.DB {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS customer_return_shipping_charges, return_items, customer_returns, customer_wallets, ledger_entries, order_item_origins, order_items, orders, products, payout_requests, supplier_return_financial_events, platform_settings, customer_return_financial_events, inventory_movements, inventory_balances CASCADE`,
+		`DROP TABLE IF EXISTS order_inventory_returns,order_inventory_captures,customer_return_shipping_charges, return_items, customer_returns, customer_wallets, ledger_entries, order_item_origins, order_items, orders, products, payout_requests, supplier_return_financial_events, platform_settings, customer_return_financial_events, inventory_movements, inventory_balances CASCADE`,
+		`DROP TABLE IF EXISTS users,suppliers,stores,payment_transactions,referral_bonuses CASCADE`,
+		`CREATE TABLE users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`,
+		`CREATE TABLE suppliers(id TEXT PRIMARY KEY)`,
+		`CREATE TABLE stores(id TEXT PRIMARY KEY)`,
+		`CREATE TABLE payment_transactions(id TEXT PRIMARY KEY,order_id TEXT)`,
+		`CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT)`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 100000, 20000, NULL, NULL)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, stock INT NOT NULL DEFAULT 0)`,
-		`CREATE TABLE orders (id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, payment_status TEXT, status TEXT, store_id TEXT, inventory_captured BOOLEAN NOT NULL DEFAULT FALSE)`,
-		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT, wholesale_cost BIGINT, seller_margin BIGINT, final_unit_price BIGINT)`,
+		`CREATE TABLE orders (id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, payment_status TEXT, status TEXT, store_id TEXT,referrer_seller_id TEXT, inventory_captured BOOLEAN NOT NULL DEFAULT FALSE)`,
+		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT,variant_id UUID, wholesale_cost BIGINT, seller_margin BIGINT, final_unit_price BIGINT)`,
 		`CREATE TABLE payout_requests (id TEXT PRIMARY KEY, supplier_id TEXT, amount BIGINT, status TEXT)`,
 		`CREATE TABLE supplier_return_financial_events (id TEXT PRIMARY KEY, supplier_id TEXT, operation TEXT, amount BIGINT)`,
 		`CREATE TABLE ledger_entries (id VARCHAR(80) PRIMARY KEY, date TIMESTAMPTZ NOT NULL DEFAULT NOW(), target_account VARCHAR(150) NOT NULL, target_type VARCHAR(20) NOT NULL, type VARCHAR(10) NOT NULL, amount BIGINT NOT NULL, reason TEXT NOT NULL, operator VARCHAR(100) NOT NULL, related_order_or_dispute VARCHAR(50), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -86,6 +91,9 @@ func rsSeedReturn(t *testing.T, db *sql.DB, prepaid bool, specs []rsItemSpec) (s
 	t.Helper()
 	ctx := context.Background()
 	customerID := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id) VALUES($1::uuid)`, customerID); err != nil {
+		t.Fatal(err)
+	}
 	orderID := "ord-rs-" + uuid.NewString()[:8]
 	if _, err := db.ExecContext(ctx, `INSERT INTO orders (id, customer_user_id, order_number, payment_status, status) VALUES ($1, $2::uuid, $3, 'paid', 'delivered_confirmed')`, orderID, customerID, "ORD-"+orderID); err != nil {
 		t.Fatalf("seed order: %v", err)
@@ -96,6 +104,12 @@ func rsSeedReturn(t *testing.T, db *sql.DB, prepaid bool, specs []rsItemSpec) (s
 	}
 	returnItemIDs := make([]string, 0, len(specs))
 	for _, sp := range specs {
+		if sp.supplierID != "" {
+			if _, err := db.Exec(`INSERT INTO suppliers(id) VALUES($1) ON CONFLICT DO NOTHING`, sp.supplierID); err != nil {
+				t.Fatal(err)
+			}
+		}
+
 		if _, err := db.ExecContext(ctx, `INSERT INTO products (id, title, supplier_id, fulfillment_method, warehouse_name, weight_grams) VALUES ($1, $2, $3, 'warehouse', 'انبار مرکزی', $4) ON CONFLICT (id) DO NOTHING`, sp.productID, "Product "+sp.productID, sp.supplierID, sp.weightG); err != nil {
 			t.Fatalf("seed product: %v", err)
 		}
@@ -103,12 +117,16 @@ func rsSeedReturn(t *testing.T, db *sql.DB, prepaid bool, specs []rsItemSpec) (s
 		if _, err := db.ExecContext(ctx, `INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, seller_margin, final_unit_price) VALUES ($1, $2, $3, $4, 0, 0, $5)`, orderItemID, orderID, sp.productID, sp.qty, sp.unitPrice); err != nil {
 			t.Fatalf("seed order item: %v", err)
 		}
-		if sp.originWH != "" {
+		{
+			originWarehouse := sp.originWH
+			if originWarehouse == "" {
+				originWarehouse = "fixture-return-warehouse"
+			}
 			oq := sp.originQty
 			if oq == 0 {
 				oq = sp.qty
 			}
-			if _, err := db.ExecContext(ctx, `INSERT INTO order_item_origins (id, order_id, order_item_id, leg_index, origin_type, supplier_id, warehouse_id, origin_label, quantity) VALUES ($1, $2, $3, 0, 'warehouse', $4, $5, 'انبار مرکزی', $6)`, uuid.NewString(), orderID, orderItemID, sp.supplierID, sp.originWH, oq); err != nil {
+			if _, err := db.ExecContext(ctx, `INSERT INTO order_item_origins (id, order_id, order_item_id, leg_index, origin_type, supplier_id, warehouse_id, origin_label, quantity) VALUES ($1, $2, $3, 0, 'warehouse', $4, $5, 'انبار مرکزی', $6)`, uuid.NewString(), orderID, orderItemID, sp.supplierID, originWarehouse, oq); err != nil {
 				t.Fatalf("seed origin: %v", err)
 			}
 		}

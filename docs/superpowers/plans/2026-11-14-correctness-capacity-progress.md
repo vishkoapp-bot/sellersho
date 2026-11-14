@@ -24,7 +24,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-06 | TODO | — | — |
 | INV-07 | TODO | — | — |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
-| FIN-001 | IN PROGRESS | — | Implementation and verification in progress |
+| FIN-001 | DONE | Reviewed code checkpoint | [Financial contract](../../architecture/financial-balances.md) |
 | FIN-006 | TODO | — | — |
 | INV-10 | TODO | — | — |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
@@ -48,7 +48,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | TODO | — | — |
-| TEST-02 | Checkpoint OPEN | Unit fixture checkpoint | [V2 measurement fixture](../../../backend/cmd/server/supplier_product_gaps_test.go) |
+| TEST-02 | Checkpoint OPEN | 8302d23 | [V2 measurement fixture](../../../backend/cmd/server/supplier_product_gaps_test.go) |
 | OPS-01 | TODO | — | — |
 | REL-01 | TODO | — | — |
 | BAK-01 | TODO | — | — |
@@ -215,3 +215,14 @@ in 0.570s. An isolated archive of committed HEAD plus only this fixture passed
 `releases/test02-exact-unit-baseline.log`. Database integration tests intentionally
 skip without explicit disposable opt-ins. This proves the default unit baseline,
 not the required integrated/race/CI/capacity gates. TEST-02 remains checkpoint OPEN.
+## FIN-001 — DONE (canonical signed balance and debit authorization)
+
+Seller display, statements and payout/service/early-withdrawal authorization share the signed transaction-aware projection. All competing writers adopt the CORE account prefix and revalidate identities. Refunded profit cannot be withdrawn; later refunds may expose debt, and debt cannot authorize spending. Supplier arithmetic retains its signed terms while earned/refund/shipping authority follows complete conserved immutable origins, never today's catalog owner. Missing or conflicting provenance is visibly reconciliation-required and blocks unsafe reads/spending; no history is guessed or repriced.
+
+Creation endpoints require stable request keys. Real financial clients preserve scoped keys across ambiguous failures and validate acknowledgments; immutable service receipts survive later plan/configuration changes. Shared transport rejects malformed positive JSON and preserves valid204. Statements now include the canonical posted terms and separate reservations; full historical reconstruction remains FIN-009. Contract: `docs/architecture/financial-balances.md`.
+
+Independent reviewer `review_fin001` found four Important issues: blank-party receive effects, statement omissions, destructive public fixture drops, and mutable service replay. All four had behavioral RED/GREEN regressions and were marked ADDRESSED in scoped re-review. Legacy fixtures now have schema-only pooled DSNs and prove public capture PK/FK survival. The SKU production change is only namespace-consistent optional-table detection.
+
+Exact staged-source verification excluded every CAP and root test-runner working change:29 focused tests,31 existing regressions,35 migrated SKU/origin/carton/callback cases,2 actual keyed endpoint cases and1 treasury-read case all passed without skips, each in a fresh guarded Docker database with verified cleanup. Actual client tests9/9, typecheck, frontend production build, Linux amd64 build and default Go suite passed. Default DB integrations intentionally skip without opt-in; the guarded cases supply the domain evidence. Proof: `releases/fin001-staged-proof.json`, counts in `releases/fin001-staged-counts.json`, local logs `logs/fin001-staged-*.log`. The earlier UUID timestamp-prefix test flake remains recorded for TEST-02 and is not declared resolved by a passing rerun.
+
+Ruling: known immutable financial principal errors were fixed in this task; unknown legacy liabilities remain a FIN-014 reconciliation gate. New request receipts are final append-only metadata after the guarded domain effect, with no independent earlier-row FK lock. Paid-cancellation/provider compensation (FIN-003/010), remaining referral/storage/payout policies, full statements, historical cutover and capacity/deployment still require their own gates. No production access, rotation or deployment occurred.

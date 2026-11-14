@@ -112,6 +112,12 @@ export async function apiRequest<T>(
     try {
       data = await response.json();
     } catch {
+      // A committed mutation can lose/truncate its response body. This is not
+      // an acknowledgement; callers must keep their operation identity for a
+      // safe replay. HTTP 204 intentionally has no representation.
+      if (response.ok && response.status !== 204) {
+        throw new ApiError(0, 'پاسخ سرور کامل دریافت نشد؛ نتیجه درخواست هنوز مشخص نیست.');
+      }
       data = null;
     }
   } else {

@@ -21,7 +21,8 @@ import (
 )
 
 const notifyWritersDDL = `
-DROP TABLE IF EXISTS notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+DROP TABLE IF EXISTS referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT,status TEXT,released_at TIMESTAMPTZ);
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	mobile VARCHAR(15) UNIQUE NOT NULL,

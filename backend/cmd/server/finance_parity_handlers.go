@@ -138,25 +138,46 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 		owedToSuppliers, owedErr := supplierRepo.SumAllSuppliersAvailable(ctx)
 		if owedErr != nil {
 			log.Printf("finance treasury cash-position: SumAllSuppliersAvailable failed: %v", owedErr)
-			writeInternalError(w, owedErr)
+			sellerError(w, owedErr)
 			return
 		}
 		financeRepo := repository.NewFinanceRepository(db)
 		var owedToStores int64
-		if storeRows, err := db.QueryContext(ctx, `SELECT id FROM stores`); err == nil {
-			var storeIDs []string
-			for storeRows.Next() {
-				var storeID string
-				if err := storeRows.Scan(&storeID); err == nil {
-					storeIDs = append(storeIDs, storeID)
-				}
+		storeRows, storeErr := db.QueryContext(ctx, `SELECT id FROM stores`)
+		if storeErr != nil {
+			sellerError(w, storeErr)
+			return
+		}
+		var storeIDs []string
+		for storeRows.Next() {
+			var id string
+			if err := storeRows.Scan(&id); err != nil {
+				storeRows.Close()
+				sellerError(w, err)
+				return
 			}
-			storeRows.Close()
-			for _, storeID := range storeIDs {
-				if bal, err := financeRepo.GetStoreBalance(ctx, storeID); err == nil {
-					owedToStores += bal.AvailableAmount
-				}
+			storeIDs = append(storeIDs, id)
+		}
+		rowsErr := storeRows.Err()
+		storeRows.Close()
+		if rowsErr != nil {
+			sellerError(w, rowsErr)
+			return
+		}
+		var signedStoreAmounts []int64
+		for _, storeID := range storeIDs {
+			bal, err := financeRepo.GetStoreBalance(ctx, storeID)
+			if err != nil {
+				sellerError(w, err)
+				return
 			}
+			signedStoreAmounts = append(signedStoreAmounts, bal.AvailableAmount)
+		}
+		var sumErr error
+		owedToStores, sumErr = repository.SumSignedFinanceBalances(signedStoreAmounts...)
+		if sumErr != nil {
+			sellerError(w, sumErr)
+			return
 		}
 		pendingRefundCount := t01Count(ctx, db, `SELECT COUNT(*) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
 		pendingRefunds := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
@@ -228,7 +249,7 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 			"success": true, "days": days,
 			"allTimeIn": allTimeIn, "allTimeOut": allTimeOut,
 			"overObligated": overObligated, "safeToSpend": safeToSpend,
-			"period": map[string]interface{}{"in": periodIn, "out": periodOut, "trend": trend},
+			"period":         map[string]interface{}{"in": periodIn, "out": periodOut, "trend": trend},
 			"heldOrderCount": heldOrderCount, "heldInOrders": heldInOrders,
 			"owedToStores": owedToStores, "owedToSuppliers": owedToSuppliers,
 			"pendingRefundCount": pendingRefundCount, "pendingRefunds": pendingRefunds,
@@ -610,8 +631,34 @@ func handleT01MonthlyRun(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		http.Error(w, `{"error":"monthly settlement is not configured by an admin"}`, http.StatusConflict)
 		return
 	}
-	finRepo := repository.NewFinanceRepository(db)
 	createdBy := t01ClaimsUserID(r)
+
+	// Candidate stores: dropshipper stores (central excluded: settling
+	// the platform's own store to itself is meaningless; TODO: the live
+	// store filter is unverified).
+	storeRows, err := db.QueryContext(ctx,
+		`SELECT id, name FROM stores WHERE owner_type != 'central' ORDER BY id`)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	type storeRow struct{ id, name string }
+	stores := []storeRow{}
+	for storeRows.Next() {
+		var s storeRow
+		if err := storeRows.Scan(&s.id, &s.name); err != nil {
+			storeRows.Close()
+			writeInternalError(w, err)
+			return
+		}
+		stores = append(stores, s)
+	}
+	if err := storeRows.Err(); err != nil {
+		storeRows.Close()
+		writeInternalError(w, err)
+		return
+	}
+	storeRows.Close()
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -619,6 +666,16 @@ func handleT01MonthlyRun(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 	defer tx.Rollback()
+	var accountLocks repository.TransactionLockSet
+	accounts := make([]repository.FinancialAccount, 0, len(stores))
+	for _, s := range stores {
+		accounts = append(accounts, repository.FinancialAccount{Type: "seller", ID: s.id})
+	}
+	if err := repository.LockAccountsTx(ctx, tx, &accountLocks, accounts...); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	// Advisory lock mirroring the automatic sweep
 	// (repository.RunMonthlySettlement, same key 91827364): serialize
 	// concurrent runs across the check-then-insert, so a second
@@ -649,45 +706,15 @@ func handleT01MonthlyRun(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		writeInternalError(w, err)
 		return
 	}
-	// Candidate stores: dropshipper stores (central excluded: settling
-	// the platform's own store to itself is meaningless; TODO: the live
-	// store filter is unverified).
-	storeRows, err := tx.QueryContext(ctx,
-		`SELECT id, name FROM stores WHERE owner_type != 'central' ORDER BY id`)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	type storeRow struct{ id, name string }
-	stores := []storeRow{}
-	for storeRows.Next() {
-		var s storeRow
-		if err := storeRows.Scan(&s.id, &s.name); err != nil {
-			storeRows.Close()
-			writeInternalError(w, err)
-			return
-		}
-		stores = append(stores, s)
-	}
-	if err := storeRows.Err(); err != nil {
-		storeRows.Close()
-		writeInternalError(w, err)
-		return
-	}
-	storeRows.Close()
 
 	var totalStores, skippedStores int
 	var totalGross, totalNet int64
 	for _, s := range stores {
-		// Balance is read through the existing finance repo function
-		// (Team 02 D31 formula, including early-withdrawal deductions),
-		// outside the cycle transaction: it only reads.
-		bal, err := finRepo.GetStoreBalance(ctx, s.id)
+		available, err := repository.BalanceTx(ctx, tx, repository.FinancialAccount{Type: "seller", ID: s.id})
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		available := bal.AvailableAmount
 		if available <= 0 {
 			continue
 		}
@@ -884,6 +911,20 @@ func handleT01EarlyWithdrawalReview(w http.ResponseWriter, r *http.Request, db *
 		return
 	}
 	defer tx.Rollback()
+	var accountStoreID string
+	if err := tx.QueryRowContext(ctx, `SELECT store_id FROM seller_early_withdrawals WHERE id=$1`, id).Scan(&accountStoreID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Withdrawal not found"}`, http.StatusNotFound)
+		} else {
+			writeInternalError(w, err)
+		}
+		return
+	}
+	var accountLocks repository.TransactionLockSet
+	if err := repository.LockAccountsTx(ctx, tx, &accountLocks, repository.FinancialAccount{Type: "seller", ID: accountStoreID}); err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	var storeID, storeName, shaba, bankName, oldStatus string
 	var netAmount int64
 	err = tx.QueryRowContext(ctx,

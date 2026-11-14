@@ -353,6 +353,17 @@ func computeReturnShippingShares(ctx context.Context, tx *sql.Tx, returnID strin
 		return nil, 0, nil
 	}
 
+	for i := range items {
+		supplier, err := immutableOrderItemSupplierTx(ctx, tx, items[i].orderItemID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if supplier == "" && items[i].supplierID != "" {
+			return nil, 0, ErrFinancePrincipalUnresolved
+		}
+		items[i].supplierID = supplier
+	}
+
 	// A part is one (return item x origin leg) slice of the returned
 	// quantity; legs price parts, parts roll up into item shares.
 	type part struct {

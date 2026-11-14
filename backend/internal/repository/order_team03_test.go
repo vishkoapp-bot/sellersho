@@ -27,8 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drup/platform/internal/testdb"
-
 	"github.com/drup/platform/internal/domain"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -40,7 +38,8 @@ func openTeam03DB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := testdb.Open(t, databaseURL)
+	db := openPrivateFinanceFixture(t, databaseURL)
+	var err error
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
@@ -51,7 +50,10 @@ func openTeam03DB(t *testing.T) *sql.DB {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, products, supplier_warehouses, warehouses, platform_settings, customer_return_shipping_charges CASCADE`,
+		`DROP TABLE IF EXISTS stores,customer_return_financial_events,order_inventory_captures,order_inventory_returns,return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, products, supplier_warehouses, warehouses, platform_settings, customer_return_shipping_charges CASCADE`,
+		`CREATE TABLE stores(id TEXT PRIMARY KEY,owner_type TEXT)`,
+		`INSERT INTO stores(id,owner_type) VALUES('store-1','dropshipper')`,
+		`CREATE TABLE IF NOT EXISTS users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
@@ -88,7 +90,7 @@ func openTeam03DB(t *testing.T) *sql.DB {
 			operator VARCHAR(100) NOT NULL, related_order_or_dispute VARCHAR(50),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
+		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY,referrer_store_id TEXT, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
 		`CREATE TABLE customer_returns (
 			id UUID PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer_id UUID NOT NULL,
 			status VARCHAR(20) NOT NULL DEFAULT 'requested', reason TEXT NOT NULL DEFAULT '',
@@ -137,6 +139,9 @@ func openTeam03DB(t *testing.T) *sql.DB {
 
 func team03InsertOrder(t *testing.T, db *sql.DB, id, customerID, status string, profit int64) {
 	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Finance fixture') ON CONFLICT(id) DO NOTHING`, customerID, "t"+customerID[:12]); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.Exec(`INSERT INTO orders (id, customer_user_id, order_number, store_id, store_name, payable_amount, payment_method, payment_status, customer_full_name, customer_phone, customer_province, customer_city, customer_address, customer_postal_code, status, tracking_code, dropshipper_profit, profit_released, shipped_at, created_at, updated_at)
 		VALUES ($1, $2::uuid, $3, 'store-1', 'Store 1', 100000, 'cash', 'paid', 'Test Customer', '09120000000', 'Tehran', 'Tehran', 'Test St 1', '1234567890', $4, 'TRK-1', $5, FALSE, NOW() - INTERVAL '1 day', NOW(), NOW())`,
 		id, customerID, "ORD-"+id, status, profit)

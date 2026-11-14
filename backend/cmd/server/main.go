@@ -151,6 +151,14 @@ func main() {
 	} else {
 		gatewayClient = payment.NewMockPaymentGatewayClient(true)
 	}
+	capacityGateway, capacityCarrier, capacityErr := selectCapacityAdapters(os.Getenv, gatewayClient)
+	if capacityErr != nil {
+		log.Fatal(capacityErr)
+	}
+	gatewayClient = capacityGateway
+	if capacityCarrier != "" {
+		tapinAPIBaseURL = capacityCarrier
+	}
 	gatewayClient = payment.ObserveGateway(gatewayClient)
 
 	if db != nil {

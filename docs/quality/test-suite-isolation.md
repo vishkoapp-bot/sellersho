@@ -116,3 +116,20 @@ A subsequent full working-tree run reported 565 tests / 51 failures while the
 payment fixture work was being prepared; it is diagnostic evidence, not a claim
 that a pristine committed source passed. The remaining integration baseline is
 still failing and required downstream lifecycle skips remain open.
+
+## Admin supplier detail fixture
+
+The supplier-detail fixture now uses UUID variant identities matching the
+canonical table left by migrations and records the delivered line's immutable
+supplier snapshot. Missing historical authority correctly yielded a null balance
+with a gap marker; the old decoded value struct displayed that as zero. All four
+supplier-detail tests now pass, retaining the expected earned/reserved/available
+amounts and Tapin token privacy assertions. Evidence:
+`logs/test02-supplier-detail.log`.
+
+During release work the 25 GB server filesystem reached 93% utilization. Seven
+explicit release paths created by this task held 221 MiB each of rebuildable
+node_modules. After resolving paths and refusing live backend/frontend mounts,
+only those dependency directories were removed. Backups, committed source,
+binaries and dist were retained; available disk increased from 1.9 to 3.5 GB and
+backend health passed. Dependencies can be recreated from each release lockfile.

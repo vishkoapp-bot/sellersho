@@ -79,8 +79,8 @@ UPDATE suppliers SET tapin_shop_id = 'shop-2', tapin_token = NULL WHERE id = 'su
 INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, stock, is_active, spn_number)
 	VALUES ('prod-a2', 'کالای الف ۲', 'prod-a2', 'digital', 'sup-a', 150000, 80000, 0, FALSE, 112);
 INSERT INTO product_variants (id, product_id, spnc, variant_name) VALUES
-	('var-a1', 'prod-a1', 'SPNC-A1', 'آبی'),
-	('var-a2', 'prod-a1', 'SPNC-A2', 'قرمز');
+	('11111111-1111-4111-8111-111111111111', 'prod-a1', 'SPNC-A1', 'آبی'),
+	('22222222-2222-4222-8222-222222222222', 'prod-a1', 'SPNC-A2', 'قرمز');
 INSERT INTO pending_approvals (id, entity_type, target_id, title, requested_data, requested_by, status) VALUES
 	('prop-pending', 'proposed_product', 'prop-pending', 'پیشنهاد در انتظار', '{}', 'sup-a', 'pending'),
 	('prop-approved', 'proposed_product', 'prop-approved', 'پیشنهاد تأییدشده', '{}', 'sup-a', 'approved'),
@@ -91,6 +91,8 @@ INSERT INTO supplier_shipping_methods (owner_user_id, method, status)
 	VALUES ('user-owner-1', 'direct', 'enabled');
 INSERT INTO orders (id, order_number, payment_status, status, total_amount) VALUES ('ord-1', '1001', 'paid', 'delivered', 200000);
 INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost) VALUES ('11111111-1111-1111-1111-111111111111', 'ord-1', 'prod-a1', 2, 100000);
+INSERT INTO order_item_origins(id,order_id,order_item_id,origin_type,supplier_id,quantity)
+	VALUES('detail-origin','ord-1','11111111-1111-1111-1111-111111111111','legacy','sup-a',2);
 INSERT INTO supplier_shipments (id, order_id, supplier_id, shipping_address, customer_phone, customer_name, status)
 	VALUES ('ship-1', 'ord-1', 'sup-a', '{}', '09120000009', 'مشتری', 'shipped');
 INSERT INTO payout_requests (id, store_id, supplier_id, recipient_type, recipient_name, shaba, bank_name, amount, status)

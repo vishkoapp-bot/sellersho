@@ -276,3 +276,15 @@ with 10 failures and verified cleanup. This snapshot precedes the suspension and
 payment/return/capacity fixture fixes above. Six storage lifecycle failures remain
 to investigate; current full-suite success has not been demonstrated.
 Evidence: `logs/test02-exact-9333c12-full.log`.
+
+## Storage departure fixture parity
+
+The private storage fixture exposes nullable SKU identity and the current product
+projection fields required by supplier-return handover. Its handover test passed,
+including quantity 5 -> 2 and replay staying 2. The obsolete legacy-shipment
+expectation now asserts the existing INV-05 fail-closed rule: a named warehouse
+without position coverage cannot ship and stays packed. The separate FIFO split
+positive shipment still passes. All three cases passed without skips; production
+inventory or shipment rules were not relaxed. Four original QC/putaway-dependent
+storage cases still require the integrated INV-09 lifecycle.
+Evidence: `logs/test02-storage-departure-final.log`.

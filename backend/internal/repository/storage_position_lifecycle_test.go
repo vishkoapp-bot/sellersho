@@ -11,6 +11,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -51,6 +52,15 @@ func storagePositionSeed(t *testing.T, db *sql.DB) {
 	for _, q := range ddl {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("storage-position seed DDL failed: %v", err)
+		}
+	}
+	for _, q := range []string{
+		`ALTER TABLE products ADD COLUMN schema_version INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE inventory_balances ADD COLUMN variant_id UUID`,
+		`CREATE TABLE IF NOT EXISTS product_variants(id UUID PRIMARY KEY,product_id TEXT,inventory_mode TEXT,is_active BOOLEAN DEFAULT TRUE)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -265,22 +275,22 @@ func TestStoragePositionShipOrderFIFOSplit(t *testing.T) {
 	}
 }
 
-func TestStoragePositionShipLegacyStockWithoutPositions(t *testing.T) {
+func TestStoragePositionShipLegacyStockWithoutPositionsFailsClosed(t *testing.T) {
 	db := team04TestDB(t)
 	storagePositionSeed(t, db)
 	ctx := context.Background()
 	repo := NewWarehouseRepository(db)
 
 	seedPackedOrder(t, db, "ORD-3", "cccccccc-cccc-cccc-cccc-cccccccccccc", "prod-legacy", 2, "warehouse", "wh-1")
-	if err := repo.ShipOrder(ctx, "ORD-3", "post", "TRK-3"); err != nil {
-		t.Fatalf("ShipOrder legacy: %v", err)
+	if err := repo.ShipOrder(ctx, "ORD-3", "post", "TRK-3"); !errors.Is(err, ErrInsufficientInventory) {
+		t.Fatalf("ShipOrder with unresolved named-origin coverage: %v", err)
 	}
 	if positions := openPositions(t, db, "prod-legacy"); len(positions) != 0 {
 		t.Fatalf("positions = %+v, want none (legacy stock has no positions to decrement)", positions)
 	}
 	var status string
-	if err := db.QueryRow(`SELECT status FROM orders WHERE id = 'ORD-3'`).Scan(&status); err != nil || status != "shipped" {
-		t.Fatalf("order status = %q (err %v), want shipped", status, err)
+	if err := db.QueryRow(`SELECT status FROM orders WHERE id = 'ORD-3'`).Scan(&status); err != nil || status != "packed" {
+		t.Fatalf("order status = %q (err %v), want unchanged packed", status, err)
 	}
 }
 

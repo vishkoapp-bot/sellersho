@@ -24,3 +24,24 @@ Initial verification: the destructive `TestFinanceAdjustmentConcurrentReplay`
 and `TestLegacyAliasAdoptionPreservesLedgerRows` both passed against separate
 clones with verified container cleanup. The complete migrated suite is running
 separately; remaining failures will be fixed without removing their assertions.
+
+## First complete isolated baseline
+
+The completed run discovered 565 top-level tests and reported 72 failures. Of the
+109 shared-database failures, 43 no longer failed and 66 still failed. Six further
+independent failures became visible after removing order-dependent contamination.
+This is a failing baseline, including visible helper/opt-in skips, not 493 passing
+integration gates. Local complete output: `logs/test02-per-test-full.log`.
+
+## Supplier registration/access fixtures
+
+Registration has activated supplier accounts immediately since the existing
+October policy. Fixtures incorrectly attempted a second pending-only approval;
+the email round-trip test also expected `pending_approval`. Fixtures now assert
+the returned approved supplier and active owner, use valid numeric mobile numbers
+for team members, and consume the migrated schema without rerunning historical
+DDL. Seven admin queue/access/ownership/QC metadata/tracking-validation/team tests
+passed in separate clones; the registration email/null round-trip passed too.
+Remaining publication and inbound lifecycle failures retain their assertions and
+are tracked separately. Logs: `logs/test02-supplier-access-green.log` and
+`logs/test02-registration-green.log`.

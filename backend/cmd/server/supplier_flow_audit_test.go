@@ -45,8 +45,8 @@ func supplierFlowSeed(t *testing.T, db *sql.DB) supplierFlowFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.ApproveSupplier(ctx, supplier.ID, "supplier-flow-audit"); err != nil {
-		t.Fatal(err)
+	if !user.IsActive || supplier.ApprovalStatus != "approved" {
+		t.Fatal("new supplier registration must activate the owner and supplier immediately")
 	}
 	if err = repository.NewCapabilityRepository(db).Grant(ctx, user.ID, "supplier", "supplier_owner", supplier.ID, nil); err != nil {
 		t.Fatal(err)

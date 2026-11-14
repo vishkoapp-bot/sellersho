@@ -195,8 +195,8 @@ func TestRegisterSupplierPersistsEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterSupplier: %v", err)
 	}
-	if supplier == nil || supplier.ApprovalStatus != "pending_approval" {
-		t.Fatalf("supplier = %+v, want pending_approval", supplier)
+	if supplier == nil || supplier.ApprovalStatus != "approved" || !user.IsActive {
+		t.Fatal("registration must return an approved supplier and active owner")
 	}
 	if user.Email != "Hello@Example.com" {
 		t.Fatalf("returned user.Email = %q, want trimmed %q", user.Email, "Hello@Example.com")

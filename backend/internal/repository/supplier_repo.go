@@ -3762,23 +3762,35 @@ func (r *SupplierRepository) ReorderVariantImages(ctx context.Context, supplierI
 // No admin re-approval (P0 decision D6); weight is not cost.
 func (r *SupplierRepository) UpdateVariantPhysical(ctx context.Context, supplierID, productID, variantID string, weight, length, width, height *int) (SupplierProductVariant, error) {
 	var out SupplierProductVariant
-	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err := ValidateVariantPhysicalValues(weight, length, width, height); err != nil {
+		return out, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return out, err
 	}
-	if !owns {
-		return out, sql.ErrNoRows
+	defer tx.Rollback()
+	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}, TransactionRowLock{Table: "products", ID: productID}, TransactionRowLock{Table: "product_variants", ID: variantID}); err != nil {
+		return out, err
 	}
-	toNull := func(v *int) sql.NullInt32 {
-		if v == nil {
-			return sql.NullInt32{}
+	var oldWeight, oldLength, oldWidth, oldHeight sql.NullInt64
+	if err = tx.QueryRowContext(ctx, `SELECT v.weight_grams,v.length_mm,v.width_mm,v.height_mm FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=$1 AND p.id=$2 AND p.supplier_id=$3`, variantID, productID, supplierID).Scan(&oldWeight, &oldLength, &oldWidth, &oldHeight); err != nil {
+		return out, err
+	}
+	same := func(old sql.NullInt64, value *int) bool {
+		return (value == nil && !old.Valid) || (value != nil && old.Valid && old.Int64 == int64(*value))
+	}
+	if !same(oldWeight, weight) || !same(oldLength, length) || !same(oldWidth, width) || !same(oldHeight, height) {
+		if err = invalidatePendingPhysicalReservationsTx(ctx, tx, productID, variantID); err != nil {
+			return out, err
 		}
-		return sql.NullInt32{Int32: int32(*v), Valid: true}
+		if _, err = tx.ExecContext(ctx, `UPDATE product_variants SET weight_grams=$1,length_mm=$2,width_mm=$3,height_mm=$4 WHERE id=$5 AND product_id=$6`, weight, length, width, height, variantID, productID); err != nil {
+			return out, err
+		}
 	}
-	if _, err := r.db.ExecContext(ctx, `UPDATE product_variants
-		SET weight_grams = $1, length_mm = $2, width_mm = $3, height_mm = $4
-		WHERE id = $5 AND product_id = $6`,
-		toNull(weight), toNull(length), toNull(width), toNull(height), variantID, productID); err != nil {
+	if err = tx.Commit(); err != nil {
 		return out, err
 	}
 	return r.GetSupplierVariant(ctx, supplierID, productID, variantID)

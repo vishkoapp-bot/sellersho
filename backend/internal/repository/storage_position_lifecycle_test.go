@@ -352,7 +352,9 @@ func TestStoragePositionPutawayAgedPositionIsChargedByEngine(t *testing.T) {
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	warehouse := "w-" + uuid.NewString()
-	opsExec(t, db, `UPDATE products SET length_mm=500,width_mm=400,height_mm=300,weight_grams=1500 WHERE id=$1`, f.product)
+	if err := NewSupplierRepository(db).RecordProductMeasurement(context.Background(), f.product, f.user, 500, 400, 300, 1500, "measured storage fixture"); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	warehouseRepo := NewWarehouseRepository(db)
 	supplierRepo := NewSupplierRepository(db)

@@ -17,9 +17,9 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-05 | DONE | efb37fc | [Origin contract](../../architecture/inventory-origins.md) |
 | INV-11 | DONE | b402f80 | [Carton contract](../../architecture/carton-creation.md) |
 | INV-02 | DONE | bb61fae / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
-| INV-03 | DONE | absolute-stock implementation | [Aggregate edits](../../architecture/legacy-aggregate-stock.md) |
+| INV-03 | DONE | 0209449 | [Aggregate edits](../../architecture/legacy-aggregate-stock.md) |
 | INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
-| INV-08 | TODO | — | — |
+| INV-08 | DONE | verified-measurement implementation | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
 | INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
 | INV-06 | TODO | — | — |
 | INV-07 | TODO | — | — |
@@ -356,12 +356,40 @@ production upgrade; migration202611140009 adds exact putaway provenance without 
 Coupled INV-02/04/09 acceptance now executes all retained positive branches without
 skips, including canonical legacy/SKU receipt -> QC -> exact putaway -> capture,
 source conservation, failed/partial QC, source/capacity refusal, replay and storage
-coverage. These three local task gates are DONE. INV-08, INV-06, INV-10 and FIN-006
-are distinct remaining measurement/occupancy/age/fee tasks.
+coverage. These three local task gates are DONE. INV-06, INV-10 and FIN-006
+are distinct remaining occupancy/age/fee tasks.
 
 INV-03's scoped absolute aggregate, reason/actor, INT bounds, API/UI, controlled
 capture/update and atomic publication requirements passed real isolated tests.
 The reviewer approved the final race/report fixes. [Stock evidence](../../architecture/legacy-aggregate-stock.md).
-Current ledger:15 DONE local gates,5 partial checkpoints,34 TODO. This is not a
+Current ledger:16 DONE local gates,5 partial checkpoints,33 TODO. This is not a
 production readiness or intended-hardware1000-user/100-RPS certificate. TEST-02
 remains partial for CI/race/dependency and other listed domain prerequisites.
+
+
+## INV-08 — verified effective SKU physicals
+
+The same effective verified physical resolver now drives the queue, suggestions,
+assignment and confirmation. Independent immutable warehouse measurements identify
+product fallback or exact SKU overrides; supplier declarations remain unverified.
+Reservations and completed placements retain the exact revision and rounded
+volume/weight. Measurement changes reset affected pending work; completed records
+and historical bin occupancy remain unchanged. SQL guards refuse forged/stale
+placement evidence before it can occupy an immutable task identity.
+
+Local RED/GREEN evidence includes the original parent-only capacity reproduction,
+exact-SKU HTTP and mounted browser regressions, and direct SQL forged-placement
+regression. Final isolated affected suite19/19 passed, followed by migration
+preservation rehearsal and the full working-tree suite591/591 with zero failures.
+That full count includes3 tests in the paused untracked networkreward package;
+588 tests cover release-eligible packages. The only top-level skip is the
+intentional migration subprocess helper. Both disposable containers were verified
+removed. Frontend286/286 passed with no skips, production frontend build and
+repository/server go vet passed. Independent review approved the final guards and
+locking with no unresolved Critical/Important finding.
+
+Evidence: logs/inv08-{before,http-before,ui-before,placement-before,combined,
+migration,full-integrated,frontend-full,frontend-build}.log. Contract:
+[verified SKU capacity](../../architecture/sku-measurement-capacity.md).
+This closes the local INV-08 gate; occupancy release remains INV-06. Paused
+networkreward and docs/fa remain excluded from source delivery.

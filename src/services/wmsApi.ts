@@ -80,6 +80,11 @@ export interface ShippingManifestDto {
 }
 
 export interface PutawayTaskDto {
+  variantId?: string;
+  variantName?: string;
+  variantSpnc?: string;
+  measurementRevision?: string;
+  measurementSource?: string;
   reconciliationRequired?: boolean;
   id: string;
   productId: string;
@@ -144,7 +149,7 @@ export const wmsApi = {
   },
 
   updateBinCapacity: (binCode: string, payload: { capacityVolumeCm3: number; maxWeightGrams?: number; verify: boolean }) => apiRequest(`/warehouse/bins/${encodeURIComponent(binCode)}/capacity`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
-  recordMeasurement: (productId: string, payload: { lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; reason: string }) => apiRequest(`/warehouse/products/${encodeURIComponent(productId)}/measurements`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  recordMeasurement: (productId: string, payload: { variantId?: string; lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; reason: string }) => apiRequest(`/warehouse/products/${encodeURIComponent(productId)}/measurements`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   assignPutaway: (productId: string, binLocation: string, quantity: number) => apiRequest<{ taskId: string }>('/warehouse/putaway/' + encodeURIComponent(productId) + '/assign', { method: 'POST', auth: true, body: JSON.stringify({ binLocation, quantity }) }),
   confirmPutaway: (taskId: string) => apiRequest(`/warehouse/putaway/${encodeURIComponent(taskId)}/confirm`, { method: 'POST', auth: true }),
   getPutawayQueue: () => apiRequest<{ success: boolean; queue: PutawayTaskDto[] }>('/warehouse/putaway/queue', { method: 'GET', auth: true }),

@@ -264,25 +264,8 @@ func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, retu
 }
 
 func (r *SupplierRepository) RecordProductMeasurement(ctx context.Context, productID, actorUserID string, lengthMM, widthMM, heightMM, weightGrams int, reason string) error {
-	if lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 || strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("valid measurements and reason are required")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var oldL, oldW, oldH, oldWeight sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT length_mm,width_mm,height_mm,weight_grams FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&oldL, &oldW, &oldH, &oldWeight); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE products SET length_mm=$1,width_mm=$2,height_mm=$3,weight_grams=$4,measurement_status='verified',measurement_version=measurement_version+1,updated_at=NOW() WHERE id=$5`, lengthMM, widthMM, heightMM, weightGrams, productID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO product_measurement_events (id,product_id,old_length_mm,old_width_mm,old_height_mm,old_weight_grams,new_length_mm,new_width_mm,new_height_mm,new_weight_grams,reason,actor_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, "MEAS-"+uuid.NewString(), productID, nullInt(oldL), nullInt(oldW), nullInt(oldH), nullInt(oldWeight), lengthMM, widthMM, heightMM, weightGrams, reason, actorUserID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := r.RecordSKUPhysicalMeasurement(ctx, productID, "", actorUserID, lengthMM, widthMM, heightMM, weightGrams, reason)
+	return err
 }
 
 func nullInt(v sql.NullInt64) interface{} {

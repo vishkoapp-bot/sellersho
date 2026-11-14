@@ -44,6 +44,9 @@ func TestPutawayCapacityConcurrencyAllowsOnlyOneReservation(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE products SET warehouse_name='Test' WHERE id=$1`, productID); err != nil {
 		t.Fatal(err)
 	}
+	if err := NewSupplierRepository(db).RecordProductMeasurement(ctx, productID, "capacity-test", 100, 100, 100, 500, "measured capacity fixture"); err != nil {
+		t.Fatal(err)
+	}
 	// One 100mm cube occupies 1000cm3 and 500g: exactly one reservation fits.
 	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_bins (bin_code,hall_name,aisle,shelf,capacity_percent,quantity,warehouse_name,capacity_volume_cm3,max_weight_grams,occupied_volume_cm3,occupied_weight_grams,capacity_status) VALUES ($1,'Capacity Test','1','1',0,0,'Test',1000,500,0,0,'verified')`, binCode); err != nil {
 		t.Fatal(err)

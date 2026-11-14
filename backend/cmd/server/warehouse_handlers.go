@@ -577,6 +577,7 @@ func handleInspectReturn(w http.ResponseWriter, r *http.Request, ctx context.Con
 func handleRecordProductMeasurement(w http.ResponseWriter, r *http.Request, ctx context.Context, productID string, repo *repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	var req struct {
+		VariantID   string `json:"variantId"`
 		LengthMM    int    `json:"lengthMm"`
 		WidthMM     int    `json:"widthMm"`
 		HeightMM    int    `json:"heightMm"`
@@ -592,11 +593,12 @@ func handleRecordProductMeasurement(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := repo.RecordProductMeasurement(ctx, productID, claims.UserID, req.LengthMM, req.WidthMM, req.HeightMM, req.WeightGrams, req.Reason); err != nil {
+	physical, err := repo.RecordSKUPhysicalMeasurement(ctx, productID, req.VariantID, claims.UserID, req.LengthMM, req.WidthMM, req.HeightMM, req.WeightGrams, req.Reason)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "measurementStatus": "verified"})
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "variantId": req.VariantID, "measurementStatus": "verified", "physical": physical})
 }
 
 func handleCarrierTariffQuote(w http.ResponseWriter, r *http.Request, ctx context.Context, db *sql.DB) {

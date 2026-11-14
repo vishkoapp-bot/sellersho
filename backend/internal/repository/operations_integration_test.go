@@ -47,6 +47,9 @@ func opsFixtureNew(t *testing.T, db *sql.DB) opsFixture {
 	opsExec(t, db, `INSERT INTO suppliers(id,name,owner_user_id,approval_status) VALUES($1,'ops supplier',$2,'approved')`, f.supplier, f.user)
 	opsExec(t, db, `INSERT INTO stores(id,name,slug,owner_name,owner_user_id,active_plan_id,status) VALUES($1,'ops store',$2,'ops',$3,'standard','active')`, f.store, f.slug, f.user)
 	opsExec(t, db, `INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status,warehouse_name) VALUES($1,'ops product',$1,$2,2000,1000,0,100,100,100,100,100,'verified','ops warehouse')`, f.product, f.supplier)
+	if err := NewSupplierRepository(db).RecordProductMeasurement(context.Background(), f.product, f.user, 100, 100, 100, 100, "measured operations fixture"); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 func opsOrder(t *testing.T, db *sql.DB, f opsFixture, paid bool) (string, string) {

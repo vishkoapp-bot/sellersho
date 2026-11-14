@@ -369,3 +369,10 @@ first-publication concurrency and bounded complete reconciliation paging.
 Frontend285/285 passed without skips; focused19 cases and the production frontend
 build passed. Default Go suite passed with explicit DB/cache opt-out. Full combined
 source verification must be repeated after this new stock implementation.
+
+That repetition completed from immutable committed source
+`0209449daee6d6e72cb16eec93d5528569600f71`: **580 top-level tests, zero
+failures**, with the same intentional migration subprocess helper skip and
+verified disposal of both PostgreSQL and Redis containers. This is the exact
+stock stage pushed and deployed through `deploy.ps1`; evidence:
+`logs/test02-exact-0209449-full.log` and `logs/test02-stage23-deploy.log`.

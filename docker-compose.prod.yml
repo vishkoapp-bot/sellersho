@@ -5,7 +5,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: drup_admin
-      POSTGRES_PASSWORD: drup_prod_secure_pass_4624998190
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?required runtime secret}"
       POSTGRES_DB: drup_db
     ports:
       - "127.0.0.1:5432:5432"
@@ -21,13 +21,15 @@ services:
     image: redis:7-alpine
     container_name: drup_redis
     restart: always
-    command: ["redis-server", "--requirepass", "drup_prod_redis_pass_4624998190"]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?required runtime secret}"
+    command: ["sh", "-ec", 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "drup_prod_redis_pass_4624998190", "ping"]
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -42,16 +44,16 @@ services:
       PORT: "8080"
       APP_ENV: "production"
       PAYMENT_GATEWAY_MODE: "real"
-      DATABASE_URL: "postgres://drup_admin:${POSTGRES_PASSWORD}@postgres:5432/drup_db?sslmode=disable"
-      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
-      JWT_SECRET: "drup_prod_jwt_secret_token_secure_32_chars_2026_xyz"
-      TRACKING_WEBHOOK_SECRET: "drup_prod_webhook_secret_key_4624998190"
+      DATABASE_URL: "${DATABASE_URL:?required runtime secret}"
+      REDIS_URL: "${REDIS_URL:?required runtime secret}"
+      JWT_SECRET: "${JWT_SECRET:?required runtime secret}"
+      TRACKING_WEBHOOK_SECRET: "${TRACKING_WEBHOOK_SECRET:?required runtime secret}"
       UPLOAD_DIR: "/app/static/uploads/products"
       LOCAL_OTP_MODE: "false"
       TEST_OTP_NUMBERS: ""
       TEST_OTP_CODE: ""
       DEMO_GATEWAY_ENABLED: "false"
-      TAPIN_TOKEN_KEY: "nQf8BTQXUGr8TI5FkETo7LCJKWWPQwTBNNQyLteJSEc="
+      TAPIN_TOKEN_KEY: "${TAPIN_TOKEN_KEY:?required runtime secret}"
       ALLOWED_ORIGINS: "http://46.249.98.190,https://46.249.98.190"
     ports:
       - "127.0.0.1:8080:8080"

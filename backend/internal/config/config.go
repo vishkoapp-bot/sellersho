@@ -30,6 +30,9 @@ type Config struct {
 	IPPanelPatternCode            string
 }
 
+const developmentJWTSecret = "drup_jwt_secret_key_2026_dev_secure"
+const developmentWebhookSecret = "drup_tracking_webhook_secret_dev_2026"
+
 // LoadConfig loads configuration from environment variables with strict fail-closed production checks
 func LoadConfig() (*Config, error) {
 	env := getEnv("APP_ENV", "development")
@@ -66,7 +69,7 @@ func LoadConfig() (*Config, error) {
 
 	if !isDev {
 		// Strict Fail-Closed Security Validation for Non-Dev / Production
-		if jwtSecret == "" {
+		if jwtSecret == "" || jwtSecret == developmentJWTSecret {
 			return nil, errors.New("JWT_SECRET environment variable is required in production (fail-closed)")
 		}
 		if len(jwtSecret) < 32 {
@@ -84,8 +87,8 @@ func LoadConfig() (*Config, error) {
 		if strings.Contains(redisURL, "drup_redis_pass_2026") {
 			return nil, errors.New("default development redis password detected in production REDIS_URL (fail-closed)")
 		}
-		if webhookSecret == "" {
-			return nil, errors.New("TRACKING_WEBHOOK_SECRET environment variable is required in production (fail-closed)")
+		if webhookSecret == "" || webhookSecret == developmentWebhookSecret || len(webhookSecret) < 32 {
+			return nil, errors.New("TRACKING_WEBHOOK_SECRET must be a non-development value of at least 32 characters in production (fail-closed)")
 		}
 		if gatewayMode != "real" {
 			return nil, errors.New("PAYMENT_GATEWAY_MODE must be explicitly set to 'real' in production (fail-closed)")
@@ -100,7 +103,7 @@ func LoadConfig() (*Config, error) {
 	} else {
 		// Development & Test Defaults
 		if jwtSecret == "" {
-			jwtSecret = "drup_jwt_secret_key_2026_dev_secure"
+			jwtSecret = developmentJWTSecret
 		}
 		if dbURL == "" {
 			dbURL = "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable"
@@ -109,7 +112,7 @@ func LoadConfig() (*Config, error) {
 			redisURL = "redis://:drup_redis_pass_2026@localhost:6379/0"
 		}
 		if webhookSecret == "" {
-			webhookSecret = "drup_tracking_webhook_secret_dev_2026"
+			webhookSecret = developmentWebhookSecret
 		}
 		if gatewayMode == "" {
 			gatewayMode = "mock"

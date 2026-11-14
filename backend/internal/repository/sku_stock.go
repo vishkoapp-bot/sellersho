@@ -27,7 +27,10 @@ func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 	if !owned {
 		return fmt.Errorf("tracked SKU is not owned by supplier")
 	}
-	location := "supplier:" + supplierID
+	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
+	if err != nil {
+		return err
+	}
 	var held int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND status='sellable' AND NOT(owner_type='supplier' AND location_type='supplier' AND location_key=$3)`, productID, variantID, location).Scan(&held); err != nil {
 		return err
@@ -38,7 +41,7 @@ func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 	target := total - int(held)
 	var balanceID string
 	var previous int
-	err := tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND owner_type='supplier' AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, location).Scan(&balanceID, &previous)
+	err = tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND owner_type='supplier' AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, location).Scan(&balanceID, &previous)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}

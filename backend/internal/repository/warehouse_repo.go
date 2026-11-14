@@ -353,76 +353,44 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 //     ("qc-pass:<inbound>:<product>") so even a guard bypass could not
 //     double-credit balances.
 //
-// debitSupplierSellableForQCReceiptTx is the legacy-ASN counterpart of the C3
-// true-transfer debit in the SKU receive path (sku_returns_handlers.go).
-//
-// The supplier's declared sellable total (the 'supplier:<id>' balance row,
-// maintained by setSupplierSellableTotalTx) is the canonical sellable pool —
-// it already includes stock physically held at the warehouse. When QC-pass
-// moves units from 'physical' to 'sellable', those units would otherwise be
-// counted TWICE (once in the supplier row, once at the warehouse), inflating
-// the canonical pool on every QC pass (oversell risk).
-//
-// So in the same transaction, debit the supplier's own sellable row by
-// min(qty, available) — clamped at zero, never negative — and record the
-// actual debited amount as a transfer movement. No-op when the product has no
-// supplier sellable row (legacy products): the QC-pass mint is then a genuine
-// addition, matching the SKU path's legacy fallback.
-func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, productID string, qty int, referenceType, referenceID, actorUserID, toLocationKey string) error {
+// debitSupplierSellableForQCReceiptTx transfers only the inbound's persisted
+// birth source. Unknown legacy origins or incomplete source stock require
+// reconciliation; today's product origin never supplies missing provenance.
+func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, productID, inboundID string, qty int, referenceType, referenceID, actorUserID, toLocationKey string) error {
 	if qty <= 0 {
 		return nil
 	}
-	var prodSupplierID string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id = $1`, productID).Scan(&prodSupplierID); err != nil {
-		return err
+	var supplier, source string
+	if err := tx.QueryRowContext(ctx, `SELECT i.supplier_id,w.id FROM inbound_shipments i JOIN products p ON p.id=$2 AND p.supplier_id=i.supplier_id JOIN supplier_warehouses w ON w.id=i.supplier_warehouse_id AND w.supplier_id=i.supplier_id WHERE i.id=$1`, inboundID, productID).Scan(&supplier, &source); err != nil {
+		return fmt.Errorf("%w: inbound source reconciliation required: %w", ErrInsufficientInventory, err)
 	}
-	if prodSupplierID == "" {
+	location := "supplier-warehouse:" + source
+	key := "inbound-qc-source:" + inboundID + ":" + productID
+	var recorded int
+	var from, to string
+	err := tx.QueryRowContext(ctx, `SELECT quantity,from_location_key,to_location_key FROM inventory_movements WHERE idempotency_key=$1`, key).Scan(&recorded, &from, &to)
+	if err == nil {
+		if recorded != qty || from != location || to != toLocationKey {
+			return fmt.Errorf("%w: inbound source event changed", ErrInsufficientInventory)
+		}
 		return nil
 	}
-	supplierKey := "supplier:" + prodSupplierID
-	// Race-safe: lock the row, clamp at zero, and learn the actual debited
-	// amount so the audit movement reflects reality (not the requested qty).
-	var oldQty, newQty sql.NullInt64
-	err := tx.QueryRowContext(ctx, `
-		WITH prev AS (
-			SELECT quantity AS old_qty FROM inventory_balances
-			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
-			  AND owner_type = 'supplier' AND location_type = 'supplier'
-			  AND location_key = $3
-			FOR UPDATE
-		),
-		upd AS (
-			UPDATE inventory_balances
-			SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW()
-			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
-			  AND owner_type = 'supplier' AND location_type = 'supplier'
-			  AND location_key = $3
-			RETURNING quantity AS new_qty
-		)
-		SELECT (SELECT old_qty FROM prev), (SELECT new_qty FROM upd)`,
-		qty, productID, supplierKey).Scan(&oldQty, &newQty)
-	if err != nil {
+	if err != sql.ErrNoRows {
 		return err
 	}
-	if !oldQty.Valid || !newQty.Valid {
-		return nil // no supplier sellable row — nothing to transfer from
+	var balance string
+	var available int
+	if err := tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND supplier_warehouse_id=$3 AND warehouse_id IS NULL AND variant_id IS NULL AND owner_type='supplier' AND location_type='supplier' AND location_key=$4 AND status='sellable' FOR UPDATE`, productID, supplier, source, location).Scan(&balance, &available); err != nil {
+		return fmt.Errorf("%w: inbound source stock is missing: %w", ErrInsufficientInventory, err)
 	}
-	actualDebit := int(oldQty.Int64 - newQty.Int64)
-	if actualDebit <= 0 {
-		return nil
+	if available < qty {
+		return fmt.Errorf("%w: inbound source stock is incomplete", ErrInsufficientInventory)
 	}
-	mvID := "IM-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO inventory_movements
-			(id, product_id, supplier_id, quantity, from_status, to_status,
-			 from_location_key, to_location_key, reference_type, reference_id,
-			 idempotency_key, actor_user_id, metadata)
-		VALUES ($1,$2,$3,$4,'sellable','sellable',$5,$6,$7,$8,$1,NULLIF($9,''),'{}'::jsonb)`,
-		mvID, productID, prodSupplierID, actualDebit,
-		supplierKey, toLocationKey, referenceType, referenceID, actorUserID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$2,updated_at=NOW() WHERE id=$1`, balance, qty); err != nil {
 		return err
 	}
-	return nil
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,$4,'sellable','sellable',$5,$6,$7,$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), productID, supplier, qty, location, toLocationKey, referenceType, referenceID, key, actorUserID)
+	return err
 }
 
 func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int) error {
@@ -473,7 +441,7 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 	// inflates the pool. Runs after the move so its products.stock re-sync
 	// (inside moveInventoryTx) already covered the credit; re-sync again
 	// for the debit leg.
-	if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, qty, "inbound_qc_pass_transfer", resID, inspectorUserID, "warehouse:"+inboundID); err != nil {
+	if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, inboundID, qty, "inbound_qc_pass_transfer", resID, inspectorUserID, "warehouse:"+inboundID); err != nil {
 		return err
 	}
 	if err := syncProductStockTx(ctx, tx, productID); err != nil {
@@ -482,8 +450,8 @@ func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inbou
 
 	putID := "PUT-" + uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO putaway_tasks (id, product_id, inbound_id, bin_location, quantity, status, created_at)
-		VALUES ($1, $2, $3, NULL, $4, 'pending', NOW())
+		INSERT INTO putaway_tasks (id, product_id, inbound_id, bin_location, quantity, status, created_at,warehouse_id)
+		VALUES ($1, $2, $3::text, NULL, $4, 'pending', NOW(),(SELECT warehouse_id FROM inbound_shipments WHERE id=$3::text))
 	`, putID, productID, inboundID, qty)
 	if err != nil {
 		return err
@@ -538,7 +506,7 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 		return err
 	}
 	if passed > 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,inbound_id,bin_location,quantity,status,created_at) VALUES ($1,$2,$3,NULL,$4,'pending',NOW())`, "PUT-"+uuid.NewString(), productID, inboundID, passed); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,inbound_id,bin_location,quantity,status,created_at,warehouse_id) VALUES ($1,$2,$3::text,NULL,$4,'pending',NOW(),(SELECT warehouse_id FROM inbound_shipments WHERE id=$3::text))`, "PUT-"+uuid.NewString(), productID, inboundID, passed); err != nil {
 			return err
 		}
 		if err := moveInventoryTx(ctx, tx, productID, supplierID, passed, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", qcID, "qc:"+qcID+":passed", inspectorUserID, `{"failed":%d,"shortage":%d}`, failed, shortage); err != nil {
@@ -548,7 +516,7 @@ func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inbound
 		// only the passed units become sellable, so only they are debited
 		// from the supplier's canonical sellable row (failed units go to
 		// 'damaged' and never enter the sellable pool).
-		if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, passed, "inbound_qc_pass_transfer", qcID, inspectorUserID, "warehouse:"+inboundID); err != nil {
+		if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, inboundID, passed, "inbound_qc_pass_transfer", qcID, inspectorUserID, "warehouse:"+inboundID); err != nil {
 			return err
 		}
 		if err := syncProductStockTx(ctx, tx, productID); err != nil {
@@ -730,13 +698,22 @@ func upsertInventoryMovementTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	if err != nil || inserted == 0 {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier',CASE WHEN $4::text LIKE 'supplier_warehouse:%' THEN 'supplier' ELSE 'warehouse' END,$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	return err
 }
 
 func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, quantity int, fromStatus, toStatus, fromLocation, toLocation, referenceType, referenceID, idempotency, actor, metadataFormat string, metadataArgs ...interface{}) error {
 	if quantity <= 0 {
 		return nil
+	}
+	if strings.HasPrefix(toLocation, "bin:") {
+		var matches bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_balances s JOIN warehouse_bins b ON b.warehouse_id=s.warehouse_id WHERE s.product_id=$1 AND s.supplier_id=$2 AND s.variant_id IS NULL AND s.location_key=$3 AND s.status=$4 AND b.bin_code=$5 AND s.warehouse_id IS NOT NULL)`, productID, supplierID, fromLocation, fromStatus, strings.TrimPrefix(toLocation, "bin:")).Scan(&matches); err != nil {
+			return err
+		}
+		if !matches {
+			return fmt.Errorf("putaway requires matching immutable warehouse identities")
+		}
 	}
 	metadata := fmt.Sprintf(metadataFormat, metadataArgs...)
 	result, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, quantity, fromStatus, toStatus, fromLocation, toLocation, referenceType, referenceID, idempotency, actor, metadata)
@@ -759,7 +736,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 	if err != nil || changed != 1 {
 		return fmt.Errorf("insufficient canonical source balance")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier',CASE WHEN $4::text LIKE 'supplier_warehouse:%' THEN 'supplier' ELSE 'warehouse' END,$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	if err != nil {
 		return err
 	}
@@ -1064,7 +1041,8 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 			           'variantId', oi.variant_id,
 			           'variantName', oi.variant_name,
 			           'variantSpnc', oi.variant_spnc,
-			           'quantity', oi.quantity,
+			           'quantity', COALESCE(oio.warehouse_quantity,oi.quantity),
+                           'originReconciliationRequired',COALESCE(oio.unresolved,TRUE),
 			           'unitPrice', oi.final_unit_price,
 			           'fulfillmentMethod', r.routing,
 			           'binLocation', CASE WHEN COALESCE(pv.inventory_mode,'legacy')='tracked' THEN (
@@ -1084,10 +1062,10 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 			LEFT JOIN products p ON p.id = oi.product_id
 			LEFT JOIN product_variants pv ON pv.id=oi.variant_id
 			LEFT JOIN LATERAL (
-				SELECT origin_type FROM order_item_origins
-				WHERE order_item_id = oi.id
-				ORDER BY leg_index ASC
-				LIMIT 1
+				SELECT CASE WHEN bool_or(origin_type='warehouse') THEN 'warehouse' WHEN bool_or(origin_type='supplier') THEN 'supplier' END AS origin_type,
+                SUM(quantity) FILTER(WHERE origin_type='warehouse') AS warehouse_quantity,
+                bool_or(origin_type='legacy' OR (origin_type='warehouse' AND warehouse_id IS NULL) OR (origin_type='supplier' AND supplier_warehouse_id IS NULL)) AS unresolved
+                FROM order_item_origins WHERE order_item_id=oi.id
 			) oio ON true
 			CROSS JOIN LATERAL (
 				SELECT CASE

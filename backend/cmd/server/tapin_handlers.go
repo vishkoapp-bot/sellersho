@@ -303,28 +303,17 @@ func submitShippingViaTapin(
 	if !ok {
 		return tapinOutcome(http.StatusBadRequest, map[string]interface{}{"error": tapinMsgDestUnmapped})
 	}
-	// Origin: the items' own origin warehouse when it carries Tapin
-	// geo ids, else the supplier's default warehouse.
-	var origin *repository.SupplierOriginWarehouse
-	for _, l := range lines {
-		if l.OriginWarehouseID == "" {
-			continue
-		}
-		if w, werr := tapinRepo.GetSupplierWarehouseGeo(ctx, l.OriginWarehouseID); werr == nil && w != nil && w.TapinCityID > 0 && w.TapinProvinceID > 0 {
-			origin = w
-			break
-		}
+	// A single provider parcel has one persisted pickup identity. Unknown or
+	// multi-pickup historical purchases require explicit fulfillment recovery.
+	originID, originErr := repository.SingleSupplierPickupOrigin(lines)
+	if originErr != nil {
+		return tapinOutcome(http.StatusConflict, map[string]interface{}{"error": "fulfillment_origin_reconciliation_required"})
 	}
-	if origin == nil {
-		w, werr := tapinRepo.GetSupplierDefaultWarehouseGeo(ctx, supplierID)
-		if werr != nil {
-			return tapinOutcome(http.StatusInternalServerError, map[string]interface{}{"error": "Internal server error"})
-		}
-		if w != nil && w.TapinCityID > 0 && w.TapinProvinceID > 0 {
-			origin = w
-		}
+	origin, originErr := tapinRepo.GetSupplierWarehouseGeo(ctx, originID)
+	if originErr != nil {
+		return tapinOutcome(http.StatusInternalServerError, map[string]interface{}{"error": "Internal server error"})
 	}
-	if origin == nil {
+	if origin == nil || origin.TapinCityID <= 0 || origin.TapinProvinceID <= 0 {
 		return tapinOutcome(http.StatusBadRequest, map[string]interface{}{"error": tapinMsgOriginUnmapped})
 	}
 	serviceType := 2 // inter-city

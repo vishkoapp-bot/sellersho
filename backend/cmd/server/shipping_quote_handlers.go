@@ -73,16 +73,19 @@ func loadShippingRates(ctx context.Context, db *sql.DB) (shippingRates, error) {
 // shippingQuoteLine is one cart line resolved against the catalog:
 // everything the pure quote computation needs, nothing about HTTP.
 type shippingQuoteLine struct {
-	ProductID   string
-	VariantID   string
-	Quantity    int
-	Fulfillment string
-	SupplierID  string
-	Warehouse   string
-	WeightG     int // 0 = unknown, caller applies the default
-	LengthMM    int
-	WidthMM     int
-	HeightMM    int
+	ProductID           string
+	VariantID           string
+	Quantity            int
+	Fulfillment         string
+	SupplierID          string
+	ItemIndex           int
+	WarehouseID         string
+	SupplierWarehouseID string
+	Warehouse           string
+	WeightG             int // 0 = unknown, caller applies the default
+	LengthMM            int
+	WidthMM             int
+	HeightMM            int
 	// UnitPriceToman is the catalog unit price (products.original_price)
 	// at resolution time. It is NOT part of the formula quote; the
 	// Tapin price inquiry (tapin_quote.go) uses it as the declared
@@ -116,7 +119,7 @@ type shippingQuoteAllocation struct {
 // shippingQuote is the computed quote: deterministic quoteId, legs,
 // allocations and the total in Tomans.
 type shippingQuote struct {
-	PricingError error `json:"-"`
+	PricingError  error                     `json:"-"`
 	QuoteID       string                    `json:"quoteId"`
 	Legs          []shippingQuoteLeg        `json:"legs"`
 	TotalShipping int64                     `json:"totalShipping"`
@@ -129,6 +132,9 @@ func billableWeightGrams(line shippingQuoteLine, rates shippingRates) int64 {
 
 func legOrigin(line shippingQuoteLine) (key, label string) {
 	if line.Fulfillment == "supplier_direct" {
+		if line.SupplierWarehouseID != "" {
+			return "supplier-warehouse:" + line.SupplierWarehouseID, line.Warehouse
+		}
 		// ISO-PURCHASE: never substitute a real supplier for a missing
 		// one. Callers that resolve from the catalog (resolveQuoteLines,
 		// order-time quote rebuild) reject a supplier-less direct line
@@ -142,6 +148,9 @@ func legOrigin(line shippingQuoteLine) (key, label string) {
 			return "supplier:" + sup, line.Warehouse
 		}
 		return "supplier:" + sup, "ارسال مستقیم تأمین‌کننده"
+	}
+	if line.WarehouseID != "" {
+		return "warehouse:" + line.WarehouseID, line.Warehouse
 	}
 	if strings.TrimSpace(line.Warehouse) != "" {
 		return "warehouse", line.Warehouse
@@ -449,6 +458,12 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 		http.Error(w, `{"error":"invalid shipping quote"}`, http.StatusBadRequest)
 		return
 	}
+	lines, err = resolveQuoteOrigins(ctx, db, lines)
+	if err != nil {
+		http.Error(w, `{"error":"inventory_origin_unavailable"}`, http.StatusConflict)
+		return
+	}
+	sortQuoteLines(lines)
 	quote := computeShippingQuote(lines, rates, quoteDestinationKey(*req.Destination))
 	if quote.PricingError != nil {
 		http.Error(w, `{"error":"shipping_amount_out_of_range"}`, http.StatusBadRequest)
@@ -467,4 +482,70 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 		"success": true, "quoteId": quote.QuoteID, "legs": quote.Legs,
 		"totalShipping": quote.TotalShipping, "allocations": quote.Allocations,
 	})
+}
+
+func resolveQuoteOrigins(ctx context.Context, db *sql.DB, lines []shippingQuoteLine) ([]shippingQuoteLine, error) {
+	totals := map[string]int{}
+	for _, line := range lines {
+		key := line.ProductID + "/" + line.VariantID
+		if line.Quantity <= 0 || totals[key] > int(^uint(0)>>1)-line.Quantity {
+			return nil, repository.ErrInsufficientInventory
+		}
+		totals[key] += line.Quantity
+	}
+	plans := map[string][]repository.FulfillmentOrigin{}
+	for _, line := range lines {
+		key := line.ProductID + "/" + line.VariantID
+		if _, ok := plans[key]; ok {
+			continue
+		}
+		origins, err := repository.ResolveInventoryOrigins(ctx, db, line.ProductID, line.VariantID, line.Fulfillment, totals[key])
+		if err != nil {
+			return nil, err
+		}
+		plans[key] = origins
+	}
+	var result []shippingQuoteLine
+	for i, line := range lines {
+		key := line.ProductID + "/" + line.VariantID
+		remaining := line.Quantity
+		plan := plans[key]
+		for j := range plan {
+			if remaining == 0 {
+				break
+			}
+			if plan[j].Quantity == 0 {
+				continue
+			}
+			q := plan[j].Quantity
+			if q > remaining {
+				q = remaining
+			}
+			split := line
+			split.ItemIndex = i
+			split.Quantity = q
+			split.WarehouseID = plan[j].WarehouseID
+			split.SupplierWarehouseID = plan[j].SupplierWarehouseID
+			split.Warehouse = plan[j].Label
+			result = append(result, split)
+			plan[j].Quantity -= q
+			remaining -= q
+		}
+		plans[key] = plan
+	}
+	// The supplier shipment model/provider registration currently has one
+	// parcel per supplier. Reject unsupported multiple pickup origins before
+	// payment, rather than pricing several pickups then choosing one later.
+	pickupBySupplier := map[string][]repository.SupplierOrderLine{}
+	for _, line := range result {
+		if line.Fulfillment == "supplier_direct" {
+			pickupBySupplier[line.SupplierID] = append(pickupBySupplier[line.SupplierID], repository.SupplierOrderLine{OriginWarehouseID: line.SupplierWarehouseID, Quantity: line.Quantity})
+		}
+	}
+	for _, lines := range pickupBySupplier {
+		if _, err := repository.SingleSupplierPickupOrigin(lines); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }

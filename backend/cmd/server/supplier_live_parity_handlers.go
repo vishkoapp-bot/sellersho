@@ -860,13 +860,14 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 		return
 	}
 	var body struct {
-		Items []repository.CartonShipmentItem `json:"items"`
+		WarehouseID string                          `json:"warehouse_id"`
+		Items       []repository.CartonShipmentItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
-	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items)
+	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items, body.WarehouseID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"variant not found or not yours"}`, http.StatusNotFound)

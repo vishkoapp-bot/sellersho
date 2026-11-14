@@ -427,13 +427,14 @@ type SupplierOrderLine struct {
 // supplier (products are supplier-owned), in stable order.
 func (r *TapinRepository) ListSupplierOrderLines(ctx context.Context, orderID, supplierID string) ([]SupplierOrderLine, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT oi.product_id, COALESCE(p.title, ''), oi.quantity, oi.final_unit_price,
-		       COALESCE(p.weight_grams, 0), COALESCE(p.origin_supplier_warehouse_id, ''),
+		SELECT oi.product_id, COALESCE(p.title, ''), x.quantity, oi.final_unit_price,
+		       COALESCE(p.weight_grams, 0), COALESCE(x.supplier_warehouse_id, ''),
 		       oi.id::text, COALESCE(oi.variant_id::text,''), COALESCE(oi.variant_name,''), COALESCE(oi.variant_spnc,'')
 		FROM order_items oi
 		JOIN products p ON p.id = oi.product_id
-		WHERE oi.order_id = $1 AND p.supplier_id = $2
-		ORDER BY oi.product_id ASC`, orderID, supplierID)
+		JOIN order_item_origins x ON x.order_item_id=oi.id AND x.origin_type='supplier' AND x.supplier_id=$2
+		WHERE oi.order_id = $1
+		ORDER BY oi.id,x.leg_index ASC`, orderID, supplierID)
 	if err != nil {
 		return nil, fmt.Errorf("list supplier order lines: %w", err)
 	}

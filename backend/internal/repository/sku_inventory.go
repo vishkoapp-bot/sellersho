@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 )
 
 type skuAllocation struct {
+	OriginID  string `json:"originId,omitempty"`
 	BalanceID string `json:"balanceId"`
 	Quantity  int    `json:"quantity"`
 }
@@ -24,6 +26,10 @@ func hasSKUInventoryTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 // SeedTrackedSKUInventoryTx creates only the exact declared V2 SKU balances.
 // Existing NULL-variant historical balances are never allocated or divided.
 func SeedTrackedSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID string) error {
+	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
+	if err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT id::text,stock FROM product_variants WHERE product_id=$1 AND inventory_mode='tracked' ORDER BY id`, productID)
 	if err != nil {
 		return err
@@ -49,7 +55,7 @@ func SeedTrackedSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	for _, s := range seeds {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled)
 		 VALUES($1,$2,NULLIF($3,''),$4,'supplier','supplier',$5,'sellable',$6,TRUE)
-		 ON CONFLICT(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL DO NOTHING`, "INV-"+uuid.NewString(), productID, supplierID, s.id, "supplier:"+supplierID, s.qty); err != nil {
+		 ON CONFLICT(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL DO NOTHING`, "INV-"+uuid.NewString(), productID, supplierID, s.id, location, s.qty); err != nil {
 			return err
 		}
 	}
@@ -115,17 +121,23 @@ func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID
 	}
 	delta := receivedQty - accounted
 	if delta > 0 {
-		// Transfer already-declared supplier units first. Additional physically
-		// received units are new stock, never taken from another SKU/legacy pool.
+		// Transfer only the carton's persisted supplier source. A catalog origin
+		// edit cannot redirect receipt or authorize minting a missing source.
+		var sourceWarehouse string
+		err := tx.QueryRowContext(ctx, `SELECT sw.id FROM shipments sh JOIN supplier_warehouses sw ON sw.id=sh.supplier_warehouse_id WHERE sh.id=$1::uuid AND sh.supplier_id=$2 AND sw.supplier_id=$2`, shipmentID, supplierID).Scan(&sourceWarehouse)
+		location := "supplier-warehouse:" + sourceWarehouse
+		if err != nil {
+			return true, err
+		}
 		var source string
 		var available int
-		err := tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, "supplier:"+supplierID).Scan(&source, &available)
+		err = tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, location).Scan(&source, &available)
 		if err != nil && err != sql.ErrNoRows {
 			return true, err
 		}
 		debit := delta
 		if debit > available {
-			debit = available
+			return true, fmt.Errorf("%w: carton source stock is unavailable", ErrInsufficientInventory)
 		}
 		// Accepted receipts remain physical staging until the complete
 		// putaway task places this exact SKU into a bin. Payment must never
@@ -136,17 +148,13 @@ func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID
 		}
 		key := fmt.Sprintf("sku-receipt:%s:%s:%d", shipmentID, variantID, receivedQty)
 		if debit > 0 {
-			if err := moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, debit, "sellable", status, "supplier:"+supplierID, "warehouse", "shipment:"+shipmentID, "sku_receipt", shipmentID, key+":transfer", ""); err != nil {
+			if err := moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, debit, "sellable", status, location, "warehouse", "shipment:"+shipmentID, "sku_receipt", shipmentID, key+":transfer", ""); err != nil {
 				return true, err
 			}
 		}
-		if delta > debit {
-			if err := creditSKUInventoryTx(ctx, tx, productID, supplierID, variantID, delta-debit, status, "warehouse", "shipment:"+shipmentID, "sku_receipt", shipmentID, key+":new", ""); err != nil {
-				return true, err
-			}
-		}
+
 		if qcStatus == "passed" {
-			_, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks(id,product_id,variant_id,inventory_source_location_key,quantity,status,created_at) VALUES($1,$2,$3,$4,$5,'pending',NOW())`, "PT-"+uuid.NewString(), productID, variantID, "shipment:"+shipmentID, delta)
+			_, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks(id,product_id,variant_id,inventory_source_location_key,quantity,status,created_at,warehouse_id) VALUES($1,$2,$3,$4,$5,'pending',NOW(),(SELECT warehouse_id FROM shipments WHERE id=$6::uuid))`, "PT-"+uuid.NewString(), productID, variantID, "shipment:"+shipmentID, delta, shipmentID)
 			if err != nil {
 				return true, err
 			}
@@ -157,7 +165,21 @@ func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID
 }
 
 func putawayTrackedSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, quantity int, sourceLocation, binCode, taskID, actor string) error {
-	return moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, "physical", "sellable", sourceLocation, "bin", "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor)
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_movements WHERE idempotency_key=$1)`, "putaway:"+taskID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if err := moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, "physical", "sellable", sourceLocation, "bin", "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor); err != nil {
+		return err
+	}
+	var warehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warehouse_id,'') FROM warehouse_bins WHERE bin_code=$1`, binCode).Scan(&warehouse); err != nil {
+		return err
+	}
+	return creditStoragePositionTx(ctx, tx, productID, supplierID, warehouse, "", quantity)
 }
 
 func moveSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, qty int, fromStatus, toStatus, source, locationType, destination, referenceType, referenceID, key, actor string) error {
@@ -166,6 +188,15 @@ func moveSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, 
 	}
 	if err := lockSKUProductTx(ctx, tx, productID, variantID); err != nil {
 		return err
+	}
+	if locationType == "bin" {
+		var matches bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_balances s JOIN warehouse_bins b ON b.warehouse_id=s.warehouse_id WHERE s.product_id=$1 AND s.variant_id=$2 AND s.location_key=$3 AND s.status=$4 AND b.bin_code=substring($5 FROM 5) AND s.warehouse_id IS NOT NULL)`, productID, variantID, source, fromStatus, destination).Scan(&matches); err != nil {
+			return err
+		}
+		if !matches {
+			return fmt.Errorf("putaway requires matching immutable warehouse identities")
+		}
 	}
 	var balanceID string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_key=$3 AND status=$4 FOR UPDATE`, productID, variantID, source, fromStatus).Scan(&balanceID); err != nil {
@@ -210,6 +241,17 @@ func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orde
 	if err != nil || !enabled {
 		return enabled, err
 	}
+	var returnVariant string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(variant_id::text,'') FROM order_inventory_captures WHERE order_item_id=$1`, orderItemID).Scan(&returnVariant)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if err := lockInventoryParentsTx(ctx, tx, []inventoryCaptureItem{{ProductID: productID, VariantID: returnVariant}}); err != nil {
+		return true, err
+	}
 	var variantID, mode string
 	var captured, restored, vqty int
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(variant_id::text,''),inventory_mode,quantity,restored_quantity,variant_quantity FROM order_inventory_captures WHERE order_item_id=$1 FOR UPDATE`, orderItemID).Scan(&variantID, &mode, &captured, &restored, &vqty)
@@ -252,7 +294,11 @@ func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orde
 	if destination == "" {
 		destination = "customer-return"
 	}
-	if err := creditSKUInventoryTx(ctx, tx, productID, supplierID, variantID, qty, status, "warehouse", destination+":return:"+returnItemID, "customer_return", returnItemID, "sku-return:"+returnItemID, actor); err != nil {
+	locationType := "warehouse"
+	if strings.HasPrefix(destination, "supplier_warehouse:") {
+		locationType = "supplier"
+	}
+	if err := creditSKUInventoryTx(ctx, tx, productID, supplierID, variantID, qty, status, locationType, destination+":return:"+returnItemID, "customer_return", returnItemID, "sku-return:"+returnItemID, actor); err != nil {
 		return true, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO order_inventory_returns(return_item_id,order_item_id,quantity) VALUES($1,$2,$3)`, returnItemID, orderItemID, qty); err != nil {
@@ -293,6 +339,20 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 		return true, err
 	}
 	rows.Close()
+	if err := lockInventoryParentsTx(ctx, tx, items); err != nil {
+		return true, err
+	}
+	// Captures are immutable business events; replay cannot debit again.
+	var capturedCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM order_inventory_captures WHERE order_id=$1`, orderID).Scan(&capturedCount); err != nil {
+		return true, err
+	}
+	if capturedCount > 0 {
+		if capturedCount != len(items) {
+			return true, fmt.Errorf("incomplete inventory capture")
+		}
+		return true, nil
+	}
 	// Validate cumulative SKU limits, including separate addon lines.
 	totals := map[string]int{}
 	for _, it := range items {
@@ -301,6 +361,22 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 			return true, ErrInsufficientInventory
 		}
 		totals[key] += it.Quantity
+	}
+	guards, err := tx.QueryContext(ctx, `SELECT b.id FROM inventory_balances b WHERE b.status='sellable' AND EXISTS(SELECT 1 FROM order_items oi WHERE oi.order_id=$1 AND oi.product_id=b.product_id) ORDER BY b.id COLLATE "C" FOR UPDATE`, orderID)
+	if err != nil {
+		return true, err
+	}
+	for guards.Next() {
+		var id string
+		if err := guards.Scan(&id); err != nil {
+			guards.Close()
+			return true, err
+		}
+	}
+	err = guards.Err()
+	guards.Close()
+	if err != nil {
+		return true, err
 	}
 	validated := map[string]bool{}
 	for _, it := range items {
@@ -336,7 +412,7 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 				validated[key] = true
 			}
 		}
-		allocations, err := consumeInventoryBalancesTx(ctx, tx, it, mode)
+		allocations, err := consumeInventoryForOriginTx(ctx, tx, it, mode)
 		if err != nil {
 			return true, err
 		}
@@ -375,8 +451,8 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 	return true, nil
 }
 
-func consumeInventoryBalancesTx(ctx context.Context, tx *sql.Tx, it inventoryCaptureItem, mode string) ([]skuAllocation, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND (($3='tracked' AND variant_id=NULLIF($2,'')::uuid) OR ($3<>'tracked' AND variant_id IS NULL)) ORDER BY id FOR UPDATE`, it.ProductID, it.VariantID, mode)
+func consumeInventoryBalancesAtOriginTx(ctx context.Context, tx *sql.Tx, it inventoryCaptureItem, mode string, origin inventoryOrigin) ([]skuAllocation, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND (($3='tracked' AND variant_id=NULLIF($2,'')::uuid) OR ($3<>'tracked' AND variant_id IS NULL)) AND (($4='warehouse' AND warehouse_id=$5 AND supplier_warehouse_id IS NULL AND location_type IN ('warehouse','bin')) OR ($4='supplier' AND supplier_id=$6 AND supplier_warehouse_id=$7 AND warehouse_id IS NULL AND location_type='supplier')) ORDER BY id FOR UPDATE`, it.ProductID, it.VariantID, mode, origin.Kind, origin.WarehouseID, origin.SupplierID, origin.SupplierWarehouseID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,9 +472,7 @@ func consumeInventoryBalancesTx(ctx context.Context, tx *sql.Tx, it inventoryCap
 		return nil, err
 	}
 	rows.Close()
-	if len(available) == 0 && mode != "tracked" {
-		return []skuAllocation{}, nil
-	}
+
 	if total < it.Quantity {
 		return nil, ErrInsufficientInventory
 	}
@@ -418,7 +492,7 @@ func consumeInventoryBalancesTx(ctx context.Context, tx *sql.Tx, it inventoryCap
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,metadata)
-		 SELECT $1,product_id,supplier_id,variant_id,$2,'sellable','sold',location_key,'customer','order_capture',$3,$4,'{}' FROM inventory_balances WHERE id=$5`, "IM-"+uuid.NewString(), a.Quantity, it.ID, "sku-capture:"+it.ID+":"+a.BalanceID, a.BalanceID); err != nil {
+		 SELECT $1,product_id,supplier_id,variant_id,$2,'sellable','sold',location_key,'customer','order_capture',$3,$4,'{}' FROM inventory_balances WHERE id=$5`, "IM-"+uuid.NewString(), a.Quantity, it.ID, "sku-capture:"+it.ID+":"+origin.ID+":"+a.BalanceID, a.BalanceID); err != nil {
 			return nil, err
 		}
 		taken = append(taken, a)
@@ -432,7 +506,28 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 	if err != nil || !enabled {
 		return enabled, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT order_item_id,product_id,COALESCE(variant_id::text,''),quantity,variant_quantity,restored_quantity,inventory_mode,allocations FROM order_inventory_captures WHERE order_id=$1 ORDER BY product_id,variant_id,order_item_id FOR UPDATE`, orderID)
+	parents, err := tx.QueryContext(ctx, `SELECT product_id,COALESCE(variant_id::text,'') FROM order_inventory_captures WHERE order_id=$1`, orderID)
+	if err != nil {
+		return true, err
+	}
+	var items []inventoryCaptureItem
+	for parents.Next() {
+		var it inventoryCaptureItem
+		if err := parents.Scan(&it.ProductID, &it.VariantID); err != nil {
+			parents.Close()
+			return true, err
+		}
+		items = append(items, it)
+	}
+	err = parents.Err()
+	parents.Close()
+	if err != nil {
+		return true, err
+	}
+	if err := lockInventoryParentsTx(ctx, tx, items); err != nil {
+		return true, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT order_item_id,product_id,COALESCE(variant_id::text,''),quantity,variant_quantity,restored_quantity,inventory_mode,allocations FROM order_inventory_captures WHERE order_id=$1 ORDER BY order_item_id COLLATE "C" FOR UPDATE`, orderID)
 	if err != nil {
 		return true, err
 	}
@@ -460,6 +555,22 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 	if len(captures) == 0 {
 		return false, nil
 	}
+	balanceGuards, err := tx.QueryContext(ctx, `SELECT b.id FROM inventory_balances b WHERE EXISTS(SELECT 1 FROM order_inventory_captures c CROSS JOIN LATERAL jsonb_array_elements(c.allocations) a WHERE c.order_id=$1 AND a->>'balanceId'=b.id) ORDER BY b.id COLLATE "C" FOR UPDATE`, orderID)
+	if err != nil {
+		return true, err
+	}
+	for balanceGuards.Next() {
+		var id string
+		if err := balanceGuards.Scan(&id); err != nil {
+			balanceGuards.Close()
+			return true, err
+		}
+	}
+	err = balanceGuards.Err()
+	balanceGuards.Close()
+	if err != nil {
+		return true, err
+	}
 	for _, c := range captures {
 		if c.restored == c.qty {
 			continue
@@ -470,6 +581,16 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 		var allocations []skuAllocation
 		if err := json.Unmarshal(c.raw, &allocations); err != nil {
 			return true, err
+		}
+		allocated := 0
+		for _, a := range allocations {
+			if a.Quantity <= 0 || a.Quantity > c.qty-allocated {
+				return true, fmt.Errorf("invalid recorded inventory allocation")
+			}
+			allocated += a.Quantity
+		}
+		if len(allocations) > 0 && allocated != c.qty {
+			return true, fmt.Errorf("incomplete recorded inventory allocation")
 		}
 		sort.Slice(allocations, func(i, j int) bool { return allocations[i].BalanceID < allocations[j].BalanceID })
 		if _, err := tx.ExecContext(ctx, `SELECT id FROM products WHERE id=$1 FOR UPDATE`, c.pid); err != nil {
@@ -482,7 +603,7 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 		}
 		for _, a := range allocations {
 			movement, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,metadata)
-			 SELECT $1,product_id,supplier_id,variant_id,$2,'sold','sellable','customer',location_key,'order_cancel',$3,$4,'{}' FROM inventory_balances WHERE id=$5 ON CONFLICT(idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), a.Quantity, c.id, "sku-cancel:"+c.id+":"+a.BalanceID, a.BalanceID)
+			 SELECT $1,product_id,supplier_id,variant_id,$2,'sold','sellable','customer',location_key,'order_cancel',$3,$4,'{}' FROM inventory_balances WHERE id=$5 ON CONFLICT(idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), a.Quantity, c.id, "sku-cancel:"+c.id+":"+a.OriginID+":"+a.BalanceID, a.BalanceID)
 			if err != nil {
 				return true, err
 			}

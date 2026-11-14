@@ -1847,29 +1847,10 @@ func (r *SupplierRepository) GetSupplierProducts(ctx context.Context, supplierID
 	return products, nil
 }
 
-// setSupplierSellableTotalTx sets the supplier-owned sellable balance for a
-// product to total, inside the caller's transaction.
-//
-// TODO (team-00, live-parity): this helper was referenced by ApproveProposal
-// and UpdateProductStock, but its defining file (inventory_unify.go, named by
-// migration 202610170001) was never committed in any branch, so its exact live
-// semantics are unverified. This is the minimal version matching every call
-// site and the comments at those sites:
-//   - the supplier-owned sellable row is the one
-//     debitSupplierSellableForQCReceiptTx identifies: owner_type='supplier',
-//     location_type='supplier', location_key='supplier:'+supplierID,
-//     status='sellable';
-//   - that row is upserted to exactly total (clamped at zero, never negative);
-//   - other sellable rows (e.g. warehouse-held) are untouched, so after the
-//     sync below the products.stock projection may legitimately exceed total
-//     (see UpdateProductStock's comment);
-//   - the projection is re-synced via syncProductStockTx, which is a no-op for
-//     products with no balance rows (legacy path keeps products.stock).
-//
-// No inventory_movements row is written: neither call site passes an actor or
-// a reference, and inventing one would fabricate audit history. The new row
-// is marked reconciled=FALSE because supplier-declared stock has not been
-// warehouse-reconciled; an existing row keeps its reconciled flag.
+// setSupplierSellableTotalTx sets future declared legacy stock at the product's
+// explicitly owned active supplier warehouse. Existing unknown lots and lots at
+// other warehouses retain their quantities and identities; an origin edit never
+// relocates history. Tracked products use SKU-specific declarations instead.
 func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
 	var version int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&version); err != nil {
@@ -1877,6 +1858,10 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supp
 	}
 	if version >= 2 {
 		return fmt.Errorf("tracked product stock must be changed for the selected SKU")
+	}
+	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
+	if err != nil {
+		return err
 	}
 	if total < 0 {
 		total = 0
@@ -1886,7 +1871,7 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supp
 		VALUES ($1, $2, $3, 'supplier', 'supplier', $4, 'sellable', $5, FALSE)
 		ON CONFLICT (product_id, owner_type, location_type, location_key, status) WHERE variant_id IS NULL
 		DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()`,
-		"INV-"+uuid.NewString(), productID, supplierID, "supplier:"+supplierID, total); err != nil {
+		"INV-"+uuid.NewString(), productID, supplierID, location, total); err != nil {
 		return err
 	}
 	return syncProductStockTx(ctx, tx, productID)
@@ -2749,6 +2734,7 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 	}
 	notes, _ := data["notes"].(string)
 
+	sourceWarehouse := ""
 	itemsCount := 0
 	cartonsCount := 0
 	var itemsList []interface{}
@@ -2772,6 +2758,14 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 				if version >= 2 {
 					return "", fmt.Errorf("%w: برای کالای دارای SKU از مسیر محموله کارتن و انتخاب تنوع استفاده کنید", ErrInboundInput)
 				}
+				var source string
+				if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM products p JOIN supplier_warehouses w ON w.id=p.origin_supplier_warehouse_id AND w.supplier_id=p.supplier_id AND w.is_active WHERE p.id=$1 AND p.supplier_id=$2`, productID, supplierID).Scan(&source); err != nil {
+					return "", fmt.Errorf("%w: explicit owned inbound source is required", ErrInboundInput)
+				}
+				if sourceWarehouse != "" && sourceWarehouse != source {
+					return "", fmt.Errorf("%w: inbound items require one source warehouse", ErrInboundInput)
+				}
+				sourceWarehouse = source
 				itemsCount += int(q)
 				cartonsCount += int(c)
 			} else {
@@ -2829,10 +2823,10 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 		}
 	}
 	query := `
-		INSERT INTO inbound_shipments (id, supplier_id, supplier_name, warehouse_id, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, notes, items, dispatch_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'scheduled', $10, $11, $12, NOW())
+		INSERT INTO inbound_shipments (id, supplier_id, supplier_name, warehouse_id, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, notes, items, dispatch_at, created_at,supplier_warehouse_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'scheduled', $10, $11, $12, NOW(),$13)
 	`
-	_, err = r.db.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt)
+	_, err = r.db.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt, sourceWarehouse)
 	if err != nil {
 		return "", err
 	}
@@ -3014,7 +3008,18 @@ func newCartonShipmentCode() string {
 // draft as «پیش‌نویس») with its variant lines. Variants must belong to
 // this supplier's products. Idempotency is per-call: live's client sends
 // no key for createShipment, so no replay handling is added.
-func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierID string, items []CartonShipmentItem) (*CartonShipment, error) {
+func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierID string, items []CartonShipmentItem, destination ...string) (*CartonShipment, error) {
+	if len(destination) != 1 || destination[0] == "" {
+		return nil, fmt.Errorf("explicit destination warehouse is required")
+	}
+	var active bool
+	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM warehouses WHERE id=$1 AND is_active)`, destination[0]).Scan(&active); err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, fmt.Errorf("destination warehouse is inactive or unknown")
+	}
+
 	if len(items) == 0 {
 		return nil, fmt.Errorf("at least one variant line is required")
 	}
@@ -3041,6 +3046,17 @@ func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierI
 			return nil, sql.ErrNoRows
 		}
 	}
+	sourceWarehouse := ""
+	for _, it := range items {
+		var source string
+		if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM product_variants pv JOIN products p ON p.id=pv.product_id JOIN supplier_warehouses w ON w.id=p.origin_supplier_warehouse_id AND w.supplier_id=p.supplier_id AND w.is_active WHERE pv.id=$1 AND p.supplier_id=$2`, it.VariantID, supplierID).Scan(&source); err != nil {
+			return nil, fmt.Errorf("explicit owned carton source is required: %w", err)
+		}
+		if sourceWarehouse != "" && sourceWarehouse != source {
+			return nil, fmt.Errorf("carton lines require a single source warehouse")
+		}
+		sourceWarehouse = source
+	}
 	var id, code string
 	inserted := false
 	for attempt := 0; attempt < 5; attempt++ {
@@ -3050,9 +3066,9 @@ func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierI
 		}
 		id = uuid.NewString()
 		_, err := r.db.ExecContext(ctx, `
-			INSERT INTO shipments (id, shipment_code, supplier_id, status)
-			VALUES ($1, $2, $3, 'draft')
-		`, id, code, supplierID)
+			INSERT INTO shipments (id, shipment_code, supplier_id, status,warehouse_id,supplier_warehouse_id)
+			VALUES ($1, $2, $3, 'draft',$4,$5)
+		`, id, code, supplierID, destination[0], sourceWarehouse)
 		if err == nil {
 			inserted = true
 			break
@@ -4929,7 +4945,7 @@ func (r *SupplierRepository) UpdateProductOrigin(ctx context.Context, supplierID
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE products SET origin_supplier_warehouse_id = $1
-		WHERE id = $2 AND supplier_id = $3`,
+		WHERE id = $2 AND supplier_id = $3 AND ($1::text IS NULL OR EXISTS (SELECT 1 FROM supplier_warehouses sw WHERE sw.id=$1 AND sw.supplier_id=$3 AND sw.is_active))`,
 		originID, productID, supplierID)
 	if err != nil {
 		return err

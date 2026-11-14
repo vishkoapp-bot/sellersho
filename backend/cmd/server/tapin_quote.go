@@ -39,10 +39,9 @@ package main
 // checkout -> order window; it is keyed by every input the fare
 // depends on, and only successful fares are cached.
 //
-// Origin geo simplification (parity-driven): the inquiry prices
-// from the supplier's DEFAULT (first active) warehouse geo ids in
-// both paths. Registration, by contrast, uses the order items' real
-// origin warehouse.
+// Named origin legs use their selected supplier warehouse geography in both
+// quote paths. Origin-less historical/unit constructions retain the old default
+// lookup; production planning requires a named eligible origin.
 
 import (
 	"context"
@@ -50,7 +49,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -82,9 +80,9 @@ type tapinQuoteError struct{ Message string }
 func (e *tapinQuoteError) Error() string { return e.Message }
 
 const (
-	tapinMsgUnreachable   = "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید."
+	tapinMsgUnreachable    = "برقراری ارتباط با تاپین ممکن نشد. دوباره تلاش کنید."
 	tapinMsgOriginUnmapped = "مختصات تاپین انبار تأمین‌کننده ثبت نشده است؛ هزینه ارسال این سفارش از تاپین قابل استعلام نیست."
-	tapinMsgDestUnmapped  = "استان/شهر مقصد در داده‌های جغرافیایی تاپین یافت نشد؛ هزینه ارسال قابل استعلام نیست."
+	tapinMsgDestUnmapped   = "استان/شهر مقصد در داده‌های جغرافیایی تاپین یافت نشد؛ هزینه ارسال قابل استعلام نیست."
 )
 
 // tapinQuoteErrorBody renders the quote failure in the quote
@@ -213,10 +211,11 @@ func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, 
 	changed := false
 	for i := range quote.Legs {
 		leg := &quote.Legs[i]
-		if !strings.HasPrefix(leg.OriginID, "supplier:") {
-			continue // warehouse / central leg: formula, untouched
+		legLines := linesByLeg[leg.OriginID]
+		if len(legLines) == 0 || legLines[0].Fulfillment != "supplier_direct" {
+			continue
 		}
-		supplierID := strings.TrimPrefix(leg.OriginID, "supplier:")
+		supplierID := legLines[0].SupplierID
 		creds, err := repo.GetSupplierCredentials(ctx, supplierID)
 		if err != nil {
 			return &tapinQuoteError{Message: tapinMsgUnreachable}
@@ -257,6 +256,9 @@ func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, 
 // Any failure is a *tapinQuoteError carrying the message to surface.
 func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client *tapin.Client, creds repository.SupplierTapinCredentials, legLines []shippingQuoteLine, legWeightGrams int64, dest shippingQuoteDestination) (int64, error) {
 	origin, err := repo.GetSupplierDefaultWarehouseGeo(ctx, creds.SupplierID)
+	if len(legLines) > 0 && legLines[0].SupplierWarehouseID != "" {
+		origin, err = repo.GetSupplierWarehouseGeo(ctx, legLines[0].SupplierWarehouseID)
+	}
 	if err != nil {
 		return 0, &tapinQuoteError{Message: tapinMsgUnreachable}
 	}

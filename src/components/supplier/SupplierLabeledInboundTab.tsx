@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSupplierResource } from './useSupplierResource';
+import { SupplierResourceState } from './SupplierResourceState';
 import { supplierApi } from '../../services/supplierApi';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -52,6 +54,8 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productId, setProductId] = useState('');
+  const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
+  const [warehouseId, setWarehouseId] = useState('');
   const [variants, setVariants] = useState<any[]>([]);
   const [variantsLoading, setVariantsLoading] = useState(false);
   const [lines, setLines] = useState<{ variant: any; expectedQty: string }[]>([]);
@@ -86,11 +90,12 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   };
   const removeVariant = (id: string) => { setLines((prev) => prev.filter((l) => l.variant.id !== id)); };
   const submit = async () => {
+    if (!warehouseId || !(warehouses.data || []).some((w: any) => w.id === warehouseId)) { error("انبار مقصد را انتخاب کن."); return; }
     const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) })).filter((l) => Number.isSafeInteger(l.expected_qty) && l.expected_qty > 0);
     if (items.length === 0) { error("حداقل یک مدل با تعداد درست اضافه کن."); return; }
     setSubmitting(true);
     try {
-      const shipment = await supplierApi.createShipment({ items });
+      const shipment = await supplierApi.createShipment({ items, warehouse_id: warehouseId });
       setCreated(shipment);
       setLines([]);
       success("محموله ثبت شد. کدش را روی کارتن بنویس.");
@@ -113,6 +118,13 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
         <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
+        <SupplierResourceState loading={warehouses.loading} error={warehouses.error} retry={warehouses.reload} />
+        <label className="block text-xs font-bold text-slate-700">انبار مرکزی مقصد
+          <select aria-label="انبار مرکزی مقصد" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] bg-white">
+            <option value="">انبار مقصد را انتخاب کن</option>
+            {(warehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
         <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] text-xs bg-white focus:border-brand-deep outline-none">
           <option value="">{productsLoading ? "صبر کن… کالاها می‌آیند" : "انتخاب کالا"}</option>
           {products.map((p: any) => (<option key={p.id} value={p.id}>{p.title}</option>))}
@@ -143,7 +155,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
             ))}
           </div>
         )}
-        <button type="button" onClick={submit} disabled={submitting || lines.length === 0} className="w-full py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
+        <button type="button" onClick={submit} disabled={submitting || lines.length === 0 || !warehouseId || warehouses.loading || !!warehouses.error} className="w-full py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
           {submitting && (<RefreshCw className="w-4 h-4 animate-spin"  strokeWidth={1.5}/>)}
           <Truck className="w-4 h-4"  strokeWidth={1.5}/>
           <span>{submitting ? "در حال ثبت…" : "ثبت محموله و گرفتن کد کارتن"}</span>

@@ -242,9 +242,9 @@ type Product struct {
 	// Shipping/tax class (P2(b)): the fallback target for variants
 	// (variant class ?? this ?? 'standard'). Stored vocabulary only
 	// in v1; consumed nowhere yet. DB default 'standard'.
-	ShippingClass             string                 `json:"shippingClass" db:"shipping_class"`
-	TaxClass                  string                 `json:"taxClass" db:"tax_class"`
-	MeasurementStatus         string                 `json:"measurementStatus" db:"measurement_status"`
+	ShippingClass     string `json:"shippingClass" db:"shipping_class"`
+	TaxClass          string `json:"taxClass" db:"tax_class"`
+	MeasurementStatus string `json:"measurementStatus" db:"measurement_status"`
 	// Brand, Rating, ReviewsCount, CreatedAt: columns confirmed by
 	// migration 202610200003 (brand TEXT, rating NUMERIC(3,2),
 	// reviews_count INT) and by the GetSupplierProducts SELECT in
@@ -280,19 +280,27 @@ type PlatformSettings struct {
 }
 
 // OrderItem represents a line item in an order with snapshot financials
-type OrderItem struct {
-	PricingPolicyVersion string `json:"pricingPolicyVersion,omitempty" db:"pricing_policy_version"`
+type OrderItemOriginSplit struct {
+	WarehouseID         *string
+	SupplierWarehouseID *string
+	Label               string
+	Quantity            int
+	LegIndex            int
+}
 
-	ID             string `json:"id" db:"id"`
-	OrderID        string `json:"orderId" db:"order_id"`
-	ProductID      string `json:"productId" db:"product_id"`
-	ProductTitle   string `json:"productTitle,omitempty"`
-	Quantity       int    `json:"quantity" db:"quantity"`
-	WholesaleCost  int64  `json:"wholesaleCost" db:"wholesale_cost"`             // C
-	PlatformFee    int64  `json:"platformFee" db:"platform_fee"`                 // F
-	SellerMargin   int64  `json:"sellerMargin" db:"seller_margin"`               // D
-	FinalUnitPrice int64  `json:"finalUnitPrice" db:"final_unit_price"`          // P = C + F + D
-	DiscountAmount int64  `json:"discountAmount,omitempty" db:"discount_amount"` // seller discount on this line (margin only)
+type OrderItem struct {
+	OriginSplits         []OrderItemOriginSplit `json:"-"`
+	PricingPolicyVersion string                 `json:"pricingPolicyVersion,omitempty" db:"pricing_policy_version"`
+	ID                   string                 `json:"id" db:"id"`
+	OrderID              string                 `json:"orderId" db:"order_id"`
+	ProductID            string                 `json:"productId" db:"product_id"`
+	ProductTitle         string                 `json:"productTitle,omitempty"`
+	Quantity             int                    `json:"quantity" db:"quantity"`
+	WholesaleCost        int64                  `json:"wholesaleCost" db:"wholesale_cost"`             // C
+	PlatformFee          int64                  `json:"platformFee" db:"platform_fee"`                 // F
+	SellerMargin         int64                  `json:"sellerMargin" db:"seller_margin"`               // D
+	FinalUnitPrice       int64                  `json:"finalUnitPrice" db:"final_unit_price"`          // P = C + F + D
+	DiscountAmount       int64                  `json:"discountAmount,omitempty" db:"discount_amount"` // seller discount on this line (margin only)
 	// D38 variant snapshot (migration 202610200005). Pointers so a NULL
 	// column scans as absent rather than as an empty variant identity.
 	VariantID   *string `json:"variantId,omitempty" db:"variant_id"`
@@ -504,15 +512,15 @@ type ProductVariant struct {
 // Variant shipping/tax class vocabulary (P2(b), mirrors the DB CHECKs
 // in migration 202611130004). 'standard' is the effective default.
 const (
-	ShippingClassStandard   = "standard"
-	ShippingClassFragile    = "fragile"
-	ShippingClassOversized  = "oversized"
-	ShippingClassHeavy      = "heavy"
-	ShippingClassColdChain  = "cold_chain"
-	TaxClassStandard        = "standard"
-	TaxClassReduced         = "reduced"
-	TaxClassZero            = "zero"
-	TaxClassExempt          = "exempt"
+	ShippingClassStandard  = "standard"
+	ShippingClassFragile   = "fragile"
+	ShippingClassOversized = "oversized"
+	ShippingClassHeavy     = "heavy"
+	ShippingClassColdChain = "cold_chain"
+	TaxClassStandard       = "standard"
+	TaxClassReduced        = "reduced"
+	TaxClassZero           = "zero"
+	TaxClassExempt         = "exempt"
 )
 
 // ValidShippingClass reports whether s is a known shipping class.

@@ -173,15 +173,31 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 			if item.SupplierID != "" {
 				originSupplierID = item.SupplierID
 			}
-			if _, err := tx.ExecContext(ctx, `
+			splits := item.OriginSplits
+			if len(splits) == 0 {
+				splits = []domain.OrderItemOriginSplit{{WarehouseID: item.WarehouseID, SupplierWarehouseID: item.SupplierWarehouseID, Label: item.OriginLabel, Quantity: item.Quantity, LegIndex: item.LegIndex}}
+			}
+			total := 0
+			for _, split := range splits {
+				if split.Quantity <= 0 || split.Quantity > item.Quantity-total {
+					return fmt.Errorf("invalid order origin split")
+				}
+				total += split.Quantity
+			}
+			if total != item.Quantity {
+				return fmt.Errorf("incomplete order origin split")
+			}
+			for _, split := range splits {
+				if _, err := tx.ExecContext(ctx, `
 				INSERT INTO order_item_origins (
 					id, order_id, order_item_id, leg_index, origin_type,
 					supplier_id, warehouse_id, supplier_warehouse_id, origin_label, quantity
 				) VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10)
-			`, uuid.New().String(), order.ID, itemID, item.LegIndex, originType,
-				originSupplierID, orderNullString(item.WarehouseID),
-				orderNullString(item.SupplierWarehouseID), item.OriginLabel, item.Quantity); err != nil {
-				return fmt.Errorf("failed to insert order item origin: %w", err)
+			`, uuid.New().String(), order.ID, itemID, split.LegIndex, originType,
+					originSupplierID, orderNullString(split.WarehouseID),
+					orderNullString(split.SupplierWarehouseID), split.Label, split.Quantity); err != nil {
+					return fmt.Errorf("failed to insert order item origin: %w", err)
+				}
 			}
 		}
 	}

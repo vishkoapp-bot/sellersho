@@ -760,90 +760,51 @@ func handleCreateOrder(
 
 	}
 
-	// Gap 13: resolve the origin identities the origins rows carry,
-	// in batch. A supplier leg's supplier_warehouse_id is the
-	// product's recorded origin supplier warehouse (catalogRepo's
-	// product read does not select that column, so it is fetched
-	// here with the warehouses lookup); a warehouse leg's
-	// warehouse_id is the warehouses row whose name matches the
-	// product's warehouse_name (NULL when unmatched — the origin
-	// label still records the name). Lookup failures degrade to
-	// NULL identities rather than failing a priced order.
+	// Checkout and standalone quotes select the same attributed eligible stock.
 	if len(orderItems) > 0 {
-		if db != nil {
-			productIDs := []string{}
-			seenProduct := map[string]bool{}
-			warehouseNames := []string{}
-			seenName := map[string]bool{}
-			for i := range orderItems {
-				if !seenProduct[orderItems[i].ProductID] {
-					seenProduct[orderItems[i].ProductID] = true
-					productIDs = append(productIDs, orderItems[i].ProductID)
-				}
-				if orderItems[i].Routing != "supplier_direct" {
-					if name := quoteLines[i].Warehouse; name != "" && !seenName[name] {
-						seenName[name] = true
-						warehouseNames = append(warehouseNames, name)
-					}
-				}
-			}
-			originSwhByProduct := map[string]string{}
-			if rows, qerr := db.QueryContext(ctx, `SELECT id, COALESCE(origin_supplier_warehouse_id, '') FROM products WHERE id = ANY($1::text[])`, pq.Array(productIDs)); qerr == nil {
-				for rows.Next() {
-					var pid, swh string
-					if err := rows.Scan(&pid, &swh); err == nil && swh != "" {
-						originSwhByProduct[pid] = swh
-					}
-				}
-				rows.Close()
-			}
-			warehouseIDByName := map[string]string{}
-			if len(warehouseNames) > 0 {
-				if rows, qerr := db.QueryContext(ctx, `SELECT id, name FROM warehouses WHERE name = ANY($1::text[])`, pq.Array(warehouseNames)); qerr == nil {
-					for rows.Next() {
-						var wid, wname string
-						if err := rows.Scan(&wid, &wname); err == nil {
-							warehouseIDByName[wname] = wid
-						}
-					}
-					rows.Close()
-				}
-			}
-			for i := range orderItems {
-				if orderItems[i].Routing == "supplier_direct" {
-					if swh, ok := originSwhByProduct[orderItems[i].ProductID]; ok {
-						v := swh
-						orderItems[i].SupplierWarehouseID = &v
-					}
-				} else if wid, ok := warehouseIDByName[quoteLines[i].Warehouse]; ok {
-					v := wid
-					orderItems[i].WarehouseID = &v
-				}
+		if db == nil {
+			http.Error(w, `{"error":"inventory unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		var originErr error
+		quoteLines, originErr = resolveQuoteOrigins(ctx, db, quoteLines)
+		if originErr != nil {
+			http.Error(w, `{"error":"inventory_origin_unavailable"}`, http.StatusConflict)
+			return
+		}
+		keys := []string{}
+		seen := map[string]bool{}
+		for _, line := range quoteLines {
+			key, _ := legOrigin(line)
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
 			}
 		}
-		// leg_index: first-appearance index of the origin key over
-		// the quote-sorted lines — the same grouping and order
-		// computeShippingQuote prices, so an origin row's leg_index
-		// is the quote leg the line was priced into.
-		sortedIdx := make([]int, len(quoteLines))
-		for i := range sortedIdx {
-			sortedIdx[i] = i
-		}
-		sort.SliceStable(sortedIdx, func(a, b int) bool {
-			ka, _ := legOrigin(quoteLines[sortedIdx[a]])
-			kb, _ := legOrigin(quoteLines[sortedIdx[b]])
-			return ka < kb
-		})
+		sort.Strings(keys)
 		legOf := map[string]int{}
-		for _, idx := range sortedIdx {
-			key, _ := legOrigin(quoteLines[idx])
-			li, ok := legOf[key]
-			if !ok {
-				li = len(legOf)
-				legOf[key] = li
-			}
-			orderItems[idx].LegIndex = li
+		for i, key := range keys {
+			legOf[key] = i
 		}
+		for _, line := range quoteLines {
+			key, _ := legOrigin(line)
+			split := domain.OrderItemOriginSplit{Label: line.Warehouse, Quantity: line.Quantity, LegIndex: legOf[key]}
+			if line.WarehouseID != "" {
+				v := line.WarehouseID
+				split.WarehouseID = &v
+			}
+			if line.SupplierWarehouseID != "" {
+				v := line.SupplierWarehouseID
+				split.SupplierWarehouseID = &v
+			}
+			item := &orderItems[line.ItemIndex]
+			item.OriginSplits = append(item.OriginSplits, split)
+			item.WarehouseID = split.WarehouseID
+			item.SupplierWarehouseID = split.SupplierWarehouseID
+			item.OriginLabel = split.Label
+			item.LegIndex = split.LegIndex
+		}
+
 	}
 
 	// Referral commission (D33): respected only when the flag is on.

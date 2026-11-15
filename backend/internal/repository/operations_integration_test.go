@@ -77,16 +77,77 @@ func TestOperationsOrderExpiryAndPaymentRace(t *testing.T) {
 	seedCanonicalWarehouseOrderOrigins(t, db, expired, warehouse)
 	seedCanonicalWarehouseOrderOrigins(t, db, paid, warehouse)
 	opsExec(t, db, `UPDATE orders SET payment_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, expired)
+	// Both different orders share the store account guard. Hold that actual
+	// row until the short expiry candidate yields; payment must still succeed
+	// when contention clears, and the expired order must recover via durable retry.
+	blocker, e := db.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer blocker.Rollback()
+	if _, e = blocker.Exec(`SELECT id FROM stores WHERE id=$1 FOR UPDATE`, f.store); e != nil {
+		t.Fatal(e)
+	}
 	var wg sync.WaitGroup
 	var expiryErr, paymentErr error
 	rrn := "rrn-" + uuid.NewString()[:20]
 	wg.Add(2)
 	go func() { defer wg.Done(); _, expiryErr = r.ExpireUnpaidOrders(ctx) }()
 	go func() { defer wg.Done(); _, paymentErr = r.MarkPaymentPaid(ctx, token, rrn, "mask") }()
+	until := time.Now().Add(3 * time.Second)
+	review := false
+	for time.Now().Before(until) {
+		if e = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM background_job_candidate_retry WHERE job='unpaid-order-expiry' AND candidate=$1 AND reason='transient' AND next_retry_at>clock_timestamp())`, expired).Scan(&review); e != nil {
+			t.Fatal(e)
+		}
+		if review {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !review {
+		_ = blocker.Rollback()
+		wg.Wait()
+		t.Fatal("expiry did not persist bounded shared-account retry", expiryErr)
+	}
+	var captured bool
+	var captures int
+	if e = db.QueryRow(`SELECT inventory_captured FROM orders WHERE id=$1`, expired).Scan(&captured); e != nil {
+		t.Fatal(e)
+	}
+	if e = db.QueryRow(`SELECT count(*) FROM order_inventory_captures WHERE order_id=$1`, expired).Scan(&captures); e != nil {
+		t.Fatal(e)
+	}
+	if captured || captures != 0 {
+		t.Fatal("deferred expiry captured stock", captured, captures)
+	}
+	_ = blocker.Rollback()
 	wg.Wait()
-	if expiryErr != nil || paymentErr != nil {
+	if paymentErr != nil || !isCandidateBudgetCancellation(expiryErr) {
 		t.Fatalf("expiry=%v payment=%v", expiryErr, paymentErr)
 	}
+	until = time.Now().Add(10 * time.Second)
+	for time.Now().Before(until) {
+		var status string
+		if e = db.QueryRow(`SELECT status FROM orders WHERE id=$1`, expired).Scan(&status); e != nil {
+			t.Fatal(e)
+		}
+		if status == "cancelled" {
+			break
+		}
+		opsExec(t, db, `UPDATE background_job_candidate_retry SET next_retry_at=clock_timestamp()-INTERVAL '1 second' WHERE job='unpaid-order-expiry' AND candidate=$1`, expired)
+		retryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_, e = r.ExpireUnpaidOrders(retryCtx)
+		cancel()
+		if e != nil && !isCandidateBudgetCancellation(e) {
+			t.Fatal(e)
+		}
+	}
+	var expiredStatus string
+	if e = db.QueryRow(`SELECT status FROM orders WHERE id=$1`, expired).Scan(&expiredStatus); e != nil || expiredStatus != "cancelled" {
+		t.Fatal("due expiry retry did not recover", expiredStatus, e)
+	}
+	t.Log("shared account contention deferred expiry atomically; persisted due retry cancelled it while payment succeeded")
 	if _, e := r.MarkPaymentPaid(ctx, expiredToken, "rrn", "mask"); !errors.Is(e, ErrPaymentExpired) {
 		t.Fatalf("resurrected expired payment: %v", e)
 	}

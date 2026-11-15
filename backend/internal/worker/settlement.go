@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/drup/platform/internal/jobrunner"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -25,7 +26,7 @@ func (w *BackgroundWorker) RunMonthlySettlementIfDue() {
 	if w.db == nil || w.finRepo == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	cycle, err := w.finRepo.RunMonthlySettlement(ctx, time.Now(), "background-worker")
 	if err != nil {
@@ -42,4 +43,18 @@ func (w *BackgroundWorker) RunMonthlySettlementIfDue() {
 			log.Printf("[INFO] Monthly settlement %s for %s: %d/%d accounts done, %d pending, %d blocked", cycle.Status, cycle.Period, cycle.CompletedStores, cycle.CandidateStores, cycle.PendingStores, cycle.BlockedStores)
 		}
 	}
+}
+
+func (w *BackgroundWorker) monthlySettlement(ctx context.Context) (jobrunner.Result, error) {
+	if w.finRepo == nil {
+		return jobrunner.Result{}, errors.New("finance repository unavailable")
+	}
+	_, err := w.finRepo.RunMonthlySettlement(ctx, time.Now(), "background-worker")
+	if errors.Is(err, repository.ErrSettlementNotConfigured) {
+		return jobrunner.Result{Disabled: true}, nil
+	}
+	// The repository returns a cumulative cycle snapshot, not this attempt's
+	// count. Keep financial totals in its existing settlement panel; never sum
+	// the same cumulative count on every scheduler tick.
+	return jobrunner.Result{}, err
 }

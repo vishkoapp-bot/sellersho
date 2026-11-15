@@ -35,8 +35,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
 | CHECKOUT-01 | DONE | 85f655a | [Durable checkout](2026-11-15-checkout-attempt.md) |
 | OPS-02 | DONE | 8c0c7c6 | [Request/provider budgets](../../operations/request-budgets.md) |
-| FIN-002 | DONE | this commit | [Durable monthly settlement](../../architecture/monthly-settlement.md) |
-| JOB-01 | TODO | — | — |
+| FIN-002 | DONE | aeed326 | [Durable monthly settlement](../../architecture/monthly-settlement.md) |
+| JOB-01 | DONE | this commit | [Background jobs](../../operations/background-jobs.md) |
 | SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
 | FIN-010 | TODO | — | — |
 | INV-12 | TODO | — | — |
@@ -742,3 +742,22 @@ Verification:
 - Fresh independent reviewer`review_fin002_release`: no Critical/Important findings. The sole Minor coverage note was closed by the actual-loop interruption test before final gates; no review findings remain.
 
 Literal source proof checks1450 Git blobs, protected directories absent, all previously applied migrations unchanged and only006 newly added. Normalized006 SHA256:`1e34cd0ca79c0a7f443ba4a21fd71048a89b50a7acc643896d94f7867fadb913`. No old completed manifest is invented and no bank/PSP/SMS operation occurs in tests. Local foreground samples do not certify FIN-013/CAP-02 hardware SLOs. Production preflight on8c0c7c6 remained healthy with unchanged financial aggregates; accepted monthly core history is fingerprinted separately before/after rollout.
+
+FIN-002 production rollout completed with `deploy.ps1 -BuildOnServer`, exit0, commit`aeed326559b27ab4553fc851f9ea3332ec4aacbb`. Independent verification confirmed released source, sealed003–006 checksums, API/PostgreSQL/Redis/frontend-root health and restricted server backup`/opt/drup/backups/deploy-20261115T220448Z-aeed3265` (0700). Financial aggregates remained40orders,8paid transactions,4,640,000toman paid,52,669toman wallet,2oldrefunds, storage fees disabled, with zero new refund obligations/verified receipts/checkout attempts/title snapshots. Accepted monthly history fingerprint stayed`41b646c66ef3dbaefb0750f5886881039096b1b08b5d520b94956f0f39237f03` (1cycle,1item,0linked payouts), with no historical progress invented. Local release receipts: `releases/fin002-production-{preflight,postcheck,receipt}.json`; final hardware certification stays OPEN.
+
+## JOB-01 — independent bounded background jobs
+
+Local acceptance completed on frozen tree`4e01795045c38749ccf6c6c30f08bed09dc7406a`, based on deployed/origin`aeed326`. Release source retains identical tested backend/frontend/scripts/edge blobs; completion notes are Markdown-only deltas. Totals are25 DONE,5 Checkpoint OPEN and24 TODO (29 not closed). Production rollout follows the standing commit/push/deploy.ps1 sequence; hardware certification stays OPEN.
+
+Six finite loops reserve expiry admission independently of routine jobs, with durable owner-CAS leases, bounded per-candidate transactions, cancellation/drain and fresh one-second outcome recording. Existing financial, inventory, SLA and delivery-window rules remain guarded. Absolute Redis hold deadlines prevent late payment initiation extending the authoritative window. Unpaid NULL-deadline initiation fails closed; already-paid replay and captured-money compensation remain valid. The existing admin panel reports missing/stale outcomes, ready/review work and automatic retry.
+
+A real controlled RED found ordinary300ms expiry contention was incorrectly placed in five-minute human review. It now retries automatically after5s using007 operational metadata; genuine reconciliation retains its old review delay. Automatic retry stays in ready-age measurements.70 controlled orders drained naturally without advancing retry/business clocks. Disabled monthly scheduling keeps review alerts active. Known Minor operations follow-ups are recorded in the operational contract, including the rare overlapping-marker subset count; no Critical/Important review finding remains.
+
+- Full frozen Go:774 top-level entries,0failures, all32packages. Four disjoint discovered groups193+192+212+177; all8 exact owned PG/Redis containers removed and absence verified. Manifest`releases/job01-verified-full-manifest.json`; logs`logs/job01-verified-{repository0,repository1,server,remaining,full-console}.log`. The migration-process and crash-child helper skips are exercised by passing parents.
+- Full frontend307/307,0failures/0skips; typecheck/Vite build succeeds with the existing chunk warning. Final vet and Linux server/migrator builds exit[0,0,0]. Logs`logs/job01-verified-{frontend,build,vet-linux}.log`.
+- Actual previous aeed migration runner/workers/admin pass8compatibility tests on additive007. The exact compatibility script/migration blobs are identical in tested5621 and final4e017; explicit input identity proof links the original receipt instead of relabeling a repeated run. Current-source starvation control passes on final4e017; identical fixture previously produced the required named actual-old runtime RED. FixtureSHA256`785151acfb791a8767e8e8a4a7354280a9acfedb7fe1368ea98e30693bb2e346`.
+- Final broad local overlap: burst260 plus120arrivals at4/s over30s, all380cancelled, stock10000unchanged, ledger0; oldest ready156s (<300), drain52.82s.848 actual HTTP catalog reads p50=4.16ms/p95=9.97ms/max66.54ms, observed total DBinuse4 across two workers. These are local measurements under concurrent isolated suites, not100RPS/hardware certification. Real child crash plus committed-first/blocked-next cancellation preserves1committed result; restart completes60 without duplicate money/stock/stuck ownership.
+
+Literal source proof verifies1465Git blobs, protected paths absent, all applied migrations unchanged and only007new. Normalized007SHA256`c2e47f0e160122dc0559cbb573c9ff43e4f4ff1ab3cb4cb3eadb731352fc406d`. Superseded3473 and failed5621 broad runs remain preserved as non-passing evidence; their failures were not counted as success. No actual PSP/SMS or production load test occurred.
+
+Release uses deploy.ps1 full local-build mode because of server disk headroom. Identity-checked removal of unused generated npm dependencies and the dedicated unused Go build-cache volume restored956391424free bytes, with source/binaries/backups/runtime services preserved. A read-only on-server dump-size budget includes128MiB reserve; final production checks still gate rollout. Production Redis7.4.11 supports the tested absolute-expiry command. Credentials/dumps remain on the server with restricted permissions.

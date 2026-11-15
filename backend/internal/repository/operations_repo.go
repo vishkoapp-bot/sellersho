@@ -25,7 +25,7 @@ func (r *OrderRepository) PaymentDeadline(ctx context.Context, id string) *sql.R
 // earlier order's products would invert the global financial lock prefix.
 // Committed results are returned even if a later order fails, for Redis cleanup.
 func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrder, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE NOT EXISTS(SELECT 1 FROM order_expiry_review_state e WHERE e.order_id=orders.id AND e.next_retry_at>clock_timestamp()) AND payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY id COLLATE "C" LIMIT 200`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE NOT EXISTS(SELECT 1 FROM background_job_candidate_retry b WHERE b.job='unpaid-order-expiry' AND b.candidate=orders.id AND b.next_retry_at>clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM order_expiry_review_state e WHERE e.order_id=orders.id AND e.next_retry_at>clock_timestamp()) AND payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY payment_expires_at,id COLLATE "C" LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
@@ -46,10 +46,23 @@ func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrde
 	out := []ExpiredOrder{}
 	var failures []error
 	for _, id := range ids {
-		o, err := r.expireUnpaidOrder(ctx, id)
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		candidateCtx, candidateCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		o, err := r.expireUnpaidOrder(candidateCtx, id)
+		contextErr := candidateCtx.Err() // capture before our own cancellation
+		candidateCancel()
 		if err != nil {
 			failures = append(failures, err)
-			if _, scheduleErr := r.db.ExecContext(ctx, `INSERT INTO order_expiry_review_state(order_id,next_retry_at,reason) VALUES($1,clock_timestamp()+INTERVAL '5 minutes','candidate_rejected') ON CONFLICT(order_id) DO UPDATE SET next_retry_at=EXCLUDED.next_retry_at,reason=EXCLUDED.reason`, id); scheduleErr != nil {
+			var scheduleErr error
+			if expiryCandidateTransient(err, contextErr) {
+				_, scheduleErr = r.db.ExecContext(ctx, `INSERT INTO background_job_candidate_retry(job,candidate,next_retry_at,reason) VALUES('unpaid-order-expiry',$1,clock_timestamp()+INTERVAL '5 seconds','transient') ON CONFLICT(job,candidate) DO UPDATE SET next_retry_at=EXCLUDED.next_retry_at,reason=EXCLUDED.reason`, id)
+			} else {
+				_, scheduleErr = r.db.ExecContext(ctx, `INSERT INTO order_expiry_review_state(order_id,next_retry_at,reason) VALUES($1,clock_timestamp()+INTERVAL '5 minutes','candidate_rejected') ON CONFLICT(order_id) DO UPDATE SET next_retry_at=EXCLUDED.next_retry_at,reason=EXCLUDED.reason`, id)
+			}
+			if scheduleErr != nil {
 				failures = append(failures, scheduleErr)
 			}
 			continue
@@ -60,6 +73,26 @@ func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrde
 	}
 	return out, errors.Join(failures...)
 }
+
+// Ordinary bounded cancellation/lock retries do not authorize human financial
+// review. A bare ErrTxDone is transient only when this candidate's context ended.
+func expiryCandidateTransient(err, contextErr error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if errors.Is(err, sql.ErrTxDone) {
+		return contextErr != nil
+	}
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) {
+		switch state.SQLState() {
+		case "57014", "55P03", "40001", "40P01":
+			return true
+		}
+	}
+	return false
+}
+
 func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*ExpiredOrder, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -127,7 +160,7 @@ func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*Ex
 // Expiry escalates for human review; silence never accepts a shortage or
 // authorizes a financial adjustment. The predicate makes every retry safe.
 func EscalateQCDeadlines(ctx context.Context, db *sql.DB) (int64, error) {
-	res, err := db.ExecContext(ctx, `UPDATE qc_discrepancies SET escalated_at=NOW() WHERE status='open' AND responded_at IS NULL AND response_due_at<=NOW() AND escalated_at IS NULL`)
+	res, err := db.ExecContext(ctx, `WITH due AS (SELECT id FROM qc_discrepancies WHERE status='open' AND responded_at IS NULL AND response_due_at<=NOW() AND escalated_at IS NULL ORDER BY response_due_at,id LIMIT 100 FOR UPDATE SKIP LOCKED) UPDATE qc_discrepancies q SET escalated_at=NOW() FROM due WHERE q.id=due.id`)
 	if err != nil {
 		return 0, err
 	}
@@ -139,6 +172,46 @@ func EscalateQCDeadlines(ctx context.Context, db *sql.DB) (int64, error) {
 // Explicit administrative decisions are preserved; only system-owned grants
 // are withdrawn automatically on degradation or account suspension.
 func RefreshSupplierSLA(ctx context.Context, db *sql.DB) (int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT s.id FROM suppliers s LEFT JOIN supplier_sla_metrics m ON m.supplier_id=s.id WHERE NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='supplier-sla' AND r.candidate=s.id AND r.next_retry_at>clock_timestamp()) ORDER BY m.assessed_at ASC NULLS FIRST,s.id LIMIT 100`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	var failures []error
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		candidateCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		n, err := refreshSupplierSLACandidate(candidateCtx, db, id)
+		cancel()
+		if err != nil {
+			failures = append(failures, err)
+			if retryErr := RecordJobCandidateRetry(ctx, db, "supplier-sla", id); retryErr != nil {
+				failures = append(failures, retryErr)
+			}
+			continue
+		}
+		total += n
+	}
+	return total, errors.Join(failures...)
+}
+func refreshSupplierSLACandidate(ctx context.Context, db *sql.DB, supplierID string) (int64, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -151,34 +224,62 @@ func RefreshSupplierSLA(ctx context.Context, db *sql.DB) (int64, error) {
  SELECT ss.supplier_id,COUNT(*)::int AS n,
  COUNT(*) FILTER(WHERE ss.shipped_at IS NOT NULL AND ss.shipped_at<=ss.created_at+make_interval(days=>GREATEST(1,LEAST(30,COALESCE((SELECT MAX(p.preparation_days) FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ss.order_id AND p.supplier_id=ss.supplier_id),1)))) AND ss.status<>'failed')::int AS good
  FROM supplier_shipments ss JOIN orders o ON o.id=ss.order_id
- WHERE ss.created_at>=NOW()-INTERVAL '90 days' AND o.payment_status='paid' AND o.status<>'cancelled'
+ WHERE ss.supplier_id=$1 AND ss.created_at>=NOW()-INTERVAL '90 days' AND o.payment_status='paid' AND o.status<>'cancelled'
  AND (ss.shipped_at IS NOT NULL OR ss.status='failed' OR ss.created_at+make_interval(days=>GREATEST(1,LEAST(30,COALESCE((SELECT MAX(p.preparation_days) FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ss.order_id AND p.supplier_id=ss.supplier_id),1))))<=NOW()) GROUP BY ss.supplier_id)
  INSERT INTO supplier_sla_metrics(supplier_id,samples,on_time,score,eligible)
  SELECT s.id,COALESCE(n,0),COALESCE(good,0),CASE WHEN n>0 THEN good*100.0/n ELSE 0 END,
  COALESCE(n>0 AND good*100.0/n>98 AND s.approval_status='approved' AND u.is_active,FALSE)
- FROM suppliers s LEFT JOIN samples ON samples.supplier_id=s.id LEFT JOIN users u ON u.id=s.owner_user_id
- ON CONFLICT(supplier_id) DO UPDATE SET samples=EXCLUDED.samples,on_time=EXCLUDED.on_time,score=EXCLUDED.score,eligible=EXCLUDED.eligible,assessed_at=NOW()`)
+ FROM suppliers s LEFT JOIN samples ON samples.supplier_id=s.id LEFT JOIN users u ON u.id=s.owner_user_id WHERE s.id=$1
+ ON CONFLICT(supplier_id) DO UPDATE SET samples=EXCLUDED.samples,on_time=EXCLUDED.on_time,score=EXCLUDED.score,eligible=EXCLUDED.eligible,assessed_at=NOW()`, supplierID)
 	if err != nil {
 		return 0, err
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipping_methods(owner_user_id,method,status,requested_at,decided_at,decided_by)
- SELECT s.owner_user_id::text,'direct','enabled',NOW(),NOW(),'system:sla' FROM supplier_sla_metrics m JOIN suppliers s ON s.id=m.supplier_id WHERE m.eligible AND s.owner_user_id IS NOT NULL
- ON CONFLICT(owner_user_id,method) DO UPDATE SET status='enabled',decided_at=NOW(),decided_by='system:sla' WHERE supplier_shipping_methods.decided_by='system:sla' OR (supplier_shipping_methods.status='requested' AND COALESCE(supplier_shipping_methods.decided_by,'')='')`)
+ SELECT s.owner_user_id::text,'direct','enabled',NOW(),NOW(),'system:sla' FROM supplier_sla_metrics m JOIN suppliers s ON s.id=m.supplier_id WHERE m.supplier_id=$1 AND m.eligible AND s.owner_user_id IS NOT NULL
+ ON CONFLICT(owner_user_id,method) DO UPDATE SET status='enabled',decided_at=NOW(),decided_by='system:sla' WHERE supplier_shipping_methods.decided_by='system:sla' OR (supplier_shipping_methods.status='requested' AND COALESCE(supplier_shipping_methods.decided_by,'')='')`, supplierID)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	_, err = tx.ExecContext(ctx, `UPDATE supplier_shipping_methods sm SET status='disabled',decided_at=NOW() FROM suppliers s JOIN supplier_sla_metrics m ON m.supplier_id=s.id WHERE sm.owner_user_id=s.owner_user_id::text AND sm.method='direct' AND sm.decided_by='system:sla' AND NOT m.eligible`)
+	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, err
 	}
-	return n, tx.Commit()
+	_, err = tx.ExecContext(ctx, `UPDATE supplier_shipping_methods sm SET status='disabled',decided_at=NOW() FROM suppliers s JOIN supplier_sla_metrics m ON m.supplier_id=s.id WHERE s.id=$1 AND sm.owner_user_id=s.owner_user_id::text AND sm.method='direct' AND sm.decided_by='system:sla' AND NOT m.eligible`, supplierID)
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
-func RecordOperationsJob(ctx context.Context, db *sql.DB, job string, started time.Time, n int64, runErr error) {
+func RecordOperationsJob(ctx context.Context, db *sql.DB, job string, started time.Time, n int64, runErr error) error {
 	message := ""
 	if runErr != nil {
-		message = runErr.Error()
+		message = "job_failed"
 	}
-	_, _ = db.ExecContext(ctx, `INSERT INTO operations_job_runs(job,affected,error,started_at,finished_at) VALUES($1,$2,$3,$4,NOW())`, job, n, message, started)
+	_, err := db.ExecContext(ctx, `INSERT INTO operations_job_runs(job,affected,error,started_at,finished_at) VALUES($1,$2,$3,$4,NOW())`, job, n, message, started)
+	return err
+}
+
+// Each cleanup table has a finite oldest-first pass and never waits on a row
+// held by a live request. No retention beyond the existing expiry predicates.
+func CleanupExpiredAds(ctx context.Context, db *sql.DB) (int64, error) {
+	var total int64
+	for _, q := range []string{
+		`WITH expired AS (SELECT ctid FROM ad_request_limits WHERE bucket<NOW()-INTERVAL '10 minutes' ORDER BY bucket LIMIT 2000 FOR UPDATE SKIP LOCKED) DELETE FROM ad_request_limits a USING expired e WHERE a.ctid=e.ctid`,
+		`WITH expired AS (SELECT ctid FROM ad_fraud_keys WHERE expires_at<NOW()-INTERVAL '1 hour' ORDER BY expires_at LIMIT 2000 FOR UPDATE SKIP LOCKED) DELETE FROM ad_fraud_keys a USING expired e WHERE a.ctid=e.ctid`,
+	} {
+		res, err := db.ExecContext(ctx, q)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }

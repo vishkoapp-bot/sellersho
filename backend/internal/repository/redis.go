@@ -73,6 +73,12 @@ func (r *RedisClient) SetJSON(ctx context.Context, key string, val interface{}, 
 // The sorted set is also the expiry index, so expired holds are removed before
 // every new reservation instead of leaving a stale aggregate counter behind.
 func (r *RedisClient) HoldInventory(ctx context.Context, orderID, productID string, qty, availableStock int, ttl time.Duration) error {
+	return r.HoldInventoryUntil(ctx, orderID, productID, qty, availableStock, time.Now().Add(ttl))
+}
+
+// HoldInventoryUntil uses an absolute deadline, so SQL/network delay cannot renew
+// an order's authoritative payment window. Existing Redis keys/scores remain compatible.
+func (r *RedisClient) HoldInventoryUntil(ctx context.Context, orderID, productID string, qty, availableStock int, deadline time.Time) error {
 	if qty <= 0 {
 		return nil
 	}
@@ -80,8 +86,11 @@ func (r *RedisClient) HoldInventory(ctx context.Context, orderID, productID stri
 	holdsKey := fmt.Sprintf("inventory:holds:%s", productID)
 	holdKeyPrefix := fmt.Sprintf("inventory:hold_qty:%s:", productID)
 	member := orderID
-	now := time.Now().Unix()
-	expiresAt := now + int64(ttl/time.Second)
+	now := float64(time.Now().UnixMilli()) / 1000
+	expiresAt := float64(deadline.UnixMilli()) / 1000
+	if expiresAt <= now {
+		return ErrPaymentExpired
+	}
 
 	const script = `
 local holds = KEYS[1]
@@ -113,7 +122,8 @@ if heldQty + qty > stock then
   return 0
 end
 
-redis.call('SET', holdKeyPrefix .. member, qty, 'EX', math.max(1, expires - now))
+if expires <= now then return -1 end
+redis.call('SET', holdKeyPrefix .. member, qty, 'PXAT', math.floor(expires * 1000))
 redis.call('ZADD', holds, expires, member)
 return 1
 `
@@ -168,7 +178,7 @@ if heldQty >= tonumber(ARGV[3]) then
 end
 return 0
 `
-	result, err := r.Client.Eval(ctx, script, []string{holdsKey}, orderID, time.Now().Unix(), qty, holdKeyPrefix).Int()
+	result, err := r.Client.Eval(ctx, script, []string{holdsKey}, orderID, float64(time.Now().UnixMilli())/1000, qty, holdKeyPrefix).Int()
 	if err != nil {
 		return false, err
 	}

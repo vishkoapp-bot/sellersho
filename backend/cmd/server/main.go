@@ -2322,9 +2322,9 @@ func main() {
 		if strings.HasSuffix(suffix, "/run") {
 			id := strings.TrimSuffix(suffix, "/run")
 			if id != "" && !strings.Contains(id, "/") {
-				var run func()
+				var run func(context.Context) error
 				if backgroundWorker != nil {
-					run = backgroundWorker.ReleaseExpiredDeliveryLocks
+					run = backgroundWorker.RunDeliveryJob
 				}
 				handleT01AdminJobRun(w, r, db.DB, id, run)
 				return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -1141,99 +1142,123 @@ func returnWindowDaysFromTx(ctx context.Context, tx *sql.Tx) int {
 // rule is unverified. TODO(U26): no staged threshold beyond the
 // 20-day auto-confirm and the window close is implemented here.
 func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, store_id, dropshipper_profit
-		FROM orders
-		WHERE status = 'delivered_confirmed'
-		  AND profit_released = FALSE
-		  AND return_window_ends_at IS NOT NULL
-		  AND return_window_ends_at <= NOW()
-		ORDER BY created_at ASC
-	`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-release' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY return_window_ends_at,id LIMIT 100`)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	type releaseCandidate struct {
-		id, storeID string
-		profit      int64
-	}
-	var candidates []releaseCandidate
+	var ids []string
 	for rows.Next() {
-		var c releaseCandidate
-		if err := rows.Scan(&c.id, &c.storeID, &c.profit); err != nil {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			return 0, err
 		}
-		candidates = append(candidates, c)
+		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
 		return 0, err
 	}
-	rows.Close()
 	var released int64
-	for _, c := range candidates {
-		tx, err := r.db.BeginTx(ctx, nil)
+	var failures []error
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		candidateCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		ok, err := r.releaseClosedReturnWindow(candidateCtx, id)
+		cancel()
+		if ok {
+			released++
+		}
 		if err != nil {
-			return released, err
+			failures = append(failures, err)
+			if retryErr := RecordJobCandidateRetry(ctx, r.db, "delivery-release", id); retryErr != nil {
+				failures = append(failures, retryErr)
+			}
 		}
-		if err := lockOrderFinanceTx(ctx, tx, c.id); err != nil {
-			tx.Rollback()
-			return released, err
-		}
-		res, err := tx.ExecContext(ctx, `
+	}
+	return released, errors.Join(failures...)
+}
+func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id string) (bool, error) {
+	c := struct {
+		id, storeID string
+		profit      int64
+	}{id: id}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err == nil {
+		defer tx.Rollback()
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, c.id); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT store_id,dropshipper_profit FROM orders WHERE id=$1 AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() FOR UPDATE`, c.id).Scan(&c.storeID, &c.profit)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `
 			UPDATE orders
 			SET profit_released = TRUE,
 			    profit_released_at = NOW(),
 			    referral_commission_released = TRUE,
 			    updated_at = NOW()
-			WHERE id = $1 AND profit_released = FALSE
+			WHERE id = $1 AND profit_released = FALSE AND status='delivered_confirmed' AND return_window_ends_at<=NOW()
 		`, c.id)
-		if err != nil {
-			tx.Rollback()
-			return released, err
-		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			// Won by a concurrent releaser; its ledger (if any) is
-			// that releaser's responsibility, never written twice.
-			tx.Rollback()
-			continue
-		}
-		if c.profit > 0 {
-			now := time.Now()
-			creditID := "REL-" + uuid.NewString()
-			debitID := "REL-" + uuid.NewString()
-			if _, err := tx.ExecContext(ctx, `
+	if err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Won by a concurrent releaser; its ledger (if any) is
+		// that releaser's responsibility, never written twice.
+		tx.Rollback()
+		return false, nil
+	}
+	if c.profit > 0 {
+		now := time.Now()
+		creditID := "REL-" + uuid.NewString()
+		debitID := "REL-" + uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, $3, 'seller', 'credit', $4, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $5)
 			`, creditID, now, c.storeID, c.profit, c.id); err != nil {
-				tx.Rollback()
-				return released, err
-			}
-			if _, err := tx.ExecContext(ctx, `
+			tx.Rollback()
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, 'platform', 'platform', 'debit', $3, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $4)
 			`, debitID, now, c.profit, c.id); err != nil {
-				tx.Rollback()
-				return released, err
-			}
+			tx.Rollback()
+			return false, err
 		}
-		// Idempotent backstop for the locked referral bonus of the
-		// referred store (source released it at confirmation; the
-		// status filter makes a second release a no-op).
-		_, _ = tx.ExecContext(ctx, `
+	}
+	// Idempotent backstop for the locked referral bonus of the
+	// referred store (source released it at confirmation; the
+	// status filter makes a second release a no-op).
+	_, err = tx.ExecContext(ctx, `
 			UPDATE referral_bonuses
 			SET status = 'released', released_at = NOW()
 			WHERE referred_store_id = $1 AND status = 'locked'
 		`, c.storeID)
-		if err := tx.Commit(); err != nil {
-			return released, err
-		}
-		released++
-		// P1-3 (best-effort): profit released - store owner + suppliers.
-		notifyProfitReleased(ctx, r.db, c.id, c.profit)
+	if err != nil {
+		return false, err
 	}
-	return released, nil
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	notifyProfitReleased(ctx, r.db, c.id, c.profit)
+	return true, nil
 }
 
 var ErrReturnWindowClosed = fmt.Errorf("return window has closed")

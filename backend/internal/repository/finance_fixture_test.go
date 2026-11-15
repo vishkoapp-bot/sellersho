@@ -6,6 +6,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"net/url"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +31,24 @@ func openPrivateFinanceFixture(t *testing.T, dsn string) *sql.DB {
 	u.RawQuery = q.Encode()
 	db, err := testdb.Open(t, u.String())
 	if err != nil {
+		t.Fatal(err)
+	}
+	// This schema deliberately has no public fallback. Install the actual new
+	// retry table used by bounded release; never relax production missing-schema checks.
+	migration, err := os.ReadFile("../../migrations/202611150007_background_jobs.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ddl := string(migration)
+	start := strings.Index(ddl, "CREATE TABLE background_job_candidate_retry (")
+	if start < 0 {
+		t.Fatal("missing candidate retry migration")
+	}
+	end := strings.Index(ddl[start:], ";")
+	if end < 0 {
+		t.Fatal("incomplete candidate retry migration")
+	}
+	if _, err = db.Exec(ddl[start : start+end+1]); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

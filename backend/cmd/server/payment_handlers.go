@@ -57,10 +57,6 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 		writeInternalError(w, err)
 		return
 	}
-	if orderRecord.PaymentStatus != "paid" && (orderRecord.Status == "cancelled" || (expiresAt != nil && !time.Now().Before(*expiresAt))) {
-		writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
-		return
-	}
 	existing, existingErr := orderRepo.GetPaymentTransactionByOrderID(ctx, orderID)
 	if existingErr != nil {
 		http.Error(w, existingErr.Error(), http.StatusInternalServerError)
@@ -70,13 +66,25 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 		writeTokenResponse(w, existing.GatewayToken, existing.OrderNumber, existing.Amount, "توکن پرداخت موجود بازگردانده شد")
 		return
 	}
+	if orderRecord.PaymentStatus != "paid" && (orderRecord.Status == "cancelled" || (expiresAt != nil && !time.Now().Before(*expiresAt))) {
+		writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
+		return
+	}
+	if expiresAt == nil {
+		writePaymentError(w, http.StatusConflict, "payment_deadline_review_required", "مهلت پرداخت ثبت نشده است؛ سفارش نیاز به بررسی دارد")
+		return
+	}
 	if catalogRepo == nil || redisClient == nil {
 		writePaymentError(w, http.StatusServiceUnavailable, "inventory_lock_unavailable", "رزرو موجودی برای شروع پرداخت در دسترس نیست")
 		return
 	}
 
-	reservedProducts, err := reserveOrderInventory(ctx, orderRecord, catalogRepo, redisClient)
+	reservedProducts, err := reserveOrderInventory(ctx, orderRecord, catalogRepo, redisClient, *expiresAt)
 	if err != nil {
+		if errors.Is(err, repository.ErrPaymentExpired) {
+			writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
+			return
+		}
 		if errors.Is(err, repository.ErrInsufficientInventory) {
 			writePaymentError(w, http.StatusConflict, "insufficient_stock", err.Error())
 			return
@@ -319,7 +327,7 @@ func handleShaparakCallback(
 	})
 }
 
-func reserveOrderInventory(ctx context.Context, order *domain.Order, catalogRepo *repository.CatalogRepository, redisClient *repository.RedisClient) ([]string, error) {
+func reserveOrderInventory(ctx context.Context, order *domain.Order, catalogRepo *repository.CatalogRepository, redisClient *repository.RedisClient, deadline time.Time) ([]string, error) {
 	quantities := make(map[string]int)
 	for _, item := range order.Items {
 		quantities[item.ProductID] += item.Quantity
@@ -332,7 +340,15 @@ func reserveOrderInventory(ctx context.Context, order *domain.Order, catalogRepo
 			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
 			return nil, fmt.Errorf("%w: محصول %s دیگر موجود نیست", repository.ErrInsufficientInventory, productID)
 		}
-		if err := redisClient.HoldInventory(ctx, order.ID, productID, qty, product.Stock, 15*time.Minute); err != nil {
+		if !time.Now().Before(deadline) {
+			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
+			return nil, repository.ErrPaymentExpired
+		}
+		holdDeadline := deadline
+		if maximum := time.Now().Add(15 * time.Minute); maximum.Before(holdDeadline) {
+			holdDeadline = maximum
+		}
+		if err := redisClient.HoldInventoryUntil(ctx, order.ID, productID, qty, product.Stock, holdDeadline); err != nil {
 			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
 			if errors.Is(err, repository.ErrInsufficientInventory) {
 				return nil, fmt.Errorf("%w: موجودی محصول %s برای پرداخت کافی نیست", repository.ErrInsufficientInventory, productID)

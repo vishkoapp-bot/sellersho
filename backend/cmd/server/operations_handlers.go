@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
 	"net/http"
 	"strings"
@@ -63,6 +64,12 @@ func handleOperationsOverview(w http.ResponseWriter, r *http.Request, db *sql.DB
 		}
 		out[key] = list
 	}
+	health, err := repository.BackgroundJobHealth(ctx, db)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	out["jobHealth"] = health
 	t01WriteJSON(w, 200, out)
 }
 func handleResolveOverdueQC(w http.ResponseWriter, r *http.Request, db *sql.DB) {

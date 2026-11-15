@@ -29,7 +29,7 @@ export interface CreateOrderPayload {
   // uses the SAVED address even if form fields were edited.
   addressId?: string;
   saveAddress?: boolean;
-  // Live parity (index-MERGED.js placeOrder): a fresh uuid per submit,
+  // One durable opaque UUID per logical checkout attempt,
   // stored by the backend (order_handlers.go IdempotencyKey) so a
   // replayed request returns the original order. Deliberately NOT
   // derived from the cart: a deterministic key would permanently block
@@ -90,6 +90,7 @@ export interface OrderRefundSummary {
 export interface OrderCancellationResponse {success:boolean;orderId:string;status:'cancelled';refund:OrderRefundSummary;}
 
 export interface BackendOrderDto {
+  checkoutReplayed?: boolean;
  refund?: OrderRefundSummary;
   id: string;
   customerUserId?: string;
@@ -192,7 +193,10 @@ export interface CustomerReturnDto {
   items?: { id: string; orderItemId: string; qty: number; qcStatus?: string }[];
 }
 
+export interface CheckoutRecovery { attemptId: string; state: 'open'|'completed'|'abandoned'; order?: BackendOrderDto; }
 export const orderApi = {
+  getCheckoutAttempt: (id: string): Promise<CheckoutRecovery> => apiRequest(`/checkout-attempts/${encodeURIComponent(id)}`, {auth:true}),
+  abandonCheckoutAttempt: (id: string): Promise<CheckoutRecovery> => apiRequest(`/checkout-attempts/${encodeURIComponent(id)}`, {auth:true,method:'POST',body:JSON.stringify({action:'abandon'})}),
   createOrder: async (payload: CreateOrderPayload): Promise<BackendOrderDto> => {
     return apiRequest<BackendOrderDto>('/orders', {
       method: 'POST',

@@ -681,6 +681,8 @@ func main() {
 	}
 	mux.HandleFunc("/api/v1/orders/confirm-delivery/", RequireRoles(jwtService, "customer")(confirmDeliveryHandler))
 
+	mux.HandleFunc("/api/v1/checkout-attempts/", RequireRoles(jwtService, "customer", "seller", "admin")(func(w http.ResponseWriter, r *http.Request) { handleCheckoutAttempt(w, r, orderRepo) }))
+
 	ordersHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			handleCreateOrder(w, r, r.Context(), orderRepo, catalogRepo, storeRepo, shipmentRepo, pricingRepo, supplierRepo, db.DB)

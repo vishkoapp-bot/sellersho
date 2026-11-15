@@ -5,6 +5,7 @@ import { stageAddressSelection, takeStagedAddressSelection } from '../services/a
 import { paymentApi } from '../services/paymentApi';
 import { isMockMode, tokenStore } from '../services/apiClient';
 import { useAuth } from './AuthContext';
+import { CheckoutAttempt, claimCheckoutAttempt, clearCheckoutAttempt, completeCheckoutAttempt, normalizeCheckoutPayload, readCheckoutAttempt } from '../services/checkoutAttempt';
 
 export interface CreateOrderParams {
   customerInfo: Order['customerInfo'];
@@ -30,6 +31,9 @@ export interface OrderContextType {
   isTrackingModalOpen: boolean;
   setIsTrackingModalOpen: (open: boolean) => void;
   placeOrder: (params: CreateOrderParams) => Promise<Order>;
+  checkoutAttempt: CheckoutAttempt | null;
+  recoverCheckout: () => Promise<Order | null>;
+  startNewCheckout: () => Promise<void>;
   fetchMyOrders: () => Promise<Order[]>; // returns the fresh list so callers can check post-refetch state
   trackOrder: (trackingCode: string) => Promise<Order | null>;
   confirmOrderDelivery: (orderId: string) => Promise<void>;
@@ -44,6 +48,11 @@ export interface OrderContextType {
 }
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
+
+const completeCheckoutOrder = (order: BackendOrderDto | undefined, requireLines = true): order is BackendOrderDto =>
+  !!order && typeof order.id === 'string' && order.id.length > 0 && typeof order.orderNumber === 'string' && order.orderNumber.length > 0 &&
+  Array.isArray(order.items) && (!requireLines || order.items.length > 0) && order.items.every(item =>
+    typeof item.id === 'string' && !!item.id && typeof item.productId === 'string' && !!item.productId && Number.isSafeInteger(item.quantity) && item.quantity > 0);
 
 const mapBackendOrder = (order: BackendOrderDto): Order => ({
   refund: order.refund,
@@ -152,12 +161,6 @@ const mapOrderCreateError = (message: string): string => {
   return message;
 };
 
-// Live parity (index-MERGED.js hS): a fresh uuid per submit.
-const newIdempotencyKey = (): string =>
-  typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { currentUser, authToken, isSessionReady } = useAuth();
   // Private order, tracking, checkout/address and panel state below this boundary
@@ -185,6 +188,16 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   // Demo data has no immutable customer IDs. It is never an ownership source.
   const [orders, setOrders] = useState<Order[]>([]);
   const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
+  const [checkoutAttempt,setCheckoutAttempt] = useState<CheckoutAttempt|null>(null);
+  const checkoutScope = JSON.stringify([currentUser?.id, currentUser?.storeId ?? null]);
+  useEffect(() => {
+    if (isMockMode() || !currentUser?.id || !authToken || !isSessionReady) return;
+    const isCurrent = captureSession();
+    const load = () => { readCheckoutAttempt(checkoutScope,isCurrent).then(a => {if(isCurrent()) setCheckoutAttempt(a);}).catch(() => {}); };
+    load(); window.addEventListener('focus',load);
+    return () => window.removeEventListener('focus',load);
+  },[checkoutScope,authToken,isSessionReady]);
+
   const [isCreatingOrder, setIsCreatingOrder] = useState<boolean>(false);
   const [trackingOrder, setTrackingOrder] = useState<Order | null>(null);
   const [isTrackingModalOpen, setIsTrackingModalOpen] = useState(false);
@@ -230,6 +243,39 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       console.warn('Failed to fetch orders:', err.message);
       return ordersRef.current;
     }
+  };
+
+  const rememberRecovered = async (a: Awaited<ReturnType<typeof orderApi.getCheckoutAttempt>>, id: string, isCurrent: () => boolean): Promise<Order|null> => {
+    if (!isCurrent()) throw new Error('Session changed during order request');
+    if (a.attemptId!==id || !['open','completed','abandoned'].includes(a.state)) throw new Error('نتیجه خرید قابل تأیید نیست؛ دوباره بازیابی کنید.');
+    if (a.state!=='completed') return null;
+    if (!completeCheckoutOrder(a.order)) throw new Error('نتیجه خرید کامل دریافت نشد؛ دوباره بازیابی کنید.');
+    const active = await completeCheckoutAttempt(checkoutScope,id,a.order.id,isCurrent);
+    if (!isCurrent()) throw new Error('Session changed during order request');
+    setCheckoutAttempt(active);
+    const order=mapBackendOrder(a.order);
+    setOrders(prev=>[order,...prev.filter(o=>o.id!==order.id)]);setCurrentOrder(order);setTrackingOrder(order);return order;
+  };
+  const recoverCheckout = async (): Promise<Order|null> => {
+    const isCurrent=captureSession();const finish=beginCreation();
+    try {
+      const attempt=await readCheckoutAttempt(checkoutScope,isCurrent);if(!attempt)return null;
+      const result=await orderApi.getCheckoutAttempt(attempt.id);
+      return await rememberRecovered(result,attempt.id,isCurrent);
+    } finally {finish();}
+  };
+  const startNewCheckout = async (): Promise<void> => {
+    const isCurrent=captureSession();const finish=beginCreation();
+    try {
+      const attempt=await readCheckoutAttempt(checkoutScope,isCurrent);if(!attempt)return;
+      const result=await orderApi.abandonCheckoutAttempt(attempt.id);
+      await rememberRecovered(result,attempt.id,isCurrent);
+      if(result.state!=='completed' && result.state!=='abandoned') throw new Error('نتیجه خرید قبلی هنوز مشخص نیست؛ دوباره تلاش کنید.');
+      await clearCheckoutAttempt(checkoutScope,attempt.id,isCurrent);
+      const active=await readCheckoutAttempt(checkoutScope,isCurrent);
+      if(!isCurrent())throw new Error('Session changed during order request');
+      setCheckoutAttempt(active);
+    } finally {finish();}
   };
 
   const placeOrder = async (params: CreateOrderParams): Promise<Order> => {
@@ -283,7 +329,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         const effectiveSaveAddress = addressId ? saveAddress : (saveAddress ?? stagedAddress?.saveAddress);
         let backendOrder: BackendOrderDto;
         try {
-          backendOrder = await orderApi.createOrder({
+          const payload = normalizeCheckoutPayload({
             storeId: orderSlug,
             customerInfo: {
               fullName: customerInfo.fullName,
@@ -299,8 +345,14 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
             shippingQuoteId,
             addressId: effectiveAddressId,
             saveAddress: effectiveSaveAddress,
-            idempotencyKey: newIdempotencyKey(),
           });
+          const attempt=await claimCheckoutAttempt(checkoutScope,payload,isCurrent);
+          requireCurrent();setCheckoutAttempt(attempt);
+          backendOrder=await orderApi.createOrder({...payload,idempotencyKey:attempt.id});
+          requireCurrent();
+          if(!completeCheckoutOrder(backendOrder,cartItems.length>0)) throw new Error('پاسخ ثبت سفارش کامل دریافت نشد؛ نتیجه خرید را بازیابی کنید.');
+          const active=await completeCheckoutAttempt(checkoutScope,attempt.id,backendOrder.id,isCurrent);
+          requireCurrent();setCheckoutAttempt(active);
         } catch (err: any) {
           // Preserve the staged selection for a retry: the form only
           // re-stages on a field change, so a bare retry would
@@ -319,6 +371,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         // Live's rule is the same: a registered order is "awaiting
         // payment", never presented as paid and never hidden.
         try {
+          if (!backendOrder.checkoutReplayed) {
           const paymentToken = await paymentApi.getShaparakToken({
             orderId: backendOrder.id,
             orderNumber: backendOrder.orderNumber,
@@ -332,6 +385,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
               token: paymentToken.token,
               orderNumber: backendOrder.orderNumber,
             });
+          }
           }
         } catch (tokenErr: any) {
           console.warn('Payment token step failed; order remains pending payment:', tokenErr?.message || tokenErr);
@@ -349,7 +403,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
             postalCode: backendOrder.customerPostalCode,
           },
           orderNumber: backendOrder.orderNumber,
-          items: [...cartItems],
+          items: backendOrder.checkoutReplayed ? mapBackendOrder(backendOrder).items : [...cartItems],
           totalAmount: backendOrder.totalAmount,
           discountAmount: backendOrder.discountAmount,
           payableAmount: backendOrder.payableAmount,
@@ -370,7 +424,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           profitReleased: backendOrder.profitReleased,
         };
 
-        setOrders((prev) => [order, ...prev]);
+        setOrders((prev) => [order, ...prev.filter(o=>o.id!==order.id)]);
         setCurrentOrder(order);
         setTrackingOrder(order);
         return order;
@@ -593,6 +647,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     isTrackingModalOpen,
     setIsTrackingModalOpen,
     placeOrder,
+    checkoutAttempt, recoverCheckout, startNewCheckout,
     fetchMyOrders,
     trackOrder,
     confirmOrderDelivery,

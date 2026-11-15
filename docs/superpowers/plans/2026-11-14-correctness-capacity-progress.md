@@ -29,11 +29,11 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-10 | DONE | 4524ee3 | [Exact receipt adoption](2026-11-15-storage-quantity-time.md) |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
 | CAP-01 | Checkpoint OPEN | ff4ff13 / Harness checkpoint | [Harness and failed evidence](../../../load-tests/README.txt) |
-| FIN-003 | DONE | paid-cancellation stage | [Paid cancellation](2026-11-15-paid-cancellation-refund.md) |
+| FIN-003 | DONE | 79ee940 | [Paid cancellation](2026-11-15-paid-cancellation-refund.md) |
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
-| CHECKOUT-01 | TODO | — | — |
+| CHECKOUT-01 | DONE | checkout-attempt stage | [Durable checkout](2026-11-15-checkout-attempt.md) |
 | OPS-02 | TODO | — | — |
 | FIN-002 | TODO | — | — |
 | JOB-01 | TODO | — | — |
@@ -647,3 +647,51 @@ above. FIN-010 original-payment execution, uncertain historical reconciliation a
 production-equivalent1000-user/100-RPS certification remain OPEN. Wallet checkout
 remains disabled. No live PSP request or historical automatic wallet credit was
 used. Deployment follows the standing committed-source deploy.ps1 workflow.
+
+
+## CHECKOUT-01 — DONE (local acceptance; production release pending)
+
+One immutable checkout attempt now persists through timeout, response loss,
+reload and concurrent tabs. IndexedDB coordinates opaque account-scoped IDs
+and request hashes without contact/address data. An explicit new purchase
+rotates the identity; materially changed payloads require resolution or explicit
+abandonment. The server stores a normalized immutable fingerprint and commits
+order/items/allocations plus attempt completion atomically. Abandonment uses
+the same lock and inserts a tombstone even before the original request arrives.
+It never cancels an already-created order. Owned recovery returns that order
+without starting payment or replaying address/discount-use side effects.
+
+Migration005 adds immutable new-checkout product-title snapshots. Historical
+NULL titles retain the explicit legacy catalog fallback; no historical title,
+stock, wallet or money fact is invented. Item loading failures and incomplete
+browser recovery representations remain retryable instead of acknowledged.
+Migrations001-004 are unchanged.
+
+Independent whole-change reviewer review_checkout_release found two Important
+recovery defects (mutable catalog description and swallowed item-read errors).
+Both were reproduced RED and fixed GREEN; the browser incomplete-response
+case was also reproduced RED/GREEN. The final candidate source tree is
+845571502a0134ae15eac14e912b6425ed34ebef. Full isolated Go: **700 top-level
+entries,0 failures** (one intentional subprocess helper skip, exercised by its
+passing parent). Both disposable containers were verified removed. Frontend:
+**300/300**, including10 mounted checkout regressions. TypeScript, production
+frontend build, Go vet, Linux server and migrator builds passed. Windows archive
+text checkout converted LF/CRLF; source-tree identity and normalized text equality
+are retained in the ignored release proof. No executable change follows this gate.
+
+Logs: logs/checkout-8455-frozen-{go,frontend,build,vet}.log,
+logs/checkout-8455-linux-build.log. Proof: releases/checkout-source-proof.json.
+Production preflight from this device times out on SSH/HTTPS; this local gate
+does not claim a new production release. Direct GitHub access was verified.
+FIN003 remains deployed at79ee940 with its prior verified backup/health receipt.
+Production-equivalent1000-user/100-RPS certification remains OPEN.
+
+Scope decisions: existing cross-tab cart editing is not certified by attempt
+coordination; recovering an order does not discard a changed cart. Post-commit
+best-effort ancillary delivery remains JOB-01 work (replays skip duplicates).
+Explicit browser storage removal/eviction loses the opaque identity; authenticated
+order history remains available. Provider/deployment/hardware acceptance requires
+its separate gates. Deferred Minor: compressed browser-test formatting.
+
+Current counts: **22 DONE,5 Checkpoint OPEN,27 TODO** of54. DONE means the
+local gate above; deployment, historical reconciliation and capacity are distinct.

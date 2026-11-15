@@ -173,6 +173,7 @@ func handleCreateOrder(
 		o.CustomerPostalCode = maskedCustomer.PostalCode
 		resp := map[string]interface{}{
 			"id":                         o.ID,
+			"checkoutReplayed":           status == http.StatusOK,
 			"orderId":                    o.ID,
 			"order_id":                   o.ID,
 			"orderNumber":                o.OrderNumber,
@@ -210,6 +211,18 @@ func handleCreateOrder(
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(resp)
 	}
+	fingerprint := normalizeCheckoutRequest(&req)
+	if req.IdempotencyKey != "" {
+		attempt, err := orderRepo.BeginCheckoutAttempt(ctx, claims.UserID, req.IdempotencyKey, fingerprint)
+		if err != nil {
+			writeCheckoutError(w, err)
+			return
+		}
+		if attempt.Order != nil {
+			respondOrder(*attempt.Order, http.StatusOK)
+			return
+		}
+	}
 	// Authenticated identity is authoritative; delivery recipient details remain request data.
 	req.CustomerInfo.Phone = claims.Mobile
 	// FIX 14: addressId loads a saved address (user_addresses) into the
@@ -245,21 +258,6 @@ func handleCreateOrder(
 	if req.UseWallet {
 		http.Error(w, `{"error":"Wallet payment is not available"}`, http.StatusBadRequest)
 		return
-	}
-	// FIX 14: idempotency replay -- the same customer + key returns the
-	// original order instead of creating a duplicate. (No unique DB
-	// constraint is added here; concurrent same-key races are flagged
-	// in the Fix 14 report, same class as the settlement race.)
-	if strings.TrimSpace(req.IdempotencyKey) != "" {
-		var existingID string
-		if err := db.QueryRowContext(ctx,
-			`SELECT id FROM orders WHERE customer_user_id = $1 AND idempotency_key = $2`,
-			claims.UserID, req.IdempotencyKey).Scan(&existingID); err == nil && existingID != "" {
-			if existing, err := orderRepo.GetOrderByID(ctx, existingID); err == nil && existing != nil {
-				respondOrder(*existing, http.StatusOK)
-				return
-			}
-		}
 	}
 
 	if len(req.Items) == 0 || req.CustomerInfo.FullName == "" || req.CustomerInfo.Phone == "" {
@@ -969,10 +967,26 @@ func handleCreateOrder(
 		}
 	}
 
-	if err := orderRepo.CreateOrderWithShipments(ctx, order, shipments); err != nil {
+	if req.IdempotencyKey != "" {
+		id, created, err := orderRepo.CreateCheckoutOrderWithShipments(ctx, order, shipments, fingerprint)
+		if err != nil {
+			writeCheckoutError(w, err)
+			return
+		}
+		if !created {
+			existing, err := orderRepo.GetOrderByID(ctx, id)
+			if err != nil || existing == nil {
+				http.Error(w, `{"error":"Checkout recovery unavailable"}`, 503)
+				return
+			}
+			respondOrder(*existing, http.StatusOK)
+			return
+		}
+	} else if err := orderRepo.CreateOrderWithShipments(ctx, order, shipments); err != nil {
 		http.Error(w, `{"error":"Order could not be created"}`, http.StatusInternalServerError)
 		return
 	}
+
 	// FIX 14: saveAddress stores the order address in the address book
 	// (best-effort: an address-book failure must not fail the order).
 	if req.SaveAddress {

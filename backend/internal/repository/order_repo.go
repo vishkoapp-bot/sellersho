@@ -87,6 +87,20 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 	}
 	defer tx.Rollback()
 
+	if err := r.insertOrderWithShipmentsTx(ctx, tx, order, shipments, false); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-14 (best-effort, separate tx): order placed - fulfilling
+	// suppliers + store owner. A notify failure never fails the order.
+	notifyOrderPlaced(ctx, r.db, order.ID)
+	return nil
+}
+
+func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sql.Tx, order domain.Order, shipments []domain.SupplierShipment, snapshotTitles bool) error {
 	queryOrder := `
 		INSERT INTO orders (
 			id, customer_user_id, order_number, store_id, store_name, total_amount, discount_amount,
@@ -113,7 +127,7 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 	if fulfillmentMethod == "" {
 		fulfillmentMethod = "warehouse"
 	}
-	_, err = tx.ExecContext(ctx, queryOrder,
+	_, err := tx.ExecContext(ctx, queryOrder,
 		order.ID, order.CustomerUserID, order.OrderNumber, order.StoreID, order.StoreName,
 		order.TotalAmount, order.DiscountAmount, order.PayableAmount, order.PaymentMethod,
 		order.PaymentStatus, order.CustomerFullName, order.CustomerPhone, order.CustomerProvince, order.CustomerCity,
@@ -156,6 +170,11 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 		_, err := tx.ExecContext(ctx, insertItem, itemArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to insert order item: %w", err)
+		}
+		if snapshotTitles {
+			if _, err := tx.ExecContext(ctx, `UPDATE order_items SET product_title_snapshot=$2 WHERE id=$1`, itemID, item.ProductTitle); err != nil {
+				return fmt.Errorf("snapshot checkout line: %w", err)
+			}
 		}
 		// Gap 13: persist the line's resolved origin in the SAME
 		// transaction (migrations 202610240001 + 202610280001).
@@ -221,12 +240,6 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// P0-14 (best-effort, separate tx): order placed - fulfilling
-	// suppliers + store owner. A notify failure never fails the order.
-	notifyOrderPlaced(ctx, r.db, order.ID)
 	return nil
 }
 
@@ -571,7 +584,7 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 	}
 
 	itemQuery := `
-		SELECT oi.id, oi.order_id, oi.product_id, p.title, oi.quantity,
+		SELECT oi.id, oi.order_id, oi.product_id, COALESCE(to_jsonb(oi)->>'product_title_snapshot',p.title,''), oi.quantity,
 		       oi.wholesale_cost, oi.platform_fee, oi.seller_margin, oi.final_unit_price, COALESCE(oi.discount_amount, 0),
 		       oi.variant_id, oi.variant_name, oi.variant_spnc, COALESCE(to_jsonb(oi)->>'pricing_policy_version', 'legacy-unversioned')
 		FROM order_items oi
@@ -579,18 +592,19 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 		WHERE oi.order_id = $1
 	`
 	rows, err := r.db.QueryContext(ctx, itemQuery, o.ID)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var it domain.OrderItem
-			if err := rows.Scan(
-				&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity,
-				&it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount,
-				&it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion,
-			); err == nil {
-				o.Items = append(o.Items, it)
-			}
+	if err != nil {
+		return nil, fmt.Errorf("read order items: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it domain.OrderItem
+		if err := rows.Scan(&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity, &it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount, &it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion); err != nil {
+			return nil, fmt.Errorf("scan order item: %w", err)
 		}
+		o.Items = append(o.Items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read order items: %w", err)
 	}
 
 	return &o, nil

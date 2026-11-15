@@ -69,8 +69,8 @@ func bounded(v string, allowed ...string) string {
 }
 func (m *Registry) Observe(component, operation, outcome string, d time.Duration) {
 	component = bounded(component, "redis", "provider", "sql", "worker", "backup")
-	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query")
-	outcome = bounded(outcome, "success", "error", "timeout", "canceled", "unknown")
+	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query")
+	outcome = bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded")
 	key := fmt.Sprintf(`component=%q,operation=%q,outcome=%q`, component, operation, outcome)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -91,7 +91,7 @@ func NewContext(ctx context.Context) context.Context {
 // LogOperation never emits arguments, URLs, errors or business identifiers.
 func LogOperation(ctx context.Context, component, operation, outcome string, d time.Duration) {
 	Default.Observe(component, operation, outcome, d)
-	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown"), d.Milliseconds())
+	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "tapin_request", "ippanel_request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded"), d.Milliseconds())
 }
 
 type response struct {
@@ -176,10 +176,10 @@ func (m *Registry) HTTP(mux *http.ServeMux, next http.Handler) http.Handler {
 				status = 200
 			}
 			outcome := "completed"
-			if r.Context().Err() == context.Canceled {
-				outcome = "canceled"
-			} else if r.Context().Err() == context.DeadlineExceeded {
+			if status == http.StatusGatewayTimeout || r.Context().Err() == context.DeadlineExceeded {
 				outcome = "timeout"
+			} else if r.Context().Err() == context.Canceled {
+				outcome = "canceled"
 			}
 			n := int64(0)
 			if rb != nil {

@@ -874,6 +874,9 @@ func handleCreateOrder(
 		// here; a Tapin failure fails the order with the upstream
 		// message instead of silently repricing by formula.
 		if terr := priceTapinQuoteLegs(ctx, db, &quote, quoteLines, quoteDest); terr != nil {
+			if writeDependencyOverload(w, terr) {
+				return
+			}
 			http.Error(w, tapinQuoteErrorBody(terr), http.StatusBadRequest)
 			return
 		}

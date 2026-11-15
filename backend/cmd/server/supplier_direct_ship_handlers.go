@@ -558,6 +558,7 @@ func handleSupplierSubmitShipping(
 			service = "post"
 		}
 		outcome := submitShippingViaTapin(ctx, supplierID, orderID, service, req.TapinBoxID, claims.UserID, shipmentRepo, orderRepo, tapinRepo)
+		if outcome.Status == http.StatusServiceUnavailable { w.Header().Set("Retry-After", "1") }
 		w.WriteHeader(outcome.Status)
 		json.NewEncoder(w).Encode(outcome.Body)
 		return

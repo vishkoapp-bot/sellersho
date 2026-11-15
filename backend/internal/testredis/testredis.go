@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -36,10 +37,7 @@ func Identity(dsn, token string) (*redis.Options, error) {
 	if err != nil {
 		return nil, errors.New("invalid disposable Redis URL")
 	}
-	opts.DialTimeout = 2 * time.Second
-	opts.ReadTimeout = 2 * time.Second
-	opts.WriteTimeout = 2 * time.Second
-	opts.MaxRetries = -1
+	dependencybudget.ConfigureRedis(opts)
 	return opts, nil
 }
 

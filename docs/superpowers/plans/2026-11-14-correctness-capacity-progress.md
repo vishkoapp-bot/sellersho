@@ -33,8 +33,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
-| CHECKOUT-01 | DONE | checkout-attempt stage | [Durable checkout](2026-11-15-checkout-attempt.md) |
-| OPS-02 | TODO | — | — |
+| CHECKOUT-01 | DONE | 85f655a | [Durable checkout](2026-11-15-checkout-attempt.md) |
+| OPS-02 | DONE | this commit | [Request/provider budgets](../../operations/request-budgets.md) |
 | FIN-002 | TODO | — | — |
 | JOB-01 | TODO | — | — |
 | SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
@@ -695,3 +695,31 @@ its separate gates. Deferred Minor: compressed browser-test formatting.
 
 Current counts: **22 DONE,5 Checkpoint OPEN,27 TODO** of54. DONE means the
 local gate above; deployment, historical reconciliation and capacity are distinct.
+
+
+CHECKOUT-01 production follow-up:85f655a60c64a118dda495565166178540242ae8
+was successfully deployed with deploy.ps1 -BuildOnServer after the operator
+resolved provider suspension. Independent marker/source/schema005 checksum,
+API/Postgres/Redis/frontend, restricted server backup and financial preservation
+checks passed. Backup:/opt/drup/backups/deploy-20261115T123450Z-85f655a6 (0700;
+secret artifacts stayed on server). Earlier network-blocked notices above are
+historical. OPS-02 is now in progress; no capacity certification is implied.
+
+## OPS-02 — request and provider budgets
+
+Local acceptance completed on frozen Git tree `7209a82a2c06d47f8aa9c34e5df1b772ecc1c692`, based on production/origin `85f655a`. The release commit contains the same backend/frontend/scripts and edge blobs plus documentation-only completion updates. This closes the task-specific local gate; production rollout is the next authorized step, and hardware capacity remains OPEN. Status totals are23 DONE,5 Checkpoint OPEN and26 TODO.
+
+Ordinary requests now have8s contexts with aligned finite browser/proxy/socket deadlines; exact POST image uploads use60/65/68/70/75s budgets. Synchronous handlers propagate cancellation to SQL/Redis/provider work, abort partial timed-out responses and reject excess work without a queue. Shared Tapin/IPPanel limits, bounded bodies, capped safe-read retry/jitter and single-attempt mutation dispatch prevent retry storms. Redirects cannot add an uncounted request or replay a POST. Local limits are process-wide, not cluster-wide quotas or capacity certification.
+
+OTP codes/cooldowns are atomically reserved before a send. Uncertain or contradictory acknowledgements retain a usable code; proven rejection cleanup is generation-specific. Missing Redis fails closed. Redis honors context deadlines and disables command retries. Tapin's existing attempt guard now admits one owner atomically and preserves unknown outcomes; this narrow guard change does not close INV-12.
+
+Verification:
+
+- Full isolated Go: `python scripts/test-suite-isolated.py` from the frozen archive,730 top-level entries,0 failures; intentional migration helper skip is exercised by its passing parent. Both exact owned PG/Redis containers were removed and absence verified. Log:`logs/ops02-7209-frozen-go.log`.
+- Complete frontend302/302,0 failures; TypeScript/Vite build0. Frontend and script subtrees are identical to the validated `c394873c8084ed3b9611aee06cc18fba51bc3d0d` candidate. Logs:`ops02-frozen-frontend.log`, `ops02-frozen-build.log`.
+- Final vet and Linux server/migrator builds:[0,0,0], `logs/ops02-7209-vet-linux.log`. Observability config2/2 PASS.
+- Actual nginx/Caddy isolated chain: internal routes404, ordinary delayed request504 at13.31s, POST image upload200 at15.77s with method/body preserved, GET image route504 at13.73s. Syntax validation used network disabled; runtime probes used an owned internal Docker network and synthetic upstream, with all labelled resources removed. Log:`logs/ops02-frozen-edge.log`.
+- Real HTTP/PG tests: SQL cancellation and pool recovery, committed-checkout deadline/disconnect recover one stored order with unchanged stock/ledger/payment effects. Redis/SMS doubles prove bounded stalled reservation, no unconfirmed send, usable response-loss code and generation-safe cleanup.16 competing Tapin claims yield one owner.
+- Fresh read-only reviewer `review_ops02_release` identified incomplete/contradictory acknowledgements and automatic redirects. Nine acknowledgement cases and six redirect cases reproduced RED, then focused packages passed; follow-up review closed all Important findings. Minor deferred: stalled Redis test does not separately count dispatched commands or assert post-fault pool reconnect.
+
+Literal source proof verifies1441 archive files against Git blobs, all applied migration files unchanged and protected directories absent. The obsolete pre-redirect full-suite run was stopped and its exact labelled containers safely removed; it is not reported as a passing full gate. No actual PSP transfer/SMS or production load test was performed. FIN-002's separately prepared failing lock-retention regression is outside this release.

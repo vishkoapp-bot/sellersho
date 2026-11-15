@@ -52,6 +52,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/shippingquote"
@@ -337,6 +338,9 @@ func tapinLegFare(ctx context.Context, repo *repository.TapinRepository, client 
 		PackageWeight:      packageWeight,
 	})
 	if err != nil {
+		if errors.Is(err, dependencybudget.ErrOverloaded) {
+			return 0, err
+		}
 		if tapin.IsServiceNotActivated(err) {
 			return 0, errTapinServiceNotActivated
 		}

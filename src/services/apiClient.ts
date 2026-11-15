@@ -54,7 +54,7 @@ export const getApiBase = (): string => API_BASE;
 
 export interface RequestOptions extends RequestInit {
   auth?: boolean;
-  /** حداکثر زمان انتظار پاسخ بر حسب میلی‌ثانیه (فقط وقتی signal دستی داده نشده باشد اعمال می‌شود) */
+  /** حداکثر زمان انتظار پاسخ بر حسب میلی‌ثانیه؛ همراه با signal دستی نیز اعمال می‌شود */
   timeout?: number;
 }
 
@@ -86,7 +86,7 @@ export async function apiRequest<T>(
     response = await fetch(url, {
       ...rest,
       headers: reqHeaders,
-      signal: rest.signal ?? AbortSignal.timeout(timeout),
+      signal: rest.signal ? AbortSignal.any([rest.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
     });
   } catch (err: any) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {

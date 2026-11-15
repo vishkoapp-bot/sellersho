@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/observability"
 	"github.com/redis/go-redis/v9"
 )
@@ -23,6 +24,7 @@ func NewRedisClient(redisURL string) (*RedisClient, error) {
 		return nil, errors.New("REDIS_URL initialization failed; configuration value withheld")
 	}
 
+	dependencybudget.ConfigureRedis(opts)
 	client := redis.NewClient(opts)
 	client.AddHook(observability.RedisHook{Registry: observability.Default})
 

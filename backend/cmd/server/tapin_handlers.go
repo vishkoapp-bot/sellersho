@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/tapin"
 )
@@ -159,6 +160,9 @@ func handleSupplierTapinLabel(
 	}
 	status, contentType, body, err := client.GetRaw(ctx, creds.Token, tapin.TipaxLabelPath(hash))
 	if err != nil {
+		if writeDependencyOverload(w, err) {
+			return
+		}
 		http.Error(w, `{"error":"`+tapinMsgUnreachable+`"}`, http.StatusBadGateway)
 		return
 	}
@@ -174,6 +178,9 @@ func handleSupplierTapinLabel(
 // failure surfaces its upstream Persian message verbatim (502); a
 // transport failure surfaces the unreachable message (502).
 func writeTapinUpstreamError(w http.ResponseWriter, err error) {
+	if writeDependencyOverload(w, err) {
+		return
+	}
 	var ue *tapin.UpstreamError
 	if errors.As(err, &ue) {
 		body, _ := json.Marshal(map[string]interface{}{"error": ue.Message, "tapinError": true})
@@ -409,10 +416,21 @@ func submitShippingViaTapin(
 	// Stamp the unknown-outcome guard BEFORE the call (migration
 	// 202610250012 semantics).
 	if err := tapinRepo.MarkTapinRegisterAttempted(ctx, state.ID); err != nil {
+		if errors.Is(err, repository.ErrTapinAttemptConflict) {
+			return tapinOutcome(http.StatusConflict, map[string]interface{}{"error": "تلاش ثبت مرسوله قبلاً شروع شده یا وضعیت مرسوله تغییر کرده است؛ ابتدا نتیجه قبلی را بررسی کنید.", "retryable": false})
+		}
 		return tapinOutcome(http.StatusInternalServerError, map[string]interface{}{"error": "Internal server error"})
 	}
 	res, callErr := newTapinClient().TipaxRegisterOrder(ctx, creds.Token, req)
 	if callErr != nil {
+		if errors.Is(callErr, dependencybudget.ErrOverloaded) {
+			// Admission failed before an outbound send; release only this proven no-send guard.
+			if err := tapinRepo.ClearTapinRegisterAttempted(ctx, state.ID); err != nil {
+				return tapinOutcome(http.StatusServiceUnavailable, map[string]interface{}{"error": "ظرفیت سرویس موقتاً در دسترس نیست؛ وضعیت ثبت را پیش از تلاش دوباره بررسی کنید."})
+			}
+			return tapinOutcome(http.StatusServiceUnavailable, map[string]interface{}{"error": "سرویس موقتاً شلوغ است؛ کمی بعد دوباره تلاش کنید.", "retryable": true})
+		}
+
 		var ue *tapin.UpstreamError
 		if errors.As(callErr, &ue) {
 			// Definite rejection: nothing was registered; clear the
@@ -425,7 +443,7 @@ func submitShippingViaTapin(
 		// Unknown outcome: the guard stays stamped; a retry answers
 		// 409 (above) instead of double-registering.
 		return tapinOutcome(http.StatusBadGateway, map[string]interface{}{
-			"error": tapinMsgUnreachable, "tapinError": true,
+			"error": "نتیجه ثبت مرسوله در تاپین هنوز مشخص نیست؛ پیش از تلاش دوباره، وضعیت مرسوله را بررسی کنید.", "tapinError": true, "outcome": "unknown", "retryable": false,
 		})
 	}
 	carrier := "tapin-tipax"

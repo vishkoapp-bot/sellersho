@@ -17,12 +17,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/drup/platform/internal/tapin"
 )
+
+var ErrTapinAttemptConflict = errors.New("Tapin registration is already attempted or shipment is not eligible")
 
 type TapinRepository struct {
 	db *sql.DB
@@ -372,20 +375,28 @@ func (r *TapinRepository) GetShipmentTapinStateByID(ctx context.Context, supplie
 // MarkTapinRegisterAttempted stamps the unknown-outcome guard
 // (migration 202610250012) BEFORE an upstream registration call.
 func (r *TapinRepository) MarkTapinRegisterAttempted(ctx context.Context, shipmentID string) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE supplier_shipments SET tapin_register_attempted_at = NOW(), updated_at = NOW() WHERE id = $1`, shipmentID)
+	result, err := r.db.ExecContext(ctx, `UPDATE supplier_shipments SET tapin_register_attempted_at=NOW(),updated_at=NOW() WHERE id=$1 AND tapin_register_attempted_at IS NULL AND tapin_registered_at IS NULL AND status IN ('pending','processing') AND COALESCE(tracking_number,'')=''`, shipmentID)
 	if err != nil {
-		return fmt.Errorf("stamp tapin register attempt: %w", err)
+		return fmt.Errorf("claim tapin register attempt: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrTapinAttemptConflict
 	}
 	return nil
 }
 
 // ClearTapinRegisterAttempted clears the guard after a DEFINITE
-// upstream rejection (an envelope answer proves nothing was
+// upstream rejection or a proven pre-send admission rejection. Only the
+// successful exclusive claim owner may call this; never clear an uncertain send.
+// An envelope answer proves nothing was
 // registered, so a retry is safe).
 func (r *TapinRepository) ClearTapinRegisterAttempted(ctx context.Context, shipmentID string) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE supplier_shipments SET tapin_register_attempted_at = NULL, updated_at = NOW() WHERE id = $1`, shipmentID)
+		`UPDATE supplier_shipments SET tapin_register_attempted_at = NULL, updated_at = NOW() WHERE id = $1 AND tapin_registered_at IS NULL AND status IN ('pending','processing') AND COALESCE(tracking_number,'')=''`, shipmentID)
 	if err != nil {
 		return fmt.Errorf("clear tapin register attempt: %w", err)
 	}

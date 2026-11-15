@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/ippanel"
 	"github.com/google/uuid"
 	"net/http"
@@ -21,6 +22,9 @@ func handleIPPanelCredit(w http.ResponseWriter, r *http.Request, client *ippanel
 	}
 	data, err := client.Credit(r.Context())
 	if err != nil {
+		if writeDependencyOverload(w, err) {
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -40,6 +44,9 @@ func handleIPPanelRecipients(w http.ResponseWriter, r *http.Request, client *ipp
 	}
 	data, err := client.Recipients(r.Context(), bulkID)
 	if err != nil {
+		if writeDependencyOverload(w, err) {
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -147,7 +154,14 @@ func handleIPPanelTest(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		// F8: log the failed test send in sms_logs, like the OTP path
 		// (main.go OTP logSMS callback) logs its failures — best effort,
 		// never masks the send error.
-		logIPPanelTestSMS(r.Context(), db, req.Recipient, "failed", "", err.Error())
+		status := "failed"
+		if dependencybudget.IsAmbiguous(err) {
+			status = "unknown"
+		}
+		logIPPanelTestSMS(r.Context(), db, req.Recipient, status, "", err.Error())
+		if writeDependencyOverload(w, err) {
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadGateway)
 		return
 	}

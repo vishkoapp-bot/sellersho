@@ -699,6 +699,7 @@ func TestTapinRegistrationUnknownOutcomeLocksRetry(t *testing.T) {
 	if out.Status != http.StatusBadGateway {
 		t.Fatalf("outcome status = %d, want 502 (%v)", out.Status, out.Body)
 	}
+    if out.Body["outcome"]!="unknown" || out.Body["retryable"]!=false {t.Fatal("uncertain registration must not instruct another send",out.Body)}
 	_, _, _, _, _, _, attempted := tapinShipmentRow(t, rp, "ord-t4")
 	if !attempted.Valid {
 		t.Fatalf("unknown outcome must keep tapin_register_attempted_at stamped")

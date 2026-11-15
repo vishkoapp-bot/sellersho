@@ -331,7 +331,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصویر');
@@ -351,6 +351,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر تنوع');
@@ -370,6 +371,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر');
@@ -423,6 +425,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود لوگو');

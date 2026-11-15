@@ -22,6 +22,7 @@ import (
 	"github.com/drup/platform/internal/ippanel"
 	"github.com/drup/platform/internal/migrations"
 	"github.com/drup/platform/internal/observability"
+	"github.com/drup/platform/internal/requestbudget"
 	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
@@ -2446,9 +2447,12 @@ func main() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      observability.Default.HTTP(mux, enableCORS(mux, cfg)),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Handler:      observability.Default.HTTP(mux, enableCORS(requestbudget.New(requestbudget.DefaultConfig())(mux), cfg)),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:  65 * time.Second,
+		WriteTimeout: 70 * time.Second,
+		IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 64 * 1024,
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

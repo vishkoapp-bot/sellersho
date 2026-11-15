@@ -329,6 +329,9 @@ func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	callErr := newTapinClient().Options(r.Context(), token, shopID)
+	if writeDependencyOverload(w, callErr) {
+		return
+	}
 	if callErr == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":            true,

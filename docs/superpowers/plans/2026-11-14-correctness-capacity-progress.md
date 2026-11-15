@@ -21,8 +21,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
 | INV-08 | DONE | d4e6399 | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
 | INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
-| INV-06 | TODO | — | — |
-| INV-07 | DONE | stock-input implementation | [Stock API](../../architecture/stock-adjustment-api.md) |
+| INV-06 | Checkpoint OPEN | occupancy core | [Physical occupancy](../../architecture/warehouse-occupancy.md) |
+| INV-07 | DONE | 214a57c | [Stock API](../../architecture/stock-adjustment-api.md) |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
 | FIN-006 | TODO | — | — |
@@ -362,7 +362,7 @@ are distinct remaining occupancy/age/fee tasks.
 INV-03's scoped absolute aggregate, reason/actor, INT bounds, API/UI, controlled
 capture/update and atomic publication requirements passed real isolated tests.
 The reviewer approved the final race/report fixes. [Stock evidence](../../architecture/legacy-aggregate-stock.md).
-Current ledger:17 DONE local gates,5 partial checkpoints,32 TODO. This is not a
+Current ledger:17 DONE local gates,6 partial checkpoints,31 TODO. This is not a
 production readiness or intended-hardware1000-user/100-RPS certificate. TEST-02
 remains partial for CI/race/dependency and other listed domain prerequisites.
 
@@ -426,3 +426,54 @@ passed. Focused final HTTP3/3 passed. Independent final review found no unresolv
 Critical/Important issue. Logs: inv07-{http-before,overflow-before,final-http,
 full-integrated,final-server-full,ui,frontend-full,frontend-build}.log under logs/.
 Contract: [stock API](../../architecture/stock-adjustment-api.md).
+
+
+INV-07 delivery: commit214a57c59f4dba563b6bce78c3520b5b55c9e1b4 was pushed
+and deployed with deploy.ps1 -BuildOnServer. Backup and health/root/nginx checks
+succeeded. Evidence: logs/inv07-production-deploy.log.
+
+## INV-06 — physical departure core checkpoint
+
+Actual capture/bin allocations now release archived measured placement occupancy
+at warehouse shipment or supplier-return handover, once per immutable business
+identity. Payment, picking and pre-departure cancellation retain physical
+occupancy. Cumulative remaining-volume rounding, mixed measurement revisions,
+multiple bins, concurrent departures, refill, strict SQL business caps, reasoned
+historical disputes and actual actor/replay identity are covered. Supplier-first
+return creation/review/parcel/handover guards fix the reproduced FK lock inversion.
+Unknown old bin/origin metadata preserves custody transfer and numerical counters,
+recording unresolved evidence and disputing known bins. Shared-bin unknown sources
+are preflighted before releasing any product in that bin.
+
+A preliminary evolving-tree run (logs/inv06-core-full-integrated.log) had600 tests
+and8 failures: TestCancellationDispatchRaces,
+TestProductModelV2IsolatedSupplierReturnLifecycleKeepsExactSKU,
+TestSupplierReturnInventoryFinancialAndTariffLifecycle,
+TestINV08MigrationPreservesHistoricalCapacity,
+TestINV06SharedBinRevisionFIFOAndDatabaseEventCaps,
+TestINV06ReturnCreationWaitsForSupplierBeforeProduct,
+TestINV06LegacyReturnWithoutOriginMetadataKeepsCustodyTransfer,
+TestINV06MigrationPreservesAndFlagsHistoricalCounters. Empty owner identities,
+a missing fixture supplier/actor and private floor-only scope, supported legacy
+metadata, dependent migration rehearsal and the actual review defects were fixed.
+That run is retained and is not release qualification. No retained exception was
+deleted to make migration tests downgrade successfully.
+
+Final exact source tree8372ea16604998e2e0ceab7c107fe107386135df completed
+**603 top-level tests with zero failures** in individually cloned migrated
+PostgreSQL and authenticated disposable Redis. Only the intentional migration
+subprocess entry skipped; its parent tests execute. Both containers were verified
+removed. Exact archive repository/server go vet passed. Source/runtime files are
+frozen; only this evidence documentation is added afterward. Proof:
+releases/inv06-core-proof.json; log: logs/inv06-frozen-full.log.
+Final affected18/18, empty-replay follow-up2/2 and model/earlier-migration/audit
+rechecks passed. Independent core review found no unresolved Critical/Important
+finding after RED/GREEN fixes. Frontend source is unchanged from the287/287 passing
+INV-07 stage; production deployment still builds both applications.
+
+INV-06 remains Checkpoint OPEN: the explicit fresh measured physical-return-to-bin
+entry branch is the next substage. Its existing receipt path credits a warehouse
+or supplier floor, and must not fabricate an ASN allocation or move already-paid
+floor quantities into a guessed bin. Read-only keyset audit, immutable history and
+upgrade rehearsal are included; unresolved production counts are not certified.
+Contract: ../../architecture/warehouse-occupancy.md.

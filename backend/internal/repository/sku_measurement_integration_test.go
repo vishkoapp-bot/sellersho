@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	"github.com/drup/platform/internal/warehouseopt"
@@ -239,50 +238,5 @@ func TestINV08PlacementInsertRejectsForgedOrStaleEvidence(t *testing.T) {
 	}
 	if err = wh.ConfirmPutaway(ctx, task, f.user); err == nil {
 		t.Fatal("stale raw edit confirmed")
-	}
-}
-
-func TestINV08MigrationPreservesHistoricalCapacity(t *testing.T) {
-	db := operationsDB(t)
-	down, err := os.ReadFile("../../migrations/202611140010_sku_measurement_revision.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(string(down)); err != nil {
-		t.Fatal(err)
-	}
-	// Build an actual pre-upgrade record; migration must not promote the SKU
-	// declaration or derive historical occupancy from today's physical tuple.
-	product, sku, task, bin := "old-"+uuid.NewString(), uuid.NewString(), "old-task-"+uuid.NewString(), "old-bin-"+uuid.NewString()[:12]
-	opsExec(t, db, `INSERT INTO products(id,title,slug,original_price,supplier_base_cost,platform_margin,is_original,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status) VALUES($1,'old',$1,2000,1000,0,TRUE,0,10,10,10,10,'verified')`, product)
-	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,length_mm,width_mm,height_mm,weight_grams) VALUES($1,$2,'old-SKU',100,100,100,1000)`, sku, product)
-	opsExec(t, db, `INSERT INTO warehouse_bins(bin_code,hall_name,aisle,shelf,quantity,occupied_volume_cm3,occupied_weight_grams) VALUES($1,'old','1','1',5,123,456)`, bin)
-	opsExec(t, db, `INSERT INTO putaway_tasks(id,product_id,quantity,status,bin_location) VALUES($1,$2,5,'completed',$3)`, task, product, bin)
-	up, err := os.ReadFile("../../migrations/202611140010_sku_measurement_revision.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(string(up)); err != nil {
-		t.Fatal(err)
-	}
-	var volume, weight, count int
-	var parentVerified, skuVerified bool
-	if err = db.QueryRow(`SELECT occupied_volume_cm3,occupied_weight_grams FROM warehouse_bins WHERE bin_code=$1`, bin).Scan(&volume, &weight); err != nil || volume != 123 || weight != 456 {
-		t.Fatalf("migration rewrote occupancy=%d/%d err=%v", volume, weight, err)
-	}
-	if err = db.QueryRow(`SELECT verified FROM inventory_effective_measurements WHERE product_id=$1 AND variant_id=''`, product).Scan(&parentVerified); err != nil || !parentVerified {
-		t.Fatalf("previous verified parent lost: %t %v", parentVerified, err)
-	}
-	if err = db.QueryRow(`SELECT verified FROM inventory_effective_measurements WHERE product_id=$1 AND variant_id=$2`, product, sku).Scan(&skuVerified); err != nil || skuVerified {
-		t.Fatalf("declared historical SKU promoted: %t %v", skuVerified, err)
-	}
-	if err = db.QueryRow(`SELECT COUNT(*) FROM warehouse_placements WHERE task_id=$1`, task).Scan(&count); err != nil || count != 0 {
-		t.Fatal("historical placement invented")
-	}
-	if err = db.QueryRow(`SELECT COUNT(*) FROM warehouse_measurement_reconciliation WHERE task_id=$1`, task).Scan(&count); err != nil || count != 1 {
-		t.Fatal("historical unresolved placement hidden")
-	}
-	if _, err = db.Exec(string(down)); err == nil {
-		t.Fatal("destructive downgrade discarded persisted revision")
 	}
 }

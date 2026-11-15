@@ -130,6 +130,9 @@ func (r *SupplierRepository) CreateReturnParcel(ctx context.Context, returnID, a
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err = lockSupplierReturnSKUTx(ctx, tx, returnID); err != nil {
+		return nil, err
+	}
 	var existing ReturnParcel
 	if err := tx.QueryRowContext(ctx, `SELECT id,return_request_id,parcel_number,carrier_code,payment_method,origin,destination,length_mm,width_mm,height_mm,weight_grams,estimated_charge,COALESCE(estimate_source,''),COALESCE(estimate_reference,''),final_charge,COALESCE(final_charge_source,''),COALESCE(final_charge_reference,''),status,COALESCE(tracking_number,''),created_by,COALESCE(confirmed_by,''),created_at FROM supplier_return_parcels WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing.ID, &existing.ReturnRequestID, &existing.ParcelNumber, &existing.CarrierCode, &existing.PaymentMethod, &existing.Origin, &existing.Destination, &existing.LengthMM, &existing.WidthMM, &existing.HeightMM, &existing.WeightGrams, &existing.EstimatedCharge, &existing.EstimateSource, &existing.EstimateReference, &existing.FinalCharge, &existing.FinalChargeSource, &existing.FinalChargeRef, &existing.Status, &existing.TrackingNumber, &existing.CreatedBy, &existing.ConfirmedBy, &existing.CreatedAt); err == nil {
 		return &existing, tx.Commit()

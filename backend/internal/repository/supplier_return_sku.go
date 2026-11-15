@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,6 +20,8 @@ func validateSupplierReturnReplay(stored SupplierReturnRequest, productID, varia
 // Empty variant identity preserves the legacy API. A tracked product must never
 // reserve a sibling SKU or use its historical unallocated product balance.
 func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx context.Context, supplierID, productID, variantID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if variantID == "" {
 		return r.CreateReturnRequestWithIdempotency(ctx, supplierID, productID, quantity, method, reason, idempotencyKey, actorUserID)
 	}
@@ -33,6 +36,9 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}, TransactionRowLock{Table: "products", ID: productID}, TransactionRowLock{Table: "product_variants", ID: variantID}); err != nil {
+		return nil, err
+	}
 	var version int
 	var title, warehouse string
 	if err = tx.QueryRowContext(ctx, `SELECT schema_version,title,COALESCE(warehouse_name,'') FROM products WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, productID, supplierID).Scan(&version, &title, &warehouse); err != nil {
@@ -162,22 +168,21 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 // Establish the same product -> SKU -> request -> balances lock order as payment
 // capture before an existing return transition locks its request row.
 func lockSupplierReturnSKUTx(ctx context.Context, tx *sql.Tx, returnID string) error {
-	var product, variant string
-	err := tx.QueryRowContext(ctx, `SELECT product_id,COALESCE(to_jsonb(rr)->>'variant_id','') FROM supplier_return_requests rr WHERE id=$1`, returnID).Scan(&product, &variant)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var product, variant, supplier string
+	err := tx.QueryRowContext(ctx, `SELECT product_id,COALESCE(to_jsonb(rr)->>'variant_id',''),supplier_id FROM supplier_return_requests rr WHERE id=$1`, returnID).Scan(&product, &variant, &supplier)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if variant == "" {
-		return nil
+	plan := []TransactionRowLock{{Table: "suppliers", ID: supplier}, {Table: "products", ID: product}, {Table: "supplier_return_requests", ID: returnID}}
+	if variant != "" {
+		plan = append(plan, TransactionRowLock{Table: "product_variants", ID: variant})
 	}
-	var locked string
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM products WHERE id=$1 FOR UPDATE`, product).Scan(&locked); err != nil {
-		return err
-	}
-	return tx.QueryRowContext(ctx, `SELECT id::text FROM product_variants WHERE id=$1 AND product_id=$2 FOR UPDATE`, variant, product).Scan(&locked)
+	return LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, plan...)
 }
 
 func supplierReturnVariantTx(ctx context.Context, tx *sql.Tx, returnID string) (string, error) {
@@ -251,6 +256,9 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 		total += a.quantity
 	}
 	if consume {
+		if err = releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actor); err != nil {
+			return true, err
+		}
 		if err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", total); err != nil {
 			return true, err
 		}

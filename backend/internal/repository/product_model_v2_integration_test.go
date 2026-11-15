@@ -43,7 +43,7 @@ func productModelV2Fixture(t *testing.T) *sql.DB {
 		INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES('model-source','supplier-test','Model source','Test','Test')`); err != nil {
 		t.Fatal(err)
 	}
-	for _, ddl := range []string{`CREATE TRIGGER model_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`, `INSERT INTO categories(id,title,slug,icon_name) VALUES('category-test','Test shirts','test-shirts','Package')`, `INSERT INTO dk_category_colors(category_id,dk_color_id,title) VALUES('category-test',1,'Color 1'),('category-test',2,'Color 2')`, `INSERT INTO dk_attributes(dk_attr_id,title,type) VALUES(-1,'Size','checkbox')`, `INSERT INTO dk_attribute_values(dk_attr_id,dk_value_id,title_fa) VALUES(-1,-1,'Size 1'),(-1,-2,'Size 2')`, `INSERT INTO dk_category_attributes VALUES('category-test',-1)`, `INSERT INTO dk_category_attribute_values VALUES('category-test',-1,-1),('category-test',-1,-2)`, `INSERT INTO platform_settings(id,supplier_return_postal_charge) VALUES(1,10)`} {
+	for _, ddl := range []string{`INSERT INTO suppliers(id,name,approval_status) VALUES('supplier-test','Model fixture supplier','approved')`, `CREATE TRIGGER model_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`, `INSERT INTO categories(id,title,slug,icon_name) VALUES('category-test','Test shirts','test-shirts','Package')`, `INSERT INTO dk_category_colors(category_id,dk_color_id,title) VALUES('category-test',1,'Color 1'),('category-test',2,'Color 2')`, `INSERT INTO dk_attributes(dk_attr_id,title,type) VALUES(-1,'Size','checkbox')`, `INSERT INTO dk_attribute_values(dk_attr_id,dk_value_id,title_fa) VALUES(-1,-1,'Size 1'),(-1,-2,'Size 2')`, `INSERT INTO dk_category_attributes VALUES('category-test',-1)`, `INSERT INTO dk_category_attribute_values VALUES('category-test',-1,-1),('category-test',-1,-2)`, `INSERT INTO platform_settings(id,supplier_return_postal_charge) VALUES(1,10)`} {
 		if _, err = tx.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +104,7 @@ func TestProductModelV2IsolatedSupplierReturnLifecycleKeepsExactSKU(t *testing.T
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err = repo.HandoverReturn(ctx, second.ID, "", "handover-sku"); err != nil {
+		if err = repo.HandoverReturn(ctx, second.ID, "model-operator", "handover-sku"); err != nil {
 			t.Fatal(err)
 		}
 	}

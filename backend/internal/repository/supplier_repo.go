@@ -1937,6 +1937,8 @@ func (r *SupplierRepository) CreateReturnRequest(ctx context.Context, supplierID
 }
 
 func (r *SupplierRepository) CreateReturnRequestWithIdempotency(ctx context.Context, supplierID, productID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if quantity <= 0 || (method != "supplier_collect" && method != "postal") || strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("invalid return request")
 	}
@@ -1950,6 +1952,21 @@ func (r *SupplierRepository) CreateReturnRequestWithIdempotency(ctx context.Cont
 		return nil, err
 	}
 	defer tx.Rollback()
+	var prefix TransactionLockSet
+	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "suppliers", ID: supplierID}); err != nil {
+		return nil, err
+	}
+	var replayProduct string
+	replayErr := tx.QueryRowContext(ctx, `SELECT product_id FROM supplier_return_requests WHERE idempotency_key=$1 AND supplier_id=$2`, idempotencyKey, supplierID).Scan(&replayProduct)
+	if replayErr != nil && replayErr != sql.ErrNoRows {
+		return nil, replayErr
+	}
+	if replayErr == nil && replayProduct != productID {
+		return nil, fmt.Errorf("idempotency key already used for a different return request")
+	}
+	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "products", ID: productID}); err != nil {
+		return nil, err
+	}
 	var existing SupplierReturnRequest
 	var existingCreated time.Time
 	err = tx.QueryRowContext(ctx, `
@@ -2309,6 +2326,9 @@ func (r *SupplierRepository) consumeReturnReservations(ctx context.Context, tx *
 	for _, item := range reservations {
 		totalConsumed += item.quantity
 	}
+	if err := releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actorUserID); err != nil {
+		return err
+	}
 	if err := decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed); err != nil {
 		return err
 	}
@@ -2368,6 +2388,8 @@ var ErrSupplierReturnNotFound = errors.New("مرجوعی تأمین‌کننده
 var ErrProposalNotPending = errors.New("proposal is not pending")
 
 func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actorUserID, idempotencyKey string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return fmt.Errorf("idempotency key required")
 	}
@@ -2399,6 +2421,9 @@ func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actor
 	}
 	if parcelCount == 0 || parcelCount != confirmedCount {
 		return fmt.Errorf("all parcels must be confirmed before handover")
+	}
+	if err = lockReturnDeparturePhysicalTx(ctx, tx, returnID, productID, supplierID); err != nil {
+		return err
 	}
 	if err := r.consumeReturnReservations(ctx, tx, returnID, productID, supplierID, actorUserID); err != nil {
 		return err

@@ -1193,6 +1193,15 @@ func (r *WarehouseRepository) PackOrder(ctx context.Context, orderID string, wei
 // flip and the customer notification are one transaction — the customer is
 // told about the shipment only when the shipment actually happened.
 func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, trackingNumber string) error {
+	return r.ShipOrderWithActor(ctx, orderID, carrier, trackingNumber, "warehouse-dispatch")
+}
+
+func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, carrier, trackingNumber, actor string) error {
+	if strings.TrimSpace(actor) == "" {
+		return ErrShipmentState
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	now := time.Now()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1233,6 +1242,13 @@ func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, t
 		return fmt.Errorf("%w: order %s is unpaid, cancelled, not packed, or has pending direct legs", ErrShipmentState, orderID)
 	}
 	if err != nil {
+		return err
+	}
+	allocations, err := loadOrderDepartureAllocationsTx(ctx, tx, updatedID)
+	if err != nil {
+		return err
+	}
+	if err = releasePlacementOccupancyTx(ctx, tx, updatedID, "warehouse_shipment", actor, allocations); err != nil {
 		return err
 	}
 	// Storage-fee positions (gap 7 lifecycle): the goods physically

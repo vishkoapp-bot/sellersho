@@ -38,7 +38,7 @@ var transactionLockTables = map[string]int{
 	"pick_tasks": 615, "supplier_return_back_requests": 616,
 	"inventory_balances": 700, "inventory_reservations": 701,
 	"warehouse_bins": 702, "putaway_capacity_reservations": 703,
-	// Rank 704 is reserved for INV-06 placement rows once their schema exists.
+	"warehouse_placements":        704,
 	"warehouse_storage_positions": 705,
 }
 

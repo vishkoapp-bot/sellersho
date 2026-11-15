@@ -737,7 +737,12 @@ func handleShipOrder(w http.ResponseWriter, r *http.Request, ctx context.Context
 	if req.Carrier == "" {
 		req.Carrier = "پست پیشتاز"
 	}
-	if err := repo.ShipOrder(ctx, orderID, req.Carrier, req.TrackingNumber); err != nil {
+	actor := callerUserID(r)
+	if actor == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := repo.ShipOrderWithActor(ctx, orderID, req.Carrier, req.TrackingNumber, actor); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -123,39 +123,42 @@ func decodeCancellationAllocations(raw []byte) ([]skuAllocation, error) {
 // canonical row acquisition. This avoids deadlock with capture/return writers.
 func lockWarehouseDispatchInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) error {
 	var plan []TransactionRowLock
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT product_id FROM order_items WHERE order_id=$1`, orderID)
+	queries := []struct{ table, sql string }{
+		{"suppliers", `SELECT DISTINCT p.supplier_id FROM products p JOIN order_items oi ON oi.product_id=p.id WHERE oi.order_id=$1 AND COALESCE(p.supplier_id,'')<>''`},
+		{"products", `SELECT DISTINCT product_id FROM order_items WHERE order_id=$1`},
+		{"product_variants", `SELECT DISTINCT to_jsonb(oi)->>'variant_id' FROM order_items oi WHERE oi.order_id=$1 AND COALESCE(to_jsonb(oi)->>'variant_id','')<>''`},
+	}
+	enabled, err := hasSKUInventoryTx(ctx, tx)
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		plan = append(plan, TransactionRowLock{Table: "products", ID: id})
+	if enabled {
+		queries = append(queries, struct{ table, sql string }{"order_inventory_captures", `SELECT order_item_id FROM order_inventory_captures WHERE order_id=$1`})
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
+	queries = append(queries,
+		struct{ table, sql string }{"inventory_balances", `SELECT id FROM inventory_balances WHERE product_id IN(SELECT product_id FROM order_items WHERE order_id=$1)`},
+		struct{ table, sql string }{"warehouse_bins", `SELECT b.bin_code FROM warehouse_bins b WHERE b.bin_code IN(SELECT warehouse_bin_identity(location_key,to_jsonb(inventory_balances)->>'bin_code') FROM inventory_balances WHERE location_type='bin' AND product_id IN(SELECT product_id FROM order_items WHERE order_id=$1)) OR b.bin_code IN(SELECT bin_code FROM warehouse_placements WHERE product_id IN(SELECT product_id FROM order_items WHERE order_id=$1))`},
+		struct{ table, sql string }{"warehouse_placements", `SELECT id FROM warehouse_placements WHERE product_id IN(SELECT product_id FROM order_items WHERE order_id=$1)`},
+	)
 	exists, err := storagePositionsExistTx(ctx, tx)
 	if err != nil {
 		return err
 	}
 	if exists {
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM warehouse_storage_positions WHERE closed_at IS NULL AND qty>0 AND product_id IN (SELECT product_id FROM order_items WHERE order_id=$1)`, orderID)
+		queries = append(queries, struct{ table, sql string }{"warehouse_storage_positions", `SELECT id FROM warehouse_storage_positions WHERE closed_at IS NULL AND qty>0 AND product_id IN(SELECT product_id FROM order_items WHERE order_id=$1)`})
+	}
+	for _, query := range queries {
+		rows, err := tx.QueryContext(ctx, query.sql, orderID)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var id string
-			if err := rows.Scan(&id); err != nil {
+			if err = rows.Scan(&id); err != nil {
 				rows.Close()
 				return err
 			}
-			plan = append(plan, TransactionRowLock{Table: "warehouse_storage_positions", ID: id})
+			plan = append(plan, TransactionRowLock{Table: query.table, ID: id})
 		}
 		err = rows.Err()
 		rows.Close()

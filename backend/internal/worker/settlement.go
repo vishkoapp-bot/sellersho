@@ -36,6 +36,10 @@ func (w *BackgroundWorker) RunMonthlySettlementIfDue() {
 		return
 	}
 	if cycle != nil {
-		log.Printf("[INFO] Monthly settlement completed for %s: %d stores swept, %d skipped (no Sheba), gross %d", cycle.Period, cycle.TotalStores, cycle.SkippedStores, cycle.TotalGross)
+		if cycle.Status == "completed" {
+			log.Printf("[INFO] Monthly settlement completed for %s: %d stores swept, %d skipped (no Sheba), gross %d", cycle.Period, cycle.TotalStores, cycle.SkippedStores, cycle.TotalGross)
+		} else {
+			log.Printf("[INFO] Monthly settlement %s for %s: %d/%d accounts done, %d pending, %d blocked", cycle.Status, cycle.Period, cycle.CompletedStores, cycle.CandidateStores, cycle.PendingStores, cycle.BlockedStores)
+		}
 	}
 }

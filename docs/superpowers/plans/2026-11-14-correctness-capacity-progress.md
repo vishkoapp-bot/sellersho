@@ -34,8 +34,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
 | CHECKOUT-01 | DONE | 85f655a | [Durable checkout](2026-11-15-checkout-attempt.md) |
-| OPS-02 | DONE | this commit | [Request/provider budgets](../../operations/request-budgets.md) |
-| FIN-002 | TODO | — | — |
+| OPS-02 | DONE | 8c0c7c6 | [Request/provider budgets](../../operations/request-budgets.md) |
+| FIN-002 | DONE | this commit | [Durable monthly settlement](../../architecture/monthly-settlement.md) |
 | JOB-01 | TODO | — | — |
 | SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
 | FIN-010 | TODO | — | — |
@@ -723,3 +723,22 @@ Verification:
 - Fresh read-only reviewer `review_ops02_release` identified incomplete/contradictory acknowledgements and automatic redirects. Nine acknowledgement cases and six redirect cases reproduced RED, then focused packages passed; follow-up review closed all Important findings. Minor deferred: stalled Redis test does not separately count dispatched commands or assert post-fault pool reconnect.
 
 Literal source proof verifies1441 archive files against Git blobs, all applied migration files unchanged and protected directories absent. The obsolete pre-redirect full-suite run was stopped and its exact labelled containers safely removed; it is not reported as a passing full gate. No actual PSP transfer/SMS or production load test was performed. FIN-002's separately prepared failing lock-retention regression is outside this release.
+
+OPS-02 production rollout completed with `deploy.ps1 -BuildOnServer`, exit0, commit`8c0c7c6198cec23eb8d269db664779fd527fee61`. Independent postcheck verified active marker/release source, sealed003–005 migration checksums, API/PostgreSQL/Redis/front-root health and restricted backup`/opt/drup/backups/deploy-20261115T170834Z-8c0c7c61` (0700; secret-bearing files restricted and retained on server). Before/after aggregates were unchanged:40orders,8paid transactions,4,640,000toman paid,52,669toman wallet,2oldrefunds, storage fees disabled and zero new refund obligations/verification receipts/checkout attempts/title snapshots. The initial SSH connection error occurred before server mutation; the successful retry is the release evidence. Only the inactive85f655a node_modules cache was pruned after exact path/active-marker/11Docker-mount/process-reference checks; source/backups/rollback binaries remain.
+
+## FIN-002 — bounded, durable monthly settlement
+
+Local acceptance completed on frozen tree`79b1356783a5ce463bd53738af6a67f47f64a837`, based on deployed/origin`8c0c7c6`. The commit retains identical tested backend/src/scripts/edge blobs with documentation-only completion updates. Status totals are24 DONE,5 Checkpoint OPEN and25 TODO. This is the local task gate; production release follows the authorized commit/push/deploy sequence, and capacity/historical cutover remain open.
+
+Manual and scheduled triggers now share one service. A cycle snapshots candidate IDs without locking every account; batches consider at most25 accounts, with4s call/1s account/100ms lock/750ms statement bounds. Each account rechecks canonical signed availability and commits payout/item/done progress atomically under its typed guard. Fair persisted retry order and cycle attempts prevent busy/unknown older work from starving others. A completed period/store never rearms after payout rejection. Detail totals/items use one repeatable-read snapshot; unsupported aggregate amounts fail closed without rewriting exact stored values. See the architecture contract for configuration-pause, progress and retry semantics.
+
+Verification:
+
+- Complete frozen Go coverage:746 top-level entries,0 failures, all31 packages. Two disjoint existing isolated-runner groups each executed373 entries; all4 exact owned PG/Redis containers were removed and absence verified. Logs:`logs/fin002-79b-{repository,remaining,full-console}.log`; package/result manifest:`releases/fin002-full-manifest.json`. The intentional migration process helper skip is exercised by its passing parent. An earlier attempt stopped on Docker subprocess timeout with no Go assertion failures; its preserved logs are not counted as a passing gate.
+- Complete frontend302/302,0 failures; TypeScript/Vite build0; vet/Linux server/migrator builds[0,0,0]. Frontend inputs match the tested3c21741 candidate exactly. Logs:`fin002-3c21-frontend.log`, `fin002-79b-build.log`, `fin002-79b-vet-linux.log`.
+-16 FIN-002 regressions cover bounded31-account resume, old history visibility, invalid aggregate/fairness, consistent detail snapshots, two workers competing with payout/service/early withdrawal, rejected payout identity, and actual manual-handler+worker+payout authority. A real SQL trigger pauses a foreground payout after its balance decision: overlapping sweep cannot reserve stale funds, preserving2m instead of4m.25 locked first-page accounts do not starve the later healthy account.
+- Actual batch interruption: after the first committed account, a SQL advisory barrier pauses the second account's item INSERT. Parent cancellation stops the production loop, retains first work/payout and rolls back the second payout; a fresh worker outside the catch-up window resumes to exactly2 payouts/4m. No detached financial work.
+- Migration006 rehearsal preserves valid sealed history/unknown processing transfer, adds missing uniqueness, and rejects duplicate effects or mismatched links atomically with unchanged data. Actual previous8c0c7c6 migration/manual/scheduled code, compiled with only new006 plus a synthetic fixture, preserves running/blocked progress, items and money. Logs:`fin002-migration-final.log`, `fin002-legacy-compat.log`.
+- Fresh independent reviewer`review_fin002_release`: no Critical/Important findings. The sole Minor coverage note was closed by the actual-loop interruption test before final gates; no review findings remain.
+
+Literal source proof checks1450 Git blobs, protected directories absent, all previously applied migrations unchanged and only006 newly added. Normalized006 SHA256:`1e34cd0ca79c0a7f443ba4a21fd71048a89b50a7acc643896d94f7867fadb913`. No old completed manifest is invented and no bank/PSP/SMS operation occurs in tests. Local foreground samples do not certify FIN-013/CAP-02 hardware SLOs. Production preflight on8c0c7c6 remained healthy with unchanged financial aggregates; accepted monthly core history is fingerprinted separately before/after rollout.

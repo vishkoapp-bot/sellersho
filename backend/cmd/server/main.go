@@ -776,6 +776,7 @@ func main() {
 
 	// 7. Warehouse WMS & Fulfillment Endpoints
 	warehouseRoles := []string{"warehouse_staff", "logistics_specialist", "admin"}
+	mux.HandleFunc("/api/v1/warehouse/customer-returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleCustomerReturnBinEntry(w, r, warehouseRepo) }))
 
 	mux.HandleFunc("/api/v1/warehouse/bins", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetBins(w, r, r.Context(), wmsRepo)

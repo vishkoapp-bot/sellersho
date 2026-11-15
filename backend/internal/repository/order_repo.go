@@ -2061,7 +2061,8 @@ func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeI
 }
 
 // ListCustomerReturnsForWarehouse lists returns on their way back to
-// (or at) the warehouse: approved or received. This is the engine
+// (or at) the warehouse: approved, received, or refunded with proven unshelved
+// units. A financial refund must not hide outstanding physical work. This is the engine
 // behind D10 warehouses/returns; Team 01's /warehouse/return-backs
 // stub route is left untouched and is not re-registered here.
 //
@@ -2078,7 +2079,7 @@ func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, d
 	return r.listCustomerReturnsQuery(ctx, `
 		SELECT `+customerReturnSelectColumns+`
 		FROM customer_returns
-		WHERE status IN ('approved', 'received')
+		WHERE (status IN ('approved', 'received') OR (status='refunded' AND EXISTS(SELECT 1 FROM warehouse_customer_return_bin_sources s WHERE s.return_id=customer_returns.id AND s.source_proven AND s.available_quantity>0)))
 		  AND ($1 = '' OR warehouse_id = $1 OR destination_supplier_warehouse_id = $1)
 		ORDER BY created_at DESC
 	`, dest)

@@ -21,7 +21,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
 | INV-08 | DONE | d4e6399 | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
 | INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
-| INV-06 | Checkpoint OPEN | occupancy core | [Physical occupancy](../../architecture/warehouse-occupancy.md) |
+| INV-06 | DONE | 54fe3da / return-bin entry | [Physical occupancy](../../architecture/warehouse-occupancy.md) |
 | INV-07 | DONE | 214a57c | [Stock API](../../architecture/stock-adjustment-api.md) |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
@@ -362,7 +362,7 @@ are distinct remaining occupancy/age/fee tasks.
 INV-03's scoped absolute aggregate, reason/actor, INT bounds, API/UI, controlled
 capture/update and atomic publication requirements passed real isolated tests.
 The reviewer approved the final race/report fixes. [Stock evidence](../../architecture/legacy-aggregate-stock.md).
-Current ledger:17 DONE local gates,6 partial checkpoints,31 TODO. This is not a
+Current ledger:18 DONE local gates,5 partial checkpoints,31 TODO. This is not a
 production readiness or intended-hardware1000-user/100-RPS certificate. TEST-02
 remains partial for CI/race/dependency and other listed domain prerequisites.
 
@@ -477,3 +477,71 @@ or supplier floor, and must not fabricate an ASN allocation or move already-paid
 floor quantities into a guessed bin. Read-only keyset audit, immutable history and
 upgrade rehearsal are included; unresolved production counts are not certified.
 Contract: ../../architecture/warehouse-occupancy.md.
+
+
+## INV-06 — DONE (fresh measured customer-return bin entry)
+
+The preceding core checkpoint was pushed and deployed as54fe3da, with verified
+backup/migration/backend/frontend/nginx health. Its previously OPEN return-bin
+acceptance is now implemented by an explicit post-QC item action. Received floor
+stock, shipping settlement and refund behavior remain intact. Proven surviving
+central-floor items may enter a matching verified bin using current verified
+physical measurement. Supplier/defective destinations and ambiguous legacy pools
+stay in their supported floor/reconciliation flows; no source/age/SKU is guessed.
+
+Migration202611150002 derives source/measurement/receipt facts in BEFORE and applies
+header, conserved floor debit/bin credit, movement, new measured placement, bin
+counters and receipt-dated returned storage atomically in AFTER. An injected late
+SQL collision rolls back every effect. Placements distinguish inbound tasks from
+return entries explicitly. Paid capture/reservation excludes floor units from the
+new action while retaining bin occupancy until actual departure. Active inbound
+capacity reservations remain protected. Existing snapshots/counters are preserved.
+
+Ruling: use a separate post-QC command rather than fabricate ASN/QC putaway tasks
+or automatically move already-paid floor stock. The failure cost of an incorrect
+source decision is duplicate/incorrect custody and capacity; therefore exact
+receipt movement/reference/location and source remainder are required. Legacy
+same-product multi-line pools are refused for counted reconciliation.
+Ruling: one-statement AFTER application replaces the planned deferred orphan check;
+no orphan header can commit, including direct SQL and later-step failures.
+Ruling: financial refund cannot hide proven unshelved physical work; eligible
+refunded items remain in the warehouse queue and can receive the same bin action.
+
+Verified RED-to-GREEN review regressions: concurrent exact replay before uniqueness
+checking, dependent trigger preventing empty downgrade, and refunded queue visibility.
+Fresh receipt->original placement->payment->shipment->actual return create/approve/
+QC receive->fresh measured bin entry->second payment/shipment passes for tracked
+and uniquely attributable legacy stock. Tests cover changed/identical replay,
+last-unit races, partial entries, real paid-floor capture/cancel, actual supplier
+reservation, actual active inbound capacity reservation, unverified SKU override,
+wrong warehouse, disputed/inconsistent counters, insufficient capacity, defective
+QC, exact tracked split items versus ambiguous legacy pools, direct SQL forgery,
+atomic failure, preserved receipt timestamp, and populated downgrade refusal.
+The mounted browser test retains exact item and command after conflict/response
+loss, issues a distinct key for changed input, refreshes actual remainder and can
+retry the original command even after a refresh shows zero remaining stock.
+
+Initial frozen tree f4aebca173db45ed6ffb2408911a98b2738247da completed615 tests with
+exactly2 failures: TestWarehouseQueueDestinationFilter and
+TestReturnShippingCODRefused. Both built old hand-written DTO schemas missing the
+new receipt-source view. Only their fixtures were upgraded to canonical migrations
+and actual create/approve flows; all destination, refusal, no-receipt/no-charge/
+no-wallet and queue visibility assertions were preserved. No runtime schema
+fallback or skipped scenario was added. Independent review approved both changes;
+corrected affected4/4 passed. Earlier failure logs remain retained.
+
+Final exact source tree eb66f58726b8df57dd195a74060ada7568c77664 completed **615
+top-level tests with zero failures**, using individually cloned migrated
+PostgreSQL and authenticated disposable Redis. Only the intentional migration
+subprocess helper entry skipped; parent process tests execute. Both owned
+containers were verified removed. Final archive repository/server go vet passed.
+Frontend **288/288**, production build and mounted new form passed. Independent
+review found no unresolved Critical/Important findings. Proof:
+releases/inv06-return-final-proof.json; logs/inv06-return-final-full.log,
+logs/inv06-return-frontend-full.log and logs/inv06-return-build-final.log.
+
+Only evidence documentation is added after this exact runtime/test freeze.
+Next: FIN-006 storage quantity/time plus INV-10 exact receipt/departure adoption;
+its separately prepared plan is not included in this release. Production storage
+fees were read-only verified disabled and remain so. Historical counted occupancy
+reconciliation and intended-hardware1000-user/100-RPS qualification remain OPEN.

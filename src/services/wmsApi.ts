@@ -101,7 +101,20 @@ export interface PutawayTaskDto {
   measurementStatus: string;
 }
 
+export interface ReturnBinSourceDto {
+  returnItemId: string; productId: string; variantId: string; productTitle: string; variantName: string; variantSpnc: string;
+  warehouseId: string; qcStatus: string; quantity: number; availableQuantity: number; sourceProven: boolean;
+  physical: { lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; verified: boolean; revision: string };
+  bins: { binCode: string; remainingVolumeCm3: number; remainingWeightGrams: number }[];
+}
+
 export const wmsApi = {
+  getReturnBinSources: (returnID: string) => apiRequest<ReturnBinSourceDto[]>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/putaway-sources`, { method: 'GET', auth: true }),
+  placeReturnInBin: async (returnID: string, itemID: string, payload: { binCode: string; quantity: number; reason: string }, key: string) => {
+    const result = await apiRequest<{ id: string; quantity: number }>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/items/${encodeURIComponent(itemID)}/putaway`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': key }, body: JSON.stringify(payload) });
+    if (!result?.id || result.quantity !== payload.quantity) throw new Error('پاسخ ثبت کامل نیست؛ همان درخواست را دوباره ارسال کنید.');
+    return result;
+  },
   getBins: async (): Promise<WarehouseBinDto[]> => {
     const data = await apiRequest<WarehouseBinDto[] | { bins?: WarehouseBinDto[]; data?: WarehouseBinDto[] }>('/warehouse/bins', {
       method: 'GET',

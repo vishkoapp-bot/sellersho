@@ -501,14 +501,31 @@ func TestReturnShippingReplaysIdempotent(t *testing.T) {
 // (6) Post-paid (COD) parcel: receive is refused, cod_refused is
 // set, and nothing else moves.
 func TestReturnShippingCODRefused(t *testing.T) {
-	db := openReturnSettlementDB(t)
-	defer db.Close()
+	// The queue now includes proven refunded floor stock. Use its canonical
+	// migrated schema rather than the deliberately small shipping DTO fixture.
+	db := operationsDB(t)
+	f := opsFixtureNew(t, db)
 	ctx := context.Background()
 	repo := NewOrderRepository(db)
-	returnID, customerID, itemIDs := rsSeedReturn(t, db, false, []rsItemSpec{
-		{productID: "p-cod", supplierID: "sup-1", weightG: intPtr(1000), qty: 1, returnQty: 1, unitPrice: 50000, originWH: "wh-1"},
-	})
-	_, err := repo.ReceiveCustomerReturn(ctx, returnID, []CustomerReturnItemQC{{ReturnItemID: itemIDs[0], QCStatus: "defective"}}, "keeper-1")
+	warehouse := "cod-wh-" + uuid.NewString()
+	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'test','test')`, warehouse)
+	order, _ := opsOrder(t, db, f, true)
+	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+INTERVAL '7 days' WHERE id=$1`, order)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
+	var item string
+	if err := db.QueryRow(`SELECT id::text FROM order_items WHERE order_id=$1`, order).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	ret, err := repo.CreateCustomerReturn(ctx, f.user, order, "COD refusal", []CustomerReturnItemRequest{{OrderItemID: item, Qty: 1}}, CustomerReturnOptions{Prepaid: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.ApproveCustomerReturn(ctx, ret.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	returnID, customerID, itemIDs := ret.ID, f.user, []string{ret.Items[0].ID}
+
+	_, err = repo.ReceiveCustomerReturn(ctx, returnID, []CustomerReturnItemQC{{ReturnItemID: itemIDs[0], QCStatus: "defective"}}, "keeper-1")
 	if !errors.Is(err, ErrReturnCODRefused) {
 		t.Fatalf("receive err = %v, want ErrReturnCODRefused", err)
 	}

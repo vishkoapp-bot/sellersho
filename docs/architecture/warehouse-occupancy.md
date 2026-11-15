@@ -1,4 +1,4 @@
-# Physical bin occupancy — INV-06 core checkpoint
+# Physical bin occupancy — INV-06
 
 The warehouse records immutable measured placement lots (INV-08) and immutable
 departure events/releases. Paid capture removes sellable availability while the
@@ -49,8 +49,52 @@ Use a read-only transaction with a statement timeout. Neither report authorizes
 numerical repair. Their result is evidence for physical counts, never a sum of
 current sellable stock used as physical occupancy.
 
-This checkpoint does not close INV-06. The supplied acceptance also requires a
-physical return into a bin to create a fresh measured placement. Existing return
-receipt destinations are warehouse/supplier floors; a separate return-bin entry
-substage remains before task closure. Normal ASN/carton refill through exact
-putaway already creates a fresh measured placement and is covered by tests.
+Customer-return receipt/QC retains its existing warehouse/supplier floor stock,
+shipping settlement and refund behavior. A separate post-QC action now moves a
+proven surviving central-floor return item into a matching verified bin. The
+warehouse customer-return tab shows the exact item/SKU, measured physical tuple,
+actual available remainder and eligible destination bins. A completed refund does
+not hide proven outstanding physical shelving work.
+
+GET `/warehouse/customer-returns/{returnID}/putaway-sources` is advisory. POST
+`/warehouse/customer-returns/{returnID}/items/{itemID}/putaway` requires warehouse,
+logistics or admin capability, authenticated actor, positive integral quantity,
+reason and Idempotency-Key. Malformed input returns400, missing/mismatched return
+item404, source/measurement/capacity conflict409. A successful actor/key retains
+its exact normalized request and result; altered replay fails. Concurrent exact
+replays recover the committed result even when the first command exhausted the
+source before the second command reached its uniqueness check. The form retains
+draft/key across conflicts and response loss, including a later source refresh.
+
+Migration202611150002 adds immutable `warehouse_return_bin_entries`. BEFORE
+derives source ownership, exact product/physical SKU, warehouse, original receipt
+time and current verified measurement from actual received items and receipt
+movements; client-supplied physical snapshots cannot substitute for these facts.
+The same order/account/product/SKU/return/item prefix precedes balances and the
+bin. Surviving sellable floor quantity excludes already-captured or supplier-return
+reserved units. Entry also caps cumulative per-item placement and accounts all
+active inbound capacity reservations. Disputed or inconsistent bin counters refuse
+new entries; historical totals are never reset.
+
+AFTER applies source debit, destination credit, immutable transfer, fresh measured
+placement, bin counters and a separate returned-goods storage position in one SQL
+statement. Failure rolls back the header and every effect, so direct SQL cannot
+commit an orphan command. `warehouse_placements.source_kind` distinguishes
+inbound putaway (mandatory task) from customer return (mandatory return-entry,
+NULL task). The original inbound insertion/completion guards remain intact; no
+ASN or fake receipt task is fabricated. Subsequent departure consumes the new
+placement's archived measurement; the original shipped lot remains released.
+Returned-goods storage retains receipt time; FIN-006/INV-10 must adopt this source
+when replacing the existing fee-position ledger.
+
+Tracked receipt proof is per return item. A legacy `custreturn` balance may merge
+same-product lines, so only a uniquely attributable QC-ok line with recorded
+central destination is eligible. Ambiguous pools, unknown destinations, supplier
+destinations and defective goods require their separate floor/reconciliation
+flows; neither current catalog routing nor original return quantity invents stock.
+Populated downgrade refuses to discard return entry evidence. Empty down/up keeps
+all pre-existing inbound placements and numerical bin counters unchanged.
+
+Local gates and delivery evidence are recorded in the execution ledger. Historical
+production occupancy still needs counted reconciliation, and intended-hardware
+1000-user/100-RPS capacity qualification remains open.

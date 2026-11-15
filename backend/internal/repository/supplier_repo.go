@@ -2329,7 +2329,16 @@ func (r *SupplierRepository) consumeReturnReservations(ctx context.Context, tx *
 	if err := releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actorUserID); err != nil {
 		return err
 	}
-	if err := decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed); err != nil {
+	known, err := hasKnownStorageProductTx(ctx, tx, productID)
+	if err != nil {
+		return err
+	}
+	if known {
+		err = consumeStorageBusinessEventTx(ctx, tx, "supplier_return", returnID, actorUserID)
+	} else {
+		err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed)
+	}
+	if err != nil {
 		return err
 	}
 	return nil

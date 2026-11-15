@@ -370,10 +370,8 @@ func TestFinanceBalanceConcurrentDebits(t *testing.T) {
 }
 
 func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
-	db := openFinanceBalanceDB(t)
-	storageFeeSeed(t, db)
-	storageEnable(t, db)
-	storageInsertPosition(t, db, "guard-position", "prod-measured", 1, 35)
+	db, f, warehouse := fin006Fixture(t)
+	fin006KnownReceipt(t, db, f, warehouse, 1, tehranDay(time.Now()).AddDate(0, 0, -35))
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
@@ -382,7 +380,7 @@ func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 	}
 	defer tx.Rollback()
 	var set TransactionLockSet
-	if err := LockAccountsTx(ctx, tx, &set, FinancialAccount{Type: "supplier", ID: "sup-1"}); err != nil {
+	if err := LockAccountsTx(ctx, tx, &set, FinancialAccount{Type: "supplier", ID: f.supplier}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

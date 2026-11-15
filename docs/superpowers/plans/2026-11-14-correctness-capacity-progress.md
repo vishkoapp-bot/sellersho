@@ -21,12 +21,12 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-04 | DONE | 1e86ad2 / 3aaacc4 | [Coupled acceptance](../../architecture/exact-inbound-putaway.md) |
 | INV-08 | DONE | d4e6399 | [SKU capacity](../../architecture/sku-measurement-capacity.md) |
 | INV-09 | DONE | 6c9632c / a2439ab / 3aaacc4 | [Exact putaway](../../architecture/exact-inbound-putaway.md) |
-| INV-06 | DONE | 54fe3da / return-bin entry | [Physical occupancy](../../architecture/warehouse-occupancy.md) |
+| INV-06 | DONE | 54fe3da / 00b34da | [Physical occupancy](../../architecture/warehouse-occupancy.md) |
 | INV-07 | DONE | 214a57c | [Stock API](../../architecture/stock-adjustment-api.md) |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
-| FIN-006 | TODO | — | — |
-| INV-10 | TODO | — | — |
+| FIN-006 | DONE | receipt-history stage | [Quantity/time contract](2026-11-15-storage-quantity-time.md) |
+| INV-10 | DONE | receipt-history stage | [Exact receipt adoption](2026-11-15-storage-quantity-time.md) |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
 | CAP-01 | Checkpoint OPEN | ff4ff13 / Harness checkpoint | [Harness and failed evidence](../../../load-tests/README.txt) |
 | FIN-003 | TODO | — | — |
@@ -545,3 +545,81 @@ Next: FIN-006 storage quantity/time plus INV-10 exact receipt/departure adoption
 its separately prepared plan is not included in this release. Production storage
 fees were read-only verified disabled and remain so. Historical counted occupancy
 reconciliation and intended-hardware1000-user/100-RPS qualification remain OPEN.
+
+
+## FIN-006 / INV-10 — DONE (coupled local receipt quantity-time gate)
+
+The deployed INV06 return-bin base00b34da was independently verified pushed and
+healthy before this stage. This stage separates each accepted QC/physical receipt
+cohort with true source, physical SKU, supplier and warehouse, actual physical
+arrival and distinct QC billing start. All current ASN/carton receipts converge
+on the same protected ledger; putaway and return-bin entry map existing cohorts
+without double credit. Failed QC and supplier-premises stock remain outside the
+central sellable-goods fee policy. Proven customer returns start fresh at QC.
+
+Immutable physical departures consume actual paid captures/consumed reservations
+and measured placement releases, not sibling SKU/product FIFO. Paid capture and
+cancellation retain held quantity. Daily fees use frozen measurement/tariff/free
+period and completed Tehran-midnight quantity, including unpaid days on closed
+positions. Both supplied probes charge34800, not348000 or0. Exact rational
+half-up per-unit rounding and checked money bounds replace floats. SQL protects
+receipt identity, quantity/closure/fee projections, daily charges/certificates and
+checkpoints; a checkpoint cannot discard an unrecorded positive quantity-day.
+Unknown policy/measurement/history never manufactures debt or blocks custody.
+
+Existing positions, dates, charges and financial links are preserved. Migration003
+adds source/cutover/exception evidence; it does not reprice old merged quantities.
+Populated downgrade refuses retained evidence. Existing001/002 checksums are not
+changed. Pre-cutover custody remains explicitly unreconciled. An incomplete actual
+source records a whole-source exception with no guessed partial debit, retains
+pending days and blocks unsafe active accrual until counted reconciliation. A
+later exception cannot suppress an already-closed known cohort's earlier unpaid
+accrual. SQL derives exception creation time, so an insert cannot backdate it.
+
+Independent review found unbounded discovery under LIMIT. Corrected with a
+persistent transactional keyset frontier and matching C-collated index:<=100
+receipt identities examined/pass,<=32 days/lot, explicit MoreWork and bounded
+unresolved sample. Real102-cohort test proves no starvation. Reviewed/root fixes
+were observed RED then GREEN, including SQL source forgery, rate precision,
+quantity/debt/checkpoint forgery, interruption recovery, unknown exception clock
+and actual closedA->later unknown stagedB->same-bin placement/shipment interaction.
+
+Final exact frozen tree7377809a62086863f5e5a62134b559c798087054 passed **639 top-level
+entries with zero failures** in guarded PostgreSQL/Redis clones. Only the intended
+TestMigrationProcessHelper entry skipped; its parent process tests executed.
+Both owned containers were verified removed. Frontend **288/288**, production
+build and final repository/server go vet passed. Linux server/migrator builds
+passed. Frontend/Go runtime sources are hash-identical to those build/test trees;
+only the SQL fix and extra regressions changed in the final candidate.
+
+Evidence: releases/fin006-release-source-proof.json;
+logs/fin006-release-frozen-full.log, fin006-release-vet.log,
+fin006-frozen-frontend.log, fin006-frozen-build.log;
+focused fin006-closed-exception-after.log5/5 and
+fin006-exception-boundaries-after.log2/2. Initial evolving discovery635/41fail,
+first frozen636/1fixture-fail, corrected intermediate636/0 and final639/0 logs are
+retained separately; failures were fixed, never skipped or called release success.
+
+Ruling: preserve the existing architecture; no new central-to-central transfer
+feature is invented. Current inbound writers accept supplier->central or explicit
+external replenishment. Pure transfer policy preserves root age/rate and one
+midnight owner; unsupported persisted transfer lineage fails closed. Cost: any
+future central-transfer writer needs physical lineage and its own acceptance.
+Ruling: historical unallocated returns remain uncertified; actual order capture,
+QC and conserved physical receipt are required for new billable return cohorts.
+Cost: those old goods require counted review, not guessed supplier/age charges.
+Ruling: active uncertain histories remain pending for counted reconciliation,
+while later unrelated uncertainty cannot block already-proven closed history.
+Cost: active uncertain cohorts wait for reviewed resolution; no pending debt is
+silently discarded or charged from guessed quantities.
+
+Production fee activation and historical reconciliation remain OPEN. Storage fees
+were read-only verified OFF on production; this stage does not enable them.
+Hardware1000-user/100RPS and production-scale execution-plan qualifications remain
+OPEN under the user's local-only choice. Actual release delivery is recorded by
+deploy.ps1 receipts/backup path and the production deployed-commit marker.
+
+Task inventory after this local gate: **20 DONE,5 checkpoints OPEN,29 TODO** out of54.
+Next: FIN-003 durable paid-cancellation refund liability, then the remaining task
+contracts. A next-stage refund-destination preference was requested asynchronously;
+it does not gate this storage release. No FIN003 implementation is in this commit.

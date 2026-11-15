@@ -7,24 +7,13 @@ package repository
 // is a separate owner decision (platform_settings.storage_fee_enabled,
 // migration 202611050005).
 //
-// The assessment walks warehouse_storage_positions (migration
-// 202610280005) and writes one warehouse_storage_fee_charges row per
-// position per chargeable calendar day (Asia/Tehran); the table's
-// UNIQUE(position_id, fee_date) is the idempotency anchor, so a re-run
-// never double-charges the same position-day. Charges are deducted
-// from the supplier balance on read (see supplierBalanceSQLWithStorage
-// in supplier_panel_repo.go), so Available drops by exactly the
-// charged total.
-//
-// Per-position per-day fee: the product's per-unit daily rate
-// (weight_kg x per-kg tariff + volume_m3 x per-m3 tariff, rounded to
-// the nearest Toman) multiplied by the position quantity. A position
-// whose product lacks ANY of weight/length/width/height is skipped
-// and counted — dimensions are never guessed. Only fully elapsed days
-// are charged (a day is billed once it has completed), and the first
-// storage_fee_free_days calendar days from original_stocked_at are
-// free (the original timestamp is used so an inter-warehouse transfer
-// never resets the free window — migration 202610280005 §5.7).
+// Known QC receipts own separate immutable age, physical SKU/warehouse,
+// measurement and tariff snapshots. Completed Tehran days use the quantity held
+// at that day's midnight; physical departure retains unpaid completed days.
+// Assessment is bounded and idempotent by receipt/day. MoreWork means another
+// pass is needed. Old unknown receipt histories remain unbillable and visible
+// in warehouse_storage_history_audit; catalog edits cannot certify their past.
+// Fees reduce supplier settlement availability on read and are never cash payouts.
 //
 // RunStorageFeeAssessment is a plain callable: the admin endpoint
 // POST /admin/storage-fees/run invokes it today; a scheduler could
@@ -35,11 +24,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"math"
+	"math/big"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/drup/platform/internal/pricing"
 )
 
 // ErrStorageFeeDisabled is returned by RunStorageFeeAssessment while
@@ -63,6 +51,10 @@ func DefaultStorageFeeSettings() StorageFeeSettings {
 
 // StorageFeeRunSummary is one assessment run's report.
 type StorageFeeRunSummary struct {
+	ReceiptsExamined              int   `json:"receiptsExamined"`
+	MoreWork                      bool  `json:"moreWork"`
+	VerifiedReceiptHistoryOnly    bool  `json:"verifiedReceiptHistoryOnly"`
+	UnresolvedSampleLimited       bool  `json:"unresolvedSampleLimited"`
 	PositionsCharged              int   `json:"positionsCharged"`
 	PositionsSkippedNoMeasurement int   `json:"positionsSkippedNoMeasurement"`
 	ChargesCreated                int   `json:"chargesCreated"`
@@ -119,217 +111,33 @@ func tehranDay(t time.Time) time.Time {
 // storageFeeUnitDayToman is one unit's daily fee in whole Tomans:
 // weight and volume components BOTH apply (the recorded two-tariff
 // decision), rounded to the nearest Toman.
-func storageFeeUnitDayToman(weightGrams, lengthMM, widthMM, heightMM int, settings StorageFeeSettings) int64 {
-	weightKg := float64(weightGrams) / 1000.0
-	volumeM3 := float64(lengthMM) * float64(widthMM) * float64(heightMM) / 1e9
-	fee := weightKg*float64(settings.PerKgDay) + volumeM3*float64(settings.PerM3Day)
-	return int64(math.Floor(fee + 0.5))
+func storageFeeUnitDayToman(weightGrams, lengthMM, widthMM, heightMM int, settings StorageFeeSettings) (int64, error) {
+	if weightGrams <= 0 || weightGrams > 1000000000 || lengthMM <= 0 || lengthMM > 1000000 || widthMM <= 0 || widthMM > 1000000 || heightMM <= 0 || heightMM > 1000000 || settings.PerKgDay < 0 || settings.PerKgDay > pricing.MaxTransportMoney || settings.PerM3Day < 0 || settings.PerM3Day > pricing.MaxTransportMoney {
+		return 0, pricing.ErrInvalidMoney
+	}
+	// Common denominator1e9: grams/1000 and mm³/1e9. Sum both
+	// exact components before the one nearest-Toman, half-up rounding.
+	weight := new(big.Int).Mul(big.NewInt(int64(weightGrams)), big.NewInt(settings.PerKgDay))
+	weight.Mul(weight, big.NewInt(1000000))
+	volume := big.NewInt(int64(lengthMM))
+	for _, factor := range []int64{int64(widthMM), int64(heightMM), settings.PerM3Day} {
+		volume.Mul(volume, big.NewInt(factor))
+	}
+	numerator := new(big.Int).Add(weight, volume)
+	denominator := big.NewInt(1000000000)
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(numerator, denominator, remainder)
+	if new(big.Int).Lsh(remainder, 1).Cmp(denominator) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	if !quotient.IsInt64() || quotient.Cmp(big.NewInt(pricing.MaxTransportMoney)) > 0 {
+		return 0, pricing.ErrInvalidMoney
+	}
+	return quotient.Int64(), nil
 }
 
-type storagePositionRow struct {
-	id                string
-	supplierID        string
-	productID         string
-	warehouseID       string
-	goodsClass        string
-	qty               int
-	originalStockedAt time.Time
-	lastFeeDate       sql.NullTime
-	lastAssessedDate  sql.NullTime
-	weightGrams       sql.NullInt64
-	lengthMM          sql.NullInt64
-	widthMM           sql.NullInt64
-	heightMM          sql.NullInt64
-}
-
-func (p storagePositionRow) measured() bool {
-	return p.weightGrams.Valid && p.weightGrams.Int64 > 0 &&
-		p.lengthMM.Valid && p.lengthMM.Int64 > 0 &&
-		p.widthMM.Valid && p.widthMM.Int64 > 0 &&
-		p.heightMM.Valid && p.heightMM.Int64 > 0
-}
-
-// RunStorageFeeAssessment charges every open storage position for its
-// uncharged, fully elapsed days beyond the free window, in one
-// transaction. It refuses (ErrStorageFeeDisabled) while the flag is
-// OFF. Safe to re-run: UNIQUE(position_id, fee_date) plus the
-// last_fee_date / last_assessed_date checkpoints make repeat runs
-// no-ops for already-assessed days.
+// RunStorageFeeAssessment uses frozen receipt facts and bounded quantity history.
+// It retains completed unpaid days even after the current position has closed.
 func (r *SupplierRepository) RunStorageFeeAssessment(ctx context.Context) (StorageFeeRunSummary, error) {
-	var summary StorageFeeRunSummary
-	settings, err := r.GetStorageFeeSettings(ctx)
-	if err != nil {
-		return summary, err
-	}
-	if !settings.Enabled {
-		return summary, ErrStorageFeeDisabled
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return summary, err
-	}
-	defer tx.Rollback()
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT p.id, p.supplier_id, p.product_id, p.warehouse_id, p.goods_class, p.qty,
-		       p.original_stocked_at, p.last_fee_date, p.last_assessed_date,
-		       pr.weight_grams, pr.length_mm, pr.width_mm, pr.height_mm
-		FROM warehouse_storage_positions p
-		JOIN products pr ON pr.id = p.product_id
-		WHERE p.closed_at IS NULL AND p.qty > 0
-		ORDER BY p.id`)
-	if err != nil {
-		return summary, err
-	}
-	positions := []storagePositionRow{}
-	for rows.Next() {
-		var p storagePositionRow
-		if err := rows.Scan(&p.id, &p.supplierID, &p.productID, &p.warehouseID, &p.goodsClass, &p.qty,
-			&p.originalStockedAt, &p.lastFeeDate, &p.lastAssessedDate,
-			&p.weightGrams, &p.lengthMM, &p.widthMM, &p.heightMM); err != nil {
-			rows.Close()
-			return summary, err
-		}
-		positions = append(positions, p)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return summary, err
-	}
-	rows.Close()
-
-	// Discover the whole prefix before taking any position locks. Re-read the
-	// assessment input after principal/product/position guards are all held.
-	var plan []TransactionRowLock
-	for _, p := range positions {
-		plan = append(plan, TransactionRowLock{Table: "suppliers", ID: p.supplierID}, TransactionRowLock{Table: "products", ID: p.productID}, TransactionRowLock{Table: "warehouse_storage_positions", ID: p.id})
-	}
-	bounded, stop := context.WithTimeout(ctx, 5*time.Second)
-	defer stop()
-	if err := LockTransactionRowsTx(bounded, tx, &TransactionLockSet{}, plan...); err != nil {
-		return summary, err
-	}
-	refreshed := make([]storagePositionRow, 0, len(positions))
-	for _, p := range positions {
-		oldSupplier, oldProduct := p.supplierID, p.productID
-		err := tx.QueryRowContext(ctx, `SELECT p.supplier_id,p.product_id,p.warehouse_id,p.goods_class,p.qty,p.original_stocked_at,p.last_fee_date,p.last_assessed_date,pr.weight_grams,pr.length_mm,pr.width_mm,pr.height_mm FROM warehouse_storage_positions p JOIN products pr ON pr.id=p.product_id WHERE p.id=$1 AND p.closed_at IS NULL AND p.qty>0`, p.id).Scan(&p.supplierID, &p.productID, &p.warehouseID, &p.goodsClass, &p.qty, &p.originalStockedAt, &p.lastFeeDate, &p.lastAssessedDate, &p.weightGrams, &p.lengthMM, &p.widthMM, &p.heightMM)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return summary, err
-		}
-		if oldSupplier != p.supplierID || oldProduct != p.productID {
-			return summary, ErrFinanceAccountChanged
-		}
-		refreshed = append(refreshed, p)
-	}
-	positions = refreshed
-
-	// P0-16 notify totals per supplier, sent only after the run commits.
-	chargedBySupplier := map[string]int64{}
-	positionsBySupplier := map[string]int{}
-
-	today := tehranDay(time.Now())
-	lastChargeableDay := today.AddDate(0, 0, -1) // only fully elapsed days are billed
-
-	for _, p := range positions {
-		if !p.measured() {
-			// Never guess dimensions. Checkpoints stay untouched, so
-			// the position is assessed once measurements exist.
-			summary.PositionsSkippedNoMeasurement++
-			continue
-		}
-		unitDay := storageFeeUnitDayToman(int(p.weightGrams.Int64), int(p.lengthMM.Int64), int(p.widthMM.Int64), int(p.heightMM.Int64), settings)
-		amountPerDay := unitDay * int64(p.qty)
-
-		firstChargeable := tehranDay(p.originalStockedAt).AddDate(0, 0, settings.FreeDays)
-		windowStart := firstChargeable
-		for _, checkpoint := range []sql.NullTime{p.lastFeeDate, p.lastAssessedDate} {
-			if checkpoint.Valid {
-				if next := tehranDay(checkpoint.Time).AddDate(0, 0, 1); next.After(windowStart) {
-					windowStart = next
-				}
-			}
-		}
-		if windowStart.After(lastChargeableDay) {
-			// Nothing to bill yet; still record that the pass looked
-			// at the position through the last elapsed day.
-			if err := advanceStorageAssessed(ctx, tx, p, lastChargeableDay); err != nil {
-				return summary, err
-			}
-			continue
-		}
-
-		chargedHere := false
-		var lastCharged time.Time
-		var insertedTotal int64
-		for day := windowStart; !day.After(lastChargeableDay); day = day.AddDate(0, 0, 1) {
-			if amountPerDay > 0 {
-				res, err := tx.ExecContext(ctx, `
-					INSERT INTO warehouse_storage_fee_charges
-						(id, position_id, supplier_id, product_id, warehouse_id, fee_date, qty, fee_unit_day_toman, amount_toman, goods_class, estimated)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE)
-					ON CONFLICT (position_id, fee_date) DO NOTHING`,
-					"WSF-"+uuid.NewString(), p.id, p.supplierID, p.productID, p.warehouseID, day, p.qty, unitDay, amountPerDay, p.goodsClass)
-				if err != nil {
-					return summary, err
-				}
-				affected, err := res.RowsAffected()
-				if err != nil {
-					return summary, err
-				}
-				if affected > 0 {
-					chargedHere = true
-					lastCharged = day
-					insertedTotal += amountPerDay
-					summary.ChargesCreated++
-				}
-			}
-		}
-		if chargedHere {
-			summary.PositionsCharged++
-			summary.TotalCharged += insertedTotal
-			chargedBySupplier[p.supplierID] += insertedTotal
-			positionsBySupplier[p.supplierID]++
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE warehouse_storage_positions
-				SET last_fee_date = $2, last_assessed_date = $3,
-				    total_fee_charged_toman = total_fee_charged_toman + $4, updated_at = NOW()
-				WHERE id = $1`, p.id, lastCharged, lastChargeableDay, insertedTotal); err != nil {
-				return summary, err
-			}
-		} else {
-			if err := advanceStorageAssessed(ctx, tx, p, lastChargeableDay); err != nil {
-				return summary, err
-			}
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return summary, fmt.Errorf("commit storage fee assessment: %w", err)
-	}
-	// P0-16 (best-effort): storage fee charged - each charged supplier.
-	for supplierID, total := range chargedBySupplier {
-		notifyStorageFeeCharged(ctx, r.db, supplierID, total, positionsBySupplier[supplierID])
-	}
-	return summary, nil
-}
-
-// advanceStorageAssessed moves a position's last_assessed_date forward
-// (never backward) without touching last_fee_date: the pass has looked
-// at those days, so they are never re-scanned, but no charge was made.
-func advanceStorageAssessed(ctx context.Context, tx *sql.Tx, p storagePositionRow, through time.Time) error {
-	if p.lastAssessedDate.Valid && !tehranDay(p.lastAssessedDate.Time).Before(through) {
-		return nil
-	}
-	if tehranDay(p.originalStockedAt).After(through) {
-		return nil
-	}
-	_, err := tx.ExecContext(ctx, `
-		UPDATE warehouse_storage_positions
-		SET last_assessed_date = $2, updated_at = NOW()
-		WHERE id = $1`, p.id, through)
-	return err
+	return r.runStorageHistoryAssessment(ctx, time.Now())
 }

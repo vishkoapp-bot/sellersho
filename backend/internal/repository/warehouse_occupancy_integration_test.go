@@ -313,7 +313,7 @@ func TestINV06HistoricalUnknownBinShipsWithoutInventingCapacity(t *testing.T) {
 	unknown := inv08Bin(t, db, warehouse, 10000, 10000)
 	opsExec(t, db, `UPDATE warehouse_bins SET quantity=1,occupied_volume_cm3=123,occupied_weight_grams=456 WHERE bin_code=$1`, unknown)
 	opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,$3,$4,'supplier','bin',$5,'sellable',1,$6)`, "000-legacy-"+uuid.NewString(), f.product, f.supplier, sku, "bin:"+unknown, warehouse)
-	opsExec(t, db, `UPDATE warehouse_storage_positions SET qty=qty+1 WHERE product_id=$1`, f.product)
+	opsExec(t, db, `INSERT INTO warehouse_storage_positions(id,product_id,supplier_id,warehouse_id,qty,stocked_at,original_stocked_at) VALUES($1,$2,$3,$4,1,NOW(),NOW())`, "old-unknown-"+uuid.NewString(), f.product, f.supplier, warehouse)
 	order := inv06PaidOrder(t, db, f, warehouse, sku)
 	opsExec(t, db, `UPDATE orders SET status='packed',fulfillment_method='warehouse' WHERE id=$1`, order)
 	if err := NewWarehouseRepository(db).ShipOrder(context.Background(), order, "post", "TRK-"+order); err != nil {

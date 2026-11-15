@@ -127,8 +127,8 @@ func TestStoragePositionCreatedByQCPassAndToppedUp(t *testing.T) {
 	if err := repo.RecordQCPass(ctx, f.product, first, f.user, 6); err != nil {
 		t.Fatalf("RecordQCPass #1: %v", err)
 	}
-	if positions := openPositions(t, db, f.product); len(positions) != 0 {
-		t.Fatalf("QC alone created storage position: %+v", positions)
+	if positions := openPositions(t, db, f.product); len(positions) != 1 {
+		t.Fatalf("QC must own one receipt position: %+v", positions)
 	}
 	inv09PlacePending(t, db, f, first, warehouse)
 	positions := openPositions(t, db, f.product)
@@ -141,35 +141,24 @@ func TestStoragePositionCreatedByQCPassAndToppedUp(t *testing.T) {
 	}
 	firstOriginal := p.originalStockedAt
 
-	// A second inbound for the same triple tops the SAME position up;
-	// the free-window clock (original_stocked_at) must not move.
+	// A second receipt has its own age, source and initial units.
 	second := inv09ReceiveLegacy(t, db, f, warehouse, 5)
 	if err := repo.RecordQCPass(ctx, f.product, second, f.user, 5); err != nil {
-		t.Fatalf("RecordQCPass #2: %v", err)
+		t.Fatal(err)
 	}
 	inv09PlacePending(t, db, f, second, warehouse)
 	positions = openPositions(t, db, f.product)
-	if len(positions) != 1 {
-		t.Fatalf("positions after top-up = %d, want 1 (merged)", len(positions))
+	if len(positions) != 2 || positions[0].qty != 6 || positions[1].qty != 5 || positions[0].inboundID != first || positions[1].inboundID != second || !positions[0].originalStockedAt.Equal(firstOriginal) || !positions[1].originalStockedAt.After(firstOriginal) {
+		t.Fatalf("receipt cohorts merged/re-aged: %+v", positions)
 	}
-	if positions[0].qty != 11 {
-		t.Fatalf("topped-up qty = %d, want 11", positions[0].qty)
-	}
-	if !positions[0].originalStockedAt.Equal(firstOriginal) {
-		t.Fatalf("original_stocked_at moved on top-up: %v -> %v", firstOriginal, positions[0].originalStockedAt)
-	}
-	if positions[0].inboundID != first {
-		t.Fatalf("inbound_id after top-up = %q, want INB-1 (the opener)", positions[0].inboundID)
-	}
-
-	// Replay of the same QC pass must not double-count the position.
 	if err := repo.RecordQCPass(ctx, f.product, second, f.user, 5); err != nil {
-		t.Fatalf("RecordQCPass replay: %v", err)
+		t.Fatal(err)
 	}
 	positions = openPositions(t, db, f.product)
-	if len(positions) != 1 || positions[0].qty != 11 {
-		t.Fatalf("after replay positions = %+v, want one position of 11", positions)
+	if len(positions) != 2 || positions[0].qty+positions[1].qty != 11 {
+		t.Fatalf("QC replay duplicated quantity: %+v", positions)
 	}
+
 }
 
 func TestStoragePositionCreatedByCompleteQC(t *testing.T) {
@@ -183,8 +172,8 @@ func TestStoragePositionCreatedByCompleteQC(t *testing.T) {
 	if err := repo.CompleteQC(ctx, f.product, inbound, f.user, 4, 0, 0, "ok"); err != nil {
 		t.Fatalf("CompleteQC: %v", err)
 	}
-	if positions := openPositions(t, db, f.product); len(positions) != 0 {
-		t.Fatalf("QC alone created storage position: %+v", positions)
+	if positions := openPositions(t, db, f.product); len(positions) != 1 {
+		t.Fatalf("QC must own one receipt position: %+v", positions)
 	}
 	inv09PlacePending(t, db, f, inbound, warehouse)
 	positions := openPositions(t, db, f.product)
@@ -349,42 +338,19 @@ func TestStoragePositionHandoverReturnDecrement(t *testing.T) {
 }
 
 func TestStoragePositionPutawayAgedPositionIsChargedByEngine(t *testing.T) {
-	db := operationsDB(t)
-	f := opsFixtureNew(t, db)
-	warehouse := "w-" + uuid.NewString()
-	if err := NewSupplierRepository(db).RecordProductMeasurement(context.Background(), f.product, f.user, 500, 400, 300, 1500, "measured storage fixture"); err != nil {
-		t.Fatal(err)
+	db, f, warehouse := fin006Fixture(t)
+	task, position := fin006KnownReceipt(t, db, f, warehouse, 2, tehranDay(time.Now()).AddDate(0, 0, -31))
+	fin006PlaceTask(t, db, f, warehouse, task, 2)
+	var qty, count int
+	if err := db.QueryRow(`SELECT COUNT(*),SUM(qty) FROM warehouse_storage_positions WHERE product_id=$1`, f.product).Scan(&count, &qty); err != nil || count != 1 || qty != 2 {
+		t.Fatalf("putaway double credit %d/%d %v", count, qty, err)
 	}
-	ctx := context.Background()
-	warehouseRepo := NewWarehouseRepository(db)
-	supplierRepo := NewSupplierRepository(db)
-
-	// Stock arrives through the real receipt/QC/putaway path, creating the
-	// position; then the position is aged to 31 days (seeded
-	// timestamps) so the engine's free window has exactly one
-	// chargeable day.
-	inbound := inv09ReceiveLegacy(t, db, f, warehouse, 2)
-	if err := warehouseRepo.RecordQCPass(ctx, f.product, inbound, f.user, 2); err != nil {
-		t.Fatalf("RecordQCPass: %v", err)
+	summary, err := NewSupplierRepository(db).RunStorageFeeAssessment(context.Background())
+	if err != nil || summary.TotalCharged != 6960 || summary.ChargesCreated != 1 || summary.PositionsCharged != 1 {
+		t.Fatalf("known aged putaway %+v %v", summary, err)
 	}
-	inv09PlacePending(t, db, f, inbound, warehouse)
-	aged := storageStockedAt(31)
-	if _, err := db.Exec(`UPDATE warehouse_storage_positions SET stocked_at = $1, original_stocked_at = $1 WHERE product_id = $2`, aged, f.product); err != nil {
-		t.Fatalf("age position: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE platform_settings SET storage_fee_enabled = true WHERE id = 1`); err != nil {
-		t.Fatalf("enable fees: %v", err)
-	}
-	summary, err := supplierRepo.RunStorageFeeAssessment(ctx)
-	if err != nil {
-		t.Fatalf("RunStorageFeeAssessment: %v", err)
-	}
-	// unit day = 3480 (1.5 kg x 2000 + 0.06 m3 x 8000); qty 2 -> 6960
-	// for the single chargeable day beyond the 30 free days.
-	if summary.ChargesCreated != 1 || summary.TotalCharged != 6960 || summary.PositionsCharged != 1 {
-		t.Fatalf("summary = %+v, want 1 charge of 6960 across 1 position", summary)
-	}
-	if n := storageChargeCount(t, db); n != 1 {
-		t.Fatalf("charge rows = %d, want 1", n)
+	var identity bool
+	if err = db.QueryRow(`SELECT p.stocked_at=l.billing_start_at AND p.original_stocked_at=l.billing_start_at AND l.physical_received_at<l.billing_start_at FROM warehouse_storage_positions p JOIN warehouse_storage_receipt_lots l ON l.id=p.id WHERE p.id=$1`, position).Scan(&identity); err != nil || !identity {
+		t.Fatalf("receipt dates lost: %v", err)
 	}
 }

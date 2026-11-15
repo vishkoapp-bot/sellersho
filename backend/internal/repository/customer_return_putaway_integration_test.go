@@ -375,7 +375,7 @@ func TestINV06CustomerReturnFreshBinEntryAndSecondDeparture(t *testing.T) {
 				t.Fatalf("placement=%+v", result)
 			}
 			var receiptClock bool
-			if err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM warehouse_storage_positions p JOIN warehouse_return_bin_entries e ON p.id='WSP-'||e.id WHERE e.id=$1 AND p.goods_class='returned' AND p.stocked_at=e.received_at AND p.original_stocked_at=e.received_at AND p.qty=e.quantity)`, result.ID).Scan(&receiptClock); err != nil || !receiptClock {
+			if err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM warehouse_storage_positions p JOIN warehouse_storage_receipt_lots l ON l.id=p.id JOIN warehouse_return_bin_entries e ON l.source_kind='customer_return' AND l.source_event_id=e.return_item_id::text WHERE e.id=$1 AND p.goods_class='returned' AND p.stocked_at=e.received_at AND p.original_stocked_at=e.received_at AND p.qty=e.quantity)`, result.ID).Scan(&receiptClock); err != nil || !receiptClock {
 				t.Fatalf("return receipt clock lost: %v", err)
 			}
 			replay, err := wh.PlaceCustomerReturnItemInBin(ctx, ret, item, bin, 2, "QC-passed return", f.user, key)

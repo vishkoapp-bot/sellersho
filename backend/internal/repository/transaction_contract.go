@@ -24,6 +24,7 @@ type TransactionRowLock struct {
 // two classes table order is explicit, then IDs sort bytewise, not by discovery
 // order, FIFO timestamps, SQL planner order, or localized display names.
 var transactionLockTables = map[string]int{
+	"platform_settings":    50,
 	"orders":               100,
 	"payment_transactions": 200,
 	"stores":               300, "suppliers": 301, "users": 302,

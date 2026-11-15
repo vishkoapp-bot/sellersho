@@ -156,8 +156,14 @@ func consumeExactPutawayTx(ctx context.Context, tx *sql.Tx, task, bin, actor str
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	if err = creditStoragePositionTx(ctx, tx, a.product, a.supplier, a.warehouse, storageInbound, a.quantity); err != nil {
+	var knownReceipt bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM warehouse_storage_receipt_lots l JOIN inbound_putaway_allocations a ON a.disposition_id=l.source_event_id AND l.source_kind='inbound_qc' WHERE a.task_id=$1)`, task).Scan(&knownReceipt); err != nil {
 		return err
+	}
+	if !knownReceipt {
+		if err = creditStoragePositionTx(ctx, tx, a.product, a.supplier, a.warehouse, storageInbound, a.quantity); err != nil {
+			return err
+		}
 	}
 	return syncProductStockTx(ctx, tx, a.product)
 }

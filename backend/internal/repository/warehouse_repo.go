@@ -1255,7 +1255,7 @@ func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, c
 	// leave the warehouse at this carrier handover, so the order's
 	// warehouse-routed quantities leave the position ledger (FIFO)
 	// in the same transaction.
-	if err := consumeShippedOrderPositionsTx(ctx, tx, updatedID); err != nil {
+	if err := consumeShippedOrderPositionsTx(ctx, tx, updatedID, actor); err != nil {
 		return err
 	}
 	if err := NotifyUser(ctx, tx, customerUserID, NotifKindOrderStatus,

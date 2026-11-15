@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/migrations"
 	"github.com/google/uuid"
 )
 
@@ -16,17 +17,7 @@ import (
 // must break these conserved-quantity assertions against PostgreSQL.
 func inv04Receipt(t *testing.T, quantity, received int, both ...bool) (*sql.DB, *WarehouseRepository, string, string) {
 	t.Helper()
-	_, schema, red, blue := skuInventoryFixture(t)
-	db := skuScopedDB(t, schema)
-	for _, q := range []string{
-		`CREATE TABLE qc_results(id TEXT PRIMARY KEY,product_id TEXT,inbound_id TEXT,inspector_user_id TEXT,status TEXT,defect_reason TEXT,quantity_passed INT,quantity_failed INT,created_at TIMESTAMPTZ)`,
-		`CREATE TABLE qc_discrepancies(id TEXT PRIMARY KEY,inbound_id TEXT,supplier_id TEXT,product_id TEXT,expected_quantity INT,received_quantity INT,defect_count INT,reason TEXT,status TEXT,created_at TIMESTAMPTZ)`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inv04Migrate(t, db)
+	db, red, blue := inv04CanonicalFixture(t)
 	if _, err := db.Exec(`UPDATE inventory_balances SET quantity=$2 WHERE variant_id=$1`, red, quantity); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +47,7 @@ func inv04Receipt(t *testing.T, quantity, received int, both ...bool) (*sql.DB, 
 func TestINV04ExactSKUSelectorAndConcurrentEndpoints(t *testing.T) {
 	db, wh, shipment, red := inv04Receipt(t, 5, 5, true)
 	ctx := context.Background()
-	if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 5); err != ErrInboundProvenance {
+	if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 5); err != ErrInboundProvenance {
 		t.Fatalf("ambiguous SKU selection: %v", err)
 	}
 	var redLine, blueLine, blue string
@@ -67,11 +58,11 @@ func TestINV04ExactSKUSelectorAndConcurrentEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, selector := range [][]string{{""}, {"missing"}, {redLine, blueLine}} {
-		if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 5, selector...); err != ErrInboundProvenance {
+		if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 5, selector...); err != ErrInboundProvenance {
 			t.Fatalf("invalid selector accepted: %v", err)
 		}
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 3, 2, 0, "red inspection", redLine); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 3, 2, 0, "red inspection", redLine); err != nil {
 		t.Fatal(err)
 	}
 	var blueQuarantine, blueDamaged, blueSellable int
@@ -90,7 +81,7 @@ func TestINV04ExactSKUSelectorAndConcurrentEndpoints(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results <- wh.CompleteQC(ctx, "p", shipment, "staff", 0, 2, 0, "blue failed", blueLine)
+			results <- wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 0, 2, 0, "blue failed", blueLine)
 		}()
 	}
 	close(start)
@@ -131,7 +122,7 @@ func TestINV04DispositionEvidenceAndRollbackGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv04Migrate(t, db)
-	if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 1); err != nil {
+	if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{`UPDATE inbound_qc_dispositions SET quantity_passed=0`, `DELETE FROM inbound_qc_dispositions`, `INSERT INTO inbound_qc_dispositions SELECT id||'-duplicate',receipt_line_id,cumulative_disposed,received_quantity,quantity_passed,quantity_failed,quantity_shortage,passed_delta,failed_delta,reason,actor_user_id,created_at FROM inbound_qc_dispositions`} {
@@ -148,7 +139,7 @@ func TestINV04DispositionEvidenceAndRollbackGuard(t *testing.T) {
 		t.Fatal("migration erased recorded disposition")
 	}
 	tx.Rollback()
-	if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 1); err != nil {
+	if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1); err != nil {
 		t.Fatalf("refused rollback damaged event: %v", err)
 	}
 }
@@ -166,7 +157,7 @@ func TestINV04AmbiguousPhysicalEvidenceRequiresReconciliation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := wh.CompleteQC(context.Background(), "p", shipment, "staff", 0, 1, 0, "counted fail"); err != ErrInboundProvenance {
+			if err := wh.CompleteQC(context.Background(), "p", shipment, "00000000-0000-4000-8000-000000000999", 0, 1, 0, "counted fail"); err != ErrInboundProvenance {
 				t.Fatalf("ambiguous history accepted: %v", err)
 			}
 			var events, moves int
@@ -185,6 +176,13 @@ func TestINV04AmbiguousPhysicalEvidenceRequiresReconciliation(t *testing.T) {
 
 func inv04Migrate(t *testing.T, db *sql.DB) {
 	t.Helper()
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('inbound_qc_dispositions') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		return
+	}
 	ddl, err := os.ReadFile("../../migrations/202611140008_inbound_qc_disposition.up.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -203,24 +201,12 @@ func inv04Migrate(t *testing.T, db *sql.DB) {
 
 func inv04LegacyReceipt(t *testing.T, quantity int) (*sql.DB, *WarehouseRepository) {
 	t.Helper()
-	_, schema, _, _ := skuInventoryFixture(t)
-	db := skuScopedDB(t, schema)
-	for _, q := range []string{
-		`ALTER TABLE inbound_shipments ADD COLUMN supplier_id TEXT,ADD COLUMN supplier_name TEXT DEFAULT 'supplier',ADD COLUMN items JSONB,ADD COLUMN scanned_items JSONB DEFAULT '[]',ADD COLUMN started_receiving_at TIMESTAMPTZ,ADD COLUMN completed_at TIMESTAMPTZ,ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()`,
-		`CREATE TABLE inbound_receiving_logs(id TEXT PRIMARY KEY,inbound_id TEXT,staff_user_id TEXT,action TEXT,scanned_item JSONB,created_at TIMESTAMPTZ)`,
-		`CREATE TABLE qc_results(id TEXT PRIMARY KEY,product_id TEXT,inbound_id TEXT,inspector_user_id TEXT,status TEXT,defect_reason TEXT,quantity_passed INT,quantity_failed INT,created_at TIMESTAMPTZ)`,
-		`CREATE TABLE qc_discrepancies(id TEXT PRIMARY KEY,inbound_id TEXT,supplier_id TEXT,product_id TEXT,expected_quantity INT,received_quantity INT,defect_count INT,reason TEXT,status TEXT,created_at TIMESTAMPTZ)`,
-		`INSERT INTO products(id,supplier_id,stock,schema_version) VALUES('legacy','s',0,0)`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inv04Migrate(t, db)
+	db, _, _ := inv04CanonicalFixture(t)
+	opsExec(t, db, `INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,schema_version) VALUES('legacy','legacy','inv04-legacy','s',2000,1000,0,0,0)`)
 	if _, err := db.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled,supplier_warehouse_id) VALUES('legacy-source','legacy','s','supplier','supplier','supplier-warehouse:sw1','sellable',$1,TRUE,'sw1')`, quantity); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO inbound_shipments(id,status,warehouse_id,supplier_id,items) VALUES('INB-inv04','in_transit','w1','s',jsonb_build_array(jsonb_build_object('product_id','legacy','quantity',$1::int)))`, quantity); err != nil {
+	if _, err := db.Exec(`INSERT INTO inbound_shipments(id,status,warehouse_id,supplier_id,supplier_name,items_count,cartons_count,items) VALUES('INB-inv04','in_transit','w1','s','INV04 supplier',$1,1,jsonb_build_array(jsonb_build_object('product_id','legacy','quantity',$1::int)))`, quantity); err != nil {
 		t.Fatal(err)
 	}
 	ctx, done := context.WithTimeout(context.Background(), 10*time.Second)
@@ -243,13 +229,13 @@ func inv04LegacyReceipt(t *testing.T, quantity int) (*sql.DB, *WarehouseReposito
 		t.Fatal(err)
 	}
 	wh := NewWarehouseRepository(db)
-	if err := wh.StartReceiving(ctx, "INB-inv04", "staff"); err != nil {
+	if err := wh.StartReceiving(ctx, "INB-inv04", "00000000-0000-4000-8000-000000000999"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wh.ScanItem(ctx, "INB-inv04", map[string]interface{}{"productId": "legacy", "quantity": float64(quantity)}, "staff"); err != nil {
+	if _, err := wh.ScanItem(ctx, "INB-inv04", map[string]interface{}{"productId": "legacy", "quantity": float64(quantity)}, "00000000-0000-4000-8000-000000000999"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteInbound(ctx, "INB-inv04", "staff"); err != nil {
+	if err := wh.CompleteInbound(ctx, "INB-inv04", "00000000-0000-4000-8000-000000000999"); err != nil {
 		t.Fatal(err)
 	}
 	return db, wh
@@ -257,7 +243,7 @@ func inv04LegacyReceipt(t *testing.T, quantity int) (*sql.DB, *WarehouseReposito
 
 func TestAuditSupplyFailedLegacyQCRemovesDeclaredSellableStock(t *testing.T) {
 	db, wh := inv04LegacyReceipt(t, 1)
-	if err := wh.CompleteQC(context.Background(), "legacy", "INB-inv04", "staff", 0, 1, 0, "failed"); err != nil {
+	if err := wh.CompleteQC(context.Background(), "legacy", "INB-inv04", "00000000-0000-4000-8000-000000000999", 0, 1, 0, "failed"); err != nil {
 		t.Fatal(err)
 	}
 	var total, sellable, damaged int
@@ -272,7 +258,7 @@ func TestAuditSupplyFailedLegacyQCRemovesDeclaredSellableStock(t *testing.T) {
 func TestINV04PartialDispositionStaysInQueue(t *testing.T) {
 	_, wh := inv04LegacyReceipt(t, 5)
 	ctx := context.Background()
-	if err := wh.RecordQCPass(ctx, "legacy", "INB-inv04", "staff", 3); err != nil {
+	if err := wh.RecordQCPass(ctx, "legacy", "INB-inv04", "00000000-0000-4000-8000-000000000999", 3); err != nil {
 		t.Fatal(err)
 	}
 	queue, err := wh.GetQCQueue(ctx)
@@ -290,10 +276,10 @@ func TestINV04PartialDispositionStaysInQueue(t *testing.T) {
 	if wire[0]["passedQuantity"] != float64(3) || wire[0]["failedQuantity"] != float64(0) || wire[0]["remainingQuantity"] != float64(2) {
 		t.Fatalf("queue lacks cumulative progress: %s", raw)
 	}
-	if err := wh.CompleteQC(ctx, "legacy", "INB-inv04", "staff", 3, 2, 0, "remaining failed"); err != nil {
+	if err := wh.CompleteQC(ctx, "legacy", "INB-inv04", "00000000-0000-4000-8000-000000000999", 3, 2, 0, "remaining failed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.RecordQCPass(ctx, "legacy", "INB-inv04", "staff", 3); err != nil {
+	if err := wh.RecordQCPass(ctx, "legacy", "INB-inv04", "00000000-0000-4000-8000-000000000999", 3); err != nil {
 		t.Fatalf("delayed partial replay: %v", err)
 	}
 	queue, err = wh.GetQCQueue(ctx)
@@ -304,7 +290,7 @@ func TestINV04PartialDispositionStaysInQueue(t *testing.T) {
 
 func TestINV04HistoricalQueueRemainsVisibleAsException(t *testing.T) {
 	db, wh := inv04LegacyReceipt(t, 5)
-	if _, err := db.Exec(`INSERT INTO inbound_shipments(id,status,warehouse_id,supplier_id,items,scanned_items) VALUES('INB-unallocated','received','w1','s','[{"product_id":"legacy","quantity":1}]','[{"productId":"legacy","quantity":1}]')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO inbound_shipments(id,status,warehouse_id,supplier_id,supplier_name,items_count,cartons_count,items,scanned_items) VALUES('INB-unallocated','received','w1','s','INV04 supplier',1,1,'[{"product_id":"legacy","quantity":1}]','[{"productId":"legacy","quantity":1}]')`); err != nil {
 		t.Fatal(err)
 	}
 	queue, err := wh.GetQCQueue(context.Background())
@@ -353,7 +339,12 @@ func inv04Quantities(t *testing.T, db *sql.DB, variant string, wantTotal, wantAc
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'inv04-capture','p',$2,1)`, uuid.NewString(), variant); err != nil {
+	opsExec(t, db, `INSERT INTO stores(id,name,slug,owner_name,owner_user_id,active_plan_id,status) VALUES('inv04-store','INV04','inv04-store','INV04','00000000-0000-4000-8000-000000000999','standard','active') ON CONFLICT DO NOTHING`)
+	opsExec(t, db, `INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,customer_user_id,payment_status) VALUES('inv04-capture','inv04-capture','inv04-store','INV04',2000,2000,'INV04','09999999999','p','c','a','1234512345','inv04-capture','00000000-0000-4000-8000-000000000999','pending') ON CONFLICT DO NOTHING`)
+	if _, err := tx.Exec(`INSERT INTO order_items(id,order_id,product_id,variant_id,quantity,wholesale_cost,platform_fee,seller_margin,final_unit_price) VALUES($1,'inv04-capture','p',$2,1,1000,0,1000,2000)`, uuid.NewString(), variant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,supplier_warehouse_id,origin_label,quantity) SELECT id::text,'inv04-capture',id,0,'supplier','s','sw1','source',1 FROM order_items WHERE order_id='inv04-capture'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := captureOrderInventoryTx(context.Background(), tx, "inv04-capture"); err != ErrInsufficientInventory {
@@ -373,7 +364,7 @@ func inv04Quantities(t *testing.T, db *sql.DB, variant string, wantTotal, wantAc
 
 func TestINV04FailedReceiptConservesTransferredUnit(t *testing.T) {
 	db, wh, shipment, variant := inv04Receipt(t, 1, 1)
-	if err := wh.CompleteQC(context.Background(), "p", shipment, "staff", 0, 1, 0, "damaged"); err != nil {
+	if err := wh.CompleteQC(context.Background(), "p", shipment, "00000000-0000-4000-8000-000000000999", 0, 1, 0, "damaged"); err != nil {
 		t.Fatalf("safe failed disposition rejected: %v", err)
 	}
 	inv04Quantities(t, db, variant, 1, 0, 1, 0)
@@ -382,18 +373,18 @@ func TestINV04FailedReceiptConservesTransferredUnit(t *testing.T) {
 func TestINV04PartialPassFailAndImmutableReplay(t *testing.T) {
 	db, wh, shipment, variant := inv04Receipt(t, 5, 5)
 	ctx := context.Background()
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 3, 2, 0, "inspection"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 3, 2, 0, "inspection"); err != nil {
 		t.Fatal(err)
 	}
 	if err := wh.CompleteQC(ctx, "p", shipment, "another-inspector", 3, 2, 0, "inspection"); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range [][3]int{{4, 1, 0}, {3, 3, 0}, {3, 2, 1}} {
-		if err := wh.CompleteQC(ctx, "p", shipment, "staff", q[0], q[1], q[2], "inspection"); err == nil {
+		if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", q[0], q[1], q[2], "inspection"); err == nil {
 			t.Fatalf("changed disposition accepted: %v", q)
 		}
 	}
-	if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 5); err == nil {
+	if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 5); err == nil {
 		t.Fatal("opposite endpoint replaced failed units")
 	}
 	inv04Quantities(t, db, variant, 5, 3, 2, 0)
@@ -404,8 +395,10 @@ func TestINV04OppositeEndpointReplay(t *testing.T) {
 		t.Run(first, func(t *testing.T) {
 			db, wh, shipment, variant := inv04Receipt(t, 2, 2)
 			ctx := context.Background()
-			record := func() error { return wh.RecordQCPass(ctx, "p", shipment, "staff", 2) }
-			complete := func() error { return wh.CompleteQC(ctx, "p", shipment, "staff", 2, 0, 0, "all passed") }
+			record := func() error { return wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 2) }
+			complete := func() error {
+				return wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 2, 0, 0, "all passed")
+			}
 			calls := []func() error{record, complete, record, complete}
 			if first == "complete" {
 				calls = []func() error{complete, record, complete, record}
@@ -415,7 +408,7 @@ func TestINV04OppositeEndpointReplay(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := wh.RecordQCPass(ctx, "p", shipment, "staff", 1); err == nil {
+			if err := wh.RecordQCPass(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1); err == nil {
 				t.Fatal("changed pass acknowledged")
 			}
 			inv04Quantities(t, db, variant, 2, 2, 0, 0)
@@ -436,7 +429,7 @@ func TestINV04OppositeEndpointReplay(t *testing.T) {
 func TestINV04CumulativeReceiptAndDelayedReplay(t *testing.T) {
 	db, wh, shipment, variant := inv04Receipt(t, 5, 2)
 	ctx := context.Background()
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 1, 1, 0, "batch one"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1, 1, 0, "batch one"); err != nil {
 		t.Fatal(err)
 	}
 	inv04Quantities(t, db, variant, 5, 1, 1, 0)
@@ -448,16 +441,16 @@ func TestINV04CumulativeReceiptAndDelayedReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	// This is the old completed batch, never a new delta against receipt 5.
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 1, 1, 0, "batch one"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1, 1, 0, "batch one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 4, 1, 0, "batch two"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 4, 1, 0, "batch two"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 1, 1, 0, "batch one"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 1, 1, 0, "batch one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 3, 2, 0, "rewrite failed disposition"); err == nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 3, 2, 0, "rewrite failed disposition"); err == nil {
 		t.Fatal("prior passed quantity was rewritten")
 	}
 	inv04Quantities(t, db, variant, 5, 4, 1, 0)
@@ -466,15 +459,15 @@ func TestINV04CumulativeReceiptAndDelayedReplay(t *testing.T) {
 func TestINV04ShortageHasNoPhysicalCredit(t *testing.T) {
 	db, wh, shipment, variant := inv04Receipt(t, 5, 3)
 	ctx := context.Background()
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 2, 1, 2, "two never arrived"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 2, 1, 2, "two never arrived"); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 2, 1, 2, "two never arrived"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 2, 1, 2, "two never arrived"); err != nil {
 		t.Fatal(err)
 	}
 	inv04Quantities(t, db, variant, 5, 2, 1, 0)
 	var discrepancies, expected, received int
-	if err := db.QueryRow(`SELECT COUNT(*),MAX(expected_quantity),MAX(received_quantity) FROM qc_discrepancies`).Scan(&discrepancies, &expected, &received); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*),MAX(expected_quantity),MAX(received_quantity) FROM qc_discrepancies WHERE inbound_id=$1`, shipment).Scan(&discrepancies, &expected, &received); err != nil {
 		t.Fatal(err)
 	}
 	if discrepancies != 1 || expected != 5 || received != 3 {
@@ -487,11 +480,41 @@ func TestINV04ShortageHasNoPhysicalCredit(t *testing.T) {
 	if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{variant, 5, "pass"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 4, 1, 0, "late arrival counted"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 4, 1, 0, "late arrival counted"); err != nil {
 		t.Fatalf("resolved shortage prevented later counted receipt disposition: %v", err)
 	}
-	if err := wh.CompleteQC(ctx, "p", shipment, "staff", 2, 1, 2, "two never arrived"); err != nil {
+	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 2, 1, 2, "two never arrived"); err != nil {
 		t.Fatalf("old shortage replay after late receipt: %v", err)
 	}
 	inv04Quantities(t, db, variant, 5, 4, 1, 0)
+}
+
+// Positive QC/storage integration uses the real migrated schema and guards.
+// The fixed domain IDs retain these disposition tests' exact conservation probes.
+func inv04CanonicalFixture(t *testing.T) (*sql.DB, string, string) {
+	t.Helper()
+	root := operationsDB(t)
+	schema := "inv04_current_" + uuid.NewString()[:8]
+	opsExec(t, root, `CREATE SCHEMA `+schema)
+	t.Cleanup(func() { root.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
+	db := skuScopedDB(t, schema)
+	opsExec(t, db, `CREATE FUNCTION uuid_generate_v4() RETURNS UUID LANGUAGE SQL AS 'SELECT public.uuid_generate_v4()'`)
+	if _, err := migrations.Run(context.Background(), db, migrations.Options{Dir: "../../migrations", MigrationTimeout: 20 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	actor := "00000000-0000-4000-8000-000000000999"
+	opsExec(t, db, `INSERT INTO users(id,mobile,full_name,role) VALUES($1,'09999999999','INV04 staff','supplier')`, actor)
+	opsExec(t, db, `INSERT INTO suppliers(id,name,owner_user_id,approval_status) VALUES('s','INV04 supplier',$1,'approved')`, actor)
+	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES('w1','INV04 central',1,1,'p','c')`)
+	opsExec(t, db, `INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES('sw1','s','INV04 source','p','c')`)
+	opsExec(t, db, `INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,schema_version,product_type,attribute_schema,origin_supplier_warehouse_id) VALUES('p','INV04 product','inv04-product','s',2000,1000,0,0,2,'variable','{}','sw1')`)
+	red, blue := uuid.NewString(), uuid.NewString()
+	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode,stock) VALUES($1,'p','INV04-RED','tracked',5),($2,'p','INV04-BLUE','tracked',3)`, red, blue)
+	for _, lot := range []struct {
+		id string
+		q  int
+	}{{red, 5}, {blue, 3}} {
+		opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,supplier_warehouse_id) VALUES($1,'p','s',$2,'supplier','supplier','supplier-warehouse:sw1','sellable',$3,'sw1')`, uuid.NewString(), lot.id, lot.q)
+	}
+	return db, red, blue
 }

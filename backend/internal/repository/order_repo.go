@@ -2295,7 +2295,7 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, ErrReturnIncompleteQC
 	}
 	for _, item := range qc {
-		res, err := tx.ExecContext(ctx, `UPDATE return_items SET qc_status = $1, received_at = NOW() WHERE id = $2 AND return_id = $3`, item.QCStatus, item.ReturnItemID, id)
+		res, err := tx.ExecContext(ctx, `UPDATE return_items SET qc_status = $1, received_at = clock_timestamp() WHERE id = $2 AND return_id = $3`, item.QCStatus, item.ReturnItemID, id)
 		if err != nil {
 			return nil, err
 		}
@@ -2308,7 +2308,8 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	// Restock (GAP 6): the goods are physically back and their
 	// verdicts are recorded, so stock truth moves NOW, at receive —
 	// not at refund, which may lag or never be pressed.
-	if err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID); err != nil {
+	storageSourcesAvailable, err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2395,6 +2396,11 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	if affected == 0 {
 		return nil, sql.ErrNoRows
 	}
+	if storageSourcesAvailable && destWarehouseID.Valid && !destSupplierWarehouseID.Valid {
+		if err := creditCustomerReturnStorageTx(ctx, tx, id); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -2410,6 +2416,8 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	return settlement, nil
 }
 
+// The result reports whether the canonical captured-inventory model can prove
+// new storage sources. Historical unallocated stock remains outside fee history.
 // restockReceivedReturnTx credits a just-received customer return's
 // items back into inventory inside the receive transaction (GAP 6).
 // QC 'ok' units become sellable again through the canonical ledger,
@@ -2430,20 +2438,20 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 // inventory_captured must be set (mirrors CancelOrder — never mint
 // stock that was never captured), and the whole block is a no-op on
 // a database without the canonical inventory tables.
-func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) error {
+func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) (bool, error) {
 	var hasInventory bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('inventory_movements') IS NOT NULL AND to_regclass('inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
-		return err
+		return false, err
 	}
 	if !hasInventory {
-		return nil
+		return false, nil
 	}
 	var captured bool
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(inventory_captured, FALSE) FROM orders WHERE id = $1`, orderID).Scan(&captured); err != nil {
-		return err
+		return false, err
 	}
 	if !captured {
-		return nil
+		return false, nil
 	}
 	destination := ""
 	if destSupplierWarehouseID.Valid && destSupplierWarehouseID.String != "" {
@@ -2460,7 +2468,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		WHERE ri.return_id = $1
 	`, returnID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	type receivedItem struct {
 		id          string
@@ -2477,23 +2485,23 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		var it receivedItem
 		if err := rows.Scan(&it.id, &it.orderItemID, &it.qty, &it.qcStatus, &it.variantID, &it.productID, &it.supplierID, &it.originLabel); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return err
+		return false, err
 	}
 	rows.Close()
 	skuAccounting, err := hasSKUInventoryTx(ctx, tx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, it := range items {
 		handled, err := restoreCapturedReturnTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if handled {
 			continue
@@ -2504,14 +2512,14 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		}
 		covered, err := canonicalCoveredTx(ctx, tx, it.productID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !covered {
 			// First canonical row for a legacy product: seed its
 			// existing products.stock into the ledger first, or the
 			// sellable projection would silently erase it.
 			if err := ensureCanonicalCoverageTx(ctx, tx, it.productID, it.supplierID); err != nil {
-				return err
+				return false, err
 			}
 		}
 		metadata := fmt.Sprintf(`{"qc":%q,"destination":%q,"origin":%q}`, it.qcStatus, destination, it.originLabel)
@@ -2519,20 +2527,20 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 			"customer_return", toStatus, "customer", "custreturn:"+returnID,
 			"customer_return", returnID,
 			"crstk:"+returnID+":"+it.id+":"+suffix, actorUserID, "%s", metadata); err != nil {
-			return err
+			return false, err
 		}
 		if it.qcStatus == "ok" {
 			if err := syncProductStockTx(ctx, tx, it.productID); err != nil {
-				return err
+				return false, err
 			}
 			if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
 				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
-					return err
+					return false, err
 				}
 			}
 		}
 	}
-	return nil
+	return skuAccounting, nil
 }
 
 // recordReturnReversalsTx writes the GAP 6 money reversals for a

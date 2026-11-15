@@ -1,29 +1,10 @@
 package repository
 
-// Storage-position lifecycle (gap 7 follow-up). The storage-fee
-// engine (storage_fee_repo.go) assesses warehouse_storage_positions
-// (migration 202610280005), but positions are a ledger this file's
-// helpers maintain alongside the inventory_balances movements they
-// accompany:
-//
-//   - CREATION: when an inbound QC pass mints sellable stock at a
-//     warehouse (RecordQCPass / CompleteQC in warehouse_repo.go —
-//     the physical -> sellable moveInventoryTx into location
-//     'warehouse:{inboundID}'), the passed quantity is credited to
-//     the open position for (product, supplier, warehouse), or a
-//     new position is opened. stocked_at / original_stocked_at are
-//     set ONLY on insert: a top-up never resets the free-window
-//     clock (the engine measures from original_stocked_at).
-//   - CONSUMPTION: when warehouse stock physically leaves — an
-//     order's ShipOrder handover, or a supplier stock-return's
-//     HandoverReturn — open positions are decremented oldest-first
-//     (FIFO by stocked_at), splitting across positions; a position
-//     that reaches zero is closed (closed_at = NOW()).
-//
-// Positions are the fee ledger; inventory_balances remain stock truth.
-// Order shipment requires complete named-origin position coverage. The older
-// supplier-return wrapper retains its historical under-coverage behavior until
-// its owning reservation/storage task adopts exact source positions.
+// Storage receipt cohorts and physical departure projection share the canonical
+// inventory transaction. New receipts use storage_receipt_history.go and exact
+// captured source/placement departures. These older FIFO helpers serve only
+// unresolved pre-cutover positions; they never establish a billable receipt age.
+// Paid capture and cancellation do not close a physically held receipt cohort.
 
 import (
 	"context"
@@ -43,18 +24,9 @@ func storagePositionsExistTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	return exists, err
 }
 
-// creditStoragePositionTx adds qty to the open storage position for
-// (productID, supplierID, warehouseID), opening a new position when
-// none is open. The caller must run it in the same transaction as
-// the inventory movement that made the stock sellable, and only
-// when that movement was genuinely new (see
-// qcSellableAlreadyCreditedTx) so a replayed QC pass cannot
-// double-count. A position's inbound_id records the inbound that
-// OPENED it; top-ups from later inbounds leave it (and both
-// timestamps) untouched. warehouseID == "" (legacy inbound with no
-// recorded destination warehouse) skips the credit: positions carry
-// a NOT NULL warehouse FK, and an unattributed position would bill
-// the wrong warehouse's storage.
+// creditStoragePositionTx preserves unattributed legacy custody as its own
+// unresolved row. It never merges a top-up into another receipt's free window.
+// New canonical QC arrivals use creditQCStorageReceiptTx in the same transaction.
 func creditStoragePositionTx(ctx context.Context, tx *sql.Tx, productID, supplierID, warehouseID, inboundID string, qty int) error {
 	if qty <= 0 || productID == "" || supplierID == "" || warehouseID == "" {
 		return nil
@@ -63,27 +35,10 @@ func creditStoragePositionTx(ctx context.Context, tx *sql.Tx, productID, supplie
 	if err != nil || !exists {
 		return err
 	}
-	var positionID string
-	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM warehouse_storage_positions
-		WHERE product_id = $1 AND supplier_id = $2 AND warehouse_id = $3 AND closed_at IS NULL
-		ORDER BY stocked_at ASC, id ASC
-		LIMIT 1 FOR UPDATE`, productID, supplierID, warehouseID).Scan(&positionID)
-	if err == sql.ErrNoRows {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO warehouse_storage_positions
-				(id, product_id, supplier_id, warehouse_id, inbound_id, goods_class, qty, stocked_at, original_stocked_at)
-			VALUES ($1, $2, $3, $4, NULLIF($5, ''), 'normal', $6, NOW(), NOW())`,
-			"WSP-"+uuid.NewString(), productID, supplierID, warehouseID, inboundID, qty)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE warehouse_storage_positions
-		SET qty = qty + $2, updated_at = NOW()
-		WHERE id = $1`, positionID, qty)
+	// Pre-cutover/unattributed receipts remain separate unknown histories.
+	// New canonical QC events use creditQCStorageReceiptTx instead. Never merge
+	// a legacy fallback into a certified receipt position or inherit its age.
+	_, err = tx.ExecContext(ctx, `INSERT INTO warehouse_storage_positions(id,product_id,supplier_id,warehouse_id,inbound_id,goods_class,qty,stocked_at,original_stocked_at) VALUES($1,$2,$3,$4,NULLIF($5,''),'normal',$6,NOW(),NOW())`, "WSP-"+uuid.NewString(), productID, supplierID, warehouseID, inboundID, qty)
 	return err
 }
 
@@ -216,7 +171,7 @@ func qcSellableAlreadyCreditedTx(ctx context.Context, tx *sql.Tx, productID, inb
 // consumeShippedOrderPositionsTx consumes every persisted warehouse split.
 // Historical missing origins/positions require explicit reconciliation; they can
 // never debit another warehouse or silently leave a split's storage outstanding.
-func consumeShippedOrderPositionsTx(ctx context.Context, tx *sql.Tx, orderID string) error {
+func consumeShippedOrderPositionsTx(ctx context.Context, tx *sql.Tx, orderID string, actors ...string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT oi.product_id,COALESCE(x.quantity,0),COALESCE(x.supplier_id,p.supplier_id,''),COALESCE(x.warehouse_id,''),COALESCE(x.origin_type,'legacy'),oi.quantity,COALESCE(SUM(x.quantity) OVER(PARTITION BY oi.id),0)
  FROM order_items oi JOIN products p ON p.id=oi.product_id LEFT JOIN order_item_origins x ON x.order_item_id=oi.id
  WHERE oi.order_id=$1 ORDER BY oi.id,x.leg_index`, orderID)
@@ -256,6 +211,17 @@ func consumeShippedOrderPositionsTx(ctx context.Context, tx *sql.Tx, orderID str
 	}
 	if warehouseSplits == 0 {
 		return nil
+	}
+	var knownReceipts bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM warehouse_storage_receipt_lots l JOIN order_items oi ON oi.product_id=l.product_id WHERE oi.order_id=$1)`, orderID).Scan(&knownReceipts); err != nil {
+		return err
+	}
+	if knownReceipts {
+		actor := "warehouse-dispatch"
+		if len(actors) > 0 {
+			actor = actors[0]
+		}
+		return consumeStorageBusinessEventTx(ctx, tx, "warehouse_shipment", orderID, actor)
 	}
 	exists, err := storagePositionsExistTx(ctx, tx)
 	if err != nil {

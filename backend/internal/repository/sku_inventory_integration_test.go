@@ -54,6 +54,7 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE UNIQUE INDEX sku_balance_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
 		`CREATE TABLE warehouses(id TEXT PRIMARY KEY,is_active BOOL DEFAULT TRUE,name TEXT DEFAULT 'warehouse')`,
 		`CREATE TABLE supplier_warehouses(id TEXT PRIMARY KEY,supplier_id TEXT,is_active BOOL DEFAULT TRUE,name TEXT DEFAULT 'supplier warehouse')`,
+		`CREATE TABLE warehouse_storage_receipt_lots (LIKE public.warehouse_storage_receipt_lots INCLUDING ALL)`,
 		`CREATE TABLE warehouse_storage_positions(id TEXT PRIMARY KEY,product_id TEXT,supplier_id TEXT,warehouse_id TEXT,inbound_id TEXT,goods_class TEXT,qty INT,stocked_at TIMESTAMPTZ DEFAULT NOW(),original_stocked_at TIMESTAMPTZ,closed_at TIMESTAMPTZ,updated_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE warehouse_bins(bin_code TEXT PRIMARY KEY,warehouse_id TEXT)`,
 		`INSERT INTO warehouse_bins VALUES('A-1','w1')`,

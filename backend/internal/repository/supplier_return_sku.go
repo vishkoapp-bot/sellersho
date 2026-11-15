@@ -259,7 +259,16 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 		if err = releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actor); err != nil {
 			return true, err
 		}
-		if err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", total); err != nil {
+		known, err := hasKnownStorageProductTx(ctx, tx, productID)
+		if err != nil {
+			return true, err
+		}
+		if known {
+			err = consumeStorageBusinessEventTx(ctx, tx, "supplier_return", returnID, actor)
+		} else {
+			err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", total)
+		}
+		if err != nil {
 			return true, err
 		}
 	}

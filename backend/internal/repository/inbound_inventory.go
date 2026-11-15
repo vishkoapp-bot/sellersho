@@ -121,8 +121,14 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inbound_qc_dispositions(id,receipt_line_id,cumulative_disposed,received_quantity,quantity_passed,quantity_failed,quantity_shortage,passed_delta,failed_delta,reason,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, qcID, l.ID, total, l.Received, passed, failed, shortage, deltaPassed, deltaFailed, reason, actor)
-	return err
+	_, err = tx.ExecContext(ctx, `INSERT INTO inbound_qc_dispositions(id,receipt_line_id,cumulative_disposed,received_quantity,quantity_passed,quantity_failed,quantity_shortage,passed_delta,failed_delta,reason,actor_user_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp())`, qcID, l.ID, total, l.Received, passed, failed, shortage, deltaPassed, deltaFailed, reason, actor)
+	if err != nil {
+		return err
+	}
+	if deltaPassed > 0 {
+		return creditQCStorageReceiptTx(ctx, tx, qcID)
+	}
+	return nil
 }
 
 // Caller owns the transaction and preholds supplier, all products/SKUs and the

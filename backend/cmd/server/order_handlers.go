@@ -1135,7 +1135,8 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 		return
 	}
-	if err := orderRepo.CancelOrder(ctx, idOrNumber, claims.UserID, isAdmin); err != nil {
+	result, err := orderRepo.CancelOrderWithRefund(ctx, idOrNumber, claims.UserID, isAdmin)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"Order not found or not owned by user"}`, http.StatusNotFound)
 			return
@@ -1151,11 +1152,7 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"orderId": idOrNumber,
-		"status":  "cancelled",
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
 func handleOrderReturn(w http.ResponseWriter, r *http.Request, ctx context.Context, idOrNumber string, orderRepo *repository.OrderRepository) {

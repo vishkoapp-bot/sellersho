@@ -706,6 +706,9 @@ func (r *OrderRepository) GetOrdersByCustomerUserID(ctx context.Context, userID 
 			}
 		}
 	}
+	if err := r.attachRefundSummaries(ctx, orders); err != nil {
+		return nil, err
+	}
 	return orders, nil
 }
 
@@ -865,6 +868,22 @@ func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken
 	}
 	defer tx.Rollback()
 	var orderID, status string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM payment_transactions WHERE gateway_token=$1`, gatewayToken).Scan(&orderID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+		return err
+	}
+	var inquiry bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_verifications WHERE order_id=$1 AND payment_id IN (SELECT id FROM payment_transactions WHERE gateway_token=$2))`, orderID, gatewayToken).Scan(&inquiry); err != nil {
+		return err
+	}
+	if inquiry {
+		return tx.Commit()
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT order_id, status FROM payment_transactions WHERE gateway_token = $1 FOR UPDATE`, gatewayToken).Scan(&orderID, &status); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -900,11 +919,7 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	if err := dbTx.QueryRowContext(ctx, `SELECT o.id,o.status,o.payment_status,o.payment_expires_at FROM orders o JOIN payment_transactions p ON p.order_id=o.id WHERE p.gateway_token=$1 FOR UPDATE OF o`, gatewayToken).Scan(&lockedOrderID, &orderStatus, &orderPayment, &deadline); err != nil {
 		return nil, err
 	}
-	if orderPayment != "paid" && (orderStatus == "cancelled" || orderPayment != "pending" || (deadline != nil && !time.Now().Before(*deadline))) {
-		return nil, ErrPaymentExpired
-	}
-
-	if err := lockOrderFinanceTx(ctx, dbTx, lockedOrderID); err != nil {
+	if err := lockOrderFinanceTx(ctx, dbTx, lockedOrderID, true); err != nil {
 		return nil, err
 	}
 
@@ -921,6 +936,28 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	}
 	if err != nil {
 		return nil, err
+	}
+	// The caller has confirmed payment. Inventory admission may fail, but the
+	// money fact must survive cancellation/expiry. The legacy signature does not
+	// certify a structured provider receipt: its liability stays unknown until
+	// independently verified. Never turn a historical refunded marker into cash.
+	if orderStatus == "cancelled" || (orderPayment != "paid" && (orderPayment != "pending" || (deadline != nil && !time.Now().Before(*deadline)))) {
+		if payment.Status != "refunded" {
+			if err := recordLatePaidCancellationTx(ctx, dbTx, &payment, rrn, cardMask); err != nil {
+				return nil, err
+			}
+			if err := dbTx.Commit(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, ErrPaymentExpired
+	}
+	var compensation bool
+	if err := dbTx.QueryRowContext(ctx, `SELECT compensation_capture FROM payment_transactions WHERE id=$1`, payment.ID).Scan(&compensation); err != nil {
+		return nil, err
+	}
+	if compensation {
+		return nil, ErrPaymentExpired
 	}
 	if payment.Status == "paid" {
 		return &payment, nil
@@ -1197,6 +1234,10 @@ var ErrReturnWindowClosed = fmt.Errorf("return window has closed")
 // (migration 202610250009): restoring on any other order would mint
 // phantom stock for orders whose stock was never captured.
 func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerUserID string, isAdmin bool) error {
+	return r.cancelOrder(ctx, idOrNumber, customerUserID, isAdmin, "")
+}
+
+func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerUserID string, isAdmin bool, admissionPaymentID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -1221,13 +1262,25 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&orderID, &status, &captured); err != nil {
 		return err
 	}
+	if admissionPaymentID != "" {
+		var confirmed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_receipts WHERE payment_id=$1 AND order_id=$2)`, admissionPaymentID, orderID).Scan(&confirmed); err != nil {
+			return err
+		}
+		if !confirmed {
+			return ErrRefundPrincipalUnresolved
+		}
+		if captured {
+			return errPaymentAlreadyCaptured
+		}
+	}
 	if err := assertOrderCancellationAllowedTx(ctx, tx, orderID); err != nil {
 		return err
 	}
 	if status == "cancelled" {
 		return tx.Commit()
 	}
-	if err := lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
 		return err
 	}
 	if err := lockCancellationInventoryTx(ctx, tx, orderID); err != nil {
@@ -1238,7 +1291,7 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	default:
 		return fmt.Errorf("%w: %s", ErrOrderCancellationState, status)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'cancelled', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
 		return err
 	}
 	if captured {
@@ -1310,6 +1363,12 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET inventory_captured=false WHERE id=$1`, orderID); err != nil {
 		return err
 	}
+	if err := synchronizeVerifiedPaymentFactsTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	if err := ensureCancellationRefundsTx(ctx, tx, orderID, customerUserID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1319,73 +1378,51 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	return nil
 }
 
-// ApplyDisputeRefundEffect implements D37 without touching
-// finance_repo.go (ResolveDispute itself is owned there and is only
-// called, never modified). After a dispute is resolved with a refund
-// action, the order becomes cancelled and its payment transaction
-// becomes refunded — the state live shows for the one resolved
-// delivery_undelivered dispute. It returns false when the dispute
-// does not exist or its action is not a refund (for example
-// release_to_seller), in which case nothing is changed.
-// Profit fields are preserved, as with CancelOrder (TODO U18).
-// TODO(U21): whether any real PSP money moved is unverified; this
-// only moves the order/payment state, it does not call a PSP refund.
+// ApplyDisputeRefundEffect is a compatibility projection. A resolved verdict
+// reserves principal in ResolveDispute's transaction; it cannot assert a bank
+// refund, cancel a partially dispatched order or restore physical inventory.
 func (r *OrderRepository) ApplyDisputeRefundEffect(ctx context.Context, disputeID string) (bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	var orderID sql.NullString
-	var action string
-	var disputeStatus string
-	var claimAmount int64
-	err = tx.QueryRowContext(ctx, `SELECT order_id, COALESCE(resolution_action, ''), COALESCE(status, ''), COALESCE(claim_amount, 0) FROM disputes WHERE id = $1`, disputeID).Scan(&orderID, &action, &disputeStatus, &claimAmount)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, err
-	}
-	if !strings.HasPrefix(action, "refund") || !orderID.Valid || orderID.String == "" {
+	var orderID, action, status string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,''),COALESCE(resolution_action,''),status FROM disputes WHERE id=$1`, disputeID).Scan(&orderID, &action, &status)
+	if err == sql.ErrNoRows {
 		return false, nil
 	}
-	if err := lockOrderFinanceTx(ctx, tx, orderID.String); err != nil {
-		return false, err
-	}
-	orderRes, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'refunded', updated_at = NOW() WHERE id = $1 AND status <> 'cancelled'`, orderID.String)
 	if err != nil {
 		return false, err
 	}
-	orderTouched, _ := orderRes.RowsAffected()
-	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status = 'refunded' WHERE order_id = $1 AND status IN ('paid', 'pending')`, orderID.String); err != nil {
+	if !strings.HasPrefix(action, "refund") || orderID == "" {
+		return false, nil
+	}
+	if err = lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
 		return false, err
 	}
-	var payable int64
-	var customerID sql.NullString
-	var orderNumber string
-	_ = tx.QueryRowContext(ctx, `SELECT COALESCE(payable_amount, 0), customer_user_id, order_number FROM orders WHERE id = $1`, orderID.String).Scan(&payable, &customerID, &orderNumber)
-	_ = payable // kept for the read above; the notified figure is the claim amount, never the full payable_amount.
-	if err := tx.Commit(); err != nil {
+	var stable bool
+	if err = tx.QueryRowContext(ctx, `SELECT order_id=$2 AND resolution_action=$3 AND status='resolved' FROM disputes WHERE id=$1 FOR UPDATE`, disputeID, orderID, action).Scan(&stable); err != nil {
 		return false, err
 	}
-	// P0-8 (best-effort): refund state change - customer, claim amount.
-	// Critic fix (Phase 2):
-	//   - notify ONLY when the order UPDATE actually moved a row: a
-	//     retry on an already-cancelled order is a no-op, not a second
-	//     refund notice.
-	//   - the figure is the dispute CLAIM amount, never the full
-	//     payable_amount (the old row quoted the whole order total).
-	//   - NO second customer row when the dispute is already resolved:
-	//     ResolveDispute (which always runs first in the live
-	//     handleResolveDispute path) already told the customer the same
-	//     verdict + claim amount via notifyDisputeResolved. One
-	//     resolution, one customer row, one figure.
-	if orderTouched == 0 || disputeStatus == "resolved" || claimAmount <= 0 {
-		return true, nil
+	if !stable {
+		return false, ErrRefundPrincipalUnresolved
 	}
-	notifyRefundIssued(ctx, r.db, orderID.String, orderNumber, customerID.String, claimAmount, false, "")
-	return true, nil
+	var modern bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_refund_obligations WHERE order_id=$1 AND purpose='dispute' AND business_id=$2)`, orderID, disputeID).Scan(&modern); err != nil {
+		return false, err
+	}
+	if !modern {
+		// Preserve uncertain old decisions as review holds, never new cash payouts.
+		sources, err := refundRecordedSourcesTx(ctx, tx, orderID)
+		if err != nil {
+			return false, err
+		}
+		if err = reserveLegacyRefundEvidenceTx(ctx, tx, orderID, "system:dispute-review", sources); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
 }
 
 // ---- Customer returns engine (D36) ----
@@ -2757,10 +2794,14 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		`, customerID, sum)
 		return err
 	}
-	if err := creditWallet(amount); err != nil {
+	if err := r.recordReturnReversalsTx(ctx, tx, id, orderID, actorUserID); err != nil {
 		return 0, nil, err
 	}
-	if err := r.recordReturnReversalsTx(ctx, tx, id, orderID, actorUserID); err != nil {
+	reservation, err := reserveOrderRefundTx(ctx, tx, orderID, "customer_return", id, "wallet", actorUserID, amount, "")
+	if err != nil {
+		return 0, nil, err
+	}
+	if err = creditReservedWalletRefundsTx(ctx, tx, reservation.IDs); err != nil {
 		return 0, nil, err
 	}
 

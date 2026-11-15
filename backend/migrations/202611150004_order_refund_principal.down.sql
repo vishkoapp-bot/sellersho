@@ -1,0 +1,36 @@
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM order_refund_request_keys) OR EXISTS(SELECT 1 FROM order_payment_verifications) OR EXISTS(SELECT 1 FROM order_payment_receipts) OR EXISTS(SELECT 1 FROM order_refund_obligations) THEN RAISE EXCEPTION 'cannot discard retained payment/refund principal evidence'; END IF;
+END $$;
+DROP TRIGGER order_refund_customer_identity ON orders;
+DROP FUNCTION guard_order_refund_customer_identity();
+DROP TRIGGER payment_refund_source_identity ON payment_transactions;
+DROP FUNCTION guard_payment_refund_source_identity();
+DROP TRIGGER refund_obligation_insert ON order_refund_obligations;
+DROP FUNCTION guard_refund_obligation_insert();
+DROP TRIGGER payment_receipt_insert ON order_payment_receipts;
+DROP FUNCTION guard_payment_receipt_insert();
+DROP TRIGGER compensation_requires_principal ON payment_transactions;
+DROP FUNCTION require_compensation_principal();
+DROP TRIGGER legacy_refund_evidence ON refunds;
+DROP TABLE order_expiry_review_state;
+DROP TRIGGER payment_compensation_insert ON payment_transactions;
+DROP FUNCTION guard_payment_compensation_insert();
+DROP TABLE order_refund_poll_state;
+DROP TABLE order_refund_request_keys;
+DROP TABLE order_refund_events;
+DROP TABLE order_refund_wallet_credits;
+DROP TABLE order_refund_attempts;
+DROP FUNCTION guard_refund_attempt();
+DROP FUNCTION guard_refund_event();
+DROP FUNCTION guard_refund_wallet_credit();
+DROP FUNCTION require_wallet_refund_outcome();
+DROP TABLE order_refund_obligations;
+DROP TABLE order_payment_receipts;
+DROP TABLE order_payment_verification_events;
+DROP TABLE order_payment_verifications;
+DROP FUNCTION guard_payment_verification_insert();
+DROP FUNCTION immutable_order_refund_evidence();
+
+DROP INDEX payment_transactions_one_active_per_order;
+ALTER TABLE payment_transactions DROP COLUMN compensation_capture;
+CREATE UNIQUE INDEX payment_transactions_one_active_per_order ON payment_transactions(order_id) WHERE status IN ('pending','paid');

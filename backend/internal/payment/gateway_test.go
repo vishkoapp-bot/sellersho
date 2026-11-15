@@ -46,3 +46,18 @@ func TestMockPaymentGatewayClient_AmountMismatch(t *testing.T) {
 		t.Fatalf("expected nil result on mismatch")
 	}
 }
+
+func TestFIN003SimulatorVerificationInquiryHasStableReference(t *testing.T) {
+	g := NewMockPaymentGatewayClient(true)
+	first, e := g.VerifyTransaction(context.Background(), "same-payment-token", 10000000)
+	if e != nil {
+		t.Fatal(e)
+	}
+	second, e := g.VerifyTransaction(context.Background(), "same-payment-token", 10000000)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if first.RRN != second.RRN {
+		t.Fatalf("inquiry invented a second payment reference %s != %s", first.RRN, second.RRN)
+	}
+}

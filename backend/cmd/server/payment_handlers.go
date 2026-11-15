@@ -113,6 +113,10 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 }
 
 type PaymentOrderRepository interface {
+	RejectVerifiedPaymentAdmission(ctx context.Context, token string) (bool, error)
+	BeginPaymentVerification(ctx context.Context, token, fundingKind string) (string, error)
+	RecordPaymentVerification(ctx context.Context, id string, result payment.VerificationResult) error
+	RecordPaymentVerificationUnknown(ctx context.Context, id, reason string) error
 	GetPaymentTransaction(ctx context.Context, gatewayToken string) (*repository.PaymentTransaction, error)
 	GetOrderByID(ctx context.Context, id string) (*domain.Order, error)
 	MarkPaymentPaid(ctx context.Context, gatewayToken, rrn, cardMask string) (*repository.PaymentTransaction, error)
@@ -198,15 +202,30 @@ func handleShaparakCallback(
 		writePaymentError(w, http.StatusServiceUnavailable, "gateway_unavailable", "ارتباط با درگاه پرداخت شاپرک برقرار نیست")
 		return
 	}
+	// This endpoint is a gated simulator. Never label its receipts real cash.
+	verificationID, err := orderRepo.BeginPaymentVerification(ctx, req.Token, "simulated")
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	verifyRes, verifyErr := gatewayClient.VerifyTransaction(ctx, req.Token, existing.Amount)
 	if verifyErr != nil || verifyRes == nil || !verifyRes.Success {
-		// P1-9 (best-effort): record the failure on the payment tx /
-		// order and notify the customer. The 402 response is unchanged.
-		_ = orderRepo.RecordPaymentFailure(ctx, req.Token)
+		if err := orderRepo.RecordPaymentVerificationUnknown(ctx, verificationID, "provider_unavailable"); err != nil {
+			writeInternalError(w, err)
+			return
+		}
 		writePaymentError(w, http.StatusPaymentRequired, "gateway_verification_failed", "تأییدیه تراکنش توسط درگاه شاپرک صادر نشد")
 		return
 	}
 
+	if err := orderRepo.RecordPaymentVerification(ctx, verificationID, *verifyRes); err != nil {
+		if errors.Is(err, payment.ErrAmountMismatch) {
+			writePaymentError(w, http.StatusConflict, "amount_mismatch", "مبلغ تأییدشده نیاز به بررسی دارد")
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
 	rrn := existing.RRN.String
 	if existing.Status != "paid" {
 		if redisClient == nil {
@@ -231,8 +250,18 @@ func handleShaparakCallback(
 				return
 			}
 			if !held {
-				writePaymentError(w, http.StatusConflict, "inventory_hold_expired", "مهلت رزرو موجودی برای این پرداخت به پایان رسیده است")
-				return
+				cancelled, compensationErr := orderRepo.RejectVerifiedPaymentAdmission(ctx, req.Token)
+				if compensationErr != nil {
+					writeInternalError(w, compensationErr)
+					return
+				}
+				if cancelled {
+					_ = redisClient.ReleaseOrderInventory(ctx, existing.OrderID, productIDs...)
+					writePaymentError(w, http.StatusConflict, "inventory_hold_expired", "رزرو پایان یافته؛ وضعیت بازپرداخت در سفارش ثبت شد")
+					return
+				}
+				// Another callback already captured stock and released this Redis hold.
+				break
 			}
 		}
 
@@ -248,6 +277,10 @@ func handleShaparakCallback(
 				return
 			}
 			if errors.Is(err, repository.ErrInsufficientInventory) {
+				if _, compensationErr := orderRepo.RejectVerifiedPaymentAdmission(ctx, req.Token); compensationErr != nil {
+					writeInternalError(w, compensationErr)
+					return
+				}
 				_ = redisClient.ReleaseOrderInventory(ctx, paymentOrderID, productIDs...)
 				writePaymentError(w, http.StatusConflict, "insufficient_stock", "موجودی کالا پیش از تکمیل پرداخت مصرف شده است")
 				return
@@ -258,8 +291,21 @@ func handleShaparakCallback(
 		if redisClient != nil {
 			_ = redisClient.ReleaseOrderInventory(ctx, existing.OrderID, productIDs...)
 		}
-	} else if existing.CardMask.Valid {
-		cardMask = existing.CardMask.String
+	} else {
+		// Paid records can belong to a cancelled/extra capture. The ordered repository
+		// guard still decides fulfillment admission on every replay.
+		existing, err = orderRepo.MarkPaymentPaid(ctx, req.Token, verifyRes.RRN, cardMask)
+		if err != nil {
+			if errors.Is(err, repository.ErrPaymentExpired) {
+				writePaymentError(w, http.StatusConflict, "payment_expired", "وضعیت بازپرداخت را در سفارش پیگیری کنید")
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		if existing.CardMask.Valid {
+			cardMask = existing.CardMask.String
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

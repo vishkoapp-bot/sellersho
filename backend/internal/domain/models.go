@@ -326,43 +326,56 @@ type OrderItem struct {
 }
 
 // Order represents customer purchase contract
+type OrderRefundSummary struct {
+	Status         string `json:"status"`
+	Currency       string `json:"currency"`
+	AmountToman    int64  `json:"amountToman"`
+	PendingToman   int64  `json:"pendingToman"`
+	SucceededToman int64  `json:"succeededToman"`
+	FailedToman    int64  `json:"failedToman"`
+	UnknownToman   int64  `json:"unknownToman"`
+	Destination    string `json:"destination"`
+	NeedsReview    bool   `json:"needsReview"`
+}
+
 type Order struct {
-	ID                         string      `json:"id" db:"id"`
-	CustomerUserID             *string     `json:"customerUserId,omitempty" db:"customer_user_id"`
-	OrderNumber                string      `json:"orderNumber" db:"order_number"`
-	StoreID                    string      `json:"storeId" db:"store_id"`
-	StoreName                  string      `json:"storeName" db:"store_name"`
-	TotalAmount                int64       `json:"totalAmount" db:"total_amount"`
-	DiscountAmount             int64       `json:"discountAmount" db:"discount_amount"`
-	SellerDiscountAmount       int64       `json:"sellerDiscountAmount,omitempty" db:"seller_discount_amount"`
-	DiscountCode               string      `json:"discountCode,omitempty" db:"discount_code"`
-	PayableAmount              int64       `json:"payableAmount" db:"payable_amount"`
-	PaymentMethod              string      `json:"paymentMethod" db:"payment_method"`
-	PaymentStatus              string      `json:"paymentStatus" db:"payment_status"`
-	CustomerFullName           string      `json:"customerFullName" db:"customer_full_name"`
-	CustomerPhone              string      `json:"customerPhone" db:"customer_phone"`
-	CustomerProvince           string      `json:"customerProvince" db:"customer_province"`
-	CustomerCity               string      `json:"customerCity" db:"customer_city"`
-	CustomerAddress            string      `json:"customerAddress" db:"customer_address"`
-	CustomerPostalCode         string      `json:"customerPostalCode" db:"customer_postal_code"`
-	Status                     string      `json:"status" db:"status"`
-	TrackingCode               string      `json:"trackingCode" db:"tracking_code"`
-	ShippingCost               int64       `json:"shippingCost" db:"shipping_cost"`
-	ShippingQuoteID            string      `json:"shippingQuoteId,omitempty" db:"shipping_quote_id"`
-	DropshipperProfit          int64       `json:"dropshipperProfit" db:"dropshipper_profit"`
-	PlatformProfit             int64       `json:"platformProfit" db:"platform_profit"`
-	ReferralCommission         int64       `json:"referralCommission" db:"referral_commission"`
-	ReferralCommissionReleased bool        `json:"referralCommissionReleased" db:"referral_commission_released"`
-	ReferrerSellerID           *string     `json:"referrerSellerId" db:"referrer_seller_id"`
-	ProfitReleased             bool        `json:"profitReleased" db:"profit_released"`
-	ProfitReleasedAt           *time.Time  `json:"profitReleasedAt" db:"profit_released_at"`
-	ShippedAt                  *time.Time  `json:"shippedAt" db:"shipped_at"`
-	ConfirmedAt                *time.Time  `json:"confirmedAt" db:"confirmed_at"`
-	DisputedAt                 *time.Time  `json:"disputedAt" db:"disputed_at"`
-	FulfillmentMethod          string      `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct" | "mixed"
-	CreatedAt                  time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt                  time.Time   `json:"updatedAt" db:"updated_at"`
-	Items                      []OrderItem `json:"items"`
+	Refund                     *OrderRefundSummary `json:"refund,omitempty"`
+	ID                         string              `json:"id" db:"id"`
+	CustomerUserID             *string             `json:"customerUserId,omitempty" db:"customer_user_id"`
+	OrderNumber                string              `json:"orderNumber" db:"order_number"`
+	StoreID                    string              `json:"storeId" db:"store_id"`
+	StoreName                  string              `json:"storeName" db:"store_name"`
+	TotalAmount                int64               `json:"totalAmount" db:"total_amount"`
+	DiscountAmount             int64               `json:"discountAmount" db:"discount_amount"`
+	SellerDiscountAmount       int64               `json:"sellerDiscountAmount,omitempty" db:"seller_discount_amount"`
+	DiscountCode               string              `json:"discountCode,omitempty" db:"discount_code"`
+	PayableAmount              int64               `json:"payableAmount" db:"payable_amount"`
+	PaymentMethod              string              `json:"paymentMethod" db:"payment_method"`
+	PaymentStatus              string              `json:"paymentStatus" db:"payment_status"`
+	CustomerFullName           string              `json:"customerFullName" db:"customer_full_name"`
+	CustomerPhone              string              `json:"customerPhone" db:"customer_phone"`
+	CustomerProvince           string              `json:"customerProvince" db:"customer_province"`
+	CustomerCity               string              `json:"customerCity" db:"customer_city"`
+	CustomerAddress            string              `json:"customerAddress" db:"customer_address"`
+	CustomerPostalCode         string              `json:"customerPostalCode" db:"customer_postal_code"`
+	Status                     string              `json:"status" db:"status"`
+	TrackingCode               string              `json:"trackingCode" db:"tracking_code"`
+	ShippingCost               int64               `json:"shippingCost" db:"shipping_cost"`
+	ShippingQuoteID            string              `json:"shippingQuoteId,omitempty" db:"shipping_quote_id"`
+	DropshipperProfit          int64               `json:"dropshipperProfit" db:"dropshipper_profit"`
+	PlatformProfit             int64               `json:"platformProfit" db:"platform_profit"`
+	ReferralCommission         int64               `json:"referralCommission" db:"referral_commission"`
+	ReferralCommissionReleased bool                `json:"referralCommissionReleased" db:"referral_commission_released"`
+	ReferrerSellerID           *string             `json:"referrerSellerId" db:"referrer_seller_id"`
+	ProfitReleased             bool                `json:"profitReleased" db:"profit_released"`
+	ProfitReleasedAt           *time.Time          `json:"profitReleasedAt" db:"profit_released_at"`
+	ShippedAt                  *time.Time          `json:"shippedAt" db:"shipped_at"`
+	ConfirmedAt                *time.Time          `json:"confirmedAt" db:"confirmed_at"`
+	DisputedAt                 *time.Time          `json:"disputedAt" db:"disputed_at"`
+	FulfillmentMethod          string              `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct" | "mixed"
+	CreatedAt                  time.Time           `json:"createdAt" db:"created_at"`
+	UpdatedAt                  time.Time           `json:"updatedAt" db:"updated_at"`
+	Items                      []OrderItem         `json:"items"`
 	// D38 snapshot columns (migrations 202610200002, 202610230005,
 	// 202610250009, 202610280008, 202610310016, 202610190003 and the
 	// carrier/packing columns). All already exist in the live schema;

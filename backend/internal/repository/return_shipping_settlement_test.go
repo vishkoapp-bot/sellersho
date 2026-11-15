@@ -73,6 +73,7 @@ func openReturnSettlementDB(t *testing.T) *sql.DB {
 			t.Fatalf("create disposable schema: %v (stmt %.60s)", err, stmt)
 		}
 	}
+	installRefundFixtureSchema(t, db)
 	return db
 }
 
@@ -136,6 +137,7 @@ func rsSeedReturn(t *testing.T, db *sql.DB, prepaid bool, specs []rsItemSpec) (s
 		}
 		returnItemIDs = append(returnItemIDs, riID)
 	}
+	seedVerifiedRefundFixturePayment(t, db, orderID)
 	return returnID, customerID, returnItemIDs
 }
 

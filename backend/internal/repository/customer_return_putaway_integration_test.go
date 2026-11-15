@@ -16,6 +16,7 @@ func inv06ReceivedReturn(t *testing.T, tracked bool, quantity int, split ...int)
 	db, f, warehouse, bin, sku := inv06Placed(t, tracked, quantity)
 	ctx := context.Background()
 	order := inv06PaidOrder(t, db, f, warehouse, sku, quantity)
+	seedVerifiedRefundFixturePayment(t, db, order)
 	opsExec(t, db, `UPDATE orders SET status='packed',fulfillment_method='warehouse' WHERE id=$1`, order)
 	if err := NewWarehouseRepository(db).ShipOrderWithActor(ctx, order, "post", "original-"+order, f.user); err != nil {
 		t.Fatal(err)

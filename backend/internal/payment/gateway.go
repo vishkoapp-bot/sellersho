@@ -2,7 +2,7 @@ package payment
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/big"
@@ -16,11 +16,11 @@ var (
 
 // VerificationResult contains the confirmed transaction attributes from the payment gateway
 type VerificationResult struct {
-	Success       bool
-	RRN           string
+	Success        bool
+	RRN            string
 	VerifiedAmount int64
-	CardMask      string
-	VerifiedAt    time.Time
+	CardMask       string
+	VerifiedAt     time.Time
 }
 
 // PaymentGatewayClient abstracts interactions with the Shaparak PSP (e.g., Asan Pardakht, Saman, Mellat)
@@ -30,9 +30,9 @@ type PaymentGatewayClient interface {
 
 // MockPaymentGatewayClient provides configurable gateway simulation for dev & testing environments
 type MockPaymentGatewayClient struct {
-	ShouldSucceed    bool
-	SimulatedRRN     string
-	SimulatedAmount  int64
+	ShouldSucceed     bool
+	SimulatedRRN      string
+	SimulatedAmount   int64
 	SimulatedCardMask string
 }
 
@@ -53,7 +53,9 @@ func (m *MockPaymentGatewayClient) VerifyTransaction(ctx context.Context, token 
 
 	rrn := m.SimulatedRRN
 	if rrn == "" {
-		nBig, _ := rand.Int(rand.Reader, big.NewInt(900000000000))
+		digest := sha256.Sum256([]byte("shaparak-simulator:" + token))
+		nBig := new(big.Int).SetBytes(digest[:])
+		nBig.Mod(nBig, big.NewInt(900000000000))
 		rrn = fmt.Sprintf("%012d", nBig.Int64()+100000000000)
 	}
 

@@ -225,72 +225,62 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 //     resolution fails closed instead of silently defaulting to carrier.
 //   - ledger ids are UUIDs (ADJ- + UUID), never ADJ- + millis%10000.
 func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, action, party, operator string, claimAmount int64) error {
-	// Facts for the post-commit notify (P0-7): order id for recipient
-	// resolution. Read before the tx; the dispute row is pending here.
-	var disputeOrderID string
-	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(order_id, '') FROM disputes WHERE id = $1`, disputeID).Scan(&disputeOrderID)
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM disputes WHERE id = $1 FOR UPDATE`, disputeID).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("dispute not found: %s", disputeID)
+	var orderID string
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,'') FROM disputes WHERE id=$1`, disputeID).Scan(&orderID); err != nil {
+		return fmt.Errorf("dispute not found: %w", err)
+	}
+	if orderID != "" {
+		if err = lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+			return err
 		}
+	}
+	var actualOrder, status string
+	var actualClaim int64
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,''),status,COALESCE(claim_amount,0) FROM disputes WHERE id=$1 FOR UPDATE`, disputeID).Scan(&actualOrder, &status, &actualClaim); err != nil {
 		return err
+	}
+	if actualOrder != orderID {
+		return ErrFinanceAccountChanged
 	}
 	if status != "pending" {
 		return fmt.Errorf("dispute already resolved: %s", disputeID)
 	}
-
-	now := time.Now()
-	updateDispute := `
-		UPDATE disputes
-		SET status = 'resolved', resolution_action = $1, responsible_party = $2, resolution_date = $3
-		WHERE id = $4 AND status = 'pending'
-	`
-	res, err := tx.ExecContext(ctx, updateDispute, action, party, now, disputeID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("dispute already resolved: %s", disputeID)
-	}
-
-	// No ledger entry for a rejected claim or a non-positive amount.
-	if action == "release_to_seller" || claimAmount <= 0 {
-		if err := tx.Commit(); err != nil {
+	if action != "release_to_seller" {
+		if !strings.HasPrefix(action, "refund") || orderID == "" || claimAmount <= 0 || claimAmount != actualClaim {
+			return ErrRefundPrincipalUnresolved
+		}
+		if err = validateSignedFinanceMoney(claimAmount); err != nil {
 			return err
 		}
-		// P0-7 (best-effort): dispute resolved, incl. claim-rejected -
-		// customer (verdict + reason) and the debited/liable party.
-		notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
-		return nil
+		targetType, ok := disputePartyLedgerType(party, action)
+		if !ok {
+			return fmt.Errorf("unknown responsible party: %s", party)
+		}
+		// Record the authorized request before resolving. The pending status keeps
+		// this new decision distinct from unproven historical resolved disputes.
+		if _, err = tx.ExecContext(ctx, `UPDATE disputes SET resolution_action=$2,responsible_party=$3 WHERE id=$1`, disputeID, action, party); err != nil {
+			return err
+		}
+		if _, err = reserveOrderRefundTx(ctx, tx, orderID, "dispute", disputeID, "original_payment", operator, claimAmount, ""); err != nil {
+			return err
+		}
+		reason := fmt.Sprintf("صدور حکم داوری پرونده %s به مسئولیت %s", disputeID, party)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO ledger_entries(id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES($1,NOW(),$2,$3,'debit',$4,$5,$6,$7)`, "ADJ-"+uuid.NewString(), party, targetType, claimAmount, reason, operator, disputeID); err != nil {
+			return err
+		}
 	}
-
-	targetType, ok := disputePartyLedgerType(party, action)
-	if !ok {
-		return fmt.Errorf("unknown responsible party: %s", party)
-	}
-
-	ledgerID := "ADJ-" + uuid.NewString()
-	insertLedger := `
-		INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
-		VALUES ($1, $2, $3, $4, 'debit', $5, $6, $7, $8)
-	`
-	reason := fmt.Sprintf("صدور حکم داوری پرونده %s به مسئولیت %s", disputeID, party)
-	if _, err := tx.ExecContext(ctx, insertLedger, ledgerID, now, party, targetType, claimAmount, reason, operator, disputeID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE disputes SET status='resolved',resolution_action=$2,responsible_party=$3,resolution_date=NOW() WHERE id=$1`, disputeID, action, party); err != nil {
 		return err
 	}
-
-	if err := tx.Commit(); err != nil {
+	if err = tx.Commit(); err != nil {
 		return err
 	}
-	// P0-7 (best-effort): dispute resolved - customer + debited party.
-	notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
+	notifyDisputeResolved(ctx, r.db, disputeID, orderID, action, party, claimAmount)
 	return nil
 }
 

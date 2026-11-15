@@ -174,6 +174,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			t.Fatalf("create disposable schema: %v (stmt %.60s)", err, stmt)
 		}
 	}
+	installRefundFixtureSchema(t, db)
 	return db
 }
 
@@ -242,6 +243,7 @@ func gmItem(t *testing.T, db *sql.DB, orderID, productID string, qty int, wholes
 func gmFileReturn(t *testing.T, repo *OrderRepository, customerID, orderID string, items []CustomerReturnItemRequest) (string, map[string]string) {
 	t.Helper()
 	ctx := context.Background()
+	seedVerifiedRefundFixturePayment(t, repo.db, orderID)
 	ret, err := repo.CreateCustomerReturn(ctx, customerID, orderID, "gap test", items, CustomerReturnOptions{Prepaid: true})
 	if err != nil {
 		t.Fatalf("create return: %v", err)
@@ -675,7 +677,7 @@ func TestGap6LegacyCoverageSeeding(t *testing.T) {
 // G6-T9: dispute-cancelling the order AFTER a clawback must not
 // double-reverse the cost: Earned drops the whole order and the
 // clawback term excludes the cancelled order's events.
-func TestGap6DisputeCancelExcludesClawback(t *testing.T) {
+func TestGap6DisputeCannotRefundAlreadyReturnedPrincipal(t *testing.T) {
 	db := openGapMoneyDB(t)
 	defer db.Close()
 	ctx := context.Background()
@@ -703,22 +705,20 @@ func TestGap6DisputeCancelExcludesClawback(t *testing.T) {
 		t.Fatalf("balance before dispute = %+v, want earned 40000 clawbacks 10000 available 30000", bal)
 	}
 
-	if _, err := db.Exec(`INSERT INTO payment_transactions (id, order_id, status) VALUES ('pt-t9', 'ord-t9a', 'paid')`); err != nil {
-		t.Fatalf("seed payment tx: %v", err)
+	// A customer return already refunded this entire captured source. A later
+	// dispute cannot issue it again or erase the existing supplier reversal.
+	if _, err := db.Exec(`INSERT INTO disputes(id,order_id,resolution_action,status,claim_amount) VALUES('dsp-t9','ord-t9a',NULL,'pending',20000)`); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, resolution_action) VALUES ('dsp-t9', 'ord-t9a', 'refund_full')`); err != nil {
-		t.Fatalf("seed dispute: %v", err)
-	}
-	applied, err := repo.ApplyDisputeRefundEffect(ctx, "dsp-t9")
-	if err != nil || !applied {
-		t.Fatalf("dispute effect applied=%v err=%v, want true/nil", applied, err)
+	if err := NewFinanceRepository(db).ResolveDispute(ctx, "dsp-t9", "refund_supplier", "supplier", "finance-gap", 20000); !errors.Is(err, ErrRefundPrincipalUnresolved) {
+		t.Fatalf("dispute double-spent returned principal %v", err)
 	}
 	bal, err = supplierRepo.GetSettlementBalance(ctx, "sup-t9")
 	if err != nil {
 		t.Fatalf("balance after dispute: %v", err)
 	}
-	if bal.Earned != 30000 || bal.ReturnClawbacks != 0 || bal.Available != 30000 {
-		t.Fatalf("balance after dispute = %+v, want earned 30000 clawbacks 0 available 30000 (no double reversal)", bal)
+	if bal.Earned != 40000 || bal.ReturnClawbacks != 10000 || bal.Available != 30000 {
+		t.Fatalf("balance after dispute = %+v, want earned 40000 clawbacks 10000 available 30000 (existing return preserved)", bal)
 	}
 }
 

@@ -118,7 +118,7 @@ func TestFinanceBalanceTransactionOwnEffects(t *testing.T) {
 func TestFinanceBalanceRefundUsesImmutableSupplierOrigin(t *testing.T) {
 	db := openFinanceBalanceDB(t)
 	ret, _ := seedFinanceBalance(t, db, "immutable-party", 10000000)
-	if _, err := db.Exec(`INSERT INTO suppliers(id) VALUES('catalog-new-party'); UPDATE order_items SET wholesale_cost=1000000,final_unit_price=11000000 WHERE order_id='order-immutable-party'; UPDATE products SET supplier_id='catalog-new-party' WHERE id='product-immutable-party'`); err != nil {
+	if _, err := db.Exec(`INSERT INTO suppliers(id) VALUES('catalog-new-party'); UPDATE order_items SET wholesale_cost=1000000 WHERE order_id='order-immutable-party'; UPDATE products SET supplier_id='catalog-new-party' WHERE id='product-immutable-party'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := NewOrderRepository(db).RefundCustomerReturn(context.Background(), ret, "test"); err != nil {
@@ -274,6 +274,7 @@ func seedFinanceBalance(t *testing.T, db *sql.DB, store string, profit int64) (s
 	if _, err := db.Exec(`INSERT INTO return_items(id,return_id,order_item_id,qty,qc_status,received_at) VALUES($1::uuid,$2::uuid,$3,1,'ok',NOW())`, uuid.NewString(), ret, item); err != nil {
 		t.Fatal(err)
 	}
+	seedVerifiedRefundFixturePayment(t, db, "order-"+store)
 	return ret, customer
 }
 
@@ -404,7 +405,12 @@ func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 
 func TestFinanceBalanceAggregateOverflowFailsClosed(t *testing.T) {
 	db := openFinanceBalanceDB(t)
-	seedFinanceBalance(t, db, "overflow", 9223372036854775807)
+	seedFinanceBalance(t, db, "overflow", 1)
+	// Corrupt only the read projection after a valid captured sale. The refund
+	// evidence must not be fabricated above the supported transport money range.
+	if _, err := db.Exec(`UPDATE orders SET dropshipper_profit=9223372036854775807 WHERE id='order-overflow'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO referral_bonuses(id,referrer_store_id,amount,status) VALUES('overflow-bonus','overflow',1,'locked')`); err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +558,7 @@ func TestFinanceBalanceParcelBusinessEventOnce(t *testing.T) {
 func TestFinanceBalanceSupplierOriginReadAuthorizationParity(t *testing.T) {
 	db := openFinanceBalanceDB(t)
 	ret, _ := seedFinanceBalance(t, db, "origin-parity", 10000000)
-	if _, err := db.Exec(`INSERT INTO suppliers(id) VALUES('origin-catalog-new'); UPDATE products SET supplier_id='origin-catalog-new' WHERE id='product-origin-parity'; UPDATE order_items SET wholesale_cost=1000000,final_unit_price=11000000 WHERE order_id='order-origin-parity'`); err != nil {
+	if _, err := db.Exec(`INSERT INTO suppliers(id) VALUES('origin-catalog-new'); UPDATE products SET supplier_id='origin-catalog-new' WHERE id='product-origin-parity'; UPDATE order_items SET wholesale_cost=1000000 WHERE order_id='order-origin-parity'`); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

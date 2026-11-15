@@ -21,7 +21,7 @@ import (
 )
 
 const notifyWritersDDL = `
-DROP TABLE IF EXISTS order_item_origins, referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+DROP TABLE IF EXISTS refunds,order_item_origins, referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
 CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT,status TEXT,released_at TIMESTAMPTZ);
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -301,9 +301,11 @@ func notifyWritersTestDB(t *testing.T) *sql.DB {
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping test DB: %v", err)
 	}
+	removeEmptyRefundFixtureSchema(t, db)
 	if _, err := db.Exec(notifyWritersDDL); err != nil {
 		t.Fatalf("seed DDL: %v", err)
 	}
+	installRefundFixtureSchema(t, db)
 	t.Cleanup(func() { db.Close() })
 	return db
 }
@@ -791,22 +793,26 @@ func TestApplyDisputeRefundEffectSingleClaimFigure(t *testing.T) {
 		t.Fatalf("seed dispute b: %v", err)
 	}
 	applied, err = repo.ApplyDisputeRefundEffect(ctx, "disp-10b")
-	if err != nil || !applied {
-		t.Fatalf("ApplyDisputeRefundEffect(b) = %v, %v, want true/nil", applied, err)
+	if applied || !errors.Is(err, ErrRefundPrincipalUnresolved) {
+		t.Fatalf("pending verdict pretended refund resolution %v %v", applied, err)
+	}
+	if _, err = db.Exec(`INSERT INTO payment_transactions(id,order_id,order_number,gateway_token,amount,status) VALUES('paytx-11','ord-11','ORD-11','tok-11',500000,'paid')`); err != nil {
+		t.Fatal(err)
+	}
+	if err = NewFinanceRepository(db).ResolveDispute(ctx, "disp-10b", "refund_carrier", "carrier", "test", 100000); err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxKinds(t, db)["refund_issued"]) != 0 {
+		t.Fatal("unexecuted original-source request asserted refund success")
 	}
 	var body string
-	if err := db.QueryRow(`SELECT body FROM notification_outbox WHERE kind = 'refund_issued'`).Scan(&body); err != nil {
-		t.Fatalf("no refund_issued row: %v", err)
+	if err = db.QueryRow(`SELECT body FROM notification_outbox WHERE kind='dispute_resolved' AND recipient_user_id=$1 ORDER BY created_at DESC LIMIT 1`, customerID).Scan(&body); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(body, "100,000") {
-		t.Fatalf("refund body = %q, want claim amount 100,000", body)
+	if !strings.Contains(body, "100,000") || strings.Contains(body, "500,000") {
+		t.Fatalf("verdict notice must quote exact claim: %s", body)
 	}
-	if strings.Contains(body, "500,000") {
-		t.Fatalf("refund body = %q, must not quote the full payable_amount", body)
-	}
-	if strings.Contains(body, "روش پرداخت اصلی") || strings.Contains(body, "چند روز کاری") {
-		t.Fatalf("refund body = %q, must not promise a PSP reversal (fix 2)", body)
-	}
+
 }
 
 // Critic fix 6: the dispute/payout queue is admins + the specialists

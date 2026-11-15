@@ -21,71 +21,107 @@ func (r *OrderRepository) PaymentDeadline(ctx context.Context, id string) *sql.R
 	return r.db.QueryRowContext(ctx, `SELECT payment_expires_at FROM orders WHERE id=$1`, id)
 }
 
-// The order row is the serialization point shared with MarkPaymentPaid.
-// No stock is added: these unpaid orders have never captured any stock.
+// Each order is one transaction: acquiring a later order's account after an
+// earlier order's products would invert the global financial lock prefix.
+// Committed results are returned even if a later order fails, for Redis cleanup.
 func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrder, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE NOT EXISTS(SELECT 1 FROM order_expiry_review_state e WHERE e.order_id=orders.id AND e.next_retry_at>clock_timestamp()) AND payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY id COLLATE "C" LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(customer_user_id::text, ''), order_number FROM orders WHERE payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 200`)
-	if err != nil {
-		return nil, err
-	}
-	out := []ExpiredOrder{}
+	var ids []string
 	for rows.Next() {
-		var o ExpiredOrder
-		if err = rows.Scan(&o.ID, &o.CustomerUserID, &o.OrderNumber); err != nil {
+		var id string
+		if err = rows.Scan(&id); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		out = append(out, o)
+		ids = append(ids, id)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return nil, err
 	}
-	for i := range out {
-		o := &out[i]
-		pr, e := tx.QueryContext(ctx, `SELECT DISTINCT product_id FROM order_items WHERE order_id=$1`, o.ID)
-		if e != nil {
-			return nil, e
-		}
-		for pr.Next() {
-			var id string
-			if e = pr.Scan(&id); e != nil {
-				pr.Close()
-				return nil, e
+	out := []ExpiredOrder{}
+	var failures []error
+	for _, id := range ids {
+		o, err := r.expireUnpaidOrder(ctx, id)
+		if err != nil {
+			failures = append(failures, err)
+			if _, scheduleErr := r.db.ExecContext(ctx, `INSERT INTO order_expiry_review_state(order_id,next_retry_at,reason) VALUES($1,clock_timestamp()+INTERVAL '5 minutes','candidate_rejected') ON CONFLICT(order_id) DO UPDATE SET next_retry_at=EXCLUDED.next_retry_at,reason=EXCLUDED.reason`, id); scheduleErr != nil {
+				failures = append(failures, scheduleErr)
 			}
-			o.Products = append(o.Products, id)
+			continue
 		}
-		e = pr.Err()
-		pr.Close()
-		if e != nil {
-			return nil, e
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE orders SET status='cancelled',payment_status='cancelled',updated_at=NOW() WHERE id=$1`, o.ID); err != nil {
-			return nil, err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE payment_transactions SET status='failed' WHERE order_id=$1 AND status='pending'`, o.ID); err != nil {
-			return nil, err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE supplier_shipments SET status='cancelled',updated_at=NOW() WHERE order_id=$1 AND status IN ('pending','processing')`, o.ID); err != nil {
-			return nil, err
+		if o != nil {
+			out = append(out, *o)
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	return out, errors.Join(failures...)
+}
+func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*ExpiredOrder, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, err
 	}
-	// P0-5 (best-effort): system expiry-cancel of an unpaid order -
-	// the customer is told (the cancel itself was system-initiated,
-	// so the customer would otherwise never learn of it).
-	for _, o := range out {
+	defer tx.Rollback()
+	var o ExpiredOrder
+	err = tx.QueryRowContext(ctx, `SELECT id,COALESCE(customer_user_id::text,''),order_number FROM orders WHERE id=$1 AND payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() FOR UPDATE SKIP LOCKED`, id).Scan(&o.ID, &o.CustomerUserID, &o.OrderNumber)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = lockOrderFinanceTx(ctx, tx, id, true); err != nil {
+		return nil, err
+	}
+	if err = assertOrderCancellationAllowedTx(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT product_id FROM order_items WHERE order_id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var p string
+		if err = rows.Scan(&p); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		o.Products = append(o.Products, p)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET status='cancelled',updated_at=NOW() WHERE id=$1`, id); err != nil {
+		return nil, err
+	}
+	if err = synchronizeVerifiedPaymentFactsTx(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	if err = ensureCancellationRefundsTx(ctx, tx, id, "system:payment-expiry"); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE supplier_shipments SET status='cancelled',updated_at=NOW() WHERE order_id=$1 AND status IN ('pending','processing')`, id); err != nil {
+		return nil, err
+	}
+	var confirmed bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_receipts WHERE order_id=$1)`, id).Scan(&confirmed); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	// The old expiry notice specifically says unpaid. Confirmed money must not
+	// receive that misleading notice; its persisted refund summary is authoritative.
+	if !confirmed {
 		notifyExpiredOrder(ctx, r.db, o.ID, o.OrderNumber, o.CustomerUserID)
 	}
-	return out, nil
+	return &o, nil
 }
 
 // Expiry escalates for human review; silence never accepts a shortage or

@@ -134,6 +134,7 @@ func openTeam03DB(t *testing.T) *sql.DB {
 			t.Fatalf("create disposable schema: %v (stmt %.60s)", err, stmt)
 		}
 	}
+	installRefundFixtureSchema(t, db)
 	return db
 }
 
@@ -301,6 +302,7 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'warehouse','sup-return','wh-return','Purchased origin',2)`, uuid.NewString(), orderID, itemID); err != nil {
 		t.Fatal(err)
 	}
+	seedVerifiedRefundFixturePayment(t, db, orderID)
 	ret, err := repo.CreateCustomerReturn(ctx, customerID, orderID, "wrong size", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}}, CustomerReturnOptions{})
 	if err != nil {
 		t.Fatalf("create return: %v", err)
@@ -344,7 +346,7 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 	cancelled, _ := repo.GetOrderByID(ctx, cancelID)
-	if cancelled.Status != "cancelled" || cancelled.PaymentStatus != "cancelled" || cancelled.DropshipperProfit != 9000 {
+	if cancelled.Status != "cancelled" || cancelled.PaymentStatus != "paid" || cancelled.DropshipperProfit != 9000 {
 		t.Fatalf("cancel result: status=%q payment=%q profit=%d", cancelled.Status, cancelled.PaymentStatus, cancelled.DropshipperProfit)
 	}
 
@@ -354,7 +356,7 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, amount, status) VALUES ($1, $2, 'ORD-DISP', 'tok-1', 100000, 'paid')`, "pay-1", disputeID); err != nil {
 		t.Fatalf("seed payment tx: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party) VALUES ('disp-1', $1, 'ORD-DISP', 'delivery_undelivered', 'resolved', 'refund_carrier', 'carrier')`, disputeID); err != nil {
+	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party,claim_amount) VALUES ('disp-1', $1, 'ORD-DISP', 'delivery_undelivered', 'resolved', 'refund_carrier', 'carrier',100000)`, disputeID); err != nil {
 		t.Fatalf("seed dispute: %v", err)
 	}
 	applied, err := repo.ApplyDisputeRefundEffect(ctx, "disp-1")
@@ -362,12 +364,16 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 		t.Fatalf("dispute refund effect applied=%v err=%v; want true", applied, err)
 	}
 	disputed, _ := repo.GetOrderByID(ctx, disputeID)
-	if disputed.Status != "cancelled" || disputed.PaymentStatus != "refunded" {
+	if disputed.Status != "processing" || disputed.PaymentStatus != "paid" {
 		t.Fatalf("dispute refund order: status=%q payment=%q", disputed.Status, disputed.PaymentStatus)
 	}
 	var txStatus string
-	if err := db.QueryRow(`SELECT status FROM payment_transactions WHERE order_id = $1`, disputeID).Scan(&txStatus); err != nil || txStatus != "refunded" {
-		t.Fatalf("payment tx status = %q, err %v; want refunded", txStatus, err)
+	if err := db.QueryRow(`SELECT status FROM payment_transactions WHERE order_id = $1`, disputeID).Scan(&txStatus); err != nil || txStatus != "paid" {
+		t.Fatalf("payment tx status = %q, err %v; want preserved paid capture", txStatus, err)
+	}
+	var review int64
+	if err := db.QueryRow(`SELECT SUM(amount_toman) FROM order_refund_obligations WHERE order_id=$1 AND destination='review' AND status='unknown'`, disputeID).Scan(&review); err != nil || review != 100000 {
+		t.Fatalf("old unresolved dispute source lost %d %v", review, err)
 	}
 	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party) VALUES ('disp-2', $1, 'ORD-CANCEL', 'delivery_undelivered', 'resolved', 'release_to_seller', 'seller')`, cancelID); err != nil {
 		t.Fatalf("seed non-refund dispute: %v", err)

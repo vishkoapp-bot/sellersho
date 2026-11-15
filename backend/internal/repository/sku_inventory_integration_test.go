@@ -68,10 +68,17 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE TABLE inventory_movements(id VARCHAR(80),product_id VARCHAR(50),supplier_id VARCHAR(50),variant_id UUID,quantity INT,from_status VARCHAR(30),to_status VARCHAR(30),from_location_key VARCHAR(150),to_location_key VARCHAR(150),reference_type VARCHAR(40),reference_id VARCHAR(80),idempotency_key VARCHAR(150) UNIQUE,actor_user_id VARCHAR(80),metadata JSONB)`,
 		`CREATE TABLE order_items(id UUID PRIMARY KEY,order_id TEXT,product_id TEXT,variant_id UUID,quantity INT,final_unit_price BIGINT DEFAULT 100,variant_name TEXT,variant_spnc TEXT)`,
 		`CREATE TRIGGER fixture_origin AFTER INSERT ON order_items FOR EACH ROW EXECUTE FUNCTION fixture_origin()`,
-		`CREATE TABLE orders(id TEXT PRIMARY KEY,order_number TEXT,status TEXT,payment_status TEXT,payment_expires_at TIMESTAMPTZ,shipped_at TIMESTAMPTZ,inventory_captured BOOL DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW(),store_id TEXT,referrer_seller_id TEXT)`,
+		`CREATE TABLE orders(id TEXT PRIMARY KEY,order_number TEXT,status TEXT,payment_status TEXT,payment_expires_at TIMESTAMPTZ,customer_user_id UUID,shipped_at TIMESTAMPTZ,inventory_captured BOOL DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW(),store_id TEXT,referrer_seller_id TEXT)`,
 		`CREATE TABLE supplier_shipments(id TEXT PRIMARY KEY,order_id TEXT,shipped_at TIMESTAMPTZ,delivered_at TIMESTAMPTZ,status TEXT)`,
 		`CREATE TABLE referral_bonuses(referrer_store_id TEXT,referred_store_id TEXT)`,
-		`CREATE TABLE payment_transactions(id TEXT,order_id TEXT,order_number TEXT,gateway_token TEXT UNIQUE,rrn TEXT,card_mask TEXT,amount BIGINT,status TEXT,created_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE payment_transactions(id TEXT PRIMARY KEY,order_id TEXT,order_number TEXT,gateway_token TEXT UNIQUE,rrn TEXT,card_mask TEXT,amount BIGINT,status TEXT,created_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE UNIQUE INDEX payment_transactions_one_active_per_order ON payment_transactions(order_id) WHERE status IN ('pending','paid')`,
+		`CREATE TABLE users(id UUID PRIMARY KEY)`,
+		`CREATE TABLE customer_wallets(customer_id UUID PRIMARY KEY,balance BIGINT NOT NULL DEFAULT 0,updated_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE ledger_entries(id TEXT PRIMARY KEY,target_account TEXT,target_type TEXT,type TEXT,amount BIGINT,reason TEXT,operator TEXT,related_order_or_dispute TEXT)`,
+		`CREATE TABLE customer_returns(id UUID PRIMARY KEY,order_id TEXT,customer_id UUID,status TEXT)`,
+		`CREATE TABLE return_items(id UUID PRIMARY KEY,return_id UUID,order_item_id TEXT,qty INT,received_at TIMESTAMPTZ,qc_status TEXT)`,
+		`CREATE TABLE disputes(id TEXT PRIMARY KEY,order_id TEXT,status TEXT,resolution_action TEXT,claim_amount BIGINT)`,
 		`CREATE TABLE order_inventory_captures(order_item_id TEXT PRIMARY KEY,order_id TEXT,product_id TEXT,variant_id UUID,quantity INT,variant_quantity INT,restored_quantity INT NOT NULL DEFAULT 0,inventory_mode TEXT,allocations JSONB)`,
 		`CREATE TABLE order_inventory_returns(return_item_id TEXT PRIMARY KEY,order_item_id TEXT,quantity INT)`,
 		`CREATE TABLE shipment_items(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),shipment_id UUID,variant_id UUID,expected_qty INT,received_qty INT DEFAULT 0,inventory_received_qty INT DEFAULT 0,qc_status TEXT DEFAULT 'pending')`,
@@ -84,12 +91,16 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 			t.Fatal(err)
 		}
 	}
-	provenance, err := os.ReadFile("../../migrations/202611140006_inventory_transfer_provenance.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(string(provenance)); err != nil {
-		t.Fatal(err)
+	// Install the actual principal migration in this private schema. Cancellation
+	// must exercise current financial guards as well as exact SKU restoration.
+	for _, name := range []string{"202611140006_inventory_transfer_provenance.up.sql", "202610250007_refunds_table.up.sql", "202611150004_order_refund_principal.up.sql"} {
+		migration, err := os.ReadFile("../../migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(string(migration)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	red, blue := uuid.NewString(), uuid.NewString()
 	if _, err := tx.Exec(`INSERT INTO products VALUES('p','s',0,2,'variable','sw1',NOW())`); err != nil {
@@ -201,7 +212,7 @@ func TestSKUInventoryPaymentCallbackIsAtomicAndIdempotent(t *testing.T) {
 	if stock != 0 || captured != 1 || state != "pending" {
 		t.Fatalf("non-atomic/replayed payment stock=%d captures=%d loser=%s", stock, captured, state)
 	}
-	if err := repo.CancelOrder(context.Background(), winner, "", true); err != nil {
+	if err := repo.CancelOrder(context.Background(), winner, "fixture:sku-cancel", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := scoped.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, red).Scan(&stock); err != nil {
@@ -209,6 +220,10 @@ func TestSKUInventoryPaymentCallbackIsAtomicAndIdempotent(t *testing.T) {
 	}
 	if stock != 1 {
 		t.Fatalf("paid cancellation restored %d units, want 1", stock)
+	}
+	var preserved bool
+	if err := scoped.QueryRow(`SELECT p.status='paid' AND (SELECT COUNT(*) FROM order_refund_obligations WHERE source_payment_id=p.id AND amount_toman=1000 AND status='unknown' AND destination='original_payment')=1 FROM payment_transactions p WHERE p.id=$1`, winner).Scan(&preserved); err != nil || !preserved {
+		t.Fatalf("SKU restoration lost captured source/unknown liability %v %v", preserved, err)
 	}
 }
 

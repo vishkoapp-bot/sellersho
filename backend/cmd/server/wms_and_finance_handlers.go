@@ -235,21 +235,22 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request, ctx context.Co
 	// A failure here is reported (the dispute itself is already
 	// resolved in finance_repo.go); the effect is idempotent on retry
 	// because it only touches orders not already cancelled.
-	orderRefunded := false
+	refundRequested := false
 	if orderRepo != nil {
 		applied, effErr := orderRepo.ApplyDisputeRefundEffect(ctx, id)
 		if effErr != nil {
 			http.Error(w, effErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		orderRefunded = applied
+		refundRequested = applied
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":       true,
-		"disputeId":     id,
-		"status":        "resolved",
-		"orderRefunded": orderRefunded,
-		"message":       "Dispute resolved",
+		"success":         true,
+		"disputeId":       id,
+		"status":          "resolved",
+		"orderRefunded":   false,
+		"refundRequested": refundRequested,
+		"message":         "Dispute resolved",
 	})
 }

@@ -25,11 +25,11 @@ DONE refers to the task-specific local gate described below. It does not certify
 | INV-07 | DONE | 214a57c | [Stock API](../../architecture/stock-adjustment-api.md) |
 | FIN-012 | DONE | bf7d1bd | [Money policy](../../architecture/money-policy.md) |
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
-| FIN-006 | DONE | receipt-history stage | [Quantity/time contract](2026-11-15-storage-quantity-time.md) |
-| INV-10 | DONE | receipt-history stage | [Exact receipt adoption](2026-11-15-storage-quantity-time.md) |
+| FIN-006 | DONE | 4524ee3 | [Quantity/time contract](2026-11-15-storage-quantity-time.md) |
+| INV-10 | DONE | 4524ee3 | [Exact receipt adoption](2026-11-15-storage-quantity-time.md) |
 | OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
 | CAP-01 | Checkpoint OPEN | ff4ff13 / Harness checkpoint | [Harness and failed evidence](../../../load-tests/README.txt) |
-| FIN-003 | TODO | — | — |
+| FIN-003 | DONE | paid-cancellation stage | [Paid cancellation](2026-11-15-paid-cancellation-refund.md) |
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-02 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
 | AUTH-03 | DONE | dd373f5 | [Cache isolation](../../auth-cache-isolation.md) |
@@ -623,3 +623,27 @@ Task inventory after this local gate: **20 DONE,5 checkpoints OPEN,29 TODO** out
 Next: FIN-003 durable paid-cancellation refund liability, then the remaining task
 contracts. A next-stage refund-destination preference was requested asynchronously;
 it does not gate this storage release. No FIN003 implementation is in this commit.
+
+## Paid cancellation local acceptance — 2026-11-15
+
+FIN-003 local gate passed: frozen source
+`e6fe0a059613d06854129838eee514e9c21b5a8c`,689 top-level backend entries,0
+failures;688 pass and the intentional migration subprocess helper skip (its parent
+process tests execute the helper). Owned PostgreSQL/Redis cleanup verified.
+Frontend290/0, TypeScript, production frontend build,vet and Linux builds pass.
+The final source differs from that executable test source only in these release
+notes/status; backend/src/scripts trees are verified identical before commit.
+
+Evidence: logs/fin003-e6fe-frozen-full.log, logs/fin003-d860-frontend.log,
+logs/fin003-d860-typecheck.log, logs/fin003-d860-build.log and
+logs/fin003-e6fe-vet.log. The earlier d860 full run688/1 exposed an outdated SKU
+fixture; the actual current migration/guards and exact paid-source liability were
+added to that fixture (24 SKU/origin tests passed), then451e full688/0 passed.
+The final689/0 includes the added accepted-source replay regression. Independent
+review findings were reproduced and fixed; no known failing gate is omitted.
+
+Current counts:21 DONE,5 Checkpoint OPEN,28 TODO. DONE is the local gate defined
+above. FIN-010 original-payment execution, uncertain historical reconciliation and
+production-equivalent1000-user/100-RPS certification remain OPEN. Wallet checkout
+remains disabled. No live PSP request or historical automatic wallet credit was
+used. Deployment follows the standing committed-source deploy.ps1 workflow.

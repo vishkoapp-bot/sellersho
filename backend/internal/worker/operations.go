@@ -28,17 +28,14 @@ func (w *BackgroundWorker) RunOperationsCycle() {
 	}{
 		{"unpaid-order-expiry", func(ctx context.Context) (int64, error) {
 			orders, e := w.orderRepo.ExpireUnpaidOrders(ctx)
-			if e != nil {
-				return 0, e
-			}
 			for _, o := range orders {
 				if w.redisClient != nil {
-					if e = w.redisClient.ReleaseOrderInventory(ctx, o.ID, o.Products...); e != nil {
-						log.Printf("[WARN] Release expired hold %s: %v (Redis TTL remains active)", o.ID, e)
+					if cleanupErr := w.redisClient.ReleaseOrderInventory(ctx, o.ID, o.Products...); cleanupErr != nil {
+						log.Printf("[WARN] Release expired hold %s: %v (Redis TTL remains active)", o.ID, cleanupErr)
 					}
 				}
 			}
-			return int64(len(orders)), nil
+			return int64(len(orders)), e
 		}},
 		{"qc-response-deadline", func(ctx context.Context) (int64, error) { return repository.EscalateQCDeadlines(ctx, w.db) }},
 		{"supplier-sla", func(ctx context.Context) (int64, error) { return repository.RefreshSupplierSLA(ctx, w.db) }},

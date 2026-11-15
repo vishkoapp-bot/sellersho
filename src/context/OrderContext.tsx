@@ -46,6 +46,7 @@ export interface OrderContextType {
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
 
 const mapBackendOrder = (order: BackendOrderDto): Order => ({
+  refund: order.refund,
   id: order.id,
   orderNumber: order.orderNumber,
   items: (order.items || []).map((item): CartItem => ({

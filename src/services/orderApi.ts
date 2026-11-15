@@ -76,7 +76,21 @@ export interface BackendOrderItemDto {
   discountAmount?: number;
 }
 
+export interface OrderRefundSummary {
+ status: 'none'|'pending'|'succeeded'|'failed'|'unknown';
+ currency: 'TOMAN';
+ amountToman: number;
+ pendingToman: number;
+ succeededToman: number;
+ failedToman: number;
+ unknownToman: number;
+ destination: 'none'|'original_payment'|'wallet'|'review'|'mixed';
+ needsReview: boolean;
+}
+export interface OrderCancellationResponse {success:boolean;orderId:string;status:'cancelled';refund:OrderRefundSummary;}
+
 export interface BackendOrderDto {
+ refund?: OrderRefundSummary;
   id: string;
   customerUserId?: string;
   orderNumber: string;
@@ -88,7 +102,7 @@ export interface BackendOrderDto {
   discountCode?: string;
   payableAmount: number;
   paymentMethod: 'cash' | 'installments';
-  paymentStatus: 'pending' | 'paid' | 'failed' | 'cancelled';
+  paymentStatus: 'pending' | 'paid' | 'failed' | 'cancelled' | 'refunded';
   customerFullName: string;
   customerPhone: string;
   customerProvince: string;
@@ -222,8 +236,8 @@ export const orderApi = {
   // FIX 5 (Team 03 G4/G5): customer cancel / return / return-quote /
   // my-returns. The return body is the live client shape
   // (order_item_id + warehouse_id + prepaid), not just orderItemId.
-  cancelOrder: async (idOrNumber: string): Promise<{ success: boolean; status: string }> => {
-    return apiRequest<{ success: boolean; status: string }>(`/orders/${encodeURIComponent(idOrNumber)}/cancel`, {
+  cancelOrder: async (idOrNumber: string): Promise<OrderCancellationResponse> => {
+    return apiRequest<OrderCancellationResponse>(`/orders/${encodeURIComponent(idOrNumber)}/cancel`, {
       method: 'POST',
       auth: true,
     });

@@ -62,10 +62,13 @@ func (w *BackgroundWorker) Start() {
 func (w *BackgroundWorker) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.runner().Stop(ctx); err != nil {
+	if err := w.StopContext(ctx); err != nil {
 		log.Printf("[WARN] background worker drain exceeded budget")
 	}
 }
+
+// StopContext cancels admission and all business work within the caller budget.
+func (w *BackgroundWorker) StopContext(ctx context.Context) error { return w.runner().Stop(ctx) }
 
 // RunDeliveryJob shares admission/ownership with the scheduled delivery pass.
 func (w *BackgroundWorker) RunDeliveryJob(ctx context.Context) error {
@@ -80,7 +83,10 @@ func (w *BackgroundWorker) RunDeliveryJob(ctx context.Context) error {
 // the return window closes) and records the cycle in job_runs, instead
 // of the old single-stage confirm-and-release in one UPDATE.
 func (w *BackgroundWorker) ReleaseExpiredDeliveryLocks() {
-	w.runDeliveryLockReleaserCycle()
+	if w.db == nil {
+		return
+	}
+	_ = w.RunDeliveryJob(context.Background())
 }
 
 // runDeliveryLockReleaserCycle runs the two live stages and records
@@ -107,25 +113,6 @@ func (w *BackgroundWorker) deliveryCycle(ctx context.Context) (released int64, c
 	// locked until stage 2. It does not set profit_released,
 	// profit_released_at or referral_commission_released (those move
 	// with the release).
-	// Fix69 O3: confirmed_at and return_window_ends_at MUST be set
-	// here — stage 2 (ReleaseClosedReturnWindows) only releases
-	// orders with a non-NULL window, so an auto-confirm that set
-	// only the status could never release. The window length is
-	// the same source the manual confirm path uses:
-	// platform_settings.return_window_days (COALESCE 7, clamped
-	// 1..365, same as order_repo returnWindowDaysFromTx /
-	// GetReturnWindowDays), read via the repo when wired and by
-	// the identical query otherwise — never a hardcoded 7 here
-	// when the setting row exists.
-	windowDays := 7
-	if w.orderRepo != nil {
-		windowDays = w.orderRepo.GetReturnWindowDays(ctx)
-	} else {
-		var days int
-		if err := w.db.QueryRowContext(ctx, `SELECT COALESCE(return_window_days, 7) FROM platform_settings ORDER BY id LIMIT 1`).Scan(&days); err == nil && days >= 1 && days <= 365 {
-			windowDays = days
-		}
-	}
 	confirmRows, confirmErr := w.db.QueryContext(ctx, `SELECT id FROM orders WHERE status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-confirm' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY shipped_at,id LIMIT 100`)
 	if confirmErr != nil {
 		return 0, 0, confirmErr
@@ -152,7 +139,7 @@ func (w *BackgroundWorker) deliveryCycle(ctx context.Context) (released int64, c
 			break
 		}
 		candidateCtx, candidateCancel := context.WithTimeout(ctx, 300*time.Millisecond)
-		ok, err := w.confirmDelivery(candidateCtx, id, windowDays)
+		ok, err := w.confirmDelivery(candidateCtx, id)
 		candidateCancel()
 		if ok {
 			confirmedOrderIDs = append(confirmedOrderIDs, id)
@@ -194,7 +181,7 @@ func (w *BackgroundWorker) deliveryCycle(ctx context.Context) (released int64, c
 	return released, confirmed, errors.Join(failures...)
 }
 
-func (w *BackgroundWorker) confirmDelivery(ctx context.Context, id string, windowDays int) (bool, error) {
+func (w *BackgroundWorker) confirmDelivery(ctx context.Context, id string) (bool, error) {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err == nil {
 		defer tx.Rollback()
@@ -206,12 +193,13 @@ func (w *BackgroundWorker) confirmDelivery(ctx context.Context, id string, windo
 		tx.Rollback()
 		return false, err
 	}
+	// Read the configured window in the same guarded transaction as confirmation.
 	var configured int
 	settingErr := tx.QueryRowContext(ctx, `SELECT COALESCE(return_window_days,7) FROM platform_settings ORDER BY id LIMIT 1`).Scan(&configured)
 	if settingErr != nil && !errors.Is(settingErr, sql.ErrNoRows) {
 		return false, settingErr
 	}
-	windowDays = 7
+	windowDays := 7
 	if configured >= 1 && configured <= 365 {
 		windowDays = configured
 	}

@@ -26,22 +26,8 @@ func (w *BackgroundWorker) RunMonthlySettlementIfDue() {
 	if w.db == nil || w.finRepo == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	cycle, err := w.finRepo.RunMonthlySettlement(ctx, time.Now(), "background-worker")
-	if err != nil {
-		if errors.Is(err, repository.ErrSettlementNotConfigured) {
-			return
-		}
-		log.Printf("[WARN] Monthly settlement sweep failed: %v", err)
-		return
-	}
-	if cycle != nil {
-		if cycle.Status == "completed" {
-			log.Printf("[INFO] Monthly settlement completed for %s: %d stores swept, %d skipped (no Sheba), gross %d", cycle.Period, cycle.TotalStores, cycle.SkippedStores, cycle.TotalGross)
-		} else {
-			log.Printf("[INFO] Monthly settlement %s for %s: %d/%d accounts done, %d pending, %d blocked", cycle.Status, cycle.Period, cycle.CompletedStores, cycle.CandidateStores, cycle.PendingStores, cycle.BlockedStores)
-		}
+	if _, err := w.runner().Run(context.Background(), "monthly-settlement"); err != nil && !errors.Is(err, jobrunner.ErrBusy) && !errors.Is(err, jobrunner.ErrStopped) {
+		log.Print("[WARN] Monthly settlement sweep failed")
 	}
 }
 

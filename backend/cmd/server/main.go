@@ -5,12 +5,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/drup/platform/internal/accesspolicy"
@@ -20,12 +24,13 @@ import (
 	"github.com/drup/platform/internal/database/seeder"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/ippanel"
+	"github.com/drup/platform/internal/lifecycle"
 	"github.com/drup/platform/internal/migrations"
 	"github.com/drup/platform/internal/observability"
-	"github.com/drup/platform/internal/requestbudget"
 	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/requestbudget"
 	"github.com/drup/platform/internal/worker"
 	"github.com/google/uuid"
 )
@@ -68,7 +73,7 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 	})
 }
 
-func runAutoMigrations(db *sql.DB) {
+func runAutoMigrations(ctx context.Context, db *sql.DB) error {
 	dirs := []string{"migrations", "../migrations", "./backend/migrations", "/app/migrations"}
 	migrationDir := os.Getenv("MIGRATIONS_DIR")
 	if migrationDir == "" {
@@ -80,36 +85,50 @@ func runAutoMigrations(db *sql.DB) {
 		}
 	}
 	if migrationDir == "" {
-		log.Fatal("[FATAL] Required migrations directory missing (fail-closed)")
+		return errors.New("required migrations directory missing (fail-closed)")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
 	if _, err := migrations.Run(ctx, db, migrations.Options{Dir: migrationDir, Logf: log.Printf}); err != nil {
-		log.Fatalf("[FATAL] Database migration failed: %v (fail-closed)", err)
+		return errors.New("database migration validation failed (fail-closed); check migration directory, checksums and database availability")
 	}
 	log.Println("[INFO] Database schema verified and up-to-date")
+	return nil
 }
 
 func main() {
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if err := run(signalCtx); err != nil {
+		log.Printf("[ERROR] %v", err)
+		os.Exit(1)
+	}
+}
+
+func run(signalCtx context.Context) (result error) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("[FATAL] Configuration error: %v", err)
+		return fmt.Errorf("configuration error: %w", err)
 	}
-
-	db, err := repository.NewPostgresDB(cfg.DatabaseURL)
+	startupCtx, stopStartup := context.WithTimeout(signalCtx, cfg.StartupTimeout)
+	defer stopStartup()
+	process := &lifecycle.Process{Grace: cfg.ShutdownGrace}
+	defer func() { result = errors.Join(result, process.Shutdown()) }()
+	db, err := repository.NewPostgresDBContext(startupCtx, cfg.DatabaseURL)
 	if err != nil {
-		log.Printf("[WARN] PostgreSQL connection: %v", err)
-	} else {
-		log.Println("[INFO] Connected to PostgreSQL 16")
-		runAutoMigrations(db.DB)
+		return err
 	}
-
-	redisClient, err := repository.NewRedisClient(cfg.RedisURL)
+	process.Closers = append(process.Closers, func(context.Context) error { return db.DB.Close() })
+	log.Print("[INFO] Connected to PostgreSQL")
+	if err = runAutoMigrations(startupCtx, db.DB); err != nil {
+		return err
+	}
+	redisClient, err := repository.NewRedisClientContext(startupCtx, cfg.RedisURL)
 	if err != nil {
-		log.Printf("[WARN] Redis connection: %v", err)
-	} else {
-		log.Println("[INFO] Connected to Redis 7")
+		return err
 	}
+	process.Closers = append(process.Closers, func(context.Context) error { return redisClient.Client.Close() })
+	log.Print("[INFO] Connected to Redis")
+	state := newHealthState(db, redisClient, cfg)
+	process.State = state
 
 	var catalogRepo *repository.CatalogRepository
 	var storeRepo *repository.StoreRepository
@@ -154,7 +173,7 @@ func main() {
 	}
 	capacityGateway, capacityCarrier, capacityErr := selectCapacityAdapters(os.Getenv, gatewayClient)
 	if capacityErr != nil {
-		log.Fatal(capacityErr)
+		return capacityErr
 	}
 	gatewayClient = capacityGateway
 	if capacityCarrier != "" {
@@ -172,8 +191,8 @@ func main() {
 		userRepo = repository.NewUserRepository(db.DB)
 		capabilityRepo = repository.NewCapabilityRepository(db.DB)
 		jwtService.SetCapabilityReader(capabilityRepo)
-		if err := capabilityRepo.BackfillOwnershipCapabilities(context.Background()); err != nil {
-			log.Printf("[WARN] Capability ownership backfill failed: %v", err)
+		if err := capabilityRepo.BackfillOwnershipCapabilities(startupCtx); err != nil {
+			return errors.New("capability ownership bootstrap failed; check database availability")
 		}
 		adminRepo = repository.NewAdminRepository(db.DB)
 		supplierRepo = repository.NewSupplierRepository(db.DB)
@@ -183,7 +202,7 @@ func main() {
 		backgroundWorker.SetOrderRepository(orderRepo)
 		backgroundWorker.SetRedisClient(redisClient)
 		backgroundWorker.SetFinanceRepository(finRepo)
-		backgroundWorker.Start()
+		process.StopWorker = backgroundWorker.StopContext
 
 	}
 
@@ -294,36 +313,9 @@ func main() {
 	}))
 
 	// 1. Health check
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		dbStatus := "down"
-		if db != nil && db.DB.Ping() == nil {
-			dbStatus = "up"
-		}
-		redisStatus := "down"
-		if redisClient != nil && redisClient.Client.Ping(r.Context()).Err() == nil {
-			redisStatus = "up"
-		}
-
-		// Team 10 live parity: honest health. Previously "status" was
-		// always "ok" even when Postgres/Redis were down (source gap).
-		// U61 CAVEAT: live DB-down behaviour is unverified -- it was
-		// deliberately never tested on live (stopping the DB was out
-		// of scope for Phase 1). This is a documented honesty fix,
-		// NOT a proven live behaviour. Healthy-case response shape
-		// (postgres:"up", redis:"up") is unchanged.
-		status, code := healthStatus(dbStatus == "up", redisStatus == "up")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      status,
-			"engine":      "Go Modular Monolith v1.0.0",
-			"environment": cfg.Environment,
-			"isDev":       seeder.IsDevEnvironment(cfg.Environment),
-			"postgres":    dbStatus,
-			"redis":       redisStatus,
-			"timestamp":   time.Now().UTC().Format(time.RFC3339),
-		})
-	})
+	mux.HandleFunc("/api/live", state.Live)
+	mux.HandleFunc("/api/ready", state.Ready)
+	mux.HandleFunc("/api/health", state.Ready)
 
 	// 2. Categories Endpoint (Redis Cached)
 	mux.HandleFunc("/api/v1/categories", func(w http.ResponseWriter, r *http.Request) {
@@ -2427,35 +2419,43 @@ func main() {
 	if db != nil {
 		observability.Default.SetDB(db.DB)
 	}
-	metricsServer, metricsErr := observability.Default.Start("127.0.0.1:9090")
-	if metricsErr != nil {
-		log.Fatalf("metrics listener failed: %v", metricsErr)
-	}
-	defer metricsServer.Close()
-	metricsCtx, stopMetrics := context.WithCancel(context.Background())
-	defer stopMetrics()
-	if redisClient != nil {
-		go observability.Default.PollDependencies(metricsCtx, redisClient.Client)
-	} else {
-		go observability.Default.PollDependencies(metricsCtx, nil)
+	if err := startupCtx.Err(); err != nil {
+		return errors.New("startup canceled or exceeded STARTUP_TIMEOUT_SECONDS")
 	}
 	addr := fmt.Sprintf(":%s", cfg.Port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return errors.New("HTTP listener bind failed; check PORT availability")
+	}
+	defer listener.Close()
+	metricsServer, metricsErr := observability.Default.Start("127.0.0.1:9090")
+	if metricsErr != nil {
+		return errors.New("metrics listener bind failed; check local metrics port availability")
+	}
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	metricsDone := make(chan struct{})
+	go func() {
+		defer close(metricsDone)
+		observability.Default.PollDependencies(metricsCtx, redisClient.Client)
+	}()
+	process.StopMetrics = func(ctx context.Context) error {
+		stopMetrics()
+		closeErr := metricsServer.Close()
+		select {
+		case <-metricsDone:
+			return closeErr
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	log.Printf("==================================================")
 	log.Printf("Drup Platform — Go Backend Core v1.0.0")
 	log.Printf("Running at http://localhost%s", addr)
 	log.Printf("==================================================")
 
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      observability.Default.HTTP(mux, enableCORS(requestbudget.New(requestbudget.DefaultConfig())(mux), cfg)),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:  65 * time.Second,
-		WriteTimeout: 70 * time.Second,
-		IdleTimeout: 60 * time.Second,
-		MaxHeaderBytes: 64 * 1024,
-	}
+	server := newHTTPServer(addr, observability.Default.HTTP(mux, state.Admission(enableCORS(requestbudget.New(requestbudget.DefaultConfig())(mux), cfg))))
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed: %v", err)
-	}
+	process.Server = server
+	stopStartup()
+	return process.Serve(signalCtx, listener, backgroundWorker.Start)
 }

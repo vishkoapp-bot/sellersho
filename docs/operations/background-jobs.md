@@ -109,13 +109,12 @@ duplicate ledger effects. Financial release tests verify one balanced ledger
 pair from the amount accepted under the guard. These are local measurements;
 production-equivalent capacity certification remains open.
 
-## Recorded operations follow-ups
+## Operations follow-ups resolved by OPS-01
 
-The final review found no remaining Critical/Important issue in this stage. Three
-Minor items remain for OPS-01: unused compatibility exports can bypass Runner
-(no current production caller), delivery has a redundant settings pre-read, and
-simultaneous active automatic-retry and financial-review markers can overcount
-the automatic subset. The last state has no demonstrated path in the normal
-lease-serialized scheduler; its review alarm remains active and financial guards
-are unaffected. Do not treat the subset claim as guaranteed for that overlap
-until the follow-up predicate and regression are applied.
+OPS-01 routes exported delivery/monthly compatibility calls through Runner,
+cancels manual pre-Start work on Stop, removes the duplicate delivery settings
+pre-read while retaining its guarded authority, and excludes active financial
+review from the automatic-retry subset even when both markers overlap. Real
+regressions cover each case. Confirmed partial progress also resets scheduler
+error backoff to2s; zero-progress, failed metadata and cancellation retain the
+original exponential limits. See [Process lifecycle](process-lifecycle.md).

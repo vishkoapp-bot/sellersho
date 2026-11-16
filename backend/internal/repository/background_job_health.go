@@ -99,7 +99,7 @@ func jobBacklog(ctx context.Context, db *sql.DB, h *JobHealth) error {
 		}
 	}
 	if h.Job == "unpaid-order-expiry" {
-		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM background_job_candidate_retry b JOIN orders o ON o.id=b.candidate WHERE b.job='unpaid-order-expiry' AND b.reason='transient' AND b.next_retry_at>clock_timestamp() AND o.payment_status='pending' AND o.status IN ('pending','processing') AND NOT o.inventory_captured AND o.payment_expires_at<=NOW() LIMIT 1001)q`).Scan(&h.AutomaticRetry); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM background_job_candidate_retry b JOIN orders o ON o.id=b.candidate WHERE b.job='unpaid-order-expiry' AND b.reason='transient' AND b.next_retry_at>clock_timestamp() AND o.payment_status='pending' AND o.status IN ('pending','processing') AND NOT o.inventory_captured AND o.payment_expires_at<=NOW() AND NOT EXISTS(SELECT 1 FROM order_expiry_review_state r WHERE r.order_id=o.id AND r.next_retry_at>clock_timestamp()) LIMIT 1001)q`).Scan(&h.AutomaticRetry); err != nil {
 			return err
 		}
 	}

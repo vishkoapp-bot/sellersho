@@ -38,10 +38,13 @@ services:
     image: alpine:3.19
     container_name: drup_backend
     restart: always
+    stop_grace_period: 30s
     working_dir: /app
     command: ["/app/server"]
     environment:
       PORT: "8080"
+      STARTUP_TIMEOUT_SECONDS: "${STARTUP_TIMEOUT_SECONDS:-30}"
+      SHUTDOWN_GRACE_SECONDS: "${SHUTDOWN_GRACE_SECONDS:-20}"
       APP_ENV: "production"
       PAYMENT_GATEWAY_MODE: "real"
       DATABASE_URL: "${DATABASE_URL:?required runtime secret}"

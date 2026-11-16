@@ -6,12 +6,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drup/platform/internal/database/seeder"
 )
 
 // Config represents runtime application configuration
 type Config struct {
+	StartupTimeout                time.Duration
+	ShutdownGrace                 time.Duration
 	Port                          string
 	DatabaseURL                   string
 	RedisURL                      string
@@ -35,6 +38,14 @@ const developmentWebhookSecret = "drup_tracking_webhook_secret_dev_2026"
 
 // LoadConfig loads configuration from environment variables with strict fail-closed production checks
 func LoadConfig() (*Config, error) {
+	startup, err := durationSeconds("STARTUP_TIMEOUT_SECONDS", 30, 600)
+	if err != nil {
+		return nil, err
+	}
+	shutdown, err := durationSeconds("SHUTDOWN_GRACE_SECONDS", 20, 25)
+	if err != nil {
+		return nil, err
+	}
 	env := getEnv("APP_ENV", "development")
 	isDev := seeder.IsDevEnvironment(env)
 
@@ -128,6 +139,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
+		StartupTimeout:                startup,
+		ShutdownGrace:                 shutdown,
 		Port:                          port,
 		DatabaseURL:                   dbURL,
 		RedisURL:                      redisURL,
@@ -160,4 +173,16 @@ func getBoolEnv(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return parsed
+}
+
+func durationSeconds(key string, fallback, maximum int) (time.Duration, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return time.Duration(fallback) * time.Second, nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 || seconds > maximum {
+		return 0, fmt.Errorf("%s must be an integer in 1..%d", key, maximum)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }

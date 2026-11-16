@@ -53,7 +53,8 @@ type Runner struct {
 }
 
 func New(store Store, jobs []Job) *Runner {
-	return &Runner{store: store, jobs: append([]Job(nil), jobs...), active: map[string]bool{}, expiry: make(chan struct{}, 1), shared: make(chan struct{}, 2)}
+	root, cancel := context.WithCancel(context.Background())
+	return &Runner{root: root, cancel: cancel, store: store, jobs: append([]Job(nil), jobs...), active: map[string]bool{}, expiry: make(chan struct{}, 1), shared: make(chan struct{}, 2)}
 }
 func (r *Runner) Start() {
 	r.mu.Lock()
@@ -62,7 +63,6 @@ func (r *Runner) Start() {
 		return
 	}
 	r.started = true
-	r.root, r.cancel = context.WithCancel(context.Background())
 	for _, j := range r.jobs {
 		r.wg.Add(1)
 		go r.loop(j)
@@ -80,7 +80,7 @@ func (r *Runner) loop(j Job) {
 			return
 		case <-timer.C:
 		}
-		_, err := r.Run(r.root, j.ID)
+		result, err := r.Run(r.root, j.ID)
 		switch {
 		case errors.Is(err, ErrStopped):
 			return
@@ -88,8 +88,14 @@ func (r *Runner) loop(j Job) {
 			delay = time.Second + time.Duration(rand.Int64N(int64(4*time.Second)))
 		case err != nil:
 			log.Printf("[WARN] background job %s: %s", j.ID, ErrorCode(err))
-			delay = backoff
-			backoff = min(60*time.Second, backoff*2)
+			if (result.Affected > 0 || result.Confirmed > 0) && !errors.Is(err, ErrMetadata) && !errors.Is(err, context.Canceled) {
+				// A bounded pass can commit useful work before its deadline. Keep
+				// draining that backlog without treating progress as an outage.
+				delay, backoff = 2*time.Second, 2*time.Second
+			} else {
+				delay = backoff
+				backoff = min(60*time.Second, backoff*2)
+			}
 		default:
 			delay = j.Period
 			backoff = 2 * time.Second

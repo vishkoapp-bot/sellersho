@@ -38,6 +38,12 @@ func New(cfg Config) func(http.Handler) http.Handler {
 	ordinary, uploads := make(chan struct{}, cfg.APIConcurrent), make(chan struct{}, cfg.UploadConcurrent)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Health owns its separate nonqueued probe budget. Busy application
+			// admission must never turn cheap process liveness into a restart storm.
+			if r.URL.Path == "/api/live" || r.URL.Path == "/api/ready" || r.URL.Path == "/api/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			duration, margin, slots := cfg.API, cfg.WriteMargin, ordinary
 			switch {
 			case IsUpload(r):
@@ -75,6 +81,9 @@ func New(cfg Config) func(http.Handler) http.Handler {
 			}
 			if err := controller.SetWriteDeadline(deadline.Add(margin)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 				panic(http.ErrAbortHandler)
+			}
+			if !readBody(guard, r) {
+				return
 			}
 			next.ServeHTTP(guard, r.WithContext(ctx))
 			if guard.expired() {

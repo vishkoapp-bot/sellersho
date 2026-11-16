@@ -37,4 +37,4 @@ Add operational contract and update public progress only after local acceptance.
 - [x] Wire truthful admin alerts/manual cancellation; test actual HTTP and UI behavior.
 - [x] Measure local overlap/connection/latency and rehearse migration/rollback compatibility.
 - [x] Fresh task and whole-change review, fix Important findings with RED/GREEN; complete frozen tests/build gates.
-- [ ] Root commits explicit reviewed files, pushes, deploys with deploy.ps1 and verifies source/backup/sealed migrations/money/history/health. Continue remaining backlog.
+- [x] Root commits explicit reviewed files, pushes, deploys with deploy.ps1 and verifies source/backup/sealed migrations/money/history/health. Continue remaining backlog.

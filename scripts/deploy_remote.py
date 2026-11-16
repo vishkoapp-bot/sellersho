@@ -77,7 +77,7 @@ runtime_env.setdefault('PLATFORM_DOMAINS', '46.249.98.190')
 for key in ['DOMAIN_EDGE_HOST', 'PLATFORM_DOMAINS']:
     os.environ[key] = runtime_env[key]
 os.environ.setdefault('PLATFORM_HTTP_HOST', '46.249.98.190')
-runtime = {'services': {'backend': {'environment': runtime_env}}}
+runtime = {'services': {'backend': {'environment': runtime_env, 'stop_grace_period': '30s'}}}
 if ssl:
     edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190'}
     if previous_edge:

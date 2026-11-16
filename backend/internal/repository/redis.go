@@ -19,6 +19,10 @@ type RedisClient struct {
 
 // NewRedisClient initializes Redis connection
 func NewRedisClient(redisURL string) (*RedisClient, error) {
+	return NewRedisClientContext(context.Background(), redisURL)
+}
+
+func NewRedisClientContext(parent context.Context, redisURL string) (*RedisClient, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, errors.New("REDIS_URL initialization failed; configuration value withheld")
@@ -28,7 +32,7 @@ func NewRedisClient(redisURL string) (*RedisClient, error) {
 	client := redis.NewClient(opts)
 	client.AddHook(observability.RedisHook{Registry: observability.Default})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {

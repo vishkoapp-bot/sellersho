@@ -38,9 +38,9 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-002 | DONE | aeed326 | [Durable monthly settlement](../../architecture/monthly-settlement.md) |
 | JOB-01 | DONE | 12d2018 / 52e6edc | [Background jobs](../../operations/background-jobs.md) |
 | SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
-| FIN-010 | TODO | — | — |
+| FIN-010 | TODO | — | Sandbox access not yet available; owner requested independent work |
 | INV-12 | TODO | — | — |
-| FIN-004 | TODO | — | — |
+| FIN-004 | DONE | this commit | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
 | FIN-005 | TODO | — | — |
 | FIN-007 | TODO | — | — |
 | FIN-008 | TODO | — | — |
@@ -49,7 +49,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | TODO | — | — |
 | TEST-02 | Checkpoint OPEN | 8302d23 / 1ef7092 | [Frontend baseline](../../frontend-test-baseline.md) |
-| OPS-01 | DONE | this commit | [Process lifecycle](../../operations/process-lifecycle.md) |
+| OPS-01 | DONE | 7ee671b | [Process lifecycle](../../operations/process-lifecycle.md) |
 | REL-01 | TODO | — | — |
 | BAK-01 | TODO | — | — |
 | MIG-02 | TODO | — | — |
@@ -781,3 +781,58 @@ The three recorded JOB follow-ups are closed: exported compatibility calls use R
 - Final concurrent local burst260+120arrivals/30s at4/s: all380cancelled, stock10000 and ledger0 unchanged, oldest154s, drain45.38s (<75),716 actual HTTP catalog reads p50=4.38ms/p95=12.64ms/max53.64ms, observedDBinuse2. These are local measurements, not100RPS certification.
 
 Fresh task/final/scoped-fix reviews found no remaining source findings. Historical focused bind setup failure was corrected and rerun; historical unit console REDs lacking persisted files are not invented receipts. The superseded795-entry broad baseline with its one capacity failure remains preserved as NONPASSING; the lighter pre-fix capacity sample passed and is not called a RED or causal performance improvement. Final full797/0 is the acceptance evidence. Source proof verifies1487literal Git blobs, all applied migrations unchanged, protected paths absent and sealed007SHA256`c2e47f0e160122dc0559cbb573c9ff43e4f4ff1ab3cb4cb3eadb731352fc406d`. No schema, credential/provider policy or money/stock formula changed; no actual provider or production fault injection occurred.
+
+OPS-01 production rollout completed at7ee671bec2df3683965c51d2c68d9728128513f3 with deploy.ps1 exit0. Independent live/ready200, health/PostgreSQL/Redis/frontend, six successful jobs and backend stop grace30s verified. Backup /opt/drup/backups/deploy-20261116T051935Z-7ee671be restricted0700. All sealed003–007 source/live/DB identities and complete financial snapshot unchanged; monthly history fingerprint41b646c66ef3dbaefb0750f5886881039096b1b08b5d520b94956f0f39237f03 unchanged. Receipt releases/ops01-production-receipt.json. No hardware capacity certification.
+
+FIN-010 remains open: owner confirmed sandbox access is not yet ready and requested independent tasks proceed. FIN-004 depends only on completed FIN-001 and is next. Initial read-only production audit found zero supplier-return parcels/events; migration must still fail closed on ambiguous history, and legacy tests remain required. No real PSP transactions have been attempted.
+
+## FIN-004 — parcel carrier charges and immutable corrections
+
+Local acceptance is complete on frozen tree `031b82e352bce9de8260049fdd922c8531f54aa6`.
+Current totals:27 DONE,5 Checkpoint OPEN,22 TODO (27 not closed). FIN-010 remains
+TODO because the owner has no sandbox access yet and requested independent work.
+
+Original confirmation now has a durable per-parcel business receipt and accepted
+retry aliases. Only draft parcels can first confirm; receiver-pays records terms
+without supplier debit. Sender-pays posts one atomic bill. Changed accepted terms
+conflict. Explicit optimistic corrections append signed debit/reversal events and
+immutable receipts, preserving the original bill and canonical supplier balance.
+Warehouse roles and typed-account/work-record guard order are retained.
+
+Additive160001 locks the five checked evidence relations before historical
+preflight and retains those locks through backfill. Three actual old-migration
+interleavings reproduced unchecked mapping; final tests reject invalid old money
+or lifecycle changes atomically and prove later writers wait through commit.
+Discovery-before-account progress and exact lock modes are tested. All previously
+applied migration blobs remain unchanged. New normalized checksum is
+`7b5df7ac1a9f0eef3c580f00a430e7aad5517550d35c38e6adb215603acf4116`.
+Production preflight is read-only:zero parcels/events and zero anomalies. No
+historical money is deleted, guessed, repriced or repaired by this release.
+
+- Final full backend:817 discovered top-level entries,0 failures,all33 packages;
+  disjoint201+201+222+193,all8 owned PostgreSQL/Redis fixtures removed. Expected
+  child-only helper skips are exercised by passing parents. Receipts:
+  `releases/fin004-accepted-full-manifest.json`, `logs/fin004-accepted-*.log`.
+- Fresh frontend:307/307,zero failures/skips/cancellations on tree33a2369, reused
+  for final source only by exact src/fixture/lock/config/runner blob identity.
+  Frozen TypeScript/Vite build and final Go vet/Linux server+migrator builds pass.
+- Test-only gate repairs make the real crash barrier select eligible candidates,
+  observe child PostgreSQL teardown,and recognize a bad-connection cancellation
+  only with the actual same-chain deadline (plus measured budget in worker tests).
+  Unknown/metadata leaves still fail. Production periods,job/candidate deadlines,
+  conservation assertions and capacity SLOs are unchanged. Deterministic REDs,
+  classifier negatives,21 related repository cases and real burst/crash pass.
+- Earlier812/1 and816/1 gates and the interrupted workspace frontend run remain
+  preserved as NONPASSING. The latter hit Vite watching97,412 ignored archive
+  files; the unchanged small-archive suite passed. No failure is relabeled green.
+
+Task,whole-stage and scoped-fix reviews are clean. Literal source proof verifies
+1500 Git blobs and protected paths absent. Validation groups run sequentially to
+avoid unrelated fixture I/O contention; each concurrency test retains its real
+internal concurrency. These are local checks,not hardware100RPS certification.
+
+The authorized commit/push/deploy.ps1 release follows this local gate. Production
+backup,applied checksum,health/jobs,and old money/monthly-history postchecks must
+be recorded before production completion. Older binaries cannot write the new
+charge evidence; a code rollback keeps charge mutations held for compatible
+roll-forward,never destructive schema down or restoring over new orders.

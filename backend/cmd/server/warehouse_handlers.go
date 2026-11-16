@@ -504,7 +504,14 @@ func handleConfirmReturnCharge(w http.ResponseWriter, r *http.Request, ctx conte
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := repo.ConfirmReturnParcelCharge(ctx, returnID, parcelID, claims.UserID, r.Header.Get("Idempotency-Key")); err != nil {
+	key, ok := requireFinanceRequestKey(w, r)
+	if !ok {
+		return
+	}
+	if err := repo.ConfirmReturnParcelCharge(ctx, returnID, parcelID, claims.UserID, key); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

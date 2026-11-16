@@ -526,9 +526,9 @@ func TestFinanceBalanceParcelBusinessEventOnce(t *testing.T) {
 	db := openFinanceBalanceDB(t)
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS supplier_return_financial_events,supplier_return_parcels,supplier_return_requests CASCADE`,
-		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT)`,
-		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT,confirmed_by TEXT,updated_at TIMESTAMPTZ)`,
-		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE)`,
+		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'packed')`,
+		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT,confirmed_by TEXT,updated_at TIMESTAMPTZ,final_charge_source TEXT,final_charge_reference TEXT)`,
+		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now())`,
 		`INSERT INTO suppliers(id) VALUES('parcel-supplier')`,
 		`INSERT INTO supplier_return_requests(id,supplier_id) VALUES('parcel-return','parcel-supplier')`,
 		`INSERT INTO supplier_return_parcels(id,return_request_id,final_charge,payment_method,status) VALUES('parcel-one','parcel-return',125000,'sender_pays','draft')`,
@@ -537,6 +537,7 @@ func TestFinanceBalanceParcelBusinessEventOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	applyParcelMigration(t, db)
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	if err := repo.ConfirmReturnParcelCharge(ctx, "parcel-return", "parcel-one", "test", "first-key"); err != nil {

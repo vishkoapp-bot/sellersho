@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -202,7 +203,8 @@ func TestJobsCrashRestartAndMidBatchCancellation(t *testing.T) {
 	jobExec(t, db, `CREATE FUNCTION job01_slow_expiry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id LIKE 'jo-%' AND NEW.status='cancelled' THEN PERFORM pg_sleep(0.025); END IF; RETURN NEW; END $$`)
 	jobExec(t, db, `CREATE TRIGGER job01_slow_expiry BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION job01_slow_expiry()`)
 	child := exec.Command(os.Args[0], "-test.run=^TestJobsCrashChild$", "-test.timeout=30s")
-	child.Env = append(os.Environ(), "SELLERSHO_JOB_CRASH_CHILD=owned-job01")
+	childApplication := "job01-crash-" + uuid.NewString()
+	child.Env = append(os.Environ(), "SELLERSHO_JOB_CRASH_CHILD=owned-job01", "PGAPPNAME="+childApplication)
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -219,27 +221,32 @@ func TestJobsCrashRestartAndMidBatchCancellation(t *testing.T) {
 	if committed < 3 {
 		t.Fatal("child made no committed progress")
 	}
+	var childBackend bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1)`, childApplication).Scan(&childBackend); err != nil || !childBackend {
+		t.Fatal("child database backend identity not observed", childBackend, err)
+	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	_ = child.Wait()
-	// After the crash, choose two actual remaining candidates. Signal a real
-	// first commit and a blocked next update before cancelling; no90ms timing guess.
-	rows, err := db.Query(`SELECT id FROM orders WHERE store_id=$1 AND status IN ('pending','processing') ORDER BY payment_expires_at,id COLLATE "C" LIMIT 2`, f.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pendingIDs []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
+	// OS exit does not establish server-side transaction teardown. Wait until all
+	// connections bearing this child-only application identity have disappeared.
+	until = time.Now().Add(5 * time.Second)
+	for {
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1)`, childApplication).Scan(&childBackend); err != nil {
 			t.Fatal(err)
 		}
-		pendingIDs = append(pendingIDs, id)
+		if !childBackend {
+			break
+		}
+		if !time.Now().Before(until) {
+			t.Fatal("crashed child database backend did not tear down")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	err = rows.Err()
-	rows.Close()
+	// After the crash, choose two actual remaining candidates. Signal a real
+	// first commit and a blocked next update before cancelling; no90ms timing guess.
+	pendingIDs, err := jobCancellationCandidates(db, f.store)
 	if err != nil || len(pendingIDs) != 2 {
 		t.Fatal("need two remaining candidates", pendingIDs, err)
 	}
@@ -313,12 +320,13 @@ func TestJobsCrashRestartAndMidBatchCancellation(t *testing.T) {
 		if !time.Now().Before(nextPass) {
 			attemptStarted := time.Now()
 			_, err = worker.runner().Run(context.Background(), "unpaid-order-expiry")
+			budgetExpired := time.Since(attemptStarted) >= 3*time.Second
 			if err != nil {
 				var automatic bool
 				if e := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM background_job_candidate_retry b JOIN orders o ON o.id=b.candidate WHERE b.job='unpaid-order-expiry' AND b.reason='transient' AND o.store_id=$1 AND o.status IN ('pending','processing'))`, f.store).Scan(&automatic); e != nil {
 					t.Fatal(e)
 				}
-				if !expectedExpiryBudgetFailure(err, automatic || time.Since(attemptStarted) >= 3*time.Second) {
+				if !expectedExpiryBudgetFailure(err, automatic || budgetExpired, budgetExpired) {
 					t.Fatal(err)
 				}
 			}
@@ -340,25 +348,56 @@ func TestJobsCrashRestartAndMidBatchCancellation(t *testing.T) {
 }
 
 // ErrTxDone requires actual automatic-retry or elapsed-job-budget evidence.
-// Joined metadata/business failures are never discarded as a budget outcome.
-func expectedExpiryBudgetFailure(err error, contextEvidence bool) bool {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, part := range joined.Unwrap() {
-			if !expectedExpiryBudgetFailure(part, contextEvidence) {
-				return false
+// A bad connection additionally requires a deadline in the same business chain
+// and measured job-budget evidence. Metadata and unknown failures remain fatal.
+func expectedExpiryBudgetFailure(err error, contextEvidence, budgetEvidence bool) bool {
+	if errors.Is(err, jobrunner.ErrMetadata) {
+		return false
+	}
+	allowBadConnection := errors.Is(err, context.DeadlineExceeded) && budgetEvidence
+	var expected func(error) bool
+	expected = func(part error) bool {
+		if joined, ok := part.(interface{ Unwrap() []error }); ok {
+			for _, leaf := range joined.Unwrap() {
+				if !expected(leaf) {
+					return false
+				}
 			}
+			return true
 		}
-		return true
+		if wrapped, ok := part.(interface{ Unwrap() error }); ok {
+			return expected(wrapped.Unwrap())
+		}
+		if errors.Is(part, context.DeadlineExceeded) {
+			return true
+		}
+		if errors.Is(part, sql.ErrTxDone) {
+			return contextEvidence
+		}
+		if errors.Is(part, driver.ErrBadConn) {
+			return allowBadConnection
+		}
+		var state interface{ SQLState() string }
+		return errors.As(part, &state) && state.SQLState() == "57014"
 	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return expectedExpiryBudgetFailure(wrapped.Unwrap(), contextEvidence)
+	return expected(err)
+}
+
+func jobCancellationCandidates(db *sql.DB, store string) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM orders WHERE store_id=$1 AND payment_status='pending' AND status IN ('pending','processing') AND NOT inventory_captured AND payment_expires_at<=NOW() AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry b WHERE b.job='unpaid-order-expiry' AND b.candidate=orders.id AND b.next_retry_at>clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM order_expiry_review_state e WHERE e.order_id=orders.id AND e.next_retry_at>clock_timestamp()) ORDER BY payment_expires_at,id COLLATE "C" LIMIT 2`, store)
+	if err != nil {
+		return nil, err
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
+	var pendingIDs []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		pendingIDs = append(pendingIDs, id)
 	}
-	if errors.Is(err, sql.ErrTxDone) {
-		return contextEvidence
-	}
-	var state interface{ SQLState() string }
-	return errors.As(err, &state) && state.SQLState() == "57014"
+	err = rows.Err()
+	rows.Close()
+	return pendingIDs, err
 }

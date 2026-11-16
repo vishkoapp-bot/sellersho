@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"github.com/drup/platform/internal/jobrunner"
@@ -155,28 +156,40 @@ func TestDeliveryReleaseContendedDeadlineRollsBackAndPersistsRetry(t *testing.T)
 	}
 }
 
-// Cancellation can race database/sql's automatic rollback and surface as
-// ErrTxDone. Accept only cancellation leaves; a joined unrelated error still fails.
+// Cancellation can race database/sql rollback and lib/pq connection invalidation.
+// A bad connection needs an actual deadline in this same error chain; unrelated
+// business/metadata leaves must still fail every cancellation assertion.
 func isCandidateBudgetCancellation(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, jobrunner.ErrMetadata) {
 		return false
 	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, part := range joined.Unwrap() {
-			if !isCandidateBudgetCancellation(part) {
-				return false
-			}
+	allowBadConnection := errors.Is(err, context.DeadlineExceeded)
+	var cancellation func(error) bool
+	cancellation = func(part error) bool {
+		if part == nil {
+			return false
 		}
-		return true
+		if joined, ok := part.(interface{ Unwrap() []error }); ok {
+			for _, leaf := range joined.Unwrap() {
+				if !cancellation(leaf) {
+					return false
+				}
+			}
+			return true
+		}
+		if wrapped, ok := part.(interface{ Unwrap() error }); ok {
+			return cancellation(wrapped.Unwrap())
+		}
+		if errors.Is(part, context.DeadlineExceeded) || errors.Is(part, sql.ErrTxDone) {
+			return true
+		}
+		if errors.Is(part, driver.ErrBadConn) {
+			return allowBadConnection
+		}
+		var state interface{ SQLState() string }
+		return errors.As(part, &state) && state.SQLState() == "57014"
 	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return isCandidateBudgetCancellation(wrapped.Unwrap())
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, sql.ErrTxDone) {
-		return true
-	}
-	var state interface{ SQLState() string }
-	return errors.As(err, &state) && state.SQLState() == "57014"
+	return cancellation(err)
 }
 
 // The financial assertion is eventual exactly-once effects, not first-pass

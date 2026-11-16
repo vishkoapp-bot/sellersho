@@ -921,6 +921,13 @@ func run(signalCtx context.Context) (result error) {
 
 	mux.HandleFunc("/api/v1/warehouse/returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/returns/")
+		if strings.HasSuffix(sub, "/correct-charge") && r.Method == http.MethodPost {
+			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/correct-charge"), "/parcels/")
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.Contains(parts[0], "/") && !strings.Contains(parts[1], "/") {
+				handleCorrectReturnCharge(w, r, r.Context(), parts[0], parts[1], supplierRepo)
+				return
+			}
+		}
 		if strings.HasSuffix(sub, "/confirm-charge") && r.Method == http.MethodPost {
 			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/confirm-charge"), "/parcels/")
 			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {

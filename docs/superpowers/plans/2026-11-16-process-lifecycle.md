@@ -48,4 +48,4 @@ through its existing runtime override; root retains release actions.
 - [x] Bound bodies using exact existing route classes; exercise slow headers/bodies and known/chunked oversize rejection without mutation.
 - [x] Close the three JOB follow-ups with real guard/window/counting regressions; test pre-Start manual cancellation and idempotent stop.
 - [x] Self-review and report exact explicit allowlist/RED-GREEN/remaining gates; no implementer stage/commit/push/deploy.
-- [ ] Root obtains fresh task/final reviews, frozen gates, commits/pushes, deploys.ps1 and verifies live/ready/health/sealed migrations/backup/money/history/stop grace. Continue backlog.
+- [x] Root obtains fresh task/final reviews, frozen gates, commits/pushes, deploys.ps1 and verifies live/ready/health/sealed migrations/backup/money/history/stop grace. Continue backlog.

@@ -15,6 +15,7 @@ import time
 import urllib.request
 
 from migration_history import classify_history
+from deploy_migration_stage import prepare_migrator
 
 root = Path(sys.argv[1]).resolve()
 commit, ssl, move_xray = sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'
@@ -134,6 +135,7 @@ def health():
 try:
     run('docker', 'exec', 'drup_backend', 'mkdir', '-p', migration_stage + '/migrations')
     run('docker', 'cp', str(release / 'backend/bin/migrate-linux'), 'drup_backend:' + migration_stage + '/migrate')
+    prepare_migrator(run, 'drup_backend', migration_stage + '/migrate')
     run('docker', 'cp', str(release / 'backend/migrations') + '/.', 'drup_backend:' + migration_stage + '/migrations')
     run('docker', 'exec', 'drup_backend', migration_stage + '/migrate',
         '-dir', migration_stage + '/migrations', '-adopt-legacy')

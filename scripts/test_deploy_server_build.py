@@ -115,7 +115,7 @@ function global:docker { throw 'Local Docker forbidden' }
         self.assertIn('PUPPETEER_SKIP_DOWNLOAD=true', self.node)
         self.assertEqual(self.node[self.node.index('PUPPETEER_SKIP_DOWNLOAD=true') - 1], '-e')
         self.assertNotIn('PUPPETEER_SKIP_DOWNLOAD=true', self.go)
-        self.assertEqual(self.node[-1], 'npm ci --no-audit --no-fund && npm run build')
+        self.assertTrue(self.node[-1].startswith('npm ci --no-audit --no-fund && npm run build'))
         self.assertNotIn('--ignore-scripts', self.node[-1])
 
     def test_build_storage_preserves_download_caches_but_discards_go_compiler_cache(self):
@@ -163,6 +163,54 @@ console.log(JSON.stringify({skipDownload: configuration.skipDownload}));
             self.assertIn('"skipDownload":true', result.stdout)
             self.assertEqual(list(owned.rglob('*')), [], 'Skip must not download/create cache files')
             print('Puppeteer installed loader/downloadBrowsers: skipDownload=true; files=0; network forbidden')
+
+    def exercise_frontend_build_phase(self, failure=''):
+        # Execute the exact emitted build shell in an owned Linux container.
+        # npm is a fixture: package installation and Vite are covered separately.
+        # The filesystem effects and shell failure propagation are real.
+        with tempfile.TemporaryDirectory(prefix='sellersho-build-phase-') as folder:
+            owned = Path(folder).resolve()
+            (owned / 'tools').mkdir()
+            (owned / 'package.json').write_text('{"fixture":true}')
+            stub = '''#!/bin/sh
+set -eu
+if [ "$1" = ci ]; then
+  mkdir -p /app/node_modules
+  echo generated > /app/node_modules/build-dependency
+  [ "$FAIL_PHASE" != install ] || exit 21
+else
+  [ "$FAIL_PHASE" != build ] || exit 22
+  mkdir -p /app/dist
+  [ "$FAIL_PHASE" = missing-artifact ] || echo built > /app/dist/index.html
+fi
+'''
+            (owned / 'tools/npm').write_text(stub, encoding='utf-8', newline='\n')
+            # cp makes the executable independent of Windows bind-mount modes.
+            prepare = 'cp /app/tools/npm /usr/local/bin/npm && chmod 755 /usr/local/bin/npm && '
+            command = ['docker', 'run', '--rm', '--network', 'none',
+                       '--mount', 'type=bind,source=' + str(owned) + ',target=/app',
+                       '--workdir', '/app', '--env', 'FAIL_PHASE=' + failure,
+                       'node:24-alpine', 'sh', '-c', prepare + self.node[-1]]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertEqual((owned / 'package.json').read_text(), '{"fixture":true}')
+            self.assertTrue((owned / 'tools/npm').is_file(), 'Source must be preserved')
+            if not failure:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((owned / 'dist/index.html').read_text().strip(), 'built')
+                self.assertFalse((owned / 'node_modules').exists(),
+                                 'Generated npm dependencies must not overlap the Go build peak')
+            else:
+                self.assertNotEqual(result.returncode, 0, 'Failed/missing build must block release')
+                self.assertTrue((owned / 'node_modules/build-dependency').is_file(),
+                                'Failed build retains its generated diagnostics')
+
+    def test_successful_frontend_build_discards_only_generated_dependencies(self):
+        self.exercise_frontend_build_phase()
+
+    def test_failed_or_incomplete_frontend_build_blocks_the_next_phase(self):
+        for failure in ['install', 'build', 'missing-artifact']:
+            with self.subTest(failure=failure):
+                self.exercise_frontend_build_phase(failure)
 
 
 if __name__ == '__main__':

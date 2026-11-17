@@ -57,6 +57,7 @@ func storagePositionSeed(t *testing.T, db *sql.DB) {
 		}
 	}
 	for _, q := range []string{
+		`ALTER TABLE orders ADD COLUMN discount_code TEXT NOT NULL DEFAULT '',ADD COLUMN seller_discount_amount BIGINT NOT NULL DEFAULT 0,ADD COLUMN coupon_discount_amount BIGINT`,
 		`ALTER TABLE products ADD COLUMN schema_version INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE inventory_balances ADD COLUMN variant_id UUID`,
 		`CREATE TABLE IF NOT EXISTS product_variants(id UUID PRIMARY KEY,product_id TEXT,inventory_mode TEXT,is_active BOOLEAN DEFAULT TRUE)`,

@@ -124,6 +124,7 @@ CREATE TABLE orders (
 	return_window_ends_at TIMESTAMPTZ,
 	seller_discount_amount BIGINT NOT NULL DEFAULT 0,
 	discount_code VARCHAR(50) DEFAULT '',
+ coupon_discount_amount BIGINT,
 	shipping_quote_id VARCHAR(100) DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

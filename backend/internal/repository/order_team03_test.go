@@ -59,9 +59,10 @@ func openTeam03DB(t *testing.T) *sql.DB {
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days) VALUES (1, 7)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT)`,
+		`CREATE TABLE product_variants(id UUID PRIMARY KEY,product_id TEXT REFERENCES products(id),spnc TEXT,variant_name TEXT,stock INT NOT NULL DEFAULT 0)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -228,6 +229,9 @@ func TestTeam03SnapshotColumnsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo := NewOrderRepository(db)
 	customerID := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Snapshot customer')`, customerID, "snap-"+customerID[:12]); err != nil {
+		t.Fatalf("seed customer parent: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO products (id, title, stock) VALUES ('prod-1', 'Test Product', 100)`); err != nil {
 		t.Fatalf("seed product: %v", err)
 	}
@@ -236,6 +240,9 @@ func TestTeam03SnapshotColumnsRoundTrip(t *testing.T) {
 	length, width, height, weight := 100, 200, 300, 500
 	disputeReason, carrier, tracking, label, box, idem := "damaged", "post", "TN-1", "LBL-1", "M", "idem-1"
 	variantID, variantName, variantSPNC := uuid.NewString(), "Red", "ABC12345"
+	if _, err := db.Exec(`INSERT INTO product_variants(id,product_id,spnc,variant_name) VALUES($1,'prod-1',$2,$3)`, variantID, variantSPNC, variantName); err != nil {
+		t.Fatal(err)
+	}
 	order := domain.Order{
 		ID: "ord-team03-snap", CustomerUserID: &customerID, OrderNumber: "ORD-SNAP",
 		StoreID: "store-1", StoreName: "Store 1", TotalAmount: 50000, DiscountAmount: 5000,

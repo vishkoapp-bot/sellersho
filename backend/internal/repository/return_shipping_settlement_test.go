@@ -56,7 +56,7 @@ func openReturnSettlementDB(t *testing.T) *sql.DB {
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 100000, 20000, NULL, NULL)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, stock INT NOT NULL DEFAULT 0)`,
-		`CREATE TABLE orders (id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, payment_status TEXT, status TEXT, store_id TEXT,referrer_seller_id TEXT, inventory_captured BOOLEAN NOT NULL DEFAULT FALSE)`,
+		`CREATE TABLE orders (id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, payment_status TEXT, status TEXT, store_id TEXT,referrer_seller_id TEXT,discount_code TEXT NOT NULL DEFAULT '', inventory_captured BOOLEAN NOT NULL DEFAULT FALSE)`,
 		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT,variant_id UUID, wholesale_cost BIGINT, seller_margin BIGINT, final_unit_price BIGINT)`,
 		`CREATE TABLE payout_requests (id TEXT PRIMARY KEY, supplier_id TEXT, amount BIGINT, status TEXT)`,
 		`CREATE TABLE supplier_return_financial_events (id TEXT PRIMARY KEY, supplier_id TEXT, operation TEXT, amount BIGINT)`,

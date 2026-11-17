@@ -339,7 +339,16 @@ func (r *SupplierShipmentRepository) markShippedGuarded(ctx context.Context, sup
 	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE id=$1 AND ($2='' OR supplier_id=$2)`, shipmentID, supplierID).Scan(&orderID); err != nil {
 		return err
 	}
-	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
+	if err := lockFulfillmentOrderTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	var replay bool
+	if err := tx.QueryRowContext(ctx, `SELECT status='shipped' AND COALESCE(tracking_number,'')=$3 AND (shipped_at IS NOT NULL OR delivered_at IS NOT NULL OR status IN ('shipped','in_transit','delivered')) FROM supplier_shipments WHERE id=$1 AND order_id=$2`, shipmentID, orderID, trackingNumber).Scan(&replay); err != nil {
+		return err
+	}
+	// The order stabilizes dispatch/cancellation while the new-dispatch branch
+	// acquires earlier financial guards before taking the shipment row lock.
+	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID, replay); err != nil {
 		return err
 	}
 	var status, currentTracking string
@@ -348,6 +357,9 @@ func (r *SupplierShipmentRepository) markShippedGuarded(ctx context.Context, sup
 	}
 	if status == "shipped" && currentTracking == trackingNumber {
 		return tx.Commit()
+	}
+	if replay {
+		return ErrShipmentState
 	}
 	if status != "pending" && status != "processing" {
 		return ErrShipmentState
@@ -375,7 +387,12 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 	if err := lockOrderFinanceTx(ctx, tx, orderID); err != nil {
 		return nil, err
 	}
-	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
+	var alreadyPhysical bool
+	if err := tx.QueryRowContext(ctx, `SELECT shipped_at IS NOT NULL OR delivered_at IS NOT NULL OR status IN ('shipped','in_transit','delivered') FROM supplier_shipments WHERE tracking_number=$1 AND order_id=$2 FOR UPDATE`, trackingNumber, orderID).Scan(&alreadyPhysical); err != nil {
+		return nil, err
+	}
+	// Carrier facts for prior custody and failed metadata do not create dispatch.
+	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID, alreadyPhysical || status == "failed"); err != nil {
 		return nil, err
 	}
 	var s domain.SupplierShipment

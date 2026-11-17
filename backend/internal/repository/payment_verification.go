@@ -87,6 +87,9 @@ func (r *OrderRepository) RecordPaymentVerification(ctx context.Context, verific
 		if err = recordVerificationEventTx(ctx, tx, verificationID, "amount_mismatch", result.VerifiedAmount, result.RRN, "confirmed_amount_requires_review"); err != nil {
 			return err
 		}
+		if _, err = confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
+			return err
+		}
 		if err = tx.Commit(); err != nil {
 			return err
 		}
@@ -108,6 +111,49 @@ func (r *OrderRepository) RecordPaymentVerification(ctx context.Context, verific
 	}
 	if err = recordVerificationEventTx(ctx, tx, verificationID, "verified", result.VerifiedAmount, result.RRN, "confirmed"); err != nil {
 		return err
+	}
+	admissible, err := confirmOrderCouponTx(ctx, tx, orderID, true)
+	if err != nil {
+		return err
+	}
+	if !admissible {
+		unresolved, e := unresolvedOrderCouponIssueTx(ctx, tx, orderID)
+		if e != nil {
+			return e
+		}
+		if unresolved {
+			var admitted bool
+			var status string
+			if err = tx.QueryRowContext(ctx, `SELECT status,inventory_captured OR shipped_at IS NOT NULL OR status IN ('shipped','delivered','delivered_unconfirmed','delivered_confirmed','delivery_disputed') OR EXISTS(SELECT 1 FROM supplier_shipments WHERE order_id=$1 AND (shipped_at IS NOT NULL OR delivered_at IS NOT NULL OR status IN ('shipped','in_transit','delivered'))) FROM orders WHERE id=$1`, orderID).Scan(&status, &admitted); err != nil {
+				return err
+			}
+			if !admitted && status != "cancelled" {
+				if status == "pending" || status == "processing" || status == "picking" || status == "picked" || status == "packed" {
+					e = assertOrderCancellationAllowedTx(ctx, tx, orderID)
+					if e == nil {
+						_, err = tx.ExecContext(ctx, `UPDATE orders SET status='cancelled',updated_at=NOW() WHERE id=$1`, orderID)
+						if err != nil {
+							return err
+						}
+					} else if errors.Is(e, ErrOrderPartiallyDispatched) || errors.Is(e, ErrOrderCancellationState) {
+						if err = holdUnresolvedCouponReceiptTx(ctx, tx, orderID); err != nil {
+							return err
+						}
+					} else {
+						return e
+					}
+				} else if err = holdUnresolvedCouponReceiptTx(ctx, tx, orderID); err != nil {
+					return err
+				}
+			}
+		} else {
+			if err = assertOrderCancellationAllowedTx(ctx, tx, orderID); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE orders SET status='cancelled',updated_at=NOW() WHERE id=$1 AND NOT inventory_captured`, orderID); err != nil {
+				return err
+			}
+		}
 	}
 	var cancelled bool
 	if err = tx.QueryRowContext(ctx, `SELECT status='cancelled' FROM orders WHERE id=$1`, orderID).Scan(&cancelled); err != nil {
@@ -140,7 +186,17 @@ func (r *OrderRepository) RecordPaymentVerificationUnknown(ctx context.Context, 
 		return err
 	}
 	defer tx.Rollback()
+	var orderID string
+	if err = tx.QueryRowContext(ctx, `SELECT order_id FROM order_payment_verifications WHERE id=$1`, id).Scan(&orderID); err != nil {
+		return err
+	}
+	if err = lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+		return err
+	}
 	if err = recordVerificationEventTx(ctx, tx, id, "unknown", nil, "", reason); err != nil {
+		return err
+	}
+	if _, err = confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -159,6 +215,9 @@ func recordVerificationEventTx(ctx context.Context, tx *sql.Tx, id, status strin
 // Called under the financial prefix by cancellation/expiry, not by pending
 // fulfillment: a receipt alone must not authorize dispatch before stock capture.
 func synchronizeVerifiedPaymentFactsTx(ctx context.Context, tx *sql.Tx, orderID string) error {
+	if _, err := confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions p SET status='paid',rrn=r.provider_reference,compensation_capture=TRUE FROM order_payment_receipts r WHERE p.id=r.payment_id AND p.order_id=$1 AND p.status<>'refunded'`, orderID); err != nil {
 		return err
 	}
@@ -250,4 +309,26 @@ func reserveExtraVerifiedCaptureTx(ctx context.Context, tx *sql.Tx, orderID, ver
 		return err
 	}
 	return ErrRefundPrincipalUnresolved
+}
+
+// A migration-origin identity issue cannot suppress independently confirmed
+// money. If cancellation is not legal, reserve an existing FIN003 review claim
+// without inventing capacity or reversing already admitted fulfillment.
+func holdUnresolvedCouponReceiptTx(ctx context.Context, tx *sql.Tx, orderID string) error {
+	sources, err := refundRecordedSourcesTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		available, e := refundSourceAvailableTx(ctx, tx, source)
+		if e != nil {
+			return e
+		}
+		if available > 0 {
+			if e = insertLegacyRefundHoldTx(ctx, tx, orderID, "system:coupon-identity-review", "coupon-identity:"+orderID, source, available); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
 }

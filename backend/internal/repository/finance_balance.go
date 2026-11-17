@@ -247,6 +247,9 @@ func lockOrderFinanceTx(ctx context.Context, tx *sql.Tx, orderID string, wallet 
 	if err := LockAccountsTx(bounded, tx, &set, accounts...); err != nil {
 		return err
 	}
+	if err := lockOrderCouponTx(bounded, tx, &set, orderID); err != nil {
+		return err
+	}
 	// Supplier parity still uses the existing product ownership term. Freeze the
 	// parent identities before posting, then reject rediscovery rather than append
 	// a newly discovered earlier account after a product/return guard.

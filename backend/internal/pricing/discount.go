@@ -47,11 +47,12 @@ type DiscountCodeInput struct {
 // carries the discounted FinalPrice/SellerMargin; DiscountAmount is
 // the total margin given up (original final - discounted final).
 type DiscountResult struct {
-	Resolution     ReferenceResolution
-	DiscountAmount int64
-	CampaignID     string
-	CampaignName   string
-	Code           string
+	Resolution         ReferenceResolution
+	DiscountAmount     int64
+	CodeDiscountAmount int64
+	CampaignID         string
+	CampaignName       string
+	Code               string
 }
 
 func discountedMarginPercent(res ReferenceResolution) float64 {
@@ -77,7 +78,7 @@ func ApplyCodeDiscount(res ReferenceResolution, c DiscountCodeInput) DiscountRes
 		return DiscountResult{Resolution: res}
 	}
 	out := discountedResolution(res, final)
-	return DiscountResult{Resolution: out, DiscountAmount: res.FinalPrice - final, Code: c.Code}
+	return DiscountResult{Resolution: out, DiscountAmount: res.FinalPrice - final, CodeDiscountAmount: res.FinalPrice - final, Code: c.Code}
 }
 
 func discountedResolution(res ReferenceResolution, final int64) ReferenceResolution {

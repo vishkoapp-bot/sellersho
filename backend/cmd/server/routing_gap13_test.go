@@ -80,7 +80,7 @@ func gap13Setup(t *testing.T) *gap13Repos {
 		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT UNIQUE, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -123,6 +123,9 @@ func gap13Setup(t *testing.T) *gap13Repos {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("DDL/seed failed: %v\n%s", err, q)
 		}
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES('11111111-1111-1111-1111-111111111111','09120000000','checkout test') ON CONFLICT(id) DO NOTHING`); err != nil {
+		t.Fatal(err)
 	}
 	prepareShippingInventoryFixture(t, db)
 	for _, row := range [][2]string{{"swh-direct-only", "sup-direct-only"}, {"swh-both", "sup-both"}} {

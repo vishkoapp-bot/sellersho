@@ -288,6 +288,7 @@ func handleCreateOrder(
 	// 400 here, never silently charging the full price. The use is
 	// consumed only after the order persists (below).
 	var sellerDiscountTotal int64 = 0
+	var couponDiscountTotal int64
 	// Fix69 follow-up (W-MONEY M2 residual): true once the validated
 	// code actually survives the admin margin lock on at least one
 	// line (see the per-line check below). A code dropped by the
@@ -300,6 +301,10 @@ func handleCreateOrder(
 	if req.DiscountCode != "" {
 		c, err := storeRepo.ValidateDiscountCode(ctx, store.ID, req.DiscountCode)
 		if err != nil {
+			if errors.Is(err, repository.ErrCouponExhausted) {
+				writeCheckoutError(w, err)
+				return
+			}
 			http.Error(w, `{"error":"Discount code is invalid or expired"}`, http.StatusBadRequest)
 			return
 		}
@@ -544,8 +549,12 @@ func handleCreateOrder(
 		// logic duplicated here. The lock is scoped per
 		// product/niche, so the code counts as applied if it
 		// survived on ANY line.
-		if discounted.Code != "" {
+		if discounted.Code != "" && discounted.CodeDiscountAmount > 0 {
 			discountCodeApplied = true
+		}
+		if err := pricing.AccumulateMoney(&couponDiscountTotal, discounted.CodeDiscountAmount, int64(qty)); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, 400)
+			return
 		}
 		if err := pricing.AccumulateMoney(&sellerDiscountTotal, discounted.DiscountAmount, int64(qty)); err != nil {
 			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
@@ -950,6 +959,12 @@ func handleCreateOrder(
 		IdempotencyKey:      idempotencyPtr,
 	}
 
+	if discountCodeApplied && discountCodeObj != nil {
+		order.CouponID = discountCodeObj.ID
+		order.CouponRevision = discountCodeObj.Revision
+		order.CouponDiscountAmount = &couponDiscountTotal
+	}
+
 	shipments := make([]domain.SupplierShipment, 0, len(directSupplierIDs))
 	if len(directSupplierIDs) > 0 && shipmentRepo != nil {
 		for directShipSupplierID := range directSupplierIDs {
@@ -986,7 +1001,7 @@ func handleCreateOrder(
 			return
 		}
 	} else if err := orderRepo.CreateOrderWithShipments(ctx, order, shipments); err != nil {
-		http.Error(w, `{"error":"Order could not be created"}`, http.StatusInternalServerError)
+		writeCheckoutError(w, err)
 		return
 	}
 
@@ -1003,13 +1018,6 @@ func handleCreateOrder(
 			"addr-"+uuid.NewString(), claims.UserID, req.CustomerInfo.FullName, req.CustomerInfo.Phone,
 			req.CustomerInfo.Province, req.CustomerInfo.City, req.CustomerInfo.PostalCode,
 			req.CustomerInfo.Address, existingCount == 0)
-	}
-	// Code use is consumed ONLY after order persistence succeeds. A
-	// consumption failure must not fail an already-created order
-	// (old-branch semantics); the atomic guard in
-	// IncrementDiscountCodeUse bounds the next use instead.
-	if discountCodeObj != nil && discountCodeApplied {
-		_ = storeRepo.IncrementDiscountCodeUse(ctx, discountCodeObj.ID)
 	}
 
 	respondOrder(order, http.StatusCreated)

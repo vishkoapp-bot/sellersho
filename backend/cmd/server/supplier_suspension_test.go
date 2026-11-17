@@ -188,7 +188,7 @@ CREATE TABLE orders (
 	dispute_reason TEXT, carrier TEXT, tracking_number TEXT, shipping_label TEXT,
 	packed_at TIMESTAMPTZ, box_size TEXT, weight_grams INT,
 	idempotency_key TEXT, return_window_ends_at TIMESTAMPTZ,
-	seller_discount_amount BIGINT DEFAULT 0, discount_code TEXT DEFAULT '',
+	seller_discount_amount BIGINT DEFAULT 0, discount_code TEXT DEFAULT '', coupon_discount_amount BIGINT,
 	shipping_quote_id TEXT
 );
 CREATE TABLE order_items (

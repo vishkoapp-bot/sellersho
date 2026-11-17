@@ -164,6 +164,9 @@ func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*Ex
 	if _, err = tx.ExecContext(ctx, `UPDATE orders SET status='cancelled',updated_at=NOW() WHERE id=$1`, id); err != nil {
 		return nil, err
 	}
+	if err = cancelOrderCouponTx(ctx, tx, id, "payment_expiry"); err != nil {
+		return nil, err
+	}
 	if err = synchronizeVerifiedPaymentFactsTx(ctx, tx, id); err != nil {
 		return nil, err
 	}

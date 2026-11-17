@@ -56,6 +56,7 @@ CREATE TABLE orders (
 	order_number VARCHAR(30) NOT NULL DEFAULT '',
 	store_id VARCHAR(50) REFERENCES stores(id),
 	referrer_seller_id VARCHAR(50),
+ discount_code TEXT NOT NULL DEFAULT '',
 	status VARCHAR(30) NOT NULL DEFAULT 'pending',
 	payment_status VARCHAR(30) NOT NULL DEFAULT 'pending',
 	payable_amount BIGINT NOT NULL DEFAULT 0,

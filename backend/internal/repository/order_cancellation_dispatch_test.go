@@ -37,7 +37,7 @@ func openCancellationDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close(); base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); base.Close() })
 	for _, ddl := range []string{
-		`CREATE TABLE orders(id text PRIMARY KEY,order_number text,customer_user_id uuid,status text,payment_status text,inventory_captured bool,shipped_at timestamptz,updated_at timestamptz,fulfillment_method text,tracking_code text,tracking_number text,carrier text,store_id text)`,
+		`CREATE TABLE orders(id text PRIMARY KEY,order_number text,customer_user_id uuid,status text,payment_status text,inventory_captured bool,shipped_at timestamptz,updated_at timestamptz,fulfillment_method text,tracking_code text,tracking_number text,carrier text,store_id text,discount_code text NOT NULL DEFAULT '')`,
 		`CREATE TABLE products(id text PRIMARY KEY,stock int)`,
 		`CREATE TABLE order_items(id text PRIMARY KEY,order_id text,product_id text,quantity int,variant_id uuid)`,
 		`CREATE TABLE order_inventory_captures(order_item_id text PRIMARY KEY,order_id text,product_id text,variant_id uuid,quantity int,variant_quantity int,restored_quantity int,inventory_mode text,allocations jsonb)`,

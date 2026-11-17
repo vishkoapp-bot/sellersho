@@ -55,6 +55,12 @@ func normalizeCheckoutRequest(req *CreateOrderReq) string {
 }
 
 func writeCheckoutError(w http.ResponseWriter, err error) {
+	for _, e := range []error{repository.ErrCouponExhausted, repository.ErrCouponInvalid, repository.ErrCouponChanged, repository.ErrCouponEvidence, repository.ErrCouponLifecycleRequired} {
+		if errors.Is(err, e) {
+			http.Error(w, `{"error":"`+e.Error()+`","code":"`+e.Error()+`"}`, http.StatusConflict)
+			return
+		}
+	}
 	if errors.Is(err, repository.ErrCheckoutConflict) || errors.Is(err, repository.ErrCheckoutAbandoned) || errors.Is(err, repository.ErrCheckoutLegacy) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusConflict)
 		return

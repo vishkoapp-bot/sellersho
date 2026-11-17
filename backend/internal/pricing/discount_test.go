@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // Percent-pricing base case (adapted from the old branch's fixed-fee
 // example; the old numbers assumed a fixed fee and MUST NOT be reused
@@ -116,5 +119,22 @@ func TestInvalidDiscountModeIsNoop(t *testing.T) {
 	r := ApplyCampaignDiscount(testPercentRes(), DiscountCampaignInput{ID: "c1", Mode: "bogus", Value: 10})
 	if r.Resolution.FinalPrice != 970000 || r.DiscountAmount != 0 || r.CampaignID != "" {
 		t.Fatalf("invalid campaign mode: %+v", r)
+	}
+}
+
+func TestFIN007CouponLayerAmount(t *testing.T) {
+	res := ReferenceResolution{BaseCost: 1000, FinalPrice: 3000, SellerMargin: 2000}
+	out := ApplySellerDiscounts(res, &DiscountCampaignInput{ID: "campaign", Mode: "fixed", Value: 500}, &DiscountCodeInput{Code: "SAVE", Mode: "fixed", Value: 300})
+	raw, _ := json.Marshal(out)
+	var fields map[string]interface{}
+	json.Unmarshal(raw, &fields)
+	if fields["CodeDiscountAmount"] != float64(300) || out.DiscountAmount != 800 || out.Resolution.FinalPrice != 2200 {
+		t.Fatalf("coupon-only evidence missing or incorrect: %s", raw)
+	}
+	zero := ApplyCodeDiscount(ReferenceResolution{BaseCost: 1000, FinalPrice: 1000}, DiscountCodeInput{Code: "SAVE", Mode: "fixed", Value: 500})
+	raw, _ = json.Marshal(zero)
+	json.Unmarshal(raw, &fields)
+	if fields["CodeDiscountAmount"] != float64(0) {
+		t.Fatalf("floor consumes benefit: %s", raw)
 	}
 }

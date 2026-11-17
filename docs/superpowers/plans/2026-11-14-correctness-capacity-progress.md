@@ -41,8 +41,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-010 | TODO | — | Sandbox access not yet available; owner requested independent work |
 | INV-12 | TODO | — | — |
 | FIN-004 | DONE | afb401e / c270fcc | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
-| FIN-005 | DONE | this commit | [Dispute eligibility contract](../specs/2026-11-16-dispute-eligibility-design.md) |
-| FIN-007 | TODO | — | — |
+| FIN-005 | DONE | 08c6d5b | [Dispute eligibility contract](../specs/2026-11-16-dispute-eligibility-design.md) |
+| FIN-007 | DONE | current FIN007 release; see git log | [Coupon reservation contract](../specs/2026-11-17-coupon-reservations-design.md) |
 | FIN-008 | TODO | — | — |
 | FIN-011 | TODO | — | — |
 | FIN-009 | TODO | — | — |
@@ -937,3 +937,16 @@ FIN-010 sandbox execution and final hardware1000-user/100RPS certification remai
 OPEN under the owner's existing instructions. Production backup/checksum/health,
 existing money/monthly-history conservation and read-only FIN005 audit still form
 the official release/postcheck gate.
+
+
+FIN-005 production completion (2026-11-17): commit `08c6d5b5451c3580407e3defc6a3320b11f92710` is pushed and deployed by `deploy.ps1 -BuildOnServer` (exit0). Independent postchecks confirm released/live/DB003–007 and160001–160002 checksums, API/PostgreSQL/Redis/frontend health, live/ready200, backend stop grace30s and six successful jobs without current errors. Restricted0700 backup `/opt/drup/backups/deploy-20261117T172515Z-08c6d5b5` remains on-server. All19 existing financial table fingerprints and monthly history are identical before/after; financial aggregates unchanged. FIN005 audit: one legacy dispute, zero pending/disputed/stuck seller-win orders; zero invented evidence/decision/transition rows. Receipt `releases/fin005-production-receipt.json`, deployment log `logs/fin005-production-deploy.log`, conservation `releases/fin005-financial-{before,after}.json`. Migration160002 is now sealed and must never be edited. Local provider/hardware certification limitations remain unchanged. FIN-007 is next; it is not yet complete.
+
+## FIN-007 — local acceptance DONE; release record follows deployment
+
+Atomic order-owned coupon reservations, exact coupon-only discount snapshots, count/event conservation, guarded keyed replay and payment/cancellation/expiry lifecycle are implemented. Known historical money/refunds survive unresolved coupon identity, while new capture/dispatch is denied and existing physical delivery/carrier facts remain recordable. Additive202611170001 preserves accepted prices, immutable issues and conservative old occupancy; marked/unmarked legacy forgery, NULL admission, backdated admission, unsafe legacy release and old supplier-child dispatch are fenced. Creation retains compatible FK parents and canonical coupon350 ordering. SQLSTATE-preserving creation retries are bounded by the original caller deadline.
+
+Final tested tree432e76625223b4ce65104d9505b5e38389da2908 passed root's serial top-level-cloned full Go gate891 entries/0 failures (two intentional subprocess-helper standalone skips; no required DB test skipped), frontend309/309/0skips, TypeScript/Vite, go vet, Linux CGO race72/72/0skips, cold production-equivalent Linux server/migrator builds,7 deployment prerequisite tests and exact Git/migration source proofs. Actual unchanged old08/new binary rehearsal run9 passed migration refusal/drain, old protected routes/workers/direct supplier dispatch, additive rollback, safe nondiscounted traffic and new checkout/replay/receipt; owned cleanup verified. All seven independent review findings R1–R4/F1–F3 were fixed and scoped re-reviewed. Earlier failed/stale runs are retained, including full62757's888/3 private fixture failures, corrected in the accepted tree.
+
+Evidence is in local ignored releases/fin007-final-gates.json, fin007-linux-race-proof.json, fin007-go-skip-audit.json, fin007-old-binary-run-9/manifest.json, source/compatibility proofs and the SDD task/review reports. The final release adds only completion/handoff documentation to the tested tree. Actual production deployment/postchecks are recorded after the commit in releases/fin007-production-receipt.json; this local DONE is not PSP/hardware or historical repair certification.
+
+The owner requested publishing this stage and handing all remaining work to another agent. See [agent handoff](../../operations/agent-handoff-2026-11-17.md). No FIN008 implementation or additional feature was started. Current task gates:29 DONE,5 Checkpoint OPEN,20 TODO;25 not closed. Sandbox Zarinpal access is not ready; intended-hardware1000-user/100-RPS certification remains OPEN by owner choice.

@@ -253,5 +253,8 @@ func recordLatePaidCancellationTx(ctx context.Context, tx *sql.Tx, p *PaymentTra
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status='cancelled',updated_at=NOW() WHERE order_id=$1 AND status IN ('pending','processing')`, p.OrderID); err != nil {
 		return err
 	}
+	if err := cancelOrderCouponTx(ctx, tx, p.OrderID, "late_payment"); err != nil {
+		return err
+	}
 	return ensureCancellationRefundsTx(ctx, tx, p.OrderID, "system:late-payment")
 }

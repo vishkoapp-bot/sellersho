@@ -34,6 +34,7 @@ import (
 // 202611030002, new in this branch; the table does not exist in
 // live-parity).
 type DiscountCode struct {
+	Revision  int64     `json:"revision"`
 	ID        string    `json:"id"`
 	StoreID   string    `json:"storeId"`
 	Code      string    `json:"code"`
@@ -79,11 +80,12 @@ func (r *StoreRepository) CreateDiscountCode(ctx context.Context, storeID string
 	}
 	c.StoreID = storeID
 	c.IsActive = true
+	c.Revision = 1
 	return &c, nil
 }
 
 func (r *StoreRepository) ListDiscountCodes(ctx context.Context, storeID string) ([]DiscountCode, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,store_id,code,mode,value,starts_at,ends_at,is_active,max_uses,used_count,created_at FROM seller_discount_codes WHERE store_id=$1 ORDER BY created_at DESC`, storeID)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,store_id,code,mode,value,starts_at,ends_at,is_active,max_uses,used_count,created_at,revision FROM seller_discount_codes WHERE store_id=$1 ORDER BY created_at DESC`, storeID)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +93,7 @@ func (r *StoreRepository) ListDiscountCodes(ctx context.Context, storeID string)
 	out := []DiscountCode{}
 	for rows.Next() {
 		var c DiscountCode
-		if err := rows.Scan(&c.ID, &c.StoreID, &c.Code, &c.Mode, &c.Value, &c.StartsAt, &c.EndsAt, &c.IsActive, &c.MaxUses, &c.UsedCount, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.StoreID, &c.Code, &c.Mode, &c.Value, &c.StartsAt, &c.EndsAt, &c.IsActive, &c.MaxUses, &c.UsedCount, &c.CreatedAt, &c.Revision); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -112,34 +114,27 @@ func (r *StoreRepository) SetDiscountCodeActive(ctx context.Context, storeID, co
 }
 
 // ValidateDiscountCode returns the code if it is active, in window and
-// not exhausted. It does not consume a use; consumption happens after
-// a successful order (IncrementDiscountCodeUse).
+// not exhausted. This is advisory only; the order transaction reserves capacity.
 func (r *StoreRepository) ValidateDiscountCode(ctx context.Context, storeID, code string) (*DiscountCode, error) {
 	code = normalizeDiscountCode(code)
 	var c DiscountCode
-	err := r.db.QueryRowContext(ctx, `SELECT id,store_id,code,mode,value,starts_at,ends_at,is_active,max_uses,used_count,created_at FROM seller_discount_codes WHERE store_id=$1 AND code=$2 AND is_active=TRUE AND starts_at <= NOW() AND ends_at > NOW() AND (max_uses IS NULL OR used_count < max_uses)`, storeID, code).Scan(&c.ID, &c.StoreID, &c.Code, &c.Mode, &c.Value, &c.StartsAt, &c.EndsAt, &c.IsActive, &c.MaxUses, &c.UsedCount, &c.CreatedAt)
+	err := r.db.QueryRowContext(ctx, `SELECT id,store_id,code,mode,value,starts_at,ends_at,is_active,max_uses,used_count,created_at,revision FROM seller_discount_codes WHERE store_id=$1 AND code=$2 AND is_active=TRUE AND starts_at <= NOW() AND ends_at > NOW()`, storeID, code).Scan(&c.ID, &c.StoreID, &c.Code, &c.Mode, &c.Value, &c.StartsAt, &c.EndsAt, &c.IsActive, &c.MaxUses, &c.UsedCount, &c.CreatedAt, &c.Revision)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("discount code is invalid or expired")
 		}
 		return nil, err
 	}
+	if c.MaxUses != nil && c.UsedCount >= *c.MaxUses {
+		return nil, ErrCouponExhausted
+	}
 	return &c, nil
 }
 
-// IncrementDiscountCodeUse atomically consumes one use. It returns an
-// error when the code is exhausted; callers log that case instead of
-// failing an already-created order.
+// IncrementDiscountCodeUse is retained for source compatibility. Capacity can
+// only change with the order-owned reservation lifecycle.
 func (r *StoreRepository) IncrementDiscountCodeUse(ctx context.Context, codeID string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE seller_discount_codes SET used_count = used_count + 1, updated_at=NOW() WHERE id=$1 AND (max_uses IS NULL OR used_count < max_uses)`, codeID)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("discount code exhausted")
-	}
-	return nil
+	return ErrCouponLifecycleRequired
 }
 
 // DiscountCampaignCreationBlocked reports whether a new discount

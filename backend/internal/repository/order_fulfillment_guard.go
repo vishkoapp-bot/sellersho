@@ -35,13 +35,29 @@ func assertOrderCancellationAllowedTx(ctx context.Context, tx *sql.Tx, orderID s
 	return nil
 }
 
-func assertOrderDispatchAllowedTx(ctx context.Context, tx *sql.Tx, orderID string) error {
+func assertOrderDispatchAllowedTx(ctx context.Context, tx *sql.Tx, orderID string, existingMetadata ...bool) error {
 	if err := lockFulfillmentOrderTx(ctx, tx, orderID); err != nil {
 		return err
 	}
 	var status, payment string
 	if err := tx.QueryRowContext(ctx, `SELECT status,payment_status FROM orders WHERE id=$1`, orderID).Scan(&status, &payment); err != nil {
 		return err
+	}
+	if len(existingMetadata) == 0 || !existingMetadata[0] {
+		// New coupon-backed dispatch must adopt the complete financial prefix
+		// before any shipment row, including the transaction-local writer fence.
+		has, err := orderHasCouponTx(ctx, tx, orderID)
+		if err != nil {
+			return err
+		}
+		if has {
+			if err := lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+				return err
+			}
+		}
+		if err := assertCouponDispatchAllowedTx(ctx, tx, orderID); err != nil {
+			return err
+		}
 	}
 	if payment != "paid" || status == "cancelled" {
 		return ErrShipmentState

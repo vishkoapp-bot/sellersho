@@ -121,6 +121,23 @@ func (r *OrderRepository) AbandonCheckoutAttempt(ctx context.Context, customer, 
 }
 
 func (r *OrderRepository) CreateCheckoutOrderWithShipments(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment, hash string) (string, bool, error) {
+	ctx, cancel := couponAdmissionContext(ctx)
+	defer cancel()
+	var id string
+	var created bool
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		id, created, err = r.createCheckoutOrderWithShipmentsOnce(ctx, order, shipments, hash)
+		if !couponTransactionRetryable(err) || ctx.Err() != nil || attempt == 2 {
+			return id, created, err
+		}
+		if err = couponRetryPause(ctx); err != nil {
+			return id, false, err
+		}
+	}
+	return id, created, err
+}
+func (r *OrderRepository) createCheckoutOrderWithShipmentsOnce(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment, hash string) (string, bool, error) {
 	if order.CustomerUserID == nil || order.IdempotencyKey == nil || !validCheckoutIdentity(*order.IdempotencyKey, hash) {
 		return "", false, ErrCheckoutConflict
 	}

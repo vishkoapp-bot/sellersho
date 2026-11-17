@@ -339,6 +339,9 @@ type OrderRefundSummary struct {
 }
 
 type Order struct {
+	CouponID                   string              `json:"-"`
+	CouponRevision             int64               `json:"-"`
+	CouponDiscountAmount       *int64              `json:"couponDiscountAmount,omitempty" db:"coupon_discount_amount"`
 	Refund                     *OrderRefundSummary `json:"refund,omitempty"`
 	ID                         string              `json:"id" db:"id"`
 	CustomerUserID             *string             `json:"customerUserId,omitempty" db:"customer_user_id"`

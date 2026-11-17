@@ -56,7 +56,7 @@ const orderSelectColumns = `
 	inventory_captured, packaging_length_mm, packaging_width_mm, packaging_height_mm,
 	dispute_reason, carrier, tracking_number, shipping_label, packed_at, box_size,
 	weight_grams, idempotency_key, return_window_ends_at,
-	COALESCE(seller_discount_amount, 0), COALESCE(discount_code, ''), COALESCE(shipping_quote_id, '')`
+	COALESCE(seller_discount_amount, 0), COALESCE(discount_code, ''), COALESCE(shipping_quote_id, ''), coupon_discount_amount`
 
 func orderScanDest(o *domain.Order) []interface{} {
 	return []interface{}{
@@ -70,7 +70,7 @@ func orderScanDest(o *domain.Order) []interface{} {
 		&o.WalletAmount, &o.GatewayAmount, &o.PlatformAddonAmount, &o.SupplierAddonAmount,
 		&o.InventoryCaptured, &o.PackagingLengthMM, &o.PackagingWidthMM, &o.PackagingHeightMM,
 		&o.DisputeReason, &o.Carrier, &o.TrackingNumber, &o.ShippingLabel, &o.PackedAt, &o.BoxSize,
-		&o.WeightGrams, &o.IdempotencyKey, &o.ReturnWindowEndsAt, &o.SellerDiscountAmount, &o.DiscountCode, &o.ShippingQuoteID,
+		&o.WeightGrams, &o.IdempotencyKey, &o.ReturnWindowEndsAt, &o.SellerDiscountAmount, &o.DiscountCode, &o.ShippingQuoteID, &o.CouponDiscountAmount,
 	}
 }
 
@@ -82,6 +82,21 @@ func (r *OrderRepository) CreateOrder(ctx context.Context, order domain.Order) e
 // CreateOrderWithShipments persists the order, line items, and direct supplier
 // allocations in one ACID transaction.
 func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment) error {
+	ctx, cancel := couponAdmissionContext(ctx)
+	defer cancel()
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = r.createOrderWithShipmentsOnce(ctx, order, shipments)
+		if !couponTransactionRetryable(err) || ctx.Err() != nil || attempt == 2 {
+			return err
+		}
+		if err = couponRetryPause(ctx); err != nil {
+			return err
+		}
+	}
+	return err
+}
+func (r *OrderRepository) createOrderWithShipmentsOnce(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -102,6 +117,12 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 }
 
 func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sql.Tx, order domain.Order, shipments []domain.SupplierShipment, snapshotTitles bool) error {
+	if err := lockCouponCreationParentsTx(ctx, tx, order, shipments, false); err != nil {
+		return err
+	}
+	if err := markCouponWriterTx(ctx, tx); err != nil {
+		return err
+	}
 	queryOrder := `
 		INSERT INTO orders (
 			id, customer_user_id, order_number, store_id, store_name, total_amount, discount_amount,
@@ -114,13 +135,13 @@ func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sq
 			inventory_captured, packaging_length_mm, packaging_width_mm, packaging_height_mm,
 			dispute_reason, carrier, tracking_number, shipping_label, packed_at, box_size,
 			weight_grams, idempotency_key, return_window_ends_at, seller_discount_amount, discount_code,
-			shipping_quote_id
+			shipping_quote_id, coupon_discount_amount
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25, $26, $27, $28,
 			$29, $30, $31, $32, $33, $34, $35, $36,
-			$37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48
+			$37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49
 		)
 	`
 	now := time.Now()
@@ -141,12 +162,18 @@ func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sq
 		orderNullInt(order.PackagingHeightMM), orderNullString(order.DisputeReason), orderNullString(order.Carrier),
 		orderNullString(order.TrackingNumber), orderNullString(order.ShippingLabel), orderNullTime(order.PackedAt),
 		orderNullString(order.BoxSize), orderNullInt(order.WeightGrams), orderNullString(order.IdempotencyKey),
-		orderNullTime(order.ReturnWindowEndsAt), order.SellerDiscountAmount, order.DiscountCode, orderNullString(&order.ShippingQuoteID),
+		orderNullTime(order.ReturnWindowEndsAt), order.SellerDiscountAmount, order.DiscountCode, orderNullString(&order.ShippingQuoteID), order.CouponDiscountAmount,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
 
+	if err := reserveOrderCouponTx(ctx, tx, order); err != nil {
+		return err
+	}
+	if err := lockCouponCreationParentsTx(ctx, tx, order, shipments, true); err != nil {
+		return err
+	}
 	queryItem := `
 		INSERT INTO order_items (
 			id, order_id, product_id, quantity, wholesale_cost,
@@ -158,6 +185,13 @@ func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sq
 	// snapshots append the policy in the same INSERT/transaction.
 	queryItemVersion := strings.Replace(queryItem, "variant_id, variant_name, variant_spnc", "variant_id, variant_name, variant_spnc, pricing_policy_version", 1)
 	queryItemVersion = strings.Replace(queryItemVersion, "$10, $11, $12)", "$10, $11, $12, $13)", 1)
+
+	if snapshotTitles {
+		queryItem = strings.Replace(queryItem, "variant_id, variant_name, variant_spnc", "variant_id, variant_name, variant_spnc, product_title_snapshot", 1)
+		queryItem = strings.Replace(queryItem, "$10, $11, $12)", "$10, $11, $12, $13)", 1)
+		queryItemVersion = strings.Replace(queryItemVersion, "pricing_policy_version", "pricing_policy_version, product_title_snapshot", 1)
+		queryItemVersion = strings.Replace(queryItemVersion, "$12, $13)", "$12, $13, $14)", 1)
+	}
 	for _, item := range order.Items {
 		itemID := uuid.New().String()
 		itemArgs := []interface{}{itemID, order.ID, item.ProductID, item.Quantity,
@@ -168,14 +202,12 @@ func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sq
 			insertItem = queryItemVersion
 			itemArgs = append(itemArgs, item.PricingPolicyVersion)
 		}
+		if snapshotTitles {
+			itemArgs = append(itemArgs, item.ProductTitle)
+		}
 		_, err := tx.ExecContext(ctx, insertItem, itemArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to insert order item: %w", err)
-		}
-		if snapshotTitles {
-			if _, err := tx.ExecContext(ctx, `UPDATE order_items SET product_title_snapshot=$2 WHERE id=$1`, itemID, item.ProductTitle); err != nil {
-				return fmt.Errorf("snapshot checkout line: %w", err)
-			}
 		}
 		// Gap 13: persist the line's resolved origin in the SAME
 		// transaction (migrations 202610240001 + 202610280001).
@@ -813,8 +845,44 @@ func (r *OrderRepository) GetOrderByNumber(ctx context.Context, orderNumber stri
 }
 
 func (r *OrderRepository) SetPaymentStatus(ctx context.Context, orderID, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE orders SET payment_status = $2, updated_at = NOW() WHERE id = $1`, orderID, status)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	bounded, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	if err = LockTransactionRowsTx(bounded, tx, &TransactionLockSet{}, TransactionRowLock{Table: "orders", ID: orderID}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	has, err := orderHasCouponTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
+	if has {
+		if err = lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+			return err
+		}
+	}
+	if has && status != "pending" && status != "failed" {
+		return ErrCouponLifecycleRequired
+	}
+	if has {
+		var old string
+		if err = tx.QueryRowContext(ctx, `SELECT payment_status FROM orders WHERE id=$1`, orderID).Scan(&old); err != nil {
+			return err
+		}
+		if old != "pending" && old != status {
+			return ErrCouponLifecycleRequired
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET payment_status=$2,updated_at=NOW() WHERE id=$1`, orderID, status); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateOrderFulfillment updates status, tracking code, and shipped_at for an order
@@ -831,15 +899,30 @@ func (r *OrderRepository) UpdateOrderFulfillment(ctx context.Context, orderID, s
 	if err := lockFulfillmentOrderTx(ctx, tx, canonicalID); err != nil {
 		return err
 	}
+	has, err := orderHasCouponTx(ctx, tx, canonicalID)
+	if err != nil {
+		return err
+	}
+	if has && status == "cancelled" {
+		return ErrCouponLifecycleRequired
+	}
 	if status == "shipped" || status == "delivered" {
-		if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID); err != nil {
+		var previous string
+		var alreadyPhysical bool
+		if err := tx.QueryRowContext(ctx, `SELECT status,shipped_at IS NOT NULL OR COALESCE(status IN ('shipped','delivered','delivered_unconfirmed','delivered_confirmed','delivery_disputed'),FALSE) FROM orders WHERE id=$1`, canonicalID).Scan(&previous, &alreadyPhysical); err != nil {
+			return err
+		}
+		// A recorded shipment may progress to delivery without inventing a new
+		// dispatch. Reverse transitions still need ordinary admission authority.
+		existingFact := previous == status || (alreadyPhysical && previous == "shipped" && status == "delivered")
+		if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID, existingFact); err != nil {
 			return err
 		}
 	}
 	now := time.Now()
 	query := `
 		UPDATE orders
-		SET status = $1,
+		SET status = $1::text,
 		    tracking_code = CASE WHEN $2 <> '' THEN $2 ELSE tracking_code END,
 		    shipped_at = CASE WHEN $1 = 'shipped' AND shipped_at IS NULL THEN $3 ELSE shipped_at END,
 		    updated_at = $3
@@ -872,7 +955,15 @@ type PaymentTransaction struct {
 }
 
 func (r *OrderRepository) CreatePaymentTransaction(ctx context.Context, tx PaymentTransaction) error {
-	_, err := r.db.ExecContext(ctx, `
+	dbTx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer dbTx.Rollback()
+	if err = lockOrderFinanceTx(ctx, dbTx, tx.OrderID, true); err != nil {
+		return err
+	}
+	_, err = dbTx.ExecContext(ctx, `
 		INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, amount, status)
 		VALUES ($1, $2, $3, $4, $5, 'pending')
 		ON CONFLICT DO NOTHING
@@ -880,7 +971,7 @@ func (r *OrderRepository) CreatePaymentTransaction(ctx context.Context, tx Payme
 	if err != nil {
 		return err
 	}
-	return nil
+	return dbTx.Commit()
 }
 
 func (r *OrderRepository) GetPaymentTransaction(ctx context.Context, gatewayToken string) (*PaymentTransaction, error) {
@@ -942,6 +1033,9 @@ func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken
 		return err
 	}
 	if inquiry {
+		if _, err := confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT order_id, status FROM payment_transactions WHERE gateway_token = $1 FOR UPDATE`, gatewayToken).Scan(&orderID, &status); err != nil {
@@ -957,6 +1051,9 @@ func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET payment_status = 'failed', updated_at = NOW() WHERE id = $1 AND payment_status = 'pending'`, orderID); err != nil {
+		return err
+	}
+	if _, err := confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -997,6 +1094,35 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	if err != nil {
 		return nil, err
 	}
+
+	// An already admitted paid replay performs no new capture. A separately
+	// compensated payment never becomes the fulfillment payment by replay.
+	if payment.Status == "paid" {
+		var admitted, compensated bool
+		if err = dbTx.QueryRowContext(ctx, `SELECT o.inventory_captured OR o.shipped_at IS NOT NULL OR o.status IN ('shipped','delivered','delivered_unconfirmed','delivered_confirmed','delivery_disputed') OR EXISTS(SELECT 1 FROM supplier_shipments WHERE order_id=o.id AND (shipped_at IS NOT NULL OR delivered_at IS NOT NULL OR status IN ('shipped','in_transit','delivered'))),p.compensation_capture FROM orders o JOIN payment_transactions p ON p.order_id=o.id WHERE o.id=$1 AND p.id=$2`, lockedOrderID, payment.ID).Scan(&admitted, &compensated); err != nil {
+			return nil, err
+		}
+		if admitted && !compensated {
+			if err = dbTx.Commit(); err != nil {
+				return nil, err
+			}
+			return &payment, nil
+		}
+	}
+
+	admissible, err := confirmOrderCouponTx(ctx, dbTx, lockedOrderID, false)
+	if err != nil {
+		return nil, err
+	}
+	if !admissible {
+		if err = recordLatePaidCancellationTx(ctx, dbTx, &payment, rrn, cardMask); err != nil {
+			return nil, err
+		}
+		if err = dbTx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, ErrPaymentExpired
+	}
 	// The caller has confirmed payment. Inventory admission may fail, but the
 	// money fact must survive cancellation/expiry. The legacy signature does not
 	// certify a structured provider receipt: its liability stays unknown until
@@ -1020,6 +1146,9 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		return nil, ErrPaymentExpired
 	}
 	if payment.Status == "paid" {
+		if err := dbTx.Commit(); err != nil {
+			return nil, err
+		}
 		return &payment, nil
 	}
 	if payment.Status != "pending" {
@@ -1392,11 +1521,14 @@ func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerU
 	if err := assertOrderCancellationAllowedTx(ctx, tx, orderID); err != nil {
 		return err
 	}
-	if status == "cancelled" {
-		return tx.Commit()
-	}
 	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
 		return err
+	}
+	if status == "cancelled" {
+		if err := cancelOrderCouponTx(ctx, tx, orderID, "customer_cancel"); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	if err := lockCancellationInventoryTx(ctx, tx, orderID); err != nil {
 		return err
@@ -1474,6 +1606,9 @@ func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerU
 				}
 			}
 		}
+	}
+	if err := cancelOrderCouponTx(ctx, tx, orderID, "customer_cancel"); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET inventory_captured=false WHERE id=$1`, orderID); err != nil {
 		return err

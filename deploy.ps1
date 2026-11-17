@@ -51,7 +51,7 @@ mkdir -p "`$release"
 git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
 test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
-docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine sh -c 'npm ci --no-audit --no-fund && npm run build'
+docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
 docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
 python3 -c 'import json,datetime,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))' "`$release/release.json"
 python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'

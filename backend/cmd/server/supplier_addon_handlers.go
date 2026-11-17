@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -31,7 +32,7 @@ func decodeAddonBody(w http.ResponseWriter, r *http.Request) (*repository.Suppli
 		SortOrder       int     `json:"sortOrder"`
 		LinkedProductID *string `json:"linkedProductId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body); err != nil {
 		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return nil, false
 	}
@@ -40,6 +41,16 @@ func decodeAddonBody(w http.ResponseWriter, r *http.Request) (*repository.Suppli
 	}
 	if body.PriceMode != "fixed" && body.PriceMode != "percent" {
 		body.PriceMode = "fixed"
+	}
+	var priceErr error
+	if body.PriceMode == "percent" {
+		_, priceErr = pricing.ParsePercent(body.PriceValue)
+	} else {
+		_, priceErr = pricing.MoneyFromNumber(body.PriceValue)
+	}
+	if priceErr != nil || body.CapToman < 0 || body.CapToman > pricing.MaxTransportMoney {
+		http.Error(w, `{"error":"Invalid price precision or bounds"}`, http.StatusBadRequest)
+		return nil, false
 	}
 	if body.PriceMode == "percent" {
 		if body.CapToman < 0 {
@@ -150,7 +161,7 @@ func (h *SupplierHandlers) HandleSetSupplierAddonActive(w http.ResponseWriter, r
 	var body struct {
 		IsActive bool `json:"isActive"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body); err != nil {
 		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -177,7 +188,7 @@ func (h *SupplierHandlers) HandleSetSupplierAddonAttachments(w http.ResponseWrit
 			ProductID string `json:"productId"`
 		} `json:"attachments"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body); err != nil {
 		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
@@ -24,20 +26,15 @@ func supplierFlowDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("SUPPLIER_FLOW_TEST_DATABASE_URL must point at a migrated disposable supplier_flow_test database")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var name string
-	if err = db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil || name != "supplier_flow_test" {
-		db.Close()
-		t.Fatal("refusing non-disposable database", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
 }
 
-type supplierFlowFixture struct{ user, supplier, product string }
+type supplierFlowFixture struct{ user, supplier, product, warehouse string }
 
 func supplierFlowSeed(t *testing.T, db *sql.DB) supplierFlowFixture {
 	t.Helper()
@@ -48,18 +45,25 @@ func supplierFlowSeed(t *testing.T, db *sql.DB) supplierFlowFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.ApproveSupplier(ctx, supplier.ID, "supplier-flow-audit"); err != nil {
-		t.Fatal(err)
+	if !user.IsActive || supplier.ApprovalStatus != "approved" {
+		t.Fatal("new supplier registration must activate the owner and supplier immediately")
 	}
 	if err = repository.NewCapabilityRepository(db).Grant(ctx, user.ID, "supplier", "supplier_owner", supplier.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	product := "audit-product-" + suffix
-	_, err = db.Exec(`INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status,warehouse_name) VALUES($1,'Audit product',$1,$2,2000,1000,0,20,100,100,100,100,'verified','Audit warehouse')`, product, supplier.ID)
+	warehouse := "audit-source-" + suffix
+	if _, err = db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,'Audit source','Test','Test')`, warehouse, supplier.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status,warehouse_name,origin_supplier_warehouse_id) VALUES($1,'Audit product',$1,$2,2000,1000,0,20,100,100,100,100,'verified','Audit warehouse',$3)`, product, supplier.ID, warehouse)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return supplierFlowFixture{user.ID, supplier.ID, product}
+	if _, err = db.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity) VALUES($1,$2,$3,'supplier','supplier',$4,'sellable',20)`, uuid.NewString(), product, supplier.ID, "supplier-warehouse:"+warehouse); err != nil {
+		t.Fatal(err)
+	}
+	return supplierFlowFixture{user.ID, supplier.ID, product, warehouse}
 }
 func supplierFlowAuthorize(t *testing.T, db *sql.DB, user, path, method string) int {
 	t.Helper()
@@ -157,6 +161,11 @@ func TestSupplierFlowScheduledInboundTransitions(t *testing.T) {
 	r := repository.NewSupplierRepository(db)
 	ctx := context.Background()
 	payload := map[string]interface{}{"items": []interface{}{map[string]interface{}{"product_id": f.product, "quantity": float64(2), "carton_count": float64(1)}}}
+	destination := "audit-destination-" + uuid.NewString()[:8]
+	if _, err := db.Exec(`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'Test','Test')`, destination); err != nil {
+		t.Fatal(err)
+	}
+	payload["warehouseId"], payload["supplierWarehouseId"] = destination, f.warehouse
 	first, err := r.CreateInbound(ctx, f.supplier, payload)
 	if err != nil {
 		t.Fatal(err)
@@ -165,14 +174,17 @@ func TestSupplierFlowScheduledInboundTransitions(t *testing.T) {
 	if err = db.QueryRow(`SELECT status FROM inbound_shipments WHERE id=$1`, first).Scan(&status); err != nil || status != "scheduled" {
 		t.Fatal(status, err)
 	}
-	if err = r.DispatchInbound(ctx, "other-supplier", first); !errors.Is(err, sql.ErrNoRows) {
+	if err = r.DispatchInbound(ctx, "other-supplier", first); !errors.Is(err, repository.ErrInboundProvenance) {
 		t.Fatal("cross-supplier dispatch accepted", err)
 	}
 	if err = r.DispatchInbound(ctx, f.supplier, first); err != nil {
 		t.Fatal(err)
 	}
-	if err = r.CancelInbound(ctx, f.supplier, first); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatal("dispatched inbound cancelled", err)
+	if err = r.CancelInbound(ctx, f.supplier, first); err != nil {
+		t.Fatal("fully dispatched cancellation retry must preserve transit units", err)
+	}
+	if err = db.QueryRow(`SELECT status FROM inbound_shipments WHERE id=$1`, first).Scan(&status); err != nil || status != "in_transit" {
+		t.Fatal("dispatched cancellation changed transit status", status, err)
 	}
 	second, err := r.CreateInbound(ctx, f.supplier, payload)
 	if err != nil {
@@ -183,6 +195,10 @@ func TestSupplierFlowScheduledInboundTransitions(t *testing.T) {
 	}
 	if err = db.QueryRow(`SELECT status FROM inbound_shipments WHERE id=$1`, second).Scan(&status); err != nil || status != "cancelled" {
 		t.Fatal(status, err)
+	}
+	var sellable, total int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER(WHERE status='sellable'),0),SUM(quantity) FROM inventory_balances WHERE product_id=$1`, f.product).Scan(&sellable, &total); err != nil || sellable != 18 || total != 20 {
+		t.Fatalf("cancelled reservation / transit conservation sellable=%d total=%d error=%v", sellable, total, err)
 	}
 }
 

@@ -9,13 +9,14 @@ package main
 // is gone (the response always carries the three section keys).
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
@@ -27,7 +28,7 @@ func TestSupplierSearchInsightPermissions(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

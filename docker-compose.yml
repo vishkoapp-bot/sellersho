@@ -38,8 +38,11 @@ services:
       dockerfile: Dockerfile
     container_name: drup_backend
     restart: unless-stopped
+    stop_grace_period: 30s
     environment:
       PORT: "8080"
+      STARTUP_TIMEOUT_SECONDS: "${STARTUP_TIMEOUT_SECONDS:-30}"
+      SHUTDOWN_GRACE_SECONDS: "${SHUTDOWN_GRACE_SECONDS:-20}"
       APP_ENV: "${APP_ENV:-production}"
       PAYMENT_GATEWAY_MODE: "${PAYMENT_GATEWAY_MODE:-real}"
       DATABASE_URL: "${DATABASE_URL}"

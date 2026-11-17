@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 
 	"github.com/drup/platform/internal/auth"
@@ -85,7 +87,7 @@ func supplierNotificationsSetup(t *testing.T) *supplierNotificationsFixture {
 	if dsn == "" {
 		t.Skip("SUPPLIER_NOTIFICATIONS_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/drup/platform/internal/pricing"
 	"strings"
 
 	"github.com/drup/platform/internal/domain"
@@ -232,6 +233,12 @@ func (r *StoreRepository) CreateStore(ctx context.Context, s domain.Store) error
 
 // SetStoreProductOverride sets or updates a specific product override
 func (r *StoreRepository) SetStoreProductOverride(ctx context.Context, storeID, productID string, value float64, mode string) error {
+	if mode != "percent" {
+		return pricing.ErrInvalidMoney
+	}
+	if _, err := pricing.ParsePercent(value); err != nil {
+		return err
+	}
 	query := `
 		INSERT INTO store_product_overrides (store_id, product_id, override_value, mode)
 		VALUES ($1, $2, $3, $4)
@@ -244,6 +251,12 @@ func (r *StoreRepository) SetStoreProductOverride(ctx context.Context, storeID, 
 
 // SetStoreNicheOverride sets or updates a specific niche override
 func (r *StoreRepository) SetStoreNicheOverride(ctx context.Context, storeID, nicheID string, value float64, mode string) error {
+	if mode != "percent" {
+		return pricing.ErrInvalidMoney
+	}
+	if _, err := pricing.ParsePercent(value); err != nil {
+		return err
+	}
 	query := `
 		INSERT INTO store_niche_overrides (store_id, niche_id, override_value, mode)
 		VALUES ($1, $2, $3, $4)
@@ -256,6 +269,9 @@ func (r *StoreRepository) SetStoreNicheOverride(ctx context.Context, storeID, ni
 
 // SetStoreMargin updates the store's default margin
 func (r *StoreRepository) SetStoreMargin(ctx context.Context, storeID string, margin float64) error {
+	if _, err := pricing.ParsePercent(margin); err != nil {
+		return err
+	}
 	query := `UPDATE stores SET custom_store_margin_override = $1, profit_margin_percent = $1 WHERE id = $2`
 	_, err := r.db.ExecContext(ctx, query, margin, storeID)
 	return err
@@ -317,6 +333,12 @@ func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Sto
 	}
 	defer tx.Rollback()
 
+	if referrerStoreID != "" {
+		var set TransactionLockSet
+		if err := LockAccountsTx(ctx, tx, &set, FinancialAccount{Type: "seller", ID: referrerStoreID}); err != nil {
+			return err
+		}
+	}
 	queryStore := `
 		INSERT INTO stores (
 			id, name, slug, owner_type, owner_name, owner_user_id, profit_margin_percent,

@@ -1,0 +1,20 @@
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM inventory_measurement_revisions) OR EXISTS(SELECT 1 FROM warehouse_placements) OR EXISTS(SELECT 1 FROM putaway_capacity_reservations WHERE measurement_revision_id IS NOT NULL) THEN RAISE EXCEPTION 'cannot remove persisted physical measurement evidence'; END IF;
+END $$;
+DROP VIEW warehouse_measurement_reconciliation;
+DROP VIEW inventory_effective_measurements;
+DROP TRIGGER putaway_placement_completion ON putaway_tasks;
+DROP FUNCTION guard_putaway_placement_completion();
+DROP TRIGGER putaway_measurement_reservation ON putaway_capacity_reservations;
+DROP FUNCTION guard_putaway_measurement_reservation();
+DROP TABLE warehouse_placements;
+DROP FUNCTION guard_warehouse_placement_insert();
+DROP FUNCTION immutable_warehouse_placement();
+ALTER TABLE putaway_capacity_reservations DROP COLUMN measurement_revision_id;
+DROP TRIGGER product_current_measurement ON products;
+DROP TRIGGER sku_current_measurement ON product_variants;
+DROP FUNCTION guard_current_inventory_measurement();
+ALTER TABLE products DROP COLUMN measurement_revision_id;
+ALTER TABLE product_variants DROP COLUMN measurement_revision_id,DROP COLUMN measurement_status,DROP COLUMN measurement_source,DROP COLUMN measurement_version;
+DROP TABLE inventory_measurement_revisions;
+DROP FUNCTION immutable_inventory_measurement();

@@ -2,12 +2,13 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 )
 
 func TestGranularReviewDatabaseLifecycle(t *testing.T) {
@@ -15,16 +16,12 @@ func TestGranularReviewDatabaseLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("isolated granular_review_test database required")
 	}
-	db, e := sql.Open("postgres", dsn)
+	db, e := testdb.Open(t, dsn)
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	var name string
-	if e = db.QueryRow(`SELECT current_database()`).Scan(&name); e != nil || name != "granular_review_test" {
-		t.Fatal("refusing non-test database", e)
-	}
 	_, e = db.Exec(`CREATE TEMP TABLE pending_approvals(id TEXT PRIMARY KEY,entity_type TEXT,target_id TEXT,title TEXT,requested_data JSONB,requested_by TEXT,status TEXT,rejection_reason TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),reviewed_at TIMESTAMPTZ);
  CREATE TEMP TABLE proposal_field_reviews(proposal_id TEXT,field_key TEXT,decision TEXT,reason TEXT,reviewer_id TEXT,value_hash TEXT,reviewed_at TIMESTAMPTZ,UNIQUE(proposal_id,field_key));
  CREATE TEMP TABLE proposal_review_history(proposal_id TEXT,action TEXT,field_key TEXT,reason TEXT,actor_id TEXT,actor_role TEXT,created_at TIMESTAMPTZ DEFAULT NOW());`)

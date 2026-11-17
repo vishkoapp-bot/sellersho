@@ -5,14 +5,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/drup/platform/internal/accesspolicy"
@@ -22,9 +24,13 @@ import (
 	"github.com/drup/platform/internal/database/seeder"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/ippanel"
+	"github.com/drup/platform/internal/lifecycle"
+	"github.com/drup/platform/internal/migrations"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/requestbudget"
 	"github.com/drup/platform/internal/worker"
 	"github.com/google/uuid"
 )
@@ -53,10 +59,10 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", matchedOrigin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, Idempotency-Key")
 		} else if isDev && reqOrigin == "" {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, Idempotency-Key")
 		}
 
 		if r.Method == http.MethodOptions {
@@ -67,114 +73,62 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 	})
 }
 
-func runAutoMigrations(db *sql.DB) {
+func runAutoMigrations(ctx context.Context, db *sql.DB) error {
 	dirs := []string{"migrations", "../migrations", "./backend/migrations", "/app/migrations"}
-	var migrationDir string
-	for _, d := range dirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			migrationDir = d
-			break
+	migrationDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationDir == "" {
+		for _, dir := range dirs {
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				migrationDir = dir
+				break
+			}
 		}
 	}
 	if migrationDir == "" {
-		log.Println("[INFO] No migrations directory found, skipping auto-migration")
-		return
+		return errors.New("required migrations directory missing (fail-closed)")
 	}
-
-	// 1. Ensure schema_migrations table exists (Fail-Closed)
-	createSchemaTable := `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version VARCHAR(255) PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-	`
-	if _, err := db.Exec(createSchemaTable); err != nil {
-		log.Fatalf("[FATAL] Failed to initialize schema_migrations table: %v (fail-closed)", err)
-	}
-
-	// 2. Load already applied migrations
-	rows, err := db.Query("SELECT version FROM schema_migrations")
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to read schema_migrations: %v (fail-closed)", err)
-	}
-	defer rows.Close()
-
-	applied := make(map[string]bool)
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err == nil {
-			applied[v] = true
-		}
-	}
-
-	entries, err := os.ReadDir(migrationDir)
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to read migrations directory %s: %v (fail-closed)", migrationDir, err)
-	}
-
-	var upFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".up.sql") {
-			upFiles = append(upFiles, filepath.Join(migrationDir, entry.Name()))
-		}
-	}
-	sort.Strings(upFiles)
-
-	for _, file := range upFiles {
-		version := filepath.Base(file)
-		if applied[version] {
-			continue
-		}
-
-		content, err := os.ReadFile(file)
-		if err != nil {
-			log.Fatalf("[FATAL] Failed to read migration file %s: %v (fail-closed)", version, err)
-		}
-
-		tx, err := db.Begin()
-		if err != nil {
-			log.Fatalf("[FATAL] Failed to begin transaction for migration %s: %v (fail-closed)", version, err)
-		}
-
-		if _, err := tx.Exec(string(content)); err != nil {
-			tx.Rollback()
-			log.Fatalf("[FATAL] Migration %s failed: %v (fail-closed)", version, err)
-		}
-
-		if _, err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, NOW()) ON CONFLICT (version) DO NOTHING", version); err != nil {
-			tx.Rollback()
-			log.Fatalf("[FATAL] Failed to record migration %s in schema_migrations: %v (fail-closed)", version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Fatalf("[FATAL] Failed to commit migration %s: %v (fail-closed)", version, err)
-		}
-
-		log.Printf("[INFO] Auto-applied migration: %s", version)
+	if _, err := migrations.Run(ctx, db, migrations.Options{Dir: migrationDir, Logf: log.Printf}); err != nil {
+		return errors.New("database migration validation failed (fail-closed); check migration directory, checksums and database availability")
 	}
 	log.Println("[INFO] Database schema verified and up-to-date")
+	return nil
 }
 
 func main() {
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if err := run(signalCtx); err != nil {
+		log.Printf("[ERROR] %v", err)
+		os.Exit(1)
+	}
+}
+
+func run(signalCtx context.Context) (result error) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("[FATAL] Configuration error: %v", err)
+		return fmt.Errorf("configuration error: %w", err)
 	}
-
-	db, err := repository.NewPostgresDB(cfg.DatabaseURL)
+	startupCtx, stopStartup := context.WithTimeout(signalCtx, cfg.StartupTimeout)
+	defer stopStartup()
+	process := &lifecycle.Process{Grace: cfg.ShutdownGrace}
+	defer func() { result = errors.Join(result, process.Shutdown()) }()
+	db, err := repository.NewPostgresDBContext(startupCtx, cfg.DatabaseURL)
 	if err != nil {
-		log.Printf("[WARN] PostgreSQL connection: %v", err)
-	} else {
-		log.Println("[INFO] Connected to PostgreSQL 16")
-		runAutoMigrations(db.DB)
+		return err
 	}
-
-	redisClient, err := repository.NewRedisClient(cfg.RedisURL)
+	process.Closers = append(process.Closers, func(context.Context) error { return db.DB.Close() })
+	log.Print("[INFO] Connected to PostgreSQL")
+	if err = runAutoMigrations(startupCtx, db.DB); err != nil {
+		return err
+	}
+	redisClient, err := repository.NewRedisClientContext(startupCtx, cfg.RedisURL)
 	if err != nil {
-		log.Printf("[WARN] Redis connection: %v", err)
-	} else {
-		log.Println("[INFO] Connected to Redis 7")
+		return err
 	}
+	process.Closers = append(process.Closers, func(context.Context) error { return redisClient.Client.Close() })
+	log.Print("[INFO] Connected to Redis")
+	state := newHealthState(db, redisClient, cfg)
+	process.State = state
 
 	var catalogRepo *repository.CatalogRepository
 	var storeRepo *repository.StoreRepository
@@ -217,6 +171,15 @@ func main() {
 	} else {
 		gatewayClient = payment.NewMockPaymentGatewayClient(true)
 	}
+	capacityGateway, capacityCarrier, capacityErr := selectCapacityAdapters(os.Getenv, gatewayClient)
+	if capacityErr != nil {
+		return capacityErr
+	}
+	gatewayClient = capacityGateway
+	if capacityCarrier != "" {
+		tapinAPIBaseURL = capacityCarrier
+	}
+	gatewayClient = payment.ObserveGateway(gatewayClient)
 
 	if db != nil {
 		catalogRepo = repository.NewCatalogRepository(db.DB)
@@ -228,8 +191,8 @@ func main() {
 		userRepo = repository.NewUserRepository(db.DB)
 		capabilityRepo = repository.NewCapabilityRepository(db.DB)
 		jwtService.SetCapabilityReader(capabilityRepo)
-		if err := capabilityRepo.BackfillOwnershipCapabilities(context.Background()); err != nil {
-			log.Printf("[WARN] Capability ownership backfill failed: %v", err)
+		if err := capabilityRepo.BackfillOwnershipCapabilities(startupCtx); err != nil {
+			return errors.New("capability ownership bootstrap failed; check database availability")
 		}
 		adminRepo = repository.NewAdminRepository(db.DB)
 		supplierRepo = repository.NewSupplierRepository(db.DB)
@@ -239,7 +202,7 @@ func main() {
 		backgroundWorker.SetOrderRepository(orderRepo)
 		backgroundWorker.SetRedisClient(redisClient)
 		backgroundWorker.SetFinanceRepository(finRepo)
-		backgroundWorker.Start()
+		process.StopWorker = backgroundWorker.StopContext
 
 	}
 
@@ -350,36 +313,9 @@ func main() {
 	}))
 
 	// 1. Health check
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		dbStatus := "down"
-		if db != nil && db.DB.Ping() == nil {
-			dbStatus = "up"
-		}
-		redisStatus := "down"
-		if redisClient != nil && redisClient.Client.Ping(r.Context()).Err() == nil {
-			redisStatus = "up"
-		}
-
-		// Team 10 live parity: honest health. Previously "status" was
-		// always "ok" even when Postgres/Redis were down (source gap).
-		// U61 CAVEAT: live DB-down behaviour is unverified -- it was
-		// deliberately never tested on live (stopping the DB was out
-		// of scope for Phase 1). This is a documented honesty fix,
-		// NOT a proven live behaviour. Healthy-case response shape
-		// (postgres:"up", redis:"up") is unchanged.
-		status, code := healthStatus(dbStatus == "up", redisStatus == "up")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      status,
-			"engine":      "Go Modular Monolith v1.0.0",
-			"environment": cfg.Environment,
-			"isDev":       seeder.IsDevEnvironment(cfg.Environment),
-			"postgres":    dbStatus,
-			"redis":       redisStatus,
-			"timestamp":   time.Now().UTC().Format(time.RFC3339),
-		})
-	})
+	mux.HandleFunc("/api/live", state.Live)
+	mux.HandleFunc("/api/ready", state.Ready)
+	mux.HandleFunc("/api/health", state.Ready)
 
 	// 2. Categories Endpoint (Redis Cached)
 	mux.HandleFunc("/api/v1/categories", func(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +423,7 @@ func main() {
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/categories/")
 		handleCategoryFacets(w, r, catalogRepo, subPath)
 	})
-    mux.HandleFunc("/api/v1/admin/product-field-reviews/", RequireRoles(jwtService,"admin")(func(w http.ResponseWriter,r *http.Request){ handleProductFieldReview(w,r,supplierRepo) }))
+	mux.HandleFunc("/api/v1/admin/product-field-reviews/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleProductFieldReview(w, r, supplierRepo) }))
 	mux.HandleFunc("/api/v1/admin/catalog/review/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/catalog/review/")
 		handleCatalogReviewDossier(w, r, catalogRepo, id)
@@ -738,6 +674,8 @@ func main() {
 	}
 	mux.HandleFunc("/api/v1/orders/confirm-delivery/", RequireRoles(jwtService, "customer")(confirmDeliveryHandler))
 
+	mux.HandleFunc("/api/v1/checkout-attempts/", RequireRoles(jwtService, "customer", "seller", "admin")(func(w http.ResponseWriter, r *http.Request) { handleCheckoutAttempt(w, r, orderRepo) }))
+
 	ordersHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			handleCreateOrder(w, r, r.Context(), orderRepo, catalogRepo, storeRepo, shipmentRepo, pricingRepo, supplierRepo, db.DB)
@@ -833,6 +771,7 @@ func main() {
 
 	// 7. Warehouse WMS & Fulfillment Endpoints
 	warehouseRoles := []string{"warehouse_staff", "logistics_specialist", "admin"}
+	mux.HandleFunc("/api/v1/warehouse/customer-returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleCustomerReturnBinEntry(w, r, warehouseRepo) }))
 
 	mux.HandleFunc("/api/v1/warehouse/bins", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetBins(w, r, r.Context(), wmsRepo)
@@ -982,6 +921,13 @@ func main() {
 
 	mux.HandleFunc("/api/v1/warehouse/returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/returns/")
+		if strings.HasSuffix(sub, "/correct-charge") && r.Method == http.MethodPost {
+			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/correct-charge"), "/parcels/")
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.Contains(parts[0], "/") && !strings.Contains(parts[1], "/") {
+				handleCorrectReturnCharge(w, r, r.Context(), parts[0], parts[1], supplierRepo)
+				return
+			}
+		}
 		if strings.HasSuffix(sub, "/confirm-charge") && r.Method == http.MethodPost {
 			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/confirm-charge"), "/parcels/")
 			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
@@ -2375,9 +2321,9 @@ func main() {
 		if strings.HasSuffix(suffix, "/run") {
 			id := strings.TrimSuffix(suffix, "/run")
 			if id != "" && !strings.Contains(id, "/") {
-				var run func()
+				var run func(context.Context) error
 				if backgroundWorker != nil {
-					run = backgroundWorker.ReleaseExpiredDeliveryLocks
+					run = backgroundWorker.RunDeliveryJob
 				}
 				handleT01AdminJobRun(w, r, db.DB, id, run)
 				return
@@ -2477,20 +2423,46 @@ func main() {
 		HandleProductImageUpload(w, r, cfg.UploadDir)
 	}))
 
+	if db != nil {
+		observability.Default.SetDB(db.DB)
+	}
+	if err := startupCtx.Err(); err != nil {
+		return errors.New("startup canceled or exceeded STARTUP_TIMEOUT_SECONDS")
+	}
 	addr := fmt.Sprintf(":%s", cfg.Port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return errors.New("HTTP listener bind failed; check PORT availability")
+	}
+	defer listener.Close()
+	metricsServer, metricsErr := observability.Default.Start("127.0.0.1:9090")
+	if metricsErr != nil {
+		return errors.New("metrics listener bind failed; check local metrics port availability")
+	}
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	metricsDone := make(chan struct{})
+	go func() {
+		defer close(metricsDone)
+		observability.Default.PollDependencies(metricsCtx, redisClient.Client)
+	}()
+	process.StopMetrics = func(ctx context.Context) error {
+		stopMetrics()
+		closeErr := metricsServer.Close()
+		select {
+		case <-metricsDone:
+			return closeErr
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	log.Printf("==================================================")
 	log.Printf("Drup Platform — Go Backend Core v1.0.0")
 	log.Printf("Running at http://localhost%s", addr)
 	log.Printf("==================================================")
 
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      enableCORS(mux, cfg),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
+	server := newHTTPServer(addr, observability.Default.HTTP(mux, state.Admission(enableCORS(requestbudget.New(requestbudget.DefaultConfig())(mux), cfg))))
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed: %v", err)
-	}
+	process.Server = server
+	stopStartup()
+	return process.Serve(signalCtx, listener, backgroundWorker.Start)
 }

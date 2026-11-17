@@ -46,7 +46,7 @@ export const AdminStorageFeeSettingsTab: React.FC = () => {
     const v = raw.trim();
     if (v === '') return null;
     const n = Number(v);
-    return Number.isInteger(n) ? n : null;
+    return Number.isSafeInteger(n) ? n : null;
   };
 
   const save = async (event: React.FormEvent) => {
@@ -93,7 +93,7 @@ export const AdminStorageFeeSettingsTab: React.FC = () => {
     try {
       const summary = await adminApi.runStorageFees();
       setRunSummary(summary);
-      setNotice('محاسبه هزینه انبارداری اجرا شد.');
+      setNotice(summary.moreWork ? 'بخشی از محاسبه انجام شد؛ برای تکمیل روزهای باقی‌مانده دوباره اجرا کنید.' : 'محاسبه هزینه انبارداری اجرا شد.');
     } catch (e: any) {
       setError(e?.message || 'اجرای محاسبه هزینه انبارداری ناموفق بود.');
     } finally {
@@ -171,7 +171,7 @@ export const AdminStorageFeeSettingsTab: React.FC = () => {
       <div className="space-y-3 rounded-xl border bg-white p-4">
         <h3 className="text-sm font-bold text-slate-800">اجرای دستی محاسبه</h3>
         <p className="text-xs text-slate-600">
-          اجرای محاسبه، روزهای سپری‌شده پس از پایان روزهای رایگان را برای همه محموله‌های باز انبار مرکزی محاسبه و مبلغ را از موجودی قابل‌برداشت تأمین‌کننده کم می‌کند. اجرای دوباره همان روزها مبلغی اضافه نمی‌کند.
+          هزینهٔ هر محموله از تعداد موجود در ابتدای هر روز کامل، پس از پایان مهلت رایگان، محاسبه می‌شود. هزینهٔ ثبت‌نشدهٔ روزهای گذشته پس از خروج کالا هم حفظ می‌شود. فقط سابقه‌های تأییدشده محاسبه می‌شوند و اجرای دوباره مبلغ تکراری اضافه نمی‌کند.
         </p>
         <button onClick={() => void runNow()} disabled={runBusy} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
           {runBusy ? 'در حال اجرا...' : 'اجرای محاسبه هزینه انبارداری'}
@@ -180,7 +180,8 @@ export const AdminStorageFeeSettingsTab: React.FC = () => {
           <ul className="list-disc space-y-1 pr-4 text-xs text-slate-600">
             <li>محموله‌های مشمول هزینه در این اجرا: {runSummary.positionsCharged}</li>
             <li>ردیف هزینه ساخته‌شده: {runSummary.chargesCreated}</li>
-            <li>محموله‌های ردشده به‌علت نداشتن وزن/ابعاد: {runSummary.positionsSkippedNoMeasurement}</li>
+            <li>محموله‌های نیازمند تأیید وزن/ابعاد: {runSummary.unresolvedSampleLimited ? 'حداقل ' : ''}{runSummary.positionsSkippedNoMeasurement}</li>
+            {runSummary.verifiedReceiptHistoryOnly && <li>سابقه‌های قدیمی یا ناقص، هزینهٔ تازه ایجاد نکرده‌اند و به بررسی نیاز دارند.</li>}
             <li>مجموع مبلغ کسرشده در این اجرا: {runSummary.totalCharged} تومان</li>
           </ul>
         )}

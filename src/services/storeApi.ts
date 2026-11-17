@@ -1,6 +1,7 @@
 import { apiRequest } from './apiClient';
 import { Store, Order } from '../types';
 import { recordVerifiedAdEvent } from './adProof';
+import { financeOperation } from './financeOperation';
 
 export interface RegisterStorePayload {
   storeName: string;
@@ -300,17 +301,17 @@ export const storeApi = {
 
   saveStoreSettings: async (slug: string, config: Record<string, unknown>): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/settings`, { method: 'PUT', auth: true, body: JSON.stringify(config) }),
   saveStoreProducts: async (slug: string, productIds: string[]): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/products`, { method: 'PUT', auth: true, body: JSON.stringify({ productIds }) }),
-  purchaseService: async (slug: string, service: string): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/services`, { method: 'POST', auth: true, body: JSON.stringify({ service }) }),
+  purchaseService: async (slug: string, service: string, storeId: string): Promise<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}> => financeOperation<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}>(`/stores/${encodeURIComponent(slug)}/services`, { service }, `seller:${storeId}:service`, value => typeof value.id === 'string' && !!value.id && value.id === storeId && typeof value.activePlanId === 'string' && !!value.activePlanId && Number.isSafeInteger(value.amount) && value.amount > 0 && Number.isSafeInteger(value.durationDays) && value.durationDays > 0 && typeof value.planExpiresAt === 'string' && Number.isFinite(Date.parse(value.planExpiresAt))),
   getOwnedBalance: async (slug: string): Promise<StoreBalanceResponse> => apiRequest<StoreBalanceResponse>(`/stores/${encodeURIComponent(slug)}/balance`, { auth: true }),
   getPayouts: async (slug: string): Promise<import('../types').PayoutRequest[]> => apiRequest<import('../types').PayoutRequest[]>(`/stores/${encodeURIComponent(slug)}/payouts`, { auth: true }),
-  requestPayout: async (slug: string, amount: number, shaba: string): Promise<unknown> => apiRequest(`/stores/${encodeURIComponent(slug)}/payouts`, { method: 'POST', auth: true, body: JSON.stringify({ amount, shaba }) }),
+  requestPayout: async (slug: string, amount: number, shaba: string, storeId: string): Promise<unknown> => financeOperation(`/stores/${encodeURIComponent(slug)}/payouts`, { amount, shaba }, `seller:${storeId}:payout`, value => typeof value.id === 'string' && !!value.id && typeof value.storeId === 'string' && value.storeId === storeId && value.amount === amount && value.status === 'pending'),
   // Team Settlement (Phase 3): seller wallet breakdown (pending vs
   // released profit) and early-withdrawal request/list. The seller
   // wallet tab UI for early withdrawal is still to be wired to
   // these calls; the API itself is live in this branch.
   getWalletBreakdown: async (slug: string): Promise<WalletBreakdownResponse> => apiRequest<WalletBreakdownResponse>(`/stores/${encodeURIComponent(slug)}/wallet`, { auth: true }),
   getEarlyWithdrawals: async (slug: string): Promise<EarlyWithdrawalResponse[]> => apiRequest<EarlyWithdrawalResponse[]>(`/stores/${encodeURIComponent(slug)}/early-withdrawals`, { auth: true }),
-  requestEarlyWithdrawal: async (slug: string, amount: number, shaba: string): Promise<EarlyWithdrawalResponse> => apiRequest<EarlyWithdrawalResponse>(`/stores/${encodeURIComponent(slug)}/early-withdrawals`, { method: 'POST', auth: true, body: JSON.stringify({ amount, shaba }) }),
+  requestEarlyWithdrawal: async (slug: string, amount: number, shaba: string, storeId: string): Promise<EarlyWithdrawalResponse> => financeOperation<EarlyWithdrawalResponse>(`/stores/${encodeURIComponent(slug)}/early-withdrawals`, { amount, shaba }, `seller:${storeId}:early-withdrawal`, value => typeof value.id === 'string' && !!value.id && typeof value.storeId === 'string' && value.storeId === storeId && value.grossAmount === amount && Number.isSafeInteger(value.netAmount) && Number.isSafeInteger(value.feeAmount) && value.netAmount + value.feeAmount === amount && value.status === 'pending'),
   // FIX 17: seller returns tab. Backend serves GET
   // /stores/{slug}/returns for authorised store reads; no client
   // function existed yet. Read-only list for the tab.

@@ -74,7 +74,8 @@ type SupplierBalance struct {
 const (
 	// Earned: per-item wholesale-cost snapshots over paid + delivered
 	// orders. No release hold — supplier money is owed from delivery.
-	supplierTermEarned = `COALESCE((SELECT SUM(oi.wholesale_cost * oi.quantity) FROM order_items oi JOIN products p ON p.id = oi.product_id JOIN orders o ON o.id = oi.order_id WHERE p.supplier_id = $SUP AND o.payment_status = 'paid' AND o.status IN ('delivered','delivered_confirmed')), 0)`
+	supplierOriginAuthority = `(SELECT CASE WHEN COUNT(*)>0 AND SUM(src.quantity)=oi.quantity AND BOOL_AND(COALESCE(src.quantity,0)>0 AND COALESCE(src.order_id,'')=oi.order_id AND COALESCE(src.supplier_id,'')<>'') AND COUNT(DISTINCT src.supplier_id)=1 THEN MIN(src.supplier_id) END FROM order_item_origins src WHERE src.order_item_id=oi.id)`
+	supplierTermEarned      = `COALESCE((SELECT SUM(oi.wholesale_cost::numeric * oi.quantity) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE ` + supplierOriginAuthority + ` = $SUP AND o.payment_status='paid' AND o.status IN ('delivered','delivered_confirmed')),0)`
 	// Reserved: payout requests still awaiting review.
 	supplierTermReserved = `COALESCE((SELECT SUM(amount) FROM payout_requests WHERE supplier_id = $SUP AND status = 'pending'), 0)`
 	// Paid: payout requests that left (or are leaving) the platform.
@@ -129,10 +130,10 @@ type balanceTableFlags struct {
 func probeBalanceTables(ctx context.Context, q queryRower) (balanceTableFlags, error) {
 	var f balanceTableFlags
 	err := q.QueryRowContext(ctx, `SELECT
-		to_regclass('public.supplier_return_financial_events') IS NOT NULL,
-		to_regclass('public.customer_return_shipping_charges') IS NOT NULL,
-		to_regclass('public.customer_return_financial_events') IS NOT NULL,
-		to_regclass('public.warehouse_storage_fee_charges') IS NOT NULL`).Scan(&f.financialEvents, &f.shippingCharges, &f.returnEvents, &f.storageFees)
+		to_regclass('supplier_return_financial_events') IS NOT NULL,
+		to_regclass('customer_return_shipping_charges') IS NOT NULL,
+		to_regclass('customer_return_financial_events') IS NOT NULL,
+		to_regclass('warehouse_storage_fee_charges') IS NOT NULL`).Scan(&f.financialEvents, &f.shippingCharges, &f.returnEvents, &f.storageFees)
 	return f, err
 }
 
@@ -170,6 +171,7 @@ func scanSupplierBalance(ctx context.Context, q queryRower, supplierID string, b
 	if err != nil {
 		return err
 	}
+	var unresolved int64
 	query := "SELECT " + strings.Join([]string{
 		supplierTermFor(supplierTermEarned, "$1"),
 		supplierTermFor(supplierTermReserved, "$1"),
@@ -178,12 +180,21 @@ func scanSupplierBalance(ctx context.Context, q queryRower, supplierID string, b
 		flags.returnClawbacksExpr("$1"),
 		supplierTermFor(supplierTermAdjustments, "$1"),
 		flags.storageFeesExpr("$1"),
+		unresolvedSupplierEarningsExpr("$1"),
 	}, ", ")
-	if err := q.QueryRowContext(ctx, query, supplierID).Scan(&balance.Earned, &balance.Reserved, &balance.Paid, &balance.ReturnCharges, &balance.ReturnClawbacks, &balance.Adjustments, &balance.StorageFees); err != nil {
+	if err := q.QueryRowContext(ctx, query, supplierID).Scan(&balance.Earned, &balance.Reserved, &balance.Paid, &balance.ReturnCharges, &balance.ReturnClawbacks, &balance.Adjustments, &balance.StorageFees, &unresolved); err != nil {
 		return err
 	}
-	balance.Available = balance.Earned - balance.Reserved - balance.Paid - balance.ReturnCharges - balance.ReturnClawbacks + balance.Adjustments - balance.StorageFees
-	return nil
+	if unresolved > 0 {
+		return ErrFinancePrincipalUnresolved
+	}
+	for _, amount := range []int64{balance.Earned, balance.Reserved, balance.Paid, balance.ReturnCharges, balance.ReturnClawbacks, balance.Adjustments, balance.StorageFees} {
+		if err := validateSignedFinanceMoney(amount); err != nil {
+			return err
+		}
+	}
+	balance.Available, err = signedBalanceSum([]int64{balance.Earned, balance.Adjustments}, []int64{balance.Reserved, balance.Paid, balance.ReturnCharges, balance.ReturnClawbacks, balance.StorageFees})
+	return err
 }
 
 func (r *SupplierRepository) GetSettlementBalance(ctx context.Context, supplierID string) (*SupplierBalance, error) {
@@ -211,9 +222,24 @@ func (r *SupplierRepository) SumAllSuppliersAvailable(ctx context.Context) (int6
 		" - (" + flags.returnClawbacksExpr("s.id") + ")" +
 		" + (" + supplierTermFor(supplierTermAdjustments, "s.id") + ")" +
 		" - (" + flags.storageFeesExpr("s.id") + ")"
-	var total int64
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(`+available+`), 0) FROM suppliers s`).Scan(&total); err != nil {
+	var total, unresolved int64
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(`+available+`),0),`+unresolvedSupplierEarningsExpr("")+` FROM suppliers s`).Scan(&total, &unresolved); err != nil {
 		return 0, err
 	}
-	return total, nil
+	if unresolved > 0 {
+		return 0, ErrFinancePrincipalUnresolved
+	}
+	return total, validateSignedFinanceMoney(total)
+}
+
+// Current catalog ownership is only a candidate for reporting ambiguity, never
+// authority for earned money. The treasury refuses every unresolved amount;
+// per-account reads also block if the source names that account or no financial
+// party can be identified at all. Nothing silently turns unknown funds into 0.
+func unresolvedSupplierEarningsExpr(supplierExpr string) string {
+	candidate := ""
+	if supplierExpr != "" {
+		candidate = ` AND (p.supplier_id=` + supplierExpr + ` OR EXISTS(SELECT 1 FROM order_item_origins candidate WHERE candidate.order_item_id=oi.id AND candidate.supplier_id=` + supplierExpr + `) OR COALESCE(p.supplier_id,'')='')`
+	}
+	return `COALESCE((SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id=oi.order_id LEFT JOIN products p ON p.id=oi.product_id WHERE oi.wholesale_cost>0 AND o.payment_status='paid' AND o.status IN ('delivered','delivered_confirmed') AND ` + supplierOriginAuthority + ` IS NULL` + candidate + `),0)`
 }

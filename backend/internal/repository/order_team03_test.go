@@ -38,7 +38,8 @@ func openTeam03DB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db := openPrivateFinanceFixture(t, databaseURL)
+	var err error
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
@@ -49,15 +50,19 @@ func openTeam03DB(t *testing.T) *sql.DB {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, products, supplier_warehouses, warehouses, platform_settings, customer_return_shipping_charges CASCADE`,
+		`DROP TABLE IF EXISTS stores,customer_return_financial_events,order_inventory_captures,order_inventory_returns,return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, products, supplier_warehouses, warehouses, platform_settings, customer_return_shipping_charges CASCADE`,
+		`CREATE TABLE stores(id TEXT PRIMARY KEY,owner_type TEXT)`,
+		`INSERT INTO stores(id,owner_type) VALUES('store-1','dropshipper')`,
+		`CREATE TABLE IF NOT EXISTS users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days) VALUES (1, 7)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT)`,
+		`CREATE TABLE product_variants(id UUID PRIMARY KEY,product_id TEXT REFERENCES products(id),spnc TEXT,variant_name TEXT,stock INT NOT NULL DEFAULT 0)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -86,7 +91,7 @@ func openTeam03DB(t *testing.T) *sql.DB {
 			operator VARCHAR(100) NOT NULL, related_order_or_dispute VARCHAR(50),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
+		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY,referrer_store_id TEXT, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
 		`CREATE TABLE customer_returns (
 			id UUID PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer_id UUID NOT NULL,
 			status VARCHAR(20) NOT NULL DEFAULT 'requested', reason TEXT NOT NULL DEFAULT '',
@@ -130,13 +135,17 @@ func openTeam03DB(t *testing.T) *sql.DB {
 			t.Fatalf("create disposable schema: %v (stmt %.60s)", err, stmt)
 		}
 	}
+	installRefundFixtureSchema(t, db)
 	return db
 }
 
 func team03InsertOrder(t *testing.T, db *sql.DB, id, customerID, status string, profit int64) {
 	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Finance fixture') ON CONFLICT(id) DO NOTHING`, customerID, "t"+customerID[:12]); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.Exec(`INSERT INTO orders (id, customer_user_id, order_number, store_id, store_name, payable_amount, payment_method, payment_status, customer_full_name, customer_phone, customer_province, customer_city, customer_address, customer_postal_code, status, tracking_code, dropshipper_profit, profit_released, shipped_at, created_at, updated_at)
-		VALUES ($1, $2::uuid, $3, 'store-1', 'Store 1', 100000, 'cash', 'paid', 'Test Customer', '09120000000', 'Tehran', 'Tehran', 'Test St 1', '1234567890', $4, 'TRK-1', $5, FALSE, NOW() - INTERVAL '1 day', NOW(), NOW())`,
+		VALUES ($1, $2::uuid, $3, 'store-1', 'Store 1', 100000, 'cash', 'paid', 'Test Customer', '09120000000', 'Tehran', 'Tehran', 'Test St 1', '1234567890', $4, 'TRK-1', $5, FALSE, CASE WHEN $4 IN ('shipped','delivered','delivered_confirmed') THEN NOW() - INTERVAL '1 day' END, NOW(), NOW())`,
 		id, customerID, "ORD-"+id, status, profit)
 	if err != nil {
 		t.Fatalf("insert order: %v", err)
@@ -147,6 +156,10 @@ func TestTeam03ConfirmDoesNotReleaseAndReleaseAfterWindowCloseDoes(t *testing.T)
 	db := openTeam03DB(t)
 	defer db.Close()
 	ctx := context.Background()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	installFIN005PrivateFixture(t, db)
 	repo := NewOrderRepository(db)
 	customerID := uuid.NewString()
 	orderID := "ord-team03-a"
@@ -184,7 +197,7 @@ func TestTeam03ConfirmDoesNotReleaseAndReleaseAfterWindowCloseDoes(t *testing.T)
 		t.Fatalf("release with open/NULL windows = %d, %v; want 0", released, err)
 	}
 
-	if _, err := db.Exec(`UPDATE orders SET return_window_ends_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, orderID); err != nil {
+	if _, err := db.Exec(`UPDATE orders SET confirmed_at=NOW()-INTERVAL '8 days',return_window_ends_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, orderID); err != nil {
 		t.Fatalf("close window: %v", err)
 	}
 	released, err := repo.ReleaseClosedReturnWindows(ctx)
@@ -216,6 +229,9 @@ func TestTeam03SnapshotColumnsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo := NewOrderRepository(db)
 	customerID := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Snapshot customer')`, customerID, "snap-"+customerID[:12]); err != nil {
+		t.Fatalf("seed customer parent: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO products (id, title, stock) VALUES ('prod-1', 'Test Product', 100)`); err != nil {
 		t.Fatalf("seed product: %v", err)
 	}
@@ -224,6 +240,9 @@ func TestTeam03SnapshotColumnsRoundTrip(t *testing.T) {
 	length, width, height, weight := 100, 200, 300, 500
 	disputeReason, carrier, tracking, label, box, idem := "damaged", "post", "TN-1", "LBL-1", "M", "idem-1"
 	variantID, variantName, variantSPNC := uuid.NewString(), "Red", "ABC12345"
+	if _, err := db.Exec(`INSERT INTO product_variants(id,product_id,spnc,variant_name) VALUES($1,'prod-1',$2,$3)`, variantID, variantSPNC, variantName); err != nil {
+		t.Fatal(err)
+	}
 	order := domain.Order{
 		ID: "ord-team03-snap", CustomerUserID: &customerID, OrderNumber: "ORD-SNAP",
 		StoreID: "store-1", StoreName: "Store 1", TotalAmount: 50000, DiscountAmount: 5000,
@@ -274,6 +293,12 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 
 	// Returns flow.
 	orderID := "ord-team03-ret"
+	if _, err := db.Exec(`CREATE TABLE suppliers(id TEXT PRIMARY KEY); INSERT INTO suppliers(id) VALUES('sup-return'); CREATE TABLE supplier_shipments(id TEXT PRIMARY KEY,order_id TEXT,status TEXT,shipped_at TIMESTAMPTZ,delivered_at TIMESTAMPTZ)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO products(id,title,stock,weight_grams,supplier_id) VALUES('prod-1','Purchased return product',0,500,'sup-return')`); err != nil {
+		t.Fatal(err)
+	}
 	team03InsertOrder(t, db, orderID, customerID, "delivered_confirmed", 6000)
 	if _, err := db.Exec(`UPDATE orders SET return_window_ends_at = NOW() + INTERVAL '7 days', confirmed_at = NOW() WHERE id = $1`, orderID); err != nil {
 		t.Fatalf("seed window: %v", err)
@@ -282,6 +307,13 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	if err := db.QueryRow(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, platform_fee, seller_margin, final_unit_price) VALUES ($1, $2, 'prod-1', 2, 10000, 0, 4000, 20000) RETURNING id`, uuid.NewString(), orderID).Scan(&itemID); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO warehouses(id,name,province_name,city_name,is_active) VALUES('wh-return','Return warehouse','Tehran','Tehran',TRUE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'warehouse','sup-return','wh-return','Purchased origin',2)`, uuid.NewString(), orderID, itemID); err != nil {
+		t.Fatal(err)
+	}
+	seedVerifiedRefundFixturePayment(t, db, orderID)
 	ret, err := repo.CreateCustomerReturn(ctx, customerID, orderID, "wrong size", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}}, CustomerReturnOptions{})
 	if err != nil {
 		t.Fatalf("create return: %v", err)
@@ -325,7 +357,7 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 	cancelled, _ := repo.GetOrderByID(ctx, cancelID)
-	if cancelled.Status != "cancelled" || cancelled.PaymentStatus != "cancelled" || cancelled.DropshipperProfit != 9000 {
+	if cancelled.Status != "cancelled" || cancelled.PaymentStatus != "paid" || cancelled.DropshipperProfit != 9000 {
 		t.Fatalf("cancel result: status=%q payment=%q profit=%d", cancelled.Status, cancelled.PaymentStatus, cancelled.DropshipperProfit)
 	}
 
@@ -335,7 +367,7 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, amount, status) VALUES ($1, $2, 'ORD-DISP', 'tok-1', 100000, 'paid')`, "pay-1", disputeID); err != nil {
 		t.Fatalf("seed payment tx: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party) VALUES ('disp-1', $1, 'ORD-DISP', 'delivery_undelivered', 'resolved', 'refund_carrier', 'carrier')`, disputeID); err != nil {
+	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party,claim_amount) VALUES ('disp-1', $1, 'ORD-DISP', 'delivery_undelivered', 'resolved', 'refund_carrier', 'carrier',100000)`, disputeID); err != nil {
 		t.Fatalf("seed dispute: %v", err)
 	}
 	applied, err := repo.ApplyDisputeRefundEffect(ctx, "disp-1")
@@ -343,12 +375,16 @@ func TestTeam03ReturnsFlowCancelAndDisputeRefund(t *testing.T) {
 		t.Fatalf("dispute refund effect applied=%v err=%v; want true", applied, err)
 	}
 	disputed, _ := repo.GetOrderByID(ctx, disputeID)
-	if disputed.Status != "cancelled" || disputed.PaymentStatus != "refunded" {
+	if disputed.Status != "processing" || disputed.PaymentStatus != "paid" {
 		t.Fatalf("dispute refund order: status=%q payment=%q", disputed.Status, disputed.PaymentStatus)
 	}
 	var txStatus string
-	if err := db.QueryRow(`SELECT status FROM payment_transactions WHERE order_id = $1`, disputeID).Scan(&txStatus); err != nil || txStatus != "refunded" {
-		t.Fatalf("payment tx status = %q, err %v; want refunded", txStatus, err)
+	if err := db.QueryRow(`SELECT status FROM payment_transactions WHERE order_id = $1`, disputeID).Scan(&txStatus); err != nil || txStatus != "paid" {
+		t.Fatalf("payment tx status = %q, err %v; want preserved paid capture", txStatus, err)
+	}
+	var review int64
+	if err := db.QueryRow(`SELECT SUM(amount_toman) FROM order_refund_obligations WHERE order_id=$1 AND destination='review' AND status='unknown'`, disputeID).Scan(&review); err != nil || review != 100000 {
+		t.Fatalf("old unresolved dispute source lost %d %v", review, err)
 	}
 	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, order_number, type, status, resolution_action, responsible_party) VALUES ('disp-2', $1, 'ORD-CANCEL', 'delivery_undelivered', 'resolved', 'release_to_seller', 'seller')`, cancelID); err != nil {
 		t.Fatalf("seed non-refund dispute: %v", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -91,6 +92,10 @@ func handleCompleteInbound(w http.ResponseWriter, r *http.Request, ctx context.C
 	}
 	staffID := getCallerUserID(ctx)
 	if err := repo.CompleteInbound(ctx, id, staffID); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -128,12 +133,24 @@ func handlePassQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID string `json:"inboundId"`
-		Quantity  int    `json:"quantity"`
+		InboundID     string  `json:"inboundId"`
+		Quantity      int     `json:"quantity"`
+		ReceiptLineID *string `json:"receiptLineId"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+	var receiptLine []string
+	if req.ReceiptLineID != nil {
+		receiptLine = append(receiptLine, *req.ReceiptLineID)
+	}
 	staffID := getCallerUserID(ctx)
-	if err := repo.RecordQCPass(ctx, productID, req.InboundID, staffID, req.Quantity); err != nil {
+	if err := repo.RecordQCPass(ctx, productID, req.InboundID, staffID, req.Quantity, receiptLine...); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -158,6 +175,10 @@ func handleFailQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	staffID := getCallerUserID(ctx)
 	if err := repo.RecordQCFail(ctx, productID, req.InboundID, staffID, req.DefectReason, req.Quantity); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -176,17 +197,26 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID string `json:"inboundId"`
-		Passed    int    `json:"passedQuantity"`
-		Failed    int    `json:"failedQuantity"`
-		Shortage  int    `json:"shortageQuantity"`
-		Reason    string `json:"defectReason"`
+		InboundID     string  `json:"inboundId"`
+		Passed        int     `json:"passedQuantity"`
+		Failed        int     `json:"failedQuantity"`
+		Shortage      int     `json:"shortageQuantity"`
+		Reason        string  `json:"defectReason"`
+		ReceiptLineID *string `json:"receiptLineId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
 		return
 	}
-	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason); err != nil {
+	var receiptLine []string
+	if req.ReceiptLineID != nil {
+		receiptLine = append(receiptLine, *req.ReceiptLineID)
+	}
+	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason, receiptLine...); err != nil {
+		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -474,7 +504,14 @@ func handleConfirmReturnCharge(w http.ResponseWriter, r *http.Request, ctx conte
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := repo.ConfirmReturnParcelCharge(ctx, returnID, parcelID, claims.UserID, r.Header.Get("Idempotency-Key")); err != nil {
+	key, ok := requireFinanceRequestKey(w, r)
+	if !ok {
+		return
+	}
+	if err := repo.ConfirmReturnParcelCharge(ctx, returnID, parcelID, claims.UserID, key); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -547,6 +584,7 @@ func handleInspectReturn(w http.ResponseWriter, r *http.Request, ctx context.Con
 func handleRecordProductMeasurement(w http.ResponseWriter, r *http.Request, ctx context.Context, productID string, repo *repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	var req struct {
+		VariantID   string `json:"variantId"`
 		LengthMM    int    `json:"lengthMm"`
 		WidthMM     int    `json:"widthMm"`
 		HeightMM    int    `json:"heightMm"`
@@ -562,11 +600,12 @@ func handleRecordProductMeasurement(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := repo.RecordProductMeasurement(ctx, productID, claims.UserID, req.LengthMM, req.WidthMM, req.HeightMM, req.WeightGrams, req.Reason); err != nil {
+	physical, err := repo.RecordSKUPhysicalMeasurement(ctx, productID, req.VariantID, claims.UserID, req.LengthMM, req.WidthMM, req.HeightMM, req.WeightGrams, req.Reason)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "measurementStatus": "verified"})
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "variantId": req.VariantID, "measurementStatus": "verified", "physical": physical})
 }
 
 func handleCarrierTariffQuote(w http.ResponseWriter, r *http.Request, ctx context.Context, db *sql.DB) {
@@ -705,7 +744,12 @@ func handleShipOrder(w http.ResponseWriter, r *http.Request, ctx context.Context
 	if req.Carrier == "" {
 		req.Carrier = "پست پیشتاز"
 	}
-	if err := repo.ShipOrder(ctx, orderID, req.Carrier, req.TrackingNumber); err != nil {
+	actor := callerUserID(r)
+	if actor == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := repo.ShipOrderWithActor(ctx, orderID, req.Carrier, req.TrackingNumber, actor); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -754,7 +798,7 @@ func handleReceiveWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, `{"error":"Shipment not found"}`, http.StatusNotFound)
 		return
 	}
-	if err != nil && err.Error() == "shipment already received" {
+	if err != nil && (errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) || err.Error() == "shipment already received") {
 		http.Error(w, `{"error":"Shipment already received"}`, http.StatusConflict)
 		return
 	}

@@ -65,6 +65,7 @@ func applyVariantSaleToCharge(res pricing.ReferenceResolution, v *domain.Product
 	}
 	return after, res.FinalPrice - after.FinalPrice
 }
+
 // read-only. It never creates an order and never consumes a code use.
 // An invalid/expired code returns discountCodeValid=false with the
 // campaign-only totals, so checkout can show a clear error; placing
@@ -128,8 +129,9 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 	var originalPayable, payable, sellerDiscount int64
 	codeApplied := false
 	for _, itemReq := range req.Items {
-		if itemReq.Quantity <= 0 {
-			continue
+		if err := validateOrderItemQuantity(itemReq.Quantity); err != nil {
+			http.Error(w, `{"error":"Invalid quantity"}`, http.StatusBadRequest)
+			return
 		}
 		p, err := catalogRepo.GetProductByID(ctx, itemReq.ProductID)
 		if err != nil || p == nil {
@@ -200,7 +202,14 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 		} else {
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
-		originalPayable += res.FinalPrice * int64(itemReq.Quantity)
+		if res.PricingError != "" {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
+		if err := pricing.AccumulateMoney(&originalPayable, res.FinalPrice, int64(itemReq.Quantity)); err != nil {
+			http.Error(w, `{"error":"Quote amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 		// Same first layer as order creation: the timed-deals
 		// widget discount, its amount folded into the line's
 		// discount amount so the quote's sellerDiscount matches
@@ -217,8 +226,12 @@ func handleDiscountQuote(w http.ResponseWriter, r *http.Request, catalogRepo *re
 		if d.Code != "" {
 			codeApplied = true
 		}
-		payable += d.Resolution.FinalPrice * int64(itemReq.Quantity)
-		sellerDiscount += d.DiscountAmount * int64(itemReq.Quantity)
+		e1 := pricing.AccumulateMoney(&payable, d.Resolution.FinalPrice, int64(itemReq.Quantity))
+		e2 := pricing.AccumulateMoney(&sellerDiscount, d.DiscountAmount, int64(itemReq.Quantity))
+		if e1 != nil || e2 != nil {
+			http.Error(w, `{"error":"Quote amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"payableAmount":     payable,

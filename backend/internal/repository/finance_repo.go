@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -64,14 +63,28 @@ func (r *FinanceRepository) GetLedgerEntries(ctx context.Context) ([]domain.Ledg
 
 // AddLedgerEntry appends an immutable entry to the ledger
 func (r *FinanceRepository) AddLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
-	query := `
-		INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`
-	_, err := r.db.ExecContext(ctx, query,
-		e.ID, e.Date, e.TargetAccount, e.TargetType, e.Type, e.Amount, e.Reason, e.Operator, e.RelatedOrderOrDispute,
-	)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var account FinancialAccount
+	switch {
+	case e.TargetType == "seller" && strings.HasPrefix(e.TargetAccount, "store_payable:"):
+		account = FinancialAccount{Type: "seller", ID: strings.TrimPrefix(e.TargetAccount, "store_payable:")}
+	case e.TargetType == "supplier" && strings.HasPrefix(e.TargetAccount, "supplier_payable:"):
+		account = FinancialAccount{Type: "supplier", ID: strings.TrimPrefix(e.TargetAccount, "supplier_payable:")}
+	}
+	if account.ID != "" {
+		var set TransactionLockSet
+		if err := LockAccountsTx(ctx, tx, &set, account); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries(id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, e.ID, e.Date, e.TargetAccount, e.TargetType, e.Type, e.Amount, e.Reason, e.Operator, e.RelatedOrderOrDispute); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetDisputes returns all customer return and delivery disputes
@@ -90,7 +103,7 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 	}
 	defer rows.Close()
 
-	var list []domain.Dispute
+	list := []domain.Dispute{}
 	for rows.Next() {
 		var d domain.Dispute
 		if err := rows.Scan(
@@ -101,6 +114,17 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 			return nil, err
 		}
 		list = append(list, d)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range list {
+		out, err := r.GetDisputeOutcome(ctx, list[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		list[i].Outcome = &out
 	}
 	return list, nil
 }
@@ -115,6 +139,7 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 // mismatch and also fails closed. The dispute type is stored as given;
 // handlers validate it against the disputes CHECK values.
 func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute) error {
+ if d.ClaimAmount<=0||validateSignedFinanceMoney(d.ClaimAmount)!=nil{return ErrDisputeInput}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -136,6 +161,15 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("order not found: %s", orderRef)
 		}
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, resolvedID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT order_number,store_id,customer_full_name FROM orders WHERE id=$1`, resolvedID).Scan(&resolvedNumber, &orderStoreID, &customerName); err != nil {
+		return err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
 		return err
 	}
 	d.OrderID = resolvedID
@@ -180,6 +214,9 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 	// un-confirm the order, and two concurrent disputes cannot both
 	// insert: the loser's UPDATE affects 0 rows and its tx rolls back.
 	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO dispute_order_evidence(dispute_id,order_id,prior_status,prior_disputed_at,prior_delivered_at,prior_confirmed_at,prior_window_ends_at,prior_profit_released,prior_profit_released_at,prior_referral_released,hold_at,evidence_kind,actor_user_id) SELECT $1,id,status,disputed_at,NULL,confirmed_at,return_window_ends_at,profit_released,profit_released_at,referral_commission_released,$2,'admission',COALESCE(customer_user_id::text,'') FROM orders WHERE id=$3`, d.ID, now, resolvedID); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'delivery_disputed', disputed_at = $1 WHERE id = $2 AND status IN ('shipped','delivered_unconfirmed','delivered')`, now, resolvedID)
 	if err != nil {
 		return err
@@ -209,73 +246,8 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 //     resolution fails closed instead of silently defaulting to carrier.
 //   - ledger ids are UUIDs (ADJ- + UUID), never ADJ- + millis%10000.
 func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, action, party, operator string, claimAmount int64) error {
-	// Facts for the post-commit notify (P0-7): order id for recipient
-	// resolution. Read before the tx; the dispute row is pending here.
-	var disputeOrderID string
-	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(order_id, '') FROM disputes WHERE id = $1`, disputeID).Scan(&disputeOrderID)
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM disputes WHERE id = $1 FOR UPDATE`, disputeID).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("dispute not found: %s", disputeID)
-		}
-		return err
-	}
-	if status != "pending" {
-		return fmt.Errorf("dispute already resolved: %s", disputeID)
-	}
-
-	now := time.Now()
-	updateDispute := `
-		UPDATE disputes
-		SET status = 'resolved', resolution_action = $1, responsible_party = $2, resolution_date = $3
-		WHERE id = $4 AND status = 'pending'
-	`
-	res, err := tx.ExecContext(ctx, updateDispute, action, party, now, disputeID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("dispute already resolved: %s", disputeID)
-	}
-
-	// No ledger entry for a rejected claim or a non-positive amount.
-	if action == "release_to_seller" || claimAmount <= 0 {
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		// P0-7 (best-effort): dispute resolved, incl. claim-rejected -
-		// customer (verdict + reason) and the debited/liable party.
-		notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
-		return nil
-	}
-
-	targetType, ok := disputePartyLedgerType(party, action)
-	if !ok {
-		return fmt.Errorf("unknown responsible party: %s", party)
-	}
-
-	ledgerID := "ADJ-" + uuid.NewString()
-	insertLedger := `
-		INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
-		VALUES ($1, $2, $3, $4, 'debit', $5, $6, $7, $8)
-	`
-	reason := fmt.Sprintf("صدور حکم داوری پرونده %s به مسئولیت %s", disputeID, party)
-	if _, err := tx.ExecContext(ctx, insertLedger, ledgerID, now, party, targetType, claimAmount, reason, operator, disputeID); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// P0-7 (best-effort): dispute resolved - customer + debited party.
-	notifyDisputeResolved(ctx, r.db, disputeID, disputeOrderID, action, party, claimAmount)
-	return nil
+	_, err := r.ResolveDisputeWithOutcome(ctx, disputeID, DisputeResolutionInput{Action: action, ResponsibleParty: party, ActorUserID: operator, ExpectedClaimAmount: &claimAmount})
+	return err
 }
 
 // disputePartyLedgerType maps a responsible-party value to a
@@ -341,6 +313,12 @@ type StatementEntry struct {
 }
 
 type StoreStatement struct {
+	OpeningAvailable int64 `json:"openingAvailable"`
+	ClosingAvailable int64 `json:"closingAvailable"`
+	OpeningReserved  int64 `json:"openingReserved"`
+	ClosingReserved  int64 `json:"closingReserved"`
+	CurrentAvailable int64 `json:"currentAvailable"`
+
 	StoreID     string           `json:"storeId"`
 	Month       string           `json:"month"`
 	Entries     []StatementEntry `json:"entries"`
@@ -453,143 +431,7 @@ func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dat
 
 // GetStoreBalance calculates real-time store financial balance including referral bonuses and 2% referral commissions
 func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string) (*StoreBalance, error) {
-	var totalSales int64
-	var pendingSettlements int64
-
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(payable_amount), 0)
-		FROM orders
-		WHERE store_id = $1 AND status != 'cancelled'
-	`, storeID).Scan(&totalSales); err != nil {
-		return nil, err
-	}
-
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(amount), 0)
-		FROM payout_requests
-		WHERE store_id = $1 AND status = 'pending'
-	`, storeID).Scan(&pendingSettlements); err != nil {
-		return nil, err
-	}
-
-	// 1. Calculate referral bonus totals (by status)
-	var bonusLocked, bonusAvailable int64
-	var lastReleasedAt *time.Time
-
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT 
-			COALESCE(SUM(CASE WHEN status = 'locked' THEN amount ELSE 0 END), 0) as locked,
-			COALESCE(SUM(CASE WHEN status = 'released' THEN amount ELSE 0 END), 0) as released,
-			MAX(released_at) as last_rel
-		FROM referral_bonuses
-		WHERE referrer_store_id = $1
-	`, storeID).Scan(&bonusLocked, &bonusAvailable, &lastReleasedAt); err != nil {
-		return nil, err
-	}
-
-	// 2. Calculate released 2% referral commission earned from subordinate orders
-	var referralCommissionEarned int64
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(referral_commission), 0)
-		FROM orders
-		WHERE store_id IN (SELECT id FROM stores WHERE referrer_seller_id = $1)
-		  AND referrer_seller_id = $1
-		  AND referral_commission_released = TRUE
-		  AND status != 'cancelled'
-	`, storeID).Scan(&referralCommissionEarned); err != nil {
-		return nil, err
-	}
-
-	var releasedProfit int64
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(dropshipper_profit), 0)
-		FROM orders
-		WHERE store_id = $1 AND profit_released = TRUE AND status IN ('delivered','delivered_confirmed')
-	`, storeID).Scan(&releasedProfit); err != nil {
-		return nil, err
-	}
-
-	// GAP 6: refunded customer returns reverse the seller margin that
-	// was (or will be) released for them, per item at the order-time
-	// snapshot. One read-side term covers both timelines: a refund
-	// before release nets against the later release; a refund after
-	// release claws back from Available. Guarded like the
-	// early-withdrawal terms so a database without migration
-	// 202611050006 still reads a plain balance.
-	var sellerReturnReversals int64
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT CASE WHEN to_regclass('public.customer_return_financial_events') IS NOT NULL
-			THEN COALESCE((SELECT SUM(amount) FROM customer_return_financial_events WHERE store_id = $1 AND component = 'seller_profit' AND operation = 'debit'), 0)
-			ELSE 0 END
-	`, storeID).Scan(&sellerReturnReversals); err != nil {
-		return nil, err
-	}
-
-	// GAP 15 (seller mirror of the supplier adjustments term):
-	// finance adjustment documents write ledger_entries payable legs
-	// ('store_payable:<id>'); credit +, debit -, per the form's own
-	// labels. Dispute debits never match (free-form target_account,
-	// no سند تعدیل prefix).
-	var sellerAdjustments int64
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0)
-		FROM ledger_entries
-		WHERE target_account = 'store_payable:' || $1 AND target_type = 'seller' AND reason LIKE 'سند تعدیل%'
-	`, storeID).Scan(&sellerAdjustments); err != nil {
-		return nil, err
-	}
-
-	// Only immutable released profit is withdrawable; never infer profit from revenue.
-	salesProfit := releasedProfit - sellerReturnReversals
-	totalBalance := salesProfit + bonusAvailable + bonusLocked + referralCommissionEarned
-
-	// Available for withdrawal includes salesProfit + released bonus + earned referral commission minus pending payouts
-	// (Locked bonus is EXCLUDED from available amount)
-	var settledPayouts int64
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT SUM(amount) FROM payout_requests WHERE store_id=$1 AND status IN ('approved','paid','processing','completed','transfer_confirmed')),0) + COALESCE((SELECT SUM(amount) FROM seller_service_purchases WHERE store_id=$1),0)`, storeID).Scan(&settledPayouts); err != nil {
-		return nil, err
-	}
-	// D31 live balance formula: source core MINUS the two
-	// early-withdrawal deductions, guarded so a database without the
-	// seller_early_withdrawals table (pre-202611020002) still works.
-	// Approved withdrawals deduct their fee_amount; pending withdrawals
-	// deduct their full gross_amount (the same profit must not be swept
-	// again by a monthly settlement while a withdrawal is pending).
-	var earlyApprovedFees, earlyPendingGross int64
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT CASE WHEN to_regclass('public.seller_early_withdrawals') IS NOT NULL
-			THEN COALESCE((SELECT SUM(fee_amount) FROM seller_early_withdrawals WHERE store_id = $1 AND status = 'approved'), 0)
-			ELSE 0 END
-	`, storeID).Scan(&earlyApprovedFees); err != nil {
-		return nil, err
-	}
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT CASE WHEN to_regclass('public.seller_early_withdrawals') IS NOT NULL
-			THEN COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id = $1 AND status = 'pending'), 0)
-			ELSE 0 END
-	`, storeID).Scan(&earlyPendingGross); err != nil {
-		return nil, err
-	}
-	available := (salesProfit + bonusAvailable + referralCommissionEarned + sellerAdjustments) - pendingSettlements - settledPayouts - earlyApprovedFees - earlyPendingGross
-	if available < 0 {
-		available = 0
-	}
-
-	return &StoreBalance{
-		StoreID:                     storeID,
-		Balance:                     totalBalance,
-		UnsettledAmount:             pendingSettlements,
-		AvailableAmount:             available,
-		EarlyWithdrawalApprovedFees: earlyApprovedFees,
-		EarlyWithdrawalPendingGross: earlyPendingGross,
-		BonusLocked:                 bonusLocked,
-		BonusAvailable:              bonusAvailable,
-		BonusTotal:                  bonusLocked + bonusAvailable,
-		ReferralCommissionEarned:    referralCommissionEarned,
-		LastReleasedAt:              lastReleasedAt,
-		SellerReturnReversals:       sellerReturnReversals,
-		Adjustments:                 sellerAdjustments,
-	}, nil
+	return scanStoreBalance(ctx, r.db, storeID)
 }
 
 func (r *FinanceRepository) GetStorePayouts(ctx context.Context, ownerUserID, storeID string) ([]SettlementRequest, error) {
@@ -620,24 +462,38 @@ func (r *FinanceRepository) GetStorePayouts(ctx context.Context, ownerUserID, st
 	return result, rows.Err()
 }
 
-func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUserID, storeID, shaba, bankName string, amount int64) (*SettlementRequest, error) {
+func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUserID, storeID, shaba, bankName string, amount int64, clientKeys ...string) (*SettlementRequest, error) {
 	if amount <= 0 {
 		return nil, ErrStoreInput
+	}
+	command, err := newFinanceCommand(FinancialAccount{Type: "seller", ID: storeID}, "payout-request-v1", clientKeys, []interface{}{ownerUserID, shaba, bankName, amount})
+	if err != nil {
+		return nil, err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "seller", ID: storeID}); err != nil {
+		return nil, err
+	}
 	var lockedID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2 FOR UPDATE`, storeID, ownerUserID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2`, storeID, ownerUserID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrStoreForbidden
 		}
 		return nil, err
 	}
-	var available int64
-	if err := tx.QueryRowContext(ctx, sellerAvailableSQL, storeID).Scan(&available); err != nil {
+	var original SettlementRequest
+	if replay, err := command.replayTx(ctx, tx, &original); err != nil {
+		return nil, err
+	} else if replay {
+		return &original, nil
+	}
+	available, balanceErr := BalanceTx(ctx, tx, FinancialAccount{Type: "seller", ID: storeID})
+	if err := balanceErr; err != nil {
 		return nil, err
 	}
 	if amount > available {
@@ -648,6 +504,9 @@ func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUs
 	if err := tx.QueryRowContext(ctx, `INSERT INTO payout_requests(id,store_id,recipient_type,recipient_name,shaba,bank_name,amount,status,available_balance,created_at) VALUES($1,$2,'seller',$2,$3,$4,$5,'pending',$6,NOW()) RETURNING id,store_id,recipient_type,recipient_name,shaba,bank_name,amount,status,available_balance,created_at`, id, storeID, shaba, bankName, amount, available).Scan(&item.ID, &item.StoreID, &item.RecipientType, &item.RecipientName, &item.Shaba, &item.BankName, &item.Amount, &item.Status, &item.AvailableBalance, &item.CreatedAt); err != nil {
 		return nil, err
 	}
+	if err := command.recordTx(ctx, tx, item); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -656,194 +515,111 @@ func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUs
 	return &item, nil
 }
 
-// RequestStorePayout checks real available balance from GetStoreBalance before creating a payout request (fail-closed)
-func (r *FinanceRepository) RequestStorePayout(ctx context.Context, storeID, shaba, bankName string, amount int64) (*SettlementRequest, error) {
-	if amount <= 0 {
-		return nil, fmt.Errorf("invalid payout amount: %d", amount)
+// RequestStorePayout discovers the owner, then delegates locked authorization and creation.
+func (r *FinanceRepository) RequestStorePayout(ctx context.Context, storeID, shaba, bankName string, amount int64, clientKeys ...string) (*SettlementRequest, error) {
+	var owner string
+	if err := r.db.QueryRowContext(ctx, `SELECT owner_user_id FROM stores WHERE id=$1`, storeID).Scan(&owner); err != nil {
+		return nil, err
 	}
-
-	bal, err := r.GetStoreBalance(ctx, storeID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve store balance: %w", err)
-	}
-	if amount > bal.AvailableAmount {
-		return nil, fmt.Errorf("requested amount (%d) exceeds available balance (%d)", amount, bal.AvailableAmount)
-	}
-
-	reqID := fmt.Sprintf("pay-req-%s", uuid.New().String())
-	query := `
-		INSERT INTO payout_requests (id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status, available_balance, created_at)
-		VALUES ($1, $2, 'seller', $2, $3, $4, $5, 'pending', $6, NOW())
-		RETURNING id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status, available_balance, created_at
-	`
-	var s SettlementRequest
-	err = r.db.QueryRowContext(ctx, query, reqID, storeID, shaba, bankName, amount, bal.AvailableAmount).Scan(
-		&s.ID, &s.StoreID, &s.RecipientType, &s.RecipientName, &s.Shaba, &s.BankName, &s.Amount, &s.Status, &s.AvailableBalance, &s.CreatedAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert payout request: %w", err)
-	}
-	// P1-6 (best-effort): payout requested - admins.
-	notifyPayoutRequested(ctx, r.db, s.ID, "تسویه فروشگاه", s.Amount, storeID)
-	return &s, nil
+	return r.RequestOwnedStorePayout(ctx, owner, storeID, shaba, bankName, amount, clientKeys...)
 }
+
+// GetStoreStatement separates posted flows from reservations. Historical cutoffs
+// project the immutable event dates and current state records; missing financial
+// event dates require reconciliation rather than an invented posting period.
 func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, month string) (*StoreStatement, error) {
-	// Fix69 A2: built from real rows only. The old version returned the
-	// same hardcoded credit 3,500,000 (ORD-SET-101) and debit 1,000,000
-	// (PAYOUT-501) for every store and month; no such rows exist.
-	// Credits are dropshipper profit released in the month plus referral
-	// bonuses released in the month. Debits are money-out payouts
-	// (approved alone is NOT money out per D32, pending/rejected never
-	// are) plus seller service purchases in the month. Ledger entries
-	// are deliberately NOT added on top: payout debits already appear
-	// in ledger_entries at transfer confirmation (ConfirmManualTransfer)
-	// and profit-release credits already appear there too, so adding
-	// both sources would double-count. An empty month returns an empty
-	// entry list with zero totals, never fake rows.
 	start, err := time.Parse("2006-01", month)
 	if err != nil {
-		return nil, fmt.Errorf("invalid month: want YYYY-MM, got %q", month)
+		return nil, fmt.Errorf("invalid month: %w", err)
 	}
 	end := start.AddDate(0, 1, 0)
-	entries := []StatementEntry{}
-
-	// Credits: released dropshipper profit (same status set as
-	// GetStoreBalance), dated by profit_released_at.
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, order_number, dropshipper_profit, profit_released_at
-		FROM orders
-		WHERE store_id = $1 AND profit_released = TRUE AND status IN ('delivered', 'delivered_confirmed')
-		  AND profit_released_at >= $2 AND profit_released_at < $3 AND dropshipper_profit > 0
-		ORDER BY profit_released_at DESC
-	`, storeID, start, end)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+	posted := `SELECT id::text,profit_released_at occurred,'credit' direction,dropshipper_profit amount,'released_profit' reason FROM orders WHERE store_id=$1 AND profit_released AND status IN ('delivered','delivered_confirmed')
+ UNION ALL SELECT id::text,released_at,'credit',amount,'referral_bonus' FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'
+ UNION ALL SELECT id::text,profit_released_at,'credit',referral_commission,'referral_commission' FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released AND status<>'cancelled'
+ UNION ALL SELECT id::text,created_at,CASE WHEN operation='debit' THEN 'debit' ELSE 'credit' END,amount,'seller_return' FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'
+ UNION ALL SELECT id::text,date,type,amount,'finance_adjustment' FROM ledger_entries WHERE target_account='store_payable:' || $1 AND target_type='seller' AND reason LIKE 'سند تعدیل%'
+ UNION ALL SELECT id::text,COALESCE(processed_at,created_at),'debit',amount,'payout' FROM payout_requests WHERE store_id=$1 AND status IN ('paid','processing','completed','transfer_confirmed')
+ UNION ALL SELECT id::text,created_at,'debit',amount,'service' FROM seller_service_purchases WHERE store_id=$1
+ UNION ALL SELECT id::text,processed_at,'debit',fee_amount,'early_fee' FROM seller_early_withdrawals WHERE store_id=$1 AND status='approved'`
+	var undated int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+posted+`) e WHERE amount<>0 AND occurred IS NULL`, storeID).Scan(&undated); err != nil {
+		return nil, err
+	}
+	if undated > 0 {
+		return nil, ErrFinancePrincipalUnresolved
+	}
+	result := &StoreStatement{StoreID: storeID, Month: month, Entries: []StatementEntry{}}
+	rows, err := tx.QueryContext(ctx, `SELECT id,occurred,direction,amount,reason FROM (`+posted+`) e WHERE amount>0 AND occurred>=$2 AND occurred<$3 ORDER BY occurred DESC,id`, storeID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	var credits, debits []int64
 	for rows.Next() {
 		var e StatementEntry
-		var orderNumber string
-		var profit int64
-		if err := rows.Scan(&e.ID, &orderNumber, &profit, &e.Date); err != nil {
+		if err := rows.Scan(&e.ID, &e.Date, &e.Type, &e.Amount, &e.Reason); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		e.Type = "credit"
-		e.Amount = profit
-		e.Reason = fmt.Sprintf("سود آزادشده سفارش %s", orderNumber)
-		e.Reference = orderNumber
-		entries = append(entries, e)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
-	// Credits: referral bonuses released in the month.
-	brows, err := r.db.QueryContext(ctx, `
-		SELECT id, amount, released_at
-		FROM referral_bonuses
-		WHERE referrer_store_id = $1 AND status = 'released'
-		  AND released_at >= $2 AND released_at < $3 AND amount > 0
-		ORDER BY released_at DESC
-	`, storeID, start, end)
-	if err != nil {
-		return nil, err
-	}
-	for brows.Next() {
-		var e StatementEntry
-		if err := brows.Scan(&e.ID, &e.Amount, &e.Date); err != nil {
-			brows.Close()
-			return nil, err
-		}
-		e.Type = "credit"
-		e.Reason = "پاداش معرف آزادشده"
+		e.Reason = map[string]string{"released_profit": "سود آزادشده سفارش", "referral_bonus": "پاداش معرف آزادشده", "referral_commission": "کمیسیون معرفی آزادشده", "seller_return": "برگشت سود فروشنده", "finance_adjustment": "سند تعدیل حساب", "payout": "تسویه و واریز به حساب شبا", "service": "خرید سرویس", "early_fee": "کارمزد برداشت زودهنگام"}[e.Reason]
 		e.Reference = e.ID
-		entries = append(entries, e)
-	}
-	if err := brows.Err(); err != nil {
-		brows.Close()
-		return nil, err
-	}
-	brows.Close()
-
-	// Debits: money-out payouts, dated by processed_at when set
-	// (transfer confirmation) and otherwise by created_at.
-	prows, err := r.db.QueryContext(ctx, `
-		SELECT id, amount, COALESCE(processed_at, created_at)
-		FROM payout_requests
-		WHERE store_id = $1 AND status IN ('paid', 'processing', 'completed', 'transfer_confirmed')
-		  AND COALESCE(processed_at, created_at) >= $2 AND COALESCE(processed_at, created_at) < $3 AND amount > 0
-		ORDER BY COALESCE(processed_at, created_at) DESC
-	`, storeID, start, end)
-	if err != nil {
-		return nil, err
-	}
-	for prows.Next() {
-		var e StatementEntry
-		if err := prows.Scan(&e.ID, &e.Amount, &e.Date); err != nil {
-			prows.Close()
-			return nil, err
-		}
-		e.Type = "debit"
-		e.Reason = "تسویه و واریز به حساب شبا"
-		e.Reference = e.ID
-		entries = append(entries, e)
-	}
-	if err := prows.Err(); err != nil {
-		prows.Close()
-		return nil, err
-	}
-	prows.Close()
-
-	// Debits: seller service purchases in the month.
-	srows, err := r.db.QueryContext(ctx, `
-		SELECT id, service_type, amount, created_at
-		FROM seller_service_purchases
-		WHERE store_id = $1 AND created_at >= $2 AND created_at < $3 AND amount > 0
-		ORDER BY created_at DESC
-	`, storeID, start, end)
-	if err != nil {
-		return nil, err
-	}
-	for srows.Next() {
-		var e StatementEntry
-		var serviceType string
-		if err := srows.Scan(&e.ID, &serviceType, &e.Amount, &e.Date); err != nil {
-			srows.Close()
-			return nil, err
-		}
-		e.Type = "debit"
-		e.Reason = fmt.Sprintf("خرید سرویس %s", serviceType)
-		e.Reference = serviceType
-		entries = append(entries, e)
-	}
-	if err := srows.Err(); err != nil {
-		srows.Close()
-		return nil, err
-	}
-	srows.Close()
-
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Date.After(entries[j].Date) })
-
-	var totalCredit int64
-	var totalDebit int64
-	for _, e := range entries {
+		result.Entries = append(result.Entries, e)
 		if e.Type == "credit" {
-			totalCredit += e.Amount
+			credits = append(credits, e.Amount)
 		} else {
-			totalDebit += e.Amount
+			debits = append(debits, e.Amount)
 		}
 	}
-
-	return &StoreStatement{
-		StoreID:     storeID,
-		Month:       start.Format("2006-01"),
-		Entries:     entries,
-		TotalCredit: totalCredit,
-		TotalDebit:  totalDebit,
-		NetBalance:  totalCredit - totalDebit,
-	}, nil
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	result.TotalCredit, err = signedBalanceSum(credits, nil)
+	if err != nil {
+		return nil, err
+	}
+	result.TotalDebit, err = signedBalanceSum(debits, nil)
+	if err != nil {
+		return nil, err
+	}
+	result.NetBalance, err = signedBalanceSum(credits, debits)
+	if err != nil {
+		return nil, err
+	}
+	reserve := `COALESCE((SELECT SUM(amount) FROM payout_requests WHERE store_id=$1 AND created_at<$2 AND ((status IN ('pending','approved')) OR (COALESCE(processed_at,created_at)>=$2 AND status IN ('rejected','paid','processing','completed','transfer_confirmed')))),0)+COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND created_at<$2 AND (status='pending' OR (processed_at>=$2 AND status IN ('approved','rejected')))),0)`
+	projection := func(cutoff time.Time) (int64, int64, error) {
+		var net, reserved int64
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END) FROM (`+posted+`) e WHERE occurred<$2),0),`+reserve, storeID, cutoff).Scan(&net, &reserved)
+		if err != nil {
+			return 0, 0, err
+		}
+		available, err := signedBalanceSum([]int64{net}, []int64{reserved})
+		return available, reserved, err
+	}
+	result.OpeningAvailable, result.OpeningReserved, err = projection(start)
+	if err != nil {
+		return nil, err
+	}
+	result.ClosingAvailable, result.ClosingReserved, err = projection(end)
+	if err != nil {
+		return nil, err
+	}
+	// Includes the current canonical signed amount explicitly, without confusing it
+	// with a historical cutoff when later events have already posted.
+	balance, err := scanStoreBalance(ctx, tx, storeID)
+	if err != nil {
+		return nil, err
+	}
+	result.CurrentAvailable = balance.AvailableAmount
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // GetPendingSettlements returns payout requests awaiting finance approval
@@ -903,11 +679,17 @@ func (r *FinanceRepository) GetSettlementDetails(ctx context.Context, id string)
 
 // ReviewSettlement updates status of payout and logs to ledger
 func (r *FinanceRepository) ReviewSettlement(ctx context.Context, id, status, reason, operator string) error {
+	if status != "approved" && status != "rejected" {
+		return ErrStoreInput
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockPayoutAccountsTx(ctx, tx, id); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	var amount int64
@@ -993,6 +775,9 @@ func (r *FinanceRepository) ConfirmManualTransferWithDate(ctx context.Context, i
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockPayoutAccountsTx(ctx, tx, id); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	var amount int64

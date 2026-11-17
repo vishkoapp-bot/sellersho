@@ -1,3 +1,4 @@
+import { markedUpPrice } from '../../utils/money';
 import React from 'react';
 import { ArrowRight, ArrowLeft, Store, CheckCircle2 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
@@ -13,7 +14,7 @@ export const DropshipperLandingView: React.FC<{ onBack: () => void }> = ({ onBac
   const cost = 1200000;
   const profit = 200000;
   const pct = platformSettings.platformPct ?? 0;
-  const fee = roundTo100(cost * (1 + pct / 100)) - cost;
+  const fee = markedUpPrice(cost, pct) - cost;
   const steps = [
     ['فروشگاه خود را بسازید', 'با شماره موبایل ثبت‌نام کنید و نام و نشانی فروشگاه خود را انتخاب کنید.'],
     ['محصولات را انتخاب کنید', 'از کاتالوگ مرکزی محصول بردارید و سود فروش خود را در محدوده مجاز تنظیم کنید.'],

@@ -9,10 +9,15 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/database/seeder"
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/ippanel"
 	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
+	"github.com/google/uuid"
 )
+
+var ErrOTPStoreUnavailable = errors.New("OTP reservation unavailable")
+var ErrOTPDeliveryUnknown = errors.New("OTP SMS delivery outcome unknown")
 
 type OTPService struct {
 	redisClient *repository.RedisClient
@@ -42,79 +47,60 @@ func (s *OTPService) GenerateAndStoreOTP(ctx context.Context, mobile string) (st
 	if !phone.IsValid(mobile) {
 		return "", errors.New("invalid mobile number")
 	}
-	value, err := rand.Int(rand.Reader, big.NewInt(9000))
-	if err != nil {
-		return "", fmt.Errorf("failed to generate OTP: %w", err)
+	if s.redisClient == nil || s.redisClient.Client == nil {
+		return "", ErrOTPStoreUnavailable
 	}
-	code := fmt.Sprintf("%04d", value.Int64()+1000)
-
 	if !s.IsDemoMode() && s.sms == nil {
 		return "", errors.New("OTP SMS provider is not configured")
 	}
-	key := fmt.Sprintf("otp:%s", mobile)
-	if s.redisClient != nil {
-		cooldownKey := fmt.Sprintf("otp:cooldown:%s", mobile)
-		allowed, err := s.redisClient.Client.SetNX(ctx, cooldownKey, 1, 30*time.Second).Result()
-		if err != nil {
-			return "", fmt.Errorf("failed to apply OTP cooldown: %w", err)
-		}
-		if !allowed {
-			return "", errors.New("OTP resend cooldown is active")
-		}
-		if !s.IsDemoMode() {
-			ids, sendErr := s.sms.SendPattern(ctx, mobile, s.patternCode, map[string]string{"code": code})
-			if sendErr != nil {
-				s.redisClient.Client.Del(ctx, cooldownKey)
-				if s.logSMS != nil {
-					s.logSMS(ctx, mobile, "otp", "failed", "", sendErr.Error())
-				}
-				return "", fmt.Errorf("OTP SMS delivery failed: %w", sendErr)
-			}
-			if s.logSMS != nil {
-				id := ""
-				if len(ids) > 0 {
-					id = ids[0]
-				}
-				s.logSMS(ctx, mobile, "otp", "sent", id, "")
-			}
-			if len(ids) > 0 {
-				_ = s.redisClient.Client.Set(ctx, fmt.Sprintf("sms:bulk:%s", ids[0]), ids[0], 30*24*time.Hour).Err()
-			}
-			if err := s.redisClient.Client.Set(ctx, key, code, 120*time.Second).Err(); err != nil {
-				return "", fmt.Errorf("failed to save OTP in redis: %w", err)
-			}
-			_ = ids
-		} else if err := s.redisClient.Client.Set(ctx, key, code, 120*time.Second).Err(); err != nil {
-			return "", fmt.Errorf("failed to save OTP in redis: %w", err)
-		}
+	value, err := rand.Int(rand.Reader, big.NewInt(9000))
+	if err != nil {
+		return "", errors.New("failed to generate OTP")
 	}
-
-	if s.IsDemoMode() {
-		// Dev/test convenience: code is still generated and stored in Redis,
-		// but it MUST also be delivered via real SMS (no auto-returned code).
-		// The response never exposes the code; read it from the SMS.
-		if s.sms != nil {
-			ids, sendErr := s.sms.SendPattern(ctx, mobile, s.patternCode, map[string]string{"code": code})
-			if sendErr != nil {
-				s.redisClient.Client.Del(ctx, fmt.Sprintf("otp:cooldown:%s", mobile))
-				if s.logSMS != nil {
-					s.logSMS(ctx, mobile, "otp", "failed", "", sendErr.Error())
-				}
-				return "", fmt.Errorf("OTP SMS delivery failed: %w", sendErr)
-			}
-			if s.logSMS != nil {
-				id := ""
-				if len(ids) > 0 {
-					id = ids[0]
-				}
-				s.logSMS(ctx, mobile, "otp", "sent", id, "")
-			}
-		}
-		if err := s.redisClient.Client.Set(ctx, key, code, 120*time.Second).Err(); err != nil {
-			return "", fmt.Errorf("failed to save OTP in redis: %w", err)
-		}
+	code := fmt.Sprintf("%04d", value.Int64()+1000)
+	generation := uuid.NewString()
+	keys := []string{"otp:" + mobile, "otp:cooldown:" + mobile, "otp:attempts:" + mobile}
+	const reserve = `
+if redis.call('EXISTS',KEYS[2])==1 then return 0 end
+redis.call('SET',KEYS[2],ARGV[1],'EX',30)
+redis.call('SET',KEYS[1],ARGV[2],'EX',120)
+redis.call('DEL',KEYS[3])
+return 1`
+	allowed, err := s.redisClient.Client.Eval(ctx, reserve, keys, generation, code).Int()
+	if err != nil {
+		return "", fmt.Errorf("%w: reservation could not be confirmed", ErrOTPStoreUnavailable)
+	}
+	if allowed != 1 {
+		return "", errors.New("OTP resend cooldown is active")
+	}
+	if s.sms == nil {
 		return "", nil
 	}
+	ids, sendErr := s.sms.SendPattern(ctx, mobile, s.patternCode, map[string]string{"code": code})
+	if sendErr != nil {
+		status := "failed"
+		if dependencybudget.IsAmbiguous(sendErr) {
+			status = "unknown"
+		} else {
+			// A failed old request cannot remove a newer reservation, even if the
+			// four-digit code happens to collide. Never detach cancellation cleanup.
+			cleanup, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			const remove = `if redis.call('GET',KEYS[2])==ARGV[1] and redis.call('GET',KEYS[1])==ARGV[2] then return redis.call('DEL',KEYS[1],KEYS[2],KEYS[3]) end return 0`
+			s.redisClient.Client.Eval(cleanup, remove, keys, generation, code).Err()
+			cancel()
+		}
+		if s.logSMS != nil {
+			s.logSMS(ctx, mobile, "otp", status, "", sendErr.Error())
+		}
+		if status == "unknown" {
+			return "", fmt.Errorf("%w: %w", ErrOTPDeliveryUnknown, sendErr)
+		}
+		return "", fmt.Errorf("OTP SMS delivery failed: %w", sendErr)
+	}
+	if s.logSMS != nil {
+		s.logSMS(ctx, mobile, "otp", "sent", ids[0], "")
+	}
+	_ = s.redisClient.Client.Set(ctx, "sms:bulk:"+ids[0], ids[0], 30*24*time.Hour).Err()
 	return "", nil
 }
 

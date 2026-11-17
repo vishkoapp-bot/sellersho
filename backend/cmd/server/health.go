@@ -1,6 +1,13 @@
 package main
 
-import "net/http"
+import (
+	"context"
+	"github.com/drup/platform/internal/config"
+	"github.com/drup/platform/internal/database/seeder"
+	"github.com/drup/platform/internal/lifecycle"
+	"github.com/drup/platform/internal/repository"
+	"net/http"
+)
 
 // healthStatus maps the already-measured Postgres/Redis liveness into
 // the /api/health top-level status and HTTP code (Team 10 live parity).
@@ -19,4 +26,22 @@ func healthStatus(postgresUp, redisUp bool) (string, int) {
 		return "ok", http.StatusOK
 	}
 	return "degraded", http.StatusServiceUnavailable
+}
+
+// newHealthState shares the production probe wiring with legacy health tests.
+func newHealthState(db *repository.PostgresDB, redisClient *repository.RedisClient, cfg *config.Config) *lifecycle.State {
+	var pg, cache lifecycle.Probe
+	if db != nil {
+		pg = db.DB.PingContext
+	}
+	if redisClient != nil {
+		cache = func(ctx context.Context) error { return redisClient.Client.Ping(ctx).Err() }
+	}
+	return lifecycle.New(pg, cache, cfg.Environment, seeder.IsDevEnvironment(cfg.Environment))
+}
+
+func legacyHealthHandler(db *repository.PostgresDB, redisClient *repository.RedisClient, cfg *config.Config) http.HandlerFunc {
+	state := newHealthState(db, redisClient, cfg)
+	state.Initialize()
+	return state.Ready
 }

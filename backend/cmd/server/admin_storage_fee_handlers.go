@@ -1,8 +1,8 @@
 package main
 
 // Storage-fee manual run (gap 7): POST /api/v1/admin/storage-fees/run
-// executes one assessment pass over all open warehouse storage
-// positions and returns its summary. The engine itself lives in the
+// executes one bounded pass over known warehouse receipt histories, including
+// pending accrual on closed positions, and returns its summary. The engine itself lives in the
 // repository (SupplierRepository.RunStorageFeeAssessment) as a plain
 // callable, so a scheduler could invoke it daily later; no scheduler
 // registration ships with this change. While the storage-fee flag is

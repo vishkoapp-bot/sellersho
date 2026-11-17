@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
@@ -191,7 +193,7 @@ func supplierGapsSetup(t *testing.T) *supplierGapsFixture {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier-gaps handler tests")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -199,6 +201,12 @@ func supplierGapsSetup(t *testing.T) *supplierGapsFixture {
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, supplierGapsDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE products ADD COLUMN schema_version INT DEFAULT 0, ADD COLUMN origin_supplier_warehouse_id TEXT, ADD COLUMN shipping_class TEXT DEFAULT 'standard', ADD COLUMN tax_class TEXT DEFAULT 'standard';
+		ALTER TABLE product_variants ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
+		ALTER TABLE inventory_balances ADD COLUMN variant_id UUID;
+		ALTER TABLE suppliers ADD COLUMN tapin_token TEXT;`); err != nil {
+		t.Fatal(err)
 	}
 	return &supplierGapsFixture{
 		db:           db,
@@ -315,11 +323,25 @@ func TestPasswordLoginSupplierStates(t *testing.T) {
 
 func (f *supplierGapsFixture) seedProposal(t *testing.T, id string) {
 	t.Helper()
-	data := `{"supplier_base_cost":800,"stock":3,"category":"digital","images":[]}`
+	if _, err := f.db.ExecContext(f.ctx, `INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES('gap-source','sup-1','Approval source','Test','Test') ON CONFLICT(id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	data := map[string]interface{}{"supplierBaseCost": float64(800), "stock": float64(3), "categorySlug": "digital", "imageUrls": []interface{}{}, "supplierWarehouseId": "gap-source"}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.db.ExecContext(f.ctx, `
 		INSERT INTO pending_approvals (id, entity_type, target_id, title, requested_data, requested_by, status)
-		VALUES ($1, 'proposed_product', $1, 'کالای تستی', $2, 'sup-1', 'pending')`, id, data); err != nil {
+		VALUES ($1, 'proposed_product', $1, 'کالای تستی', $2, 'sup-1', 'pending')`, id, string(raw)); err != nil {
 		t.Fatalf("seed proposal: %v", err)
+	}
+	var decisions []repository.FieldDecision
+	for key, value := range repository.ReviewLeaves(data) {
+		decisions = append(decisions, repository.FieldDecision{Key: key, Decision: "approved", ValueHash: repository.ReviewValueHash(value)})
+	}
+	if err := f.supplierRepo.SaveFieldReview(f.ctx, id, "test-admin", decisions); err != nil {
+		t.Fatal(err)
 	}
 }
 

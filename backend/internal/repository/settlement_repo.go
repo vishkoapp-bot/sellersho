@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/pricing"
 	"github.com/google/uuid"
 )
 
@@ -109,14 +110,21 @@ type WalletBreakdown struct {
 }
 
 type MonthlySettlementCycle struct {
-	Period        string    `json:"period"`
-	SettlementDay int       `json:"settlementDay"`
-	Status        string    `json:"status"`
-	TotalStores   int       `json:"totalStores"`
-	TotalGross    int64     `json:"totalGross"`
-	TotalNet      int64     `json:"totalNet"`
-	SkippedStores int       `json:"skippedStores"`
-	CreatedAt     time.Time `json:"createdAt"`
+	Period           string    `json:"period"`
+	SettlementDay    int       `json:"settlementDay"`
+	Status           string    `json:"status"`
+	TotalStores      int       `json:"totalStores"`
+	TotalGross       int64     `json:"totalGross"`
+	TotalNet         int64     `json:"totalNet"`
+	SkippedStores    int       `json:"skippedStores"`
+	CreatedAt        time.Time `json:"createdAt"`
+	CreatedBy        string    `json:"createdBy"`
+	ProgressKnown    bool      `json:"progressKnown"`
+	CandidateStores  int       `json:"candidateStores"`
+	CompletedStores  int       `json:"completedStores"`
+	PendingStores    int       `json:"pendingStores"`
+	BlockedStores    int       `json:"blockedStores"`
+	AlreadyCompleted bool      `json:"-"`
 }
 
 type MonthlySettlementItem struct {
@@ -190,7 +198,7 @@ func (r *FinanceRepository) GetWalletBreakdown(ctx context.Context, storeID stri
 	// Guarded like GetStoreBalance (D31): a database without the
 	// seller_early_withdrawals table (pre-202611020002) still works.
 	var earlyPending int64
-	if err := r.db.QueryRowContext(ctx, `SELECT CASE WHEN to_regclass('public.seller_early_withdrawals') IS NOT NULL THEN COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='pending'),0) ELSE 0 END`, storeID).Scan(&earlyPending); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT CASE WHEN to_regclass('seller_early_withdrawals') IS NOT NULL THEN COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='pending'),0) ELSE 0 END`, storeID).Scan(&earlyPending); err != nil {
 		return nil, err
 	}
 	settings, err := r.GetSettlementSettings(ctx)
@@ -203,30 +211,48 @@ func (r *FinanceRepository) GetWalletBreakdown(ctx context.Context, storeID stri
 	}, nil
 }
 
-func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUserID, storeID string, gross int64, shaba, bankName string) (*EarlyWithdrawal, error) {
+func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUserID, storeID string, gross int64, shaba, bankName string, clientKeys ...string) (*EarlyWithdrawal, error) {
+	if gross > pricing.MaxTransportMoney {
+		return nil, pricing.ErrInvalidMoney
+	}
 	if gross < EarlyWithdrawalMinimumToman {
 		return nil, ErrEarlyWithdrawalTooSmall
 	}
 	if shaba == "" || bankName == "" {
 		return nil, fmt.Errorf("shaba and bank_name are required")
 	}
+	command, err := newFinanceCommand(FinancialAccount{Type: "seller", ID: storeID}, "early-withdrawal-v1", clientKeys, []interface{}{ownerUserID, gross, shaba, bankName})
+	if err != nil {
+		return nil, err
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "seller", ID: storeID}); err != nil {
+		return nil, err
+	}
 	var lockedID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2 AND owner_type='dropshipper' FOR UPDATE`, storeID, ownerUserID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE id=$1 AND owner_user_id=$2 AND owner_type='dropshipper'`, storeID, ownerUserID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrStoreForbidden
 		}
 		return nil, err
 	}
+	var original EarlyWithdrawal
+	if replay, err := command.replayTx(ctx, tx, &original); err != nil {
+		return nil, err
+	} else if replay {
+		original.fillDeadline()
+		return &original, nil
+	}
 	// sellerAvailableSQL (live-parity, D31) already subtracts pending
 	// early withdrawals, pending/approved payouts and service
 	// purchases, so the same profit cannot be requested twice.
-	var available int64
-	if err := tx.QueryRowContext(ctx, sellerAvailableSQL, storeID).Scan(&available); err != nil {
+	available, balanceErr := BalanceTx(ctx, tx, FinancialAccount{Type: "seller", ID: storeID})
+	if err := balanceErr; err != nil {
 		return nil, err
 	}
 	if gross > available {
@@ -239,7 +265,10 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	if !feePct.Valid {
 		return nil, ErrEarlyWithdrawalFeeUnset
 	}
-	feeAmount := int64(float64(gross) * feePct.Float64 / 100.0)
+	feeAmount, err := pricing.TruncatedPercent(gross, feePct.Float64)
+	if err != nil || feeAmount > gross || feePct.Float64 > 100 {
+		return nil, pricing.ErrInvalidMoney
+	}
 	net := gross - feeAmount
 	if net <= 0 {
 		return nil, fmt.Errorf("net amount must be positive")
@@ -250,6 +279,9 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 		return nil, err
 	}
 	out.fillDeadline()
+	if err := command.recordTx(ctx, tx, out); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -277,24 +309,30 @@ func (r *FinanceRepository) ListEarlyWithdrawals(ctx context.Context, storeID st
 }
 
 func (r *FinanceRepository) ListMonthlyCycles(ctx context.Context) ([]MonthlySettlementCycle, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT period, settlement_day, status, total_stores, total_gross, total_net, skipped_stores, created_at FROM monthly_settlement_cycles ORDER BY period DESC LIMIT 24`)
+	rows, err := r.db.QueryContext(ctx, monthlyCycleSelect+` ORDER BY c.period DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []MonthlySettlementCycle{}
 	for rows.Next() {
-		var c MonthlySettlementCycle
-		if err := rows.Scan(&c.Period, &c.SettlementDay, &c.Status, &c.TotalStores, &c.TotalGross, &c.TotalNet, &c.SkippedStores, &c.CreatedAt); err != nil {
+		c, err := scanMonthlyCycle(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, c)
+		out = append(out, *c)
 	}
 	return out, rows.Err()
 }
 
 func (r *FinanceRepository) ListMonthlyItems(ctx context.Context, period string) ([]MonthlySettlementItem, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status,created_at FROM monthly_settlement_items WHERE cycle_period=$1 ORDER BY created_at DESC`, period)
+	return listMonthlyItems(ctx, r.db, period)
+}
+
+func listMonthlyItems(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, period string) ([]MonthlySettlementItem, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status,created_at FROM monthly_settlement_items WHERE cycle_period=$1 ORDER BY created_at DESC`, period)
 	if err != nil {
 		return nil, err
 	}
@@ -352,155 +390,8 @@ func settlementWindowPeriod(now time.Time, configuredDay int) (string, int, bool
 	return "", 0, false
 }
 
-// RunMonthlySettlement performs the free automatic monthly sweep.
-// It returns (nil, nil) when today is outside the settlement window
-// (the settlement day plus the 3 following days, D1 catch-up), and
-// (nil, ErrSettlementNotConfigured) when the admin has not set a day.
-// It is idempotent: a cycle for the current period can only be created
-// once (period is the primary key), and a second run returns the
-// existing cycle without sweeping again.
-//
-// Reconciliation with the manual engine (handleT01MonthlyRun): the
-// store filter (owner_type != 'central'), the store-name
-// recipient, the fee-free pending payout, the
-// skipped_no_bank_details item, and the cycle totals (which count
-// skipped stores and their amounts) all match the manual run, so a
-// cycle means the same thing whichever trigger created it. Balances
-// are read through GetStoreBalance before the write transaction,
-// exactly like the manual run (same read/write race window; a
-// balance change between the read and the cycle insert is not
-// re-checked, and a later cycle never re-sweeps the same period).
+// RunMonthlySettlement shares the bounded durable engine with the manual trigger.
+// Unfinished periods resume fairly outside the due window; completed history is sealed.
 func (r *FinanceRepository) RunMonthlySettlement(ctx context.Context, now time.Time, createdBy string) (*MonthlySettlementCycle, error) {
-	settings, err := r.GetSettlementSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if settings.SettlementDay == nil {
-		return nil, ErrSettlementNotConfigured
-	}
-	// D1 catch-up (user decision, N=3): the sweep runs on the
-	// settlement day and during the 3 following days. Window days
-	// that spill into the next month still sweep the PREVIOUS
-	// month's period, never the new month's.
-	period, effectiveDay, ok := settlementWindowPeriod(now, *settings.SettlementDay)
-	if !ok {
-		return nil, nil
-	}
-	type candidate struct {
-		id, name  string
-		available int64
-	}
-	storeRows, err := r.db.QueryContext(ctx, `SELECT id, name FROM stores WHERE owner_type != 'central' ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	var candidates []candidate
-	for storeRows.Next() {
-		var c candidate
-		if err := storeRows.Scan(&c.id, &c.name); err != nil {
-			storeRows.Close()
-			return nil, err
-		}
-		bal, err := r.GetStoreBalance(ctx, c.id)
-		if err != nil {
-			storeRows.Close()
-			return nil, err
-		}
-		c.available = bal.AvailableAmount
-		candidates = append(candidates, c)
-	}
-	storeRows.Close()
-	if err := storeRows.Err(); err != nil {
-		return nil, err
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	// FIX 14: serialize concurrent sweep runs for this period (the
-	// cycle-PK already enforces one settlement per month; the lock
-	// closes the check-then-insert race so a duplicate run waits
-	// instead of failing on the PK). This changes no catch-up or
-	// balance-read semantics -- both are flagged for Richard's
-	// decision in the Fix 14 report, not invented here.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(91827364)`); err != nil {
-		return nil, err
-	}
-	var existing MonthlySettlementCycle
-	err = tx.QueryRowContext(ctx, `SELECT period, settlement_day, status, total_stores, total_gross, total_net, skipped_stores, created_at FROM monthly_settlement_cycles WHERE period=$1`, period).Scan(&existing.Period, &existing.SettlementDay, &existing.Status, &existing.TotalStores, &existing.TotalGross, &existing.TotalNet, &existing.SkippedStores, &existing.CreatedAt)
-	if err == nil {
-		// Already swept this month: do nothing, do not sweep twice.
-		return &existing, nil
-	}
-	if err != sql.ErrNoRows {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO monthly_settlement_cycles(period, settlement_day, status, total_stores, total_gross, total_net, skipped_stores, created_by) VALUES($1,$2,'completed',0,0,0,0,$3)`, period, effectiveDay, createdBy); err != nil {
-		return nil, err
-	}
-	totalStores, skippedStores := 0, 0
-	var totalGross, totalNet int64
-	// P0-13 / P1-6 notify lists, resolved during the loop and sent
-	// only after the cycle commits (best-effort, separate tx each).
-	type settlementNotify struct {
-		storeID  string
-		amount   int64
-		payoutID string
-	}
-	var skippedNotifies, createdNotifies []settlementNotify
-	for _, c := range candidates {
-		if c.available <= 0 {
-			continue
-		}
-		var shaba, bankName string
-		err := tx.QueryRowContext(ctx, `SELECT shaba, bank_name FROM payout_requests WHERE store_id = $1 ORDER BY created_at DESC LIMIT 1`, c.id).Scan(&shaba, &bankName)
-		if err == sql.ErrNoRows || shaba == "" {
-			// Never invent bank details: record the skip, keep balance.
-			if _, err := tx.ExecContext(ctx, `INSERT INTO monthly_settlement_items(id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status) VALUES($1,$2,$3,$4,0,$4,NULL,'skipped_no_bank_details')`, "msi-"+uuid.NewString(), period, c.id, c.available); err != nil {
-				return nil, err
-			}
-			skippedStores++
-			totalStores++
-			totalGross += c.available
-			totalNet += c.available
-			skippedNotifies = append(skippedNotifies, settlementNotify{storeID: c.id, amount: c.available})
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		// Pending payout for the full (fee-free) amount. It stays
-		// 'pending' for the existing finance review /
-		// transfer-confirmation flow (D32); no ledger entry is written
-		// here, because approval alone never writes the ledger, and
-		// no bank transfer is performed by this code.
-		payoutID := "pay-req-" + uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO payout_requests(id,store_id,recipient_type,recipient_name,shaba,bank_name,amount,status,available_balance,created_at) VALUES($1,$2,'seller',$3,$4,$5,$6,'pending',$6,NOW())`, payoutID, c.id, c.name, shaba, bankName, c.available); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO monthly_settlement_items(id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status) VALUES($1,$2,$3,$4,0,$4,$5,'pending_payout')`, "msi-"+uuid.NewString(), period, c.id, c.available, payoutID); err != nil {
-			return nil, err
-		}
-		totalStores++
-		totalGross += c.available
-		totalNet += c.available
-		createdNotifies = append(createdNotifies, settlementNotify{storeID: c.id, amount: c.available, payoutID: payoutID})
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE monthly_settlement_cycles SET total_stores=$1, total_gross=$2, total_net=$3, skipped_stores=$4 WHERE period=$5`, totalStores, totalGross, totalNet, skippedStores, period); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	// P0-13 (best-effort): skipped for missing bank details - store
-	// owner, telling them to add bank details. P1-6: sellers whose
-	// cycle created a payout for them.
-	for _, n := range skippedNotifies {
-		notifySettlementSkipped(ctx, r.db, n.storeID, period, n.amount)
-	}
-	for _, n := range createdNotifies {
-		notifySettlementCreated(ctx, r.db, n.storeID, period, n.payoutID, n.amount)
-	}
-	return &MonthlySettlementCycle{Period: period, SettlementDay: effectiveDay, Status: "completed", TotalStores: totalStores, TotalGross: totalGross, TotalNet: totalNet, SkippedStores: skippedStores}, nil
+	return r.runMonthlyScheduled(ctx, now, createdBy)
 }

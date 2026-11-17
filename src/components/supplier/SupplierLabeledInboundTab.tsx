@@ -1,5 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSupplierResource } from './useSupplierResource';
+import { SupplierResourceState } from './SupplierResourceState';
 import { supplierApi } from '../../services/supplierApi';
+import { createCartonDraftOperation } from '../../services/cartonDraft';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { Package, Truck, CheckCircle2, Printer, RefreshCw, X, Tag } from 'lucide-react';
@@ -47,11 +50,18 @@ const printCartonLabel = (shipment: any) => {
 };
 
 export const SupplierLabeledInboundTab: React.FC = () => {
-  const { toPersianDigits } = useStore();
+  const { toPersianDigits, supplierSession } = useStore();
   const { success, error } = useToast();
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productId, setProductId] = useState('');
+  const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
+  const sourceWarehouses = useSupplierResource(supplierApi.getMyWarehouses);
+  const [sourceId, setSourceId] = useState('');
+  const [sourceKind, setSourceKind] = useState('transfer');
+  const [externalReference, setExternalReference] = useState('');
+  const [sourceReason, setSourceReason] = useState('');
+  const [warehouseId, setWarehouseId] = useState('');
   const [variants, setVariants] = useState<any[]>([]);
   const [variantsLoading, setVariantsLoading] = useState(false);
   const [lines, setLines] = useState<{ variant: any; expectedQty: string }[]>([]);
@@ -59,6 +69,15 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   const [shipmentsLoading, setShipmentsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<any | null>(null);
+  const draftOperation = useRef(createCartonDraftOperation());
+  const submittingRef = useRef(false);
+  useEffect(() => {
+    draftOperation.current.reset();
+    setLines([]);
+    setCreated(null);
+    setProductId('');
+    setWarehouseId('');
+  }, [supplierSession?.supplierId, supplierSession?.token]);
   const loadProducts = useCallback(async () => {
     setProductsLoading(true);
     try { setProducts(await supplierApi.getProducts()); }
@@ -86,17 +105,24 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   };
   const removeVariant = (id: string) => { setLines((prev) => prev.filter((l) => l.variant.id !== id)); };
   const submit = async () => {
-    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) })).filter((l) => Number.isSafeInteger(l.expected_qty) && l.expected_qty > 0);
-    if (items.length === 0) { error("حداقل یک مدل با تعداد درست اضافه کن."); return; }
+    if (submittingRef.current) return;
+    if (!warehouseId || !(warehouses.data || []).some((w: any) => w.id === warehouseId)) { error("انبار مقصد را انتخاب کن."); return; }
+    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) }));
+    if (items.length === 0 || items.some(l => !Number.isSafeInteger(l.expected_qty) || l.expected_qty <= 0 || l.expected_qty > 2147483647)) { error("تعداد همه مدل‌ها باید درست و حداکثر ۲۱۴۷۴۸۳۶۴۷ باشد."); return; }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
-      const shipment = await supplierApi.createShipment({ items });
+      if (sourceKind === 'transfer' && !sourceId) throw new Error('انبار مبدأ را انتخاب کن.');
+      if (sourceKind === 'external_replenishment' && (!externalReference.trim() || !sourceReason.trim())) throw new Error('مرجع یکتا و دلیل ورود جدید الزامی است.');
+      const source = sourceKind === 'transfer' ? {source_kind: sourceKind, supplier_warehouse_id: sourceId} : {source_kind: sourceKind, external_reference: externalReference.trim(), reason: sourceReason.trim()};
+      const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId, source });
+      draftOperation.current.reset();
       setCreated(shipment);
       setLines([]);
       success("محموله ثبت شد. کدش را روی کارتن بنویس.");
       await loadShipments();
     } catch (cause: unknown) { error(cause instanceof Error ? cause.message : "ثبت محموله انجام نشد."); }
-    finally { setSubmitting(false); }
+    finally { submittingRef.current = false; setSubmitting(false); }
   };
   return (
     <div className="space-y-3.5 pb-6">
@@ -113,6 +139,15 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
         <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
+        <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود جدید با مدرک مستقل</option></select></label>
+        {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : <div className="space-y-2"><input aria-label="مرجع ورود جدید" placeholder="مرجع یکتای مدرک ورود جدید" value={externalReference} onChange={e => setExternalReference(e.target.value)} className="w-full border rounded-xl p-2"/><input aria-label="دلیل ورود جدید" placeholder="دلیل ورود جدید" value={sourceReason} onChange={e => setSourceReason(e.target.value)} className="w-full border rounded-xl p-2"/></div>}
+        <SupplierResourceState loading={warehouses.loading} error={warehouses.error} retry={warehouses.reload} />
+        <label className="block text-xs font-bold text-slate-700">انبار مرکزی مقصد
+          <select aria-label="انبار مرکزی مقصد" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] bg-white">
+            <option value="">انبار مقصد را انتخاب کن</option>
+            {(warehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
         <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] text-xs bg-white focus:border-brand-deep outline-none">
           <option value="">{productsLoading ? "صبر کن… کالاها می‌آیند" : "انتخاب کالا"}</option>
           {products.map((p: any) => (<option key={p.id} value={p.id}>{p.title}</option>))}
@@ -143,7 +178,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
             ))}
           </div>
         )}
-        <button type="button" onClick={submit} disabled={submitting || lines.length === 0} className="w-full py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
+        <button type="button" onClick={submit} disabled={submitting || lines.length === 0 || !warehouseId || warehouses.loading || !!warehouses.error} className="w-full py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
           {submitting && (<RefreshCw className="w-4 h-4 animate-spin"  strokeWidth={1.5}/>)}
           <Truck className="w-4 h-4"  strokeWidth={1.5}/>
           <span>{submitting ? "در حال ثبت…" : "ثبت محموله و گرفتن کد کارتن"}</span>
@@ -162,6 +197,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
             </div>
             <div className="flex items-center gap-1.5">
               <button type="button" onClick={() => printCartonLabel(s)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-brand-deep hover:border-brand-border transition-colors" title="چاپ برچسب کارتن"><Printer className="w-3.5 h-3.5"  strokeWidth={1.5}/></button>
+              {s.status === 'draft' && <><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'dispatch'); await loadShipments();} catch {error('ارسال ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">ثبت ارسال</button><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'cancel'); await loadShipments();} catch {error('لغو ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">لغو و آزادسازی رزرو</button></>}
               <span className="text-[10px] font-bold bg-brand-soft text-brand-deep px-2.5 py-1 rounded-full">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>
             </div>
           </div>

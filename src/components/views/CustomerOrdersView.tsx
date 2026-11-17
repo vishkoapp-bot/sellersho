@@ -3,11 +3,11 @@ import { useOrders } from '../../context/OrderContext';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { Order } from '../../types';
-import { orderApi, CustomerReturnDto, ReturnDestinationInfo } from '../../services/orderApi';
+import { orderApi, CustomerReturnDto, ReturnDestinationInfo, OrderRefundSummary } from '../../services/orderApi';
 import { ArrowRight, Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle } from 'lucide-react';
 
 export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { currentStore, customerUser, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
+  const { currentStore, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
   const { success, error: toastError } = useToast();
   const { orders, fetchMyOrders } = useOrders();
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[]>([]);
@@ -22,19 +22,19 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   const [returnBusy, setReturnBusy] = useState(false);
   const [confirmingCancelId, setConfirmingCancelId] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancellationResults, setCancellationResults] = useState<Record<string,OrderRefundSummary>>({});
 
   useEffect(() => {
+    let active = true;
     void fetchMyOrders();
-    orderApi.getMyReturns().then(setMyReturns).catch(() => setMyReturns([]));
+    orderApi.getMyReturns().then((rows) => { if (active) setMyReturns(rows); }).catch(() => { if (active) setMyReturns([]); });
+    return () => { active = false; ++returnQuoteSeq.current; };
   }, []);
   const [filter, setFilter] = useState<'all' | 'processing' | 'shipped' | 'delivered'>('all');
 
-  // Strict privacy filter: only show orders placed by this customer identity
-  const userPhone = (customerUser.mobile || '').replace(/\D/g, '').slice(-10);
-  const myOrders = orders.filter((o) => {
-    const orderPhone = (o.customerInfo?.phone || '').replace(/\D/g, '').slice(-10);
-    return (userPhone && orderPhone === userPhone) || o.customerInfo?.fullName === customerUser.fullName;
-  });
+  // The authenticated backend selects ownership by immutable user ID. Recipient
+  // names and phones are editable shipping details, never ownership selectors.
+  const myOrders = orders.map(o => cancellationResults[o.id] ? {...o,status:'cancelled' as const,refund:o.status==='cancelled' ? o.refund ?? cancellationResults[o.id] : cancellationResults[o.id]} : o);
 
   // Fix82: per-store buyer panels. One account may hold panels at
   // central, mone and other dropshippers, but each panel shows ONLY
@@ -67,8 +67,10 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   const doCancel = async (ord: Order) => {
     setCancelBusy(true);
     try {
-      await orderApi.cancelOrder(ord.id);
-      success(`سفارش ${ord.orderNumber} با موفقیت لغو شد.`);
+      const result = await orderApi.cancelOrder(ord.id);
+      if (result?.success !== true || result.status !== 'cancelled' || result.orderId !== ord.id || !result.refund) throw new Error('نتیجه لغو سفارش تأیید نشد؛ وضعیت سفارش را دوباره بررسی کنید.');
+      setCancellationResults(previous=>({...previous,[ord.id]:result.refund}));
+      success(result.refund.status==='none' ? `سفارش ${ord.orderNumber} لغو شد.` : `سفارش ${ord.orderNumber} لغو شد؛ نتیجه بازپرداخت را در همین سفارش پیگیری کنید.`);
       setConfirmingCancelId(null);
       await fetchMyOrders();
     } catch (e: any) {
@@ -309,6 +311,15 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                       <span>هنوز دریافت نکرده‌ام</span>
                     </button>
                   </div>
+                </div>
+              )}
+
+              {ord.refund && ord.refund.status !== 'none' && (
+                <div role="status" data-refund-status={ord.refund.status} className="p-2 border border-amber-200 bg-amber-50 rounded-xl text-[11px] space-y-1">
+                  <strong>{({pending:'بازپرداخت در انتظار انجام',succeeded:'بازپرداخت انجام شد',failed:'بازپرداخت ناموفق؛ نیازمند پیگیری',unknown:'بازپرداخت نیازمند بررسی'} as const)[ord.refund.status]}</strong>
+                  <p>مبلغ ثبت‌شده: {formatPrice(ord.refund.amountToman)} تومان؛ مقصد: {({original_payment:'روش پرداخت اولیه',wallet:'کیف پول',review:'نیازمند بررسی',mixed:'چند روش پرداخت',none:'در دست بررسی'} as const)[ord.refund.destination]}</p>
+                  {ord.refund.succeededToman > 0 && <p>مبلغ انجام‌شده: {formatPrice(ord.refund.succeededToman)} تومان</p>}
+                  {ord.refund.status !== 'succeeded' && <p>بازگشت وجه هنوز تأیید نشده است؛ وضعیت نهایی پس از بررسی یا تأیید پرداخت نمایش داده می‌شود.</p>}
                 </div>
               )}
 

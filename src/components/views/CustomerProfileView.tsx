@@ -17,12 +17,8 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
     onBack(); // بازگشت به صفحه اصلی
   };
 
-  // Strict privacy filter: only count orders placed by this customer identity
-  const userPhone = (customerUser.mobile || '').replace(/\D/g, '').slice(-10);
-  const myOrders = orders.filter((o) => {
-    const orderPhone = (o.customerInfo?.phone || '').replace(/\D/g, '').slice(-10);
-    return (userPhone && orderPhone === userPhone) || o.customerInfo?.fullName === customerUser.fullName;
-  });
+  // OrderContext contains only this authenticated account's backend-owned list.
+  const myOrders = orders;
 
   return (
     <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20">

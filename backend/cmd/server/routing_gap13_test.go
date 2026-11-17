@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
@@ -49,7 +51,7 @@ func gap13Setup(t *testing.T) *gap13Repos {
 	if dsn == "" {
 		t.Skip("GAP13_TEST_DATABASE_URL not set; skipping disposable-DB gap13 test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -78,7 +80,7 @@ func gap13Setup(t *testing.T) *gap13Repos {
 		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT UNIQUE, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -122,6 +124,19 @@ func gap13Setup(t *testing.T) *gap13Repos {
 			t.Fatalf("DDL/seed failed: %v\n%s", err, q)
 		}
 	}
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES('11111111-1111-1111-1111-111111111111','09120000000','checkout test') ON CONFLICT(id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	prepareShippingInventoryFixture(t, db)
+	for _, row := range [][2]string{{"swh-direct-only", "sup-direct-only"}, {"swh-both", "sup-both"}} {
+		if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,'انبار تأمین‌کننده','تهران','تهران')`, row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedShippingInventoryFixtureLot(t, db, "p-wh-directonly", "sup-direct-only", "", "swh-direct-only", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-direct-both", "sup-both", "", "swh-both", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-direct-none", "sup-none", "wh-central", "", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-wh-none", "sup-none", "wh-central", "", 10)
 	return &gap13Repos{
 		db:           db,
 		orderRepo:    repository.NewOrderRepository(db),
@@ -309,8 +324,8 @@ func TestGap13QuoteOrderParity(t *testing.T) {
 	for _, leg := range quote.Legs {
 		origins[leg.OriginID] = true
 	}
-	if !origins["supplier:sup-direct-only"] || !origins["warehouse"] {
-		t.Fatalf("quote leg origins = %v, want supplier:sup-direct-only + warehouse", origins)
+	if !origins["supplier-warehouse:swh-direct-only"] || !origins["warehouse:wh-central"] {
+		t.Fatalf("quote leg origins = %v, want the exact supplier and central warehouse IDs", origins)
 	}
 
 	rec := gap13CreateOrder(t, rp, gap13OrderBody(items, quote.QuoteID))

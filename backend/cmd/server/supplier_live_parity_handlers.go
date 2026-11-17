@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -292,6 +293,7 @@ func (h *SupplierHandlers) HandleTapinBoxes(w http.ResponseWriter, r *http.Reque
 //   - 332 (token not found) and every other envelope failure:
 //     ok:false with the upstream Persian message verbatim.
 //   - transport failure: 502, unreachable.
+//
 // The token and shop id never appear in any response or log line.
 func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -327,6 +329,9 @@ func (h *SupplierHandlers) HandleTapinTest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	callErr := newTapinClient().Options(r.Context(), token, shopID)
+	if writeDependencyOverload(w, callErr) {
+		return
+	}
 	if callErr == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":            true,
@@ -675,7 +680,7 @@ func (h *SupplierHandlers) HandleSupplierPriceIncreaseExceptionTicket(w http.Res
 		NewReference int64  `json:"newReference"`
 		Message      string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ProductID) == "" || req.NewReference <= 0 {
+	if err := decodeMoneyJSON(r.Body, &req, true); err != nil || strings.TrimSpace(req.ProductID) == "" || req.NewReference <= 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -860,15 +865,48 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 		return
 	}
 	var body struct {
-		Items []repository.CartonShipmentItem `json:"items"`
+		WarehouseID string                          `json:"warehouse_id"`
+		CreationKey string                          `json:"creation_key"`
+		Action      string                          `json:"action"`
+		ShipmentID  string                          `json:"shipment_id"`
+		Source      repository.CartonInboundSource  `json:"source"`
+		Items       []repository.CartonShipmentItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
-	out, err := h.supplierRepo.CreateCartonShipment(r.Context(), supplierID, body.Items)
+	if body.Action != "" {
+		if (body.Action != "dispatch" && body.Action != "cancel") || body.ShipmentID == "" {
+			http.Error(w, `{"error":"invalid shipment action"}`, 400)
+			return
+		}
+		if err := h.supplierRepo.ChangeCartonDispatch(r.Context(), supplierID, body.ShipmentID, body.Action == "cancel"); err != nil {
+			http.Error(w, `{"error":"inbound provenance or physical state conflict"}`, 409)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+	if strings.TrimSpace(body.CreationKey) == "" {
+		http.Error(w, `{"error":"creation_key is required"}`, http.StatusBadRequest)
+		return
+	}
+	out, err := h.supplierRepo.CreateCartonShipmentFromSource(r.Context(), supplierID, body.Items, body.Source, body.WarehouseID, body.CreationKey)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, repository.ErrCartonCreationConflict) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, `{"error":"creation_key belongs to a different shipment payload"}`, http.StatusConflict)
+			return
+		}
+		var state interface{ SQLState() string }
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+			(errors.As(err, &state) && (state.SQLState() == "40001" || state.SQLState() == "40P01" || state.SQLState() == "55P03")) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, `{"error":"shipment creation is busy; retry with the same creation_key"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, `{"error":"variant not found or not yours"}`, http.StatusNotFound)
 			return
 		}
@@ -1350,6 +1388,7 @@ func (h *SupplierHandlers) HandleUpdateVariantPhysical(w http.ResponseWriter, r 
 //   - S < P_central, the central-store resolved price at write time
 //   - saleFrom < saleTo when both set; saleTo strictly in the future
 //   - admin-locked variants (variant/product admin_set lock) => 409
+//
 // A sale may be set on an inactive variant (inert until activation).
 // Setting a sale needs no supplier_price_increases row: a sale is a
 // final-price DECREASE. If a later governed cost increase pushes R
@@ -1360,7 +1399,7 @@ func (h *SupplierHandlers) HandleUpdateVariantSale(w http.ResponseWriter, r *htt
 		return
 	}
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	if err := decodeMoneyJSON(r.Body, &raw, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1452,6 +1491,10 @@ func (h *SupplierHandlers) HandleUpdateVariantSale(w http.ResponseWriter, r *htt
 		central := domain.Store{ID: "store-central", Slug: "central", OwnerType: "central"}
 		prod := domain.Product{ID: productID, CategorySlug: categorySlug, SupplierBaseCost: costC}
 		centralRes := pricing.ResolveReferencePricingForStoreProductVariantWithCost(prod, costC, variantID, central, settings, nil, nil)
+		if centralRes.PricingError != "" {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 		refCost := centralRes.BaseCost
 		if *salePrice <= refCost {
 			http.Error(w, fmt.Sprintf(`{"error":"salePrice must be above the reference cost %d"}`, refCost), http.StatusBadRequest)
@@ -1505,7 +1548,7 @@ func (h *SupplierHandlers) HandleCreateProductVariant(w http.ResponseWriter, r *
 		VariantName      string            `json:"variant_name"`
 		Attributes       map[string]string `json:"attributes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1556,7 +1599,7 @@ func (h *SupplierHandlers) HandleCreateProductVariantsBulk(w http.ResponseWriter
 	var body struct {
 		Variants []json.RawMessage `json:"variants"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
@@ -1661,7 +1704,7 @@ func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *
 		Clear               bool   `json:"clear"`
 		Reason              string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -1859,7 +1902,7 @@ func (h *SupplierHandlers) HandleResubmitCatalogReview(w http.ResponseWriter, r 
 	var body struct {
 		Data map[string]interface{} `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}

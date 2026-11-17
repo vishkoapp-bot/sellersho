@@ -1,3 +1,4 @@
+import { financeOperation } from './financeOperation';
 import { apiRequest } from './apiClient';
 
 export interface LedgerEntryDto {
@@ -13,7 +14,16 @@ export interface LedgerEntryDto {
   createdAt: string;
 }
 
+export interface DisputeOutcome {
+ disputeId: string; orderId: string; action: string; responsibleParty: string;
+ claimAmount: number; decisionTime?: string; replay: boolean; orderStatus: string;
+ sellerReleaseState: 'awaiting_delivery'|'awaiting_window'|'held'|'eligible'|'released'|'needs_review';
+ holdReasons: string[]; refundScope: 'order';
+ refund: {status:'none'|'pending'|'succeeded'|'failed'|'unknown'; amountToman:number; pendingToman:number; succeededToman:number; failedToman:number; unknownToman:number; needsReview:boolean};
+}
+
 export interface DisputeDto {
+  outcome?: DisputeOutcome;
   id: string;
   orderNumber: string;
   type: 'return_7day' | 'delivery_undelivered';
@@ -57,6 +67,7 @@ export interface CreateAdjustmentResponse {
 export interface ResolveDisputePayload {
   action: string;
   responsibleParty: string;
+  claimAmount?: number;
 }
 
 export const financeApi = {
@@ -82,25 +93,21 @@ export const financeApi = {
     });
   },
 
-  resolveDispute: async (id: string, payload: ResolveDisputePayload): Promise<any> => {
-    return apiRequest<any>(`/disputes/${encodeURIComponent(id)}/resolve`, {
+  resolveDispute: async (id: string, payload: ResolveDisputePayload): Promise<DisputeOutcome> => {
+    const outcome = await apiRequest<DisputeOutcome>(`/disputes/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       auth: true,
       body: JSON.stringify(payload),
     });
+    if (!outcome || outcome.disputeId !== id || !outcome.orderId || !outcome.sellerReleaseState || outcome.refundScope !== 'order' || !outcome.refund) throw new Error('نتیجه حکم نامشخص است؛ فهرست را دوباره بارگذاری کنید.');
+    return outcome;
   },
 
-  // P0-3: POST /finance/adjustments. Success is HTTP 200 {success, docId}.
-  // There is no idempotency key: the backend ignores extra fields, so a
-  // repeated submit creates a second, distinct document. The UI's
-  // single-flight disable-while-submitting is the only duplicate guard.
-  createAdjustment: async (payload: CreateAdjustmentPayload): Promise<CreateAdjustmentResponse> => {
-    return apiRequest<CreateAdjustmentResponse>('/finance/adjustments', {
-      method: 'POST',
-      auth: true,
-      body: JSON.stringify(payload),
-    });
-  },
+  // Durable keyed adjustment; ambiguous responses retain the operation identity.
+  createAdjustment: async (payload: CreateAdjustmentPayload): Promise<CreateAdjustmentResponse> =>
+    financeOperation<CreateAdjustmentResponse>('/finance/adjustments', payload,
+      `${payload.targetKind}:${payload.targetId}:adjustment`,
+      value => value.success === true && typeof value.docId === 'string' && !!value.docId),
 
   getCashPosition: async (days = 30): Promise<CashPositionDto> => {
     return apiRequest<CashPositionDto>(`/finance/treasury/cash-position?days=${days}`, {

@@ -620,7 +620,7 @@ func notifyDisputeResolved(ctx context.Context, db *sql.DB, disputeID, orderID, 
 		if action == "release_to_seller" {
 			body = fmt.Sprintf("پرونده اختلاف سفارش %s بررسی شد و ادعای شما رد شد؛ مبلغی بازپرداخت نمی‌شود. طرف مسئول: %s.", o.OrderNumber, party)
 		} else if claimAmount > 0 {
-			body = fmt.Sprintf("پرونده اختلاف سفارش %s %s و بازپرداخت مبلغ %s ثبت شد. طرف مسئول: %s.", o.OrderNumber, verdict, formatToman(claimAmount), party)
+			body = fmt.Sprintf("پرونده اختلاف سفارش %s %s و درخواست بازپرداخت مبلغ %s ثبت شد. طرف مسئول: %s.", o.OrderNumber, verdict, formatToman(claimAmount), party)
 		}
 		notifyBestEffort(ctx, db, o.CustomerID, NotifKindDisputeResolved, fmt.Sprintf("نتیجه اختلاف سفارش %s", o.OrderNumber), body, payload, "dispute_resolved_customer")
 	}
@@ -666,7 +666,7 @@ func notifyRefundIssued(ctx context.Context, db *sql.DB, orderID, orderNumber, c
 	if walletCredit {
 		body = fmt.Sprintf("مبلغ %s بابت سفارش %s به کیف پول شما بازگشت.%s", formatToman(amount), orderNumber, extra)
 	} else {
-		body = fmt.Sprintf("بازپرداخت مبلغ %s بابت سفارش %s ثبت شد؛ وضعیت پرداخت سفارش به «بازپرداخت‌شده» تغییر کرد.%s", formatToman(amount), orderNumber, extra)
+		body = fmt.Sprintf("بازپرداخت مبلغ %s بابت سفارش %s ثبت شد؛ وضعیت اجرای استرداد را در جزئیات سفارش پیگیری کنید.%s", formatToman(amount), orderNumber, extra)
 	}
 	notifyBestEffort(ctx, db, customerID, NotifKindRefundIssued,
 		fmt.Sprintf("بازپرداخت سفارش %s", orderNumber), body, payload, "refund_issued")

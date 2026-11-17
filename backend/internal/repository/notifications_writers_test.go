@@ -19,7 +19,8 @@ import (
 )
 
 const notifyWritersDDL = `
-DROP TABLE IF EXISTS notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+DROP TABLE IF EXISTS refunds,order_item_origins, referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
+CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT,status TEXT,released_at TIMESTAMPTZ);
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	mobile VARCHAR(15) UNIQUE NOT NULL,
@@ -123,6 +124,7 @@ CREATE TABLE orders (
 	return_window_ends_at TIMESTAMPTZ,
 	seller_discount_amount BIGINT NOT NULL DEFAULT 0,
 	discount_code VARCHAR(50) DEFAULT '',
+ coupon_discount_amount BIGINT,
 	shipping_quote_id VARCHAR(100) DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -134,7 +136,7 @@ CREATE TABLE product_variants (
 	stock INT NOT NULL DEFAULT 0
 );
 CREATE TABLE customer_returns (
-	id VARCHAR(50) PRIMARY KEY,
+	id UUID PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
 	customer_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'requested',
@@ -175,8 +177,13 @@ CREATE TABLE supplier_shipments (
 	carrier VARCHAR(100) DEFAULT '',
 	tracking_number VARCHAR(100) DEFAULT '',
 	shipped_at TIMESTAMPTZ,
+	delivered_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE order_item_origins (
+	order_item_id VARCHAR(50),
+	supplier_id VARCHAR(50)
 );
 CREATE TABLE supplier_shipment_audit_logs (
 	id VARCHAR(50) PRIMARY KEY,
@@ -286,16 +293,15 @@ func notifyWritersTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("NOTIFY_WRITERS_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open test DB: %v", err)
-	}
+	db := openPrivateFinanceFixture(t, dsn)
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping test DB: %v", err)
 	}
+	removeEmptyRefundFixtureSchema(t, db)
 	if _, err := db.Exec(notifyWritersDDL); err != nil {
 		t.Fatalf("seed DDL: %v", err)
 	}
+	installRefundFixtureSchema(t, db)
 	t.Cleanup(func() { db.Close() })
 	return db
 }
@@ -448,6 +454,7 @@ func TestDisputeFiledAndResolvedNotify(t *testing.T) {
 	ctx := context.Background()
 	customerID, _, _, adminID, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "ord-4", "ORD-4", customerID, "shipped", "paid")
+	installFIN005PrivateFixture(t, db)
 	fin := NewFinanceRepository(db)
 	if err := fin.CreateDispute(ctx, DisputeForTest("disp-1", "ord-4", "ORD-4")); err != nil {
 		t.Fatalf("CreateDispute: %v", err)
@@ -456,7 +463,7 @@ func TestDisputeFiledAndResolvedNotify(t *testing.T) {
 	if len(kinds["dispute_filed"]) != 1 || kinds["dispute_filed"][0] != adminID {
 		t.Fatalf("dispute_filed = %v, want [admin %s]", kinds["dispute_filed"], adminID)
 	}
-	if err := fin.ResolveDispute(ctx, "disp-1", "release_to_seller", "supplier", "admin", 500000); err != nil {
+	if err := fin.ResolveDispute(ctx, "disp-1", "release_to_seller", "seller", "admin", 500000); err != nil {
 		t.Fatalf("ResolveDispute: %v", err)
 	}
 	kinds = outboxKinds(t, db)
@@ -693,6 +700,7 @@ func TestWarehouseCarrierFailedRepeatIsNoop(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, quantity) VALUES ('item-ord-wh', 'ord-wh', 'prod-1', 1)`); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
+	installFIN005PrivateFixture(t, db)
 	repo := NewOrderRepository(db)
 	order, err := repo.UpdateWarehouseOrderStatusFromCarrier(ctx, "TRK-WH1", "failed")
 	if err != nil || order == nil {
@@ -721,18 +729,18 @@ func TestReceiveCustomerReturnCODRefusedRepeatNotifiesOnce(t *testing.T) {
 	ctx := context.Background()
 	customerID, _, _, _, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "ord-9", "ORD-9", customerID, "delivered", "paid")
-	if _, err := db.Exec(`INSERT INTO customer_returns (id, order_id, customer_id, status, prepaid) VALUES ('ret-cod', 'ord-9', $1, 'approved', FALSE)`, customerID); err != nil {
+	if _, err := db.Exec(`INSERT INTO customer_returns (id, order_id, customer_id, status, prepaid) VALUES ('550e8400-e29b-41d4-a716-446655440000', 'ord-9', $1, 'approved', FALSE)`, customerID); err != nil {
 		t.Fatalf("seed return: %v", err)
 	}
 	repo := NewOrderRepository(db)
 	qc := []CustomerReturnItemQC{{ReturnItemID: "ri-1", QCStatus: "ok"}}
-	if _, err := repo.ReceiveCustomerReturn(ctx, "ret-cod", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
+	if _, err := repo.ReceiveCustomerReturn(ctx, "550e8400-e29b-41d4-a716-446655440000", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
 		t.Fatalf("first COD receive err = %v, want ErrReturnCODRefused", err)
 	}
 	if n := len(outboxKinds(t, db)["return_cod_refused"]); n != 1 {
 		t.Fatalf("return_cod_refused rows after first refusal = %d, want 1", n)
 	}
-	if _, err := repo.ReceiveCustomerReturn(ctx, "ret-cod", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
+	if _, err := repo.ReceiveCustomerReturn(ctx, "550e8400-e29b-41d4-a716-446655440000", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
 		t.Fatalf("second COD receive err = %v, want ErrReturnCODRefused again", err)
 	}
 	if n := len(outboxKinds(t, db)["return_cod_refused"]); n != 1 {
@@ -783,22 +791,27 @@ func TestApplyDisputeRefundEffectSingleClaimFigure(t *testing.T) {
 		t.Fatalf("seed dispute b: %v", err)
 	}
 	applied, err = repo.ApplyDisputeRefundEffect(ctx, "disp-10b")
-	if err != nil || !applied {
-		t.Fatalf("ApplyDisputeRefundEffect(b) = %v, %v, want true/nil", applied, err)
+	if applied || !errors.Is(err, ErrRefundPrincipalUnresolved) {
+		t.Fatalf("pending verdict pretended refund resolution %v %v", applied, err)
+	}
+	if _, err = db.Exec(`INSERT INTO payment_transactions(id,order_id,order_number,gateway_token,amount,status) VALUES('paytx-11','ord-11','ORD-11','tok-11',500000,'paid')`); err != nil {
+		t.Fatal(err)
+	}
+	installFIN005PrivateFixture(t, db)
+	if err = NewFinanceRepository(db).ResolveDispute(ctx, "disp-10b", "refund_carrier", "carrier", "test", 100000); err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxKinds(t, db)["refund_issued"]) != 0 {
+		t.Fatal("unexecuted original-source request asserted refund success")
 	}
 	var body string
-	if err := db.QueryRow(`SELECT body FROM notification_outbox WHERE kind = 'refund_issued'`).Scan(&body); err != nil {
-		t.Fatalf("no refund_issued row: %v", err)
+	if err = db.QueryRow(`SELECT body FROM notification_outbox WHERE kind='dispute_resolved' AND recipient_user_id=$1 ORDER BY created_at DESC LIMIT 1`, customerID).Scan(&body); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(body, "100,000") {
-		t.Fatalf("refund body = %q, want claim amount 100,000", body)
+	if !strings.Contains(body, "100,000") || strings.Contains(body, "500,000") {
+		t.Fatalf("verdict notice must quote exact claim: %s", body)
 	}
-	if strings.Contains(body, "500,000") {
-		t.Fatalf("refund body = %q, must not quote the full payable_amount", body)
-	}
-	if strings.Contains(body, "روش پرداخت اصلی") || strings.Contains(body, "چند روز کاری") {
-		t.Fatalf("refund body = %q, must not promise a PSP reversal (fix 2)", body)
-	}
+
 }
 
 // Critic fix 6: the dispute/payout queue is admins + the specialists

@@ -1,63 +1,48 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
-	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/drup/platform/internal/config"
+	"github.com/drup/platform/internal/migrations"
 	_ "github.com/lib/pq"
 )
 
 func main() {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		log.Fatalf("[FATAL] Configuration error: %v", err)
-	}
-	dbFlag := flag.String("db", cfg.DatabaseURL, "PostgreSQL connection string")
-	dirFlag := flag.String("dir", "migrations", "Path to migrations folder")
+	// Prefer environment credentials so they do not appear in process arguments.
+	dbFlag := flag.String("db", os.Getenv("DATABASE_URL"), "PostgreSQL connection string (prefer DATABASE_URL)")
+	dirFlag := flag.String("dir", "migrations", "Required migrations directory")
+	adopt := flag.Bool("adopt-legacy", false, "Explicitly adopt legacy history matching the pinned historical manifest")
+	timeout := flag.Duration("timeout", 10*time.Minute, "Overall migration deadline")
+	lockTimeout := flag.Duration("lock-timeout", 30*time.Second, "Singleton lock wait deadline")
+	migrationTimeout := flag.Duration("migration-timeout", 2*time.Minute, "Per-migration execution/DDL lock deadline")
 	flag.Parse()
-
+	if *dbFlag == "" {
+		log.Fatal("DATABASE_URL is required")
+	}
+	if *timeout <= 0 || *lockTimeout <= 0 || *migrationTimeout <= 0 {
+		log.Fatal("Migration timeouts must be positive")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
 	db, err := sql.Open("postgres", *dbFlag)
 	if err != nil {
-		log.Fatalf("Failed to open DB: %v", err)
+		log.Fatal("Failed to initialize migration database connection")
 	}
 	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		log.Fatalf("Failed to ping DB: %v", err)
+	if _, err := migrations.Run(ctx, db, migrations.Options{
+		Dir: *dirFlag, AdoptLegacy: *adopt, LockTimeout: *lockTimeout,
+		MigrationTimeout: *migrationTimeout, Logf: log.Printf,
+	}); err != nil {
+		log.Fatalf("Migration failed: %v", err)
 	}
-
-	entries, err := os.ReadDir(*dirFlag)
-	if err != nil {
-		log.Fatalf("Failed to read migrations directory: %v", err)
-	}
-
-	var upFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".up.sql") {
-			upFiles = append(upFiles, filepath.Join(*dirFlag, entry.Name()))
-		}
-	}
-	sort.Strings(upFiles)
-
-	for _, file := range upFiles {
-		content, err := os.ReadFile(file)
-		if err != nil {
-			log.Fatalf("Failed to read %s: %v", file, err)
-		}
-		log.Printf("Applying migration: %s", filepath.Base(file))
-		if _, err := db.Exec(string(content)); err != nil {
-			log.Printf("Notice on %s: %v (continuing)", filepath.Base(file), err)
-		} else {
-			log.Printf("Successfully applied: %s", filepath.Base(file))
-		}
-	}
-
-	fmt.Println("All migrations processed successfully.")
+	log.Println("Database schema verified and up-to-date")
 }

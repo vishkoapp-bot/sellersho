@@ -10,8 +10,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/google/uuid"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -22,19 +27,42 @@ func gap13QueueSetup(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("GAP13_TEST_DATABASE_URL not set; skipping disposable-DB gap13 queue test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping test DB: %v", err)
 	}
+	base := db
+	schema := "gap13_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := base.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); base.Close() })
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("search_path", schema+",public")
+		u.RawQuery = q.Encode()
+		dsn = u.String()
+	} else {
+		dsn += " search_path=" + schema + ",public"
+	}
+	db, err = testdb.Open(t, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
-		`DROP TABLE IF EXISTS order_item_origins, order_items, orders, products, warehouse_bins, supplier_shipping_methods, suppliers CASCADE`,
+		`CREATE TABLE product_variants(id UUID PRIMARY KEY,inventory_mode TEXT)`,
+		`CREATE TABLE order_inventory_captures(order_item_id TEXT PRIMARY KEY,allocations JSONB)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, supplier_id TEXT, fulfillment_method TEXT)`,
 		`CREATE TABLE orders (id TEXT PRIMARY KEY, order_number TEXT, store_name TEXT, customer_full_name TEXT, total_amount BIGINT NOT NULL DEFAULT 0, status TEXT, fulfillment_method TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), discount_amount BIGINT NOT NULL DEFAULT 0, shipping_cost BIGINT NOT NULL DEFAULT 0, payable_amount BIGINT NOT NULL DEFAULT 0, payment_status TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT, customer_address TEXT, customer_postal_code TEXT, tracking_code TEXT)`,
-		`CREATE TABLE order_items (id UUID PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT, final_unit_price BIGINT)`,
+		`CREATE TABLE order_items (id UUID PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT, final_unit_price BIGINT,variant_id UUID,variant_name TEXT,variant_spnc TEXT)`,
 		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id UUID, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT)`,
 		`CREATE TABLE warehouse_bins (bin_code TEXT, product_id TEXT, updated_at TIMESTAMPTZ)`,
 		`CREATE TABLE suppliers (id TEXT PRIMARY KEY, owner_user_id TEXT)`,

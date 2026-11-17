@@ -41,7 +41,7 @@ export const SellerSubscriptionTab: React.FC<{ onManageStores: () => void }> = (
   const maxStores = ownedStores.some((store) => store.activePlanId === 'vip') ? 10 : 1;
   const handlePurchase = async (planId: string) => {
     try {
-      const updated = await storeApi.purchaseService(currentStore.slug, planId);
+      const updated = await storeApi.purchaseService(currentStore.slug, planId, currentStore.id);
       success('اشتراک با موفقیت فعال شد.');
       window.location.reload();
       return updated;

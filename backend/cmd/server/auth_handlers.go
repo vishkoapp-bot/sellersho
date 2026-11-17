@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/drup/platform/internal/accesspolicy"
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
@@ -165,6 +167,15 @@ func handleSendOTP(w http.ResponseWriter, r *http.Request, ctx context.Context, 
 	mobile := phone.Normalize(req.Mobile)
 	code, err := otpService.GenerateAndStoreOTP(ctx, mobile)
 	if err != nil {
+		if errors.Is(err, dependencybudget.ErrOverloaded) || errors.Is(err, auth.ErrOTPStoreUnavailable) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "سرویس ورود موقتاً در دسترس نیست؛ کمی بعد تلاش کنید.", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, auth.ErrOTPDeliveryUnknown) {
+			http.Error(w, "نتیجه ارسال پیامک هنوز مشخص نیست؛ اگر کد را دریافت کرده‌اید از همان استفاده کنید و برای ارسال مجدد کمی صبر کنید.", http.StatusBadGateway)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "cooldown") || strings.Contains(err.Error(), "invalid") {
 			status = http.StatusTooManyRequests

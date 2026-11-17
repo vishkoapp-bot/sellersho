@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,15 @@ import (
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
 )
+
+func panelSourceFixture(t *testing.T, db *sql.DB, supplier string) string {
+	t.Helper()
+	id := "panel-source-" + uuid.NewString()[:16]
+	if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,$1,'Test','Test')`, id, supplier); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
 
 func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	db := setupTestPostgresDB(t)
@@ -39,6 +49,10 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	if err := repo.CreateDirectProduct(ctx, domain.Product{ID: productID, Slug: productID, Title: "Panel product", CategorySlug: "digital", SupplierID: supplier.ID, SupplierBaseCost: 1000, Stock: 10}); err != nil {
 		t.Fatal(err)
 	}
+	source := panelSourceFixture(t, db, supplier.ID)
+	if err := repo.UpdateProductOrigin(ctx, supplier.ID, productID, source); err != nil {
+		t.Fatal(err)
+	}
 	for name, action := range map[string]func() error{
 		"foreign stock":  func() error { return repo.UpdateProductStock(ctx, "foreign", productID, 99, "") },
 		"negative stock": func() error { return repo.UpdateProductStock(ctx, supplier.ID, productID, -1, "") },
@@ -52,7 +66,7 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 			}
 		})
 	}
-	if err := repo.UpdateProductStock(ctx, supplier.ID, productID, 0, ""); err != nil {
+	if err := repo.UpdateProductStock(ctx, supplier.ID, productID, 0, "Counted empty panel fixture"); err != nil {
 		t.Fatal(err)
 	}
 	var stock int
@@ -81,6 +95,14 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 		t.Fatal("empty inbound accepted")
 	}
 	inbound := map[string]interface{}{"items": []interface{}{map[string]interface{}{"product_id": productID, "quantity": float64(5), "carton_count": float64(1)}}}
+	destination := "panel-destination-" + suffix
+	if _, err := db.Exec(`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'Test','Test')`, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateProductStock(ctx, supplier.ID, productID, 5, "Prepare inbound fixture"); err != nil {
+		t.Fatal(err)
+	}
+	inbound["warehouseId"], inbound["supplierWarehouseId"] = destination, source
 	if _, err := repo.CreateInbound(ctx, "foreign", inbound); err == nil {
 		t.Fatal("foreign inbound accepted")
 	}
@@ -113,6 +135,69 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	report, err := repo.GetSalesReport(ctx, supplier.ID, "", "")
 	if err != nil || report.TotalRevenue != 0 {
 		t.Fatalf("empty report: %v %v", report, err)
+	}
+}
+
+func TestSupplierStockAggregateHTTPReturnsVerifiedQuantity(t *testing.T) {
+	db := setupTestPostgresDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	repo := repository.NewSupplierRepository(db)
+	suffix := uuid.NewString()[:8]
+	owner, supplier, err := repo.RegisterSupplier(ctx, "Stock test", "Owner", "stock-"+suffix, "TestStockPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
+	if err != nil {
+		t.Fatal(err)
+	}
+	product, warehouse := "stock-"+suffix, "stock-wh-"+suffix
+	if err = repo.CreateDirectProduct(ctx, domain.Product{ID: product, Slug: product, Title: "Stock product", CategorySlug: "digital", SupplierID: supplier.ID, SupplierBaseCost: 1000, Stock: 5}); err != nil {
+		t.Fatal(err)
+	}
+	source := panelSourceFixture(t, db, supplier.ID)
+	if err = repo.UpdateProductOrigin(ctx, supplier.ID, product, source); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		args []interface{}
+	}{
+		{`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'p','c')`, []interface{}{warehouse}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,supplier_warehouse_id) VALUES($1,$2,$3,'supplier','supplier',$4,'sellable',5,$5)`, []interface{}{uuid.NewString(), product, supplier.ID, "supplier-warehouse:" + source, source}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,$3,'supplier','warehouse',$4,'sellable',5,$5)`, []interface{}{uuid.NewString(), product, supplier.ID, "warehouse:" + warehouse, warehouse}},
+	} {
+		if _, err = db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := NewSupplierHandlers(repo, auth.NewJWTService("stock-fixture"), false)
+	request := func(payload string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/supplier/products/"+product+"/stock", strings.NewReader(payload))
+		contextWithSupplier := context.WithValue(r.Context(), supplierIDKey, supplier.ID)
+		r = r.WithContext(context.WithValue(contextWithSupplier, userClaimsKey, &auth.UserClaims{UserID: owner.ID}))
+		w := httptest.NewRecorder()
+		h.HandleUpdateStock(w, r)
+		return w
+	}
+	if w := request(`{"new_stock":10}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := request(`{"new_stock":4,"reason":"below held"}`); w.Code != http.StatusConflict {
+		t.Fatalf("below held status=%d body=%s", w.Code, w.Body.String())
+	}
+	w := request(`{"new_stock":8,"reason":"counted correction"}`)
+	var result struct {
+		Stock        int `json:"stock"`
+		ProductStock int `json:"productStock"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK || result.Stock != 8 || result.ProductStock != 8 {
+		t.Fatalf("verified response status=%d result=%+v err=%v", w.Code, result, err)
+	}
+	var local, held int
+	var actor string
+	if err = db.QueryRow(`SELECT SUM(quantity) FILTER(WHERE supplier_warehouse_id=$2),SUM(quantity) FILTER(WHERE warehouse_id=$3) FROM inventory_balances WHERE product_id=$1 AND status='sellable'`, product, source, warehouse).Scan(&local, &held); err != nil || local != 3 || held != 5 {
+		t.Fatalf("HTTP balances=%d/%d err=%v", local, held, err)
+	}
+	if err = db.QueryRow(`SELECT actor_user_id FROM inventory_movements WHERE product_id=$1 AND reference_type='legacy_stock_adjustment'`, product).Scan(&actor); err != nil || actor != owner.ID {
+		t.Fatal("HTTP stock actor missing")
 	}
 }
 
@@ -155,7 +240,23 @@ func TestSupplierProposalNotPublishedBeforeApproval(t *testing.T) {
 		_, _ = db.Exec(`DELETE FROM users WHERE id=$1`, owner.ID)
 	})
 	h := NewSupplierHandlers(repo, auth.NewJWTService("panel-test"), false)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/products/propose", strings.NewReader(`{"title":"Pending product","categorySlug":"digital","supplierBaseCost":1000,"stock":10,"weightGrams":500,"lengthMm":100,"widthMm":100,"heightMm":100,"fulfillmentMethod":"supplier_direct"}`))
+	source := panelSourceFixture(t, db, supplier.ID)
+	niche := "niche-panel-" + suffix
+	if _, err := db.Exec(`INSERT INTO niches(id,title,slug,category_slug) VALUES($1,'Panel fixture niche',$1,'digital')`, niche); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]interface{}{
+		"title": "Pending product", "categorySlug": "digital", "supplierBaseCost": 1000, "stock": 10,
+		"schemaVersion": 2, "productType": "simple", "nicheIds": []string{niche},
+		"productSchema":       map[string]interface{}{"version": 2, "type": "simple", "attributes": []interface{}{}},
+		"variants":            []interface{}{map[string]interface{}{"id": uuid.NewString(), "selection": map[string]interface{}{}, "stock": 10, "supplier_base_cost": 1000, "is_active": true}},
+		"supplierWarehouseId": source, "weightGrams": 500, "lengthMm": 100, "widthMm": 100, "heightMm": 100, "fulfillmentMethod": "supplier_direct",
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/supplier/products/propose", strings.NewReader(string(raw)))
 	req = req.WithContext(context.WithValue(req.Context(), supplierIDKey, supplier.ID))
 	w := httptest.NewRecorder()
 	h.HandleProposeProduct(w, req)
@@ -170,17 +271,39 @@ func TestSupplierProposalNotPublishedBeforeApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE id=$1`, response.ProductID).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE supplier_id=$1`, supplier.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("proposal published early: %d %v", count, err)
 	}
-	if _, err := repo.ApproveProposal(ctx, response.ProposalID, ""); err != nil {
+	if _, err := repo.ApproveProposal(ctx, response.ProposalID, ""); err == nil {
+		t.Fatal("unreviewed product was published")
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE supplier_id=$1`, supplier.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatal("unreviewed approval left a partial publication", err)
+	}
+	var stored []byte
+	if err := db.QueryRow(`SELECT requested_data FROM pending_approvals WHERE id=$1`, response.ProposalID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE id=$1 AND supplier_id=$2`, response.ProductID, supplier.ID).Scan(&count); err != nil || count != 1 {
+	var reviewData map[string]interface{}
+	if err := json.Unmarshal(stored, &reviewData); err != nil {
+		t.Fatal(err)
+	}
+	var decisions []repository.FieldDecision
+	for key, value := range repository.ReviewLeaves(reviewData) {
+		decisions = append(decisions, repository.FieldDecision{Key: key, Decision: "approved", ValueHash: repository.ReviewValueHash(value)})
+	}
+	if err := repo.SaveFieldReview(ctx, response.ProposalID, "test-admin", decisions); err != nil {
+		t.Fatal(err)
+	}
+	productID, err := repo.ApproveProposal(ctx, response.ProposalID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE id=$1 AND supplier_id=$2`, productID, supplier.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("approval did not publish: %d %v", count, err)
 	}
 	var fulfillment string
-	if err := db.QueryRow(`SELECT fulfillment_method FROM products WHERE id=$1`, response.ProductID).Scan(&fulfillment); err != nil {
+	if err := db.QueryRow(`SELECT fulfillment_method FROM products WHERE id=$1`, productID).Scan(&fulfillment); err != nil {
 		t.Fatal(err)
 	}
 	if fulfillment != "supplier_direct" {

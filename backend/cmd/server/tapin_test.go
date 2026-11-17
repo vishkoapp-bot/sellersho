@@ -22,6 +22,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 
@@ -151,7 +153,7 @@ func tapinTestSetup(t *testing.T) *tapinRepos {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB tapin test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -186,7 +188,7 @@ func tapinTestSetup(t *testing.T) *tapinRepos {
 		`INSERT INTO tapin_geo_snapshots (kind, payload) VALUES ('tree', '[{"code":1,"title":"تهران","cities":[{"code":1,"title":"تهران"},{"code":5,"title":"ری"}]},{"code":26,"title":"قم","cities":[{"code":170,"title":"قم"}]}]'::jsonb)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -234,6 +236,17 @@ func tapinTestSetup(t *testing.T) *tapinRepos {
 			t.Fatalf("DDL/seed failed: %v\n%s", err, q)
 		}
 	}
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES('11111111-1111-1111-1111-111111111111','09120000000','checkout test') ON CONFLICT(id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	prepareShippingInventoryFixture(t, db)
+	if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name,tapin_province_id,tapin_city_id) VALUES('swh-plain','sup-plain','انبار تأمین‌کننده','تهران','تهران',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	seedShippingInventoryFixtureLot(t, db, "p-tapin", "sup-tapin", "", "swh-tapin", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-heavy", "sup-tapin", "", "swh-tapin", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-plain", "sup-plain", "", "swh-plain", 10)
+	seedShippingInventoryFixtureLot(t, db, "p-central", "sup-plain", "wh-central", "", 10)
 	return &tapinRepos{
 		db:           db,
 		orderRepo:    repository.NewOrderRepository(db),
@@ -447,6 +460,10 @@ func TestTapinQuoteServiceNotActivatedFallsBackToFormula(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve lines: %v", err)
 	}
+	lines, err = resolveQuoteOrigins(ctx, rp.db, lines)
+	if err != nil {
+		t.Fatal("resolve exact formula origins", err)
+	}
 	rates, err := loadShippingRates(ctx, rp.db)
 	if err != nil {
 		t.Fatalf("load rates: %v", err)
@@ -489,6 +506,10 @@ func TestTapinQuoteUnconnectedLegKeepsFormula(t *testing.T) {
 	lines, err := resolveQuoteLines(ctx, rp.catalogRepo, rp.supplierRepo, []shippingQuoteItemReq{{ProductID: "p-plain", Quantity: 1}})
 	if err != nil {
 		t.Fatalf("resolve lines: %v", err)
+	}
+	lines, err = resolveQuoteOrigins(ctx, rp.db, lines)
+	if err != nil {
+		t.Fatal("resolve exact formula origins", err)
 	}
 	rates, err := loadShippingRates(ctx, rp.db)
 	if err != nil {
@@ -562,6 +583,9 @@ func tapinSeedOrder(t *testing.T, rp *tapinRepos, orderID, itemProductID string,
 		if _, err := rp.db.Exec(q); err != nil {
 			t.Fatalf("seed order: %v\n%s", err, q)
 		}
+	}
+	if _, err := rp.db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,supplier_warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'supplier','sup-tapin','swh-tapin','انبار تأمین‌کننده',$4)`, "origin-"+orderID, orderID, "oi-"+orderID, qty); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -677,6 +701,9 @@ func TestTapinRegistrationUnknownOutcomeLocksRetry(t *testing.T) {
 	out := submitShippingViaTapin(context.Background(), "sup-tapin", "ord-t4", "tipax", "", "actor-1", rp.shipmentRepo, rp.orderRepo, rp.tapinRepo)
 	if out.Status != http.StatusBadGateway {
 		t.Fatalf("outcome status = %d, want 502 (%v)", out.Status, out.Body)
+	}
+	if out.Body["outcome"] != "unknown" || out.Body["retryable"] != false {
+		t.Fatal("uncertain registration must not instruct another send", out.Body)
 	}
 	_, _, _, _, _, _, attempted := tapinShipmentRow(t, rp, "ord-t4")
 	if !attempted.Valid {

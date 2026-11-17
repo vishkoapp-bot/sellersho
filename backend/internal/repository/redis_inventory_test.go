@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testredis"
 )
 
 func TestInventoryHoldWindow(t *testing.T) {
-	client, err := NewRedisClient("redis://:drup_redis_pass_2026@localhost:6379/0")
-	if err != nil {
-		t.Skipf("Redis integration test unavailable: %v", err)
-	}
+	client := &RedisClient{Client: testredis.Open(t, os.Getenv("SELLERSHO_TEST_REDIS_URL"), os.Getenv("SELLERSHO_TEST_REDIS_TOKEN"))}
 
 	ctx := context.Background()
 	productID := fmt.Sprintf("test-product-%d", time.Now().UnixNano())
@@ -44,10 +44,7 @@ func TestInventoryHoldWindow(t *testing.T) {
 }
 
 func TestConcurrentInventoryHoldsCannotOversell(t *testing.T) {
-	client, err := NewRedisClient("redis://:drup_redis_pass_2026@localhost:6379/0")
-	if err != nil {
-		t.Skipf("Redis integration test unavailable: %v", err)
-	}
+	client := &RedisClient{Client: testredis.Open(t, os.Getenv("SELLERSHO_TEST_REDIS_URL"), os.Getenv("SELLERSHO_TEST_REDIS_TOKEN"))}
 	ctx := context.Background()
 	productID := fmt.Sprintf("last-unit-%d", time.Now().UnixNano())
 	orderIDs := []string{fmt.Sprintf("last-unit-a-%d", time.Now().UnixNano()), fmt.Sprintf("last-unit-b-%d", time.Now().UnixNano())}

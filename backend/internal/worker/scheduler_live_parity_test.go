@@ -1,10 +1,13 @@
 package worker
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -13,8 +16,7 @@ import (
 // for the live staged profit release (MASTER-AUDIT D34). It is
 // skipped during normal unit test runs unless
 // TEAM09_WORKER_DATABASE_URL points at a DISPOSABLE database: it
-// creates and drops its own minimal orders/job_runs tables and must
-// never run against a live or shared database.
+// uses the canonical migrated orders/job_runs schema in its guarded database.
 //
 // Expected staged behaviour under test:
 //   - shipped/delivered_unconfirmed older than 20 days -> confirmed
@@ -30,7 +32,7 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("TEAM09_WORKER_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := testdb.Open(t, databaseURL)
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
@@ -39,62 +41,41 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 
-	// Minimal schema: only the columns the worker touches. This is a
-	// test fixture, not the migration-chain orders table.
-	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS job_runs`,
-		`DROP TABLE IF EXISTS orders`,
-		`CREATE TABLE orders (
-			id BIGSERIAL PRIMARY KEY,
-			status TEXT NOT NULL,
-			shipped_at TIMESTAMPTZ,
-			confirmed_at TIMESTAMPTZ,
-			profit_released BOOLEAN NOT NULL DEFAULT FALSE,
-			profit_released_at TIMESTAMPTZ,
-			referral_commission_released BOOLEAN NOT NULL DEFAULT FALSE,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			return_window_ends_at TIMESTAMPTZ
-		)`,
-		`CREATE TABLE job_runs (
-			id BIGSERIAL PRIMARY KEY,
-			job_id TEXT NOT NULL,
-			started_at TIMESTAMPTZ NOT NULL,
-			released BIGINT NOT NULL DEFAULT 0,
-			confirmed BIGINT NOT NULL DEFAULT 0,
-			duration_ms BIGINT NOT NULL DEFAULT 0,
-			error TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("fixture schema: %v", err)
-		}
+	var initialJobCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs`).Scan(&initialJobCount); err != nil {
+		t.Fatal(err)
 	}
-	defer func() {
-		_, _ = db.Exec(`DROP TABLE IF EXISTS job_runs`)
-		_, _ = db.Exec(`DROP TABLE IF EXISTS orders`)
-	}()
+	customer := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role,is_active) VALUES($1,$2,'Worker fixture customer','customer',TRUE)`, customer, "09"+time.Now().Format("150405000")); err != nil {
+		t.Fatal(err)
+	}
 
+	store := "worker-store-" + uuid.NewString()[:12]
+	if _, err := db.Exec(`INSERT INTO stores(id,name,slug,owner_name,owner_user_id,owner_type) VALUES($1,'Worker fixture',$1,'Worker fixture',$2,'dropshipper')`, store, customer); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	seed := []struct {
-		name   string
-		status string
-		ship   *time.Time
-		window *time.Time
+		name      string
+		status    string
+		ship      *time.Time
+		confirmed *time.Time
+		window    *time.Time
 	}{
-		{"confirm-only", "shipped", timePtr(now.AddDate(0, 0, -21)), nil},
-		{"release-closed-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.Add(-time.Hour))},
-		{"open-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.Add(24 * time.Hour))},
-		{"null-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), nil},
-		{"recent-shipment", "shipped", timePtr(now.Add(-24 * time.Hour)), nil},
+		{"confirm-only", "shipped", timePtr(now.AddDate(0, 0, -21)), nil, nil},
+		{"release-closed-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -8)), timePtr(now.Add(-time.Hour))},
+		{"open-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -6)), timePtr(now.Add(24 * time.Hour))},
+		{"null-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -7)), nil},
+		{"recent-shipment", "shipped", timePtr(now.Add(-24 * time.Hour)), nil, nil},
 	}
-	ids := map[string]int64{}
+	ids := map[string]string{}
 	for _, s := range seed {
-		var id int64
-		err := db.QueryRow(
-			`INSERT INTO orders (status, shipped_at, return_window_ends_at) VALUES ($1, $2, $3) RETURNING id`,
-			s.status, s.ship, s.window,
-		).Scan(&id)
+		id := "worker-" + uuid.NewString()[:20]
+		_, err := db.Exec(
+			`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,customer_user_id,status,shipped_at,confirmed_at,return_window_ends_at,dropshipper_profit,payment_status)
+			VALUES($1,$1,$3,'Worker fixture',20000,20000,'Worker customer','09123456789','Test','Test','Test','1234512345',$1,$2,$4,$5,$6,$7,7000,'paid')`,
+			id, customer, store, s.status, s.ship, s.confirmed, s.window,
+		)
 		if err != nil {
 			t.Fatalf("seed %s: %v", s.name, err)
 		}
@@ -132,6 +113,22 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 	check("null-window", "delivered_confirmed", false)
 	check("recent-shipment", "shipped", false)
 
+	// The closed recorded window releases exactly the captured7000 once;
+	// pre-existing confirmation/window facts must survive the cycle verbatim.
+	for _, s := range seed {
+		if s.status != "delivered_confirmed" {
+			continue
+		}
+		var preserved bool
+		if err := db.QueryRow(`SELECT confirmed_at IS NOT DISTINCT FROM $2::timestamptz AND return_window_ends_at IS NOT DISTINCT FROM $3::timestamptz FROM orders WHERE id=$1`, ids[s.name], s.confirmed, s.window).Scan(&preserved); err != nil || !preserved {
+			t.Fatalf("%s recorded facts rewritten %v %v", s.name, preserved, err)
+		}
+	}
+	var pairs int
+	var credit, debit int64
+	if err := db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(amount) FILTER(WHERE type='credit'),0),COALESCE(SUM(amount) FILTER(WHERE type='debit'),0) FROM ledger_entries WHERE related_order_or_dispute=$1 AND operator='system:delivery-lock-releaser'`, ids["release-closed-window"]).Scan(&pairs, &credit, &debit); err != nil || pairs != 2 || credit != 7000 || debit != 7000 {
+		t.Fatalf("captured release pair count=%d credit=%d debit=%d %v", pairs, credit, debit, err)
+	}
 	var jobID string
 	var jobReleased, jobConfirmed int64
 	var jobErr string
@@ -148,8 +145,8 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 	// The hourly search rollup (TODO U73) must write nothing.
 	w.runSearchRollup()
 	var jobCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs`).Scan(&jobCount); err != nil || jobCount != 1 {
-		t.Errorf("job_runs count after rollup = %d (err %v), want 1", jobCount, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs`).Scan(&jobCount); err != nil || jobCount != initialJobCount+1 {
+		t.Errorf("job_runs count after rollup = %d (err %v), want %d", jobCount, err, initialJobCount+1)
 	}
 }
 

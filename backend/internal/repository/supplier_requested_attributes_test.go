@@ -2,9 +2,10 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 )
 
 func TestRequestedAttributesPublishAtomically(t *testing.T) {
@@ -12,15 +13,11 @@ func TestRequestedAttributesPublishAtomically(t *testing.T) {
 	if dsn == "" {
 		t.Skip("isolated supplier database required")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var name string
-	if err = db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil || name != "supplier_flow_test" {
-		t.Fatal("refusing non-test database")
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)

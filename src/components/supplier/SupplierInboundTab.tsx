@@ -54,6 +54,8 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
   const products = useSupplierResource(supplierApi.getProducts);
   const inbounds = useSupplierResource(supplierApi.getInbounds);
   const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
+  const sourceWarehouses = useSupplierResource(supplierApi.getMyWarehouses);
+  const [sourceId, setSourceId] = useState('');
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
   const [cartons, setCartons] = useState('');
@@ -81,11 +83,12 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
     const units = Number(quantity);
     const cartonCount = Number(cartons);
     if (!productId || !Number.isSafeInteger(units) || units < 1 || !Number.isSafeInteger(cartonCount) || cartonCount < 1 || !carrier.trim()) { error('کالا را انتخاب کن و تعداد، کارتن و نام حامل را کامل وارد کن.'); return; }
+    if (!sourceId) { error('انبار مبدأ را انتخاب کن.'); return; }
     if (!warehouseId) { error('انبار مرکزی مقصد را انتخاب کن.'); return; }
     if (!dispatchAt.trim()) { error('زمان اعزام را وارد کن.'); return; }
     setSaving(true);
     try {
-      await supplierApi.createInbound({ items: [{ product_id: productId, quantity: units, carton_count: cartonCount }], carrier: carrier.trim(), vehicle_plate: plate.trim(), warehouseId, dispatchAt: dispatchAt.trim() });
+      await supplierApi.createInbound({ sourceKind: 'transfer', supplierWarehouseId: sourceId, items: [{ product_id: productId, quantity: units, carton_count: cartonCount }], carrier: carrier.trim(), vehicle_plate: plate.trim(), warehouseId, dispatchAt: dispatchAt.trim() });
       success('بار در سامانه ثبت شد.');
       setQuantity('');
       setCartons('');
@@ -119,6 +122,9 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
             <input required min="1" step="1" type="text" inputMode="numeric" value={formatNumber(quantity, toPersianDigits)} onChange={event => setQuantity(parseDigits(event.target.value))} placeholder="چند عدد کالا؟" className="rounded-xl border p-2.5 min-h-[44px] text-xs" />
             <input required min="1" step="1" type="text" inputMode="numeric" value={formatNumber(cartons, toPersianDigits)} onChange={event => setCartons(parseDigits(event.target.value))} placeholder="چند کارتن؟" className="rounded-xl border p-2.5 min-h-[44px] text-xs" />
           </div>
+          <label className="block text-xs">انبار مبدأ انتقال
+            <select required value={sourceId} onChange={e => setSourceId(e.target.value)} className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>
+          </label>
           <label className="block text-[11px] font-bold text-slate-600">انبار مرکزی مقصد
             <select required value={warehouseId} onChange={event => setWarehouseId(event.target.value)} disabled={!hasWarehouses} className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs">
               <option value="">انتخاب انبار مرکزی</option>

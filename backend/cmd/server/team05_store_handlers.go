@@ -83,27 +83,27 @@ type team05PublicStore struct {
 	// selectedNicheIds, activeCategories, sellerDealsWidgetConfig).
 	// The 3 FIX3 presentation-only keys are not live keys; they stay at
 	// the end so the live base order is byte-identical.
-	ID                      string          `json:"id"`
-	Slug                    string          `json:"slug"`
-	Name                    string          `json:"name"`
-	Tagline                 string          `json:"tagline"`
-	Description             string          `json:"description"`
-	ShortDescription        string          `json:"shortDescription"`
-	Status                  string          `json:"status"`
-	OwnerType               string          `json:"ownerType"`
-	ActiveProductIDs        []string        `json:"activeProductIds"`
-	SelectedNicheIDs        []string        `json:"selectedNicheIds"`
-	ActiveCategories        []string        `json:"activeCategories"`
-	SellerDealsWidgetConfig json.RawMessage `json:"sellerDealsWidgetConfig"`
-	TemplateID              string          `json:"templateId"`
-	TemplateConfig          json.RawMessage `json:"templateConfig"`
-	Logo                    string          `json:"logo"`
+	ID                      string                      `json:"id"`
+	Slug                    string                      `json:"slug"`
+	Name                    string                      `json:"name"`
+	Tagline                 string                      `json:"tagline"`
+	Description             string                      `json:"description"`
+	ShortDescription        string                      `json:"shortDescription"`
+	Status                  string                      `json:"status"`
+	OwnerType               string                      `json:"ownerType"`
+	ActiveProductIDs        []string                    `json:"activeProductIds"`
+	SelectedNicheIDs        []string                    `json:"selectedNicheIds"`
+	ActiveCategories        []string                    `json:"activeCategories"`
+	SellerDealsWidgetConfig json.RawMessage             `json:"sellerDealsWidgetConfig"`
+	TemplateID              string                      `json:"templateId"`
+	TemplateConfig          json.RawMessage             `json:"templateConfig"`
+	Logo                    string                      `json:"logo"`
 	BuilderWidgets          *team05PublicBuilderWidgets `json:"builderWidgets,omitempty"`
 	// F1: the central-deals filter pair — presentation data the
 	// public storefront deals slider consumes; omitted while
 	// unset (unset == the default niche mode downstream).
-	CentralDealsFilter      string          `json:"centralDealsFilter,omitempty"`
-	CentralDealsProductIDs  []string        `json:"centralDealsProductIds,omitempty"`
+	CentralDealsFilter     string   `json:"centralDealsFilter,omitempty"`
+	CentralDealsProductIDs []string `json:"centralDealsProductIds,omitempty"`
 }
 
 // team05PublicBuilderWidgets is the widgets-only subset of
@@ -340,7 +340,7 @@ func handleTeam05StoreDiscountCampaigns(w http.ResponseWriter, r *http.Request, 
 			EndsAt   time.Time `json:"endsAt"`
 			IsActive bool      `json:"isActive"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+		if decodeMoneyJSON(r.Body, &payload) != nil {
 			http.Error(w, `{"error":"Invalid request"}`, http.StatusBadRequest)
 			return
 		}
@@ -380,7 +380,7 @@ func handleTeam05StoreDiscountCampaigns(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		var payload domain.SellerDiscountCampaignPatch
-		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+		if decodeMoneyJSON(r.Body, &payload) != nil {
 			http.Error(w, `{"error":"Invalid request"}`, http.StatusBadRequest)
 			return
 		}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/drup/platform/internal/jobrunner"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -25,17 +26,21 @@ func (w *BackgroundWorker) RunMonthlySettlementIfDue() {
 	if w.db == nil || w.finRepo == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cycle, err := w.finRepo.RunMonthlySettlement(ctx, time.Now(), "background-worker")
-	if err != nil {
-		if errors.Is(err, repository.ErrSettlementNotConfigured) {
-			return
-		}
-		log.Printf("[WARN] Monthly settlement sweep failed: %v", err)
-		return
+	if _, err := w.runner().Run(context.Background(), "monthly-settlement"); err != nil && !errors.Is(err, jobrunner.ErrBusy) && !errors.Is(err, jobrunner.ErrStopped) {
+		log.Print("[WARN] Monthly settlement sweep failed")
 	}
-	if cycle != nil {
-		log.Printf("[INFO] Monthly settlement completed for %s: %d stores swept, %d skipped (no Sheba), gross %d", cycle.Period, cycle.TotalStores, cycle.SkippedStores, cycle.TotalGross)
+}
+
+func (w *BackgroundWorker) monthlySettlement(ctx context.Context) (jobrunner.Result, error) {
+	if w.finRepo == nil {
+		return jobrunner.Result{}, errors.New("finance repository unavailable")
 	}
+	_, err := w.finRepo.RunMonthlySettlement(ctx, time.Now(), "background-worker")
+	if errors.Is(err, repository.ErrSettlementNotConfigured) {
+		return jobrunner.Result{Disabled: true}, nil
+	}
+	// The repository returns a cumulative cycle snapshot, not this attempt's
+	// count. Keep financial totals in its existing settlement panel; never sum
+	// the same cumulative count on every scheduler tick.
+	return jobrunner.Result{}, err
 }

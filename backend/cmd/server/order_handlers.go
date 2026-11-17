@@ -173,6 +173,7 @@ func handleCreateOrder(
 		o.CustomerPostalCode = maskedCustomer.PostalCode
 		resp := map[string]interface{}{
 			"id":                         o.ID,
+			"checkoutReplayed":           status == http.StatusOK,
 			"orderId":                    o.ID,
 			"order_id":                   o.ID,
 			"orderNumber":                o.OrderNumber,
@@ -210,6 +211,18 @@ func handleCreateOrder(
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(resp)
 	}
+	fingerprint := normalizeCheckoutRequest(&req)
+	if req.IdempotencyKey != "" {
+		attempt, err := orderRepo.BeginCheckoutAttempt(ctx, claims.UserID, req.IdempotencyKey, fingerprint)
+		if err != nil {
+			writeCheckoutError(w, err)
+			return
+		}
+		if attempt.Order != nil {
+			respondOrder(*attempt.Order, http.StatusOK)
+			return
+		}
+	}
 	// Authenticated identity is authoritative; delivery recipient details remain request data.
 	req.CustomerInfo.Phone = claims.Mobile
 	// FIX 14: addressId loads a saved address (user_addresses) into the
@@ -246,21 +259,6 @@ func handleCreateOrder(
 		http.Error(w, `{"error":"Wallet payment is not available"}`, http.StatusBadRequest)
 		return
 	}
-	// FIX 14: idempotency replay -- the same customer + key returns the
-	// original order instead of creating a duplicate. (No unique DB
-	// constraint is added here; concurrent same-key races are flagged
-	// in the Fix 14 report, same class as the settlement race.)
-	if strings.TrimSpace(req.IdempotencyKey) != "" {
-		var existingID string
-		if err := db.QueryRowContext(ctx,
-			`SELECT id FROM orders WHERE customer_user_id = $1 AND idempotency_key = $2`,
-			claims.UserID, req.IdempotencyKey).Scan(&existingID); err == nil && existingID != "" {
-			if existing, err := orderRepo.GetOrderByID(ctx, existingID); err == nil && existing != nil {
-				respondOrder(*existing, http.StatusOK)
-				return
-			}
-		}
-	}
 
 	if len(req.Items) == 0 || req.CustomerInfo.FullName == "" || req.CustomerInfo.Phone == "" {
 		http.Error(w, `{"error":"Missing required order information"}`, http.StatusBadRequest)
@@ -290,6 +288,7 @@ func handleCreateOrder(
 	// 400 here, never silently charging the full price. The use is
 	// consumed only after the order persists (below).
 	var sellerDiscountTotal int64 = 0
+	var couponDiscountTotal int64
 	// Fix69 follow-up (W-MONEY M2 residual): true once the validated
 	// code actually survives the admin margin lock on at least one
 	// line (see the per-line check below). A code dropped by the
@@ -302,6 +301,10 @@ func handleCreateOrder(
 	if req.DiscountCode != "" {
 		c, err := storeRepo.ValidateDiscountCode(ctx, store.ID, req.DiscountCode)
 		if err != nil {
+			if errors.Is(err, repository.ErrCouponExhausted) {
+				writeCheckoutError(w, err)
+				return
+			}
 			http.Error(w, `{"error":"Discount code is invalid or expired"}`, http.StatusBadRequest)
 			return
 		}
@@ -515,6 +518,10 @@ func handleCreateOrder(
 		} else {
 			res = pricing.ResolveReferencePricing(*p, *store, settings, locks)
 		}
+		if res.PricingError != "" {
+			http.Error(w, `{"error":"Product pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 		// The timed-deals widget discount (margin percentage points
 		// from the store's widget config) is the first discount
 		// layer: it is the advertised campaign price, so it is what
@@ -542,26 +549,36 @@ func handleCreateOrder(
 		// logic duplicated here. The lock is scoped per
 		// product/niche, so the code counts as applied if it
 		// survived on ANY line.
-		if discounted.Code != "" {
+		if discounted.Code != "" && discounted.CodeDiscountAmount > 0 {
 			discountCodeApplied = true
 		}
-		sellerDiscountTotal += discounted.DiscountAmount * int64(qty)
+		if err := pricing.AccumulateMoney(&couponDiscountTotal, discounted.CodeDiscountAmount, int64(qty)); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, 400)
+			return
+		}
+		if err := pricing.AccumulateMoney(&sellerDiscountTotal, discounted.DiscountAmount, int64(qty)); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 		res = discounted.Resolution
 		// TODO U14: order-path split unverified in live; see function doc.
 		split := pricing.ReferenceProfitSplit(res, store.OwnerType != "dropshipper")
 
-		lineItemSellingPrice := res.FinalPrice * int64(qty)
-		lineItemPlatformFee := split.PlatformFeeAmount * int64(qty)
-		lineItemSellerMargin := split.DropshipperMargin * int64(qty)
-
-		totalAmount += res.OriginalPrice * int64(qty)
-		payableAmount += lineItemSellingPrice
-
-		if store.OwnerType == "dropshipper" {
-			dropshipperProfit += lineItemSellerMargin
-			platformProfit += lineItemPlatformFee
-		} else {
-			platformProfit += split.PlatformTotal * int64(qty)
+		// Validate every aggregate before snapshotting or reserving inventory.
+		lineItemSellingPrice, e1 := pricing.CheckedMultiply(res.FinalPrice, int64(qty))
+		lineItemPlatformFee, e2 := pricing.CheckedMultiply(split.PlatformFeeAmount, int64(qty))
+		lineItemSellerMargin, e3 := pricing.CheckedMultiply(split.DropshipperMargin, int64(qty))
+		e4 := pricing.AccumulateMoney(&totalAmount, res.OriginalPrice, int64(qty))
+		e5 := pricing.AccumulateMoney(&payableAmount, lineItemSellingPrice, 1)
+		e6 := pricing.AccumulateMoney(&dropshipperProfit, lineItemSellerMargin, 1)
+		platformUnit := lineItemPlatformFee
+		if store.OwnerType != "dropshipper" {
+			platformUnit, e2 = pricing.CheckedMultiply(split.PlatformTotal, int64(qty))
+		}
+		e7 := pricing.AccumulateMoney(&platformProfit, platformUnit, 1)
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil || e6 != nil || e7 != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
 		}
 
 		// Fix69 M1: the variant snapshot travels to the order line
@@ -584,17 +601,18 @@ func handleCreateOrder(
 			originLabel = "ارسال مستقیم تأمین‌کننده"
 		}
 		item := domain.OrderItem{
-			ProductID:      p.ID,
-			ProductTitle:   p.Title,
-			Quantity:       qty,
-			WholesaleCost:  res.WholesaleCost,
-			PlatformFee:    res.PlatformFee,
-			SellerMargin:   res.SellerMargin,
-			FinalUnitPrice: res.FinalPrice,
-			DiscountAmount: discounted.DiscountAmount,
-			Routing:        itemRouting,
-			OriginLabel:    originLabel,
-			SupplierID:     p.SupplierID,
+			PricingPolicyVersion: res.MoneyPolicyVersion,
+			ProductID:            p.ID,
+			ProductTitle:         p.Title,
+			Quantity:             qty,
+			WholesaleCost:        res.WholesaleCost,
+			PlatformFee:          res.PlatformFee,
+			SellerMargin:         res.SellerMargin,
+			FinalUnitPrice:       res.FinalPrice,
+			DiscountAmount:       discounted.DiscountAmount,
+			Routing:              itemRouting,
+			OriginLabel:          originLabel,
+			SupplierID:           p.SupplierID,
 		}
 		// ISO-PURCHASE: resolve addonIds against product_addons
 		// (active + approved only) AND scoped to this (store, product),
@@ -668,19 +686,33 @@ func handleCreateOrder(
 					found[aid] = true
 					var fee int64
 					if mode == "percent" {
-						fee = int64(float64(res.FinalPrice) * priceVal / 100.0)
+						fee, err = pricing.TruncatedPercent(res.FinalPrice, priceVal)
 					} else {
-						fee = int64(priceVal)
+						fee, err = pricing.MoneyFromNumber(priceVal)
+					}
+					if err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Addon pricing is unavailable"}`, http.StatusConflict)
+						return
 					}
 					if cap > 0 && fee > cap {
 						fee = cap
 					}
 					if owner == "supplier" {
-						supplierAddonTotal += fee * int64(qty)
+						err = pricing.AccumulateMoney(&supplierAddonTotal, fee, int64(qty))
 					} else {
-						platformAddonTotal += fee * int64(qty)
+						err = pricing.AccumulateMoney(&platformAddonTotal, fee, int64(qty))
 					}
-					addonLineTotal += fee * int64(qty)
+					if err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+						return
+					}
+					if err = pricing.AccumulateMoney(&addonLineTotal, fee, int64(qty)); err != nil {
+						rows.Close()
+						http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+						return
+					}
 				}
 				rows.Close()
 				if err := rows.Err(); err != nil {
@@ -691,7 +723,10 @@ func handleCreateOrder(
 					http.Error(w, `{"error":"Addon not available for this store or product"}`, http.StatusBadRequest)
 					return
 				}
-				payableAmount += addonLineTotal
+				if err := pricing.AccumulateMoney(&payableAmount, addonLineTotal, 1); err != nil {
+					http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+					return
+				}
 			}
 		}
 		if chosenVariant != nil {
@@ -732,90 +767,51 @@ func handleCreateOrder(
 
 	}
 
-	// Gap 13: resolve the origin identities the origins rows carry,
-	// in batch. A supplier leg's supplier_warehouse_id is the
-	// product's recorded origin supplier warehouse (catalogRepo's
-	// product read does not select that column, so it is fetched
-	// here with the warehouses lookup); a warehouse leg's
-	// warehouse_id is the warehouses row whose name matches the
-	// product's warehouse_name (NULL when unmatched — the origin
-	// label still records the name). Lookup failures degrade to
-	// NULL identities rather than failing a priced order.
+	// Checkout and standalone quotes select the same attributed eligible stock.
 	if len(orderItems) > 0 {
-		if db != nil {
-			productIDs := []string{}
-			seenProduct := map[string]bool{}
-			warehouseNames := []string{}
-			seenName := map[string]bool{}
-			for i := range orderItems {
-				if !seenProduct[orderItems[i].ProductID] {
-					seenProduct[orderItems[i].ProductID] = true
-					productIDs = append(productIDs, orderItems[i].ProductID)
-				}
-				if orderItems[i].Routing != "supplier_direct" {
-					if name := quoteLines[i].Warehouse; name != "" && !seenName[name] {
-						seenName[name] = true
-						warehouseNames = append(warehouseNames, name)
-					}
-				}
-			}
-			originSwhByProduct := map[string]string{}
-			if rows, qerr := db.QueryContext(ctx, `SELECT id, COALESCE(origin_supplier_warehouse_id, '') FROM products WHERE id = ANY($1::text[])`, pq.Array(productIDs)); qerr == nil {
-				for rows.Next() {
-					var pid, swh string
-					if err := rows.Scan(&pid, &swh); err == nil && swh != "" {
-						originSwhByProduct[pid] = swh
-					}
-				}
-				rows.Close()
-			}
-			warehouseIDByName := map[string]string{}
-			if len(warehouseNames) > 0 {
-				if rows, qerr := db.QueryContext(ctx, `SELECT id, name FROM warehouses WHERE name = ANY($1::text[])`, pq.Array(warehouseNames)); qerr == nil {
-					for rows.Next() {
-						var wid, wname string
-						if err := rows.Scan(&wid, &wname); err == nil {
-							warehouseIDByName[wname] = wid
-						}
-					}
-					rows.Close()
-				}
-			}
-			for i := range orderItems {
-				if orderItems[i].Routing == "supplier_direct" {
-					if swh, ok := originSwhByProduct[orderItems[i].ProductID]; ok {
-						v := swh
-						orderItems[i].SupplierWarehouseID = &v
-					}
-				} else if wid, ok := warehouseIDByName[quoteLines[i].Warehouse]; ok {
-					v := wid
-					orderItems[i].WarehouseID = &v
-				}
+		if db == nil {
+			http.Error(w, `{"error":"inventory unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		var originErr error
+		quoteLines, originErr = resolveQuoteOrigins(ctx, db, quoteLines)
+		if originErr != nil {
+			http.Error(w, `{"error":"inventory_origin_unavailable"}`, http.StatusConflict)
+			return
+		}
+		keys := []string{}
+		seen := map[string]bool{}
+		for _, line := range quoteLines {
+			key, _ := legOrigin(line)
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
 			}
 		}
-		// leg_index: first-appearance index of the origin key over
-		// the quote-sorted lines — the same grouping and order
-		// computeShippingQuote prices, so an origin row's leg_index
-		// is the quote leg the line was priced into.
-		sortedIdx := make([]int, len(quoteLines))
-		for i := range sortedIdx {
-			sortedIdx[i] = i
-		}
-		sort.SliceStable(sortedIdx, func(a, b int) bool {
-			ka, _ := legOrigin(quoteLines[sortedIdx[a]])
-			kb, _ := legOrigin(quoteLines[sortedIdx[b]])
-			return ka < kb
-		})
+		sort.Strings(keys)
 		legOf := map[string]int{}
-		for _, idx := range sortedIdx {
-			key, _ := legOrigin(quoteLines[idx])
-			li, ok := legOf[key]
-			if !ok {
-				li = len(legOf)
-				legOf[key] = li
-			}
-			orderItems[idx].LegIndex = li
+		for i, key := range keys {
+			legOf[key] = i
 		}
+		for _, line := range quoteLines {
+			key, _ := legOrigin(line)
+			split := domain.OrderItemOriginSplit{Label: line.Warehouse, Quantity: line.Quantity, LegIndex: legOf[key]}
+			if line.WarehouseID != "" {
+				v := line.WarehouseID
+				split.WarehouseID = &v
+			}
+			if line.SupplierWarehouseID != "" {
+				v := line.SupplierWarehouseID
+				split.SupplierWarehouseID = &v
+			}
+			item := &orderItems[line.ItemIndex]
+			item.OriginSplits = append(item.OriginSplits, split)
+			item.WarehouseID = split.WarehouseID
+			item.SupplierWarehouseID = split.SupplierWarehouseID
+			item.OriginLabel = split.Label
+			item.LegIndex = split.LegIndex
+		}
+
 	}
 
 	// Referral commission (D33): respected only when the flag is on.
@@ -829,7 +825,12 @@ func handleCreateOrder(
 		if percent <= 0 {
 			percent = 2.0
 		}
-		referralCommission = int64(float64(platformProfit) * (percent / 100.0))
+		var err error
+		referralCommission, err = pricing.TruncatedPercent(platformProfit, percent)
+		if err != nil || referralCommission > platformProfit {
+			http.Error(w, `{"error":"Referral pricing is unavailable"}`, http.StatusConflict)
+			return
+		}
 	}
 
 	if len(directSupplierIDs) > 0 {
@@ -872,12 +873,19 @@ func handleCreateOrder(
 			Address: req.CustomerInfo.Address, PostalCode: req.CustomerInfo.PostalCode,
 		}
 		quote := computeShippingQuote(quoteLines, rates, quoteDestinationKey(quoteDest))
+		if quote.PricingError != nil {
+			http.Error(w, `{"error":"shipping_amount_out_of_range"}`, http.StatusBadRequest)
+			return
+		}
 		// Tapin repricing (tapin_quote.go): the identical step the
 		// quote endpoint ran, over lines built from the same product
 		// reads — a Tapin-priced quote re-derives the same quoteId
 		// here; a Tapin failure fails the order with the upstream
 		// message instead of silently repricing by formula.
 		if terr := priceTapinQuoteLegs(ctx, db, &quote, quoteLines, quoteDest); terr != nil {
+			if writeDependencyOverload(w, terr) {
+				return
+			}
 			http.Error(w, tapinQuoteErrorBody(terr), http.StatusBadRequest)
 			return
 		}
@@ -887,7 +895,10 @@ func handleCreateOrder(
 		}
 		shippingCost = quote.TotalShipping
 		shippingQuoteID = quote.QuoteID
-		payableAmount += shippingCost
+		if err := pricing.AccumulateMoney(&payableAmount, shippingCost, 1); err != nil {
+			http.Error(w, `{"error":"Order amount exceeds supported bounds"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	// FIX 14: DiscountAmount is original-minus-final merchandise
@@ -948,6 +959,12 @@ func handleCreateOrder(
 		IdempotencyKey:      idempotencyPtr,
 	}
 
+	if discountCodeApplied && discountCodeObj != nil {
+		order.CouponID = discountCodeObj.ID
+		order.CouponRevision = discountCodeObj.Revision
+		order.CouponDiscountAmount = &couponDiscountTotal
+	}
+
 	shipments := make([]domain.SupplierShipment, 0, len(directSupplierIDs))
 	if len(directSupplierIDs) > 0 && shipmentRepo != nil {
 		for directShipSupplierID := range directSupplierIDs {
@@ -968,10 +985,26 @@ func handleCreateOrder(
 		}
 	}
 
-	if err := orderRepo.CreateOrderWithShipments(ctx, order, shipments); err != nil {
-		http.Error(w, `{"error":"Order could not be created"}`, http.StatusInternalServerError)
+	if req.IdempotencyKey != "" {
+		id, created, err := orderRepo.CreateCheckoutOrderWithShipments(ctx, order, shipments, fingerprint)
+		if err != nil {
+			writeCheckoutError(w, err)
+			return
+		}
+		if !created {
+			existing, err := orderRepo.GetOrderByID(ctx, id)
+			if err != nil || existing == nil {
+				http.Error(w, `{"error":"Checkout recovery unavailable"}`, 503)
+				return
+			}
+			respondOrder(*existing, http.StatusOK)
+			return
+		}
+	} else if err := orderRepo.CreateOrderWithShipments(ctx, order, shipments); err != nil {
+		writeCheckoutError(w, err)
 		return
 	}
+
 	// FIX 14: saveAddress stores the order address in the address book
 	// (best-effort: an address-book failure must not fail the order).
 	if req.SaveAddress {
@@ -985,13 +1018,6 @@ func handleCreateOrder(
 			"addr-"+uuid.NewString(), claims.UserID, req.CustomerInfo.FullName, req.CustomerInfo.Phone,
 			req.CustomerInfo.Province, req.CustomerInfo.City, req.CustomerInfo.PostalCode,
 			req.CustomerInfo.Address, existingCount == 0)
-	}
-	// Code use is consumed ONLY after order persistence succeeds. A
-	// consumption failure must not fail an already-created order
-	// (old-branch semantics); the atomic guard in
-	// IncrementDiscountCodeUse bounds the next use instead.
-	if discountCodeObj != nil && discountCodeApplied {
-		_ = storeRepo.IncrementDiscountCodeUse(ctx, discountCodeObj.ID)
 	}
 
 	respondOrder(order, http.StatusCreated)
@@ -1134,9 +1160,14 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 		return
 	}
-	if err := orderRepo.CancelOrder(ctx, idOrNumber, claims.UserID, isAdmin); err != nil {
+	result, err := orderRepo.CancelOrderWithRefund(ctx, idOrNumber, claims.UserID, isAdmin)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"Order not found or not owned by user"}`, http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, repository.ErrOrderPartiallyDispatched) || errors.Is(err, repository.ErrOrderCancellationState) {
+			http.Error(w, `{"error":"Order cannot be cancelled"}`, http.StatusConflict)
 			return
 		}
 		if strings.Contains(err.Error(), "cannot be cancelled") {
@@ -1146,11 +1177,7 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"orderId": idOrNumber,
-		"status":  "cancelled",
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
 func handleOrderReturn(w http.ResponseWriter, r *http.Request, ctx context.Context, idOrNumber string, orderRepo *repository.OrderRepository) {
@@ -1784,6 +1811,14 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		}
 		settlement, err := orderRepo.ReceiveCustomerReturn(ctx, id, qc, claims.UserID)
 		if err != nil {
+			if writeFinanceBusy(w, err) {
+				return
+			}
+			if errors.Is(err, repository.ErrFinancePrincipalUnresolved) || errors.Is(err, repository.ErrFinanceAccountChanged) {
+				http.Error(w, `{"error":"Immutable financial principal requires reconciliation"}`, http.StatusConflict)
+				return
+			}
+
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return or item not found, or return not approved"}`, http.StatusNotFound)
 				return
@@ -1809,6 +1844,14 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		}
 		amount, settlement, err := orderRepo.RefundCustomerReturn(ctx, id, claims.UserID)
 		if err != nil {
+			if writeFinanceBusy(w, err) {
+				return
+			}
+			if errors.Is(err, repository.ErrFinancePrincipalUnresolved) || errors.Is(err, repository.ErrFinanceAccountChanged) {
+				http.Error(w, `{"error":"Immutable financial principal requires reconciliation"}`, http.StatusConflict)
+				return
+			}
+
 			if err == sql.ErrNoRows {
 				http.Error(w, `{"error":"Return not found"}`, http.StatusNotFound)
 				return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -55,7 +56,7 @@ const orderSelectColumns = `
 	inventory_captured, packaging_length_mm, packaging_width_mm, packaging_height_mm,
 	dispute_reason, carrier, tracking_number, shipping_label, packed_at, box_size,
 	weight_grams, idempotency_key, return_window_ends_at,
-	COALESCE(seller_discount_amount, 0), COALESCE(discount_code, ''), COALESCE(shipping_quote_id, '')`
+	COALESCE(seller_discount_amount, 0), COALESCE(discount_code, ''), COALESCE(shipping_quote_id, ''), coupon_discount_amount`
 
 func orderScanDest(o *domain.Order) []interface{} {
 	return []interface{}{
@@ -69,7 +70,7 @@ func orderScanDest(o *domain.Order) []interface{} {
 		&o.WalletAmount, &o.GatewayAmount, &o.PlatformAddonAmount, &o.SupplierAddonAmount,
 		&o.InventoryCaptured, &o.PackagingLengthMM, &o.PackagingWidthMM, &o.PackagingHeightMM,
 		&o.DisputeReason, &o.Carrier, &o.TrackingNumber, &o.ShippingLabel, &o.PackedAt, &o.BoxSize,
-		&o.WeightGrams, &o.IdempotencyKey, &o.ReturnWindowEndsAt, &o.SellerDiscountAmount, &o.DiscountCode, &o.ShippingQuoteID,
+		&o.WeightGrams, &o.IdempotencyKey, &o.ReturnWindowEndsAt, &o.SellerDiscountAmount, &o.DiscountCode, &o.ShippingQuoteID, &o.CouponDiscountAmount,
 	}
 }
 
@@ -81,12 +82,47 @@ func (r *OrderRepository) CreateOrder(ctx context.Context, order domain.Order) e
 // CreateOrderWithShipments persists the order, line items, and direct supplier
 // allocations in one ACID transaction.
 func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment) error {
+	ctx, cancel := couponAdmissionContext(ctx)
+	defer cancel()
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = r.createOrderWithShipmentsOnce(ctx, order, shipments)
+		if !couponTransactionRetryable(err) || ctx.Err() != nil || attempt == 2 {
+			return err
+		}
+		if err = couponRetryPause(ctx); err != nil {
+			return err
+		}
+	}
+	return err
+}
+func (r *OrderRepository) createOrderWithShipmentsOnce(ctx context.Context, order domain.Order, shipments []domain.SupplierShipment) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
+	if err := r.insertOrderWithShipmentsTx(ctx, tx, order, shipments, false); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// P0-14 (best-effort, separate tx): order placed - fulfilling
+	// suppliers + store owner. A notify failure never fails the order.
+	notifyOrderPlaced(ctx, r.db, order.ID)
+	return nil
+}
+
+func (r *OrderRepository) insertOrderWithShipmentsTx(ctx context.Context, tx *sql.Tx, order domain.Order, shipments []domain.SupplierShipment, snapshotTitles bool) error {
+	if err := lockCouponCreationParentsTx(ctx, tx, order, shipments, false); err != nil {
+		return err
+	}
+	if err := markCouponWriterTx(ctx, tx); err != nil {
+		return err
+	}
 	queryOrder := `
 		INSERT INTO orders (
 			id, customer_user_id, order_number, store_id, store_name, total_amount, discount_amount,
@@ -99,13 +135,13 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 			inventory_captured, packaging_length_mm, packaging_width_mm, packaging_height_mm,
 			dispute_reason, carrier, tracking_number, shipping_label, packed_at, box_size,
 			weight_grams, idempotency_key, return_window_ends_at, seller_discount_amount, discount_code,
-			shipping_quote_id
+			shipping_quote_id, coupon_discount_amount
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25, $26, $27, $28,
 			$29, $30, $31, $32, $33, $34, $35, $36,
-			$37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48
+			$37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49
 		)
 	`
 	now := time.Now()
@@ -113,7 +149,7 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 	if fulfillmentMethod == "" {
 		fulfillmentMethod = "warehouse"
 	}
-	_, err = tx.ExecContext(ctx, queryOrder,
+	_, err := tx.ExecContext(ctx, queryOrder,
 		order.ID, order.CustomerUserID, order.OrderNumber, order.StoreID, order.StoreName,
 		order.TotalAmount, order.DiscountAmount, order.PayableAmount, order.PaymentMethod,
 		order.PaymentStatus, order.CustomerFullName, order.CustomerPhone, order.CustomerProvince, order.CustomerCity,
@@ -126,12 +162,18 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 		orderNullInt(order.PackagingHeightMM), orderNullString(order.DisputeReason), orderNullString(order.Carrier),
 		orderNullString(order.TrackingNumber), orderNullString(order.ShippingLabel), orderNullTime(order.PackedAt),
 		orderNullString(order.BoxSize), orderNullInt(order.WeightGrams), orderNullString(order.IdempotencyKey),
-		orderNullTime(order.ReturnWindowEndsAt), order.SellerDiscountAmount, order.DiscountCode, orderNullString(&order.ShippingQuoteID),
+		orderNullTime(order.ReturnWindowEndsAt), order.SellerDiscountAmount, order.DiscountCode, orderNullString(&order.ShippingQuoteID), order.CouponDiscountAmount,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
 
+	if err := reserveOrderCouponTx(ctx, tx, order); err != nil {
+		return err
+	}
+	if err := lockCouponCreationParentsTx(ctx, tx, order, shipments, true); err != nil {
+		return err
+	}
 	queryItem := `
 		INSERT INTO order_items (
 			id, order_id, product_id, quantity, wholesale_cost,
@@ -139,13 +181,31 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 			variant_id, variant_name, variant_spnc
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
+	// Legacy repository callers do not claim a modern policy. New priced
+	// snapshots append the policy in the same INSERT/transaction.
+	queryItemVersion := strings.Replace(queryItem, "variant_id, variant_name, variant_spnc", "variant_id, variant_name, variant_spnc, pricing_policy_version", 1)
+	queryItemVersion = strings.Replace(queryItemVersion, "$10, $11, $12)", "$10, $11, $12, $13)", 1)
+
+	if snapshotTitles {
+		queryItem = strings.Replace(queryItem, "variant_id, variant_name, variant_spnc", "variant_id, variant_name, variant_spnc, product_title_snapshot", 1)
+		queryItem = strings.Replace(queryItem, "$10, $11, $12)", "$10, $11, $12, $13)", 1)
+		queryItemVersion = strings.Replace(queryItemVersion, "pricing_policy_version", "pricing_policy_version, product_title_snapshot", 1)
+		queryItemVersion = strings.Replace(queryItemVersion, "$12, $13)", "$12, $13, $14)", 1)
+	}
 	for _, item := range order.Items {
 		itemID := uuid.New().String()
-		_, err := tx.ExecContext(ctx, queryItem,
-			itemID, order.ID, item.ProductID, item.Quantity,
+		itemArgs := []interface{}{itemID, order.ID, item.ProductID, item.Quantity,
 			item.WholesaleCost, item.PlatformFee, item.SellerMargin, item.FinalUnitPrice, item.DiscountAmount,
-			orderNullString(item.VariantID), orderNullString(item.VariantName), orderNullString(item.VariantSPNC),
-		)
+			orderNullString(item.VariantID), orderNullString(item.VariantName), orderNullString(item.VariantSPNC)}
+		insertItem := queryItem
+		if item.PricingPolicyVersion != "" {
+			insertItem = queryItemVersion
+			itemArgs = append(itemArgs, item.PricingPolicyVersion)
+		}
+		if snapshotTitles {
+			itemArgs = append(itemArgs, item.ProductTitle)
+		}
+		_, err := tx.ExecContext(ctx, insertItem, itemArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to insert order item: %w", err)
 		}
@@ -165,15 +225,31 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 			if item.SupplierID != "" {
 				originSupplierID = item.SupplierID
 			}
-			if _, err := tx.ExecContext(ctx, `
+			splits := item.OriginSplits
+			if len(splits) == 0 {
+				splits = []domain.OrderItemOriginSplit{{WarehouseID: item.WarehouseID, SupplierWarehouseID: item.SupplierWarehouseID, Label: item.OriginLabel, Quantity: item.Quantity, LegIndex: item.LegIndex}}
+			}
+			total := 0
+			for _, split := range splits {
+				if split.Quantity <= 0 || split.Quantity > item.Quantity-total {
+					return fmt.Errorf("invalid order origin split")
+				}
+				total += split.Quantity
+			}
+			if total != item.Quantity {
+				return fmt.Errorf("incomplete order origin split")
+			}
+			for _, split := range splits {
+				if _, err := tx.ExecContext(ctx, `
 				INSERT INTO order_item_origins (
 					id, order_id, order_item_id, leg_index, origin_type,
 					supplier_id, warehouse_id, supplier_warehouse_id, origin_label, quantity
 				) VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10)
-			`, uuid.New().String(), order.ID, itemID, item.LegIndex, originType,
-				originSupplierID, orderNullString(item.WarehouseID),
-				orderNullString(item.SupplierWarehouseID), item.OriginLabel, item.Quantity); err != nil {
-				return fmt.Errorf("failed to insert order item origin: %w", err)
+			`, uuid.New().String(), order.ID, itemID, split.LegIndex, originType,
+					originSupplierID, orderNullString(split.WarehouseID),
+					orderNullString(split.SupplierWarehouseID), split.Label, split.Quantity); err != nil {
+					return fmt.Errorf("failed to insert order item origin: %w", err)
+				}
 			}
 		}
 	}
@@ -197,12 +273,6 @@ func (r *OrderRepository) CreateOrderWithShipments(ctx context.Context, order do
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// P0-14 (best-effort, separate tx): order placed - fulfilling
-	// suppliers + store owner. A notify failure never fails the order.
-	notifyOrderPlaced(ctx, r.db, order.ID)
 	return nil
 }
 
@@ -267,6 +337,13 @@ func (r *OrderRepository) ConfirmOrderDelivery(ctx context.Context, idOrNumber, 
 		return err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	// D35: window = confirmed_at + return_window_days from
@@ -327,6 +404,13 @@ func (r *OrderRepository) ConfirmOrderDeliverySystem(ctx context.Context, idOrNu
 		return err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	// D34/D35: staged, exactly like ConfirmOrderDelivery: status +
@@ -397,6 +481,43 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 		return fmt.Errorf("unsupported carrier status transition: %s", status)
 	}
 
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, idOrNumber).Scan(&financeOrderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return err
+	}
+	if targetStatus == "delivery_disputed" {
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, financeOrderID).Scan(&current); err != nil {
+			return err
+		}
+		switch current {
+		case "processing", "shipped", "delivered_unconfirmed", "delivered", "delivery_disputed":
+		default:
+			return sql.ErrNoRows
+		}
+		changed, err := applyCarrierFailureHoldTx(ctx, tx, financeOrderID)
+		if err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		if changed {
+			notifyCarrierFailed(ctx, r.db, financeOrderID)
+		}
+		return nil
+	}
 	query := `
 		UPDATE orders
 		SET status = $2,
@@ -410,13 +531,16 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 			WHERE order_id = orders.id AND status <> 'delivered'
 		  ))
 	`
-	result, err := r.db.ExecContext(ctx, query, idOrNumber, targetStatus)
+	result, err := tx.ExecContext(ctx, query, idOrNumber, targetStatus)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	// P1-5 (best-effort): carrier 'failed' flips the order to
 	// delivery_disputed - the customer is told.
@@ -450,17 +574,49 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		return nil, sql.ErrNoRows
 	}
 
-	// Critic fix (Phase 2): a repeated webhook for an order ALREADY in
-	// the target state is a no-op success — return the order, notify
-	// nobody. The transition UPDATE below has NO `status = $2` leg
-	// (the old leg re-matched an already-disputed order and re-notified
-	// on every repeated 'failed' webhook); without the pre-check here,
-	// removing that leg would turn a duplicate webhook into a 404.
-	var existingID, currentStatus string
-	if err := r.db.QueryRowContext(ctx, `SELECT id, status FROM orders WHERE tracking_number = $1 AND fulfillment_method IN ('warehouse', 'mixed')`, trackingNumber).Scan(&existingID, &currentStatus); err == nil && currentStatus == targetStatus {
-		return r.GetOrderByID(ctx, existingID)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
 	}
-
+	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE tracking_number=$1 AND fulfillment_method IN ('warehouse','mixed')`, trackingNumber).Scan(&financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, financeOrderID).Scan(&current); err != nil {
+		return nil, err
+	}
+	if targetStatus == "delivery_disputed" {
+		switch current {
+		case "processing", "picking", "picked", "packed", "shipped", "delivery_disputed":
+		default:
+			return nil, sql.ErrNoRows
+		}
+		changed, err := applyCarrierFailureHoldTx(ctx, tx, financeOrderID)
+		if err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		if changed {
+			notifyCarrierFailed(ctx, r.db, financeOrderID)
+		}
+		return r.GetOrderByID(ctx, financeOrderID)
+	}
+	if current == targetStatus {
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return r.GetOrderByID(ctx, financeOrderID)
+	}
 	var orderID string
 	query := `
 		UPDATE orders
@@ -477,7 +633,11 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		  )
 		RETURNING id
 	`
-	if err := r.db.QueryRowContext(ctx, query, trackingNumber, targetStatus).Scan(&orderID); err != nil {
+	if err := tx.QueryRowContext(ctx, query, trackingNumber, targetStatus).Scan(&orderID); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
@@ -502,26 +662,27 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 	}
 
 	itemQuery := `
-		SELECT oi.id, oi.order_id, oi.product_id, p.title, oi.quantity,
+		SELECT oi.id, oi.order_id, oi.product_id, COALESCE(to_jsonb(oi)->>'product_title_snapshot',p.title,''), oi.quantity,
 		       oi.wholesale_cost, oi.platform_fee, oi.seller_margin, oi.final_unit_price, COALESCE(oi.discount_amount, 0),
-		       oi.variant_id, oi.variant_name, oi.variant_spnc
+		       oi.variant_id, oi.variant_name, oi.variant_spnc, COALESCE(to_jsonb(oi)->>'pricing_policy_version', 'legacy-unversioned')
 		FROM order_items oi
 		LEFT JOIN products p ON oi.product_id = p.id
 		WHERE oi.order_id = $1
 	`
 	rows, err := r.db.QueryContext(ctx, itemQuery, o.ID)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var it domain.OrderItem
-			if err := rows.Scan(
-				&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity,
-				&it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount,
-				&it.VariantID, &it.VariantName, &it.VariantSPNC,
-			); err == nil {
-				o.Items = append(o.Items, it)
-			}
+	if err != nil {
+		return nil, fmt.Errorf("read order items: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it domain.OrderItem
+		if err := rows.Scan(&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity, &it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount, &it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion); err != nil {
+			return nil, fmt.Errorf("scan order item: %w", err)
 		}
+		o.Items = append(o.Items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read order items: %w", err)
 	}
 
 	return &o, nil
@@ -579,7 +740,7 @@ func (r *OrderRepository) loadItemsByOrderIDs(ctx context.Context, orderIDs []st
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT oi.id, oi.order_id, oi.product_id, COALESCE(p.title, ''), oi.quantity,
 		       oi.wholesale_cost, oi.platform_fee, oi.seller_margin, oi.final_unit_price, COALESCE(oi.discount_amount, 0),
-		       oi.variant_id, oi.variant_name, oi.variant_spnc
+		       oi.variant_id, oi.variant_name, oi.variant_spnc, COALESCE(to_jsonb(oi)->>'pricing_policy_version', 'legacy-unversioned')
 		FROM order_items oi
 		LEFT JOIN products p ON oi.product_id = p.id
 		WHERE oi.order_id IN (`+strings.Join(ph, ", ")+`)
@@ -594,7 +755,7 @@ func (r *OrderRepository) loadItemsByOrderIDs(ctx context.Context, orderIDs []st
 		if err := rows.Scan(
 			&it.ID, &it.OrderID, &it.ProductID, &it.ProductTitle, &it.Quantity,
 			&it.WholesaleCost, &it.PlatformFee, &it.SellerMargin, &it.FinalUnitPrice, &it.DiscountAmount,
-			&it.VariantID, &it.VariantName, &it.VariantSPNC,
+			&it.VariantID, &it.VariantName, &it.VariantSPNC, &it.PricingPolicyVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -636,6 +797,9 @@ func (r *OrderRepository) GetOrdersByCustomerUserID(ctx context.Context, userID 
 				orders[i].Items = byOrder[orders[i].ID]
 			}
 		}
+	}
+	if err := r.attachRefundSummaries(ctx, orders); err != nil {
+		return nil, err
 	}
 	return orders, nil
 }
@@ -681,23 +845,101 @@ func (r *OrderRepository) GetOrderByNumber(ctx context.Context, orderNumber stri
 }
 
 func (r *OrderRepository) SetPaymentStatus(ctx context.Context, orderID, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE orders SET payment_status = $2, updated_at = NOW() WHERE id = $1`, orderID, status)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	bounded, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	if err = LockTransactionRowsTx(bounded, tx, &TransactionLockSet{}, TransactionRowLock{Table: "orders", ID: orderID}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	has, err := orderHasCouponTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
+	if has {
+		if err = lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+			return err
+		}
+	}
+	if has && status != "pending" && status != "failed" {
+		return ErrCouponLifecycleRequired
+	}
+	if has {
+		var old string
+		if err = tx.QueryRowContext(ctx, `SELECT payment_status FROM orders WHERE id=$1`, orderID).Scan(&old); err != nil {
+			return err
+		}
+		if old != "pending" && old != status {
+			return ErrCouponLifecycleRequired
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET payment_status=$2,updated_at=NOW() WHERE id=$1`, orderID, status); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateOrderFulfillment updates status, tracking code, and shipped_at for an order
 func (r *OrderRepository) UpdateOrderFulfillment(ctx context.Context, orderID, status, trackingCode string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var canonicalID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+		return err
+	}
+	if err := lockFulfillmentOrderTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
+	has, err := orderHasCouponTx(ctx, tx, canonicalID)
+	if err != nil {
+		return err
+	}
+	if has && status == "cancelled" {
+		return ErrCouponLifecycleRequired
+	}
+	if status == "shipped" || status == "delivered" {
+		var previous string
+		var alreadyPhysical bool
+		if err := tx.QueryRowContext(ctx, `SELECT status,shipped_at IS NOT NULL OR COALESCE(status IN ('shipped','delivered','delivered_unconfirmed','delivered_confirmed','delivery_disputed'),FALSE) FROM orders WHERE id=$1`, canonicalID).Scan(&previous, &alreadyPhysical); err != nil {
+			return err
+		}
+		// A recorded shipment may progress to delivery without inventing a new
+		// dispatch. Reverse transitions still need ordinary admission authority.
+		existingFact := previous == status || (alreadyPhysical && previous == "shipped" && status == "delivered")
+		if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID, existingFact); err != nil {
+			return err
+		}
+	}
 	now := time.Now()
 	query := `
 		UPDATE orders
-		SET status = $1,
+		SET status = $1::text,
 		    tracking_code = CASE WHEN $2 <> '' THEN $2 ELSE tracking_code END,
 		    shipped_at = CASE WHEN $1 = 'shipped' AND shipped_at IS NULL THEN $3 ELSE shipped_at END,
 		    updated_at = $3
-		WHERE id = $4 OR order_number = $4
+		WHERE (id = $4 OR order_number = $4) AND status <> 'cancelled'
 	`
-	_, err := r.db.ExecContext(ctx, query, status, trackingCode, now, orderID)
-	return err
+	res, err := tx.ExecContext(ctx, query, status, trackingCode, now, canonicalID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrShipmentState
+	}
+	return tx.Commit()
 }
 
 type PaymentTransaction struct {
@@ -713,7 +955,15 @@ type PaymentTransaction struct {
 }
 
 func (r *OrderRepository) CreatePaymentTransaction(ctx context.Context, tx PaymentTransaction) error {
-	_, err := r.db.ExecContext(ctx, `
+	dbTx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer dbTx.Rollback()
+	if err = lockOrderFinanceTx(ctx, dbTx, tx.OrderID, true); err != nil {
+		return err
+	}
+	_, err = dbTx.ExecContext(ctx, `
 		INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, amount, status)
 		VALUES ($1, $2, $3, $4, $5, 'pending')
 		ON CONFLICT DO NOTHING
@@ -721,7 +971,7 @@ func (r *OrderRepository) CreatePaymentTransaction(ctx context.Context, tx Payme
 	if err != nil {
 		return err
 	}
-	return nil
+	return dbTx.Commit()
 }
 
 func (r *OrderRepository) GetPaymentTransaction(ctx context.Context, gatewayToken string) (*PaymentTransaction, error) {
@@ -769,6 +1019,25 @@ func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken
 	}
 	defer tx.Rollback()
 	var orderID, status string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM payment_transactions WHERE gateway_token=$1`, gatewayToken).Scan(&orderID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+		return err
+	}
+	var inquiry bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_verifications WHERE order_id=$1 AND payment_id IN (SELECT id FROM payment_transactions WHERE gateway_token=$2))`, orderID, gatewayToken).Scan(&inquiry); err != nil {
+		return err
+	}
+	if inquiry {
+		if _, err := confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT order_id, status FROM payment_transactions WHERE gateway_token = $1 FOR UPDATE`, gatewayToken).Scan(&orderID, &status); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -782,6 +1051,9 @@ func (r *OrderRepository) RecordPaymentFailure(ctx context.Context, gatewayToken
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE orders SET payment_status = 'failed', updated_at = NOW() WHERE id = $1 AND payment_status = 'pending'`, orderID); err != nil {
+		return err
+	}
+	if _, err := confirmOrderCouponTx(ctx, tx, orderID, false); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -804,8 +1076,8 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	if err := dbTx.QueryRowContext(ctx, `SELECT o.id,o.status,o.payment_status,o.payment_expires_at FROM orders o JOIN payment_transactions p ON p.order_id=o.id WHERE p.gateway_token=$1 FOR UPDATE OF o`, gatewayToken).Scan(&lockedOrderID, &orderStatus, &orderPayment, &deadline); err != nil {
 		return nil, err
 	}
-	if orderPayment != "paid" && (orderStatus == "cancelled" || orderPayment != "pending" || (deadline != nil && !time.Now().Before(*deadline))) {
-		return nil, ErrPaymentExpired
+	if err := lockOrderFinanceTx(ctx, dbTx, lockedOrderID, true); err != nil {
+		return nil, err
 	}
 
 	var payment PaymentTransaction
@@ -822,7 +1094,61 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	if err != nil {
 		return nil, err
 	}
+
+	// An already admitted paid replay performs no new capture. A separately
+	// compensated payment never becomes the fulfillment payment by replay.
 	if payment.Status == "paid" {
+		var admitted, compensated bool
+		if err = dbTx.QueryRowContext(ctx, `SELECT o.inventory_captured OR o.shipped_at IS NOT NULL OR o.status IN ('shipped','delivered','delivered_unconfirmed','delivered_confirmed','delivery_disputed') OR EXISTS(SELECT 1 FROM supplier_shipments WHERE order_id=o.id AND (shipped_at IS NOT NULL OR delivered_at IS NOT NULL OR status IN ('shipped','in_transit','delivered'))),p.compensation_capture FROM orders o JOIN payment_transactions p ON p.order_id=o.id WHERE o.id=$1 AND p.id=$2`, lockedOrderID, payment.ID).Scan(&admitted, &compensated); err != nil {
+			return nil, err
+		}
+		if admitted && !compensated {
+			if err = dbTx.Commit(); err != nil {
+				return nil, err
+			}
+			return &payment, nil
+		}
+	}
+
+	admissible, err := confirmOrderCouponTx(ctx, dbTx, lockedOrderID, false)
+	if err != nil {
+		return nil, err
+	}
+	if !admissible {
+		if err = recordLatePaidCancellationTx(ctx, dbTx, &payment, rrn, cardMask); err != nil {
+			return nil, err
+		}
+		if err = dbTx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, ErrPaymentExpired
+	}
+	// The caller has confirmed payment. Inventory admission may fail, but the
+	// money fact must survive cancellation/expiry. The legacy signature does not
+	// certify a structured provider receipt: its liability stays unknown until
+	// independently verified. Never turn a historical refunded marker into cash.
+	if orderStatus == "cancelled" || (orderPayment != "paid" && (orderPayment != "pending" || (deadline != nil && !time.Now().Before(*deadline)))) {
+		if payment.Status != "refunded" {
+			if err := recordLatePaidCancellationTx(ctx, dbTx, &payment, rrn, cardMask); err != nil {
+				return nil, err
+			}
+			if err := dbTx.Commit(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, ErrPaymentExpired
+	}
+	var compensation bool
+	if err := dbTx.QueryRowContext(ctx, `SELECT compensation_capture FROM payment_transactions WHERE id=$1`, payment.ID).Scan(&compensation); err != nil {
+		return nil, err
+	}
+	if compensation {
+		return nil, ErrPaymentExpired
+	}
+	if payment.Status == "paid" {
+		if err := dbTx.Commit(); err != nil {
+			return nil, err
+		}
 		return &payment, nil
 	}
 	if payment.Status != "pending" {
@@ -990,94 +1316,154 @@ func returnWindowDaysFromTx(ctx context.Context, tx *sql.Tx) int {
 // rule is unverified. TODO(U26): no staged threshold beyond the
 // 20-day auto-confirm and the window close is implemented here.
 func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, store_id, dropshipper_profit
-		FROM orders
-		WHERE status = 'delivered_confirmed'
-		  AND profit_released = FALSE
-		  AND return_window_ends_at IS NOT NULL
-		  AND return_window_ends_at <= NOW()
-		ORDER BY created_at ASC
-	`)
+	// Exclude review-only window/profit/release history before LIMIT, including
+	// orders without a dispute transition. The locked shared guard rechecks all
+	// predicates; this read-only filter grants no financial authority.
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE NOT profit_released AND (
+ (status='delivered_confirmed' AND confirmed_at IS NOT NULL AND return_window_ends_at>=confirmed_at AND return_window_ends_at<=NOW()) OR
+ (status='delivery_disputed' AND EXISTS(SELECT 1 FROM dispute_order_evidence e JOIN disputes f ON f.id=e.dispute_id WHERE e.order_id=orders.id AND f.status='resolved' AND f.resolution_action='release_to_seller' AND e.hold_at=orders.disputed_at AND e.prior_status IN ('shipped','delivered_unconfirmed','delivered','delivered_confirmed')))
+ ) AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed') AND referral_commission_released=FALSE AND dropshipper_profit BETWEEN 0 AND 9007199254740991
+ AND NOT EXISTS(SELECT 1 FROM ledger_entries l WHERE l.related_order_or_dispute=orders.id AND l.reason='Staged profit release after return window closed')
+ AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=orders.id AND d.status='pending')
+ AND NOT EXISTS(SELECT 1 FROM customer_returns cr WHERE cr.order_id=orders.id AND cr.status NOT IN ('rejected','cancelled','refunded'))
+ AND NOT EXISTS(SELECT 1 FROM customer_returns cr WHERE cr.order_id=orders.id AND cr.status='refunded' AND NOT fin005_return_entitlement_proven(orders.id,cr.id::text)) AND NOT EXISTS(SELECT 1 FROM order_refund_obligations o WHERE o.order_id=orders.id AND (o.purpose<>'customer_return' OR COALESCE((SELECT e.status FROM order_refund_events e WHERE e.obligation_id=o.id ORDER BY event_no DESC LIMIT 1),o.status)<>'succeeded'))
+ AND NOT EXISTS(SELECT 1 FROM dispute_order_transitions t WHERE t.order_id=orders.id AND t.result='needs_review' AND t.reason NOT IN ('pending_dispute','active_return') AND NOT EXISTS(SELECT 1 FROM dispute_order_transitions fixed WHERE fixed.order_id=t.order_id AND fixed.created_at>t.created_at AND fixed.result='restored')) AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-release' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY return_window_ends_at NULLS LAST,id LIMIT 100`)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	type releaseCandidate struct {
-		id, storeID string
-		profit      int64
-	}
-	var candidates []releaseCandidate
+	var ids []string
 	for rows.Next() {
-		var c releaseCandidate
-		if err := rows.Scan(&c.id, &c.storeID, &c.profit); err != nil {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			return 0, err
 		}
-		candidates = append(candidates, c)
+		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
 		return 0, err
 	}
 	var released int64
-	for _, c := range candidates {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return released, err
+	var failures []error
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
 		}
-		res, err := tx.ExecContext(ctx, `
+		candidateCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		ok, err := r.releaseClosedReturnWindow(candidateCtx, id)
+		cancel()
+		if ok {
+			released++
+		}
+		if err != nil {
+			failures = append(failures, err)
+			if retryErr := RecordJobCandidateRetry(ctx, r.db, "delivery-release", id); retryErr != nil {
+				failures = append(failures, retryErr)
+			}
+		}
+	}
+	return released, errors.Join(failures...)
+}
+func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id string) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err = lockOrderFinanceTx(ctx, tx, id); err != nil {
+		return false, err
+	}
+	if _, err = reconcileDisputeEligibilityTx(ctx, tx, id); err != nil {
+		return false, err
+	}
+	released, err := releaseClosedReturnWindowTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	if released {
+		var profit int64
+		if err := r.db.QueryRowContext(ctx, `SELECT dropshipper_profit FROM orders WHERE id=$1`, id).Scan(&profit); err == nil {
+			notifyProfitReleased(ctx, r.db, id, profit)
+		}
+	}
+	return released, nil
+}
+
+// Consumes the caller's canonical financial prefix.
+func releaseClosedReturnWindowTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	state, _, err := disputeReleaseStateTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if state != "eligible" {
+		return false, nil
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		return false, err
+	}
+	c := struct {
+		id, storeID string
+		profit      int64
+	}{id: id}
+	err = tx.QueryRowContext(ctx, `SELECT store_id,dropshipper_profit FROM orders WHERE id=$1 AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() FOR UPDATE`, c.id).Scan(&c.storeID, &c.profit)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `
 			UPDATE orders
 			SET profit_released = TRUE,
 			    profit_released_at = NOW(),
 			    referral_commission_released = TRUE,
 			    updated_at = NOW()
-			WHERE id = $1 AND profit_released = FALSE
+			WHERE id = $1 AND profit_released = FALSE AND status='delivered_confirmed' AND return_window_ends_at<=NOW()
 		`, c.id)
-		if err != nil {
-			tx.Rollback()
-			return released, err
-		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			// Won by a concurrent releaser; its ledger (if any) is
-			// that releaser's responsibility, never written twice.
-			tx.Rollback()
-			continue
-		}
-		if c.profit > 0 {
-			now := time.Now()
-			creditID := "REL-" + uuid.NewString()
-			debitID := "REL-" + uuid.NewString()
-			if _, err := tx.ExecContext(ctx, `
+	if err != nil {
+		return false, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Won by a concurrent releaser; its ledger (if any) is
+		// that releaser's responsibility, never written twice.
+		return false, nil
+	}
+	if c.profit > 0 {
+		now := time.Now()
+		creditID := "REL-" + uuid.NewString()
+		debitID := "REL-" + uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, $3, 'seller', 'credit', $4, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $5)
 			`, creditID, now, c.storeID, c.profit, c.id); err != nil {
-				tx.Rollback()
-				return released, err
-			}
-			if _, err := tx.ExecContext(ctx, `
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, 'platform', 'platform', 'debit', $3, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $4)
 			`, debitID, now, c.profit, c.id); err != nil {
-				tx.Rollback()
-				return released, err
-			}
+			return false, err
 		}
-		// Idempotent backstop for the locked referral bonus of the
-		// referred store (source released it at confirmation; the
-		// status filter makes a second release a no-op).
-		_, _ = tx.ExecContext(ctx, `
+	}
+	// Idempotent backstop for the locked referral bonus of the
+	// referred store (source released it at confirmation; the
+	// status filter makes a second release a no-op).
+	_, err = tx.ExecContext(ctx, `
 			UPDATE referral_bonuses
 			SET status = 'released', released_at = NOW()
 			WHERE referred_store_id = $1 AND status = 'locked'
 		`, c.storeID)
-		if err := tx.Commit(); err != nil {
-			return released, err
-		}
-		released++
-		// P1-3 (best-effort): profit released - store owner + suppliers.
-		notifyProfitReleased(ctx, r.db, c.id, c.profit)
+	if err != nil {
+		return false, err
 	}
-	return released, nil
+	return true, nil
 }
 
 var ErrReturnWindowClosed = fmt.Errorf("return window has closed")
@@ -1092,6 +1478,12 @@ var ErrReturnWindowClosed = fmt.Errorf("return window has closed")
 // (migration 202610250009): restoring on any other order would mint
 // phantom stock for orders whose stock was never captured.
 func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerUserID string, isAdmin bool) error {
+	return r.cancelOrder(ctx, idOrNumber, customerUserID, isAdmin, "")
+}
+
+func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerUserID string, isAdmin bool, admissionPaymentID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1114,12 +1506,39 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&orderID, &status, &captured); err != nil {
 		return err
 	}
+	if admissionPaymentID != "" {
+		var confirmed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_receipts WHERE payment_id=$1 AND order_id=$2)`, admissionPaymentID, orderID).Scan(&confirmed); err != nil {
+			return err
+		}
+		if !confirmed {
+			return ErrRefundPrincipalUnresolved
+		}
+		if captured {
+			return errPaymentAlreadyCaptured
+		}
+	}
+	if err := assertOrderCancellationAllowedTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+		return err
+	}
+	if status == "cancelled" {
+		if err := cancelOrderCouponTx(ctx, tx, orderID, "customer_cancel"); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if err := lockCancellationInventoryTx(ctx, tx, orderID); err != nil {
+		return err
+	}
 	switch status {
 	case "processing", "pending", "picking", "picked", "packed":
 	default:
-		return fmt.Errorf("order in status %s cannot be cancelled", status)
+		return fmt.Errorf("%w: %s", ErrOrderCancellationState, status)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'cancelled', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
 		return err
 	}
 	if captured {
@@ -1188,6 +1607,18 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 			}
 		}
 	}
+	if err := cancelOrderCouponTx(ctx, tx, orderID, "customer_cancel"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET inventory_captured=false WHERE id=$1`, orderID); err != nil {
+		return err
+	}
+	if err := synchronizeVerifiedPaymentFactsTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	if err := ensureCancellationRefundsTx(ctx, tx, orderID, customerUserID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1197,70 +1628,51 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, idOrNumber, customerU
 	return nil
 }
 
-// ApplyDisputeRefundEffect implements D37 without touching
-// finance_repo.go (ResolveDispute itself is owned there and is only
-// called, never modified). After a dispute is resolved with a refund
-// action, the order becomes cancelled and its payment transaction
-// becomes refunded — the state live shows for the one resolved
-// delivery_undelivered dispute. It returns false when the dispute
-// does not exist or its action is not a refund (for example
-// release_to_seller), in which case nothing is changed.
-// Profit fields are preserved, as with CancelOrder (TODO U18).
-// TODO(U21): whether any real PSP money moved is unverified; this
-// only moves the order/payment state, it does not call a PSP refund.
+// ApplyDisputeRefundEffect is a compatibility projection. A resolved verdict
+// reserves principal in ResolveDispute's transaction; it cannot assert a bank
+// refund, cancel a partially dispatched order or restore physical inventory.
 func (r *OrderRepository) ApplyDisputeRefundEffect(ctx context.Context, disputeID string) (bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	var orderID sql.NullString
-	var action string
-	var disputeStatus string
-	var claimAmount int64
-	err = tx.QueryRowContext(ctx, `SELECT order_id, COALESCE(resolution_action, ''), COALESCE(status, ''), COALESCE(claim_amount, 0) FROM disputes WHERE id = $1`, disputeID).Scan(&orderID, &action, &disputeStatus, &claimAmount)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, err
-	}
-	if !strings.HasPrefix(action, "refund") || !orderID.Valid || orderID.String == "" {
+	var orderID, action, status string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,''),COALESCE(resolution_action,''),status FROM disputes WHERE id=$1`, disputeID).Scan(&orderID, &action, &status)
+	if err == sql.ErrNoRows {
 		return false, nil
 	}
-	orderRes, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'cancelled', payment_status = 'refunded', updated_at = NOW() WHERE id = $1 AND status <> 'cancelled'`, orderID.String)
 	if err != nil {
 		return false, err
 	}
-	orderTouched, _ := orderRes.RowsAffected()
-	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status = 'refunded' WHERE order_id = $1 AND status IN ('paid', 'pending')`, orderID.String); err != nil {
+	if !strings.HasPrefix(action, "refund") || orderID == "" {
+		return false, nil
+	}
+	if err = lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
 		return false, err
 	}
-	var payable int64
-	var customerID sql.NullString
-	var orderNumber string
-	_ = tx.QueryRowContext(ctx, `SELECT COALESCE(payable_amount, 0), customer_user_id, order_number FROM orders WHERE id = $1`, orderID.String).Scan(&payable, &customerID, &orderNumber)
-	_ = payable // kept for the read above; the notified figure is the claim amount, never the full payable_amount.
-	if err := tx.Commit(); err != nil {
+	var stable bool
+	if err = tx.QueryRowContext(ctx, `SELECT order_id=$2 AND resolution_action=$3 AND status='resolved' FROM disputes WHERE id=$1 FOR UPDATE`, disputeID, orderID, action).Scan(&stable); err != nil {
 		return false, err
 	}
-	// P0-8 (best-effort): refund state change - customer, claim amount.
-	// Critic fix (Phase 2):
-	//   - notify ONLY when the order UPDATE actually moved a row: a
-	//     retry on an already-cancelled order is a no-op, not a second
-	//     refund notice.
-	//   - the figure is the dispute CLAIM amount, never the full
-	//     payable_amount (the old row quoted the whole order total).
-	//   - NO second customer row when the dispute is already resolved:
-	//     ResolveDispute (which always runs first in the live
-	//     handleResolveDispute path) already told the customer the same
-	//     verdict + claim amount via notifyDisputeResolved. One
-	//     resolution, one customer row, one figure.
-	if orderTouched == 0 || disputeStatus == "resolved" || claimAmount <= 0 {
-		return true, nil
+	if !stable {
+		return false, ErrRefundPrincipalUnresolved
 	}
-	notifyRefundIssued(ctx, r.db, orderID.String, orderNumber, customerID.String, claimAmount, false, "")
-	return true, nil
+	var modern bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_refund_obligations WHERE order_id=$1 AND purpose='dispute' AND business_id=$2)`, orderID, disputeID).Scan(&modern); err != nil {
+		return false, err
+	}
+	if !modern {
+		// Preserve uncertain old decisions as review holds, never new cash payouts.
+		sources, err := refundRecordedSourcesTx(ctx, tx, orderID)
+		if err != nil {
+			return false, err
+		}
+		if err = reserveLegacyRefundEvidenceTx(ctx, tx, orderID, "system:dispute-review", sources); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
 }
 
 // ---- Customer returns engine (D36) ----
@@ -1787,6 +2199,16 @@ func (r *OrderRepository) CreateCustomerReturn(ctx context.Context, customerID, 
 	if _, err := tx.ExecContext(ctx, `SELECT id FROM orders WHERE id = $1 FOR UPDATE`, order.ID); err != nil {
 		return nil, err
 	}
+	var admissible bool
+	if err := tx.QueryRowContext(ctx, `SELECT status='delivered_confirmed' AND NOT profit_released AND (return_window_ends_at IS NULL OR return_window_ends_at>NOW()) AND customer_user_id::text=$2 FROM orders WHERE id=$1`, order.ID, customerID).Scan(&admissible); err != nil {
+		return nil, err
+	}
+	if !admissible {
+		return nil, ErrReturnWindowClosed
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
 	returnID := uuid.NewString()
 	now := time.Now()
 	// Destination (owner rule, Oct 28 2026): derived from the returned
@@ -1936,7 +2358,8 @@ func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeI
 }
 
 // ListCustomerReturnsForWarehouse lists returns on their way back to
-// (or at) the warehouse: approved or received. This is the engine
+// (or at) the warehouse: approved, received, or refunded with proven unshelved
+// units. A financial refund must not hide outstanding physical work. This is the engine
 // behind D10 warehouses/returns; Team 01's /warehouse/return-backs
 // stub route is left untouched and is not re-registered here.
 //
@@ -1953,10 +2376,36 @@ func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, d
 	return r.listCustomerReturnsQuery(ctx, `
 		SELECT `+customerReturnSelectColumns+`
 		FROM customer_returns
-		WHERE status IN ('approved', 'received')
+		WHERE (status IN ('approved', 'received') OR (status='refunded' AND EXISTS(SELECT 1 FROM warehouse_customer_return_bin_sources s WHERE s.return_id=customer_returns.id AND s.source_proven AND s.available_quantity>0)))
 		  AND ($1 = '' OR warehouse_id = $1 OR destination_supplier_warehouse_id = $1)
 		ORDER BY created_at DESC
 	`, dest)
+}
+
+func (r *OrderRepository) guardedReturnExec(ctx context.Context, id, query string, args ...any) (sql.Result, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var order string
+	if err = tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&order); err != nil {
+		return nil, err
+	}
+	if err = lockOrderFinanceTx(ctx, tx, order); err != nil {
+		return nil, err
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 func (r *OrderRepository) transitionCustomerReturn(ctx context.Context, id, fromStatus, toStatus, adminNote string) error {
@@ -1969,7 +2418,7 @@ func (r *OrderRepository) transitionCustomerReturn(ctx context.Context, id, from
 		q = `UPDATE customer_returns SET status = $1, updated_at = NOW() WHERE id = $2 AND status = $3`
 		args = []interface{}{toStatus, id, fromStatus}
 	}
-	res, err := r.db.ExecContext(ctx, q, args...)
+	res, err := r.guardedReturnExec(ctx, id, q, args...)
 	if err != nil {
 		return err
 	}
@@ -2014,7 +2463,7 @@ func (r *OrderRepository) RejectCustomerReturn(ctx context.Context, id, adminNot
 }
 
 func (r *OrderRepository) CancelCustomerReturn(ctx context.Context, id string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'cancelled', updated_at = NOW() WHERE id = $1 AND status IN ('requested', 'approved')`, id)
+	res, err := r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'cancelled', updated_at = NOW() WHERE id = $1 AND status IN ('requested', 'approved')`, id)
 	if err != nil {
 		return err
 	}
@@ -2033,9 +2482,9 @@ func (r *OrderRepository) ShipCustomerReturn(ctx context.Context, id, trackingNu
 	var res sql.Result
 	var err error
 	if prepaid == nil {
-		res, err = r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber)
+		res, err = r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber)
 	} else {
-		res, err = r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), prepaid = $3, updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber, *prepaid)
+		res, err = r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), prepaid = $3, updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber, *prepaid)
 	}
 	if err != nil {
 		return err
@@ -2086,6 +2535,16 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
 	var status string
 	var orderID string
 	var prepaid bool
@@ -2162,7 +2621,7 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, ErrReturnIncompleteQC
 	}
 	for _, item := range qc {
-		res, err := tx.ExecContext(ctx, `UPDATE return_items SET qc_status = $1, received_at = NOW() WHERE id = $2 AND return_id = $3`, item.QCStatus, item.ReturnItemID, id)
+		res, err := tx.ExecContext(ctx, `UPDATE return_items SET qc_status = $1, received_at = clock_timestamp() WHERE id = $2 AND return_id = $3`, item.QCStatus, item.ReturnItemID, id)
 		if err != nil {
 			return nil, err
 		}
@@ -2175,7 +2634,8 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	// Restock (GAP 6): the goods are physically back and their
 	// verdicts are recorded, so stock truth moves NOW, at receive —
 	// not at refund, which may lag or never be pressed.
-	if err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID); err != nil {
+	storageSourcesAvailable, err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2262,6 +2722,11 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	if affected == 0 {
 		return nil, sql.ErrNoRows
 	}
+	if storageSourcesAvailable && destWarehouseID.Valid && !destSupplierWarehouseID.Valid {
+		if err := creditCustomerReturnStorageTx(ctx, tx, id); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -2277,6 +2742,8 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	return settlement, nil
 }
 
+// The result reports whether the canonical captured-inventory model can prove
+// new storage sources. Historical unallocated stock remains outside fee history.
 // restockReceivedReturnTx credits a just-received customer return's
 // items back into inventory inside the receive transaction (GAP 6).
 // QC 'ok' units become sellable again through the canonical ledger,
@@ -2297,20 +2764,20 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 // inventory_captured must be set (mirrors CancelOrder — never mint
 // stock that was never captured), and the whole block is a no-op on
 // a database without the canonical inventory tables.
-func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) error {
+func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) (bool, error) {
 	var hasInventory bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.inventory_movements') IS NOT NULL AND to_regclass('public.inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
-		return err
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('inventory_movements') IS NOT NULL AND to_regclass('inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
+		return false, err
 	}
 	if !hasInventory {
-		return nil
+		return false, nil
 	}
 	var captured bool
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(inventory_captured, FALSE) FROM orders WHERE id = $1`, orderID).Scan(&captured); err != nil {
-		return err
+		return false, err
 	}
 	if !captured {
-		return nil
+		return false, nil
 	}
 	destination := ""
 	if destSupplierWarehouseID.Valid && destSupplierWarehouseID.String != "" {
@@ -2327,7 +2794,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		WHERE ri.return_id = $1
 	`, returnID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	type receivedItem struct {
 		id          string
@@ -2344,23 +2811,23 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		var it receivedItem
 		if err := rows.Scan(&it.id, &it.orderItemID, &it.qty, &it.qcStatus, &it.variantID, &it.productID, &it.supplierID, &it.originLabel); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return err
+		return false, err
 	}
 	rows.Close()
 	skuAccounting, err := hasSKUInventoryTx(ctx, tx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, it := range items {
 		handled, err := restoreCapturedReturnTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if handled {
 			continue
@@ -2371,14 +2838,14 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		}
 		covered, err := canonicalCoveredTx(ctx, tx, it.productID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !covered {
 			// First canonical row for a legacy product: seed its
 			// existing products.stock into the ledger first, or the
 			// sellable projection would silently erase it.
 			if err := ensureCanonicalCoverageTx(ctx, tx, it.productID, it.supplierID); err != nil {
-				return err
+				return false, err
 			}
 		}
 		metadata := fmt.Sprintf(`{"qc":%q,"destination":%q,"origin":%q}`, it.qcStatus, destination, it.originLabel)
@@ -2386,20 +2853,20 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 			"customer_return", toStatus, "customer", "custreturn:"+returnID,
 			"customer_return", returnID,
 			"crstk:"+returnID+":"+it.id+":"+suffix, actorUserID, "%s", metadata); err != nil {
-			return err
+			return false, err
 		}
 		if it.qcStatus == "ok" {
 			if err := syncProductStockTx(ctx, tx, it.productID); err != nil {
-				return err
+				return false, err
 			}
 			if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
 				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
-					return err
+					return false, err
 				}
 			}
 		}
 	}
-	return nil
+	return skuAccounting, nil
 }
 
 // recordReturnReversalsTx writes the GAP 6 money reversals for a
@@ -2416,7 +2883,7 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 // whole block is a no-op on a database without the events table.
 func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.Tx, returnID, orderID, actorUserID string) error {
 	var hasReturnEvents bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.customer_return_financial_events') IS NOT NULL`).Scan(&hasReturnEvents); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('customer_return_financial_events') IS NOT NULL`).Scan(&hasReturnEvents); err != nil {
 		return err
 	}
 	if !hasReturnEvents {
@@ -2435,26 +2902,25 @@ func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.T
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT ri.id::text, ri.qty, oi.wholesale_cost, oi.seller_margin, COALESCE(p.supplier_id, '')
+		SELECT ri.id::text, ri.qty, oi.wholesale_cost, oi.seller_margin, oi.id::text
 		FROM return_items ri
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
-		JOIN products p ON p.id = oi.product_id
 		WHERE ri.return_id = $1 AND ri.received_at IS NOT NULL AND ri.qc_status IN ('ok', 'defective')
 	`, returnID)
 	if err != nil {
 		return err
 	}
 	type refundedItem struct {
-		id         string
-		qty        int
-		unitCost   int64
-		unitMargin int64
-		supplierID string
+		id          string
+		qty         int
+		unitCost    int64
+		unitMargin  int64
+		orderItemID string
 	}
 	var items []refundedItem
 	for rows.Next() {
 		var it refundedItem
-		if err := rows.Scan(&it.id, &it.qty, &it.unitCost, &it.unitMargin, &it.supplierID); err != nil {
+		if err := rows.Scan(&it.id, &it.qty, &it.unitCost, &it.unitMargin, &it.orderItemID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2466,11 +2932,22 @@ func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.T
 	}
 	rows.Close()
 	for _, it := range items {
-		if it.supplierID != "" {
+		supplierID := ""
+		if it.unitCost > 0 {
+			var err error
+			supplierID, err = immutableOrderItemSupplierTx(ctx, tx, it.orderItemID)
+			if err != nil {
+				return err
+			}
+			if supplierID == "" {
+				return ErrFinancePrincipalUnresolved
+			}
+		}
+		if supplierID != "" {
 			if amount := it.unitCost * int64(it.qty); amount > 0 {
 				reason := fmt.Sprintf("برگشت هزینه کالا — مرجوعی مشتری %s / قلم %s", returnID, it.id)
 				if err := insertReturnReversalTx(ctx, tx, returnID, it.id, orderID,
-					it.supplierID, "", "product_cost", "supplier", it.supplierID,
+					supplierID, "", "product_cost", "supplier", supplierID,
 					amount, "crcb:"+returnID+":"+it.id, reason, actorUserID); err != nil {
 					return err
 				}
@@ -2539,6 +3016,16 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		return 0, nil, err
 	}
 	defer tx.Rollback()
+	var financeOrderID string
+	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&financeOrderID); err != nil {
+		return 0, nil, err
+	}
+	if err := lockOrderFinanceTx(ctx, tx, financeOrderID, true); err != nil {
+		return 0, nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return 0, nil, err
+	}
 	var customerID string
 	var orderID string
 	var status string
@@ -2549,6 +3036,13 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		FROM customer_returns WHERE id = $1 FOR UPDATE
 	`, id).Scan(&customerID, &orderID, &status, &shippingAmount, &shippingBearer); err != nil {
 		return 0, nil, err
+	}
+	var originalCustomer sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT customer_user_id::text FROM orders WHERE id=$1`, financeOrderID).Scan(&originalCustomer); err != nil {
+		return 0, nil, err
+	}
+	if orderID != financeOrderID || !originalCustomer.Valid || customerID != originalCustomer.String {
+		return 0, nil, ErrFinancePrincipalUnresolved
 	}
 	if status != "received" {
 		return 0, nil, fmt.Errorf("only a received return can be refunded (status is %s)", status)
@@ -2592,10 +3086,14 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		`, customerID, sum)
 		return err
 	}
-	if err := creditWallet(amount); err != nil {
+	if err := r.recordReturnReversalsTx(ctx, tx, id, orderID, actorUserID); err != nil {
 		return 0, nil, err
 	}
-	if err := r.recordReturnReversalsTx(ctx, tx, id, orderID, actorUserID); err != nil {
+	reservation, err := reserveOrderRefundTx(ctx, tx, orderID, "customer_return", id, "wallet", actorUserID, amount, "")
+	if err != nil {
+		return 0, nil, err
+	}
+	if err = creditReservedWalletRefundsTx(ctx, tx, reservation.IDs); err != nil {
 		return 0, nil, err
 	}
 

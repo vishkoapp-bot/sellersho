@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { CustomerReturnBinEntry } from './CustomerReturnBinEntry';
 import { wmsApi } from '../../services/wmsApi';
 import { apiRequest } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
@@ -287,6 +288,7 @@ export const WarehouseCustomerReturnsTab: React.FC = () => {
           </div>
           {r.reason && <p className="text-[11px] text-slate-600">دلیل: {r.reason}</p>}
           {r.trackingNumber && <p className="text-[11px] text-slate-500">کد رهگیری: {r.trackingNumber}</p>}
+          {(r.status === 'received' || r.status === 'refunded') && <CustomerReturnBinEntry returnID={r.id} />}
         </div>
       ))}
     </ListShell>

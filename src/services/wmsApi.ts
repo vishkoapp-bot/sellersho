@@ -41,6 +41,14 @@ export interface InboundShipmentDto {
 }
 
 export interface QCQueueItemDto {
+  reconciliationRequired?: boolean;
+  /** Exact immutable allocation; required when one product has multiple SKU lines. */
+  receiptLineId: string;
+  variantId?: string;
+  passedQuantity: number;
+  failedQuantity: number;
+  shortageQuantity: number;
+  remainingQuantity: number;
   id: string;
   productId: string;
   productTitle: string;
@@ -72,6 +80,12 @@ export interface ShippingManifestDto {
 }
 
 export interface PutawayTaskDto {
+  variantId?: string;
+  variantName?: string;
+  variantSpnc?: string;
+  measurementRevision?: string;
+  measurementSource?: string;
+  reconciliationRequired?: boolean;
   id: string;
   productId: string;
   title: string;
@@ -87,7 +101,20 @@ export interface PutawayTaskDto {
   measurementStatus: string;
 }
 
+export interface ReturnBinSourceDto {
+  returnItemId: string; productId: string; variantId: string; productTitle: string; variantName: string; variantSpnc: string;
+  warehouseId: string; qcStatus: string; quantity: number; availableQuantity: number; sourceProven: boolean;
+  physical: { lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; verified: boolean; revision: string };
+  bins: { binCode: string; remainingVolumeCm3: number; remainingWeightGrams: number }[];
+}
+
 export const wmsApi = {
+  getReturnBinSources: (returnID: string) => apiRequest<ReturnBinSourceDto[]>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/putaway-sources`, { method: 'GET', auth: true }),
+  placeReturnInBin: async (returnID: string, itemID: string, payload: { binCode: string; quantity: number; reason: string }, key: string) => {
+    const result = await apiRequest<{ id: string; quantity: number }>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/items/${encodeURIComponent(itemID)}/putaway`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': key }, body: JSON.stringify(payload) });
+    if (!result?.id || result.quantity !== payload.quantity) throw new Error('پاسخ ثبت کامل نیست؛ همان درخواست را دوباره ارسال کنید.');
+    return result;
+  },
   getBins: async (): Promise<WarehouseBinDto[]> => {
     const data = await apiRequest<WarehouseBinDto[] | { bins?: WarehouseBinDto[]; data?: WarehouseBinDto[] }>('/warehouse/bins', {
       method: 'GET',
@@ -109,7 +136,11 @@ export const wmsApi = {
   scanInboundItem: (inboundId: string, payload: { productId?: string; barcode?: string; quantity: number }) => apiRequest<{ success: boolean; scannedCount: number }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/scan-item`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   completeReceiving: (inboundId: string) => apiRequest<{ success: boolean; status: string }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/complete`, { method: 'POST', auth: true }),
   getQCQueue: () => apiRequest<{ success: boolean; queue: QCQueueItemDto[] }>('/warehouse/qc/queue', { method: 'GET', auth: true }),
-  completeQC: (productId: string, payload: { inboundId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string }) => apiRequest<{ success: boolean; status: string }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  completeQC: async (productId: string, payload: { inboundId: string; receiptLineId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string }) => {
+    const result = await apiRequest<{ success: boolean; status: string }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) });
+    if (result?.success !== true || result.status !== 'completed') throw new Error('پاسخ ثبت QC کامل نیست؛ همان نتیجه را دوباره ارسال کنید.');
+    return result;
+  },
 
   getManifests: async (): Promise<ShippingManifestDto[]> => {
     return apiRequest<ShippingManifestDto[]>('/warehouse/manifests', {
@@ -131,7 +162,7 @@ export const wmsApi = {
   },
 
   updateBinCapacity: (binCode: string, payload: { capacityVolumeCm3: number; maxWeightGrams?: number; verify: boolean }) => apiRequest(`/warehouse/bins/${encodeURIComponent(binCode)}/capacity`, { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
-  recordMeasurement: (productId: string, payload: { lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; reason: string }) => apiRequest(`/warehouse/products/${encodeURIComponent(productId)}/measurements`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  recordMeasurement: (productId: string, payload: { variantId?: string; lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; reason: string }) => apiRequest(`/warehouse/products/${encodeURIComponent(productId)}/measurements`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   assignPutaway: (productId: string, binLocation: string, quantity: number) => apiRequest<{ taskId: string }>('/warehouse/putaway/' + encodeURIComponent(productId) + '/assign', { method: 'POST', auth: true, body: JSON.stringify({ binLocation, quantity }) }),
   confirmPutaway: (taskId: string) => apiRequest(`/warehouse/putaway/${encodeURIComponent(taskId)}/confirm`, { method: 'POST', auth: true }),
   getPutawayQueue: () => apiRequest<{ success: boolean; queue: PutawayTaskDto[] }>('/warehouse/putaway/queue', { method: 'GET', auth: true }),

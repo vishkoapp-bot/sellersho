@@ -1,0 +1,64 @@
+{
+  "profiles": [
+    {
+      "name": "api-100rps",
+      "file": "commerce-rolling.mjs",
+      "status": "IMPLEMENTED30s/30min/2h;30s failed local baseline retained;long durations not executed;full financial/return oracle pending"
+    },
+    {
+      "name": "users-1000",
+      "status": "IMPLEMENTED90s/30min;90s failed local baseline retained;full30min not executed",
+      "vus": 1000,
+      "think_time_seconds": "uniform5..15",
+      "requires": "independent carts, orders, sessions and actual throughput",
+      "file": "users-1000.mjs"
+    },
+    {
+      "name": "login-ramp",
+      "status": "IMPLEMENTED: OTP-only local PASS;OTP+background FAILED;all raw counts retained",
+      "distinct_users": 1000,
+      "seconds": 60,
+      "requires": "actual challenge/verification/password calls, SMS double, background browsing at combined 100 API RPS"
+    },
+    {
+      "name": "hot-sku",
+      "status": "IMPLEMENTED/EXECUTED:five paid/95stock conflicts/10duplicate callbacks/stock and amount assertions matched;FAILED token and callback latency;100principals only;acceptance OPEN",
+      "contenders": 100,
+      "stock": 5,
+      "successful_captures": 5
+    },
+    {
+      "name": "hot-account",
+      "status": "OPEN",
+      "requires": "refund/payout/settlement contention and signed balance oracle"
+    },
+    {
+      "name": "staff-report",
+      "status": "IMPLEMENTED30second role-scoped variant;not exercised;acceptance OPEN",
+      "total_api_rps": 100,
+      "requires": "warehouse/seller/admin roles and production worker schedule"
+    },
+    {
+      "name": "cold-cache",
+      "status": "OPEN",
+      "requires": "fresh isolated Redis, separately labeled warm run"
+    },
+    {
+      "name": "assets-tls-browser",
+      "status": "IMPLEMENTED10anonymous cold/warm contexts;internal image setup failed;bounded host relay FAILED before HTTP/zero rendered pages;timings excluded;acceptance OPEN",
+      "requires": "built frontend and real browser cohort; extra assets/domain authorization requests counted"
+    },
+    {
+      "name": "recovery",
+      "status": "OPEN;pure100/200RPS arrival planner only;continuous headroom/recovery integration not implemented",
+      "burst_rps": 200,
+      "burst_seconds": 300,
+      "recovery_seconds": 120
+    },
+    {
+      "name": "faults",
+      "status": "OPEN",
+      "requires": "provider timeouts/ambiguous outcomes, restart boundaries, duplicate callback and conservation"
+    }
+  ]
+}

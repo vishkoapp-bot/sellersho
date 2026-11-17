@@ -17,6 +17,7 @@ import (
 
 	"github.com/drup/platform/internal/domain"
 	phoneutil "github.com/drup/platform/internal/phone"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -1410,31 +1411,55 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	queryProduct := `
 		INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, platform_margin, is_original, stock, image_url, description, warehouse_name, preparation_days, supplier_warranty, specs, fulfillment_method, barcode, brand, length_mm, width_mm, height_mm, weight_grams, shipping_class, tax_class, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20, $21, $22, $23, $24, $25, NOW(), NOW())
-		ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, supplier_base_cost = EXCLUDED.supplier_base_cost, image_url = EXCLUDED.image_url, description = EXCLUDED.description, specs = EXCLUDED.specs, brand = EXCLUDED.brand,
-		                               barcode = CASE WHEN EXCLUDED.barcode IS NOT NULL THEN EXCLUDED.barcode ELSE products.barcode END
+		ON CONFLICT (id) DO NOTHING
 	`
 	originalPrice := int64(float64(baseCost) * 1.25)
-	// Fix 9: distinguish a first approval (sync the full gallery) from a
-	// re-approval (leave the supplier-curated gallery untouched).
-	var existedBefore bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&existedBefore); err != nil {
-		return "", fmt.Errorf("failed to check product existence: %w", err)
+	// Derive first publication from the atomic insert, not an unlocked EXISTS:
+	// distinct historical proposals may name the same future product identity.
+	productInsert, err := tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight, shipClass, taxClass)
+	if err != nil {
+		return "", fmt.Errorf("failed to insert product: %w", err)
 	}
-	if existedBefore && IsProductV2(data) {
-		return "", fmt.Errorf("published SKU identity and inventory require an explicit product amendment")
+	inserted, err := productInsert.RowsAffected()
+	if err != nil {
+		return "", err
 	}
+	existedBefore := inserted == 0
 	if existedBefore {
 		var owner string
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id=$1`, productID).Scan(&owner); err != nil {
+		var version int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,''),COALESCE((to_jsonb(p)->>'schema_version')::int,0),stock FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&owner, &version, &stock); err != nil {
 			return "", err
 		}
 		if owner != requestedBy {
 			return "", fmt.Errorf("product belongs to another supplier")
 		}
+		if version >= 2 || IsProductV2(data) {
+			return "", fmt.Errorf("published SKU identity and inventory require an explicit product amendment")
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE products SET supplier_base_cost=$2,image_url=$3,description=$4,specs=$5,brand=$6,barcode=COALESCE(NULLIF($7,''),barcode) WHERE id=$1`, productID, baseCost, imgURL, desc, specsBytes, brand, barcode); err != nil {
+			return "", err
+		}
 	}
-	_, err = tx.ExecContext(ctx, queryProduct, productID, title, slug, categorySlug, requestedBy, originalPrice, baseCost, platformMargin, isOriginal, stock, imgURL, desc, warehouse, prepDays, warranty, specsBytes, fulfillmentMethod, barcode, brand, measLength, measWidth, measHeight, measWeight, shipClass, taxClass)
-	if err != nil {
-		return "", fmt.Errorf("failed to insert product: %w", err)
+	// The reviewed source selection must be attached before initial stock is
+	// allocated. A source label/current profile is never evidence of ownership.
+	// Existing publications retain their origin; later edits use their own API.
+	if !existedBefore {
+		if rawSource, exists := data["supplierWarehouseId"]; exists && rawSource != nil {
+			source, ok := rawSource.(string)
+			if !ok {
+				return "", fmt.Errorf("invalid supplier publication origin")
+			}
+			if source = strings.TrimSpace(source); source != "" {
+				var ownedSource string
+				if err := tx.QueryRowContext(ctx, `SELECT id FROM supplier_warehouses WHERE id=$1 AND supplier_id=$2 AND is_active FOR SHARE`, source, requestedBy).Scan(&ownedSource); err != nil {
+					return "", fmt.Errorf("publication requires an active owned supplier origin: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE products SET origin_supplier_warehouse_id=$1 WHERE id=$2`, ownedSource, productID); err != nil {
+					return "", err
+				}
+			}
+		}
 	}
 
 	// Fix 9: persist the proposal's full gallery into product_images so it
@@ -1626,8 +1651,8 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	// keeps the products.stock projection in sync), and create a default
 	// variant so the SKU engine can see it. Re-approvals are idempotent
 	// (upsert + EXISTS guard).
-	if requestedBy != "" && !IsProductV2(data) {
-		if err := setSupplierSellableTotalTx(ctx, tx, productID, requestedBy, stock); err != nil {
+	if !existedBefore && requestedBy != "" && !IsProductV2(data) {
+		if err := seedSupplierInitialStockTx(ctx, tx, productID, requestedBy, stock); err != nil {
 			return "", fmt.Errorf("failed to seed supplier inventory for %s: %w", productID, err)
 		}
 	}
@@ -1847,30 +1872,11 @@ func (r *SupplierRepository) GetSupplierProducts(ctx context.Context, supplierID
 	return products, nil
 }
 
-// setSupplierSellableTotalTx sets the supplier-owned sellable balance for a
-// product to total, inside the caller's transaction.
-//
-// TODO (team-00, live-parity): this helper was referenced by ApproveProposal
-// and UpdateProductStock, but its defining file (inventory_unify.go, named by
-// migration 202610170001) was never committed in any branch, so its exact live
-// semantics are unverified. This is the minimal version matching every call
-// site and the comments at those sites:
-//   - the supplier-owned sellable row is the one
-//     debitSupplierSellableForQCReceiptTx identifies: owner_type='supplier',
-//     location_type='supplier', location_key='supplier:'+supplierID,
-//     status='sellable';
-//   - that row is upserted to exactly total (clamped at zero, never negative);
-//   - other sellable rows (e.g. warehouse-held) are untouched, so after the
-//     sync below the products.stock projection may legitimately exceed total
-//     (see UpdateProductStock's comment);
-//   - the projection is re-synced via syncProductStockTx, which is a no-op for
-//     products with no balance rows (legacy path keeps products.stock).
-//
-// No inventory_movements row is written: neither call site passes an actor or
-// a reference, and inventing one would fabricate audit history. The new row
-// is marked reconciled=FALSE because supplier-declared stock has not been
-// warehouse-reconciled; an existing row keeps its reconciled flag.
-func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
+// First publication seeds a declared lot independently from later aggregate edits.
+func seedSupplierInitialStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
+	if total < 0 || int64(total) > 2147483647 {
+		return ErrStockAdjustmentInput
+	}
 	var version int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&version); err != nil {
 		return err
@@ -1878,55 +1884,26 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, productID, supp
 	if version >= 2 {
 		return fmt.Errorf("tracked product stock must be changed for the selected SKU")
 	}
-	if total < 0 {
-		total = 0
+	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
+	if err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO inventory_balances (id, product_id, supplier_id, owner_type, location_type, location_key, status, quantity, reconciled)
 		VALUES ($1, $2, $3, 'supplier', 'supplier', $4, 'sellable', $5, FALSE)
 		ON CONFLICT (product_id, owner_type, location_type, location_key, status) WHERE variant_id IS NULL
 		DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()`,
-		"INV-"+uuid.NewString(), productID, supplierID, "supplier:"+supplierID, total); err != nil {
+		"INV-"+uuid.NewString(), productID, supplierID, location, total); err != nil {
 		return err
 	}
 	return syncProductStockTx(ctx, tx, productID)
 }
 
-// UpdateProductStock updates inventory for a product through the canonical
-// inventory_balances ledger: the supplier-owned sellable balance is adjusted so
-// the canonical sellable total equals newStock, and the products.stock
-// projection is re-synced. Warehouse-held sellable stock is never reduced by a
-// supplier edit (the supplier row is clamped at zero); in that case the stored
-// projection legitimately exceeds newStock.
-func (r *SupplierRepository) UpdateProductStock(ctx context.Context, supplierID, productID string, newStock int, reason string) error {
-	if newStock < 0 {
-		return fmt.Errorf("stock cannot be negative")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM products WHERE id = $1 AND supplier_id = $2)`,
-		productID, supplierID).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("product %s not found", productID)
-	}
-	if err := setSupplierSellableTotalTx(ctx, tx, productID, supplierID, newStock); err != nil {
-		return err
-	}
-	// P2-9: persist the caller-supplied reason in audit_logs instead of
-	// silently dropping it — «who changed stock/price and why» must be traceable.
-	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_stock_update", map[string]interface{}{
-		"product_id": productID, "new_stock": newStock, "reason": reason,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit()
+// UpdateProductStock retains the legacy aggregate API; HTTP uses AdjustProductStock
+// to retain the actor and return the verified committed projection.
+func (r *SupplierRepository) UpdateProductStock(ctx context.Context, supplier, product string, total int, reason string) error {
+	_, err := r.AdjustProductStock(ctx, supplier, product, "", total, reason, "")
+	return err
 }
 
 type SupplierReturnRequest struct {
@@ -1960,6 +1937,8 @@ func (r *SupplierRepository) CreateReturnRequest(ctx context.Context, supplierID
 }
 
 func (r *SupplierRepository) CreateReturnRequestWithIdempotency(ctx context.Context, supplierID, productID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if quantity <= 0 || (method != "supplier_collect" && method != "postal") || strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("invalid return request")
 	}
@@ -1973,6 +1952,21 @@ func (r *SupplierRepository) CreateReturnRequestWithIdempotency(ctx context.Cont
 		return nil, err
 	}
 	defer tx.Rollback()
+	var prefix TransactionLockSet
+	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "suppliers", ID: supplierID}); err != nil {
+		return nil, err
+	}
+	var replayProduct string
+	replayErr := tx.QueryRowContext(ctx, `SELECT product_id FROM supplier_return_requests WHERE idempotency_key=$1 AND supplier_id=$2`, idempotencyKey, supplierID).Scan(&replayProduct)
+	if replayErr != nil && replayErr != sql.ErrNoRows {
+		return nil, replayErr
+	}
+	if replayErr == nil && replayProduct != productID {
+		return nil, fmt.Errorf("idempotency key already used for a different return request")
+	}
+	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "products", ID: productID}); err != nil {
+		return nil, err
+	}
 	var existing SupplierReturnRequest
 	var existingCreated time.Time
 	err = tx.QueryRowContext(ctx, `
@@ -2332,7 +2326,19 @@ func (r *SupplierRepository) consumeReturnReservations(ctx context.Context, tx *
 	for _, item := range reservations {
 		totalConsumed += item.quantity
 	}
-	if err := decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed); err != nil {
+	if err := releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actorUserID); err != nil {
+		return err
+	}
+	known, err := hasKnownStorageProductTx(ctx, tx, productID)
+	if err != nil {
+		return err
+	}
+	if known {
+		err = consumeStorageBusinessEventTx(ctx, tx, "supplier_return", returnID, actorUserID)
+	} else {
+		err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed)
+	}
+	if err != nil {
 		return err
 	}
 	return nil
@@ -2391,6 +2397,8 @@ var ErrSupplierReturnNotFound = errors.New("مرجوعی تأمین‌کننده
 var ErrProposalNotPending = errors.New("proposal is not pending")
 
 func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actorUserID, idempotencyKey string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return fmt.Errorf("idempotency key required")
 	}
@@ -2422,6 +2430,9 @@ func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actor
 	}
 	if parcelCount == 0 || parcelCount != confirmedCount {
 		return fmt.Errorf("all parcels must be confirmed before handover")
+	}
+	if err = lockReturnDeparturePhysicalTx(ctx, tx, returnID, productID, supplierID); err != nil {
+		return err
 	}
 	if err := r.consumeReturnReservations(ctx, tx, returnID, productID, supplierID, actorUserID); err != nil {
 		return err
@@ -2738,6 +2749,13 @@ var ErrInboundProductForbidden = errors.New("این کالا متعلق به ت�
 
 // CreateInbound registers a new ASN shipment to the warehouse
 func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID string, data map[string]interface{}) (string, error) {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	sourceKind, _ := data["sourceKind"].(string)
+	if sourceKind != "" && sourceKind != "transfer" {
+		return "", ErrInboundProvenance
+	}
+	sourceRequested, _ := data["supplierWarehouseId"].(string)
 	inboundID := "INB-" + uuid.NewString()
 	carrier, _ := data["carrier"].(string)
 	if carrier == "" {
@@ -2749,6 +2767,7 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 	}
 	notes, _ := data["notes"].(string)
 
+	sourceWarehouse := ""
 	itemsCount := 0
 	cartonsCount := 0
 	var itemsList []interface{}
@@ -2772,6 +2791,14 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 				if version >= 2 {
 					return "", fmt.Errorf("%w: برای کالای دارای SKU از مسیر محموله کارتن و انتخاب تنوع استفاده کنید", ErrInboundInput)
 				}
+				var source string
+				if err := r.db.QueryRowContext(ctx, `SELECT w.id FROM products p JOIN supplier_warehouses w ON w.id=COALESCE(NULLIF($3,''),p.origin_supplier_warehouse_id) AND w.supplier_id=p.supplier_id AND w.is_active WHERE p.id=$1 AND p.supplier_id=$2`, productID, supplierID, sourceRequested).Scan(&source); err != nil {
+					return "", fmt.Errorf("%w: explicit owned inbound source is required", ErrInboundInput)
+				}
+				if sourceWarehouse != "" && sourceWarehouse != source {
+					return "", fmt.Errorf("%w: inbound items require one source warehouse", ErrInboundInput)
+				}
+				sourceWarehouse = source
 				itemsCount += int(q)
 				cartonsCount += int(c)
 			} else {
@@ -2829,11 +2856,37 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 		}
 	}
 	query := `
-		INSERT INTO inbound_shipments (id, supplier_id, supplier_name, warehouse_id, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, notes, items, dispatch_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'scheduled', $10, $11, $12, NOW())
+		INSERT INTO inbound_shipments (id, supplier_id, supplier_name, warehouse_id, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, notes, items, dispatch_at, created_at,supplier_warehouse_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'scheduled', $10, $11, $12, NOW(),$13)
 	`
-	_, err = r.db.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	transferLines := []InboundTransferLine{}
+	parents := []inventoryCaptureItem{}
+	for _, raw := range itemsList {
+		m := raw.(map[string]interface{})
+		pid := m["product_id"].(string)
+		q := int(m["quantity"].(float64))
+		parents = append(parents, inventoryCaptureItem{ProductID: pid})
+		transferLines = append(transferLines, InboundTransferLine{ProductID: pid, Quantity: q, SourceKind: "transfer", Source: InventoryOrigin{Type: "supplier", SupplierID: supplierID, SupplierWarehouseID: sourceWarehouse}})
+	}
+	if err := LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}); err != nil {
+		return "", err
+	}
+	if err := lockInventoryParentsTx(ctx, tx, parents); err != nil {
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt, sourceWarehouse)
+	if err != nil {
+		return "", err
+	}
+	if err := reserveInboundTransferTx(ctx, tx, inboundID, supplierID, warehouseID, transferLines); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	// P0-15 (best-effort): inbound created - warehouse staff.
@@ -2931,45 +2984,73 @@ func (r *SupplierRepository) enrichInboundItems(ctx context.Context, list []Inbo
 // dispatched_at (live's tn «ارسال شد» button). Only the owning supplier's
 // scheduled row moves; anything else is sql.ErrNoRows.
 func (r *SupplierRepository) DispatchInbound(ctx context.Context, supplierID, inboundID string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE inbound_shipments SET status = 'in_transit', dispatched_at = NOW()
-		WHERE id = $1 AND supplier_id = $2 AND status = 'scheduled'
-	`, inboundID, supplierID)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	// P0-15 (best-effort): inbound dispatched, in transit - warehouse staff.
-	supName := supplierID
-	if sup, serr := r.GetSupplierByID(ctx, supplierID); serr == nil && sup != nil {
-		supName = sup.Name
-	}
-	notifyInbound(ctx, r.db, inboundID, supName, true)
-	return nil
+	return r.changeInboundTransfer(ctx, supplierID, inboundID, false)
 }
-
-// CancelInbound moves a scheduled inbound to cancelled (live's tn «لغو»
-// button), with the same ownership/state guard as DispatchInbound.
 func (r *SupplierRepository) CancelInbound(ctx context.Context, supplierID, inboundID string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE inbound_shipments SET status = 'cancelled'
-		WHERE id = $1 AND supplier_id = $2 AND status = 'scheduled'
-	`, inboundID, supplierID)
+	return r.changeInboundTransfer(ctx, supplierID, inboundID, true)
+}
+func (r *SupplierRepository) changeInboundTransfer(ctx context.Context, supplier, inbound string, cancel bool) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
+	defer tx.Rollback()
+	if err := lockInboundShipmentTx(ctx, tx, inbound); err != nil {
+		return err
+	}
+	var owner string
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id FROM inbound_shipments WHERE id=$1`, inbound).Scan(&owner); err != nil {
+		return err
+	}
+	if owner != supplier {
+		return ErrInboundProvenance
+	}
+	if !cancel {
+		var pending, cancelled int
+		if err := tx.QueryRowContext(ctx, `SELECT SUM(quantity-dispatched_quantity-cancelled_quantity),SUM(cancelled_quantity) FROM inbound_inventory_lines WHERE shipment_id=$1`, inbound).Scan(&pending, &cancelled); err != nil {
+			return err
+		}
+		if cancelled > 0 {
+			return ErrInboundProvenance
+		}
+		if pending == 0 {
+			return tx.Commit()
+		}
+	}
+	if cancel {
+		err = cancelInboundTransferTx(ctx, tx, inbound)
+	} else {
+		err = dispatchInboundTransferTx(ctx, tx, inbound)
+	}
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		return sql.ErrNoRows
+	status := "in_transit"
+	if cancel {
+		var dispatched int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(dispatched_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inbound).Scan(&dispatched); err != nil {
+			return err
+		}
+		if dispatched == 0 {
+			status = "cancelled"
+		} else {
+			return tx.Commit()
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE inbound_shipments SET status=$2::text,dispatched_at=CASE WHEN $2::text='in_transit' THEN COALESCE(dispatched_at,NOW()) ELSE dispatched_at END WHERE id=$1`, inbound, status); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if !cancel {
+		supName := supplier
+		if sup, err := r.GetSupplierByID(ctx, supplier); err == nil && sup != nil {
+			supName = sup.Name
+		}
+		notifyInbound(ctx, r.db, inbound, supName, true)
 	}
 	return nil
 }
@@ -3009,81 +3090,11 @@ func newCartonShipmentCode() string {
 	return string(b[:])
 }
 
-// CreateCartonShipment inserts a carton shipment (status 'draft', the
-// only fresh state the source CHECK allows; live's an map also covers
-// draft as «پیش‌نویس») with its variant lines. Variants must belong to
-// this supplier's products. Idempotency is per-call: live's client sends
-// no key for createShipment, so no replay handling is added.
-func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierID string, items []CartonShipmentItem) (*CartonShipment, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("at least one variant line is required")
-	}
-	seen := map[string]bool{}
-	for _, it := range items {
-		if it.VariantID == "" || it.ExpectedQty <= 0 || seen[it.VariantID] {
-			return nil, fmt.Errorf("shipment requires unique SKU lines and positive quantities")
-		}
-		seen[it.VariantID] = true
-	}
-	for _, it := range items {
-		if it.VariantID == "" || it.ExpectedQty <= 0 {
-			return nil, fmt.Errorf("invalid shipment line")
-		}
-		var owned bool
-		if err := r.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM product_variants pv
-				JOIN products p ON p.id = pv.product_id
-				WHERE pv.id = $1 AND p.supplier_id = $2)
-		`, it.VariantID, supplierID).Scan(&owned); err != nil {
-			return nil, err
-		}
-		if !owned {
-			return nil, sql.ErrNoRows
-		}
-	}
-	var id, code string
-	inserted := false
-	for attempt := 0; attempt < 5; attempt++ {
-		code = newCartonShipmentCode()
-		if code == "" {
-			return nil, fmt.Errorf("could not generate shipment code")
-		}
-		id = uuid.NewString()
-		_, err := r.db.ExecContext(ctx, `
-			INSERT INTO shipments (id, shipment_code, supplier_id, status)
-			VALUES ($1, $2, $3, 'draft')
-		`, id, code, supplierID)
-		if err == nil {
-			inserted = true
-			break
-		}
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			continue
-		}
-		return nil, err
-	}
-	if !inserted {
-		return nil, fmt.Errorf("could not generate a unique shipment code")
-	}
-	for _, it := range items {
-		if _, err := r.db.ExecContext(ctx, `
-			INSERT INTO shipment_items (shipment_id, variant_id, expected_qty)
-			VALUES ($1, $2, $3)
-		`, id, it.VariantID, it.ExpectedQty); err != nil {
-			return nil, err
-		}
-	}
-	var out CartonShipment
-	err := r.db.QueryRowContext(ctx, `
-		SELECT s.id, s.shipment_code,
-			(SELECT COUNT(*) FROM shipment_items WHERE shipment_id = s.id),
-			s.status, s.created_at
-		FROM shipments s WHERE s.id = $1
-	`, id).Scan(&out.ID, &out.ShipmentCode, &out.ItemCount, &out.Status, &out.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
+// CreateCartonShipment creates one atomic carton. The optional second argument is
+// a supplier-scoped creation key; HTTP callers must supply it. Legacy internal
+// callers without a key receive a new operation identity on each invocation.
+func (r *SupplierRepository) CreateCartonShipment(ctx context.Context, supplierID string, items []CartonShipmentItem, destination ...string) (*CartonShipment, error) {
+	return r.createCartonShipment(ctx, supplierID, items, destination...)
 }
 
 // ListCartonShipments returns this supplier's carton shipments, newest
@@ -3185,6 +3196,8 @@ type WarehouseReceiveItem struct {
 // live's UI). An already-'received' shipment is rejected, matching live's
 // UI disabling the form for received shipments.
 func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code string, items []WarehouseReceiveItem) (string, error) {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	if len(items) == 0 {
 		return "", fmt.Errorf("at least one received item is required")
 	}
@@ -3194,12 +3207,38 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 	}
 	defer tx.Rollback()
 	var shipmentID, status string
-	err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1) FOR UPDATE`, code).Scan(&shipmentID, &status)
+	err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1)`, code).Scan(&shipmentID, &status)
 	if err != nil {
 		return "", err
 	}
-	if status == "received" {
-		return "", fmt.Errorf("shipment already received")
+	var provenance bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inbound_inventory_lines WHERE shipment_id=$1)`, shipmentID).Scan(&provenance); err != nil {
+		return "", err
+	}
+	if !provenance {
+		// Already-accounted history can be acknowledged without recreating a source.
+		// Every submitted cumulative quantity and QC state must match that old effect.
+		for _, item := range items {
+			var accounted int
+			var oldQC string
+			if err := tx.QueryRowContext(ctx, `SELECT inventory_received_qty,qc_status FROM shipment_items WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, item.VariantID).Scan(&accounted, &oldQC); err != nil {
+				return "", ErrInboundProvenance
+			}
+			qc := item.QCStatus
+			if qc == "pass" {
+				qc = "passed"
+			}
+			if qc == "fail" {
+				qc = "failed"
+			}
+			if accounted <= 0 || accounted != item.ReceivedQty || qc != oldQC {
+				return "", ErrInboundProvenance
+			}
+		}
+		return status, tx.Commit()
+	}
+	if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
+		return "", err
 	}
 	for _, item := range items {
 		var stored string
@@ -3241,7 +3280,7 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 	if total > 0 && fully == total {
 		newStatus = "received"
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = NOW() WHERE id = $2`, newStatus, shipmentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = COALESCE(received_at,NOW()) WHERE id = $2`, newStatus, shipmentID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -3757,23 +3796,35 @@ func (r *SupplierRepository) ReorderVariantImages(ctx context.Context, supplierI
 // No admin re-approval (P0 decision D6); weight is not cost.
 func (r *SupplierRepository) UpdateVariantPhysical(ctx context.Context, supplierID, productID, variantID string, weight, length, width, height *int) (SupplierProductVariant, error) {
 	var out SupplierProductVariant
-	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
+	if err := ValidateVariantPhysicalValues(weight, length, width, height); err != nil {
+		return out, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return out, err
 	}
-	if !owns {
-		return out, sql.ErrNoRows
+	defer tx.Rollback()
+	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}, TransactionRowLock{Table: "products", ID: productID}, TransactionRowLock{Table: "product_variants", ID: variantID}); err != nil {
+		return out, err
 	}
-	toNull := func(v *int) sql.NullInt32 {
-		if v == nil {
-			return sql.NullInt32{}
+	var oldWeight, oldLength, oldWidth, oldHeight sql.NullInt64
+	if err = tx.QueryRowContext(ctx, `SELECT v.weight_grams,v.length_mm,v.width_mm,v.height_mm FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=$1 AND p.id=$2 AND p.supplier_id=$3`, variantID, productID, supplierID).Scan(&oldWeight, &oldLength, &oldWidth, &oldHeight); err != nil {
+		return out, err
+	}
+	same := func(old sql.NullInt64, value *int) bool {
+		return (value == nil && !old.Valid) || (value != nil && old.Valid && old.Int64 == int64(*value))
+	}
+	if !same(oldWeight, weight) || !same(oldLength, length) || !same(oldWidth, width) || !same(oldHeight, height) {
+		if err = invalidatePendingPhysicalReservationsTx(ctx, tx, productID, variantID); err != nil {
+			return out, err
 		}
-		return sql.NullInt32{Int32: int32(*v), Valid: true}
+		if _, err = tx.ExecContext(ctx, `UPDATE product_variants SET weight_grams=$1,length_mm=$2,width_mm=$3,height_mm=$4 WHERE id=$5 AND product_id=$6`, weight, length, width, height, variantID, productID); err != nil {
+			return out, err
+		}
 	}
-	if _, err := r.db.ExecContext(ctx, `UPDATE product_variants
-		SET weight_grams = $1, length_mm = $2, width_mm = $3, height_mm = $4
-		WHERE id = $5 AND product_id = $6`,
-		toNull(weight), toNull(length), toNull(width), toNull(height), variantID, productID); err != nil {
+	if err = tx.Commit(); err != nil {
 		return out, err
 	}
 	return r.GetSupplierVariant(ctx, supplierID, productID, variantID)
@@ -4393,19 +4444,33 @@ func (r *SupplierRepository) RespondDiscrepancy(ctx context.Context, supplierID,
 }
 
 // RequestSettlement submits payout request
-func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID string, amount int64, shaba, bankName, accountHolder string) (string, error) {
-	if amount <= 0 {
+func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID string, amount int64, shaba, bankName, accountHolder string, clientKeys ...string) (string, error) {
+	if amount <= 0 || amount > pricing.MaxTransportMoney {
 		return "", fmt.Errorf("settlement amount must be positive")
+	}
+	command, err := newFinanceCommand(FinancialAccount{Type: "supplier", ID: supplierID}, "payout-request-v1", clientKeys, []interface{}{amount, shaba, bankName, accountHolder})
+	if err != nil {
+		return "", err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
+	var accountLocks TransactionLockSet
+	if err := LockAccountsTx(ctx, tx, &accountLocks, FinancialAccount{Type: "supplier", ID: supplierID}); err != nil {
+		return "", err
+	}
 	var locked string
 	var approvalStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT id, approval_status FROM suppliers WHERE id = $1 FOR UPDATE`, supplierID).Scan(&locked, &approvalStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id, approval_status FROM suppliers WHERE id = $1`, supplierID).Scan(&locked, &approvalStatus); err != nil {
 		return "", err
+	}
+	var original string
+	if replay, err := command.replayTx(ctx, tx, &original); err != nil {
+		return "", err
+	} else if replay {
+		return original, nil
 	}
 	// Gap 12: a suspended supplier cannot request NEW settlements
 	// (already-pending requests stay admin-reviewable). The balance
@@ -4413,11 +4478,11 @@ func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID s
 	if approvalStatus == "suspended" {
 		return "", ErrSupplierSuspended
 	}
-	var balance SupplierBalance
-	if err := scanSupplierBalance(ctx, tx, supplierID, &balance); err != nil {
+	available, err := BalanceTx(ctx, tx, FinancialAccount{Type: "supplier", ID: supplierID})
+	if err != nil {
 		return "", err
 	}
-	if amount > balance.Available {
+	if amount > available {
 		return "", fmt.Errorf("insufficient settlement balance")
 	}
 	requestID := "pay-" + uuid.NewString()
@@ -4427,6 +4492,9 @@ func (r *SupplierRepository) RequestSettlement(ctx context.Context, supplierID s
 	`
 	_, err = tx.ExecContext(ctx, query, requestID, supplierID, accountHolder, shaba, bankName, amount)
 	if err != nil {
+		return "", err
+	}
+	if err := command.recordTx(ctx, tx, requestID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -4929,7 +4997,7 @@ func (r *SupplierRepository) UpdateProductOrigin(ctx context.Context, supplierID
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE products SET origin_supplier_warehouse_id = $1
-		WHERE id = $2 AND supplier_id = $3`,
+		WHERE id = $2 AND supplier_id = $3 AND ($1::text IS NULL OR EXISTS (SELECT 1 FROM supplier_warehouses sw WHERE sw.id=$1 AND sw.supplier_id=$3 AND sw.is_active))`,
 		originID, productID, supplierID)
 	if err != nil {
 		return err
@@ -5707,6 +5775,9 @@ func (r *SupplierRepository) ListSupplierAddons(ctx context.Context, supplierID 
 // — this is what live's staged toast describes. Edits to pending/rejected
 // addons apply in place.
 func (r *SupplierRepository) CreateSupplierAddon(ctx context.Context, supplierID string, a *SupplierAddon) (*SupplierAddon, error) {
+	if err := validateAddonMoney(a); err != nil {
+		return nil, err
+	}
 	a.ID = "addon-" + uuid.NewString()[:12]
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO product_addons (id, owner_type, owner_supplier_id, title, description, kind, price_mode, price_value, cap_toman, approval_status, is_active, sort_order, linked_product_id)
@@ -5736,6 +5807,9 @@ func (r *SupplierRepository) GetSupplierAddon(ctx context.Context, supplierID, a
 }
 
 func (r *SupplierRepository) UpdateSupplierAddonInPlace(ctx context.Context, supplierID string, a *SupplierAddon) error {
+	if err := validateAddonMoney(a); err != nil {
+		return err
+	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE product_addons SET title = $1, description = $2, kind = $3, price_mode = $4, price_value = $5, cap_toman = $6, sort_order = $7, linked_product_id = $8, updated_at = NOW()
 		WHERE id = $9 AND owner_type = 'supplier' AND owner_supplier_id = $10
@@ -5754,6 +5828,9 @@ func (r *SupplierRepository) UpdateSupplierAddonInPlace(ctx context.Context, sup
 }
 
 func (r *SupplierRepository) StageSupplierAddonUpdate(ctx context.Context, supplierID string, a *SupplierAddon) error {
+	if err := validateAddonMoney(a); err != nil {
+		return err
+	}
 	data, err := json.Marshal(map[string]interface{}{
 		"title": a.Title, "description": a.Description, "kind": a.Kind, "priceMode": a.PriceMode,
 		"priceValue": a.PriceValue, "capToman": a.CapToman, "sortOrder": a.SortOrder, "linkedProductId": a.LinkedProductID,

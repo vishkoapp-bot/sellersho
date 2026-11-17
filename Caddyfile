@@ -1,32 +1,76 @@
 {
+	metrics
+    servers {
+        timeouts {
+            read_header 5s
+            read_body 65s
+            write 75s
+            idle 60s
+        }
+    }
 	email "{$ACME_EMAIL}"
 	on_demand_tls {
 		ask http://backend:8080/internal/domains/allow
 	}
 }
 
+(frontend_budget_proxy) {
+    @long_image_upload {
+        method POST
+        path_regexp budget_image ^/api/v1/(upload/product-image|supplier/products/[^/]+/(variants/[^/]+/)?images)$
+    }
+    handle @long_image_upload {
+        reverse_proxy frontend:80 {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                dial_timeout 3s
+                response_header_timeout 70s
+                keepalive 30s
+            }
+        }
+    }
+    handle {
+        reverse_proxy frontend:80 {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                dial_timeout 3s
+                response_header_timeout 14s
+                keepalive 30s
+            }
+        }
+    }
+}
+
 :443 {
-	tls {
-		on_demand
-	}
-	@internal path /internal/*
-	respond @internal 404
-	forward_auth backend:8080 {
-		uri /internal/domains/allow?domain={host}
-	}
-	reverse_proxy frontend:80 {
-		header_up X-Forwarded-Proto https
-	}
+    tls {
+        on_demand
+    }
+    # Preserve deny/auth/proxy order explicitly; handle groups otherwise sort
+    # before a top-level respond directive in the Caddy adapter.
+    route {
+        @internal path /internal/*
+        respond @internal 404
+        forward_auth backend:8080 {
+            uri /internal/domains/allow?domain={host}
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 4s
+            }
+        }
+        import frontend_budget_proxy
+    }
 }
 
 :80 {
-	@internal path /internal/*
-	respond @internal 404
-	@legacy_ip host {$PLATFORM_HTTP_HOST:localhost}
-	handle @legacy_ip {
-		reverse_proxy frontend:80
-	}
-	handle {
-		redir https://{host}{uri} 308
-	}
+    route {
+        @internal path /internal/*
+        respond @internal 404
+        @legacy_ip host {$PLATFORM_HTTP_HOST:localhost}
+        handle @legacy_ip {
+            import frontend_budget_proxy
+        }
+        handle {
+            redir https://{host}{uri} 308
+        }
+    }
 }

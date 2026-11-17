@@ -11,7 +11,7 @@ Set-Location -LiteralPath $root
 if ($Target -ne '/opt/drup') { throw 'This deployment supports the verified /opt/drup installation only.' }
 if ($MoveXray443 -and -not $EnableSSL) { throw 'MoveXray443 requires EnableSSL.' }
 function Run-Git([string[]]$GitArgs) {
-    $result = & git -c "safe.directory=$($root.Replace('\','/'))" @GitArgs
+    $result = & git -c "safe.directory=$($root.Replace('\','/'))" -c core.autocrlf=false @GitArgs
     if ($LASTEXITCODE -ne 0) { throw "Git failed: $($GitArgs[0])" }
     return $result
 }
@@ -25,6 +25,16 @@ $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
+# The release runner performs reviewed legacy adoption only after its verified
+# database backup. This early check is deliberately read-only.
+Remote @'
+set -eu
+ready=$(docker exec drup_postgres psql -U drup_admin -d drup_db -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='schema_migrations'")
+if [ "$ready" != "1" ]; then
+  echo 'DEPLOYMENT BLOCKED: production migration history is unavailable.' >&2
+  exit 1
+fi
+'@
 # Slow/unreliable client uploads can use the server's authenticated Git origin.
 # Both applications still build from the exact pushed commit in an isolated release.
 if ($BuildOnServer) {
@@ -41,8 +51,8 @@ mkdir -p "`$release"
 git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
 test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
-docker run --rm -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:20-alpine sh -c 'npm ci --no-audit --no-fund && npm run build'
-docker run --rm -e CGO_ENABLED=0 -v "`$release/backend:/app" -v sellersho-go-build-cache:/root/.cache/go-build -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server'
+docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
+docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
 python3 -c 'import json,datetime,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))' "`$release/release.json"
 python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
 "@
@@ -69,6 +79,8 @@ try {
     # The archive has no .git directory; release.json records its exact commit.
     & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/server-linux ./cmd/server
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
+    & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/migrate-linux ./cmd/migrate
+    if ($LASTEXITCODE -ne 0) { throw 'Migration runner build failed.' }
 } finally {
     Pop-Location
     $env:GOOS = $previousGoOS; $env:GOARCH = $previousGoArch; $env:CGO_ENABLED = $previousCGO

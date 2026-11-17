@@ -20,6 +20,10 @@ type FakeOrderRepository struct {
 	tx            *repository.PaymentTransaction
 	order         *domain.Order
 	markPaidCalls int
+	markPaidError error
+	beginCalls    int
+	verifiedCalls int
+	unknownCalls  int
 }
 
 func (f *FakeOrderRepository) GetPaymentTransaction(ctx context.Context, gatewayToken string) (*repository.PaymentTransaction, error) {
@@ -45,6 +49,9 @@ func (f *FakeOrderRepository) RecordPaymentFailure(ctx context.Context, gatewayT
 
 func (f *FakeOrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn, cardMask string) (*repository.PaymentTransaction, error) {
 	f.markPaidCalls++
+	if f.markPaidError != nil {
+		return nil, f.markPaidError
+	}
 	f.tx.Status = "paid"
 	f.tx.RRN = sql.NullString{String: rrn, Valid: true}
 	f.tx.CardMask = sql.NullString{String: cardMask, Valid: true}
@@ -152,5 +159,53 @@ func TestPaymentCallback_AmountMismatch(t *testing.T) {
 	}
 	if fakeRepo.markPaidCalls != 0 {
 		t.Fatalf("MarkPaymentPaid must not be called on amount mismatch")
+	}
+}
+
+func (f *FakeOrderRepository) BeginPaymentVerification(ctx context.Context, token, kind string) (string, error) {
+	f.beginCalls++
+	return "verify-request-1", nil
+}
+func (f *FakeOrderRepository) RecordPaymentVerification(ctx context.Context, id string, result payment.VerificationResult) error {
+	f.verifiedCalls++
+	return nil
+}
+func (f *FakeOrderRepository) RecordPaymentVerificationUnknown(ctx context.Context, id, reason string) error {
+	f.unknownCalls++
+	return nil
+}
+func TestFIN003CallbackRecordsConfirmedFundsBeforeRedisAdmission(t *testing.T) {
+	f := &FakeOrderRepository{tx: &repository.PaymentTransaction{ID: "p", OrderID: "o", GatewayToken: "t", Amount: 10000000, Status: "pending"}}
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"token":"t"}`))
+	w := httptest.NewRecorder()
+	HandleShaparakCallbackHTTP(w, req, "test", f, nil, payment.NewMockPaymentGatewayClient(true))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("admission failure %d", w.Code)
+	}
+	if f.beginCalls != 1 || f.verifiedCalls != 1 || f.markPaidCalls != 0 {
+		t.Fatalf("verified funds disappeared before Redis failure: request=%d receipt=%d capture=%d", f.beginCalls, f.verifiedCalls, f.markPaidCalls)
+	}
+}
+func TestFIN003CallbackUnknownVerificationDoesNotDeclareNoCapture(t *testing.T) {
+	f := &FakeOrderRepository{tx: &repository.PaymentTransaction{ID: "p", OrderID: "o", GatewayToken: "t", Amount: 10000000, Status: "pending"}}
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"token":"t"}`))
+	w := httptest.NewRecorder()
+	HandleShaparakCallbackHTTP(w, req, "test", f, nil, payment.NewMockPaymentGatewayClient(false))
+	if f.tx.Status != "pending" || f.unknownCalls != 1 || f.verifiedCalls != 0 {
+		t.Fatalf("uncertain verification erased inquiry state: %s unknown=%d receipts=%d", f.tx.Status, f.unknownCalls, f.verifiedCalls)
+	}
+}
+
+func (f *FakeOrderRepository) RejectVerifiedPaymentAdmission(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func TestFIN003PreviouslyPaidCallbackCannotPretendCancelledFulfillmentSucceeded(t *testing.T) {
+	f := &FakeOrderRepository{tx: &repository.PaymentTransaction{ID: "p", OrderID: "o", GatewayToken: "t", Amount: 10000000, Status: "paid"}, markPaidError: repository.ErrPaymentExpired}
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"token":"t"}`))
+	w := httptest.NewRecorder()
+	HandleShaparakCallbackHTTP(w, req, "test", f, nil, payment.NewMockPaymentGatewayClient(true))
+	if w.Code != http.StatusConflict || f.markPaidCalls != 1 {
+		t.Fatalf("paid callback bypassed cancelled admission %d calls=%d %s", w.Code, f.markPaidCalls, w.Body.String())
 	}
 }

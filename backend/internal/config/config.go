@@ -6,12 +6,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drup/platform/internal/database/seeder"
 )
 
 // Config represents runtime application configuration
 type Config struct {
+	StartupTimeout                time.Duration
+	ShutdownGrace                 time.Duration
 	Port                          string
 	DatabaseURL                   string
 	RedisURL                      string
@@ -30,8 +33,19 @@ type Config struct {
 	IPPanelPatternCode            string
 }
 
+const developmentJWTSecret = "drup_jwt_secret_key_2026_dev_secure"
+const developmentWebhookSecret = "drup_tracking_webhook_secret_dev_2026"
+
 // LoadConfig loads configuration from environment variables with strict fail-closed production checks
 func LoadConfig() (*Config, error) {
+	startup, err := durationSeconds("STARTUP_TIMEOUT_SECONDS", 30, 600)
+	if err != nil {
+		return nil, err
+	}
+	shutdown, err := durationSeconds("SHUTDOWN_GRACE_SECONDS", 20, 25)
+	if err != nil {
+		return nil, err
+	}
 	env := getEnv("APP_ENV", "development")
 	isDev := seeder.IsDevEnvironment(env)
 
@@ -66,7 +80,7 @@ func LoadConfig() (*Config, error) {
 
 	if !isDev {
 		// Strict Fail-Closed Security Validation for Non-Dev / Production
-		if jwtSecret == "" {
+		if jwtSecret == "" || jwtSecret == developmentJWTSecret {
 			return nil, errors.New("JWT_SECRET environment variable is required in production (fail-closed)")
 		}
 		if len(jwtSecret) < 32 {
@@ -84,8 +98,8 @@ func LoadConfig() (*Config, error) {
 		if strings.Contains(redisURL, "drup_redis_pass_2026") {
 			return nil, errors.New("default development redis password detected in production REDIS_URL (fail-closed)")
 		}
-		if webhookSecret == "" {
-			return nil, errors.New("TRACKING_WEBHOOK_SECRET environment variable is required in production (fail-closed)")
+		if webhookSecret == "" || webhookSecret == developmentWebhookSecret || len(webhookSecret) < 32 {
+			return nil, errors.New("TRACKING_WEBHOOK_SECRET must be a non-development value of at least 32 characters in production (fail-closed)")
 		}
 		if gatewayMode != "real" {
 			return nil, errors.New("PAYMENT_GATEWAY_MODE must be explicitly set to 'real' in production (fail-closed)")
@@ -100,7 +114,7 @@ func LoadConfig() (*Config, error) {
 	} else {
 		// Development & Test Defaults
 		if jwtSecret == "" {
-			jwtSecret = "drup_jwt_secret_key_2026_dev_secure"
+			jwtSecret = developmentJWTSecret
 		}
 		if dbURL == "" {
 			dbURL = "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable"
@@ -109,7 +123,7 @@ func LoadConfig() (*Config, error) {
 			redisURL = "redis://:drup_redis_pass_2026@localhost:6379/0"
 		}
 		if webhookSecret == "" {
-			webhookSecret = "drup_tracking_webhook_secret_dev_2026"
+			webhookSecret = developmentWebhookSecret
 		}
 		if gatewayMode == "" {
 			gatewayMode = "mock"
@@ -125,6 +139,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
+		StartupTimeout:                startup,
+		ShutdownGrace:                 shutdown,
 		Port:                          port,
 		DatabaseURL:                   dbURL,
 		RedisURL:                      redisURL,
@@ -157,4 +173,16 @@ func getBoolEnv(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return parsed
+}
+
+func durationSeconds(key string, fallback, maximum int) (time.Duration, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return time.Duration(fallback) * time.Second, nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 || seconds > maximum {
+		return 0, fmt.Errorf("%s must be an integer in 1..%d", key, maximum)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }

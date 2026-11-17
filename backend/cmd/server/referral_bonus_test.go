@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/repository"
@@ -21,10 +23,7 @@ import (
 
 func setupTestPostgresDB(t *testing.T) *sql.DB {
 	dbURL := os.Getenv("CAPABILITY_AUDIT_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable"
-	}
-	db, err := sql.Open("postgres", dbURL)
+	db, err := testdb.Open(t, dbURL)
 	if err != nil {
 		t.Skipf("skipping db integration test: %v", err)
 	}

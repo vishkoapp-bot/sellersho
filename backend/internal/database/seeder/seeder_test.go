@@ -2,9 +2,13 @@ package seeder
 
 import (
 	"context"
-	"database/sql"
+	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -87,13 +91,23 @@ func TestLiveSeederIdempotencyAndReset(t *testing.T) {
 	t.Setenv("WAREHOUSE_PASSWORD", "TestWarehouse!2026")
 	t.Setenv("SUPPORT_PASSWORD", "TestSupport!2026")
 	t.Setenv("SUPPLIER_PASSWORD", "TestSupplier!2026")
-	dbURL := "postgres://drup_admin:drup_secure_password_2026@drup_postgres:5432/drup_db?sslmode=disable"
-	db, err := sql.Open("postgres", dbURL)
+	dbURL := os.Getenv("SELLERSHO_TEST_DATABASE_URL")
+	db, err := testdb.Open(t, dbURL)
 	if err != nil {
 		t.Skipf("Skipping live database seeder test: %v", err)
 		return
 	}
 	defer db.Close()
+	if os.Getenv("SELLERSHO_TEST_SCHEMA_ONLY") != "1" {
+		t.Fatal("seeder lifecycle requires an empty current-schema fixture: python scripts/test-isolated.py --schema-only -- go test ./internal/database/seeder -count=1")
+	}
+	var superuser, createdb, createrole bool
+	if err := db.QueryRow(`SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user`).Scan(&superuser, &createdb, &createrole); err != nil {
+		t.Fatal(err)
+	}
+	if superuser || createdb || createrole {
+		t.Fatal("seeder fixture must use the guarded non-superuser test role")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -118,6 +132,9 @@ func TestLiveSeederIdempotencyAndReset(t *testing.T) {
 	var productCount1, storeCount1 int
 	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM products").Scan(&productCount1)
 	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM stores").Scan(&storeCount1)
+	if productCount1 == 0 || storeCount1 == 0 {
+		t.Fatal("SeedDev did not populate products and stores")
+	}
 
 	// 3. Run SeedDev AGAIN (Test Idempotency: seed -> seed)
 	if err := s.SeedDev(ctx); err != nil {
@@ -133,25 +150,45 @@ func TestLiveSeederIdempotencyAndReset(t *testing.T) {
 			productCount1, productCount2, storeCount1, storeCount2)
 	}
 
-	// 4. Test CleanDev (clean -> verify 0)
-	if err := s.CleanDev(ctx); err != nil {
-		t.Fatalf("CleanDev failed: %v", err)
+	// The current schema forbids ledger TRUNCATE even when the ledger is empty.
+	// The old test expected forbidden cleanup to succeed. Preserve that protection
+	// and dispose of the entire isolated database through the runner instead.
+	snapshot := func() map[string]int64 {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tables []string
+		for rows.Next() {
+			var table string
+			if err := rows.Scan(&table); err != nil {
+				t.Fatal(err)
+			}
+			tables = append(tables, table)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+		counts := make(map[string]int64, len(tables))
+		for _, table := range tables {
+			var count int64
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM "`+strings.ReplaceAll(table, `"`, `""`)+`"`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			counts[table] = count
+		}
+		return counts
 	}
-
-	var productCountClean int
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM products").Scan(&productCountClean)
-	if productCountClean != 0 {
-		t.Errorf("Expected 0 products after CleanDev, got %d", productCountClean)
-	}
-
-	// 5. Test ResetDev (reset -> verify fully populated again)
-	if err := s.ResetDev(ctx); err != nil {
-		t.Fatalf("ResetDev failed: %v", err)
-	}
-
-	var productCountReset int
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM products").Scan(&productCountReset)
-	if productCountReset != productCount1 {
-		t.Errorf("Expected %d products after ResetDev, got %d", productCount1, productCountReset)
+	before := snapshot()
+	for name, operation := range map[string]func(context.Context) error{"CleanDev": s.CleanDev, "ResetDev": s.ResetDev} {
+		err := operation(ctx)
+		if err == nil || !strings.Contains(err.Error(), "append-only") {
+			t.Fatalf("%s must refuse immutable-ledger truncation, got %v", name, err)
+		}
+		if after := snapshot(); !reflect.DeepEqual(before, after) {
+			t.Fatalf("%s changed fixture table counts despite ledger guard: before=%v after=%v", name, before, after)
+		}
 	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"github.com/drup/platform/internal/jobrunner"
 	"net/http"
 	"strconv"
 	"time"
@@ -540,7 +542,7 @@ func handleT01AdminJobs(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 // cycle synchronously or queued is unproven; the synchronous
 // read-back is what the live frontend needs, since it replaces
 // the job from the response and toasts lastReleased.
-func handleT01AdminJobRun(w http.ResponseWriter, r *http.Request, db *sql.DB, jobID string, run func()) {
+func handleT01AdminJobRun(w http.ResponseWriter, r *http.Request, db *sql.DB, jobID string, run func(context.Context) error) {
 	if !t01MethodOnly(w, r, http.MethodPost) || t01DBNil(w, db) {
 		return
 	}
@@ -552,7 +554,16 @@ func handleT01AdminJobRun(w http.ResponseWriter, r *http.Request, db *sql.DB, jo
 		http.Error(w, `{"error":"scheduler unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	run()
+	if err := run(r.Context()); err != nil {
+		if errors.Is(err, jobrunner.ErrBusy) {
+			http.Error(w, `{"error":"job busy"}`, http.StatusConflict)
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, `{"error":"job cancelled"}`, http.StatusRequestTimeout)
+		} else {
+			http.Error(w, `{"error":"job failed; review operations"}`, http.StatusServiceUnavailable)
+		}
+		return
+	}
 	job, found, err := t01SchedulerJob(r.Context(), db, jobID)
 	if err != nil {
 		writeInternalError(w, err)

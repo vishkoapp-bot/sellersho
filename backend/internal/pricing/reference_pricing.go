@@ -7,10 +7,14 @@
 // (ResolvePricing / ResolvePlatformFeeF occur 0 times in the live binary)
 // and instead prices percent-only:
 //
-//	P = RoundTo100(referenceCost * (1 + margin))
-//	referenceCost = RoundTo100(C * (1 + platformPct/100))
-//	platformFeeF (reported) = referenceCost - C   // 0 while platform_pct = 0
-//	baseCostB (reported, dropshipper view) = referenceCost  // = C while pct = 0
+//	P = max(referenceCost, RoundTo100(referenceCost * (1 + margin)))
+//	referenceCost = max(C, RoundTo100(C * (1 + platformPct/100)))
+//	platformFeeF (reported) = referenceCost - C
+//	baseCostB (reported, dropshipper view) = referenceCost
+//
+// FIN-012 versions the nonnegative floor and exact integer rounding. With zero
+// platform percent the fee remains zero for costs divisible by 100; other
+// costs follow the floor contract in money.go and docs/architecture/money-policy.md.
 //
 // Proven live examples (MASTER-AUDIT section 3(a), team-02 report section 3.1):
 //   - prod-earbuds-pro, C=1,200,000: central 1,320,000 (x1.10), dropshipper
@@ -47,21 +51,10 @@
 package pricing
 
 import (
-	"math"
+	"math/big"
 
 	"github.com/drup/platform/internal/domain"
 )
-
-// RoundTo100 rounds an amount in Tomans to the nearest multiple of 100.
-// TODO U11: whether live rounds the intermediate reference cost, the final
-// price, or both, and in which direction for non-multiples of 100, is
-// unverified — every proven live example is an exact multiple of 100, so
-// all rounding choices agree on the proven cases. This implementation
-// rounds both steps to the nearest 100 and must not be read as proof of
-// the live rounding rule for non-multiples.
-func RoundTo100(val float64) int64 {
-	return int64(math.Round(val/100.0)) * 100
-}
 
 // PlatformPricingSettings is the pricing-relevant subset of platform
 // settings, loaded from platform_settings (id = 1) plus the platform_pct
@@ -226,12 +219,15 @@ type StoreVariantOverride struct {
 
 // ReferenceResolution is the complete live-model price breakdown.
 type ReferenceResolution struct {
+	MoneyPolicyVersion string `json:"moneyPolicyVersion"`
+	PricingError       string `json:"pricingError,omitempty"`
+
 	WholesaleCost     int64   `json:"wholesaleCost"` // C
 	PlatformPct       float64 `json:"platformPct"`
 	PlatformPctSource string  `json:"platformPctSource"`
 	ReferenceCost     int64   `json:"referenceCost"` // R = RoundTo100(C * (1+pct/100))
-	PlatformFee       int64   `json:"platformFee"`   // F = R - C; reported platformFeeF
-	BaseCost          int64   `json:"baseCost"`      // live baseCostB = R (= C while pct = 0)
+	PlatformFee       int64   `json:"platformFee"`   // F = R - C; always nonnegative
+	BaseCost          int64   `json:"baseCost"`      // live baseCostB = R, with cost floor
 	SellerMargin      int64   `json:"sellerMargin"`  // D = P - R (dropshipper margin, or central profit for central stores)
 	FinalPrice        int64   `json:"finalPrice"`    // P
 	OriginalPrice     int64   `json:"originalPrice"`
@@ -259,7 +255,16 @@ func DiscountPercent(originalPrice, finalPrice int64) int64 {
 	if originalPrice <= 0 || finalPrice >= originalPrice {
 		return 0
 	}
-	return int64(math.Round(float64(originalPrice-finalPrice) / float64(originalPrice) * 100.0))
+	if finalPrice < 0 {
+		return 0
+	}
+	n := new(big.Int).Mul(big.NewInt(originalPrice-finalPrice), big.NewInt(100))
+	q, rem := new(big.Int), new(big.Int)
+	q.QuoRem(n, big.NewInt(originalPrice), rem)
+	if new(big.Int).Lsh(rem, 1).Cmp(big.NewInt(originalPrice)) >= 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	return q.Int64()
 }
 
 // applyDropshipperOverride applies one seller override to the current
@@ -374,8 +379,14 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 // (TODO U12 for the order path).
 func ResolveReferencePricing(product domain.Product, store domain.Store, settings *PlatformPricingSettings, locks []MarginLock) ReferenceResolution {
 	settings = OrDefault(settings)
+	if product.OriginalPrice < 0 || product.OriginalPrice > MaxTransportMoney || product.SupplierBaseCost > MaxTransportMoney {
+		return invalidResolution(product.SupplierBaseCost)
+	}
 	pct, pctSource := ResolvePlatformPct(product.ID, product.CategorySlug, settings)
-	referenceCost := RoundTo100(float64(product.SupplierBaseCost) * (1.0 + pct/100.0))
+	referenceCost, err := MarkedUpPrice(product.SupplierBaseCost, pct)
+	if err != nil {
+		return invalidResolution(product.SupplierBaseCost)
+	}
 
 	var margin float64
 	var tier, mode, note string
@@ -389,26 +400,33 @@ func ResolveReferencePricing(product domain.Product, store domain.Store, setting
 		mode = "percent"
 	}
 
-	finalPrice := RoundTo100(float64(referenceCost) * (1.0 + margin/100.0))
+	finalPrice, err := MarkedUpPrice(referenceCost, margin)
+	if err != nil {
+		return invalidResolution(product.SupplierBaseCost)
+	}
+	if finalPrice > MaxTransportMoney {
+		return invalidResolution(product.SupplierBaseCost)
+	}
 	originalPrice := product.OriginalPrice
 	if finalPrice > originalPrice {
 		originalPrice = finalPrice
 	}
 	return ReferenceResolution{
-		WholesaleCost:     product.SupplierBaseCost,
-		PlatformPct:       pct,
-		PlatformPctSource: pctSource,
-		ReferenceCost:     referenceCost,
-		PlatformFee:       referenceCost - product.SupplierBaseCost,
-		BaseCost:          referenceCost,
-		SellerMargin:      finalPrice - referenceCost,
-		FinalPrice:        finalPrice,
-		OriginalPrice:     originalPrice,
-		ActiveTier:        tier,
-		PricingMode:       mode,
-		MarginPercent:     margin,
-		AdminLocked:       locked,
-		UnverifiedNote:    note,
+		MoneyPolicyVersion: MoneyPolicyVersion,
+		WholesaleCost:      product.SupplierBaseCost,
+		PlatformPct:        pct,
+		PlatformPctSource:  pctSource,
+		ReferenceCost:      referenceCost,
+		PlatformFee:        referenceCost - product.SupplierBaseCost,
+		BaseCost:           referenceCost,
+		SellerMargin:       finalPrice - referenceCost,
+		FinalPrice:         finalPrice,
+		OriginalPrice:      originalPrice,
+		ActiveTier:         tier,
+		PricingMode:        mode,
+		MarginPercent:      margin,
+		AdminLocked:        locked,
+		UnverifiedNote:     note,
 	}
 }
 
@@ -418,25 +436,35 @@ func ResolveReferencePricing(product domain.Product, store domain.Store, setting
 // as SupplierBaseCost.
 func resolveVariantAtMargin(variantProduct domain.Product, variantCost int64, margin float64, tier string, settings *PlatformPricingSettings) ReferenceResolution {
 	pct, pctSource := ResolvePlatformPct(variantProduct.ID, variantProduct.CategorySlug, settings)
-	referenceCost := RoundTo100(float64(variantCost) * (1.0 + pct/100.0))
-	finalPrice := RoundTo100(float64(referenceCost) * (1.0 + margin/100.0))
+	referenceCost, err := MarkedUpPrice(variantCost, pct)
+	if err != nil {
+		return invalidResolution(variantCost)
+	}
+	finalPrice, err := MarkedUpPrice(referenceCost, margin)
+	if err != nil {
+		return invalidResolution(variantCost)
+	}
+	if finalPrice > MaxTransportMoney || variantProduct.OriginalPrice < 0 || variantProduct.OriginalPrice > MaxTransportMoney {
+		return invalidResolution(variantCost)
+	}
 	originalPrice := variantProduct.OriginalPrice
 	if finalPrice > originalPrice {
 		originalPrice = finalPrice
 	}
 	return ReferenceResolution{
-		WholesaleCost:     variantCost,
-		PlatformPct:       pct,
-		PlatformPctSource: pctSource,
-		ReferenceCost:     referenceCost,
-		PlatformFee:       referenceCost - variantCost,
-		BaseCost:          referenceCost,
-		SellerMargin:      finalPrice - referenceCost,
-		FinalPrice:        finalPrice,
-		OriginalPrice:     originalPrice,
-		ActiveTier:        tier,
-		PricingMode:       "percent",
-		MarginPercent:     margin,
+		MoneyPolicyVersion: MoneyPolicyVersion,
+		WholesaleCost:      variantCost,
+		PlatformPct:        pct,
+		PlatformPctSource:  pctSource,
+		ReferenceCost:      referenceCost,
+		PlatformFee:        referenceCost - variantCost,
+		BaseCost:           referenceCost,
+		SellerMargin:       finalPrice - referenceCost,
+		FinalPrice:         finalPrice,
+		OriginalPrice:      originalPrice,
+		ActiveTier:         tier,
+		PricingMode:        "percent",
+		MarginPercent:      margin,
 	}
 }
 
@@ -462,7 +490,13 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 			variantProduct.SupplierBaseCost = variantCost
 			base := ResolveReferencePricing(variantProduct, store, settings, nil)
 			// Recompute with the locked margin, keeping the same pct.
-			finalPrice := RoundTo100(float64(base.ReferenceCost) * (1.0 + *l.Value/100.0))
+			if base.PricingError != "" {
+				return base
+			}
+			finalPrice, err := MarkedUpPrice(base.ReferenceCost, *l.Value)
+			if err != nil || finalPrice > MaxTransportMoney {
+				return invalidResolution(variantCost)
+			}
 			base.SellerMargin = finalPrice - base.ReferenceCost
 			base.FinalPrice = finalPrice
 			base.ActiveTier = "variant"
@@ -483,7 +517,13 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 			variantProduct.SupplierBaseCost = variantCost
 			base := ResolveReferencePricing(variantProduct, store, settings, nil)
 			// Recompute with the locked margin, keeping the same pct.
-			finalPrice := RoundTo100(float64(base.ReferenceCost) * (1.0 + *l.Value/100.0))
+			if base.PricingError != "" {
+				return base
+			}
+			finalPrice, err := MarkedUpPrice(base.ReferenceCost, *l.Value)
+			if err != nil || finalPrice > MaxTransportMoney {
+				return invalidResolution(variantCost)
+			}
 			base.SellerMargin = finalPrice - base.ReferenceCost
 			base.FinalPrice = finalPrice
 			base.ActiveTier = "product-locked"
@@ -566,4 +606,9 @@ func ReferenceProfitSplit(res ReferenceResolution, isCentral bool) ProfitSplit {
 		CentralProfit:     0,
 		PlatformTotal:     res.PlatformFee,
 	}
+}
+
+// invalidResolution quarantines unsupported legacy inputs. Mutation callers must reject PricingError.
+func invalidResolution(cost int64) ReferenceResolution {
+	return ReferenceResolution{WholesaleCost: cost, MoneyPolicyVersion: MoneyPolicyVersion, PricingError: ErrInvalidMoney.Error()}
 }

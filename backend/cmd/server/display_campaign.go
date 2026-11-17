@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
@@ -40,29 +41,7 @@ func loadActiveDiscountCampaignsForDisplay(ctx context.Context, storeRepo *repos
 // product or any of its niches; product/niche/store-scoped campaigns
 // by a lock on the product or any niche.
 func displayCampaignLocked(store domain.Store, locks []pricing.MarginLock, p domain.Product, variantID string) bool {
-	if store.IsMarginLockedByAdmin {
-		return true
-	}
-	lockedBy := func(scope, scopeID string) bool {
-		for _, l := range locks {
-			if l.Scope == scope && l.ScopeID == scopeID {
-				return true
-			}
-		}
-		return false
-	}
-	if variantID != "" && lockedBy("variant", variantID) {
-		return true
-	}
-	if lockedBy("product", p.ID) {
-		return true
-	}
-	for _, n := range p.NicheIDs {
-		if lockedBy("niche", n) {
-			return true
-		}
-	}
-	return false
+	return catalogpricing.CampaignLocked(store, locks, p, variantID)
 }
 
 // pickDisplayCampaign resolves the winning campaign for one priced
@@ -72,44 +51,7 @@ func displayCampaignLocked(store domain.Store, locks []pricing.MarginLock, p dom
 // GetActiveDiscountCampaign so the displayed price and the charged
 // price always come from the same campaign.
 func pickDisplayCampaign(campaigns []domain.SellerDiscountCampaign, p domain.Product, variantID string) *domain.SellerDiscountCampaign {
-	if len(campaigns) == 0 {
-		return nil
-	}
-	rank := func(c domain.SellerDiscountCampaign) (int, bool) {
-		switch c.Scope {
-		case "variant":
-			if variantID != "" && c.TargetID == variantID {
-				return 0, true
-			}
-		case "product":
-			if c.TargetID == p.ID {
-				return 1, true
-			}
-		case "niche":
-			for i, n := range p.NicheIDs {
-				if c.TargetID == n {
-					return 2 + i, true
-				}
-			}
-		case "store":
-			return 1000000, true
-		}
-		return 0, false
-	}
-	var best *domain.SellerDiscountCampaign
-	bestRank := 0
-	for i := range campaigns {
-		c := campaigns[i]
-		r, ok := rank(c)
-		if !ok {
-			continue
-		}
-		if best == nil || r < bestRank || (r == bestRank && c.CreatedAt.After(best.CreatedAt)) {
-			best = &campaigns[i]
-			bestRank = r
-		}
-	}
-	return best
+	return catalogpricing.PickCampaign(campaigns, p, variantID)
 }
 
 // applyDisplayCampaign applies one campaign to a display resolution.
@@ -118,8 +60,5 @@ func pickDisplayCampaign(campaigns []domain.SellerDiscountCampaign, p domain.Pro
 // reference cost, rounded to 100, never raising the price), so the
 // displayed price IS the charged price.
 func applyDisplayCampaign(res pricing.ReferenceResolution, c *domain.SellerDiscountCampaign) pricing.DiscountResult {
-	if c == nil {
-		return pricing.DiscountResult{Resolution: res}
-	}
-	return pricing.ApplyCampaignDiscount(res, pricing.DiscountCampaignInput{ID: c.ID, Scope: c.Scope, Name: c.Name, Mode: c.Mode, Value: c.Value})
+	return catalogpricing.ApplyCampaign(res, c)
 }

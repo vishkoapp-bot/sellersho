@@ -1,0 +1,2031 @@
+/SELLERSHO: CORRECTNESS, 1,000 USERS AND 100 RPS IMPLEMENTATION TASKS
+Date: 2026-11-13
+Audited revision: 07aff40ffc8914a9deaa153aa7894b9d3fd73400
+Repository: git@github.com:vishkoapp-bot/sellersho.git
+Status: PLANNED. All 54 tasks below are TODO. No application fixes or deployment performed.
+
+Goal: correct stock and money flows, support 1,000 concurrent active signed-in users and prove 100 total
+  external API RPS on the intended deployment hardware, then release with tested recovery.
+Architecture: preserve the Go/PostgreSQL/Redis monolith and React frontend; repair transactional invariants
+  first and optimize measured bottlenecks. Keep Caddy/Nginx in the qualifying traffic path.
+Tech stack: Go (repository currently declares 1.23), PostgreSQL 16, Redis 7, React 19, TypeScript, Vite, Docker
+  Compose, Nginx and Caddy. Pin supported patched toolchains/images during release work; these baseline names
+  are not a claim that every old version is suitable for launch.
+Spec: docs/superpowers/specs/2026-11-13-correctness-100rps-readiness.md. Its full acceptance contract is
+  included below so this TXT file is self-contained.
+Execution: implement one reviewable task at a time, using superpowers:subagent-driven-development or
+  superpowers:executing-plans where available. Follow the repository's AGENTS.md for authorized
+  implementation/release. This document is the requested task artifact, not evidence that implementation has
+  happened.
+
+READING AND PRIORITY
+P0: test/environment safety prerequisite. P1: correctness or launch-readiness gate. P2: narrower defect or
+  performance validation; confirmed defects still need repair before the affected feature launches. A
+  conditional optimization may close with measured proof that no change is needed; a suspected defect may close
+  with an executed non-defect regression. Neither may be silently skipped.
+Owner names below are engineering roles, not assignments to unidentified people. Assign a named person during
+  execution. Source line numbers refer to the audited revision and will move.
+The "Depends on" field is the authoritative acyclic implementation dependency list. Shared integration
+  requirements remain mandatory at CAP-02/GO-01 even when each core can be built separately. Code/tests may be
+  prepared in parallel, but a task is DONE only after its own acceptance passes on the integrated branch.
+
+DEFINITION OF DONE FOR EACH TASK
+[ ] Add the named regression or failure-injection/measurement scenario using the task's exact inputs and
+  expected outcomes; demonstrate the existing failure for a confirmed bug.
+[ ] Implement the scoped change in the listed files, including API/DB/UI callers and migration behavior where
+  required.
+[ ] Run that regression and the affected existing suite; capture PASS results, replay/concurrency behavior, and
+  measured evidence for performance/operations tasks.
+[ ] Verify rollback/cutover and historical-data implications stated in the task. Review the resulting diff;
+  commit only the task's intended files under the authorized workflow.
+[ ] Record the commit, commands, environment, reports and reviewer in the task's completion record. No checkbox
+  is checked in this initial backlog.
+
+VERIFICATION ENTRY POINTS
+Do not run the existing native whole Go suite until TEST-01 removes unsafe database defaults. After isolation,
+  run Go tests from backend: go test ./... -count=1; focused inventory/finance probes: go test
+  ./internal/repository -run '^(TestAuditFinance|TestAuditSupply|TestAuditOrder|TestSKUInventory)' -count=1 -v,
+  or the promoted equivalent names recorded by TEST-02. Use an explicitly disposable migrated database. Run go
+  test -race on the concurrency packages in a supported CI environment.
+Frontend: npm run build; TEST-02 adds npm test using the existing tsx test runner and the complete tracked test
+  list. Capacity: CAP-01 creates the guarded runner and k6 scripts; report actual http_reqs and
+  dropped_iterations. Migration/restore/fault tasks use their isolated rehearsal runners and retain exit status
+  plus invariant output.
+
+REVIEW FOCUS
+1. A delayed response after logout/account switch cannot resurrect A or erase B: AUTH-02/AUTH-03.
+2. Split fulfillment, partial return and cancellation cannot recreate a dispatched unit: INV-01/INV-05/FIN-003.
+3. Legacy unknown SKU/origin/receipt age cannot be guessed during backfill:
+  INV-02/INV-05/INV-10/FIN-006/FIN-014.
+4. Response loss or restart after an external success cannot create a second charge or lose a refund liability:
+  CHECKOUT-01/FIN-003/FIN-010/JOB-01.
+5. Rounding boundaries, maximum quantities and same-name cross-tenant identities preserve exact totals and
+  ownership: FIN-012/INV-07/AUTH-03/QUAL-01.
+
+WORKSTREAM DELIVERY ORDER
+A. Start TEST-01, CORE-01, OBS-01, MIG-01, SEC-01 and CAP-01 environment/harness. Establish baseline and
+  provider/hardware inputs.
+B. Repair inventory, canonical money, payment/refund state, auth and checkout; settle documented
+  pricing/referral policy. Domain regressions must fail before fixes and pass after them.
+C. Bound queries/workers, tune only measured bottlenecks, and build immutable releases, compatible migrations
+  and tested backups. These can proceed in parallel where Depends-on permits.
+D. Reconcile legacy fixtures/history, complete QUAL-01, run INV-12/FIN-013 and the final CAP-02 workload with
+  1,000 users. Close every required gate with evidence.
+E. GO-01 assembles the release and executes the verified rollout only as part of authorized implementation.
+  Until then this project is not certified ready.
+
+INTEGRATION DECISIONS THAT PREVENT DEPENDENCY CYCLES
+- CORE-01 governs all row-lock ordering; domain-local alternatives do not override it.
+- INV-05 provides origin metadata before INV-02 consumes it. INV-11 provides atomic carton persistence;
+  reservations then join that transaction. INV-02/04/09 are enabled together.
+- FIN-006 delivers storage history/accrual core before INV-10 wires V2 receipts. Keep physical receipt time
+  separate from billing start (default QC acceptance). Both pass the integrated inventory/finance tests before
+  billing is enabled.
+- FIN-003 records the internal refund liability before FIN-010 executes provider refunds. FIN-012 defines
+  internal units before FIN-010 supplies provider conversion. A missing provider contract must not stall
+  internal accounting correctness.
+- FIN-011 establishes referral policy before FIN-009 statements; FIN-014 reconciles historical deployment data
+  after the canonical statement contract exists.
+- AUTH-01 provides common clearing/generation invalidation, then AUTH-02 guards async work and AUTH-03 clears
+  identity-bound caches. Ship the three together. CHECKOUT-01 supplies attempt recovery; CHECKOUT-02 adds quote
+  recovery against that contract.
+- JOB-01 implements cooperative worker stop, then OPS-01 wires process drain. MIG-01 supplies the runner, REL-01
+  the immutable manifest, BAK-01 a proven backup, then MIG-02 the upgrade/rollback rehearsal. No circular
+  approval dependency is implied.
+- CAP-01 creates the environment/harness early; CAP-02 is the final measured gate. FIN-010 is the sole payment
+  task; the duplicate PAY-01 proposal was merged into it.
+
+CAPACITY AND BUSINESS ACCEPTANCE CONTRACT
+=======================================
+Correctness, 1,000 users, and 100 RPS deployment acceptance
+
+Status: proposed engineering acceptance criteria and task backlog, 13 November 2026. No implementation, capacity
+  certification, or production release is implied by this document.
+
+Goal and baseline
+
+Make Sellersho's stock, order, payment, and accounting flows reconcile under retries and concurrent requests,
+  then demonstrate 1,000 concurrent signed-in user sessions and sustained 100 total API requests per second on
+  the intended deployment hardware. The user requested 1,000 starting users; this plan conservatively interprets
+  that as concurrent active sessions. Keep the existing Go monolith, PostgreSQL, Redis, React, Nginx, and Caddy
+  architecture unless measurements show a specific change is necessary.
+
+The audited revision is 07aff40ffc8914a9deaa153aa7894b9d3fd73400. The audit produced 14 failing database
+  invariant reproductions and four groups of frontend reproductions. Ten existing SKU inventory integration
+  tests passed. The isolated existing Go baseline had 157 top-level passes, five failures, and 222 skips; the
+  frontend had 208 passes and two failures. The frontend production build passed. These results reject a
+  correctness sign-off; they do not measure production capacity. Detailed local evidence is in
+  ../../../../audit-artifacts/ relative to this file's directory, outside the repository; task acceptance
+  criteria must remain usable without that directory.
+
+Global constraints
+
+- Capacity means 100 total externally received API requests per second, not 100 completed checkouts per second;
+  revise the workload if the business target differs.
+- Starting user capacity means 1,000 concurrent active signed-in sessions with isolated identities, carts, and
+  orders; it does not mean 1,000 simultaneous database connections or 1,000 checkouts per second.
+- Keep PostgreSQL authoritative for stock and money; Redis and browser caches cannot authorize a stock capture,
+  refund, debit, or payout.
+- Use the established integer monetary unit, checked arithmetic, and an explicitly documented rounding rule at
+  every conversion; never silently change a pricing formula to satisfy a stale test.
+- Every stock or money mutation must preserve its business invariant in one database transaction and be safe to
+  retry after an ambiguous response.
+- Historical corrections require attributable evidence and an auditable correction; ambiguous history must enter
+  reconciliation, never an invented balance or silent rewrite.
+- Test and benchmark only explicitly disposable environments; never infer a test database from localhost, a
+  development label, or production credentials.
+- Preserve existing services and primary-site access; exclude docs/fa/ and paused
+  backend/internal/networkreward/ from changes and releases.
+- Follow AGENTS.md for authorized implementation and release: validate, commit, push, then use deploy.ps1;
+  protect secrets and rehearse database compatibility before production.
+
+Business invariants
+
+1. A physical unit has one lifecycle position. Supplier sellable, warehouse sellable, reserved, in transit,
+  staging, quarantined, damaged, dispatched, and returned movements cannot create the same unit twice. Model
+  current on-hand states separately from cumulative departures; do not sum overlapping projections. Receipt and
+  approved adjustment are attributable external sources; shipment, disposal, and supplier return are
+  attributable departures.
+2. Capture follows the persisted SKU, location, and fulfillment-origin split. A routed warehouse line cannot
+  silently consume a supplier lot. Cancellation restores only the exact eligible allocations; dispatched goods
+  become sellable again only after a recorded acceptable return receipt.
+3. Bin capacity follows actual placement and physical departure, using SKU dimensions/weight. A sale reservation
+  and a physical shipment are distinct events.
+4. One authoritative signed financial balance feeds display, statements, payout, service purchase, monthly
+  settlement, refunds, and fees. All competing writers take compatible locks before making a debit/reservation
+  decision. Debt remains visible.
+5. A business event has one effect even with different client retry keys, duplicate callbacks, worker restarts,
+  or out-of-order delivery. A paid cancellation records the refund obligation even when the external provider is
+  unavailable.
+6. Receipt age and quantity history determine storage fees. New units cannot inherit past occupied days;
+  departure cannot erase accrued charges. Ledger postings and their reversals reconcile to statement closing
+  balances and treasury liabilities.
+7. The server validates price, discount, delivery quote, quantity, ownership, and authorization. Browser state
+  is scoped to authenticated identity and store; stale async responses cannot restore a logged-out session or
+  replace a newer quote.
+
+Capacity contract
+
+These are initial acceptance targets, not observed results. The release evidence must identify CPU model/count,
+  RAM, disk class, OS, exact application/image versions, PostgreSQL/Redis settings, number of replicas, pool
+  sizes, and other services sharing the host. Measure generator CPU and network too. A test on a developer
+  machine does not certify a different production host.
+
+Provision 1,000 distinct authenticated users and maintain their independent session/token/cookie state
+  throughout the qualifying run, distributed across stores and roles according to the intended audience.
+  Exercise all identities, rather than reusing one token 1,000 times. Run both (a) the fixed 100 RPS
+  arrival-rate workload and (b) a closed-loop 1,000-user journey simulation with realistic think time, reporting
+  its actual throughput. At 100 RPS, 1,000 active users average one API request per user per ten seconds; page
+  fan-out and checkout bursts must be counted explicitly. The closed-loop run alone cannot certify 100 RPS
+  because slow responses can lower its offered load.
+
+Run a separate startup login ramp of 1,000 distinct users over 60 seconds, and repeat it with background
+  browsing so total offered API traffic reaches 100 RPS. Count each authentication flow's real requests,
+  including any challenge/verification calls; use a synthetic adapter instead of sending real SMS at load-test
+  rates. Test expiry/refresh/re-login at configured lifetimes and concurrent device sessions. Assert no
+  cross-user or cross-store data leakage, cart/key reuse, involuntary global logout, or unbounded retained
+  session state. Use a small real-browser cohort for UI behavior and protocol-level clients for the
+  1,000-session capacity run; 1,000 local browser processes are not required.
+
+Use a separate load generator and the public TLS path through Caddy/Nginx. Count external API requests
+  separately from Caddy domain-authorization subrequests, provider calls, probes, and assets. Also run a
+  browser/static-asset burst to measure their additional domain-authorization load. Match the production worker
+  schedule and enabled features.
+
+Initial steady-state mix, adjustable only with recorded rationale before the qualifying run:
+
+| Scenario | External API RPS |
+|---|---:|
+| Product listing/search with varied filters/pages | 30 |
+| Product detail, varied SKUs and stores | 20 |
+| Storefront/store configuration reads | 15 |
+| Authenticated order/account reads | 15 |
+| Shipping quotes with valid carts | 8 |
+| Order creation with valid quotes and unique logical attempts | 4 |
+| Payment initiation for prepared eligible orders | 4 |
+| Verified payment callbacks for prepared attempts | 4 |
+| **Total** | **100** |
+
+Use seeded lifecycle queues or a separately measured feeder so that writes remain valid and sufficient unique
+  inventory is available for the full run. Account for every helper request. Run a separate end-to-end checkout
+  scenario to exercise creation-to-callback dependencies and measure completed checkouts per second. Warm-cache
+  and cold-cache results are separate. Include warehouse/seller/admin activity and scheduled fees/settlements in
+  an additional workload variant with the same 100 total API RPS budget. Do not count expected stock rejection
+  as successful checkout throughput.
+
+An arrival-rate executor controls iterations, not automatically requests. Use one measured API call per
+  scheduled iteration for the table above, or derive iteration rates from the actual number of calls and report
+  measured http_reqs throughput. Require zero dropped iterations. See the official [k6 arrival-rate
+  executor](https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-arrival-rate/) and
+  [dropped-iteration
+  guidance](https://grafana.com/docs/k6/latest/using-k6/scenarios/concepts/dropped-iterations/).
+
+| Gate | Acceptance |
+|---|---|
+| Sustained test | 100 API RPS for 30 minutes after warmup; approximately 180,000 measured external requests |
+| Soak | 100 API RPS for two hours; approximately 720,000 requests; no upward unbounded memory, connection, queue, or goroutine growth |
+| Read latency | p95 <= 300 ms and p99 <= 1,000 ms, reported by route class |
+| Mutation latency | p95 <= 750 ms and p99 <= 2,000 ms for local processing; provider time reported separately |
+| Errors | Unexpected HTTP/transport/business failures < 0.1%; valid-traffic throttling counts as failure; no hidden failed assertions |
+| Business correctness | Zero oversells, duplicate effects, missing refund obligations, or unexplained ledger/stock reconciliation differences |
+| Saturation | No OOM, exhausted database connections, or indefinitely waiting work; target <= 70% sustained CPU on the bottleneck host at 100 RPS |
+| Recovery/headroom | 200 API RPS for five minutes; bounded rejection/queues permitted above target, no corruption, recovery to 100 RPS latency/error targets within two minutes |
+
+If actual provider latency makes the complete payment request exceed the local target, instrument the local and
+  provider portions and set an explicit end-to-end budget from the provider contract before launch. Local
+  adapter simulations must reproduce timeout, failure, and ambiguous results; a local simulation is not
+  real-provider certification. Use provider sandbox only within its allowed traffic limits.
+
+Use at least 10,000 products, 50,000 SKUs, 100,000 historical orders, 100 stores, 100 suppliers, and 1,000
+  customers as an initial data floor, or the expected launch cardinality if larger. Include skewed tenants,
+  broad searches, realistic line counts, stock histories, and aged fee positions. These are proposed test
+  fixtures, not claims about current data. Load-seed enough additional saleable stock/orders for the full write
+  run.
+
+Required contention and failure scenarios
+
+- One hundred simultaneous order captures compete for the last five valid units: exactly five inventory captures
+  and five allocations. Reject excess attempts before external payment capture where the provider flow permits
+  it. If money was already captured externally, preserve the paid fact and create one durable
+  refund/compensation obligation; never fabricate available stock or erase the confirmed payment.
+- One hundred deliveries of one callback, including different transport retry keys: one financial effect and one
+  inventory capture.
+- Concurrent cancellation/dispatch, receipt/capture, refund/payout, and automatic/manual settlement:
+  conservation and balance invariants hold; retries and deadlocks are bounded.
+- Crash after provider verification, after transaction commit before response, and during worker execution:
+  restart/reconciliation converges to one recorded outcome.
+- Redis restart/loss, database connection loss, and provider timeout: readiness reflects dependencies, mutations
+  fail safely, obligations survive, and recovery is measured.
+- Account A to B switch with delayed A responses, stale shipping quotes, maximum/invalid quantities, rounding
+  boundaries, partial return after split fulfillment, and legacy/V2 mixed inventory: deterministic tested
+  outcomes.
+
+Release evidence and operations
+
+All confirmed audit bugs require regression tests and remediation before enabling affected commerce paths.
+  Investigation tasks close with evidence of either a fix or a verified non-defect; merely relabeling a risk
+  does not close it. The real payment adapter is a launch blocker for a store accepting actual payments.
+  Provider selection and credentials are external inputs, not reasons to replace verification with a mock.
+
+Migration rehearsals must cover an empty database and a representative previous production schema/data snapshot
+  in a disposable environment. One serialized tracked runner must fail on errors. Expand/contract changes must
+  remain compatible with the rollback application; restoring a backup is disaster recovery, not a routine
+  rollback that discards new orders.
+
+Before launch, restore a backup into a fresh isolated environment and verify order, stock, ledger, upload,
+  configuration, and payment-obligation integrity. Initial operational objectives are RPO <= 15 minutes and RTO
+  <= 60 minutes, subject to infrastructure feasibility and business confirmation; implement WAL/PITR or an
+  equivalent mechanism and prove the targets if adopted. Assign a named incident owner, alerts, on-call contact,
+  reconciliation schedule, and capacity rerun policy. A successful archive listing is not a restore drill.
+
+The go/no-go record must link the commit/image digests, migration results, complete test reports (including skip
+  reasons), raw load-test output, dashboards, restore drill, rollback rehearsal, historical reconciliation,
+  unresolved-risk decisions, and payment sandbox evidence. No plan checkbox can substitute for those results.
+
+
+TASK INDEX
+==========
+[ ] TEST-01 | P0 | Isolate every database test and seeder lifecycle
+[ ] CORE-01 | P1 | Define and enforce one cross-domain transaction contract
+[ ] INV-01 | P1 | Prevent whole-order cancellation after any fulfillment leg dispatches
+[ ] MIG-01 | P1 | Use one strict migration runner with concurrency and integrity guards
+[ ] INV-05 | P1 | Allocate and restore inventory at the exact persisted fulfillment origin
+[ ] INV-11 | P2 | Make carton creation atomic and retry-safe
+[ ] INV-02 | P1 | Persist inbound provenance and reserve/move exact transfer units
+[ ] INV-03 | P1 | Make legacy aggregate stock edits location-safe
+[ ] INV-04 | P1 | Remove failed-QC duplicate source availability without double debiting transfers
+[ ] INV-08 | P2 | Use verified effective SKU physicals for capacity
+[ ] INV-09 | P2 | Keep all legacy receipt staging unsellable until exact putaway
+[ ] INV-06 | P2 | Release bin occupancy once on physical departure
+[ ] INV-07 | P2 | Supply and validate stock-adjustment reasons end to end
+[ ] FIN-012 | P1 | Integer money, rounding and stale pricing expectations
+[ ] FIN-001 | P1 | Canonical seller balance and debit authorization
+[ ] FIN-006 | P1 | Storage quantity-time accounting
+[ ] INV-10 | P2 | Record V2 receipt storage occupancy with true warehouse and age
+[ ] OBS-01 | P1 | Add bounded metrics, tracing and actionable alerts
+[ ] CAP-01 | P1 | Build the 1,000-user and 100-RPS qualification environment
+[ ] FIN-003 | P1 | Paid cancellation creates a durable refund obligation
+[ ] AUTH-01 | P1 | Make every panel logout revoke the shared client session
+[ ] AUTH-02 | P1 | Prevent stale auth/profile results from resurrecting a session
+[ ] AUTH-03 | P1 | Bind orders and other user caches to stable identity
+[ ] CHECKOUT-01 | P1 | Persist a logical checkout attempt through ambiguous outcomes
+[ ] OPS-02 | P1 | Align request/provider deadlines and retry semantics
+[ ] FIN-002 | P1 | Monthly settlement concurrency and restart safety
+[ ] JOB-01 | P1 | Bound, isolate and observe worker jobs and their backlog
+[ ] SEC-01 | P1 | Remove committed secret defaults and establish controlled credential lifecycle
+[ ] FIN-010 | P1 | Real payment adapter and reconciliation capability
+[ ] INV-12 | P1 | Promote inventory regressions and measure contention at the 100-rps target
+[ ] FIN-004 | P1 | Parcel-charge business idempotency
+[ ] FIN-005 | P1 | Dispute verdict and order financial eligibility
+[ ] FIN-007 | P2 | Coupon use atomically attached to the order
+[ ] FIN-008 | P2 | Treasury cash/liability arithmetic
+[ ] FIN-011 | P1 | Investigate referral reversal and release conservation
+[ ] FIN-009 | P2 | Complete, reconcilable seller statements
+[ ] FIN-013 | P1 | Finance verification at 100 RPS and operational controls
+[ ] CHECKOUT-02 | P1 | Sequence shipping quotes and recover from server mismatch
+[ ] TEST-02 | P1 | Make the complete test and build baseline trustworthy
+[ ] OPS-01 | P1 | Make startup, health, graceful drain and shutdown explicit
+[ ] REL-01 | P1 | Build, stage and verify an immutable release from the exact committed source
+[ ] BAK-01 | P1 | Produce restorable, protected backups and rehearse recovery
+[ ] MIG-02 | P1 | Make rollback compatible with schema and pending migration files
+[ ] FIN-014 | P1 | Historical reconciliation and staged financial cutover
+[ ] CHECKOUT-03 | P2 | Unify the displayed cart/checkout price breakdown
+[ ] PERF-01 | P1 | Apply catalog pagination before fetching and pricing all products
+[ ] PERF-02 | P1 | Bound order lists and expensive reconciliation/report work
+[ ] PERF-03 | P1 | Budget the DB pool and reduce repeated auth/config reads safely
+[ ] PERF-04 | P1 | Benchmark Redis hot-key holds and define restart recovery
+[ ] EDGE-01 | P1 | Include domain authorization and assets in edge capacity
+[ ] REL-02 | P1 | Define deployment availability and host resource/health budgets
+[ ] QUAL-01 | P1 | Close unreviewed business and authorization coverage
+[ ] CAP-02 | P1 | Prove integrated correctness at 1,000 users and 100 RPS
+[ ] GO-01 | P1 | Assemble a reviewable release and execute the verified rollout
+
+AUDIT FINDING COVERAGE
+=====================
+Main audit finding 01: INV-01, FIN-003
+Main audit finding 02: INV-02
+Main audit finding 03: INV-03
+Main audit finding 04: INV-04
+Main audit finding 05: INV-05
+Main audit finding 06: INV-06
+Main audit finding 07: FIN-001
+Main audit finding 08: FIN-002
+Main audit finding 09: FIN-004
+Main audit finding 10: FIN-003
+Main audit finding 11: FIN-007
+Main audit finding 12: FIN-006
+Main audit finding 13: FIN-006
+Main audit finding 14: FIN-005
+Main audit finding 15: AUTH-01
+Main audit finding 16: AUTH-02
+Main audit finding 17: CHECKOUT-01
+Main audit finding 18: CHECKOUT-02
+Additional source findings: V2 adjustment reason -> INV-07; SKU physical overrides -> INV-08; sellable staging
+  -> INV-09; V2 missing storage positions -> INV-10; non-atomic cartons -> INV-11; treasury liability gap ->
+  FIN-008; incomplete statements -> FIN-009; real PSP gap -> FIN-010; referral reversal uncertainty -> FIN-011;
+  cart display math -> CHECKOUT-03; identity-bound cached orders -> AUTH-03; unsafe test defaults -> TEST-01;
+  stale test baseline -> TEST-02; remaining route/business/authorization coverage -> QUAL-01.
+SRE findings: startup/readiness/drain -> OPS-01; deadline mismatch -> OPS-02; catalog late limit -> PERF-01;
+  unbounded orders/reports -> PERF-02; pool/query budget -> PERF-03; Redis holder scan/recovery -> PERF-04;
+  Caddy authorization overhead -> EDGE-01; worker starvation/backlog -> JOB-01; migration failure/tracking ->
+  MIG-01; schema/rollback compatibility -> MIG-02; build provenance -> REL-01; rollout interruption/resource
+  budget -> REL-02; tracked secret defaults -> SEC-01; false backup success/incomplete recovery -> BAK-01; 1,000
+  users/100 RPS -> CAP-01/CAP-02; final release -> GO-01.
+
+SHARED INVENTORY INTERFACES
+===========================
+
+* No silent replenishment: receipt cannot infer new stock from an exhausted/missing source balance. New
+  shipments use sourceKind='transfer' unless an explicit 'external_replenishment' line records a unique external
+  receipt reference and reason. A transfer reserves its exact supplier lot when booked, moves it to transit on
+  explicit dispatch, then consumes its allocated transit quantity on receipt. Cancellation releases only
+  undispatched reservations. External receipts credit once, after authorized warehouse verification, and cannot
+  also debit/reuse a transfer allocation. Existing unknown shipments require reconciliation; they are not
+  automatically reclassified as new goods.
+* Keep one source debit: the transfer task owns the debit. QC and putaway only change state/location of those
+  same allocated units. Do not retain the old QC supplier debit after adding the upstream debit. Every receipt,
+  correction, disposition, cancellation and departure has database-enforced business identity independent of
+  client retry keys.
+* Common origin type proposed in backend/internal/repository/inventory_origin.go: InventoryOrigin { Type string;
+  SupplierID, WarehouseID, SupplierWarehouseID string }. Allowed Type: supplier, warehouse, legacy. Legacy means
+  explicitly unattributed history, never a wildcard for a named origin. InventoryAllocation { BalanceID string;
+  Quantity int; Origin InventoryOrigin } extends existing allocation JSON compatibly; original balance IDs
+  remain immutable.
+* Transfer interface proposed in backend/internal/repository/inbound_inventory.go: reserveInboundTransferTx(ctx
+  context.Context, tx *sql.Tx, shipmentID, supplierID, warehouseID string, lines []InboundTransferLine) error;
+  dispatchInboundTransferTx(ctx context.Context, tx *sql.Tx, shipmentID string) error; receiveInboundLineTx(ctx
+  context.Context, tx *sql.Tx, lineID string, cumulativeReceived int, actor string) error. InboundTransferLine
+  contains ProductID, VariantID, SourceKind, ExternalReference, Reason strings; Quantity int; Source
+  InventoryOrigin. Quantity and IDs are validated before writes. SKU can be empty only for legacy unallocated
+  stock.
+* Preserve captureOrderInventoryTx/restoreOrderInventoryTx outer signatures. INV-05 replaces allocation
+  internals with consumeInventoryForOriginTx(ctx context.Context, tx *sql.Tx, item inventoryCaptureItem, mode
+  string, origin InventoryOrigin, quantity int) ([]InventoryAllocation, error). It consumes all persisted
+  order-origin splits; it does not pick the first split or change origin after payment.
+* CORE-01 owns the one global lock order, including payment, account and storage rows; all inventory helpers and
+  callers must adopt it. External carrier/PSP calls remain outside stock transactions with durable replay state.
+* Migration/reconciliation rule: new metadata is additive first. Backfill only from unique immutable links such
+  as inbound destination, exact capture balance IDs, task-to-bin records and existing movement IDs. Do not
+  allocate NULL variant history across SKUs, infer supplier warehouse from the product's current origin,
+  decrement anonymous stock to 'repair' it, manufacture historic receipts, or bill fabricated historical
+  storage. Unresolved stock is excluded from named-origin promises and surfaced for counted reconciliation with
+  audit evidence. Keep existing paid orders operationally visible as exceptions; do not silently cancel them or
+  let a read hide them.
+
+
+SHARED FINANCIAL INTERFACES
+===========================
+Use one transaction-aware financial service over existing domain tables. This
+does not require an unrelated event-sourcing rewrite. Proposed interfaces/names:
+  LockAccountsTx(ctx, tx, orderedAccountKeys)
+  BalanceTx(ctx, tx, accountKey, currency) -> BalanceSnapshot
+  ReserveDebitTx(ctx, tx, accountKey, amount, businessKey, requestKey) -> Reservation
+  PostMoneyEffectTx(ctx, tx, effect, businessKey) -> ExistingOrCreatedEffect
+  ReadBalances(ctx, accountKeys, currency, asOf) -> coherent report snapshot
+Account keys distinguish seller, supplier and customer, not an untyped ID string.
+BalanceSnapshot exposes signed posted balance, outstanding reservations, signed
+available = posted - reserved, debt, currency/unit, and snapshot/version metadata.
+The UI may display max(0, signedAvailable) as spendable, but debt must remain
+visible to accounting; GREATEST(0) must not erase liabilities in treasury totals.
+
+1. All paths that change a balance/reservation acquire the same affected-account
+   locks: payout, early withdrawal, service purchase, refund reversal, adjustment,
+   release, withdrawal approval/rejection, transfer completion and settlement.
+   Multiple accounts lock in deterministic account-key order. Coordinate the
+   cross-domain order/payment/return/inventory lock order with the order workstream
+   before implementation; do not introduce a competing order in finance code.
+2. Authorization computes BalanceTx in the same transaction after the locks,
+   without cached reports or a separate *sql.DB read. Either one canonical SQL
+   statement or an explicitly coherent transaction snapshot computes all terms.
+3. Balance terms include released profit/commission/bonus, signed adjustments,
+   return reversals, finalized outgoing payments/purchases/fees, and outstanding
+   reservations. Define each status exactly once. An approved early withdrawal
+   has a net payout plus its fee; gross and linked net must never both reserve.
+4. ReserveDebit rejects nonpositive amount, currency mismatch, insufficient signed
+   funds, overflow or failed reads. A legitimate later refund may create debt;
+   do not suppress a customer's refund because a seller already withdrew. Freeze
+   further spend and surface recovery liability instead of clamping it away.
+5. Business uniqueness uses the domain event identity (parcel charge, order refund,
+   return item/component, cycle/store, payment reference), independent of request
+   keys. Reusing an idempotency key with a different payload returns conflict.
+6. Errors never become zero balances or success. External effects and notifications
+   execute after commit through durable jobs/outbox when delivery is required.
+   No bank/PSP/network call occurs while account or inventory locks are held.
+7. Amounts remain integer int64/BIGINT in a declared canonical currency unit.
+   Checked intermediates and versioned integer rounding are defined by FIN-012.
+   Pricing snapshots are immutable inputs to refunds, not today's catalogue.
+8. Reports use the same canonical term definitions and coherent snapshots. A
+   report cache may be explicit about staleness; it never authorizes money moves.
+
+
+DETAILED TASKS
+==============
+
+[ ] TEST-01 | P0 | Isolate every database test and seeder lifecycle
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: QA lead + backend/frontend reviewers
+Depends on: None
+Primary existing files: backend/cmd/server/referral_bonus_test.go;
+  backend/cmd/server/price_increase_governance_test.go;
+  backend/internal/repository/order_payment_concurrency_test.go;
+  backend/internal/repository/warehouse_capacity_integration_test.go;
+  backend/internal/repository/returns_operations_integration_test.go;
+  backend/internal/database/seeder/seeder_test.go.
+Evidence: backend/cmd/server/referral_bonus_test.go:22-38 defaults to localhost:5432/drup_db and immediately
+  ALTERs; reused by ten tests. price_increase_governance_test.go:62,90 changes existing platform_settings.
+  repository/order_payment_concurrency_test.go:14-26, warehouse_capacity_integration_test.go:14-26 and
+  returns_operations_integration_test.go:127-144 hardcode the application DB.
+  database/seeder/seeder_test.go:82-109 uses drup_postgres/drup_db; SeedBootstrap writes settings and SeedDev
+  upserts accounts before CleanDev/ResetDev:136-149. Current ledger truncate guard should block the whole broad
+  TRUNCATE, so the audit does not claim the current full schema is wiped; earlier committed writes remain
+  unsafe.
+Task: remove all application-DSN fallbacks; require an explicit disposable test DSN and validate a test-only
+  database/schema marker before the first write. Prefer a unique DB per run, created by a narrowly scoped test
+  role, migrated through the canonical runner and dropped only after its resolved identity is checked. Separate
+  unit and opt-in integration suites. Register cleanup before writes, but do not rely on cleanup to protect
+  existing data. Isolate seeder tests completely.
+Acceptance: default go test ./... with a reachable sentinel application DB and no integration DSN causes no
+  application DB connections/writes; sentinel schema/data unchanged. An unsafe DSN is refused before writes.
+  Disposable integration suite works and cleans up on setup/test failure. CI load/chaos tools accept only
+  explicit nonproduction targets and seeded disposable data. Preserve the audit repro scripts as evidence; turn
+  relevant scenarios into regressions once fixes exist.
+
+[ ] CORE-01 | P1 | Define and enforce one cross-domain transaction contract
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Backend lead + finance/inventory reviewers
+Depends on: TEST-01
+Evidence: the repairs touch concurrent order, payment, return, account, inventory, and storage writers.
+  Independent local locking fixes can introduce cross-domain deadlocks; this is a required integration design
+  and regression task, not a newly reproduced audit defect.
+Owner: backend lead, reviewed jointly by inventory and finance owners.
+Files: backend/internal/repository/order_repo.go, sku_inventory.go, supplier_repo.go, warehouse_repo.go,
+  supplier_shipping_repo.go, returns_operations_repo.go, settlement_repo.go, storage_position_repo.go,
+  storage_fee_repo.go; new docs/architecture/transaction-contract.md and
+  backend/internal/repository/transaction_contract_integration_test.go.
+Implementation: inventory every mutation entry point and document its invariant, business-event identity, lock
+  acquisition, retry response, and external side effect. Use this global row-lock order: sorted order IDs ->
+  payment records -> sorted typed financial account guards -> sorted products -> sorted SKUs ->
+  shipment/return/task records -> inventory balances, bins, placements and storage positions in a documented
+  consistent table/ID order. A path may skip irrelevant classes but cannot acquire an earlier class after a
+  later one. Discover IDs without locking, acquire guards in order, then revalidate ownership/state/amount.
+  Account-only workers may not subsequently lock an order/payment; storage assessment must discover
+  account/product identities before locking positions. Refactor return-first, parcel-first and position-first
+  callers that invert the hierarchy. Do not hold database locks during provider/carrier calls. Allocate
+  noncolliding additive migration IDs for the coordinated workstreams.
+Interfaces: retain public repository APIs where possible. All transaction helpers take the caller's context and
+  *sql.Tx; helpers must not open a nested database transaction or read authorization through *sql.DB. Document
+  preheld locks for LockAccountsTx, BalanceTx, captureOrderInventoryTx, restoreOrderInventoryTx,
+  reserveInboundTransferTx, releasePlacementOccupancyTx and storage accrual. Namespace request keys by principal
+  and operation; bind immutable payload fingerprints; business-event uniqueness remains database-enforced
+  independently of request keys.
+Acceptance: deliver the complete writer map, explicit helper/preheld-lock contracts and executable
+  two-connection lock-order fixtures for dispatch/cancel, payment/return, transfer/capture, payout/refund,
+  storage assessment/departure and parcel charge/adjustment. The helper fixtures prove bounded acquisition,
+  rollback and independent-account concurrency. Assign each incompatible existing caller to its owning
+  INV/FIN/JOB task. CORE-01 can close when that contract and helper-fixture evidence exist; it does not claim
+  all existing callers are repaired. Actual domain flows must show no invariant drift, duplicate effect,
+  unbounded blocking or exhausted retry in INV-12/FIN-013/CAP-02 after adoption.
+Data risk: no historical state is rewritten by this task. Publishing a document without the writer inventory and
+  executable lock fixtures does not close this prerequisite. Each domain task remains responsible for adopting
+  and testing the common contract in its production callers.
+
+[ ] INV-01 | P1 | Prevent whole-order cancellation after any fulfillment leg dispatches
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01
+Evidence state: confirmed by executable PostgreSQL reproduction, audit_order_test.go and
+  order-invariant-results.txt; customer-route equivalence confirmed in source.
+Existing files: backend/internal/repository/order_repo.go (CancelOrder); supplier_shipping_repo.go
+  (SubmitShipping); supplier_shipment_repo.go (alternate status writers); warehouse_repo.go (ShipOrder);
+  sku_inventory.go (restoreOrderInventoryTx); backend/cmd/server/order_handlers.go;
+  supplier_direct_ship_handlers.go; tapin_handlers.go. Regression destination:
+  backend/internal/repository/order_inventory_capture_test.go plus a disposable-schema integration test imported
+  from audit_order_test.go.
+Implementation: implement assertOrderCancellationAllowedTx(ctx context.Context, tx *sql.Tx, orderID string)
+  error and ErrOrderPartiallyDispatched; lock/check aggregate order plus all supplier legs and warehouse
+  dispatch markers. Initial scope refuses whole-order cancellation after any physical dispatch; partial
+  cancellation is a separate future feature. All dispatch writers must use the same order lock/state gate.
+  Preserve stock restoration only for eligible, captured, unreturned quantities. Map customer/API conflict to
+  409. Coordinate paid-cancellation money liability with FIN's cancellation/refund task in the same transaction;
+  do not restore inventory while leaving an already-dispatched/refunded financial leg inconsistent.
+Acceptance: root TestAuditOrderPartiallyShippedCannotRestoreShippedStock passes for customer and admin ownership
+  routes; two suppliers and mixed warehouse/supplier orders reject cancellation after first dispatch and leave
+  stock unchanged. Race SubmitShipping/ShipOrder vs CancelOrder 100 times: exactly one compatible outcome, no
+  shipped-and-restored line. Unshipped paid cancellation restores once; partially returned quantity is not
+  restored twice. Orders with a legacy shipment timestamp but misleading aggregate status are blocked, not
+  treated as undelivered.
+Data risk: identify already-cancelled orders with dispatched legs and restored captures; produce itemized
+  reconciliation report. Do not subtract their possibly-resold stock or re-open paid states automatically.
+
+[ ] MIG-01 | P1 | Use one strict migration runner with concurrency and integrity guards
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: TEST-01
+Primary existing files: backend/cmd/migrate/main.go; backend/cmd/server/main.go.
+Evidence: main.go:70-156 runner records names and transactions per file, but silently skips a missing migrations
+  directory and lacks a cross-process advisory lock/checksum. backend/cmd/migrate/main.go applies every up file,
+  logs/continues per-file failures, does not record schema_migrations and prints success. Root independently
+  applied all 179 migrations on a fresh DB without SQL errors; this does not prove upgrade compatibility or
+  concurrent-run safety.
+Task: use one shared runner for CLI, CI and release: ordered immutable versions/checksums, advisory singleton
+  lock, transactional execution where valid, recorded result, explicit timeouts, and nonzero failure. Fail
+  required missing-dir/schema mismatch/checksum drift; support explicit documented nontransactional migrations
+  if ever needed. Separate migration execution from each HTTP replica startup, or make startup wait safely on
+  the same locked runner. Never ignore failed DDL and then serve a mismatched schema.
+Acceptance: fresh DB, realistic previous-version upgrade, simultaneous runners, injected SQL failure halfway,
+  missing directory, applied-file checksum change and process termination tests. On failure no success is
+  reported, no partial transactional migration is marked applied, and retry is safe. Verify existing
+  179-migration bootstrap evidence remains reproducible via the canonical runner. Record per-file duration and
+  identify lock-heavy migrations before release.
+
+[ ] INV-05 | P1 | Allocate and restore inventory at the exact persisted fulfillment origin
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01, MIG-01
+Evidence state: confirmed by executable PostgreSQL inventory-capture reproduction,
+  TestAuditSupplyWarehouseOriginCannotCaptureSupplierOnlyLot. The test does not contact a PSP or claim a live
+  payment.
+Existing files: backend/internal/repository/sku_inventory.go; inventory_unify.go; supplier_repo.go (origin
+  edit/new balances); warehouse_repo.go; warehouse_optimization_repo.go; supplier_fulfillment_lines.go;
+  order_repo.go; backend/internal/routing/routing.go; backend/cmd/server/shipping_quote_handlers.go;
+  order_handlers.go. Tests: warehouse_routing_gap13_test.go and sku_inventory_integration_test.go.
+New files: backend/internal/repository/inventory_origin.go;
+  backend/migrations/202611140002_inventory_origin_identity.up.sql and .down.sql. Reuse
+  inventory_balances.warehouse_id; add supplier warehouse identity where needed. Persist destination identity on
+  new carton/receipt/putaway rows, map bins by immutable warehouse ID, and propagate origin through moves and
+  returns. Add measured allocation indexes for product/SKU/origin/sellable, without changing old migration
+  files.
+Implementation: use consumeInventoryForOriginTx for every order_item_origins split and verify split quantities
+  sum exactly to line quantity. Supplier origin cannot consume warehouse lots; warehouse W1 cannot consume
+  W2/unknown stock. Supplier warehouse changes affect future declared stock only; do not silently relocate
+  existing lots. Checkout/quotes must use the same eligible-origin availability. Capture failure returns
+  shortage/conflict; it must not silently reroute or reprice after PSP authorization. Coordinate shortage refund
+  handling with payment task. Cancellation restores recorded balances, not today's product origin.
+Acceptance: warehouse-origin/supplier-only audit regression passes; test reverse direction, two warehouses, two
+  supplier warehouses, multi-leg split, inactive origin, origin change after checkout, concurrent last unit at a
+  named origin. Each successful captured allocation matches its persisted leg and quantity; replay/cancel
+  restores exactly those locations. Legacy unknown rows are visible for review but never satisfy named-origin
+  stock; old paid captures remain fulfillable via explicit exception workflow rather than disappearing from
+  queues.
+Data risk: NULL warehouse/variant cannot be guessed from current product flags or names. Backfill only unique
+  inbound/task/capture evidence; unresolved pending payment orders fail closed with customer-safe recovery, not
+  an unexplained lost payment. This boundary requires rollout reconciliation before enabling strict allocation.
+
+[ ] INV-11 | P2 | Make carton creation atomic and retry-safe
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01
+Evidence state: source-confirmed independent header/line commits and missing INT upper bound; add
+  failure-injection/API retry reproduction. Stable creation-key behavior is an associated reliability
+  improvement.
+Existing files: backend/internal/repository/supplier_repo.go (CreateCartonShipment);
+  backend/cmd/server/supplier_live_parity_handlers.go; src/services/supplierApi.ts;
+  src/components/supplier/SupplierLabeledInboundTab.tsx; backend/migrations/202610160006_sku_returns.up.sql as
+  reference only (do not edit).
+New migration proposed: backend/migrations/202611140005_carton_business_idempotency.up.sql and .down.sql; add
+  unique shipment_id+variant_id after duplicate reconciliation and supplier-scoped creation key+request
+  fingerprint. Shipment header, lines and INV-02 reservations commit/rollback together. Validate integer bounds
+  and cumulative quantities before any write; check ownership inside the transaction. Keep one client key for an
+  unchanged draft through ambiguous network failure; changed draft gets a new operation key. Same key/different
+  payload returns409.
+Acceptance: second line quantity2147483648 rejects with zero headers/lines/reservations; injected failure after
+  first line rolls back all; duplicate variant or foreign SKU creates nothing; same key retry returns same
+  shipment; concurrent same key produces one; response-loss retry does not create another transfer; changed
+  payload with reused key fails. Header-code collision retries do not leave partial rows.
+Data risk: identify orphan headers, duplicate shipment lines and duplicate physical-shipment claims before
+  adding uniqueness. Do not merge received quantities or delete audit history automatically; mark/reconcile
+  exceptions.
+
+[ ] INV-02 | P1 | Persist inbound provenance and reserve/move exact transfer units
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01, INV-05, INV-11
+Evidence state: confirmed by executable PostgreSQL capture/receipt reproduction,
+  TestAuditSupplyReceiptDoesNotRecreateSoldTransferredUnits; booking/dispatch behavior source-traced. New
+  receipt policy is a proposed implementation decision, not existing behavior.
+Existing files: backend/internal/repository/supplier_repo.go (CreateInbound, DispatchInbound, CancelInbound,
+  CreateCartonShipment, ReceiveWarehouseShipment); sku_inventory.go (ReceiveTrackedSKUShipmentItemTx);
+  warehouse_repo.go (applyInboundInventoryTx); supplier_return_sku.go (shared lock ordering);
+  backend/cmd/server/supplier_live_parity_handlers.go; supplier_handlers.go; warehouse_handlers.go; main.go;
+  src/components/supplier/SupplierInboundTab.tsx; SupplierLabeledInboundTab.tsx; src/services/supplierApi.ts.
+New files: backend/internal/repository/inbound_inventory.go;
+  backend/migrations/202611140001_inventory_transfer_provenance.up.sql and .down.sql; focused
+  inbound_inventory_integration_test.go. Persist line identity, source kind, source balance allocations,
+  destination warehouse, reserved/dispatched/received quantity, version/provenance state; support legacy inbound
+  lines without guessing a SKU. Extend carton UI/API with actual destination, explicit source kind/reference and
+  dispatch/cancel actions.
+Implementation: use the shared transfer interfaces/policy above. Booking atomically moves source sellable into a
+  dedicated inbound-reserved state; dispatch moves those exact units to transit; cumulative receipt moves at
+  most dispatched-unreceived units into physical/quarantine staging. A missing source or over-receipt is a
+  conflict, never creditSKUInventoryTx(...new). Replayed payload must match business line identity and original
+  quantities. Explicit replenishment credits once under its unique external reference; forbid cross-mode replay.
+  Cancellation of undelivered remainder follows physical state, not client status text.
+Acceptance: audit transfer-after-sale regression passes; initial 1 unit cannot yield two captures across
+  booking/dispatch/receive/putaway. Concurrent booking/payment allows only one claim. Partial receive 2 then 5
+  of 5 credits total 5; duplicate/cross-key receipt stays 5; receive 6 fails. Missing source, unspecified
+  historical source, or external reference replay with different quantity fails closed. Cancelling an
+  undispatched transfer releases once; dispatched stock cannot return sellable without physical receipt
+  evidence. Explicit additional replenishment of 1 genuinely increases physical total by exactly 1.
+Data risk: reserve/backfill only new shipments automatically. Existing scheduled/draft/in-transit shipments need
+  a dry-run classification and recorded source reconciliation; replay of already-accounted receipts must remain
+  a no-op. Never both debit the source at migration and again at receipt/QC.
+
+[ ] INV-03 | P1 | Make legacy aggregate stock edits location-safe
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01
+Evidence state: confirmed by executable PostgreSQL reproduction,
+  TestAuditSupplyLegacyAggregateEditDoesNotAddWarehouseStockTwice; UI aggregate payload source-traced.
+Existing files: backend/internal/repository/supplier_repo.go (setSupplierSellableTotalTx, UpdateProductStock,
+  approval caller); supplier_stock_v2.go; sku_stock.go; inventory_unify.go;
+  backend/cmd/server/supplier_handlers.go; src/components/supplier/SupplierProductsTab.tsx;
+  src/services/supplierApi.ts. Tests: supplier_panel_test.go, sku_inventory_integration_test.go plus promoted
+  aggregate audit regression.
+Implementation: retain the existing UI's absolute sellable aggregate contract. Under product and relevant
+  balance locks, set supplier-local sellable to requestedTotal minus sellable held elsewhere; reject
+  requestedTotal below held stock. Separate legacy initial publication seeding from subsequent aggregate
+  adjustment if required so approval cannot use the wrong contract. Record adjustment movement and reason/actor,
+  enforce INT bounds, leave reserved/transit/quarantine quantities untouched.
+Acceptance: 5 supplier + 5 warehouse -> save10 remains10 for 20 retries; save8 yields3+5; save4 fails with no
+  writes; zero-stock and no-balance legacy cases work; V2 still requires exact SKU; sibling SKU and other
+  supplier are untouched. Concurrent capture/update follows serialized absolute-total semantics and never drives
+  a location negative. Response returns resulting aggregate, not an unverified echo.
+Data risk: existing inflated totals cannot be safely repaired from current stock alone. Report adjustment/audit
+  and warehouse movements for counted reconciliation; no blanket subtraction of warehouse balances.
+
+[ ] INV-04 | P1 | Remove failed-QC duplicate source availability without double debiting transfers
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: INV-02
+Evidence state: confirmed by executable PostgreSQL reproduction,
+  TestAuditSupplyFailedLegacyQCRemovesDeclaredSellableStock.
+Existing files: backend/internal/repository/warehouse_repo.go (RecordQCPass, CompleteQC,
+  debitSupplierSellableForQCReceiptTx, moveInventoryTx); sku_inventory.go;
+  backend/cmd/server/warehouse_handlers.go; existing operations_integration_test.go and new inbound inventory
+  regressions.
+Implementation: consume the recorded physical receipt allocation for both passed and failed disposition; remove
+  the legacy passed-only source debit once INV-02 owns the transfer debit. Normalize RecordQCPass and CompleteQC
+  through one disposition helper keyed by receipt line so calling both endpoints cannot process units twice.
+  Reject passed+failed greater than undisposed physical receipt quantity; track shortage separately, without
+  inventory credit.
+Acceptance: initial1 -> receive1 -> fail1 yields supplier sellable0, damaged/quarantine1, total physical1.
+  Partial pass3/fail2 of5 conserves5; pass/fail replay, opposite endpoint replay, and changed payload cannot
+  add/remove units twice. Already-debited transfer does not lose a second supplier unit. Customer capture cannot
+  buy failed or undisposed units. Audit failed-QC reproduction passes.
+Data risk: already-failed historical receipts may have duplicated source stock; quarantine unresolved
+  differences and report evidence, not automatic damage-based subtraction from stock that may have been sold or
+  adjusted.
+
+[ ] INV-08 | P2 | Use verified effective SKU physicals for capacity
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CORE-01, MIG-01
+Evidence state: source-confirmed parent-only capacity reads despite persisted variant overrides; runtime
+  overfill assertion must be added by this task.
+Existing files: backend/internal/repository/warehouse_repo.go; warehouse_optimization_repo.go;
+  returns_operations_repo.go (RecordProductMeasurement); supplier_repo.go (UpdateVariantPhysical);
+  product_publication_v2.go; backend/cmd/server/warehouse_handlers.go;
+  src/components/warehouse/WarehousePutawayTab.tsx; src/services/wmsApi.ts;
+  backend/internal/warehouseopt/capacity.go.
+New files: backend/internal/repository/sku_measurement.go;
+  backend/migrations/202611140004_sku_measurement_revision.up.sql and .down.sql. Interface:
+  loadEffectiveSKUPhysicalTx(ctx context.Context, tx *sql.Tx, productID, variantID string) (SKUPhysical, error),
+  with dimensions, weight, Verified bool and immutable Revision reference. Proposal dimensions remain declared,
+  not automatically verified. SKU overrides require SKU verification; product fallback uses product
+  verification. Reservation and placement store revision and actual rounded volume/weight.
+Acceptance: parent10x10x10mm/10g with verified SKU100x100x100mm/1000g uses1000cm3/1000g; too-small bin rejected
+  in suggestions/assign/confirm consistently. No override uses verified parent. Unverified override fails
+  closed. Measurement changes invalidate/revalidate pending reservations; completed placement's recorded
+  occupancy never changes retroactively. Arithmetic overflow/max dimensions and multiple-unit rounding tests
+  pass.
+Data risk: existing overrides are not proven warehouse-verified. Mark them declared/unverified until
+  counted/measured, preserving existing occupancy snapshots where evidence exists; do not rewrite historical
+  volume using today's dimensions.
+
+[ ] INV-09 | P2 | Keep all legacy receipt staging unsellable until exact putaway
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: INV-02, INV-04
+Evidence state: source-confirmed legacy sellable-staging/capture/full-task conflict; add actual legacy
+  QC->capture->ConfirmPutaway regression before changing it.
+Existing files: backend/internal/repository/warehouse_repo.go (QC helpers, putaway queue, ConfirmPutaway);
+  sku_inventory.go; inventory_unify.go; backend/cmd/server/warehouse_handlers.go;
+  warehouse_capacity_integration_test.go; operations_integration_test.go.
+Implementation: after passing QC, retain a physical/staging balance with receipt/task provenance; ConfirmPutaway
+  alone moves the task's exact quantity into bin sellable. Share rules with tracked receipts. Payment and
+  supplier-return eligibility must exclude staging; ensure stock projection includes sellable only. Keep
+  completed task idempotent and support partial receipt as separate exact tasks, not a mutable aggregate.
+Acceptance: QC passes10, payment before putaway cannot capture those10, ConfirmPutaway places all10, then
+  payment1 leaves9 sellable and no stranded task. Existing supplier stock unrelated to the transfer remains
+  independently eligible. Both legacy QC endpoints, retries, mixed failed quantities and partial receipt tasks
+  obey the same rule. Pending task quantity always has sufficient exact staging source.
+Data risk: historical QC sellable staging may already have paid captures. Do not demote all staging blindly or
+  cancel paid units. Reconcile each open task against exact captured/uncaptured quantities, split documented
+  remaining work and surface unresolved shortages. Never resurrect captured units to make a task complete.
+
+[ ] INV-06 | P2 | Release bin occupancy once on physical departure
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: INV-05, INV-08, INV-09
+Evidence state: confirmed by executable PostgreSQL actual AssignPutawayTask/ConfirmPutaway/capture/ShipOrder
+  reproduction, TestAuditSupplyShippingReleasesActualPutawayBinCapacity.
+Existing files: backend/internal/repository/warehouse_repo.go (ConfirmPutaway, PickItem, CompletePickingOrder,
+  ShipOrder); wms_repo.go; warehouse_optimization_repo.go; supplier_return_sku.go; supplier_repo.go (supplier
+  return handover); sku_inventory.go; storage_position_repo.go. Tests: warehouse_capacity_integration_test.go
+  and promoted bin-capacity audit regression.
+New files: backend/internal/repository/warehouse_occupancy.go;
+  backend/migrations/202611140003_warehouse_placement_ledger.up.sql and .down.sql.
+Implementation/interface: record a placement lot at ConfirmPutaway with exact SKU/product, source balance/task,
+  bin, units, measured volume/weight and measurement revision. releasePlacementOccupancyTx(ctx context.Context,
+  tx *sql.Tx, eventID, eventType, actor string, allocations []InventoryAllocation) error debits placements/bin
+  counters once under locks; unique business event+placement prevents retry double release. Initial scope frees
+  capacity at verified ShipOrder or supplier-return handover, conservatively retaining occupancy during
+  picking/packing. Do not free at payment capture. For cancellation before departure leave occupancy unchanged;
+  after departure INV-01 refuses whole cancellation. Physical return into a bin creates a fresh measured
+  placement.
+Acceptance: actual receipt->assign->confirm->capture->ShipOrder audit regression yields occupied0 and permits
+  refill. Multi-bin partial shipment and supplier return free only departed amounts. Duplicate handover, payment
+  cancellation before shipment, and concurrent departures never free twice or make counters negative. Capacity
+  counts all physical held statuses, including allocated/reserved units still in bin. Archived placement
+  dimensions remain authoritative if current SKU dimensions change.
+Data risk: counters cannot be reconstructed from current sellable quantities because paid/unshipped goods remain
+  physically present. Build a dry-run reconciliation using completed tasks, capture/dispatch history and
+  verified physical counts; mark unresolved bins disputed rather than resetting to zero or arbitrary sum.
+
+[ ] INV-07 | P2 | Supply and validate stock-adjustment reasons end to end
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: INV-03
+Evidence state: source-confirmed UI/API contract mismatch; no mounted UI/HTTP reproduction was run for this
+  finding during the audit.
+Existing files: src/components/supplier/SupplierProductsTab.tsx; src/services/supplierApi.ts;
+  backend/cmd/server/supplier_handlers.go; backend/internal/repository/sku_stock.go; supplier_stock_v2.go;
+  supplier_repo.go. Tests: SupplierProductsTab.focus.test.ts, supplierApi.sku.test.ts, supplier panel/stock
+  handler tests.
+Implementation: add required reason field with existing Persian UI conventions; send trimmed reason plus
+  selected SKU; enforce nonblank reason and safe quantity bounds consistently for legacy and V2 adjustments.
+  Define typed validation/domain errors and return 400 for malformed input, 409 for held-stock/conflict, 403/404
+  for unauthorized SKU, not generic500. Preserve reason/actor in adjustment audit/movement.
+Acceptance: mounted component submits nonblank reason and exact SKU; valid V2 save succeeds; blank reason is
+  blocked client-side and rejected by API; retained draft allows correction after conflict; zero is valid;
+  >INT_MAX, negative, fractional and foreign SKU fail without mutation. UI displays resulting authoritative
+  quantity.
+Data risk: no backfill of invented historical reasons. Existing blank audit reasons remain identified as legacy
+  unknown.
+
+[ ] FIN-012 | P1 | Integer money, rounding and stale pricing expectations
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: TEST-01, CORE-01
+Priority/evidence: P1 prerequisite/release quality; floating arithmetic is present,
+  but no universal money corruption claim follows without a concrete input proof.
+Files: backend/internal/pricing/reference_pricing.go:55-63,378-422;
+  discount.go:122,168; sale.go; widget_discount.go;
+  backend/internal/repository/settlement_repo.go:242-243;
+  return_shipping_settlement.go; pricing/discount tests and API validation.
+Scope:
+  Document canonical unit (current price engine documents toman), legal bounds,
+  decimal percentage precision, rounding stage/direction, floor rules, partial
+  allocation and remainder tie-break. Translate exact decimal inputs into integer
+  scaled ratios; no float intermediates for payable amounts, fee or refund sums.
+  Preserve existing intended nearest100 price rounding (currently math.Round),
+  and current early-fee truncation for nonnegative values unless an explicit
+  business decision changes it. Version intentional changes; do not impose
+  nearest100 rounding on every refund or other exact money event.
+  Provider unit conversion belongs at the adapter boundary, exactly once with
+  overflow/divisibility checks. Reject NaN/Inf, negative/out-of-range inputs and
+  unsupported precision before persistence. Immutable line totals and deterministic
+  remainder allocation guarantee sum(parts)=parent; do not round independent
+  refund pieces in a way that creates/loses the original amount.
+  Pin the unit/rounding/formula contract from the existing canonical pricing
+  implementation first. Reconcile four stale campaign test expectations with
+  that current percentage-off contract; fix misleading comments and assert the
+  intended math. Do not change the formula merely to make stale tests green.
+Acceptance:
+  Tables at half100 boundaries,0,minimum,maximum, fractional percent and near-int64
+  limits; property tests for checked overflow, no unintended negative fees/margins,
+  price floors, gross=fee+net, exact splits, cumulative partial refunds<=original,
+  and deterministic rounding. Run existing discount suite plus audit regressions.
+  If nonrounded cost with0 percent produces negative platform fee, reproduce and
+  resolve under the documented floor contract instead of assuming bad test data.
+Migration/reconciliation:
+  Do not recompute historical paid snapshots with the new algorithm. Add policy
+  version where needed; convert stored percentages losslessly or quarantine values
+  beyond chosen precision. Report changed boundary cases before enabling writes.
+Provider dependency boundary: the internal toman/int64 contract is implemented first. The actual PSP
+  unit/conversion is a FIN-010 integration input and must not block or create a dependency cycle in internal
+  arithmetic.
+
+New maintained units: backend/internal/pricing/money.go and money_test.go own checked scaled-integer arithmetic
+  and documented rounding helpers; existing pricing functions consume them without changing historical
+  snapshots.
+
+[ ] FIN-001 | P1 | Canonical seller balance and debit authorization
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: CORE-01, FIN-012
+Priority/evidence: P1, reproduced. TestAuditFinanceRefundCannotBeWithdrawn.
+Files: backend/internal/repository/seller_services_repo.go:8-15,38-51;
+  finance_repo.go:519-573,623-648; settlement_repo.go:219-249;
+  order_repo.go:2536-2784; supplier_panel_repo.go for supplier parity;
+  backend/cmd/server/seller_panel_handlers.go:59,148,195;
+  finance_adjustments_handlers.go. New finance helper/test files as needed.
+Scope:
+  Replace divergent sellerAvailableSQL and read-side formula with the shared
+  transaction-aware balance definition. Include seller return debit and finance
+  adjustments, preserve signed debt, and adopt account locking in every writer.
+  Inventory/cancellation policy remains in the order workstream; finance consumes
+  immutable posted effects. Do not redesign supplier arithmetic without parity
+  tests; expose its existing signed terms through the shared contract.
+Acceptance:
+  Existing refund probe passes: refund10m -> seller available0 -> payout2m rejected.
+  Credit/debit adjustments produce identical read/authorization outcomes.
+  Race payout/service/early withdrawal/refund on one account and on independent
+  accounts; no debit is admitted above its locked signed availability. A later
+  valid refund can produce tracked debt without permitting new spend.
+  Pending -> approved -> completed/rejected changes each reservation/posted term
+  exactly once; repeat requests and crashes around commit produce one effect.
+Migration/reconciliation:
+  Prefer no mass rewrite; add required event uniqueness/indexes via additive
+  migration. Inventory all financial writer paths before switching. FIN-014 must
+  identify already over-reserved/withdrawn refunded profit and establish recovery
+  or compensating adjustments without erasing original history.
+New maintained units: backend/internal/repository/finance_balance.go, finance_balance_test.go and
+  finance_balance_integration_test.go own the shared definitions/transaction service; keep domain state
+  transitions in their existing repositories.
+
+[ ] FIN-006 | P1 | Storage quantity-time accounting
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001, INV-02
+Priority/evidence: P1 overbilling / P2 missed accrual; two reproduced probes.
+Files: backend/internal/repository/storage_position_repo.go:59-88,149-161;
+  storage_fee_repo.go:174-247; warehouse_repo.go:497,561;
+  supplier_repo.go:2335; V2 storage writer sites from supply workstream;
+  backend/migrations/202610280005_storage_fee.up.sql and
+  202611050005_storage_fee_settings.up.sql (reference), new migration(s).
+Scope:
+  Preserve separate inbound-lot age and quantity history. Use immutable occupancy
+  intervals, or accrue through the defined cutoff under lock before quantity
+  changes. Closure must retain unpaid accrued days. Integrate all legacy/V2 stock
+  arrivals, departures, returns and transfers with the same storage events.
+  Define timezone (existing Tehran-day behavior), fully elapsed-day treatment,
+  free period and whether transfer resets age; snapshot applicable tariff and
+  measured dimensions to prevent today's change rewriting historical charges.
+Acceptance:
+  Existing top-up probe charges34,800 not348,000; departure probe charges34,800
+  not0. Test partial departure, multiple receipts, re-entry/transfer policy,
+  midnight/timezone boundary, tariff/measurement changes, replay and concurrent
+  assessment/departure. Sum charges equals integer per-lot chargeable quantity-day
+  integral; fee event uniqueness holds under two workers and crash recovery.
+  Enable feature only after legacy and V2 pathways pass the same tests.
+Migration/reconciliation:
+  Old merged positions cannot reliably reveal receipt ages by themselves. Recover
+  history from trustworthy receipt/movement records where possible; otherwise use
+  a documented reviewed cutover baseline and explicit unresolved adjustments.
+  Never invent precise historic debt or silently retrobill all current quantity.
+  Keep feature disabled for unreconciled accounts/paths until validated.
+Shared storage interface: FIN-006 defines creditStorageReceiptLotTx used by INV-10, with separate
+  physicalReceivedAt and billingStartAt. Default billable start is QC acceptance, not an earlier physical
+  arrival. Document billable statuses and free-period lineage for transfer/return; prevent historical repricing.
+  FIN-006 delivers the ledger core before INV-10 adds all V2 writers; integrated tests close in FIN-013/INV-12.
+
+[ ] INV-10 | P2 | Record V2 receipt storage occupancy with true warehouse and age
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: INV-02, INV-05, FIN-006
+Evidence state: source-confirmed missing tracked receipt/putaway fee-position writer; billing effect was not
+  executed for V2 receipts in the audit.
+Existing files: backend/internal/repository/sku_inventory.go (tracked receipt); warehouse_repo.go (putaway);
+  storage_position_repo.go; storage_fee_repo.go; supplier_repo.go (carton); storage_position_lifecycle_test.go
+  and storage_fee_repo_test.go.
+Implementation: at the same business event that currently starts fees for legacy QC-approved goods, emit exactly
+  one warehouse receipt-lot position for approved tracked physical units. Store physical_received_at separately
+  from billing_start_at; preserve the current QC-acceptance billing start unless FIN-006 documents a versioned
+  policy change. Preserve SKU identity/receipt reference and warehouse ID from INV-02/INV-05; putaway must not
+  add another fee position. Consume positions using actual departed lot allocations, not unrelated product FIFO.
+  Shared finance interface should be finalized by the finance storage-history task:
+  creditStorageReceiptLotTx(ctx context.Context, tx *sql.Tx, receiptLineID, productID, supplierID, variantID,
+  warehouseID string, qty int, physicalReceivedAt, billingStartAt time.Time) error. Existing
+  creditStoragePositionTx may wrap the new interface for legacy callers; do not retain merge-into-old-age
+  behavior.
+Acceptance: approved V2 receipt creates one attributable position; receipt/putaway replay adds none; failed QC
+  does not become a sellable-fee position under existing billing policy; topping up never inherits old age. Two
+  warehouses and two SKUs bill their own actual intervals; partial shipment bills through departure once.
+  Product-level totals reconcile with physical held lots including staging per the agreed fee start event.
+Data risk: do not retroactively bill unknown V2 arrival dates or extrapolate today's quantity backward.
+  Historical correction needs evidence-based receipt intervals and separately reviewed financial adjustments,
+  not silent debit during migration.
+
+[ ] OBS-01 | P1 | Add bounded metrics, tracing and actionable alerts
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: TEST-01
+Primary existing files: backend/cmd/server/main.go; backend/internal/repository/postgres.go;
+  backend/internal/repository/redis.go; Caddyfile; nginx.conf.
+Evidence: main.go:2486-2495 mounts enableCORS(mux,cfg) without a comprehensive request instrumentation/drain
+  wrapper. DB pool and workers expose no complete capacity dashboard in inspected wiring. Do not infer absence
+  of every existing log from this scope.
+Task: instrument the public API, Caddy/nginx and internal domain-authorization requests separately: actual
+  request counts, normalized route/status, request/response sizes, active requests, queue/admission rejects,
+  latency histograms, timeouts and cancellations. Add request correlation through SQL/provider calls and jobs.
+  Export sql.DB.Stats (in-use/idle/open, wait count/time), PG query/lock/deadlock metrics, Redis
+  command/script/pool latency, provider outcomes and timeout counts, worker last-success/duration/backlog/oldest
+  age, and CPU/RSS/GC/goroutines/disk/connection metrics. Restrict metrics/profiling access. Never label by
+  user/order IDs or log tokens, credentials, full addresses, payment data or raw unbounded SQL values.
+Acceptance: one dashboard can explain a load-test slow request and worker delay using a correlation ID;
+  histogram buckets cover the agreed SLO. Alert tests prove elevated errors, dependency loss, no successful
+  expiry/reconciliation run, disk pressure and backup failure reach the approved operator channel. Route labels
+  stay bounded under random IDs and sensitive fields are redacted. No external messages sent as part of this
+  planning task.
+
+[ ] CAP-01 | P1 | Build the 1,000-user and 100-RPS qualification environment
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: TEST-01, OBS-01, MIG-01
+Evidence: no capacity measurement exists yet; the user requested 1,000 starting users and 100 RPS.
+Owner: SRE/performance engineer with QA and backend lead.
+New files: load-tests/README.txt, load-tests/workload.json, load-tests/api-100rps.js, load-tests/users-1000.js,
+  load-tests/login-ramp.js, load-tests/seed-manifest.json and scripts/load-test-isolated.ps1; keep seed
+  generation and teardown in a guarded staging-only tool. Equivalent cross-platform runner may accompany the
+  PowerShell entry point.
+Implementation: implement the single capacity contract printed at the start of this file. Record actual intended
+  host resources, service versions, connection budgets, dataset, feature scope and external-adapter latency
+  distributions. Generate 1,000 distinct principals with independent session state and suitable role/store
+  ownership; do not multiply one token. Use the central endpoint RPS mix with one measured API request per
+  arrival or explicitly account for every request per iteration. Preallocate adequate load-generator workers,
+  disable hidden retries/redirects or count them, maintain valid lifecycle queues for order/token/callback
+  steps, and generate sufficient stock for the full two-hour soak. Add a separate 1,000-user paced journey test,
+  real-browser cohort, login ramp, hot-SKU, hot-account, staff/report, cold-cache and asset/TLS profiles.
+  Provider/SMS/carrier doubles prevent real charges/messages; low-rate real sandbox evidence belongs to FIN-010.
+Acceptance: harness refuses an unmarked production target, validates workload weights sum to 100, verifies all
+  1,000 identities participate and reports actual external/API/internal/asset/provider counts separately. Wrong
+  amount, cross-tenant response, duplicate effect, failed assertion, dropped arrival or insufficient fixture
+  stock cannot be reported as a successful run. Run a short baseline with known failures labeled; baseline
+  completion does not certify readiness. Produce a reproducible environment manifest and raw machine-readable
+  reports with no credentials.
+Data risk: synthetic or properly sanitized fixtures only; rate tests and failure injection cannot target
+  production. A successful developer-machine run does not certify different deployment hardware.
+
+[ ] FIN-003 | P1 | Paid cancellation creates a durable refund obligation
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: INV-01, FIN-001
+Priority/evidence: P1, reproduced. TestAuditFinancePaidCancellationPreservesRefundLiability.
+Files: backend/internal/repository/order_repo.go:1094-1197;
+  backend/cmd/server/order_handlers.go:1121-1137;
+  src/components/views/CustomerOrdersView.tsx:54-73;
+  src/services/orderApi.ts:225-230;
+  payment transaction/refund schema and new migration(s).
+Scope:
+  Split order fulfillment cancellation from payment/refund accounting. Preserve
+  captured payment facts; atomically record the refund amount, destination,
+  currency, source payment and unique business identity with cancellation.
+  Implement explicit refund pending/succeeded/failed/unknown outcomes and durable
+  retry/reconciliation. Credit wallet or request original-payment refund only
+  according to the chosen product policy; never issue both for the same amount.
+  Include existing return/dispute/partial-refund amounts when computing remaining
+  refundable principal. Customer response/UI displays refund state accurately.
+Acceptance:
+  Existing paid10m probe yields preserved paid accounting plus exactly10m refund
+  liability/credit. Unpaid cancellation creates no refund. Duplicate cancellation,
+  retries, concurrent callback, partial previous refund and crash-after-commit
+  yield no double credit and cumulative refund never exceeds captured amount.
+  Partly dispatched goods obey order cancellation policy; no financial response
+  claims successful whole cancellation when a child shipment is ineligible.
+  Unknown provider result remains unresolved and reserved, never guessed refunded
+  or failed; reconciler eventually applies one confirmed outcome.
+Migration/reconciliation:
+  Add state/event/outbox schema without rewriting paid history. Find cancelled
+  orders with paid transactions, match real settlement evidence if available,
+  deduct documented prior refunds, and create reviewed obligations. Do not assume
+  that every historical simulator 'paid' row represents real captured cash.
+Provider dependency boundary: implement durable internal liabilities and wallet-policy tests now;
+  original-payment execution is completed in FIN-010. The later adapter must not be required to define the
+  internal refund obligation.
+
+[ ] AUTH-01 | P1 | Make every panel logout revoke the shared client session
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: TEST-01
+Primary existing files: src/context/AuthContext.tsx.
+Evidence: src/context/AuthContext.tsx:304-310 and 330-335; identity-derived panel sessions:228-261;
+  AdminDashboardView.tsx:267 and warehouse/WarehouseDashboardView.tsx:124. support_specialist and finance remain
+  logged in after admin logout; logistics_specialist remains logged in after warehouse logout. Role-name checks
+  omit valid roles.
+Task: expose one shared logout operation independent of the selected role; synchronously clear the credential,
+  current user, every role session and user-bound storage/cache. Make panel-specific functions delegate to it.
+  Advance the auth generation before asynchronous work can resolve. Define cross-tab logout behavior and use a
+  storage/BroadcastChannel event if all tabs must log out.
+Acceptance: mounted regression tests for the three reproduced roles, all supported panel roles, and users whose
+  capability permits a panel despite a different base role. Immediately after logout, token/user/panel sessions
+  are absent, protected UI is inaccessible, reload does not restore the credential, and no subsequent privileged
+  request carries it. Repeat with two tabs under the agreed logout policy. Do not assert server JWT revocation
+  unless a separate server revocation feature is implemented.
+Regression file to create/extend: src/context/AuthContext.lifecycle.test.tsx.
+
+[ ] AUTH-02 | P1 | Prevent stale auth/profile results from resurrecting a session
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: AUTH-01
+Primary existing files: src/context/AuthContext.tsx; src/components/SellerOnboardingModal.tsx.
+Evidence: src/context/AuthContext.tsx:423-438 unconditionally applies a captured-token refresh; initial
+  restore:124-165; persistence:263-271. SellerOnboardingModal.tsx:91-97 calls refreshToken, while close remains
+  enabled:139-143. Repro confirms isSessionReady=true during refresh, logout clears A, then pending result
+  restores A. Initial App restore gate at App.tsx:144 is not the reproduced user path.
+Task: associate every auth request with an auth generation and expected credential; check both on success AND
+  failure before applying state, resetting storage, or clearing a newer login. Advance generation on logout,
+  login and identity replacement. Abort obsolete requests as an optimization, retaining guards because
+  cancellation can race completion. Apply the same rules to role/profile fetches and initial restore.
+Acceptance: deferred-result tests cover logout then success/error, login B after request A, two out-of-order
+  refreshes, restore versus explicit login, unmount, and onboarding close/logout. No old request can restore A
+  or erase B. A valid current refresh still updates capabilities. Run the existing frontend auth/routing checks
+  plus these tests.
+Regression file to create/extend: src/context/AuthContext.lifecycle.test.tsx.
+
+[ ] AUTH-03 | P1 | Bind orders and other user caches to stable identity
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: AUTH-02
+Primary existing files: src/context/OrderContext.tsx; src/components/views/CustomerOrdersView.tsx;
+  src/components/views/CustomerProfileView.tsx.
+Evidence: src/context/OrderContext.tsx caches orders across identity changes;
+  src/components/views/CustomerOrdersView.tsx:32-36 and src/components/views/CustomerProfileView.tsx:20-24
+  accept phone OR fullName matches. No browser reproduction was completed for this risk.
+Task: first add a two-account reproduction using equal display names and different IDs/phones; inspect every
+  cache persisted by Auth/Order/Store providers. Scope private responses by immutable account ID and appropriate
+  tenant ID, clear them on identity change, and reject late results from the prior generation. Use
+  backend-authenticated identity to select customer orders; display name is not an ownership key. Define
+  guest-cart retention separately so it cannot retain private order history.
+Acceptance: A -> logout -> B and A -> B with in-flight requests never display A's order/address/contact details
+  to B, including equal names, failed B fetches, reload and browser back. Customer order filtering uses server
+  identity/ownership, not names. Extend the capacity fixture to 1,000 distinct active identities across
+  representative stores, with private-data canaries and repeated equal display names, and assert response
+  ownership throughout the load run. If validation disproves a suspected path, retain the regression and
+  document the actual isolation guarantee rather than reporting a confirmed leak.
+Regression file to create/extend: src/context/OrderContext.identity.test.tsx.
+
+[ ] CHECKOUT-01 | P1 | Persist a logical checkout attempt through ambiguous outcomes
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: AUTH-03, CORE-01
+Primary existing files: src/context/OrderContext.tsx; src/services/orderApi.ts; src/services/apiClient.ts;
+  backend/cmd/server/order_handlers.go; backend/internal/repository/order_repo.go.
+Evidence: src/context/OrderContext.tsx:154-158,231-247 generates a new UUID on every invocation;
+  src/services/apiClient.ts:48,77-88 supplies a 15s timeout/error path;
+  backend/cmd/server/order_handlers.go:249-262 replays by customer plus the same key. Identical frontend retries
+  emitted different UUIDs after simulated committed-but-lost response.
+Task: create one attempt ID plus immutable normalized checkout payload, persist it sufficiently to survive
+  reload, and reuse it for network timeout/response-loss retries until the outcome is known. Provide an
+  order-status/recovery path using the attempt ID. A materially changed payload must not silently reuse the
+  previous key; resolve or explicitly abandon the old attempt before creating another. A genuinely new identical
+  purchase must get a new ID. Disable accidental duplicate submits but keep server idempotency authoritative.
+Acceptance: tests for response lost after commit, double click, retry after reload, concurrent tabs, old attempt
+  after logout, same key/different payload, and two deliberate identical purchases. One logical attempt creates
+  at most one order/reservation/payment intent; retry returns the same order. A new purchase is possible after
+  completion. Assert inventory/ledger invariants, not just equal HTTP responses.
+Regression file to create/extend: src/context/OrderContext.checkout.test.tsx.
+
+[ ] OPS-02 | P1 | Align request/provider deadlines and retry semantics
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, CORE-01, CHECKOUT-01
+Primary existing files: backend/cmd/server/main.go; src/services/apiClient.ts; backend/internal/tapin/client.go;
+  backend/internal/ippanel/client.go.
+Evidence: main.go:2490-2491 uses 10s server timeouts; src/services/apiClient.ts:48 uses 15s;
+  internal/tapin/client.go:153-159 uses 10s HTTP; ippanel/client.go:67-76 uses 10s dial/15s HTTP. A provider may
+  consume the entire HTTP server write budget. A transport WriteTimeout alone does not define or propagate a
+  business-operation deadline.
+Task: set explicit route-level context deadlines, propagate them to SQL and outbound requests, and choose
+  provider deadlines shorter than their enclosing route/proxy/client budgets with response margin. Document
+  special long-running uploads/exports as separate bounded workflows. Classify safe retryable reads, idempotent
+  mutations and ambiguous provider outcomes; add bounded exponential backoff with jitter only where safe.
+  Preserve durable states for reconciliation instead of rolling forward on guessed failure. Bound provider
+  concurrency/rate and reject overload predictably without retry storms. Review existing OTP/provider abuse
+  controls before adding duplicates.
+Acceptance: provider delayed beyond budget returns a documented bounded response; SQL/outbound work cancels
+  where safe and ambiguous committed work is recoverable. Success immediately before/after client disconnect
+  creates one business effect. Simultaneous upstream failures do not cause unbounded goroutines, retries or pool
+  wait. Response time budgets remain consistent through Caddy -> nginx -> API -> provider -> client.
+
+[ ] FIN-002 | P1 | Monthly settlement concurrency and restart safety
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001
+Priority/evidence: P1, reproduced. TestAuditFinanceSweepSerializesWithSellerPayout.
+Files: backend/internal/repository/settlement_repo.go:404-493;
+  backend/cmd/server/finance_parity_handlers.go:631,685,729-732;
+  backend/internal/worker/settlement.go;
+  backend/migrations/202611020002_monthly_settlement.up.sql (reference only).
+Scope:
+  Make manual and scheduled sweeps call one service. Choose candidates without
+  trusting stale candidate amounts; lock each account and recompute/reserve with
+  FIN-001. Retain cycle uniqueness and add/check unique cycle+store effect.
+  Bound batch size and transaction time; persist progress if splitting a cycle
+  into account-level transactions. Retry restart must resume unfinished accounts,
+  never mark an incomplete batch as a completed cycle.
+Acceptance:
+  Existing deterministic race produces total reservations <=2m, not4m.
+  Repeat the race through manual handler and service-purchase/early-withdraw paths.
+  Two workers, manual+worker, crash mid-batch and resumed job yield at most one
+  reservation per period/store and complete remaining eligible accounts.
+  Rejected/failed prior requests do not silently become duplicate cycle payouts.
+  Foreground debit latency meets FIN-013 budgets while a large sweep runs.
+Migration/reconciliation:
+  Deduplicate/reconcile existing monthly items before adding uniqueness. Link
+  legitimate existing payout requests to their cycle. Do not automatically resend
+  payment for a cycle whose transfer status is unknown; resolve via FIN-014.
+
+[ ] JOB-01 | P1 | Bound, isolate and observe worker jobs and their backlog
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: CORE-01, OBS-01, MIG-01, FIN-002
+Primary existing files: backend/internal/worker/scheduler.go; backend/internal/worker/operations.go;
+  backend/internal/worker/settlement.go; backend/internal/repository/operations_repo.go.
+Evidence: worker/scheduler.go:105-134 runs delivery/monthly/operations sequentially in one goroutine; Stop:137
+  closes a channel without waiting/canceling and is not wired into main shutdown. operations.go:12+ runs cleanup
+  and multiple 40s jobs serially. repository/operations_repo.go:26-87 expiry locks SKIP LOCKED LIMIT200 every
+  ~120s (nominal ceiling 1.67 expirations/s per worker, before scheduler delays), queries/updates each order; QC
+  update:93 is unbounded. SLA:111 already uses an advisory transaction lock. settlement_repo.go:427 also has an
+  advisory lock: do not claim all jobs lack concurrency safety. order_repo.go:992-1042 collects all closed
+  return candidates, then individual guarded transactions. scheduler.go:269 creates job_runs during operation
+  and can log with an already expired job context; operations job recording can swallow errors. Search rollup
+  scheduler:310 is presently a no-op.
+Task: define job ownership, period, concurrency, timeout, overlap policy, queue-age SLO and retry/backoff
+  separately. Use bounded batches/drain time budgets, fair scheduling and PostgreSQL locking/leases where
+  needed, preserving existing guards. Separate slow settlement/report work from expiry/customer-critical cleanup
+  so one job cannot starve others. Make Start/Stop idempotent with cancellation and WaitGroup-style draining.
+  Move job_runs DDL into migrations, record outcomes with a fresh short deadline, and alert on missing
+  successes. Specify whether the no-op search rollup is needed; implement retention/aggregation only if product
+  requirements require it.
+Acceptance: create expiry backlog above 200 and sustain the expected abandoned-checkout rate; oldest eligible
+  order age remains within a proposed 5-minute expiry/release SLO and backlog drains after burst. Tune this SLO
+  to the reservation contract, not just ticker frequency. Force a slow/failing settlement and prove expiry
+  continues. Start two workers and kill/restart one mid-batch: exactly-once business effects, no stuck
+  ownership, recoverable progress. Shutdown completes within budget. Report DB connection usage and interactive
+  API latency while every scheduled job overlaps. A second replica is allowed only after these
+  duplicate-execution tests pass.
+
+[ ] SEC-01 | P1 | Remove committed secret defaults and establish controlled credential lifecycle
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: None
+Primary existing files: docker-compose.prod.yml; backend/internal/config/config.go.
+Evidence: docker-compose.prod.yml contains embedded production-named signing/webhook/encryption and DB/Redis
+  secret values. The deployment preserves the live runtime environment, so source presence does not prove live
+  credential equality or compromise. Values intentionally omitted from this artifact.
+Task: replace secret literals/defaults with required runtime injection or mounted restricted secret files.
+  Inventory exposure through Git history/build logs/artifacts and identify which credentials were actually used;
+  rotate those through an approved plan, including JWT/session invalidation and compatibility for encrypted
+  stored data/provider callbacks. Validate required production configuration without dumping it. Restrict
+  runtime/backup file permissions and ensure secrets never enter the frontend build.
+Acceptance: repository and distributable artifacts scan clean for active credential material; missing production
+  secrets fail startup rather than selecting a fallback. Required secrets work in staging through the same
+  injection path. Rotation drill demonstrates intended session invalidation, continued decryption/re-encryption
+  as needed, webhook/provider continuity and a rollback plan without publishing secrets. No blanket destructive
+  key replacement without compatibility analysis.
+
+[ ] FIN-010 | P1 | Real payment adapter and reconciliation capability
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-003, FIN-012, INV-05, CHECKOUT-01, OPS-02, JOB-01, SEC-01
+Priority/evidence: P1 production-commerce blocker; source-confirmed stub.
+Files: backend/internal/payment/gateway.go:88-94 and gateway_test.go;
+  backend/cmd/server/payment_handlers.go:92,139-142,305;
+  backend/cmd/server/main.go callback route around:1226;
+  backend/internal/repository/order_repo.go payment/capture methods;
+  payment_callback_test.go, order_payment_concurrency_test.go;
+  new durable payment/refund reconciliation job and migration(s).
+Scope:
+  Keep simulator isolated and production fail-closed. Select an actual supported
+  PSP only from an approved merchant integration contract; obtain official request,
+  signature, amount/unit, callback, inquiry, settlement and refund specifications.
+  Do not invent a provider, endpoint or signing scheme. Implement adapter-backed
+  initiation, authenticated/server-verified callback and inquiry, unique provider
+  transaction identity, durable internal state machine and bounded retry policy.
+  Capture amount/currency/order identity from immutable snapshots. Verify before
+  financial success; ambiguous network/provider outcomes enter unknown/pending
+  reconciliation, never assumed failure/success. Repeated callbacks are benign.
+  Provider-confirmed money with failed local order/inventory completion creates
+  a tracked compensation/refund obligation and is visible to operations.
+Acceptance:
+  Adapter contract tests plus approved sandbox flows for success, rejection,
+  amount/unit mismatch, bad authentication, duplicates, reordered callback/inquiry,
+  timeout-before/after-provider-commit, process restart and inquiry reconciliation.
+  One payment produces <=one local capture and financial effect; total refunds
+  <=confirmed captured principal. Unknown never releases money for payout or
+  fabricates refund completion. Compensating obligations survive process death.
+  No mock token/simulator route can enter production paid path. Secrets redacted;
+  callback origin/verification/rate limits follow the actual provider contract.
+Migration/reconciliation:
+  Add provider namespace, unique references, explicit statuses and durable jobs.
+  Segregate legacy synthetic tokens; do not relabel them real PSP transactions.
+  Backfill only verified mappings. Rollout stays disabled until sandbox and
+  reconciliation evidence are reviewed; production credentials are injected, not
+  committed. This planning task does not authorize contacting a provider.
+Frontend and deployment integration (merged FIN-010 scope):
+Evidence: backend/internal/payment/gateway.go:88-93 always returns ErrVerificationFailed in real mode;
+  payment_handlers.go:92-112 fabricates a local token,301-305 a placeholder URL; production callback
+  rejected:139-141. config/config.go:90-91 requires real mode for production; main.go:215-216 wires it;
+  OrderContext.tsx:265-277 only auto-callbacks in DEV and does not redirect to paymentUrl. The UI already labels
+  payment unavailable: this is a readiness gap, not a newly discovered regression in a working paid flow.
+Task: implement the chosen PSP's documented sandbox contract: actual token initiation, redirect/handoff,
+  validated callback authenticity, server-to-server verify/inquiry, exact order/merchant/amount/currency
+  binding, durable idempotent status transitions, pending/timeout reconciliation, duplicate/late callback
+  handling, cancellation/refund operations and customer resume/status UI. Keep the simulator fail-closed in
+  production. Add explicit feature/config readiness checks so missing provider readiness cannot accept
+  supposedly payable orders silently. Do not merely remove the production callback guard.
+Acceptance: sandbox success, decline, cancellation, forged/changed callback, wrong amount/currency/order,
+  repeated callbacks, provider timeout after authorization, lost response, restart during transition, expired
+  inventory reservation and refund retry all reach an explainable recorded state. Rejected/forged/mismatched
+  attempts create zero successful payment capture. A valid successful attempt creates at most one capture; any
+  required refund/compensation is a distinct idempotent effect. Unknown provider outcomes remain durable and
+  visible until inquiry resolves them. Capture sandbox contract evidence and a release checklist without
+  credentials. Bulk load uses a controlled provider double; real-provider contract checks remain within the
+  provider's permitted rate. If online payment is out of launch scope, approved release scope must explicitly
+  disable it and describe the supported order/payment workflow.
+
+[ ] INV-12 | P1 | Promote inventory regressions and measure contention at the 100-rps target
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Inventory/backend engineer + warehouse reviewer
+Depends on: CAP-01, INV-01, INV-02, INV-03, INV-04, INV-05, INV-06, INV-07, INV-08, INV-09, INV-10, INV-11,
+  FIN-003, FIN-006, FIN-010
+Evidence state: investigation/qualification required. Existing audit defects were reproduced; no 100-rps
+  capacity, latency, contention or production-hardware result exists yet.
+Existing files: backend/internal/repository/sku_inventory_integration_test.go; order_inventory_capture_test.go;
+  warehouse_capacity_integration_test.go; storage_position_lifecycle_test.go;
+  backend/internal/repository/redis_inventory_test.go; backend/cmd/server/sku_order_quantities_test.go. Import
+  audit_supply_test.go/audit_order_test.go evidence into maintained tests with explicit disposable DB guard. New
+  proposed files: backend/internal/repository/inventory_workflow_integration_test.go;
+  load-tests/inventory-100rps.js; docs/operations/inventory-reconciliation.md (parent may consolidate with
+  deployment runbook).
+Implementation: exercise public HTTP flows against a fully migrated synthetic environment with fake PSP/carrier
+  adapters, plus deterministic repository concurrency probes. Measure SQL timings, lock waits/deadlocks,
+  connection-pool waits, retries, inventory conflicts and conservation drift. Analyze real plans for
+  capture/origin/transfer/departure queries; add only justified indexes/batching. Preserve stable locks and
+  atomic debit; do not increase throughput by dropping validation, using stale Redis quantity as authority, or
+  accepting missing allocations. Keep per-product serialization until measurement proves a safe finer-grained
+  lock/projection redesign necessary.
+Capacity acceptance: use the single central 1,000-user/100-RPS contract and CAP-01 harness; CAP-02 owns the
+  final whole-system qualification. Add a two-minute 100 capture-attempts/second hotspot probe and a distributed
+  100-SKU probe. Verify disjoint state conservation per lot and event, including valid receipts, reservations,
+  captures, restores and physical departures. A physical departure must not be subtracted a second time from an
+  already counted capture. Expected sold-out conflicts are tagged and never counted as successful purchases.
+Acceptance additionally: all six audit inventory/order reproductions and ten existing SKU tests pass;
+  full-migration tests cover source constraints, transaction rollback/replay and historical unknowns; run
+  dispatch/cancel, transfer/payment, receipt/capture, supplier return/capture and capacity assignment/departure
+  races. Soak produces no negative quantities, duplicate business movements, orphan reservations, named-origin
+  mismatch or unexplained aggregate/lot difference. Save workload/results/EXPLAIN and migration rehearsal
+  artifacts for deployment review.
+Data risk: load tests use only generated disposable data. Rehearse migrations against a scrubbed representative
+  snapshot and verify dry-run reconciliation totals before enablement. Rollback must not drop new
+  provenance/placement data after writes; disable affected entry points and roll forward if an old binary cannot
+  read the new states.
+
+[ ] FIN-004 | P1 | Parcel-charge business idempotency
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001
+Priority/evidence: P1 in main audit, reproduced. TestAuditFinanceParcelChargeHasBusinessIdempotency.
+Files: backend/internal/repository/returns_operations_repo.go:193-242;
+  backend/cmd/server/warehouse_handlers.go:477;
+  backend/migrations/000024_inventory_returns_carriers_dimensions.up.sql:145-159
+  (reference); additive constraint migration and integration tests.
+Scope:
+  Under parcel lock permit one charge transition. Enforce unique parcel+charge
+  component (or equivalent immutable business identity), validate parcel state,
+  and check affected rows. Same business operation with a new key returns stored
+  outcome; different amount/payload conflicts. Charge corrections are explicit
+  reversal/adjustment events, not another confirmation.
+Acceptance:
+  Existing120k probe remains120k with same/different keys and concurrent requests.
+  Cancelled/handed-over/already-confirmed parcels cannot create a new charge;
+  receiver-pays confirmation posts no supplier debit. Transaction failure between
+  ledger and domain event leaves neither committed. Corrected final bill follows
+  its own unique adjustment flow and preserves original audit trail.
+Migration/reconciliation:
+  Existing duplicate business rows will block uniqueness. Detect them, distinguish
+  actual separate carrier charges from repeats, attach a canonical event identity,
+  and reverse verified duplicates through compensating ledger entries. Do not
+  delete financial records merely to make the constraint migration succeed.
+
+[ ] FIN-005 | P1 | Dispute verdict and order financial eligibility
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-003
+Priority/evidence: P1 in main audit, reproduced. TestAuditFinanceRejectedDisputeReleasesSeller.
+Files: backend/internal/repository/finance_repo.go:108-273;
+  order_repo.go:993-999,1200-1264;
+  backend/cmd/server/wms_and_finance_handlers.go:196-254.
+Scope:
+  Persist verdict and corresponding order/refund eligibility atomically; replace
+  the untracked ResolveDispute then ApplyDisputeRefundEffect split. Seller-winning
+  verdict restores the correct delivery/release state and timestamps without
+  bypassing other open disputes/returns. Customer-winning outcome creates the
+  refund obligation through FIN-003 machinery. Keep release idempotent.
+Acceptance:
+  Existing expired-window seller-win probe releases once; unexpired window waits.
+  Another open dispute/return still holds the appropriate amount. Test repeat
+  verdict, concurrent release/refund, and injected failure at every write boundary.
+  No resolved verdict can leave required money work permanently untracked; refund
+  outcome preserves sum of captured, refunded and outstanding liability.
+Migration/reconciliation:
+  Find resolved seller-win disputes with delivery_disputed orders. Recover prior
+  fulfillment and valid window from evidence; do not blindly mark every order
+  delivered or backdate a window. Repair with auditable transition records, and
+  reconcile any previous release before enabling the worker.
+
+[ ] FIN-007 | P2 | Coupon use atomically attached to the order
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-012, CHECKOUT-01
+Priority/evidence: P2, reproduced. TestAuditFinanceCouponLastUseIsAtomicWithOrders.
+Files: backend/internal/repository/discount_repo.go:116-140;
+  order_repo.go:1-210; backend/cmd/server/order_handlers.go:303,989-994;
+  backend/migrations/202611030002_seller_discount_codes.up.sql (reference).
+Scope:
+  Validate/reserve a remaining use inside CreateOrder's transaction, write a
+  unique coupon/order reservation, and remove ignored post-commit increments.
+  Define use lifecycle: proposed default reserve at order creation, consume on
+  confirmed payment, release once on eligible unpaid expiry/cancellation. If
+  business policy consumes at creation instead, encode/document that explicitly.
+  Same checkout idempotency key retrieves the original reservation/order. A lost
+  response must not reserve another use, coordinated with checkout retry task.
+Acceptance:
+  maxUses1 with100 simultaneous attempts creates at most one active use and one
+  correspondingly discounted logical order. Rollback restores availability;
+  retry uses the same order. Concurrent expiry/payment cannot both release and
+  consume. Unlimited/date-bound coupons preserve semantics. An exhausted coupon
+  returns a clear pre-commit response, not a silently undiscounted order.
+Migration/reconciliation:
+  Rebuild counts/reservations from eligible persisted orders under the chosen
+  policy, including pending orders. Do not reprice already accepted orders to
+  conceal historical oversubscription. Prevent old and new writers running with
+  incompatible counter semantics during deployment.
+
+[ ] FIN-008 | P2 | Treasury cash/liability arithmetic
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001, FIN-003, FIN-012
+Priority/evidence: P2, source-confirmed, needs new executable reproduction.
+Files: backend/cmd/server/finance_parity_handlers.go:105-178;
+  backend/internal/repository/finance_repo.go:519-573;
+  supplier_panel_repo.go; customer wallet/withdrawal reporting callers.
+Scope:
+  Define cash position from recorded captured/settled cash and confirmed money
+  out; distinguish authorization/capture/settlement as the PSP contract requires.
+  Subtract outstanding seller/supplier/customer obligations exactly once across
+  pending, approved, processing and uncertain transfers/refunds. Include customer
+  wallet balances/refund liabilities without double-counting withdrawal holds.
+  Separate recovery receivables (negative seller balances) from liquid cash:
+  money owed back by a seller is not automatically spendable bank cash.
+  Replace per-store balance loop with a set-based coherent reporting query or a
+  reconciled projection. Failed balance reads must fail the report, not show0.
+Acceptance:
+  New integration test: pending2m -> approved2m, with no external money movement,
+  changes safeToSpend by0. Transfer completion reduces cash and obligation by the
+  same amount. Wallet refund/withdrawal reservation and payout rejection preserve
+  conservation; negative recovery debt never inflates spendable bank cash.
+  Mixed seller/supplier/customer liabilities, failed reads and concurrent changes
+  yield coherent totals. Report exposes unresolved provider cash explicitly.
+Migration/reconciliation:
+  Historical order.payment_status is not a bank statement. Mark unverified opening
+  cash and legacy simulator records separately; reconcile provider/bank evidence
+  before asserting production safe-to-spend. No guessed opening balances.
+
+[ ] FIN-011 | P1 | Investigate referral reversal and release conservation
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001, FIN-012
+Priority/evidence: P1 investigation before money sign-off; NOT an established bug.
+Files: backend/internal/repository/order_repo.go:1031,2519-2784;
+  finance_repo.go:493-499,742-768; seller_services_repo.go:10-11;
+  internal/pricing/reference_pricing.go referral policy fields;
+  actual bonus/commission writers found by full call tracing.
+Scope:
+  Establish product policy separately for referral commission versus one-time
+  referral bonus: refundable, vested or clawback conditions; full versus partial
+  return; pre/post release; whether referrer changes affect already earned amounts.
+  Trace all writers and payout/read gates against immutable order-time ownership.
+  Build reproducible conservation tests before alleging a missing reversal.
+Acceptance:
+  Written policy table and executed full/partial return cases before/after release,
+  after referrer payout and after ownership change. Sum allocation, refund and
+  retained entitlements reconciles. If a defect is proven, produce exact source,
+  failing regression and bounded implementation follow-up under FIN-011; if policy
+  intentionally retains a bonus, record the resulting platform expense explicitly.
+Migration/reconciliation:
+  Do not claw back existing bonuses speculatively. Any repair requires historical
+  policy/version evidence and compensating events; debt after payout is visible.
+
+[ ] FIN-009 | P2 | Complete, reconcilable seller statements
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001, FIN-011
+Priority/evidence: P2, source-confirmed, needs new executable reproduction.
+Files: backend/internal/repository/finance_repo.go:690-847;
+  statement handlers/UI consumers discovered from GetStoreStatement callers.
+Scope:
+  Add return reversals, signed finance adjustments, early-withdrawal fees and
+  referral commissions with stable source identities/effective dates. Avoid
+  counting a payout and its mirrored ledger leg twice. Separate posted movements
+  from pending reservations; provide opening/closing signed balance and reserved
+  amounts where needed to reconcile displayed available funds. Use stable paging
+  and defined month timezone, not a moving offset against mutable order state.
+Acceptance:
+  New2m profit/full-return test shows +2m and -2m, net0. Early withdrawal gross1m,
+  fee50k and net payout950k reconciles exactly1m total reduction. Adjustments and
+  referral terms appear once. Opening + posted credits - posted debits = closing;
+  closing - active reservations = signed available. Cross-month reversals retain
+  original event date and do not silently rewrite past statement content.
+Migration/reconciliation:
+  Use a canonical union/view over existing events if complete; backfill missing
+  event metadata only with evidence. Mark an explicit reconciled opening entry
+  where older history is incomplete; never manufacture a detailed transaction
+  history from today's aggregate. Preserve downloadable historical evidence.
+Historical dependency boundary: use canonical event mappings and synthetic historical fixtures here. FIN-014
+  performs actual cutover reconciliation after statements exist; it is a release gate, not a prerequisite for
+  this implementation.
+
+[ ] FIN-013 | P1 | Finance verification at 100 RPS and operational controls
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: CAP-01, FIN-001, FIN-002, FIN-003, FIN-004, FIN-005, FIN-006, FIN-007, FIN-008, FIN-009, FIN-010,
+  FIN-011, FIN-012, INV-10, JOB-01
+Priority/evidence: P1 release gate; performance has NOT been measured by audit.
+Files: new backend finance integration/concurrency/load tests; repository query
+  sites in FIN-001/002/006/008/009; worker/settlement.go; metrics/log middleware.
+Scope:
+  Promote all8 probes into regressions against fully migrated disposable DBs,
+  retaining deterministic synchronization. Add fault injection and two-process
+  execution. Load-test a defined whole-system 100 total API RPS mix, with finance
+  endpoints and background settlement/storage/refund workers represented. This
+  is not 100 payout writes/second. Root's load plan owns exact endpoint mix,
+  latency SLO, realistic row counts, hardware and sustained/spike durations.
+  Add a separate hot-account contention profile and coupon-last-use burst, plus
+  independent-account throughput. Inspect EXPLAIN ANALYZE and lock/pool metrics;
+  add narrowly justified account/status/time/business-key indexes, bounded batch
+  sizes and cursor pagination. Remove treasury per-store N+1 balance reads.
+  Instrument financial invariant failures, balance mismatches, rejected excessive
+  reservations, oldest unknown payment/refund, reconciliation differences, job
+  lag, retries, query latency, deadlocks and lock/pool wait. Avoid high-cardinality
+  account labels and sensitive payment fields. Alerts link to actionable runbooks.
+Acceptance:
+  Zero oversubscription/double effects/unexplained money differences at completion,
+  including worker restarts and provider uncertainty; all8 original probes pass.
+  During the 100 RPS test, meet root's centralized latency/error budgets and maintain
+  bounded lock wait, queue age and DB pool use. Reconcile every generated event
+  after run, not only HTTP success counts. Independent accounts do not share a
+  global finance mutex. Unknown external outcomes remain in a visible work queue.
+  Query/index improvement must show measured before/after evidence; no claim
+  of100 RPS readiness from unit tests or a single isolated benchmark.
+Migration/reconciliation:
+  Use safe concurrent index creation where appropriate with explicit migration
+  transaction constraints. Validate index size/write cost on realistic data.
+  Load testing is staging/disposable only; no production money or service calls.
+
+[ ] CHECKOUT-02 | P1 | Sequence shipping quotes and recover from server mismatch
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: CHECKOUT-01
+Primary existing files: src/components/CartDrawer.tsx; backend/cmd/server/shipping_quote_handlers.go;
+  backend/cmd/server/order_handlers.go.
+Evidence: src/components/CartDrawer.tsx:230-256 clears debounce timers but not active responses; catch:353-358
+  only toasts. backend/cmd/server/order_handlers.go:884-886 rejects shipping_quote_changed. Repro submits city B
+  with stale quote A; retry uses quote A again with no new quote request.
+Task: attach a generation/signature to quote inputs (address/city, store, lines/SKUs/quantities and all
+  shipping-relevant options); only the latest matching request may update success/error/loading. Cancel obsolete
+  requests where possible. Invalidate/refetch on shipping_quote_changed and display the new charge for explicit
+  review while retaining form state. Avoid creating a second order while CHECKOUT-01's outcome is unresolved.
+Acceptance: deferred A/B responses in both orders; address selection/edit, quantity/addon/SKU change,
+  direct-purchase versus normal-cart switch, drawer close/reopen, failed/stale errors. Submits always use the
+  latest matching quote. A server mismatch visibly refreshes and becomes retryable without editing the address
+  or losing the cart. No duplicate order on recovery; changed payable is reviewed.
+Regression file to create/extend: src/components/CartDrawer.quote.test.tsx.
+
+[ ] TEST-02 | P1 | Make the complete test and build baseline trustworthy
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: QA lead + backend/frontend reviewers
+Depends on: TEST-01, FIN-012, INV-01, INV-02, INV-03, INV-04, INV-05, INV-06, FIN-001, FIN-002, FIN-003,
+  FIN-004, FIN-005, FIN-006, FIN-007, AUTH-01, AUTH-02, CHECKOUT-01, CHECKOUT-02
+Evidence: isolated audit baseline had five failing Go tests and two failing frontend tests; 222 top-level Go
+  tests skipped. Existing passing tests do not cover the reproduced stock/money/session failures.
+Owner: QA/backend lead with frontend and SRE reviewers.
+Files: backend/internal/pricing/*_test.go, backend/cmd/server/supplier_product_gaps_test.go,
+  src/components/views/CatalogView.test.tsx, package.json, run_all_tests.cjs; new scripts/test-isolated.ps1,
+  scripts/test-isolated.sh and .github/workflows/ci.yml if no equivalent CI exists. Add regressions beside the
+  production code they exercise; do not leave them only in external audit artifacts.
+Implementation: repair four stale campaign assertions against FIN-012's documented current formula; correct the
+  legacy product-validation fixture to test the intended V2 publication rule; wrap CatalogView tests with the
+  real required StoreProvider. Add an explicit frontend test command collecting all existing .test.ts/.test.tsx
+  files through the current tsx runner. Introduce separate pure-unit and disposable migrated integration jobs
+  using TEST-01. Promote all 14 database reproductions and the four frontend reproductions into maintained tests
+  with deterministic synchronization. Add targeted race/property tests where concurrency or arithmetic requires
+  them, run go vet and build/typecheck, and scan Go/npm/container dependencies with documented severity triage.
+  Pin the selected supported toolchain and dependencies without blind major upgrades.
+Acceptance: npm run build and the configured frontend test command exit zero; Go unit and required integration
+  jobs exit zero; all 14 promoted reproductions and 10 existing SKU integration cases pass in the same
+  integrated revision. Record every skip reason; no required DB test silently skips because credentials were
+  omitted. CI fails on an intentionally broken invariant or migration and cannot reach production addresses.
+  Unit tests remain runnable with no network. A failing stale test is fixed by policy-aligned
+  fixtures/assertions, never by removing the test or changing business rules to make it green.
+Data risk: run only after TEST-01 guards exist; do not invoke the current unguarded native all-tests suite
+  against localhost application databases. This task establishes the release gate; domain owners still implement
+  their own fixes.
+
+[ ] OPS-01 | P1 | Make startup, health, graceful drain and shutdown explicit
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: JOB-01, MIG-01, OBS-01
+Primary existing files: backend/cmd/server/main.go; backend/cmd/server/health.go;
+  backend/internal/worker/scheduler.go; backend/internal/repository/postgres.go.
+Evidence: main.go:353-381 already returns 503 when DB/Redis health fails; DB Ping lacks a request timeout.
+  Server:2486-2495 sets ReadTimeout/WriteTimeout=10s, with no explicit signal-driven Shutdown path or scheduler
+  Stop/DB/Redis close in inspected main. Startup logs DB initialization failure then later uses db.DB (e.g.
+  main.go:251), rather than a clean controlled startup failure.
+Task: fail startup with a clear nonzero result if required DB/config/migrations cannot initialize, using bounded
+  retries if desired. Separate cheap process liveness from readiness that includes initialized schema,
+  dependency connectivity and a drain flag. Give DB/Redis probes short context deadlines and bound probe
+  concurrency. On SIGTERM first become unready, stop admitting new mutating work, drain HTTP within a configured
+  grace period, cancel/wait workers, flush needed logs, then close dependencies. Set ReadHeaderTimeout,
+  IdleTimeout, header/body limits and appropriate route budgets from observed use; distinguish uploads from
+  small JSON.
+Acceptance: injected DB/Redis failure produces bounded readiness 503 without liveness restart storms; health
+  never hangs behind exhausted pool indefinitely. Startup failures are actionable and do not dereference nil
+  dependencies. SIGTERM during active safe reads and checkout drains or returns a recoverable result, has no
+  double financial effect, and exits within the configured orchestrator grace period. Slow-header/body clients
+  cannot exhaust resources. Existing dependency-503 behavior is preserved, not presented as a new fix.
+
+[ ] REL-01 | P1 | Build, stage and verify an immutable release from the exact committed source
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: TEST-01, TEST-02, MIG-01, SEC-01, OPS-01
+Primary existing files: deploy.ps1; scripts/deploy_remote.py; Dockerfile; backend/Dockerfile.
+Evidence: deploy.ps1:161-163 runs local frontend build in the workspace, whereas backend builds from staged
+  source; ignored .env/untracked inputs can affect frontend despite tracked-tree cleanliness. build-on-server
+  uses archived source but mutable Node/Go image tags. deploy_remote.py already has a file lock:21-23,
+  manifest/live-mount checks, pg_dump backup:102, old hashed-asset retention:131-137 and health/root checks:189;
+  preserve these protections.
+Task: build both frontend/backend from the same clean archived commit in a controlled environment; specify
+  allowed public VITE variables and enforce VITE_USE_MOCK=false in release. Pin dependency/toolchain/container
+  versions and produce a manifest with commit, artifact checksums, migration set, build config names and image
+  digests (no secret values). Add CI typecheck/build/regression/invariant gates. Stage artifacts, validate
+  config, then switch traffic only after readiness and a small representative smoke suite. Keep old asset
+  availability for existing clients. Detect browser/API contract incompatibility across cutover.
+Acceptance: a dirty ignored local frontend file/env cannot change archived-build output; repeated build uses the
+  declared source/toolchain/config and produces traceable artifacts. Release validation rejects mock APIs,
+  placeholder providers when payment is enabled, missing assets/migrations and wrong manifest. Smoke test
+  login/role authorization, catalog, quote, idempotent order recovery and supported payment state on disposable
+  fixtures. Preserve AGENTS.md exclusions: docs/fa Persian documents and paused backend/internal/networkreward;
+  preserve primary site and unrelated services. No commit/push/deploy is authorized by this planning artifact
+  itself.
+
+[ ] BAK-01 | P1 | Produce restorable, protected backups and rehearse recovery
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: SEC-01, MIG-01, REL-01
+Primary existing files: backup-daily.sh; backup-auto.sh; scripts/deploy_remote.py.
+Evidence: backup-daily.sh uses set -e but not pipefail; pg_dump | gzip can succeed at the shell pipeline despite
+  pg_dump failure. backup-auto.sh uses pipefail and local seven-day rotation but inspected backup content misses
+  some runtime/SSL/Caddy configuration, and scripts lack a consistent restrictive umask.
+  deploy_remote.py:102-105 makes a custom-format dump and pg_restore --list validates its catalogue only, not a
+  restore. Backups on the same host do not cover host/disk loss.
+Task: consolidate a documented backup entry point with pipefail, failure propagation, umask077, archive
+  checksums/manifest and retention. Back up DB, uploads/object references, migration/release manifest and all
+  required runtime/edge configuration/keys securely. Encrypt and copy to an independent failure domain; restrict
+  readers and test key recovery. Define owner-approved RPO/RTO; if proposed RPO<=15min is required, implement
+  WAL/PITR or a measured equivalent, since daily dumps cannot meet it. Keep all restores isolated until data and
+  services validate.
+Acceptance: injected pg_dump failure produces nonzero exit, no success marker and an alert; corrupt/missing
+  artifacts detected. Restore a recent backup into a new isolated environment and validate schema,
+  inventory/ledger balances, order/payment state, media and domain configuration with sanitized data. Measure
+  actual recovery time and recoverable-data age against approved targets; proposed initial drill target
+  RTO<=60min and RPO<=15min, subject to infrastructure/user approval. Exercise loss of primary host plus restore
+  credentials, not only pg_restore --list. Schedule periodic automated restore verification and a documented
+  manual runbook. No live backup/restore run was performed in this plan.
+
+[ ] MIG-02 | P1 | Make rollback compatible with schema and pending migration files
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: MIG-01, REL-01, BAK-01
+Primary existing files: scripts/deploy_remote.py; backend/migrations.
+Evidence: scripts/deploy_remote.py:146-149 copies pending migration files into a persistent runtime directory;
+  rollback:194-231 restores previous code/config but not those files. A failed migration can remain and be
+  retried by the restored binary. backend/migrations/202611110003_sku_inventory.up.sql:7-14 drops a legacy
+  unique constraint, so describing every migration as additive is not enough to establish previous-binary
+  compatibility.
+Task: classify schema changes into expand/backfill/contract stages and identify last compatible app revision.
+  Stage immutable migration manifests, execute/check them before traffic cutover, and handle unapplied
+  failed-version files explicitly on rollback. Rollback must either run a schema-compatible previous binary or
+  perform a documented forward repair; do not blindly restore an old DB backup over newly accepted orders.
+  Define backfill resumability, lock/statement timeout and data validation. Keep backup restoration as a
+  controlled disaster-recovery procedure with a write freeze/reconciliation plan.
+Acceptance: isolated release rehearsal from current production-shaped previous schema: fail migration
+  before/after commit and fail backend health after migration; old/forward-repair release becomes healthy
+  without re-triggering a stranded failed file. Prove previous/new binaries are compatible for the permitted
+  overlap window. Record unavailable rollback points explicitly. Data accepted after deployment is never
+  silently erased by rollback. No production deployment is required to prove this in staging.
+
+[ ] FIN-014 | P1 | Historical reconciliation and staged financial cutover
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Finance/backend engineer + finance-domain reviewer
+Depends on: FIN-001, FIN-002, FIN-003, FIN-004, FIN-005, FIN-006, FIN-007, FIN-008, FIN-009, FIN-010, FIN-011,
+  FIN-012, MIG-02
+Priority/evidence: P1 release gate for affected money paths, no production data read.
+Files: new read-only reconciliation/report scripts and separately reviewed repair
+  commands; additive backend/migrations files; deploy.ps1 integration through root
+  release plan; finance runbooks and test fixtures.
+Scope:
+  Build a dry-run report with immutable record IDs and explanation for each class:
+  payout oversubscription, paid cancellation without refund, duplicate parcel
+  charge, resolved-but-held dispute, storage history gap, coupon oversubscription,
+  statement mismatch and uncertain PSP outcome. Distinguish source-derived ledger
+  state from verified bank/provider cash. Produce proposed compensating entries
+  and state transitions in a concrete reviewable repair batch, with idempotent
+  operation IDs, expected-before predicates and audit metadata.
+  Use expand/backfill/validate/switch sequencing: schema supports both versions,
+  shadow canonical reads expose discrepancies, reconcile, then atomically enable
+  new authorization/writers. Avoid mixed old/new writers for financial transitions.
+  Preserve backups; disable affected writes if a gate fails. Rollback must not run
+  old unsafe writers over new financial states or delete posted repair effects.
+Acceptance:
+  Rehearse from realistic legacy fixture with every detected defect and ambiguous
+  case, then rerun to prove no duplicate repairs. Exact before/after invariants
+  reconcile; unresolved cases remain flagged and excluded from unsafe automatic
+  payout/refund decisions. Migration failure halts release; backup restoration
+  and forward-repair/rollback procedure is demonstrated in staging.
+  Release evidence includes schema version, regression/load output, reconciliation
+  totals, unresolved-obligation queue and operator runbook. No silently dropped
+  ledger rows, guessed cash balances or retroactive repricing of accepted orders.
+Migration/reconciliation risk:
+  Highest for existing merged storage history and simulator/real payment ambiguity.
+  Dry-run tooling can be delivered now; any actual production repair/deployment
+  belongs to the separately authorized implementation/release workflow.
+
+[ ] CHECKOUT-03 | P2 | Unify the displayed cart/checkout price breakdown
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Frontend engineer + backend reviewer
+Depends on: FIN-012, CHECKOUT-02
+Primary existing files: src/context/CartContext.tsx; src/components/CartDrawer.tsx.
+Evidence: src/context/CartContext.tsx computes cartDiscount from original price minus a payable that includes
+  addons; CartDrawer.tsx computes cartGrossDiscount by adding addons back. Direct-purchase subtotal already
+  includes addons while another row presents addons. No wrong server charge was established.
+Task: define shared merchandise original, merchandise discount, merchandise net, addons, shipping and total
+  amounts; render the same breakdown in cart, direct checkout, quote review, success and order detail. Preserve
+  the backend order snapshot; never recompute historical paid amounts from current catalog prices. Review money
+  units and integer rounding with finance tasks.
+Acceptance: table tests for merchandise 100/addons 50/discount 0 => discount 0,total 150 before shipping;
+  original 100,sale 90,addons 50 => discount 10,total 140; quantities, mixed SKUs, multiple addon types,
+  zero/rounded discounts, direct and normal cart. UI rows sum to the server-accepted payable without inventing a
+  discount or double-counting addons. Validate source risk before changing financial semantics.
+Regression file to create/extend: src/context/CartContext.pricing.test.ts.
+
+[ ] PERF-01 | P1 | Apply catalog pagination before fetching and pricing all products
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, FIN-012, INV-05
+Primary existing files: backend/internal/repository/catalog_repo.go; backend/cmd/server/handlers.go;
+  src/context/ProductContext.tsx; src/services/catalogApi.ts.
+Evidence: repository/catalog_repo.go:92-219 fetches the full filtered result, with wildcard
+  lower(title/description) LIKE:146-149; handlers.go:575-585 accepts an uncapped positive limit or
+  zero/unbounded. handleProducts loads all at636 and slices only at739-740 after
+  settings/store/variant/campaign/pricing work:642-737. Supplier lookup:725 is per unique supplier using a local
+  map, not literally per product. Variants/defaults are already batched at672-673 and catalog_repo.go:434/556;
+  preserve that good behavior. ProductContext.tsx:386-405 fetches the whole catalog on initial loading.
+Task: define capped cursor pagination with stable ordering and filters in SQL, then fetch/pricing dependencies
+  only for that page. Batch supplier names for page suppliers. Bound pricing/override reads to relevant page
+  keys where semantics permit. Add correct indexed search based on EXPLAIN (e.g. prefix or trigram only after
+  agreeing search behavior), not an unconditional index recipe. Update catalogApi/ProductContext/storefront UI
+  to consume pages, cancel obsolete filter requests and retain scoped cache keys.
+  Price-bounds:handlers.go:1042-1084 also loads/prices all rows; implement a separately profiled correct
+  bounded/cached/aggregate approach that preserves variant/campaign/store semantics.
+Acceptance: at expected production and 10x growth cardinalities, an N-item page prices only N items (plus
+  documented bounded dependency queries); query count does not grow with total catalog size or unique supplier
+  count within the page. No duplicate/missing entries when paging stable data; agreed behavior under concurrent
+  edits. Filters/search/price bounds match authoritative store/variant prices and tenant visibility. Capture
+  EXPLAIN ANALYZE with buffers, timings, row counts and response bytes on disposable data; meet read latency
+  gate in CAP-02 without hiding queries behind warm caches only.
+Initial pagination contract: default 24 and maximum 100 products per page; stable cursor includes sort key plus
+  unique ID and binds the filter/store signature. Explicitly migrate existing unpaged frontend consumers.
+  Preserve correct bounds/search semantics.
+
+[ ] PERF-02 | P1 | Bound order lists and expensive reconciliation/report work
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, FIN-009
+Primary existing files: backend/internal/repository/order_repo.go;
+  backend/internal/repository/historical_reconciliation_report.go.
+Evidence: repository/order_repo.go:606-678 returns unbounded user/all order lists; item loading at569 is already
+  batched. historical_reconciliation_report.go:94-158 builds all products and lateral JSON evidence aggregates;
+  ReviewHistoricalInventory:241+ regenerates the full report to locate a single product. Some endpoints are
+  already capped: team01_helpers.go:83-94 defaults100/max200, and ad_network_report.go:86 bounds recent events;
+  do not replace functioning limits indiscriminately.
+Task: inventory list/export endpoints and add capped cursor/page/date ranges only where missing; keep item
+  batching. Split reconciliation summary pages from per-product paginated evidence. Make a review fetch and
+  validate the selected product directly in its transaction. Profile historical/financial aggregations, use
+  appropriate indexes/summary tables where correctness and refresh policy are defined, and move genuinely large
+  exports to a bounded background job with authorized download and expiration.
+Acceptance: maximum/default limits enforced server-side, invalid limits rejected or normalized consistently;
+  frontend consumes the contract. Largest supported report and selected-product review stay within measured
+  memory/query/runtime bounds. Pagination and authorization survive same-name tenants and concurrent additions;
+  totals are consistent with finance reference queries. At 100 total RPS including the agreed staff/report
+  substitution profile, no report starves customer checkout or the worker pool. Exports have explicit
+  row/size/runtime caps and cancellation behavior.
+Initial bounds for currently unbounded routes: default 50 and maximum 100 list entries, stable cursor; default
+  report window 31 days and maximum 366 days. Preserve existing tighter route limits. Large exports require
+  explicit row/byte/runtime limits validated against the dataset; document values in the API contract before
+  enabling that path.
+
+[ ] PERF-03 | P1 | Budget the DB pool and reduce repeated auth/config reads safely
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, PERF-01
+Primary existing files: backend/internal/repository/postgres.go; backend/cmd/server/auth_handlers.go;
+  backend/internal/repository/capability_repo.go; backend/internal/repository/pricing_repo.go.
+Evidence: repository/postgres.go:22-23 fixes max-open25/max-idle10 and uses startup Ping without timeout; HTTP
+  and workers share the pool. auth_handlers.go:38 refreshes capabilities and:48 checks blocked status on
+  authenticated requests; capability_repo.go:22 and:72 fetch capability/active state. pricing_repo.go:40-98
+  calls pricing settings and full product/category maps:110/127 plus ceilings:151; handlers.go:530-541 loads all
+  store variant overrides.
+Task: make pool sizes/lifetime/idle settings configurable with validated limits, expose pool waits, and
+  establish the current 25/10 baseline. Set an explicit whole-deployment connection budget: sum across API
+  replicas, jobs/migrations/admin headroom <= PostgreSQL available connections. Profile and combine redundant
+  per-request authorization queries where possible. Use request-local reuse or versioned narrowly scoped caches
+  only with documented revocation/invalidation guarantees; do not trade block/capability enforcement for a long
+  TTL. Profile price/config map query volume after PERF-01.
+Acceptance: report transaction/query p95/p99, pool wait distribution, PG active/idle/locked connections and CPU
+  at agreed load. No connection exhaustion when workers and reports overlap. Changes preserve immediate
+  blocked-user/capability behavior required by security policy. Demonstrate latency/throughput improvement
+  against baseline before increasing pool/replicas; rollback the tuning if DB contention worsens. Proposed
+  steady-state headroom: <80% of allocated DB connection budget and pool wait p95<25ms, with exceptions
+  justified by measurements.
+
+[ ] PERF-04 | P1 | Benchmark Redis hot-key holds and define restart recovery
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, OPS-02, INV-05, FIN-003
+Primary existing files: backend/internal/repository/redis.go; docker-compose.yml; docker-compose.prod.yml.
+Evidence: repository/redis.go:69+ HoldInventory runs Lua:89-104 that expires members then scans current holders
+  and GETs/sums them; cost grows with holders for a hot product. ReleaseOrderInventory:173+ releases
+  sequentially and stops on first error. Redis is also used for OTP/cache. Client initialization:18-33 uses
+  default pool options and 3s startup Ping. Base compose enables AOF, while prod override replaces the Redis
+  command with an authentication command without appendonly; inspect the final merged configuration rather than
+  assuming inherited command flags.
+Task: benchmark hold latency at 10/100/1,000/10,000 holders on a hot product alongside OTP/cache traffic, and
+  instrument script/pool latency. Establish explicit persistence/eviction/memory policy for each data class.
+  Define which state is reconstructible from canonical PostgreSQL reservations and how restart/lost holds
+  interact with pending payments; root exact-SKU/oversell invariant fixes are mandatory. If profiling fails the
+  budget, replace unbounded scan/cleanup with a bounded or maintained aggregate design with proven
+  expiry/duplicate/release semantics. Continue best-effort release/recovery for remaining items on partial Redis
+  errors with observable retry/reconciliation, not silent leakage. Tune connection options based on data, not
+  default guesses.
+Acceptance: hot-key load at agreed occupancy meets mutation SLO without monopolizing Redis and degrading OTP.
+  Restart, eviction policy test, partial release failure and expired-holder bursts never oversell or
+  double-release; stale holds recover within a documented bound. Final merged Compose/config includes the chosen
+  persistence settings. A Redis restart recovery drill documents whether customers must re-verify OTP and how
+  pending orders reconcile. No cluster adoption is required unless measurement and key-slot correctness justify
+  it.
+
+[ ] EDGE-01 | P1 | Include domain authorization and assets in edge capacity
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OBS-01, SEC-01, CAP-01
+Primary existing files: Caddyfile; backend/cmd/server/main.go; backend/cmd/server/domain_handlers.go.
+Evidence: Caddyfile:14-16 performs forward_auth /internal/domains/allow?domain={host} before reverse_proxy for
+  every HTTPS request; this includes static assets. on_demand_tls also calls the allow endpoint. main.go:255
+  binds the internal endpoint. Thus 100 external HTTPS API RPS can add roughly 100 internal allow checks/RPS
+  before assets, health checks, retries or other traffic; measure actual counts. Backend-direct tests omit this
+  cost.
+Task: benchmark through deployed-equivalent Caddy -> nginx -> backend with primary and seller domains, HTTPS
+  keep-alive and a separate TLS/new-connection sample. Instrument allow-check counts/latency/DB queries.
+  Preserve deny-by-default domain approval and internal-path blocking. If allow checks are significant, use a
+  bounded hostname/ownership cache with explicit invalidation/revocation SLA and tests, or a routing design
+  preserving the same authorization; do not bypass approval for all static assets accidentally. Evaluate
+  content-hashed asset compression/cache headers separately from dynamic API responses.
+Acceptance: load report distinguishes 100 measured external API RPS, internal allow RPS, asset RPS and total
+  backend/DB work. Approved/revoked/unknown/malformed/IDN domains and primary-site routes behave correctly under
+  cache churn and API restart. No tenant data or private supplier-cost fields appear in another
+  domain/capability cache. New TLS handshakes/domain issuance obey safe rate limits and do not fail ordinary
+  requests. Existing primary-site access and unrelated host services are preserved.
+
+[ ] REL-02 | P1 | Define deployment availability and host resource/health budgets
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: OPS-01, MIG-02, REL-01, OBS-01
+Primary existing files: scripts/deploy_remote.py; docker-compose.yml; docker-compose.prod.yml;
+  docker-compose.ssl.yml.
+Evidence: deploy_remote.py:177 force-recreates backend and:180-181 stops/recreates frontend, causing a
+  single-instance interruption. Compose uses mutable
+  postgres16-alpine/redis7-alpine/nginx:alpine/alpine3.19/caddy2-alpine tags in inspected files; final
+  resource/log/health configuration needs a merged-config review. SSL compose resets frontend ports so Caddy
+  owns the public edge; base/prod-only load tests do not represent that path.
+Task: choose an approved maintenance window or a measurable no-downtime deployment target. If no downtime is
+  required, implement staged healthy replacement and HTTP drain on this host/topology with backward-compatible
+  DB/API transitions; do not introduce orchestration merely by default. Pin patched image versions/digests, set
+  measured CPU/memory/process/log rotation/disk budgets, restart policies and meaningful health checks. Validate
+  final merged base+prod+SSL+runtime config in a redacted way. Keep PostgreSQL/Redis/internal backend ports
+  nonpublic and preserve existing Xray/primary-site behavior.
+Acceptance: release rehearsal under the selected 100-RPS profile meets the approved downtime/error budget; if
+  zero downtime is promised, no unexpected request loss during cutover and no extra financial effects from
+  retries. Failed replacement rolls back traffic before impacting users. Sustained load shows no
+  OOM/restart/log-disk exhaustion, with documented capacity headroom. Images have a patch/rollback procedure.
+  Resource values are chosen from the measured host, not guessed in this plan.
+
+[ ] QUAL-01 | P1 | Close unreviewed business and authorization coverage
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: QA lead + backend/frontend reviewers
+Depends on: CORE-01, TEST-01, FIN-001, AUTH-03
+Evidence: the first audit did not exhaustively verify every admin, analytics, advertising, reporting, tenant or
+  security boundary. This is investigation and qualification, not an assertion that every remaining module has a
+  defect.
+Owner: QA/backend lead with frontend and SRE reviewers.
+Files: backend/cmd/server/main.go and its registered handler files, backend/internal/repository callers,
+  src/services and src/context; new docs/quality/route-invariant-matrix.txt and focused tests alongside affected
+  packages. Paused backend/internal/networkreward/ remains excluded.
+Implementation: inventory every active route and background job. For each, record role/tenant/ownership rules,
+  data mutated, monetary/quantity formula, transaction and idempotency policy, bounded-input policy, and current
+  regression coverage. Trace remaining active seller-service, campaign/advertising, subscription, commission,
+  customer-wallet and report writers through canonical money rules. Classify uncertain policy with a
+  reproducible input before changing behavior. Add cross-tenant and object-ownership tests for
+  customer/seller/supplier/warehouse/support/finance/admin, including guessed IDs, revoked capabilities, expired
+  tokens, host/store mismatch, uploads, callbacks, exports and sensitive reports. Validate trust boundaries and
+  existing protections before adding new controls.
+Acceptance: every active mutation and money/inventory read has an explicit reviewed row in the matrix. Invalid
+  role/tenant/ownership cannot read or mutate another tenant's records; authorized users retain intended access.
+  Exact arithmetic examples, maximum/negative/fractional values, partial actions, failed reads and retry
+  semantics have tests for uncovered business writers. Every discovered actionable defect becomes a numbered
+  subtask linked to its failing regression and is fixed before the relevant path launches. No unknown
+  money/security risk is silently marked passed or excluded to claim readiness.
+Data risk: use generated identities and fixtures only. Do not copy customer data, production tokens or private
+  keys into tests or task artifacts.
+
+[ ] CAP-02 | P1 | Prove integrated correctness at 1,000 users and 100 RPS
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: SRE/performance engineer + backend reviewer
+Depends on: INV-01, INV-02, INV-03, INV-04, INV-05, INV-06, INV-07, INV-08, INV-09, INV-10, INV-11, INV-12,
+  FIN-001, FIN-002, FIN-003, FIN-004, FIN-005, FIN-006, FIN-007, FIN-008, FIN-009, FIN-010, FIN-011, FIN-012,
+  FIN-013, FIN-014, AUTH-01, AUTH-02, AUTH-03, CHECKOUT-01, CHECKOUT-02, CHECKOUT-03, TEST-01, OBS-01, OPS-01,
+  OPS-02, PERF-01, PERF-02, PERF-03, PERF-04, EDGE-01, JOB-01, MIG-01, MIG-02, REL-01, REL-02, SEC-01, BAK-01,
+  CORE-01, QUAL-01, TEST-02, CAP-01
+Evidence: required measurement after fixes; no current pass claimed.
+Owner: SRE/performance engineer, independently reviewed by inventory, finance and QA leads.
+Files: load-tests from CAP-01; new docs/operations/capacity-evidence.txt and timestamped raw reports/dashboards
+  outside committed source where bulky. Record immutable commit/image/config identifiers.
+Implementation: run the central 30-minute 100-RPS qualification, two-hour 100-RPS soak, separate 1,000-user
+  journey and 1,000-user/60-second login ramp with browsing, and 200-RPS five-minute recovery test. Run
+  cold/warm cache, hot SKU/account and staff/report variants with scheduled workers active. Inject process death
+  at payment/capture/response boundaries, Redis restart, temporary DB loss, provider timeout, worker failover
+  and failed replacement in isolated staging. Correlate route latency with
+  SQL/locks/pool/Redis/edge/provider/CPU/memory, then make only evidenced optimizations and rerun affected
+  profiles plus the final full gate.
+Acceptance: all central latency, error, throughput, zero-dropped-arrival, memory/queue, isolation and
+  conservation gates pass on the intended deployment shape. Five units under 100 simultaneous valid buyers
+  produce exactly five captures; one callback replayed 100 times produces one effect. All 1,000 independent
+  sessions retain the correct identity/cart/orders through think time, token lifecycle and account switching.
+  Reconcile every generated order, reservation, payment/refund obligation, inventory movement and financial
+  event after load/fault recovery; HTTP 200 counts alone are insufficient. Valid-traffic 429s and unexpected
+  409s fail the test. Log baseline versus final metrics and every failed/repeated run; do not loosen targets
+  after failure without a recorded scope decision.
+Data risk: no live production fault injection. If hardware, workload, enabled provider, schema, worker schedule
+  or pool topology changes materially, rerun the affected gates before retaining the capacity claim.
+
+[ ] GO-01 | P1 | Assemble a reviewable release and execute the verified rollout
+--------------------------------------------------------------------------------
+Status: TODO
+Owner: Release lead + SRE/backend reviewers
+Depends on: CAP-02
+Evidence: a plan, a build, and a load-test result alone are not a safe commerce release.
+Owner: release lead with SRE, backend, finance and inventory sign-off.
+Files: deploy.ps1, scripts/deploy_remote.py, docs/live-deployment.md; new docs/operations/release-checklist.txt
+  and docs/operations/incident-runbook.txt. Reuse the release manifest and restore evidence from REL/MIG/BAK
+  tasks.
+Implementation: assemble exact commit/artifacts, tests, migrations and rollback compatibility, historical
+  stock/money reconciliation, real payment sandbox evidence, raw 1,000-user/100-RPS results, backup restore
+  evidence, required runtime configuration names and incident ownership. All tasks in this file require closure
+  evidence; conditional optimization tasks may close with measured proof that no structural change is necessary,
+  and investigation tasks with a demonstrated non-defect. Document externally blocked provider/hardware inputs
+  explicitly; do not label a payment-disabled site ready for normal paid commerce. For an authorized release
+  follow AGENTS.md: validate, commit, push, deploy through deploy.ps1, verify readiness and the supported
+  business flows, monitor, and use the rehearsed rollback/forward-repair procedure on failure. Never include
+  docs/fa or paused networkreward work.
+Acceptance: all required gates are green for the exact release, no unresolved stock/money/auth blocker, and
+  named owners can execute refund-unknown, reconciliation mismatch, worker lag, provider outage, restore and
+  rollback runbooks. Staging rehearsal proves graceful drain, smoke checks, backup integrity and recovery
+  without lost orders. Once actually deployed, record observed health and post-release invariant/latency checks;
+  before deployment the status is READY FOR DEPLOYMENT only, never DEPLOYED. This task file itself performs no
+  commit, push or deployment.
+Data risk: preserve primary-site access, existing services, new accepted orders and secrets. Uncertain
+  historical records remain visible and block unsafe automatic payouts/stock promises until reconciled.
+
+PRIMARY TECHNICAL REFERENCES
+============================
+The capacity methodology uses the official k6 fixed-arrival executor and dropped-iteration metric; iteration
+  rate must not be confused with HTTP request rate:
+https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-arrival-rate/
+https://grafana.com/docs/k6/latest/using-k6/scenarios/concepts/dropped-iterations/
+For pool changes use measured sql.DB statistics and whole-host connection budgets; raising a pool limit is not
+  itself a throughput fix:
+https://go.dev/doc/database/manage-connections
+Profile representative queries using PostgreSQL 16 plans/buffers and aggregated query statistics. EXPLAIN
+  ANALYZE executes statements; use disposable data for write plans:
+https://www.postgresql.org/docs/16/sql-explain.html
+https://www.postgresql.org/docs/16/pgstatstatements.html
+
+DELIVERY STATUS
+===============
+This is the requested complete TXT task backlog. No task is marked complete, no production readiness or measured
+  capacity is claimed, and no application source was changed by writing this file. Implement, verify and record
+  evidence before changing that status.

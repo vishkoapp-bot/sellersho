@@ -1,18 +1,14 @@
 package repository
 
 // Regression test for the inventory_captured capture/restore pair
-// (migration 202610250009): MarkPaymentPaid debits products.stock /
-// product_variants.stock at payment time, so it must also set
+// (migration 202610250009): MarkPaymentPaid captures exact physical stock
+// at payment time, so it must also set
 // orders.inventory_captured = TRUE in the same transaction —
 // CancelOrder restores stock ONLY under that flag, and before this
 // fix no production path ever set it, so every paid-then-cancelled
 // order permanently lost its stock.
 //
-// DB-gated exactly like the rest of the team03 suite: skipped unless
-// TEAM03_DATABASE_URL points at a DISPOSABLE Postgres database (see
-// openTeam03DB). The team03 disposable schema has no product_variants
-// table, so this test creates the minimal one it needs (only id and
-// stock are touched by the capture/restore statements).
+// Uses the disposable, fully migrated schema and explicit purchased origins.
 
 import (
 	"context"
@@ -22,22 +18,17 @@ import (
 )
 
 func TestMarkPaymentPaidCapturesInventoryAndCancelRestores(t *testing.T) {
-	db := openTeam03DB(t)
+	db := openPaymentConcurrencyDB(t)
 	defer db.Close()
 	ctx := context.Background()
-
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS product_variants CASCADE`); err != nil {
-		t.Fatalf("drop product_variants: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id TEXT, stock INT NOT NULL DEFAULT 0)`); err != nil {
-		t.Fatalf("create product_variants: %v", err)
-	}
 
 	suffix := uuid.NewString()[:12]
 	userID := uuid.NewString()
 	plainID := "prod-plain-" + suffix
 	varProductID := "prod-var-" + suffix
 	variantID := uuid.New()
+	siblingID := uuid.New()
+	storeID := "store-cap-" + suffix
 	orderID := "order-cap-" + suffix
 	orderNumber := "ORD-CAP-" + suffix
 	token := "TOKEN-CAP-" + suffix
@@ -48,17 +39,29 @@ func TestMarkPaymentPaidCapturesInventoryAndCancelRestores(t *testing.T) {
 			t.Fatalf("fixture %q: %v", query, err)
 		}
 	}
-	exec(`INSERT INTO products (id, title, stock) VALUES ($1, 'plain', 10)`, plainID)
-	exec(`INSERT INTO products (id, title, stock) VALUES ($1, 'variant product', 8)`, varProductID)
-	exec(`INSERT INTO product_variants (id, product_id, stock) VALUES ($1, $2, 5)`, variantID, varProductID)
-	exec(`INSERT INTO orders (id, customer_user_id, order_number, total_amount, payable_amount, payment_status, status)
-		VALUES ($1, $2, $3, 5000, 5000, 'pending', 'processing')`, orderID, userID, orderNumber)
+	exec(`INSERT INTO users(id,mobile,full_name,role,is_active) VALUES($1,$2,'Capture customer','customer',TRUE)`, userID, "098"+suffix[:8])
+	exec(`INSERT INTO stores(id,name,slug,owner_type,owner_name,active_plan_id) VALUES($1,$1,$1,'central','Platform','vip')`, storeID)
+	exec(`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock) VALUES ($1,'plain',$1,'digital','sup-ali',2000,1000,100,10)`, plainID)
+	exec(`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,schema_version,product_type,attribute_schema) VALUES ($1,'variant product',$1,'digital','sup-ali',2000,1000,100,8,2,'variable','{}')`, varProductID)
+	exec(`INSERT INTO product_variants (id,product_id,variant_name,spnc,stock,inventory_mode) VALUES ($1,$2,'Purchased SKU',$4,5,'tracked'),($3,$2,'Sibling SKU',$5,3,'tracked')`, variantID, varProductID, siblingID, "A"+suffix[:10], "B"+suffix[:10])
+	warehouse := seedCanonicalWarehouseStock(t, db, plainID, "sup-ali", 10)
+	for _, lot := range []struct {
+		id       uuid.UUID
+		quantity int
+	}{{variantID, 5}, {siblingID, 3}} {
+		exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,'sup-ali',$3,'supplier','warehouse',$4,'sellable',$5,$6)`, uuid.NewString(), varProductID, lot.id, "warehouse:"+warehouse, lot.quantity, warehouse)
+	}
+	insertOrder := func(id, number string, amount int) {
+		exec(`INSERT INTO orders(id,customer_user_id,order_number,store_id,store_name,total_amount,payable_amount,payment_method,payment_status,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,status,tracking_code,fulfillment_method) VALUES($1,$2,$3,$4,'Capture store',$5,$5,'cash','pending','Capture customer','09120000000','Tehran','Tehran','Test address','1234567890','processing',$3,'warehouse')`, id, userID, number, storeID, amount)
+	}
+	insertOrder(orderID, orderNumber, 10000)
 	exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, platform_fee, seller_margin, final_unit_price)
-		VALUES ($1, $2, $3, 3, 1000, 100, 900, 2000)`, "item-plain-"+suffix, orderID, plainID)
+		VALUES ($1, $2, $3, 3, 1000, 100, 900, 2000)`, uuid.NewString(), orderID, plainID)
 	exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, platform_fee, seller_margin, final_unit_price, variant_id)
-		VALUES ($1, $2, $3, 2, 1000, 100, 900, 2000, $4)`, "item-var-"+suffix, orderID, varProductID, variantID)
+		VALUES ($1, $2, $3, 2, 1000, 100, 900, 2000, $4)`, uuid.NewString(), orderID, varProductID, variantID)
 	exec(`INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, amount, status)
-		VALUES ($1, $2, $3, $4, 5000, 'pending')`, "pay-cap-"+suffix, orderID, orderNumber, token)
+		VALUES ($1, $2, $3, $4, 10000, 'pending')`, "pay-cap-"+suffix, orderID, orderNumber, token)
+	seedCanonicalWarehouseOrderOrigins(t, db, orderID, warehouse)
 
 	stockOf := func(productID string) int {
 		t.Helper()
@@ -136,14 +139,17 @@ func TestMarkPaymentPaidCapturesInventoryAndCancelRestores(t *testing.T) {
 	// Negative control: cancelling an UNPAID order must restore
 	// nothing (the flag is false; restoring would mint phantom stock).
 	unpaidOrderID := "order-unpaid-" + suffix
-	exec(`INSERT INTO orders (id, customer_user_id, order_number, total_amount, payable_amount, payment_status, status)
-		VALUES ($1, $2, $3, 8000, 8000, 'pending', 'processing')`, unpaidOrderID, userID, "ORD-UNPAID-"+suffix)
+	insertOrder(unpaidOrderID, "ORD-UNPAID-"+suffix, 8000)
 	exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost, platform_fee, seller_margin, final_unit_price)
-		VALUES ($1, $2, $3, 4, 1000, 100, 900, 2000)`, "item-unpaid-"+suffix, unpaidOrderID, plainID)
+		VALUES ($1, $2, $3, 4, 1000, 100, 900, 2000)`, uuid.NewString(), unpaidOrderID, plainID)
 	if err := repo.CancelOrder(ctx, unpaidOrderID, userID, false); err != nil {
 		t.Fatalf("CancelOrder unpaid: %v", err)
 	}
 	if got := stockOf(plainID); got != 10 {
 		t.Fatalf("plain product stock after unpaid cancel = %d, want 10 (no phantom restore)", got)
+	}
+	var siblingStock int
+	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, siblingID).Scan(&siblingStock); err != nil || siblingStock != 3 {
+		t.Fatalf("unrelated sibling stock=%d err=%v; want 3", siblingStock, err)
 	}
 }

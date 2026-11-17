@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -36,7 +37,7 @@ func handleSaveStoreWidget(w http.ResponseWriter, r *http.Request, repo *reposit
 		EndsAt         string             `json:"endsAt"`
 		Discounts      map[string]float64 `json:"discounts,omitempty"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&config) != nil || strings.TrimSpace(config.Title) == "" || len(config.Title) > 300 || config.CountdownHours < 1 || config.CountdownHours > 168 || len(config.ProductIDs) < 1 || len(config.ProductIDs) > 100 {
+	if decodeMoneyJSON(http.MaxBytesReader(w, r.Body, 16384), &config) != nil || strings.TrimSpace(config.Title) == "" || len(config.Title) > 300 || config.CountdownHours < 1 || config.CountdownHours > 168 || len(config.ProductIDs) < 1 || len(config.ProductIDs) > 100 {
 		http.Error(w, `{"error":"Invalid widget configuration"}`, http.StatusBadRequest)
 		return
 	}
@@ -51,7 +52,7 @@ func handleSaveStoreWidget(w http.ResponseWriter, r *http.Request, repo *reposit
 				break
 			}
 		}
-		if !listed || pct <= 0 || pct > 100 {
+		if _, err := pricing.ParsePercent(pct); !listed || err != nil || pct <= 0 || pct > 100 {
 			http.Error(w, `{"error":"Invalid widget configuration"}`, http.StatusBadRequest)
 			return
 		}

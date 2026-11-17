@@ -3,9 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -13,7 +16,7 @@ import (
 
 func openWarehouseCapacityIntegrationDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("postgres", "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable")
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Skipf("Postgres integration unavailable: %v", err)
 	}
@@ -38,7 +41,14 @@ func TestPutawayCapacityConcurrencyAllowsOnlyOneReservation(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,fulfillment_method,length_mm,width_mm,height_mm,weight_grams,measurement_status) VALUES ($1,$2,$3,'digital','sup-technolife',100000,50000,1000,TRUE,2,'warehouse',100,100,100,500,'verified')`, productID, "Capacity concurrency product", productID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_bins (bin_code,hall_name,aisle,shelf,capacity_percent,quantity,warehouse_name,capacity_volume_cm3,occupied_volume_cm3,occupied_weight_grams,capacity_status) VALUES ($1,'Capacity Test','1','1',0,0,'Test',1000000,0,0,'verified')`, binCode); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE products SET warehouse_name='Test' WHERE id=$1`, productID); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewSupplierRepository(db).RecordProductMeasurement(ctx, productID, "capacity-test", 100, 100, 100, 500, "measured capacity fixture"); err != nil {
+		t.Fatal(err)
+	}
+	// One 100mm cube occupies 1000cm3 and 500g: exactly one reservation fits.
+	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_bins (bin_code,hall_name,aisle,shelf,capacity_percent,quantity,warehouse_name,capacity_volume_cm3,max_weight_grams,occupied_volume_cm3,occupied_weight_grams,capacity_status) VALUES ($1,'Capacity Test','1','1',0,0,'Test',1000,500,0,0,'verified')`, binCode); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,bin_location,quantity,status,created_at) VALUES ($1,$2,NULL,1,'pending',NOW()),($3,$2,NULL,1,'pending',NOW())`, taskA, productID, taskB); err != nil {

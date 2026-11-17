@@ -1,3 +1,4 @@
+import { financeOperation } from './financeOperation';
 import { apiRequest, tokenStore, getApiBase } from './apiClient';
 import type { ProductSchema } from '../types/productSchema';
 
@@ -299,14 +300,14 @@ export const supplierApi = {
   },
   markNotificationsRead: (ids?: string[]) => apiRequest<{ success?: boolean; updated?: number; unreadCount?: number }>('/supplier/notifications/read', { method: 'POST', auth: true, body: JSON.stringify(ids?.length ? { ids } : {}) }),
   proposeProduct: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/products/propose', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
-  updateStock: (productId: string, newStock: number, reason?: string, variantId?: string) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
+  updateStock: (productId: string, newStock: number, reason: string, variantId?: string) => apiRequest<{ success: boolean; stock: number; productStock: number }>(`/supplier/products/${encodeURIComponent(productId)}/stock`, { method: 'PUT', auth: true, body: JSON.stringify({ new_stock: newStock, reason, variantId }) }),
   updatePricing: (productId: string, newSupplierBaseCost: number, reason?: string) => apiRequest<UpdatePricingResponse>(`/supplier/products/${encodeURIComponent(productId)}/pricing`, { method: 'PUT', auth: true, body: JSON.stringify({ new_supplier_base_cost: newSupplierBaseCost, reason }) }),
   // Gap 11 — price-increase governance: own request history + exception tickets.
   getPriceIncreases: () => apiRequest<SupplierPriceIncreaseDto[]>('/supplier/price-increases', { method: 'GET', auth: true }),
   createPriceIncreaseExceptionTicket: (productId: string, newReference: number, message?: string) => apiRequest<{ success: boolean; ticketId: string }>('/supplier/price-increases/exception-ticket', { method: 'POST', auth: true, body: JSON.stringify({ productId, newReference, message }) }),
   updateSupplyOption: (productId: string, supplyOption: SupplierProductDto['supplyOption']) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/supply-option`, { method: 'PUT', auth: true, body: JSON.stringify({ supply_option: supplyOption }) }),
   getInbounds: () => apiRequest<SupplierInboundDto[]>('/supplier/inbounds', { method: 'GET', auth: true }),
-  createInbound: (payload: { items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  createInbound: (payload: { sourceKind?: 'transfer'; supplierWarehouseId?: string; items: { product_id: string; quantity: number; carton_count: number }[]; carrier: string; vehicle_plate: string; notes?: string; warehouseId?: string; dispatchAt?: string }) => apiRequest<{ inbound_id: string }>('/supplier/inbounds/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   getShipments: async (): Promise<any[]> => {
     const data = await apiRequest<any>('/supplier/shipments', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.shipments ?? []);
@@ -330,7 +331,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصویر');
@@ -350,6 +351,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر تنوع');
@@ -369,6 +371,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود تصاویر');
@@ -393,10 +396,13 @@ export const supplierApi = {
   },
   getCatalogReview: (proposalId: string) => apiRequest<any>(`/supplier/catalog/review/${encodeURIComponent(proposalId)}`, { method: 'GET', auth: true }),
   resubmitCatalogReview: (proposalId: string, data: Record<string, unknown>) => apiRequest(`/supplier/catalog/review/${encodeURIComponent(proposalId)}/resubmit`, { method: 'POST', auth: true, body: JSON.stringify({ data }) }),
-  createShipment: async (payload: { items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+  createShipment: async (payload: { creation_key: string; warehouse_id: string; source?: {source_kind: string; supplier_warehouse_id?: string; external_reference?: string; reason?: string}; items: { variant_id: string; expected_qty: number }[] }): Promise<any> => {
+    if (!payload.creation_key?.trim() || payload.creation_key.length > 128) throw new Error('Shipment creation key is required');
     const data = await apiRequest<any>('/supplier/shipments', { method: 'POST', auth: true, body: JSON.stringify(payload) });
     return data?.shipment ?? data;
   },
+  changeShipmentDispatch: (shipment_id: string, action: 'dispatch' | 'cancel') => apiRequest<{success: boolean}>('/supplier/shipments', {method: 'POST', auth: true, body: JSON.stringify({shipment_id, action})}),
+
   getCentralWarehouses: async (): Promise<any[]> => {
     const data = await apiRequest<any>('/supplier/warehouses/central', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : [];
@@ -406,7 +412,7 @@ export const supplierApi = {
   getDiscrepancies: () => apiRequest<SupplierDiscrepancyDto[]>('/supplier/discrepancies', { method: 'GET', auth: true }),
   respondDiscrepancy: (id: string, response: string, resolutionOffer: string) => apiRequest(`/supplier/discrepancies/${encodeURIComponent(id)}/respond`, { method: 'POST', auth: true, body: JSON.stringify({ response, resolution_offer: resolutionOffer }) }),
   getSalesReport: (startDate?: string, endDate?: string) => apiRequest<SupplierReportDto>(`/supplier/sales-report${startDate || endDate ? `?start_date=${encodeURIComponent(startDate || '')}&end_date=${encodeURIComponent(endDate || '')}` : ''}`, { method: 'GET', auth: true }),
-  requestSettlement: (amount: number, shaba: string, bankName: string, accountHolder: string) => apiRequest('/supplier/settlement/request', { method: 'POST', auth: true, body: JSON.stringify({ amount, shaba, bank_name: bankName, account_holder: accountHolder }) }),
+  requestSettlement: (amount: number, shaba: string, bankName: string, accountHolder: string) => financeOperation('/supplier/settlement/request', { amount, shaba, bank_name: bankName, account_holder: accountHolder }, 'supplier:settlement', value => value.success === true && typeof value.id === 'string' && !!value.id && value.payout_request_id === value.id),
   getSettlementHistory: () => apiRequest<SupplierPayoutDto[]>('/supplier/settlement/history', { method: 'GET', auth: true }),
   getStorageFeeCharges: () => apiRequest<{ charges: SupplierStorageFeeCharge[] }>('/supplier/settlement/storage-fees', { method: 'GET', auth: true }),
   getSupplierProfileFull: () => apiRequest<SupplierProfileFull>('/supplier/profile', { method: 'GET', auth: true }),
@@ -419,6 +425,7 @@ export const supplierApi = {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
+      signal: AbortSignal.timeout(75000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as any)?.error || 'خطا در آپلود لوگو');

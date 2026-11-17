@@ -18,7 +18,7 @@ import (
 func storageFeeSeed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ddl := []string{
-		`DROP TABLE IF EXISTS warehouse_storage_fee_charges, warehouse_storage_positions, customer_return_shipping_charges, supplier_return_financial_events, customer_return_financial_events, ledger_entries, payout_requests, order_items, orders, products, warehouses, suppliers, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS order_item_origins,warehouse_storage_fee_charges, warehouse_storage_positions, customer_return_shipping_charges, supplier_return_financial_events, customer_return_financial_events, ledger_entries, payout_requests, order_items, orders, products, warehouses, suppliers, platform_settings CASCADE`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, storage_fee_enabled BOOLEAN NOT NULL DEFAULT false, storage_fee_free_days INT NOT NULL DEFAULT 30, storage_fee_per_kg_day BIGINT NOT NULL DEFAULT 2000, storage_fee_per_m3_day BIGINT NOT NULL DEFAULT 8000)`,
 		`INSERT INTO platform_settings (id) VALUES (1)`,
 		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY)`,
@@ -34,6 +34,7 @@ func storageFeeSeed(t *testing.T, db *sql.DB) {
 		`CREATE TABLE warehouse_storage_fee_charges (id TEXT PRIMARY KEY, position_id TEXT NOT NULL, supplier_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, warehouse_id TEXT NOT NULL, fee_date DATE NOT NULL, qty INT NOT NULL, fee_unit_day_toman BIGINT NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman > 0), goods_class VARCHAR(20) NOT NULL, estimated BOOLEAN NOT NULL DEFAULT FALSE, journal_debit_id TEXT, journal_credit_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (position_id, fee_date))`,
 		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, payment_status VARCHAR(20), status VARCHAR(30))`,
 		`CREATE TABLE order_items (id VARCHAR(50) PRIMARY KEY, order_id VARCHAR(50), product_id VARCHAR(50), wholesale_cost BIGINT, quantity INT)`,
+		`CREATE TABLE order_item_origins(id TEXT PRIMARY KEY,order_id TEXT,order_item_id TEXT,supplier_id TEXT,quantity INT)`,
 		`CREATE TABLE payout_requests (id VARCHAR(50) PRIMARY KEY, supplier_id VARCHAR(50), amount BIGINT, status VARCHAR(20))`,
 		`CREATE TABLE supplier_return_financial_events (supplier_id VARCHAR(50), operation VARCHAR(10), amount BIGINT)`,
 		`CREATE TABLE customer_return_shipping_charges (supplier_id VARCHAR(50), bearer VARCHAR(20), amount BIGINT)`,
@@ -80,152 +81,86 @@ func storageChargeCount(t *testing.T, db *sql.DB) int {
 }
 
 func TestStorageFeeSettingsDefaults(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	repo := NewSupplierRepository(db)
-	settings, err := repo.GetStorageFeeSettings(context.Background())
-	if err != nil {
-		t.Fatalf("GetStorageFeeSettings: %v", err)
-	}
-	want := DefaultStorageFeeSettings()
-	if settings != want {
-		t.Fatalf("defaults = %+v, want %+v (flag OFF, 30 free days, 2000/kg, 8000/m3)", settings, want)
-	}
-	if settings.Enabled {
-		t.Fatal("storage fees must ship disabled")
+	db := operationsDB(t)
+	settings, err := NewSupplierRepository(db).GetStorageFeeSettings(context.Background())
+	if err != nil || settings != DefaultStorageFeeSettings() {
+		t.Fatalf("defaults %+v %v", settings, err)
 	}
 }
-
 func TestStorageFeeRunRefusesWhileDisabled(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	storageInsertPosition(t, db, "WSP-old", "prod-measured", 1, 60)
-	repo := NewSupplierRepository(db)
-	if _, err := repo.RunStorageFeeAssessment(context.Background()); !errors.Is(err, ErrStorageFeeDisabled) {
-		t.Fatalf("run while OFF: err = %v, want ErrStorageFeeDisabled", err)
+	db, f, wh := fin006Fixture(t)
+	fin006KnownReceipt(t, db, f, wh, 1, tehranDay(time.Now()).AddDate(0, 0, -60))
+	opsExec(t, db, `UPDATE platform_settings SET storage_fee_enabled=FALSE WHERE id=1`)
+	if _, err := NewSupplierRepository(db).RunStorageFeeAssessment(context.Background()); !errors.Is(err, ErrStorageFeeDisabled) {
+		t.Fatalf("run while OFF: %v", err)
 	}
 	if n := storageChargeCount(t, db); n != 0 {
-		t.Fatalf("charges while OFF = %d, want 0", n)
+		t.Fatalf("charges while OFF=%d", n)
 	}
 }
-
 func TestStorageFeeFreeWindowChargesNothing(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	storageEnable(t, db)
-	storageInsertPosition(t, db, "WSP-young", "prod-measured", 3, 10)
-	repo := NewSupplierRepository(db)
-	summary, err := repo.RunStorageFeeAssessment(context.Background())
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if summary.ChargesCreated != 0 || summary.TotalCharged != 0 || summary.PositionsCharged != 0 {
-		t.Fatalf("free-window summary = %+v, want all zero charges", summary)
-	}
-	if n := storageChargeCount(t, db); n != 0 {
-		t.Fatalf("charges = %d, want 0", n)
+	db, f, wh := fin006Fixture(t)
+	fin006KnownReceipt(t, db, f, wh, 3, tehranDay(time.Now()).AddDate(0, 0, -10))
+	r, err := NewSupplierRepository(db).RunStorageFeeAssessment(context.Background())
+	if err != nil || r.ChargesCreated != 0 || r.TotalCharged != 0 || r.PositionsCharged != 0 || storageChargeCount(t, db) != 0 {
+		t.Fatalf("free window %+v %v", r, err)
 	}
 }
-
 func TestStorageFeeDay31ChargesExactlyOneDayAndDropsBalance(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	storageEnable(t, db)
-	// Earned baseline: one paid+delivered order, 500000 x 2 = 1,000,000.
-	if _, err := db.Exec(`INSERT INTO orders (id, payment_status, status) VALUES ('ord-1', 'paid', 'delivered')`); err != nil {
-		t.Fatalf("seed order: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, wholesale_cost, quantity) VALUES ('oi-1', 'ord-1', 'prod-measured', 500000, 2)`); err != nil {
-		t.Fatalf("seed order item: %v", err)
-	}
-	// Position stocked 31 days ago, qty 2: day 31 is the first
-	// chargeable elapsed day (30 free); exactly 1 day x 3480 x 2.
-	storageInsertPosition(t, db, "WSP-31", "prod-measured", 2, 31)
-
+	db, f, wh := fin006Fixture(t)
+	_, position := fin006KnownReceipt(t, db, f, wh, 2, tehranDay(time.Now()).AddDate(0, 0, -31))
+	order, _ := opsOrder(t, db, f, true)
+	opsExec(t, db, `UPDATE order_items SET quantity=2,wholesale_cost=500000,final_unit_price=500000 WHERE order_id=$1`, order)
+	opsExec(t, db, `UPDATE orders SET status='delivered' WHERE id=$1`, order)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, wh)
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
-	before, err := repo.GetSettlementBalance(ctx, "sup-1")
-	if err != nil {
-		t.Fatalf("balance before: %v", err)
+	before, err := repo.GetSettlementBalance(ctx, f.supplier)
+	if err != nil || before.Available != 1000000 || before.StorageFees != 0 {
+		t.Fatalf("balance before %+v %v", before, err)
 	}
-	if before.Available != 1000000 || before.StorageFees != 0 {
-		t.Fatalf("balance before = %+v, want available 1000000 storageFees 0", before)
-	}
-
 	summary, err := repo.RunStorageFeeAssessment(ctx)
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	const want = 6960
+	if err != nil || summary.TotalCharged != want || summary.ChargesCreated != 1 || summary.PositionsCharged != 1 {
+		t.Fatalf("day31 %+v %v", summary, err)
 	}
-	const wantDay = 3480 * 2
-	if summary.PositionsCharged != 1 || summary.ChargesCreated != 1 || summary.TotalCharged != wantDay {
-		t.Fatalf("summary = %+v, want 1 position / 1 charge / %d Toman", summary, wantDay)
+	var unit, amount int64
+	var date time.Time
+	if err = db.QueryRow(`SELECT fee_unit_day_toman,amount_toman,fee_date FROM warehouse_storage_fee_charges WHERE position_id=$1`, position).Scan(&unit, &amount, &date); err != nil || unit != 3480 || amount != want || !date.Equal(tehranDay(time.Now()).AddDate(0, 0, -1)) {
+		t.Fatalf("daily evidence %d/%d/%v %v", unit, amount, date, err)
 	}
-	var unitDay, amount int64
-	var feeDate time.Time
-	if err := db.QueryRow(`SELECT fee_unit_day_toman, amount_toman, fee_date FROM warehouse_storage_fee_charges WHERE position_id = 'WSP-31'`).Scan(&unitDay, &amount, &feeDate); err != nil {
-		t.Fatalf("read charge: %v", err)
+	after, err := repo.GetSettlementBalance(ctx, f.supplier)
+	if err != nil || after.StorageFees != want || after.Available != 1000000-want {
+		t.Fatalf("balance after %+v %v", after, err)
 	}
-	if unitDay != 3480 || amount != wantDay {
-		t.Fatalf("charge unitDay=%d amount=%d, want 3480/%d", unitDay, amount, wantDay)
-	}
-	if !feeDate.Equal(tehranDay(time.Now()).AddDate(0, 0, -1)) {
-		t.Fatalf("fee_date = %v, want yesterday (Tehran)", feeDate)
-	}
-
-	after, err := repo.GetSettlementBalance(ctx, "sup-1")
-	if err != nil {
-		t.Fatalf("balance after: %v", err)
-	}
-	if after.StorageFees != wantDay || after.Available != 1000000-wantDay {
-		t.Fatalf("balance after = %+v, want storageFees %d and available %d", after, wantDay, 1000000-wantDay)
-	}
-
-	// Idempotency: a same-day re-run creates nothing new.
 	again, err := repo.RunStorageFeeAssessment(ctx)
-	if err != nil {
-		t.Fatalf("re-run: %v", err)
-	}
-	if again.ChargesCreated != 0 || again.TotalCharged != 0 {
-		t.Fatalf("re-run summary = %+v, want no new charges", again)
-	}
-	if n := storageChargeCount(t, db); n != 1 {
-		t.Fatalf("charges after re-run = %d, want 1", n)
+	if err != nil || again.TotalCharged != 0 || again.ChargesCreated != 0 || storageChargeCount(t, db) != 1 {
+		t.Fatalf("replay %+v %v", again, err)
 	}
 }
-
 func TestStorageFeeUnmeasuredPositionSkipped(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	storageEnable(t, db)
-	storageInsertPosition(t, db, "WSP-nomeasure", "prod-unmeasured", 5, 60)
+	db, f, wh := fin006Fixture(t)
+	opsExec(t, db, `UPDATE products SET measurement_revision_id=NULL,length_mm=NULL,width_mm=NULL,height_mm=NULL,weight_grams=NULL WHERE id=$1`, f.product)
+	fin006KnownReceipt(t, db, f, wh, 5, tehranDay(time.Now()).AddDate(0, 0, -60))
 	repo := NewSupplierRepository(db)
-	summary, err := repo.RunStorageFeeAssessment(context.Background())
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if summary.PositionsSkippedNoMeasurement != 1 {
-		t.Fatalf("skipped = %d, want 1", summary.PositionsSkippedNoMeasurement)
-	}
-	if summary.ChargesCreated != 0 || storageChargeCount(t, db) != 0 {
-		t.Fatalf("unmeasured position was charged: summary %+v", summary)
+	for i := 0; i < 2; i++ {
+		r, err := repo.RunStorageFeeAssessment(context.Background())
+		if err != nil || r.PositionsSkippedNoMeasurement != 1 || r.ChargesCreated != 0 || storageChargeCount(t, db) != 0 {
+			t.Fatalf("unmeasured %+v %v", r, err)
+		}
+		if i == 0 {
+			if err = repo.RecordProductMeasurement(context.Background(), f.product, f.user, 500, 400, 300, 1500, "later measurement cannot certify past custody"); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
-
 func TestStorageFeeTariffOverrideRespected(t *testing.T) {
-	db := team04TestDB(t)
-	storageFeeSeed(t, db)
-	storageEnable(t, db)
-	if _, err := db.Exec(`UPDATE platform_settings SET storage_fee_per_kg_day = 5000 WHERE id = 1`); err != nil {
-		t.Fatalf("override tariff: %v", err)
-	}
-	storageInsertPosition(t, db, "WSP-override", "prod-measured", 2, 31)
-	repo := NewSupplierRepository(db)
-	summary, err := repo.RunStorageFeeAssessment(context.Background())
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	// unit day = 1.5*5000 + 0.06*8000 = 7500 + 480 = 7980; x qty 2 = 15960.
-	if summary.TotalCharged != 15960 {
-		t.Fatalf("totalCharged = %d, want 15960 with overridden kg tariff", summary.TotalCharged)
+	db, f, wh := fin006Fixture(t)
+	opsExec(t, db, `UPDATE platform_settings SET storage_fee_per_kg_day=5000 WHERE id=1`)
+	fin006KnownReceipt(t, db, f, wh, 2, tehranDay(time.Now()).AddDate(0, 0, -31))
+	summary, err := NewSupplierRepository(db).RunStorageFeeAssessment(context.Background())
+	if err != nil || summary.TotalCharged != 15960 {
+		t.Fatalf("receipt tariff %+v %v", summary, err)
 	}
 }

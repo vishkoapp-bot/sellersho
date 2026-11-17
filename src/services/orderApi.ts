@@ -29,7 +29,7 @@ export interface CreateOrderPayload {
   // uses the SAVED address even if form fields were edited.
   addressId?: string;
   saveAddress?: boolean;
-  // Live parity (index-MERGED.js placeOrder): a fresh uuid per submit,
+  // One durable opaque UUID per logical checkout attempt,
   // stored by the backend (order_handlers.go IdempotencyKey) so a
   // replayed request returns the original order. Deliberately NOT
   // derived from the cart: a deterministic key would permanently block
@@ -76,7 +76,22 @@ export interface BackendOrderItemDto {
   discountAmount?: number;
 }
 
+export interface OrderRefundSummary {
+ status: 'none'|'pending'|'succeeded'|'failed'|'unknown';
+ currency: 'TOMAN';
+ amountToman: number;
+ pendingToman: number;
+ succeededToman: number;
+ failedToman: number;
+ unknownToman: number;
+ destination: 'none'|'original_payment'|'wallet'|'review'|'mixed';
+ needsReview: boolean;
+}
+export interface OrderCancellationResponse {success:boolean;orderId:string;status:'cancelled';refund:OrderRefundSummary;}
+
 export interface BackendOrderDto {
+  checkoutReplayed?: boolean;
+ refund?: OrderRefundSummary;
   id: string;
   customerUserId?: string;
   orderNumber: string;
@@ -88,7 +103,7 @@ export interface BackendOrderDto {
   discountCode?: string;
   payableAmount: number;
   paymentMethod: 'cash' | 'installments';
-  paymentStatus: 'pending' | 'paid' | 'failed' | 'cancelled';
+  paymentStatus: 'pending' | 'paid' | 'failed' | 'cancelled' | 'refunded';
   customerFullName: string;
   customerPhone: string;
   customerProvince: string;
@@ -178,7 +193,10 @@ export interface CustomerReturnDto {
   items?: { id: string; orderItemId: string; qty: number; qcStatus?: string }[];
 }
 
+export interface CheckoutRecovery { attemptId: string; state: 'open'|'completed'|'abandoned'; order?: BackendOrderDto; }
 export const orderApi = {
+  getCheckoutAttempt: (id: string): Promise<CheckoutRecovery> => apiRequest(`/checkout-attempts/${encodeURIComponent(id)}`, {auth:true}),
+  abandonCheckoutAttempt: (id: string): Promise<CheckoutRecovery> => apiRequest(`/checkout-attempts/${encodeURIComponent(id)}`, {auth:true,method:'POST',body:JSON.stringify({action:'abandon'})}),
   createOrder: async (payload: CreateOrderPayload): Promise<BackendOrderDto> => {
     return apiRequest<BackendOrderDto>('/orders', {
       method: 'POST',
@@ -222,8 +240,8 @@ export const orderApi = {
   // FIX 5 (Team 03 G4/G5): customer cancel / return / return-quote /
   // my-returns. The return body is the live client shape
   // (order_item_id + warehouse_id + prepaid), not just orderItemId.
-  cancelOrder: async (idOrNumber: string): Promise<{ success: boolean; status: string }> => {
-    return apiRequest<{ success: boolean; status: string }>(`/orders/${encodeURIComponent(idOrNumber)}/cancel`, {
+  cancelOrder: async (idOrNumber: string): Promise<OrderCancellationResponse> => {
+    return apiRequest<OrderCancellationResponse>(`/orders/${encodeURIComponent(idOrNumber)}/cancel`, {
       method: 'POST',
       auth: true,
     });

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, ReactNode } from 'react';
 import { 
   InboundShipment, 
   QCDiscrepancyReport, 
@@ -7,8 +7,9 @@ import {
   SupplierPromotion,
   Product
 } from '../types';
-import { apiRequest, isMockMode } from '../services/apiClient';
+import { apiRequest, isMockMode, tokenStore } from '../services/apiClient';
 import { useProducts } from './ProductContext';
+import { useAuth } from './AuthContext';
 
 export interface WarehouseContextType {
   inboundShipments: InboundShipment[];
@@ -113,27 +114,51 @@ const INITIAL_AD_CAMPAIGNS: AdCampaign[] = [
 ];
 
 export const WarehouseProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { currentUser, authToken, isSessionReady } = useAuth();
+  const scope = JSON.stringify([authToken ? currentUser?.id ?? null : null, currentUser?.storeId ?? null, isSessionReady]);
+  return <WarehouseSessionProvider key={scope}>{children}</WarehouseSessionProvider>;
+};
+
+const WarehouseSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { currentUser, authToken, isSessionReady } = useAuth();
+  const proposalStorageKey = currentUser?.id && authToken && isSessionReady
+    ? `drup_proposed_products_v2:${encodeURIComponent(JSON.stringify([currentUser.id, currentUser.storeId ?? null]))}` : null;
+  const mounted = useRef(true);
+  const captureSession = () => {
+    const generation = tokenStore.getGeneration();
+    const credential = authToken;
+    return () => mounted.current && generation === tokenStore.getGeneration() && credential === tokenStore.getToken();
+  };
+  useLayoutEffect(() => {
+    mounted.current = true;
+    // Legacy drafts have no trustworthy owner and must never be guessed/migrated.
+    localStorage.removeItem('drup_proposed_products');
+    return () => { mounted.current = false; };
+  }, []);
   const { addProduct, fetchProducts } = useProducts();
-  const [inboundShipments, setInboundShipments] = useState<InboundShipment[]>(INITIAL_INBOUND_SHIPMENTS);
-  const [qcDiscrepancies, setQcDiscrepancies] = useState<QCDiscrepancyReport[]>(INITIAL_QC_DISCREPANCIES);
+  const [inboundShipments, setInboundShipments] = useState<InboundShipment[]>(() => isMockMode() ? INITIAL_INBOUND_SHIPMENTS : []);
+  const [qcDiscrepancies, setQcDiscrepancies] = useState<QCDiscrepancyReport[]>(() => isMockMode() ? INITIAL_QC_DISCREPANCIES : []);
   const [proposedProducts, setProposedProducts] = useState<ProposedProduct[]>(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && proposalStorageKey) {
       try {
-        const saved = localStorage.getItem('drup_proposed_products');
-        if (saved) return JSON.parse(saved);
+        const saved = localStorage.getItem(proposalStorageKey);
+        if (saved) { const parsed = JSON.parse(saved); if (Array.isArray(parsed)) return parsed; }
       } catch {}
     }
-    return INITIAL_PROPOSED_PRODUCTS;
+    return isMockMode() ? INITIAL_PROPOSED_PRODUCTS : [];
   });
-  const [adCampaigns, setAdCampaigns] = useState<AdCampaign[]>(INITIAL_AD_CAMPAIGNS);
+  const [adCampaigns, setAdCampaigns] = useState<AdCampaign[]>(() => isMockMode() ? INITIAL_AD_CAMPAIGNS : []);
   const [supplierPromotions, setSupplierPromotions] = useState<SupplierPromotion[]>([]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && proposalStorageKey && mounted.current && authToken === tokenStore.getToken()) {
       try {
-        localStorage.setItem('drup_proposed_products', JSON.stringify(proposedProducts));
+        localStorage.setItem(proposalStorageKey, JSON.stringify(proposedProducts));
       } catch {}
     }
+    // Live public catalogue membership comes only from the authenticated backend
+    // moderation flow and subsequent catalogue fetch, never a local draft cache.
+    if (!isMockMode()) return;
 
     // Automatically sync and merge any approved proposals into the products catalog
     proposedProducts.forEach((item) => {
@@ -226,6 +251,8 @@ export const WarehouseProvider: React.FC<{ children: ReactNode }> = ({ children 
     return { manifestId, trackingCodes };
   };
   const submitProposedProduct = (offer: Omit<ProposedProduct, 'id' | 'status' | 'createdAt'>) => {
+    const isCurrent = captureSession();
+    if (!isCurrent() || (!isMockMode() && !proposalStorageKey)) return;
     const tempId = `prop-${Date.now().toString().slice(-4)}`;
     const newProp: ProposedProduct = {
       ...offer,
@@ -260,6 +287,7 @@ export const WarehouseProvider: React.FC<{ children: ReactNode }> = ({ children 
         }),
       })
         .then((resp) => {
+          if (!isCurrent()) return;
           if (resp && resp.proposal_id) {
             setProposedProducts((prev) =>
               prev.map((p) => (p.id === tempId ? { ...p, id: resp.proposal_id, productId: resp.product_id } : p))
@@ -271,6 +299,8 @@ export const WarehouseProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   const approveAndMergeProduct = async (item: ProposedProduct | any) => {
+    const isCurrent = captureSession();
+    if (!isCurrent()) return;
     // 1. Mark as approved in proposedProducts
     setProposedProducts((prev) =>
       prev.map((p) => (p.id === item.id ? { ...p, status: 'approved' } : p))
@@ -285,13 +315,16 @@ export const WarehouseProvider: React.FC<{ children: ReactNode }> = ({ children 
           auth: true,
           body: JSON.stringify({ approved: true, notes: 'تأیید شده از پنل مدیریت' }),
         });
+        if (!isCurrent()) return;
         if (resp && resp.product_id) {
           backendProductID = resp.product_id;
         }
       } catch (err: any) {
+        if (!isCurrent()) return;
         console.warn('Backend approval call notice:', err.message);
       }
     }
+    if (!isCurrent()) return;
 
     // 3. Construct complete Product object
     const finalProdId = backendProductID || item.productId || (item.id.startsWith('prod-') ? item.id : `prod-${item.id.replace('prop-', '')}`);

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+	"github.com/drup/platform/internal/testredis"
+
 	_ "github.com/lib/pq"
 
 	"github.com/drup/platform/internal/auth"
@@ -27,9 +30,9 @@ import (
 // the OTP send path is never exercised and no SMS is ever sent.
 //
 // DB-gated like the other suites in this package
-// (TEAM04_TEST_DATABASE_URL); Redis comes from GAP19B_TEST_REDIS_URL
-// (default: the local disposable instance). Both skip cleanly when
-// unavailable. The DDL is the minimal faithful subset of the real
+// (TEAM04_TEST_DATABASE_URL); Redis requires its own explicit disposable URL
+// and marker. Only absent opt-in skips; unsafe/unavailable explicit targets fail.
+// The DDL is the minimal faithful subset of the real
 // schema the exercised handler and repo functions touch.
 
 const supplierOTPStateDDL = `
@@ -115,15 +118,8 @@ func supplierOTPSetup(t *testing.T) *supplierOTPFixture {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier OTP-state handler tests")
 	}
-	redisURL := os.Getenv("GAP19B_TEST_REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://127.0.0.1:16399/0"
-	}
-	redisClient, err := repository.NewRedisClient(redisURL)
-	if err != nil {
-		t.Skipf("Redis unavailable for the OTP-state tests: %v", err)
-	}
-	db, err := sql.Open("postgres", dsn)
+	redisClient := &repository.RedisClient{Client: testredis.Open(t, os.Getenv("SELLERSHO_TEST_REDIS_URL"), os.Getenv("SELLERSHO_TEST_REDIS_TOKEN"))}
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

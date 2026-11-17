@@ -1,0 +1,6 @@
+FROM node:24-bookworm-slim
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::https::Timeout=15 -o Acquire::Retries=0 update \
+    && apt-get -o Acquire::https::Timeout=15 -o Acquire::Retries=0 install -y --no-install-recommends chromium ca-certificates fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+USER node

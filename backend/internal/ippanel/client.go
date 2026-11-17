@@ -5,13 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/drup/platform/internal/dependencybudget"
+	"github.com/drup/platform/internal/observability"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+var sharedBudget = func() *dependencybudget.Executor {
+	p := dependencybudget.DefaultPolicy(8, 8)
+	p.Observe = func(ctx context.Context, outcome string, d time.Duration) {
+		observability.LogOperation(ctx, "provider", "ippanel_request", outcome, d)
+	}
+	return dependencybudget.New(p)
+}()
+var sharedHTTP = &http.Client{Timeout: 6 * time.Second, Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second, KeepAlive: 30 * time.Second}).DialContext, ResponseHeaderTimeout: 3 * time.Second, MaxResponseHeaderBytes: 64 * 1024, MaxConnsPerHost: 8, MaxIdleConns: 16, MaxIdleConnsPerHost: 8, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 2 * time.Second}}
 
 type Client struct {
 	BaseURL string
@@ -52,7 +62,7 @@ type sendResponse struct {
 		BulkIDAlt        any      `json:"bulkId"`
 	} `json:"data"`
 	Meta struct {
-		Status  bool   `json:"status"`
+		Status  *bool  `json:"status"`
 		Message string `json:"message"`
 	} `json:"meta"`
 }
@@ -66,57 +76,51 @@ type creditResponse struct {
 
 func New(baseURL, token, sender string) *Client {
 	// IPPanel must bypass any process-level HTTP(S)_PROXY. VPN routing remains an OS/network concern.
-	transport := &http.Transport{
-		Proxy:       nil,
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-	}
 	if parsed, err := url.Parse(baseURL); err == nil && parsed.Scheme != "https" && parsed.Scheme != "http" {
 		baseURL = "https://edge.ippanel.com/v1"
 	}
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Token: token, Sender: sender, HTTP: &http.Client{Timeout: 15 * time.Second, Transport: transport}}
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Token: token, Sender: sender, HTTP: sharedHTTP}
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any) error {
-	var reader io.Reader
+	var encoded []byte
+	var err error
 	if body != nil {
-		b, err := json.Marshal(body)
+		encoded, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	safe := method == http.MethodGet
+	reply, err := sharedBudget.Do(ctx, c.HTTP, func(callCtx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(callCtx, method, c.BaseURL+path, bytes.NewReader(encoded))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", c.Token)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	}, safe, 4<<10)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", c.Token)
-	req.Header.Set("Content-Type", "application/json")
-	res, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("ippanel connection failed: %w", err)
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(raw))
-		if len(msg) > 300 {
-			msg = msg[:300] + "..."
-		}
-		if msg == "" {
-			msg = res.Status
-		}
-		return fmt.Errorf("ippanel http status %d: %s", res.StatusCode, msg)
-	}
+	raw := reply.Body
 	if out == nil {
 		return nil
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return fmt.Errorf("ippanel: empty response")
+		err = fmt.Errorf("ippanel: empty response")
+	} else {
+		err = json.Unmarshal(raw, out)
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("ippanel: invalid json response: %w", err)
+	if err != nil {
+		if !safe {
+			return dependencybudget.MarkAmbiguous(fmt.Errorf("ippanel: incomplete acknowledgement"))
+		}
+		return fmt.Errorf("ippanel: invalid response")
 	}
 	return nil
+
 }
 
 func normalizeRecipient(m string) string {
@@ -142,11 +146,8 @@ func (c *Client) SendPattern(ctx context.Context, recipient, pattern string, par
 	if err != nil {
 		return nil, err
 	}
-	if !out.Meta.Status {
-		if out.Meta.Message == "" {
-			return nil, fmt.Errorf("ippanel: send rejected without message")
-		}
-		return nil, fmt.Errorf("ippanel: %s", out.Meta.Message)
+	if out.Meta.Status == nil {
+		return nil, dependencybudget.MarkAmbiguous(fmt.Errorf("ippanel: missing send acknowledgement"))
 	}
 	ids := []string{}
 	for _, f := range out.Data.MessageOutboxIDs {
@@ -169,6 +170,18 @@ func (c *Client) SendPattern(ctx context.Context, recipient, pattern string, par
 				}
 			}
 		}
+	}
+	if !*out.Meta.Status {
+		if len(ids) > 0 {
+			return nil, dependencybudget.MarkAmbiguous(fmt.Errorf("ippanel: conflicting send acknowledgement"))
+		}
+		if out.Meta.Message == "" {
+			return nil, fmt.Errorf("ippanel: send rejected without message")
+		}
+		return nil, fmt.Errorf("ippanel: %s", out.Meta.Message)
+	}
+	if len(ids) == 0 {
+		return nil, dependencybudget.MarkAmbiguous(fmt.Errorf("ippanel: missing message reference"))
 	}
 	return ids, nil
 }

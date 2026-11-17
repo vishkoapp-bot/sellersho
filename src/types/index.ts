@@ -333,6 +333,7 @@ export interface CartItem {
 }
 
 export interface Order {
+  refund?: import('../services/orderApi').OrderRefundSummary;
   id: string;
   orderNumber: string;
   items: CartItem[];

@@ -9,12 +9,13 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
@@ -26,7 +27,7 @@ func team04HTTPRepos(t *testing.T) (*repository.CatalogRepository, *repository.S
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB HTTP test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -191,10 +192,17 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	if spnTitle != "دستبند طلا" {
 		t.Fatalf("spn detail title = %q", spnTitle)
 	}
-	var specs map[string]json.RawMessage
-	_ = json.Unmarshal(spnDetail["specs"], &specs)
-	if len(specs) == 0 {
-		t.Fatalf("spn detail specs empty, want DB specs exposed")
+	// The current public DTO deliberately omits specs/images (FIX 12 in
+	// assembleProductDetail), while the repository keeps dossier data intact.
+	if _, exists := spnDetail["specs"]; exists {
+		t.Fatal("public detail unexpectedly exposes dossier specs")
+	}
+	if _, exists := spnDetail["images"]; exists {
+		t.Fatal("public detail unexpectedly exposes dossier gallery")
+	}
+	stored, err := catalogRepo.GetProductByID(ctx, "prod-active-1")
+	if err != nil || stored == nil || stored.Specs["power"] != "1450 وات" {
+		t.Fatalf("stored dossier specs were lost: product=%v error=%v", stored, err)
 	}
 	var storeCount int
 	_ = json.Unmarshal(spnDetail["storeCount"], &storeCount)

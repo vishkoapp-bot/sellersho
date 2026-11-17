@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
@@ -39,7 +41,7 @@ func openReturnDestDB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := testdb.Open(t, databaseURL)
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
@@ -57,7 +59,7 @@ func openReturnDestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE product_variants (id UUID PRIMARY KEY, variant_name TEXT)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -438,30 +440,38 @@ func TestSupplierCustomerReturnsShowSupplierDestination(t *testing.T) {
 }
 
 func TestWarehouseQueueDestinationFilter(t *testing.T) {
-	db := openReturnDestDB(t)
-	defer db.Close()
+	// Exercise the production query against the canonical migrated schema.
+	// Destination derivation DTO fixtures intentionally omit inventory receipt
+	// history and cannot represent refunded-but-unshelved work.
+	db := operationsDB(t)
+	f := opsFixtureNew(t, db)
 	repo := NewOrderRepository(db)
 	ctx := context.Background()
-	customerID := uuid.NewString()
-
-	rdWarehouse(t, db, "wh-1", "انبار مرکزی قم", "قم", 10)
-	rdSupplierWarehouse(t, db, "swh-1", "sup-1", "کارخانه کرج", "کرج", "")
-	rdProduct(t, db, "p-sup", "sup-1", "supplier_direct", "", "")
-	rdProduct(t, db, "p-wh", "", "warehouse", "", "")
-
-	itemA := rdOrderWithItem(t, db, "ord-rd-queue-sup", customerID, "p-sup", 1)
-	rdOrigin(t, db, "ord-rd-queue-sup", itemA, "supplier", "sup-1", "", "swh-1")
-	retSup := rdCreate(t, repo, customerID, "ord-rd-queue-sup", []string{itemA}, CustomerReturnOptions{})
-
-	itemB := rdOrderWithItem(t, db, "ord-rd-queue-wh", customerID, "p-wh", 1)
-	rdOrigin(t, db, "ord-rd-queue-wh", itemB, "warehouse", "", "wh-1", "")
-	retWh := rdCreate(t, repo, customerID, "ord-rd-queue-wh", []string{itemB}, CustomerReturnOptions{})
-
-	for _, ret := range []*CustomerReturn{retSup, retWh} {
-		if err := repo.ApproveCustomerReturn(ctx, ret.ID, ""); err != nil {
-			t.Fatalf("approve %s: %v", ret.ID, err)
+	warehouse, supplierWarehouse := "wh-"+uuid.NewString(), "swh-"+uuid.NewString()
+	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'test','test')`, warehouse)
+	opsExec(t, db, `INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,$1,'test','test')`, supplierWarehouse, f.supplier)
+	file := func(kind string) *CustomerReturn {
+		order, _ := opsOrder(t, db, f, true)
+		opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+INTERVAL '7 days' WHERE id=$1`, order)
+		var item string
+		if err := db.QueryRow(`SELECT id::text FROM order_items WHERE order_id=$1`, order).Scan(&item); err != nil {
+			t.Fatal(err)
 		}
+		if kind == "warehouse" {
+			seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
+		} else {
+			opsExec(t, db, `INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,supplier_warehouse_id,origin_label,quantity) VALUES($1,$2,$3,0,'supplier',$4,$5,'recorded supplier origin',1)`, uuid.NewString(), order, item, f.supplier, supplierWarehouse)
+		}
+		ret, err := repo.CreateCustomerReturn(ctx, f.user, order, "destination filter", []CustomerReturnItemRequest{{OrderItemID: item, Qty: 1}}, CustomerReturnOptions{Prepaid: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = repo.ApproveCustomerReturn(ctx, ret.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+		return ret
 	}
+	retSup, retWh := file("supplier"), file("warehouse")
 
 	all, err := repo.ListCustomerReturnsForWarehouse(ctx, "")
 	if err != nil {
@@ -470,14 +480,14 @@ func TestWarehouseQueueDestinationFilter(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("unfiltered queue = %d returns, want 2", len(all))
 	}
-	supplierQueue, err := repo.ListCustomerReturnsForWarehouse(ctx, "swh-1")
+	supplierQueue, err := repo.ListCustomerReturnsForWarehouse(ctx, supplierWarehouse)
 	if err != nil {
 		t.Fatalf("supplier queue: %v", err)
 	}
 	if len(supplierQueue) != 1 || supplierQueue[0].ID != retSup.ID {
 		t.Fatalf("supplier queue = %+v, want only the supplier-destined return", supplierQueue)
 	}
-	centralQueue, err := repo.ListCustomerReturnsForWarehouse(ctx, "wh-1")
+	centralQueue, err := repo.ListCustomerReturnsForWarehouse(ctx, warehouse)
 	if err != nil {
 		t.Fatalf("central queue: %v", err)
 	}

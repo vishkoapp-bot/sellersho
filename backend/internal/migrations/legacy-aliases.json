@@ -1,0 +1,14 @@
+{
+  "202610190001": "202610190001_payment_callback_retries.up.sql",
+  "202610190002": "202610190002_payout_honesty.up.sql",
+  "202610190003": "202610190003_supplier_approval.up.sql",
+  "202610190004": "202610190004_profit_lock_view.up.sql",
+  "202610190005": "202610190005_customer_return_cancel.up.sql",
+  "202610190006": "202610190006_pack_box_size.up.sql",
+  "202610190007_cms_improvements": "202610190007_cms_improvements.up.sql",
+  "202610190009_pricing_engine": "202610190009_pricing_engine.up.sql",
+  "202610190010_store_template_electronic": "202610190010_store_template_electronic.up.sql",
+  "202610190011_store_template_fashion": "202610190011_store_template_fashion.up.sql",
+  "202610190012": "202610190012_store_template_digikala.up.sql",
+  "202610200001": "202610200001_supplier_signed_contract_version.up.sql"
+}

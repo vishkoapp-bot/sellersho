@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/drup/platform/internal/config"
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
 )
@@ -22,11 +24,7 @@ func minInt(a, b int) int {
 
 func openSupplyTierTestDB(t *testing.T) (*sql.DB, *repository.SupplierRepository, string) {
 	t.Helper()
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		t.Skipf("database configuration unavailable: %v", err)
-	}
-	db, err := sql.Open("postgres", cfg.DatabaseURL)
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Skipf("database unavailable: %v", err)
 	}

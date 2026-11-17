@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
+import { useOrders } from '../context/OrderContext';
 import type { DirectBuy } from '../context/StoreContext';
 import { useToast } from '../context/ToastContext';
 import { CartItemList } from './CartItemList';
@@ -36,6 +37,8 @@ export const CartDrawer: React.FC = () => {
     toPersianDigits 
   } = useStore();
 
+  const {checkoutAttempt,recoverCheckout,startNewCheckout,isCreatingOrder}=useOrders();
+  const {setActiveView}=useStore();
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'checkout' | 'success'>('cart');
   const [paymentMethod, setPaymentMethod] = useState<'cash'>('cash');
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -399,6 +402,16 @@ export const CartDrawer: React.FC = () => {
           </button>
         </div>
 
+        {checkoutAttempt && (
+          <div role="status" className="mx-4 mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 space-y-2">
+            <p>{checkoutAttempt.state==='completed' ? 'سفارش قبلی ثبت شده است. برای خرید دوباره، «شروع خرید تازه» را بزنید.' : 'نتیجه تلاش خرید قبلی قابل بازیابی است؛ برای جلوگیری از سفارش تکراری، ابتدا آن را بررسی کنید.'}</p>
+            <div className="flex flex-wrap gap-3">
+              <button disabled={isCreatingOrder} className="font-bold underline disabled:opacity-50" onClick={async()=>{try{const order=await recoverCheckout();if(order){toastSuccess(`سفارش ${order.orderNumber} بازیابی شد.`);setIsCartOpen(false);setActiveView('customer_orders');}else{toastError('سفارش ثبت‌شده‌ای برای این تلاش پیدا نشد؛ همان اطلاعات را دوباره ارسال کنید یا خرید تازه را صریحاً شروع کنید.');}}catch(err:any){toastError(err.message);}}}>بازیابی سفارش قبلی</button>
+              <button disabled={isCreatingOrder} className="font-bold underline disabled:opacity-50" onClick={async()=>{try{await startNewCheckout();setPlacedOrder(null);setCheckoutStep('cart');toastSuccess('خرید تازه آماده است؛ سفارش ثبت‌شده قبلی در سفارش‌های من باقی می‌ماند.');}catch(err:any){toastError(err.message);}}}>شروع خرید تازه</button>
+            </div>
+          </div>
+        )}
+
         {/* Body Content */}
         <div className="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4">
           {effectiveStep === 'cart' && <CartItemList />}
@@ -463,7 +476,7 @@ export const CartDrawer: React.FC = () => {
                 </button>
                 <button
                   onClick={handleCheckoutSubmit}
-                  disabled={isSubmittingOrder || (shippingQuoteState !== 'quoted' && shippingQuoteState !== 'free')}
+                  disabled={isSubmittingOrder || isCreatingOrder || (shippingQuoteState !== 'quoted' && shippingQuoteState !== 'free')}
                   className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs md:text-sm lg:text-base py-3 lg:py-3.5 rounded-2xl shadow-md shadow-brand/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* TODO(U44): exact live final-button text beyond the quoted

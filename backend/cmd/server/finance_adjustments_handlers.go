@@ -1,7 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+
+	"github.com/drup/platform/internal/pricing"
 	"net/http"
 	"regexp"
 	"strings"
@@ -49,7 +54,7 @@ import (
 // document to its payable leg and never displays the counterpart). Ledger rows
 // are append-only by migration 202610160003, which is what makes
 // the document immutable. A finance_adjustments audit row is also
-// written (migration 202611040012) when the table exists.
+// written atomically with its durable request identity (migration 202611140004).
 // GET keeps the existing deliberate 501 stub in
 // handleT01FinanceAdjustments (finance_parity_handlers.go, NOT
 // edited here): the stub stays the GET behaviour; only POST is
@@ -72,6 +77,10 @@ func wr69FinanceAdjustments(w http.ResponseWriter, r *http.Request, db *sql.DB) 
 
 func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if t01DBNil(w, db) {
+		return
+	}
+	requestKey, ok := requireFinanceRequestKey(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -97,7 +106,7 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 		http.Error(w, `{"error":"direction must be debit or credit"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Amount <= 0 {
+	if req.Amount <= 0 || req.Amount > pricing.MaxTransportMoney {
 		http.Error(w, `{"error":"amount must be greater than 0"}`, http.StatusBadRequest)
 		return
 	}
@@ -107,43 +116,38 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 		return
 	}
 	ctx := r.Context()
-	// Fail closed: the target must be a real supplier / store id.
-	var exists int
-	var qerr error
-	if req.TargetKind == "supplier" {
-		qerr = db.QueryRowContext(ctx, `SELECT 1 FROM suppliers WHERE id = $1`, targetID).Scan(&exists)
-	} else {
-		qerr = db.QueryRowContext(ctx, `SELECT 1 FROM stores WHERE id = $1`, targetID).Scan(&exists)
-	}
-	if qerr == sql.ErrNoRows {
-		http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		sellerError(w, err)
 		return
 	}
-	if qerr != nil {
-		writeInternalError(w, qerr)
+	defer tx.Rollback()
+	var accountLocks repository.TransactionLockSet
+	if err := repository.LockAccountsTx(ctx, tx, &accountLocks, repository.FinancialAccount{Type: req.TargetKind, ID: targetID}); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
+		} else {
+			sellerError(w, err)
+		}
 		return
 	}
-	// M3 (round 2): server-side duplicate guard — an identical
-	// adjustment (same target + direction + amount + reason, same
-	// operator) within 10 minutes is rejected with a 409 naming the
-	// existing docId. The UI single-flight does not cover
-	// response-loss retries or two tabs; this covers the sequential
-	// case. Truly concurrent identical POSTs can still both pass this
-	// check (check-then-insert, no unique index — no new migrations
-	// in this mission); the window + operator match keep the residual
-	// narrow and admin-only.
 	operator := wr69Operator(r)
-	const wr69DuplicateWindow = 10 * time.Minute
-	if t01TableExists(ctx, db, "finance_adjustments") {
-		var existingDocID string
-		dupErr := db.QueryRowContext(ctx, `SELECT id FROM finance_adjustments WHERE target_kind = $1 AND target_id = $2 AND direction = $3 AND amount = $4 AND reason = $5 AND operator = $6 AND created_at > $7 ORDER BY created_at DESC LIMIT 1`,
-			req.TargetKind, targetID, req.Direction, req.Amount, reason, operator, time.Now().Add(-wr69DuplicateWindow)).Scan(&existingDocID)
-		if dupErr == nil {
-			t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "duplicate adjustment within 10 minutes", "docId": existingDocID})
+	payload, _ := json.Marshal([]interface{}{req.TargetKind, targetID, req.Direction, req.Amount, reason, operator, "finance-adjustment-v1"})
+	digest := sha256.Sum256(payload)
+	fingerprint := hex.EncodeToString(digest[:])
+	if requestKey != "" {
+		var oldID, oldFingerprint string
+		err := tx.QueryRowContext(ctx, `SELECT id,request_fingerprint FROM finance_adjustments WHERE target_kind=$1 AND target_id=$2 AND request_key=$3`, req.TargetKind, targetID, requestKey).Scan(&oldID, &oldFingerprint)
+		if err == nil {
+			if oldFingerprint != fingerprint {
+				http.Error(w, `{"error":"idempotency payload conflict"}`, http.StatusConflict)
+				return
+			}
+			t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "docId": oldID})
 			return
 		}
-		if dupErr != sql.ErrNoRows {
-			writeInternalError(w, dupErr)
+		if err != sql.ErrNoRows {
+			sellerError(w, err)
 			return
 		}
 	}
@@ -160,18 +164,9 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 		counterDirection = "debit"
 	}
 	ledgerReason := "سند تعدیل " + reason
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		writeInternalError(w, err)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO finance_adjustments(id,target_kind,target_id,direction,amount,reason,operator,request_key,request_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9)`, docID, req.TargetKind, targetID, req.Direction, req.Amount, reason, operator, requestKey, fingerprint); err != nil {
+		sellerError(w, err)
 		return
-	}
-	defer tx.Rollback()
-	if t01TableExists(ctx, db, "finance_adjustments") {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO finance_adjustments (id, target_kind, target_id, direction, amount, reason, operator)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, docID, req.TargetKind, targetID, req.Direction, req.Amount, reason, operator); err != nil {
-			writeInternalError(w, err)
-			return
-		}
 	}
 	legs := []struct{ account, typ, dir string }{
 		{payableAccount, payableType, req.Direction},
@@ -180,12 +175,12 @@ func wr69FinanceAdjustmentCreate(w http.ResponseWriter, r *http.Request, db *sql
 	for _, leg := range legs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, "ADJ-LED-"+uuid.NewString(), now, leg.account, leg.typ, leg.dir, req.Amount, ledgerReason, operator, docID); err != nil {
-			writeInternalError(w, err)
+			sellerError(w, err)
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		writeInternalError(w, err)
+		sellerError(w, err)
 		return
 	}
 	// P0-9 (best-effort): finance adjustment - the adjusted supplier /

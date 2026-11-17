@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -16,26 +16,14 @@ import (
 func TestSupplierTeamPermissions(t *testing.T) {
 	db := setupTestPostgresDB(t)
 	defer db.Close()
-	migration, err := os.ReadFile("../../migrations/000014_supplier_team_roles.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(string(migration)); err != nil {
-		t.Fatal(err)
-	}
 	repo := repository.NewSupplierRepository(db)
 	suffix := uuid.New().String()[:8]
-	owner, supplier, err := repo.RegisterSupplier(context.Background(), "Team Test", "Owner", "team-"+suffix, "TestTeamPassword!", "09"+suffix, "", "Tehran")
+	owner, supplier, err := repo.RegisterSupplier(context.Background(), "Team Test", "Owner", "team-"+suffix, "TestTeamPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Registration leaves the owner inactive (approval_status =
-	// 'pending_approval'); GetSupplierAccess denies a pending supplier's
-	// whole team via the owner-active gate (standing D54 policy). Member
-	// permission checks only make sense for an approved supplier, so run
-	// the production approval transition first.
-	if _, err := repo.ApproveSupplier(context.Background(), supplier.ID, owner.ID); err != nil {
-		t.Fatal(err)
+	if !owner.IsActive || supplier.ApprovalStatus != "approved" {
+		t.Fatal("registration must activate the supplier and owner immediately")
 	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM users WHERE id IN (SELECT user_id FROM supplier_members WHERE supplier_id = $1)`, supplier.ID)
@@ -45,7 +33,7 @@ func TestSupplierTeamPermissions(t *testing.T) {
 	jwtService := auth.NewJWTService("team-test-secret")
 	for _, role := range []string{"finance", "products", "orders", "operations", "marketing", "manager"} {
 		t.Run(role, func(t *testing.T) {
-			member, err := repo.CreateMember(context.Background(), supplier.ID, owner.ID, role, suffix+role, "t"+suffix+role[:3], "TestTeamPassword!", role)
+			member, err := repo.CreateMember(context.Background(), supplier.ID, owner.ID, role, suffix+role, fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "TestTeamPassword!", role)
 			if err != nil {
 				t.Fatal(err)
 			}

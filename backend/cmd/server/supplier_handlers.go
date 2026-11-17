@@ -269,7 +269,7 @@ func (h *SupplierHandlers) HandleProposeProduct(w http.ResponseWriter, r *http.R
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeMoneyJSON(r.Body, &payload, true); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -651,23 +651,39 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 
 	var req struct {
 		VariantID string `json:"variantId"`
-		NewStock  int    `json:"new_stock"`
+		NewStock  *int   `json:"new_stock"`
 		Reason    string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock < 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock == nil || *req.NewStock < 0 || int64(*req.NewStock) > 2147483647 || len(req.Reason) > 2000 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.Reason) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "علت اصلاح موجودی را وارد کنید؛ اگر این فیلد را نمی‌بینید صفحه را به‌روز کنید"})
+		return
+	}
 
-	err := h.supplierRepo.UpdateProductStockForVariant(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, req.NewStock, req.Reason, callerUserID(r))
+	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, *req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, repository.ErrStockAdjustmentInput), errors.Is(err, repository.ErrStockSKURequired):
+			status = http.StatusBadRequest
+		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrStockProjectionLimit), errors.Is(err, repository.ErrInsufficientInventory):
+			status = http.StatusConflict
+		case errors.Is(err, repository.ErrStockOwnership), errors.Is(err, sql.ErrNoRows):
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"stock":   req.NewStock,
+		"success":      true,
+		"stock":        result.Stock,
+		"productStock": result.ProductStock,
 	})
 }
 
@@ -686,7 +702,7 @@ func (h *SupplierHandlers) HandleUpdatePricing(w http.ResponseWriter, r *http.Re
 		NewSupplierBaseCost int64  `json:"new_supplier_base_cost"`
 		Reason              string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewSupplierBaseCost <= 0 {
+	if err := decodeMoneyJSON(r.Body, &req, true); err != nil || req.NewSupplierBaseCost <= 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -790,6 +806,10 @@ func (h *SupplierHandlers) HandleCreateInbound(w http.ResponseWriter, r *http.Re
 			t01WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if errors.Is(err, repository.ErrInboundInput) {
 			t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -842,6 +862,10 @@ func (h *SupplierHandlers) HandleDispatchInbound(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 	if err := h.supplierRepo.DispatchInbound(r.Context(), supplierID, inboundID); err != nil {
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"inbound not found or not scheduled"}`, http.StatusNotFound)
 			return
@@ -858,6 +882,10 @@ func (h *SupplierHandlers) HandleCancelInbound(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 	if err := h.supplierRepo.CancelInbound(r.Context(), supplierID, inboundID); err != nil {
+		if errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"inbound not found or not scheduled"}`, http.StatusNotFound)
 			return
@@ -1015,6 +1043,10 @@ func (h *SupplierHandlers) HandleRespondDiscrepancy(w http.ResponseWriter, r *ht
 // 19. POST /api/v1/supplier/settlement/request
 func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	requestKey, ok := requireFinanceRequestKey(w, r)
+	if !ok {
+		return
+	}
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 
 	var req struct {
@@ -1023,7 +1055,7 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 		BankName      string `json:"bank_name"`
 		AccountHolder string `json:"account_holder"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeMoneyJSON(r.Body, &req); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -1037,8 +1069,19 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 	if !strings.HasPrefix(req.Shaba, "IR") {
 		req.Shaba = "IR" + req.Shaba
 	}
-	reqID, err := h.supplierRepo.RequestSettlement(r.Context(), supplierID, req.Amount, req.Shaba, verification.BankName, req.AccountHolder)
+	reqID, err := h.supplierRepo.RequestSettlement(r.Context(), supplierID, req.Amount, req.Shaba, verification.BankName, req.AccountHolder, requestKey)
 	if err != nil {
+		if errors.Is(err, repository.ErrFinancePrincipalUnresolved) {
+			sellerError(w, err)
+			return
+		}
+		if writeFinanceBusy(w, err) {
+			return
+		}
+		if errors.Is(err, repository.ErrFinanceCommandConflict) {
+			http.Error(w, `{"error":"Financial request payload conflict"}`, http.StatusConflict)
+			return
+		}
 		// Gap 12: new settlement requests are frozen while the
 		// supplier is suspended (409, like the balance conflict).
 		if errors.Is(err, repository.ErrSupplierSuspended) {

@@ -122,6 +122,9 @@ func handleReviewSettlement(w http.ResponseWriter, r *http.Request, ctx context.
 		operator = claims.FullName
 	}
 	if err := finRepo.ReviewSettlement(ctx, id, status, req.Reason, operator); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "already reviewed") {
 			http.Error(w, `{"error":"Settlement is already reviewed"}`, http.StatusConflict)
 			return
@@ -160,6 +163,9 @@ func handleConfirmManualTransfer(w http.ResponseWriter, r *http.Request, ctx con
 		operator = claims.FullName
 	}
 	if err := finRepo.ConfirmManualTransfer(ctx, id, req.TransferReference, operator); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not approved") {
 			http.Error(w, `{"error":"Payout is not approved"}`, http.StatusConflict)
 			return

@@ -130,6 +130,9 @@ func (r *SupplierRepository) CreateReturnParcel(ctx context.Context, returnID, a
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err = lockSupplierReturnSKUTx(ctx, tx, returnID); err != nil {
+		return nil, err
+	}
 	var existing ReturnParcel
 	if err := tx.QueryRowContext(ctx, `SELECT id,return_request_id,parcel_number,carrier_code,payment_method,origin,destination,length_mm,width_mm,height_mm,weight_grams,estimated_charge,COALESCE(estimate_source,''),COALESCE(estimate_reference,''),final_charge,COALESCE(final_charge_source,''),COALESCE(final_charge_reference,''),status,COALESCE(tracking_number,''),created_by,COALESCE(confirmed_by,''),created_at FROM supplier_return_parcels WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing.ID, &existing.ReturnRequestID, &existing.ParcelNumber, &existing.CarrierCode, &existing.PaymentMethod, &existing.Origin, &existing.Destination, &existing.LengthMM, &existing.WidthMM, &existing.HeightMM, &existing.WeightGrams, &existing.EstimatedCharge, &existing.EstimateSource, &existing.EstimateReference, &existing.FinalCharge, &existing.FinalChargeSource, &existing.FinalChargeRef, &existing.Status, &existing.TrackingNumber, &existing.CreatedBy, &existing.ConfirmedBy, &existing.CreatedAt); err == nil {
 		return &existing, tx.Commit()
@@ -188,80 +191,9 @@ func (r *SupplierRepository) CreateReturnParcel(ctx context.Context, returnID, a
 	return &ReturnParcel{ID: id, ReturnRequestID: returnID, ParcelNumber: parcelNumber, CarrierCode: input.CarrierCode, PaymentMethod: input.PaymentMethod, Origin: input.Origin, Destination: input.Destination, LengthMM: input.LengthMM, WidthMM: input.WidthMM, HeightMM: input.HeightMM, WeightGrams: input.WeightGrams, EstimatedCharge: input.EstimatedCharge, EstimateSource: input.EstimateSource, EstimateReference: input.EstimateReference, FinalCharge: input.FinalCharge, FinalChargeSource: input.FinalChargeSource, FinalChargeRef: input.FinalChargeRef, Status: "draft", TrackingNumber: input.TrackingNumber, CreatedBy: actorUserID}, nil
 }
 
-// ConfirmReturnParcelCharge records the carrier charge and supplier debit in
-// one transaction. It intentionally permits a negative supplier balance.
-func (r *SupplierRepository) ConfirmReturnParcelCharge(ctx context.Context, returnID, parcelID, actorUserID, idempotencyKey string) error {
-	if strings.TrimSpace(idempotencyKey) == "" {
-		return fmt.Errorf("idempotency key required")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM supplier_return_financial_events WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing); err == nil {
-		return tx.Commit()
-	}
-	var amount int64
-	var method, supplierID string
-	var parcelStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(final_charge,0),payment_method,status FROM supplier_return_parcels WHERE id=$1 AND return_request_id=$2 FOR UPDATE`, parcelID, returnID).Scan(&amount, &method, &parcelStatus); err != nil {
-		return err
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id FROM supplier_return_requests WHERE id=$1 FOR UPDATE`, returnID).Scan(&supplierID); err != nil {
-		return err
-	}
-	if method == "receiver_pays" {
-		if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=NOW() WHERE id=$2 AND status IN ('draft','confirmed')`, actorUserID, parcelID); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
-	if method != "sender_pays" || amount <= 0 {
-		return fmt.Errorf("sender-paid parcel requires a positive final carrier charge")
-	}
-	now := time.Now()
-	ledgerID := "RET-LED-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES ($1,$2,$3,'supplier','debit',$4,$5,$6,$7)`, ledgerID, now, supplierID, amount, fmt.Sprintf("هزینه حمل مرجوعی %s / مرسوله %s", returnID, parcelID), actorUserID, returnID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_return_financial_events (id,return_request_id,parcel_id,supplier_id,operation,amount,payment_method,ledger_entry_id,idempotency_key,reason,actor_user_id) VALUES ($1,$2,$3,$4,'debit',$5,$6,$7,$8,$9,$10)`, "RET-FIN-"+uuid.NewString(), returnID, parcelID, supplierID, amount, method, ledgerID, idempotencyKey, fmt.Sprintf("carrier charge for %s", parcelID), actorUserID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='confirmed',confirmed_by=$1,updated_at=$2 WHERE id=$3 AND status IN ('draft','confirmed')`, actorUserID, now, parcelID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// P1-8 (best-effort): sender-paid parcel charge confirmed - supplier
-	// (amount debited). Receiver-pays confirmations carry no debit and
-	// return earlier, so they notify nothing here.
-	notifySupplierParcelCharge(ctx, r.db, returnID, parcelID, supplierID, amount)
-	return nil
-}
-
 func (r *SupplierRepository) RecordProductMeasurement(ctx context.Context, productID, actorUserID string, lengthMM, widthMM, heightMM, weightGrams int, reason string) error {
-	if lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 || strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("valid measurements and reason are required")
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var oldL, oldW, oldH, oldWeight sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT length_mm,width_mm,height_mm,weight_grams FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&oldL, &oldW, &oldH, &oldWeight); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE products SET length_mm=$1,width_mm=$2,height_mm=$3,weight_grams=$4,measurement_status='verified',measurement_version=measurement_version+1,updated_at=NOW() WHERE id=$5`, lengthMM, widthMM, heightMM, weightGrams, productID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO product_measurement_events (id,product_id,old_length_mm,old_width_mm,old_height_mm,old_weight_grams,new_length_mm,new_width_mm,new_height_mm,new_weight_grams,reason,actor_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, "MEAS-"+uuid.NewString(), productID, nullInt(oldL), nullInt(oldW), nullInt(oldH), nullInt(oldWeight), lengthMM, widthMM, heightMM, weightGrams, reason, actorUserID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := r.RecordSKUPhysicalMeasurement(ctx, productID, "", actorUserID, lengthMM, widthMM, heightMM, weightGrams, reason)
+	return err
 }
 
 func nullInt(v sql.NullInt64) interface{} {

@@ -34,19 +34,24 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 	if databaseURL == "" {
 		t.Skip("TEAM03_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db := openPrivateFinanceFixture(t, databaseURL)
+	var err error
 	if err != nil {
 		t.Fatalf("open disposable database: %v", err)
 	}
 	ctx := context.Background()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS order_inventory_returns, order_inventory_captures, seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
+		`CREATE TABLE finance_command_requests(principal_type TEXT,principal_id TEXT,operation TEXT,client_key TEXT,fingerprint TEXT,result JSONB,PRIMARY KEY(principal_type,principal_id,operation,client_key))`,
 		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
 		`INSERT INTO platform_settings (id, return_window_days, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 7, 100000, 20000, NULL, NULL)`,
 		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -55,7 +60,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		`CREATE TABLE stores (id TEXT PRIMARY KEY, owner_type TEXT, referrer_seller_id TEXT)`,
 		`CREATE TABLE orders (
 			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
-			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT,
+			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
 			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
 			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
@@ -140,7 +145,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		)`,
 		`CREATE TABLE inventory_balances (
 			id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, owner_type TEXT,
-			location_type TEXT, location_key TEXT, status TEXT, quantity INT NOT NULL DEFAULT 0,
+			location_type TEXT, location_key TEXT, status TEXT, variant_id UUID, quantity INT NOT NULL DEFAULT 0,
 			reconciled BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (product_id, owner_type, location_type, location_key, status)
 		)`,
@@ -169,6 +174,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			t.Fatalf("create disposable schema: %v (stmt %.60s)", err, stmt)
 		}
 	}
+	installRefundFixtureSchema(t, db)
 	return db
 }
 
@@ -201,6 +207,9 @@ func gmBalance(t *testing.T, db *sql.DB, productID, supplierID, locationKey stri
 
 func gmOrder(t *testing.T, db *sql.DB, id, customerID, storeID string, captured, profitReleased bool, dropshipperProfit int64) {
 	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name) VALUES($1::uuid,$2,'Finance fixture') ON CONFLICT(id) DO NOTHING`, customerID, "f"+customerID[:12]); err != nil {
+		t.Fatal(err)
+	}
 	if storeID == "" {
 		storeID = "central"
 	}
@@ -223,6 +232,9 @@ func gmItem(t *testing.T, db *sql.DB, orderID, productID string, qty int, wholes
 		itemID, orderID, productID, qty, wholesale, margin, price, variantArg); err != nil {
 		t.Fatalf("seed order item: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity) SELECT $1,$2,$3,0,'warehouse',supplier_id,'wh-1','انبار مرکزی',$4 FROM products WHERE id=$5`, "fixture-origin-"+itemID, orderID, itemID, qty, productID); err != nil {
+		t.Fatal(err)
+	}
 	return itemID
 }
 
@@ -231,6 +243,7 @@ func gmItem(t *testing.T, db *sql.DB, orderID, productID string, qty int, wholes
 func gmFileReturn(t *testing.T, repo *OrderRepository, customerID, orderID string, items []CustomerReturnItemRequest) (string, map[string]string) {
 	t.Helper()
 	ctx := context.Background()
+	seedVerifiedRefundFixturePayment(t, repo.db, orderID)
 	ret, err := repo.CreateCustomerReturn(ctx, customerID, orderID, "gap test", items, CustomerReturnOptions{Prepaid: true})
 	if err != nil {
 		t.Fatalf("create return: %v", err)
@@ -485,9 +498,34 @@ func TestGap6SellerProfitReversal(t *testing.T) {
 	}
 	gmProduct(t, db, "p-t4", "sup-t4", 3)
 	gmBalance(t, db, "p-t4", "sup-t4", "warehouse:wh-1", 3)
-	gmOrder(t, db, "ord-t4", customerID, "store-t4", true, true, 7000)
+	gmOrder(t, db, "ord-t4", customerID, "store-t4", true, false, 7000)
 	itemID := gmItem(t, db, "ord-t4", "p-t4", 1, 10000, 7000, 20000, "")
 
+	// File while admission is open/unreleased, then load the retained historical
+	// release before refund. This represents an old recorded release, not a call
+	// asking the guarded current releaser to release an active return.
+	opsExec(t, db, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '1 day',return_window_ends_at=NOW()+INTERVAL '6 days' WHERE id='ord-t4'`)
+	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t4", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = lockOrderFinanceTx(ctx, tx, "ord-t4"); err != nil {
+		t.Fatal(err)
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET profit_released=TRUE,profit_released_at=NOW(),referral_commission_released=TRUE WHERE id='ord-t4'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO ledger_entries(id,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES($1,'store-t4','seller','credit',7000,'Staged profit release after return window closed','fixture:retained-release','ord-t4'),($2,'platform','platform','debit',7000,'Staged profit release after return window closed','fixture:retained-release','ord-t4')`, "REL-"+uuid.NewString(), "REL-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	before, err := financeRepo.GetStoreBalance(ctx, "store-t4")
 	if err != nil {
 		t.Fatalf("store balance before: %v", err)
@@ -496,7 +534,6 @@ func TestGap6SellerProfitReversal(t *testing.T) {
 		t.Fatalf("store available before = %d, want 7000 (released profit)", before.AvailableAmount)
 	}
 
-	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t4", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "ok"})
 	if _, _, err := repo.RefundCustomerReturn(ctx, returnID, "finance-gap"); err != nil {
 		t.Fatalf("refund: %v", err)
@@ -664,7 +701,7 @@ func TestGap6LegacyCoverageSeeding(t *testing.T) {
 // G6-T9: dispute-cancelling the order AFTER a clawback must not
 // double-reverse the cost: Earned drops the whole order and the
 // clawback term excludes the cancelled order's events.
-func TestGap6DisputeCancelExcludesClawback(t *testing.T) {
+func TestGap6DisputeCannotRefundAlreadyReturnedPrincipal(t *testing.T) {
 	db := openGapMoneyDB(t)
 	defer db.Close()
 	ctx := context.Background()
@@ -692,22 +729,21 @@ func TestGap6DisputeCancelExcludesClawback(t *testing.T) {
 		t.Fatalf("balance before dispute = %+v, want earned 40000 clawbacks 10000 available 30000", bal)
 	}
 
-	if _, err := db.Exec(`INSERT INTO payment_transactions (id, order_id, status) VALUES ('pt-t9', 'ord-t9a', 'paid')`); err != nil {
-		t.Fatalf("seed payment tx: %v", err)
+	// A customer return already refunded this entire captured source. A later
+	// dispute cannot issue it again or erase the existing supplier reversal.
+	if _, err := db.Exec(`INSERT INTO disputes(id,order_id,resolution_action,status,claim_amount) VALUES('dsp-t9','ord-t9a',NULL,'pending',20000)`); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO disputes (id, order_id, resolution_action) VALUES ('dsp-t9', 'ord-t9a', 'refund_full')`); err != nil {
-		t.Fatalf("seed dispute: %v", err)
-	}
-	applied, err := repo.ApplyDisputeRefundEffect(ctx, "dsp-t9")
-	if err != nil || !applied {
-		t.Fatalf("dispute effect applied=%v err=%v, want true/nil", applied, err)
+	installFIN005PrivateFixture(t, db)
+	if err := NewFinanceRepository(db).ResolveDispute(ctx, "dsp-t9", "refund_supplier", "supplier", "finance-gap", 20000); !errors.Is(err, ErrRefundPrincipalUnresolved) {
+		t.Fatalf("dispute double-spent returned principal %v", err)
 	}
 	bal, err = supplierRepo.GetSettlementBalance(ctx, "sup-t9")
 	if err != nil {
 		t.Fatalf("balance after dispute: %v", err)
 	}
-	if bal.Earned != 30000 || bal.ReturnClawbacks != 0 || bal.Available != 30000 {
-		t.Fatalf("balance after dispute = %+v, want earned 30000 clawbacks 0 available 30000 (no double reversal)", bal)
+	if bal.Earned != 40000 || bal.ReturnClawbacks != 10000 || bal.Available != 30000 {
+		t.Fatalf("balance after dispute = %+v, want earned 40000 clawbacks 10000 available 30000 (existing return preserved)", bal)
 	}
 }
 

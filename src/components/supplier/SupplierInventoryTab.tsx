@@ -169,8 +169,8 @@ export const formatReturnDate = (iso: string): string => {
 };
 
 // The stock-save contract, extracted so tests can pin the exact
-// updateStock payload: same validation messages and the same
-// updateStock(id, value, undefined, variantId?) call as before. The
+// updateStock payload: absolute total, counted reason and exact SKU when needed.
+// The
 // component wraps this with the saving flag, toast, and reloads.
 export async function saveStockEdit(
   api: Pick<typeof supplierApi, 'updateStock'>,
@@ -178,15 +178,17 @@ export async function saveStockEdit(
   stock: string,
   stockVariantId: string,
   variantRows: SupplierProductVariantDto[],
+  reason = '',
 ): Promise<void> {
   const value = Number(stock);
-  if (stock.trim() === '' || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error('موجودی را با عدد وارد کن (نمی‌تواند منفی باشد).');
+  if (stock.trim() === '' || !Number.isSafeInteger(value) || value < 0 || value > 2147483647) {
+    throw new Error('موجودی را با عدد وارد کن (از صفر تا ۲۱۴۷۴۸۳۶۴۷).');
   }
   if (product.schemaVersion === 2 && (!stockVariantId || !variantRows.some(row => row.id === stockVariantId))) {
     throw new Error('تنوع دقیق کالا را انتخاب کنید.');
   }
-  await api.updateStock(product.id, value, undefined, product.schemaVersion === 2 ? stockVariantId : undefined);
+  if (!reason.trim()) throw new Error('علت اصلاح موجودی را وارد کنید.');
+  await api.updateStock(product.id, value, reason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined);
 }
 
 export interface ReturnValidationInput {
@@ -213,6 +215,7 @@ export interface SupplierInventoryEditState {
   product: SupplierProductDto;
   variantId: string;
   stock: string;
+  reason: string;
 }
 
 export interface SupplierInventoryViewProps {
@@ -236,6 +239,7 @@ export interface SupplierInventoryViewProps {
   saving: boolean;
   onEditVariantChange: (variantId: string) => void;
   onEditStockChange: (stock: string) => void;
+  onEditReasonChange: (reason: string) => void;
   onSaveEdit: (event: React.FormEvent) => void;
   onCancelEdit: () => void;
   onOpenEdit: (product: SupplierProductDto, variantId?: string) => void;
@@ -262,7 +266,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
   const {
     items, totalCount, locations, returns, productsById, shareData, shareLoaded,
     loading, error, retry, query, onQueryChange, statusFilter, onStatusFilterChange,
-    statusCounts, editing, editVariants, saving, onEditVariantChange, onEditStockChange,
+    statusCounts, editing, editVariants, saving, onEditVariantChange, onEditStockChange, onEditReasonChange,
     onSaveEdit, onCancelEdit, onOpenEdit, onOpenReturn, returning, returnVariants,
     returnQuantity, returnVariantId, returnMethod, returnReason, returnSaving,
     onReturnVariantChange, onReturnQuantityChange, onReturnMethodChange, onReturnReasonChange,
@@ -448,7 +452,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               label="تنوع برای اصلاح موجودی" loading={editVariants.loading} error={editVariants.error} retry={editVariants.reload} disabled={saving}
               onSelect={id => onEditVariantChange(id)} /> }
             <label className="block text-[11px] font-bold text-slate-600">
-              موجودی جدید (عدد)
+              موجودی کل قابل فروش (عدد)
               <input
                 autoFocus
                 type="text"
@@ -459,6 +463,8 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                 className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs bg-white font-normal"
               />
             </label>
+            <p className="text-[11px] text-slate-500">این تعداد شامل موجودی قابل فروش در انبارهای دیگر هم هست.</p>
+            <label className="block text-[11px] font-bold text-slate-600">علت اصلاح موجودی<input aria-label="علت اصلاح موجودی" value={editing.reason} onChange={event => onEditReasonChange(event.target.value)} maxLength={500} className="mt-1 w-full rounded-lg border p-2 text-xs font-normal" /></label>
             <div className="flex gap-2">
               <button
                 disabled={saving || (editing.product.schemaVersion === 2 && (!editing.variantId || editVariants.loading || !!editVariants.error))}
@@ -550,6 +556,7 @@ export const SupplierInventoryTab: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<InventoryStatusFilter>('all');
   const [editing, setEditing] = useState<SupplierProductDto | null>(null);
   const [stock, setStock] = useState('');
+  const [stockReason, setStockReason] = useState('');
   const [stockVariantId, setStockVariantId] = useState('');
   const [saving, setSaving] = useState(false);
   const [returns, setReturns] = useState<SupplierReturnRequestDto[]>([]);
@@ -590,6 +597,7 @@ export const SupplierInventoryTab: React.FC = () => {
 
   const openEdit = (item: SupplierProductDto, variantId?: string) => {
     setEditing(item);
+    setStockReason('');
     setStockVariantId(variantId || '');
     // v2 stock comes from the variant row (pre-filled by the effect above
     // once rows load, or by the picker below); v1 pre-fills immediately.
@@ -601,7 +609,7 @@ export const SupplierInventoryTab: React.FC = () => {
     if (!editing || saving) return;
     setSaving(true);
     try {
-      await saveStockEdit(supplierApi, editing, stock, stockVariantId, stockVariants.rows);
+      await saveStockEdit(supplierApi, editing, stock, stockVariantId, stockVariants.rows, stockReason);
       setEditing(null);
       success('موجودی ذخیره شد.');
       await resource.reload();
@@ -690,11 +698,12 @@ const newUuid = (): string => {
       statusFilter={statusFilter}
       onStatusFilterChange={setStatusFilter}
       statusCounts={statusCounts}
-      editing={editing ? { product: editing, variantId: stockVariantId, stock } : null}
+      editing={editing ? { product: editing, variantId: stockVariantId, stock, reason: stockReason } : null}
       editVariants={stockVariants}
       saving={saving}
       onEditVariantChange={id => { setStockVariantId(id); setStock(variantPrefillStock(stockVariants.rows, id)); }}
       onEditStockChange={setStock}
+      onEditReasonChange={setStockReason}
       onSaveEdit={save}
       onCancelEdit={() => setEditing(null)}
       onOpenEdit={openEdit}

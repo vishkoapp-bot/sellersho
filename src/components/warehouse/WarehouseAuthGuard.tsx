@@ -1,8 +1,8 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
-import { tokenStore } from '../../services/apiClient';
 import { isValidIranianMobile, normalizeIranianMobile } from '../../utils/validators';
 import { Warehouse, KeyRound, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
 
@@ -43,6 +43,7 @@ export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
   children,
 }) => {
   const { warehouseSession, setWarehouseSession, toPersianDigits } = useStore();
+  const { authenticate } = useAuth();
   const { success, error } = useToast();
 
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(OFFICIAL_WAREHOUSES[0].warehouseId);
@@ -113,14 +114,16 @@ export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
     const clean = normalizeIranianMobile(mobile);
     const target = OFFICIAL_WAREHOUSES.find((w) => w.warehouseId === selectedWarehouseId) || OFFICIAL_WAREHOUSES[0];
     setIsSubmitting(true);
+    let requestIsCurrent = () => true;
     try {
       const requestedRole = target.role === 'warehouse_staff' ? 'warehouse_staff' : undefined;
-      const res = await authApi.verifyOTP(clean, otp.trim(), requestedRole);
+      const res = await authenticate(() => authApi.verifyOTP(clean, otp.trim(), requestedRole));
+      requestIsCurrent = res.isCurrent;
+      if (!requestIsCurrent()) return;
       if (!(res.user.capabilities || []).some((capability) => ['warehouse_staff', 'logistics_specialist', 'admin'].includes(capability)) && !['warehouse_staff', 'logistics_specialist', 'admin'].includes(res.user.role)) {
         error('این شماره حساب مجاز پرسنل انبار ندارد.');
         return;
       }
-      tokenStore.setToken(res.token);
       setWarehouseSession({
         token: res.token,
         staffId: res.user.id,
@@ -132,6 +135,7 @@ export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
       });
       success(`ورود با موفقیت انجام شد: ${res.user.fullName || target.staffName}`);
     } catch (err: any) {
+      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
       error(err.message || 'کد تایید نامعتبر یا منقضی شده است.');
     } finally {
       setIsSubmitting(false);

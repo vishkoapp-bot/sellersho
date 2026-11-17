@@ -14,7 +14,7 @@ it('serializes exact SKU identity for stock updates and returns while preserving
     await supplierApi.requestReturn('p', 2, 'postal', 'damaged', 'return-a', 'sku-a');
     assert.equal(JSON.parse(String(calls[1].init.body)).variantId, 'sku-a');
     assert.equal((calls[1].init.headers as Record<string, string>)['Idempotency-Key'], 'return-a');
-    await supplierApi.updateStock('old', 3);
-    assert.deepEqual(JSON.parse(String(calls[2].init.body)), { new_stock: 3 });
+    await supplierApi.updateStock('old', 3, 'legacy recount');
+    assert.deepEqual(JSON.parse(String(calls[2].init.body)), { new_stock: 3, reason: 'legacy recount' });
   } finally { mocked.mock.restore(); }
 });

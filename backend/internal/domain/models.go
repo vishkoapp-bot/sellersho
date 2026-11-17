@@ -242,9 +242,9 @@ type Product struct {
 	// Shipping/tax class (P2(b)): the fallback target for variants
 	// (variant class ?? this ?? 'standard'). Stored vocabulary only
 	// in v1; consumed nowhere yet. DB default 'standard'.
-	ShippingClass             string                 `json:"shippingClass" db:"shipping_class"`
-	TaxClass                  string                 `json:"taxClass" db:"tax_class"`
-	MeasurementStatus         string                 `json:"measurementStatus" db:"measurement_status"`
+	ShippingClass     string `json:"shippingClass" db:"shipping_class"`
+	TaxClass          string `json:"taxClass" db:"tax_class"`
+	MeasurementStatus string `json:"measurementStatus" db:"measurement_status"`
 	// Brand, Rating, ReviewsCount, CreatedAt: columns confirmed by
 	// migration 202610200003 (brand TEXT, rating NUMERIC(3,2),
 	// reviews_count INT) and by the GetSupplierProducts SELECT in
@@ -280,17 +280,27 @@ type PlatformSettings struct {
 }
 
 // OrderItem represents a line item in an order with snapshot financials
+type OrderItemOriginSplit struct {
+	WarehouseID         *string
+	SupplierWarehouseID *string
+	Label               string
+	Quantity            int
+	LegIndex            int
+}
+
 type OrderItem struct {
-	ID             string `json:"id" db:"id"`
-	OrderID        string `json:"orderId" db:"order_id"`
-	ProductID      string `json:"productId" db:"product_id"`
-	ProductTitle   string `json:"productTitle,omitempty"`
-	Quantity       int    `json:"quantity" db:"quantity"`
-	WholesaleCost  int64  `json:"wholesaleCost" db:"wholesale_cost"`             // C
-	PlatformFee    int64  `json:"platformFee" db:"platform_fee"`                 // F
-	SellerMargin   int64  `json:"sellerMargin" db:"seller_margin"`               // D
-	FinalUnitPrice int64  `json:"finalUnitPrice" db:"final_unit_price"`          // P = C + F + D
-	DiscountAmount int64  `json:"discountAmount,omitempty" db:"discount_amount"` // seller discount on this line (margin only)
+	OriginSplits         []OrderItemOriginSplit `json:"-"`
+	PricingPolicyVersion string                 `json:"pricingPolicyVersion,omitempty" db:"pricing_policy_version"`
+	ID                   string                 `json:"id" db:"id"`
+	OrderID              string                 `json:"orderId" db:"order_id"`
+	ProductID            string                 `json:"productId" db:"product_id"`
+	ProductTitle         string                 `json:"productTitle,omitempty"`
+	Quantity             int                    `json:"quantity" db:"quantity"`
+	WholesaleCost        int64                  `json:"wholesaleCost" db:"wholesale_cost"`             // C
+	PlatformFee          int64                  `json:"platformFee" db:"platform_fee"`                 // F
+	SellerMargin         int64                  `json:"sellerMargin" db:"seller_margin"`               // D
+	FinalUnitPrice       int64                  `json:"finalUnitPrice" db:"final_unit_price"`          // P = C + F + D
+	DiscountAmount       int64                  `json:"discountAmount,omitempty" db:"discount_amount"` // seller discount on this line (margin only)
 	// D38 variant snapshot (migration 202610200005). Pointers so a NULL
 	// column scans as absent rather than as an empty variant identity.
 	VariantID   *string `json:"variantId,omitempty" db:"variant_id"`
@@ -316,43 +326,59 @@ type OrderItem struct {
 }
 
 // Order represents customer purchase contract
+type OrderRefundSummary struct {
+	Status         string `json:"status"`
+	Currency       string `json:"currency"`
+	AmountToman    int64  `json:"amountToman"`
+	PendingToman   int64  `json:"pendingToman"`
+	SucceededToman int64  `json:"succeededToman"`
+	FailedToman    int64  `json:"failedToman"`
+	UnknownToman   int64  `json:"unknownToman"`
+	Destination    string `json:"destination"`
+	NeedsReview    bool   `json:"needsReview"`
+}
+
 type Order struct {
-	ID                         string      `json:"id" db:"id"`
-	CustomerUserID             *string     `json:"customerUserId,omitempty" db:"customer_user_id"`
-	OrderNumber                string      `json:"orderNumber" db:"order_number"`
-	StoreID                    string      `json:"storeId" db:"store_id"`
-	StoreName                  string      `json:"storeName" db:"store_name"`
-	TotalAmount                int64       `json:"totalAmount" db:"total_amount"`
-	DiscountAmount             int64       `json:"discountAmount" db:"discount_amount"`
-	SellerDiscountAmount       int64       `json:"sellerDiscountAmount,omitempty" db:"seller_discount_amount"`
-	DiscountCode               string      `json:"discountCode,omitempty" db:"discount_code"`
-	PayableAmount              int64       `json:"payableAmount" db:"payable_amount"`
-	PaymentMethod              string      `json:"paymentMethod" db:"payment_method"`
-	PaymentStatus              string      `json:"paymentStatus" db:"payment_status"`
-	CustomerFullName           string      `json:"customerFullName" db:"customer_full_name"`
-	CustomerPhone              string      `json:"customerPhone" db:"customer_phone"`
-	CustomerProvince           string      `json:"customerProvince" db:"customer_province"`
-	CustomerCity               string      `json:"customerCity" db:"customer_city"`
-	CustomerAddress            string      `json:"customerAddress" db:"customer_address"`
-	CustomerPostalCode         string      `json:"customerPostalCode" db:"customer_postal_code"`
-	Status                     string      `json:"status" db:"status"`
-	TrackingCode               string      `json:"trackingCode" db:"tracking_code"`
-	ShippingCost               int64       `json:"shippingCost" db:"shipping_cost"`
-	ShippingQuoteID            string      `json:"shippingQuoteId,omitempty" db:"shipping_quote_id"`
-	DropshipperProfit          int64       `json:"dropshipperProfit" db:"dropshipper_profit"`
-	PlatformProfit             int64       `json:"platformProfit" db:"platform_profit"`
-	ReferralCommission         int64       `json:"referralCommission" db:"referral_commission"`
-	ReferralCommissionReleased bool        `json:"referralCommissionReleased" db:"referral_commission_released"`
-	ReferrerSellerID           *string     `json:"referrerSellerId" db:"referrer_seller_id"`
-	ProfitReleased             bool        `json:"profitReleased" db:"profit_released"`
-	ProfitReleasedAt           *time.Time  `json:"profitReleasedAt" db:"profit_released_at"`
-	ShippedAt                  *time.Time  `json:"shippedAt" db:"shipped_at"`
-	ConfirmedAt                *time.Time  `json:"confirmedAt" db:"confirmed_at"`
-	DisputedAt                 *time.Time  `json:"disputedAt" db:"disputed_at"`
-	FulfillmentMethod          string      `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct" | "mixed"
-	CreatedAt                  time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt                  time.Time   `json:"updatedAt" db:"updated_at"`
-	Items                      []OrderItem `json:"items"`
+	CouponID                   string              `json:"-"`
+	CouponRevision             int64               `json:"-"`
+	CouponDiscountAmount       *int64              `json:"couponDiscountAmount,omitempty" db:"coupon_discount_amount"`
+	Refund                     *OrderRefundSummary `json:"refund,omitempty"`
+	ID                         string              `json:"id" db:"id"`
+	CustomerUserID             *string             `json:"customerUserId,omitempty" db:"customer_user_id"`
+	OrderNumber                string              `json:"orderNumber" db:"order_number"`
+	StoreID                    string              `json:"storeId" db:"store_id"`
+	StoreName                  string              `json:"storeName" db:"store_name"`
+	TotalAmount                int64               `json:"totalAmount" db:"total_amount"`
+	DiscountAmount             int64               `json:"discountAmount" db:"discount_amount"`
+	SellerDiscountAmount       int64               `json:"sellerDiscountAmount,omitempty" db:"seller_discount_amount"`
+	DiscountCode               string              `json:"discountCode,omitempty" db:"discount_code"`
+	PayableAmount              int64               `json:"payableAmount" db:"payable_amount"`
+	PaymentMethod              string              `json:"paymentMethod" db:"payment_method"`
+	PaymentStatus              string              `json:"paymentStatus" db:"payment_status"`
+	CustomerFullName           string              `json:"customerFullName" db:"customer_full_name"`
+	CustomerPhone              string              `json:"customerPhone" db:"customer_phone"`
+	CustomerProvince           string              `json:"customerProvince" db:"customer_province"`
+	CustomerCity               string              `json:"customerCity" db:"customer_city"`
+	CustomerAddress            string              `json:"customerAddress" db:"customer_address"`
+	CustomerPostalCode         string              `json:"customerPostalCode" db:"customer_postal_code"`
+	Status                     string              `json:"status" db:"status"`
+	TrackingCode               string              `json:"trackingCode" db:"tracking_code"`
+	ShippingCost               int64               `json:"shippingCost" db:"shipping_cost"`
+	ShippingQuoteID            string              `json:"shippingQuoteId,omitempty" db:"shipping_quote_id"`
+	DropshipperProfit          int64               `json:"dropshipperProfit" db:"dropshipper_profit"`
+	PlatformProfit             int64               `json:"platformProfit" db:"platform_profit"`
+	ReferralCommission         int64               `json:"referralCommission" db:"referral_commission"`
+	ReferralCommissionReleased bool                `json:"referralCommissionReleased" db:"referral_commission_released"`
+	ReferrerSellerID           *string             `json:"referrerSellerId" db:"referrer_seller_id"`
+	ProfitReleased             bool                `json:"profitReleased" db:"profit_released"`
+	ProfitReleasedAt           *time.Time          `json:"profitReleasedAt" db:"profit_released_at"`
+	ShippedAt                  *time.Time          `json:"shippedAt" db:"shipped_at"`
+	ConfirmedAt                *time.Time          `json:"confirmedAt" db:"confirmed_at"`
+	DisputedAt                 *time.Time          `json:"disputedAt" db:"disputed_at"`
+	FulfillmentMethod          string              `json:"fulfillmentMethod" db:"fulfillment_method"` // "warehouse" | "supplier_direct" | "mixed"
+	CreatedAt                  time.Time           `json:"createdAt" db:"created_at"`
+	UpdatedAt                  time.Time           `json:"updatedAt" db:"updated_at"`
+	Items                      []OrderItem         `json:"items"`
 	// D38 snapshot columns (migrations 202610200002, 202610230005,
 	// 202610250009, 202610280008, 202610310016, 202610190003 and the
 	// carrier/packing columns). All already exist in the live schema;
@@ -419,22 +445,40 @@ type SupplierShipmentAuditLog struct {
 }
 
 // Dispute represents a return claim or undelivered shipment dispute
+// DisputeOutcome separates immutable adjudication from evolving order-level money progress.
+type DisputeOutcome struct {
+	DisputeID          string             `json:"disputeId"`
+	OrderID            string             `json:"orderId"`
+	Action             string             `json:"action"`
+	ResponsibleParty   string             `json:"responsibleParty"`
+	ClaimAmount        int64              `json:"claimAmount"`
+	ActorUserID        string             `json:"actorUserId,omitempty"`
+	DecisionTime       *time.Time         `json:"decisionTime,omitempty"`
+	Replay             bool               `json:"replay"`
+	OrderStatus        string             `json:"orderStatus"`
+	SellerReleaseState string             `json:"sellerReleaseState"`
+	HoldReasons        []string           `json:"holdReasons"`
+	RefundScope        string             `json:"refundScope"`
+	Refund             OrderRefundSummary `json:"refund"`
+}
+
 type Dispute struct {
-	ID               string     `json:"id" db:"id"`
-	OrderID          string     `json:"orderId" db:"order_id"`
-	OrderNumber      string     `json:"orderNumber" db:"order_number"`
-	Type             string     `json:"type" db:"type"` // 'return_7day' | 'delivery_undelivered'
-	CustomerName     string     `json:"customerName" db:"customer_name"`
-	ProductTitle     string     `json:"productTitle" db:"product_title"`
-	ClaimAmount      int64      `json:"claimAmount" db:"claim_amount"`
-	Reason           string     `json:"reason" db:"reason"`
-	StoreID          string     `json:"storeId" db:"store_id"`
-	SupplierName     string     `json:"supplierName" db:"supplier_name"`
-	Status           string     `json:"status" db:"status"` // 'pending' | 'resolved'
-	ResponsibleParty string     `json:"responsibleParty" db:"responsible_party"`
-	ResolutionAction string     `json:"resolutionAction" db:"resolution_action"`
-	ResolutionDate   *time.Time `json:"resolutionDate" db:"resolution_date"`
-	CreatedAt        time.Time  `json:"createdAt" db:"created_at"`
+	Outcome          *DisputeOutcome `json:"outcome,omitempty"`
+	ID               string          `json:"id" db:"id"`
+	OrderID          string          `json:"orderId" db:"order_id"`
+	OrderNumber      string          `json:"orderNumber" db:"order_number"`
+	Type             string          `json:"type" db:"type"` // 'return_7day' | 'delivery_undelivered'
+	CustomerName     string          `json:"customerName" db:"customer_name"`
+	ProductTitle     string          `json:"productTitle" db:"product_title"`
+	ClaimAmount      int64           `json:"claimAmount" db:"claim_amount"`
+	Reason           string          `json:"reason" db:"reason"`
+	StoreID          string          `json:"storeId" db:"store_id"`
+	SupplierName     string          `json:"supplierName" db:"supplier_name"`
+	Status           string          `json:"status" db:"status"` // 'pending' | 'resolved'
+	ResponsibleParty string          `json:"responsibleParty" db:"responsible_party"`
+	ResolutionAction string          `json:"resolutionAction" db:"resolution_action"`
+	ResolutionDate   *time.Time      `json:"resolutionDate" db:"resolution_date"`
+	CreatedAt        time.Time       `json:"createdAt" db:"created_at"`
 }
 
 // LedgerEntry represents immutable double-entry bookkeeping journal entry
@@ -502,15 +546,15 @@ type ProductVariant struct {
 // Variant shipping/tax class vocabulary (P2(b), mirrors the DB CHECKs
 // in migration 202611130004). 'standard' is the effective default.
 const (
-	ShippingClassStandard   = "standard"
-	ShippingClassFragile    = "fragile"
-	ShippingClassOversized  = "oversized"
-	ShippingClassHeavy      = "heavy"
-	ShippingClassColdChain  = "cold_chain"
-	TaxClassStandard        = "standard"
-	TaxClassReduced         = "reduced"
-	TaxClassZero            = "zero"
-	TaxClassExempt          = "exempt"
+	ShippingClassStandard  = "standard"
+	ShippingClassFragile   = "fragile"
+	ShippingClassOversized = "oversized"
+	ShippingClassHeavy     = "heavy"
+	ShippingClassColdChain = "cold_chain"
+	TaxClassStandard       = "standard"
+	TaxClassReduced        = "reduced"
+	TaxClassZero           = "zero"
+	TaxClassExempt         = "exempt"
 )
 
 // ValidShippingClass reports whether s is a known shipping class.

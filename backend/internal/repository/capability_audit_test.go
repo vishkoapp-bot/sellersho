@@ -2,10 +2,11 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -18,7 +19,7 @@ func TestCapabilityAuditBackfill(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("CAPABILITY_AUDIT_DATABASE_URL is not set")
 	}
-	db, err := sql.Open("postgres", databaseURL)
+	db, err := testdb.Open(t, databaseURL)
 	if err != nil {
 		t.Skipf("capability audit database unavailable: %v", err)
 	}

@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
 	_ "github.com/lib/pq"
@@ -39,7 +41,7 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB HTTP test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -50,7 +52,7 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 	ddl := []string{
 		`DROP TABLE IF EXISTS supplier_shipment_audit_logs, supplier_shipments, order_items, order_item_origins, orders, products, suppliers CASCADE`,
 		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, supplier_id VARCHAR(50), fulfillment_method VARCHAR(50))`,
-		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, order_number VARCHAR(30) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'processing', payment_status VARCHAR(20) NOT NULL DEFAULT 'pending', fulfillment_method VARCHAR(20) NOT NULL DEFAULT 'warehouse', tracking_code TEXT, shipped_at TIMESTAMPTZ, customer_province VARCHAR(50) NOT NULL DEFAULT '', customer_city VARCHAR(50) NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY, order_number VARCHAR(30) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'processing', discount_code TEXT NOT NULL DEFAULT '', payment_status VARCHAR(20) NOT NULL DEFAULT 'pending', fulfillment_method VARCHAR(20) NOT NULL DEFAULT 'warehouse', tracking_code TEXT, shipped_at TIMESTAMPTZ, customer_province VARCHAR(50) NOT NULL DEFAULT '', customer_city VARCHAR(50) NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, quantity INT NOT NULL DEFAULT 1, wholesale_cost BIGINT NOT NULL, variant_id UUID, variant_name TEXT, variant_spnc TEXT)`,
 		`CREATE TABLE order_item_origins (order_item_id TEXT NOT NULL, leg_index INT NOT NULL DEFAULT 0, origin_type VARCHAR(20) NOT NULL)`,
 		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, owner_user_id TEXT)`,
@@ -95,6 +97,10 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("seed failed: %v", err)
 		}
+	}
+	if _, err := db.Exec(`ALTER TABLE order_item_origins ADD COLUMN quantity INT, ADD COLUMN supplier_id TEXT;
+		UPDATE order_item_origins x SET quantity=oi.quantity,supplier_id=p.supplier_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.id=x.order_item_id`); err != nil {
+		t.Fatal(err)
 	}
 	return db, repository.NewSupplierShipmentRepository(db)
 }
@@ -289,7 +295,7 @@ func gap14GetSupplierOrders(t *testing.T, repo *repository.SupplierShipmentRepos
 	rec := httptest.NewRecorder()
 	handleGetSupplierOrders(rec, req, req.Context(), repo, nil, nil)
 	var body struct {
-		Success bool               `json:"success"`
+		Success bool                 `json:"success"`
 		Orders  []gap14SupplierOrder `json:"orders"`
 	}
 	if rec.Code == http.StatusOK {

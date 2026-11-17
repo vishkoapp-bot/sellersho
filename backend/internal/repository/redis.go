@@ -3,9 +3,12 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/dependencybudget"
+	"github.com/drup/platform/internal/observability"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -16,18 +19,25 @@ type RedisClient struct {
 
 // NewRedisClient initializes Redis connection
 func NewRedisClient(redisURL string) (*RedisClient, error) {
+	return NewRedisClientContext(context.Background(), redisURL)
+}
+
+func NewRedisClientContext(parent context.Context, redisURL string) (*RedisClient, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse redis url: %w", err)
+		return nil, errors.New("REDIS_URL initialization failed; configuration value withheld")
 	}
 
+	dependencybudget.ConfigureRedis(opts)
 	client := redis.NewClient(opts)
+	client.AddHook(observability.RedisHook{Registry: observability.Default})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to ping redis: %w", err)
+		client.Close()
+		return nil, errors.New("Redis connection failed; dependency details withheld")
 	}
 
 	return &RedisClient{Client: client}, nil
@@ -67,6 +77,12 @@ func (r *RedisClient) SetJSON(ctx context.Context, key string, val interface{}, 
 // The sorted set is also the expiry index, so expired holds are removed before
 // every new reservation instead of leaving a stale aggregate counter behind.
 func (r *RedisClient) HoldInventory(ctx context.Context, orderID, productID string, qty, availableStock int, ttl time.Duration) error {
+	return r.HoldInventoryUntil(ctx, orderID, productID, qty, availableStock, time.Now().Add(ttl))
+}
+
+// HoldInventoryUntil uses an absolute deadline, so SQL/network delay cannot renew
+// an order's authoritative payment window. Existing Redis keys/scores remain compatible.
+func (r *RedisClient) HoldInventoryUntil(ctx context.Context, orderID, productID string, qty, availableStock int, deadline time.Time) error {
 	if qty <= 0 {
 		return nil
 	}
@@ -74,8 +90,11 @@ func (r *RedisClient) HoldInventory(ctx context.Context, orderID, productID stri
 	holdsKey := fmt.Sprintf("inventory:holds:%s", productID)
 	holdKeyPrefix := fmt.Sprintf("inventory:hold_qty:%s:", productID)
 	member := orderID
-	now := time.Now().Unix()
-	expiresAt := now + int64(ttl/time.Second)
+	now := float64(time.Now().UnixMilli()) / 1000
+	expiresAt := float64(deadline.UnixMilli()) / 1000
+	if expiresAt <= now {
+		return ErrPaymentExpired
+	}
 
 	const script = `
 local holds = KEYS[1]
@@ -107,7 +126,8 @@ if heldQty + qty > stock then
   return 0
 end
 
-redis.call('SET', holdKeyPrefix .. member, qty, 'EX', math.max(1, expires - now))
+if expires <= now then return -1 end
+redis.call('SET', holdKeyPrefix .. member, qty, 'PXAT', math.floor(expires * 1000))
 redis.call('ZADD', holds, expires, member)
 return 1
 `
@@ -162,7 +182,7 @@ if heldQty >= tonumber(ARGV[3]) then
 end
 return 0
 `
-	result, err := r.Client.Eval(ctx, script, []string{holdsKey}, orderID, time.Now().Unix(), qty, holdKeyPrefix).Int()
+	result, err := r.Client.Eval(ctx, script, []string{holdsKey}, orderID, float64(time.Now().UnixMilli())/1000, qty, holdKeyPrefix).Int()
 	if err != nil {
 		return false, err
 	}

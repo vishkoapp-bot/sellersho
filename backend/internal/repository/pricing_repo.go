@@ -182,7 +182,7 @@ func (r *PricingRepository) GetProductMarginCeiling(ctx context.Context, product
 // SetProductMarginCeiling upserts one per-product ceiling (admin only;
 // enforced by the caller). Negative or absurd values are rejected.
 func (r *PricingRepository) SetProductMarginCeiling(ctx context.Context, productID string, pct float64) error {
-	if math.IsNaN(pct) || math.IsInf(pct, 0) || pct < 0 || pct > 1000 {
+	if _, err := pricing.ParsePercent(pct); err != nil {
 		return fmt.Errorf("invalid product margin ceiling %v", pct)
 	}
 	_, err := r.db.ExecContext(ctx, `
@@ -242,6 +242,9 @@ func (r *PricingRepository) GetPlatformPctsBatch(ctx context.Context, productIDs
 
 // SetProductPlatformPct upserts one product ladder row.
 func (r *PricingRepository) SetProductPlatformPct(ctx context.Context, productID string, pct float64) error {
+	if _, err := pricing.ParsePercent(pct); err != nil {
+		return err
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO platform_pct_products (product_id, pct, updated_at)
 		VALUES ($1, $2, NOW())
@@ -252,6 +255,9 @@ func (r *PricingRepository) SetProductPlatformPct(ctx context.Context, productID
 
 // SetCategoryPlatformPct upserts one category ladder row.
 func (r *PricingRepository) SetCategoryPlatformPct(ctx context.Context, categorySlug string, pct float64) error {
+	if _, err := pricing.ParsePercent(pct); err != nil {
+		return err
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO platform_pct_categories (category_slug, pct, updated_at)
 		VALUES ($1, $2, NOW())
@@ -277,6 +283,9 @@ func (r *PricingRepository) DeleteCategoryPlatformPct(ctx context.Context, categ
 // increase_locked, max_profit_margin. Other platform_settings columns are
 // deliberately not written here; they belong to other settings families.
 func (r *PricingRepository) UpdatePlatformPricingSettings(ctx context.Context, s *pricing.PlatformPricingSettings) error {
+	if err := pricing.ValidateSettings(s); err != nil {
+		return err
+	}
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE platform_settings
 		SET platform_pct = $1, central_profit_pct = $2, increase_cap_pct = $3,
@@ -383,6 +392,11 @@ func (r *PricingRepository) ListStoreMarginLocks(ctx context.Context, storeID st
 // simply keeps the current margin on unlock (the migration's documented
 // fallback). No lock semantics beyond freeze/admin_set are invented.
 func (r *PricingRepository) SetStoreMarginLock(ctx context.Context, storeID string, lock pricing.MarginLock) error {
+	if lock.Value != nil {
+		if _, err := pricing.ParsePercent(*lock.Value); err != nil {
+			return err
+		}
+	}
 	if lock.Mode == "admin_set" && lock.Value == nil {
 		return fmt.Errorf("admin_set lock requires lock_value")
 	}
@@ -604,7 +618,7 @@ func (r *PricingRepository) SetStoreVariantOverride(ctx context.Context, o prici
 	// values must also sit inside the binding range for that product
 	// (per-product ceiling replaces the global MaxProfitMargin when set).
 	// Settings load failure fails closed.
-	if math.IsNaN(o.Value) || math.IsInf(o.Value, 0) || o.Value < 0 {
+	if _, err := pricing.ParsePercent(o.Value); err != nil {
 		return fmt.Errorf("invalid variant override value %v", o.Value)
 	}
 	if o.Mode == "percent" {

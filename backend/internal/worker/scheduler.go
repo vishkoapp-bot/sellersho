@@ -3,73 +3,22 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"github.com/drup/platform/internal/jobrunner"
 	"log"
+	"sync"
 
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/repository"
 	"time"
 )
 
-// BackgroundWorker runs scheduled cron tasks in Go.
-//
-// Live-parity notes (Team 09, MASTER-AUDIT D34/D43/D51/D73):
-//
-//   - Cadence is exactly the live one: the delivery-lock-releaser runs
-//     once on startup and then every 60 seconds. The startup message
-//     below reproduces the live startup message verbatim, including
-//     its "search rollup hourly" phrase.
-//   - Profit release is STAGED in live, unlike the old source worker
-//     which released profit in the same UPDATE that confirmed delivery.
-//     Stage 1 (confirmed) only moves an order to delivered_confirmed
-//     after 20 days from shipped_at, and stamps confirmed_at plus
-//     return_window_ends_at (Fix69 O3) so stage 2 can release it.
-//     Stage 2 (released) only flips
-//     profit_released once the return window has closed
-//     (return_window_ends_at <= NOW()). The two counters are recorded
-//     on every cycle in job_runs (migration 202610310008), with
-//     job_id = "delivery-lock-releaser".
-//   - TODO(U19/U26): orders in delivered_confirmed whose
-//     return_window_ends_at is NULL are deliberately NOT released by
-//     stage 2. Live has delivered_confirmed orders with a NULL window
-//     that are already released, so the NULL-window rule is
-//     unverified; no fallback (for example confirmed_at + 7 days)
-//     is guessed here.
-//   - The ledger pair for a release (seller/credit + platform/debit,
-//     agent system:delivery-lock-releaser, D34) is NOT written by this
-//     worker. Ledger writes belong to the finance/order teams; this
-//     worker only flips the profit flags and records the job run.
-//   - TODO(U73): the hourly search rollup destination is unverified.
-//     runSearchRollup is therefore a documented no-op: the hourly
-//     tick exists so the cadence matches live, but it writes nowhere
-//     until U73 is resolved. Do NOT assume search_term_daily is the
-//     hourly destination: the source migration comment for
-//     search_queries names search_term_daily as the archival target
-//     for rows older than 90 days and references a
-//     repository.RollupSearchQueries that does not exist in source
-//     Go, while live search_term_daily holds 0 rows and live
-//     job_runs holds no rollup job.
-//   - Monthly settlement (Team Settlement, Phase 3, on top of
-//     live-parity): the AUTOMATIC sweep is now wired here, in
-//     worker/settlement.go (RunMonthlySettlementIfDue), on the
-//     same 60s ticker and once on startup. It is NOT live
-//     behaviour (MASTER-AUDIT section 3b / U02: live had only
-//     the manual trigger); it is the user-approved automatic
-//     layer. It stays inert while settlement_day is unset,
-//     runs only on the admin-configured settlement_day, and
-//     sweeps at most once per month (cycle period is the primary
-//     key). The settlement tables themselves already exist via
-//     migration 202611020002; no new migration was added.
-//   - The view-recorder and search-log writers (D51, D43) are NOT in
-//     this worker: their tables already exist via migrations
-//     202610230002 (store_view_daily / product_view_daily /
-//     view_dedupe_daily) and 202610220003 + 202610310009
-//     (search_queries / catalog_result_count). The HTTP recorder
-//     handlers belong to the API/catalog teams.
-//   - Redis key patterns are untouched by this file (D73): otp:*,
-//     catalog:*, jwt:revoked:* and sms:bulk:* are neither renamed
-//     nor flushed anywhere in this change.
+// BackgroundWorker runs fixed independent bounded jobs. Search rollup remains an
+// unscheduled compatibility no-op until its write destination is established.
 type BackgroundWorker struct {
 	db          *sql.DB
-	stopCh      chan struct{}
+	engineOnce  sync.Once
+	engine      *jobrunner.Runner
 	orderRepo   *repository.OrderRepository
 	finRepo     *repository.FinanceRepository
 	redisClient *repository.RedisClient
@@ -79,17 +28,11 @@ func (w *BackgroundWorker) SetRedisClient(r *repository.RedisClient) { w.redisCl
 
 func NewBackgroundWorker(db *sql.DB) *BackgroundWorker {
 	return &BackgroundWorker{
-		db:     db,
-		stopCh: make(chan struct{}),
+		db: db,
 	}
 }
 
-// Start begins periodic background audit loops
-// SetOrderRepository wires the staged-release point (Team 03, D34):
-// when set, stage 2 calls OrderRepository.ReleaseClosedReturnWindows,
-// which flips the flags AND writes the seller/credit + platform/debit
-// ledger pair. Without it, stage 2 falls back to the flag-only UPDATE
-// (Team 09 behaviour, used by tests that construct the worker bare).
+// SetOrderRepository is startup wiring, snapshotted before loops start.
 func (w *BackgroundWorker) SetOrderRepository(r *repository.OrderRepository) {
 	w.orderRepo = r
 }
@@ -102,40 +45,35 @@ func (w *BackgroundWorker) SetFinanceRepository(r *repository.FinanceRepository)
 	w.finRepo = r
 }
 
+func (w *BackgroundWorker) runner() *jobrunner.Runner {
+	w.engineOnce.Do(func() {
+		snapshot := &BackgroundWorker{db: w.db, orderRepo: w.orderRepo, finRepo: w.finRepo, redisClient: w.redisClient}
+		w.engine = jobrunner.New(repository.JobStore{DB: w.db}, snapshot.jobs())
+	})
+	return w.engine
+}
 func (w *BackgroundWorker) Start() {
-	ticker := time.NewTicker(60 * time.Second)
-	rollupTicker := time.NewTicker(time.Hour)
-	operationsTicker := time.NewTicker(2 * time.Minute)
-	go func() {
-		log.Println("[INFO] Background Worker started (delivery-lock-releaser every 60s, search rollup hourly)")
-		// Run once on startup
-		w.runDeliveryLockReleaserCycle()
-		w.RunMonthlySettlementIfDue()
-		w.RunOperationsCycle()
-
-		for {
-			select {
-			case <-ticker.C:
-				w.runDeliveryLockReleaserCycle()
-				w.RunMonthlySettlementIfDue()
-			case <-rollupTicker.C:
-				// TODO(U73): hourly search rollup; see runSearchRollup.
-				w.runSearchRollup()
-			case <-operationsTicker.C:
-				w.RunOperationsCycle()
-			case <-w.stopCh:
-				ticker.Stop()
-				rollupTicker.Stop()
-				operationsTicker.Stop()
-				return
-			}
-		}
-	}()
+	if w.db != nil {
+		w.runner().Start()
+	}
 }
 
-// Stop gracefully shuts down background worker
+// Stop cancels all business work and drains within the component's 5s budget.
 func (w *BackgroundWorker) Stop() {
-	close(w.stopCh)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.StopContext(ctx); err != nil {
+		log.Printf("[WARN] background worker drain exceeded budget")
+	}
+}
+
+// StopContext cancels admission and all business work within the caller budget.
+func (w *BackgroundWorker) StopContext(ctx context.Context) error { return w.runner().Stop(ctx) }
+
+// RunDeliveryJob shares admission/ownership with the scheduled delivery pass.
+func (w *BackgroundWorker) RunDeliveryJob(ctx context.Context) error {
+	_, err := w.runner().Run(ctx, "delivery-lock-releaser")
+	return err
 }
 
 // ReleaseExpiredDeliveryLocks runs one delivery-lock-releaser cycle.
@@ -145,7 +83,10 @@ func (w *BackgroundWorker) Stop() {
 // the return window closes) and records the cycle in job_runs, instead
 // of the old single-stage confirm-and-release in one UPDATE.
 func (w *BackgroundWorker) ReleaseExpiredDeliveryLocks() {
-	w.runDeliveryLockReleaserCycle()
+	if w.db == nil {
+		return
+	}
+	_ = w.RunDeliveryJob(context.Background())
 }
 
 // runDeliveryLockReleaserCycle runs the two live stages and records
@@ -159,58 +100,56 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 	}
 
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(observability.NewContext(context.Background()), 10*time.Second)
 	defer cancel()
+	released, confirmed, err = w.deliveryCycle(ctx)
+	w.recordJobRun(ctx, started, released, confirmed, err)
+	return
+}
 
+func (w *BackgroundWorker) deliveryCycle(ctx context.Context) (released int64, confirmed int64, err error) {
 	// Stage 1 (confirmed): 20-day auto-confirm. This step changes
 	// ONLY the status plus the confirmation timestamps; profit stays
 	// locked until stage 2. It does not set profit_released,
 	// profit_released_at or referral_commission_released (those move
 	// with the release).
-	// Fix69 O3: confirmed_at and return_window_ends_at MUST be set
-	// here — stage 2 (ReleaseClosedReturnWindows) only releases
-	// orders with a non-NULL window, so an auto-confirm that set
-	// only the status could never release. The window length is
-	// the same source the manual confirm path uses:
-	// platform_settings.return_window_days (COALESCE 7, clamped
-	// 1..365, same as order_repo returnWindowDaysFromTx /
-	// GetReturnWindowDays), read via the repo when wired and by
-	// the identical query otherwise — never a hardcoded 7 here
-	// when the setting row exists.
-	windowDays := 7
-	if w.orderRepo != nil {
-		windowDays = w.orderRepo.GetReturnWindowDays(ctx)
-	} else {
-		var days int
-		if err := w.db.QueryRowContext(ctx, `SELECT COALESCE(return_window_days, 7) FROM platform_settings ORDER BY id LIMIT 1`).Scan(&days); err == nil && days >= 1 && days <= 365 {
-			windowDays = days
-		}
-	}
-	confirmRows, confirmErr := w.db.QueryContext(ctx, `
-		UPDATE orders
-		SET status = 'delivered_confirmed',
-		    confirmed_at = NOW(),
-		    return_window_ends_at = NOW() + ($1 * INTERVAL '1 day'),
-		    updated_at = NOW()
-		WHERE status IN ('shipped', 'delivered_unconfirmed')
-		  AND shipped_at IS NOT NULL
-		  AND shipped_at <= NOW() - INTERVAL '20 days'
-		  AND profit_released = FALSE
-		RETURNING id
-	`, windowDays)
+	confirmRows, confirmErr := w.db.QueryContext(ctx, `SELECT id FROM orders WHERE status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed') AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-confirm' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY shipped_at,id LIMIT 100`)
 	if confirmErr != nil {
-		w.recordJobRun(ctx, started, 0, 0, confirmErr)
+		return 0, 0, confirmErr
+	}
+	var candidateIDs []string
+	for confirmRows.Next() {
+		var id string
+		if err := confirmRows.Scan(&id); err != nil {
+			confirmRows.Close()
+			return 0, 0, err
+		}
+		candidateIDs = append(candidateIDs, id)
+	}
+	confirmErr = confirmRows.Err()
+	confirmRows.Close()
+	if confirmErr != nil {
 		return 0, 0, confirmErr
 	}
 	var confirmedOrderIDs []string
-	if confirmRows != nil {
-		for confirmRows.Next() {
-			var oid string
-			if err := confirmRows.Scan(&oid); err == nil && oid != "" {
-				confirmedOrderIDs = append(confirmedOrderIDs, oid)
+	var failures []error
+	for _, id := range candidateIDs {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		candidateCtx, candidateCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		ok, err := w.confirmDelivery(candidateCtx, id)
+		candidateCancel()
+		if ok {
+			confirmedOrderIDs = append(confirmedOrderIDs, id)
+		}
+		if err != nil {
+			failures = append(failures, err)
+			if retryErr := repository.RecordJobCandidateRetry(ctx, w.db, "delivery-confirm", id); retryErr != nil {
+				failures = append(failures, retryErr)
 			}
 		}
-		confirmRows.Close()
 	}
 	confirmed = int64(len(confirmedOrderIDs))
 	// P1-3 (best-effort): 20-day auto-confirm — customer + store owner
@@ -230,67 +169,74 @@ func (w *BackgroundWorker) runDeliveryLockReleaserCycle() (released int64, confi
 		// so it can never double-write.
 		released, releaseErr = w.orderRepo.ReleaseClosedReturnWindows(ctx)
 	} else {
-		// Fallback: flag-only release (Team 09 behaviour).
-		releaseRes, err := w.db.ExecContext(ctx, `
-			UPDATE orders
-			SET profit_released = TRUE,
-			    profit_released_at = NOW(),
-			    referral_commission_released = TRUE,
-			    updated_at = NOW()
-			WHERE status = 'delivered_confirmed'
-			  AND profit_released = FALSE
-			  AND return_window_ends_at IS NOT NULL
-			  AND return_window_ends_at <= NOW()
-		`)
-		if err != nil {
-			releaseErr = err
-		} else if releaseRes != nil {
-			released, _ = releaseRes.RowsAffected()
-		}
+		released, releaseErr = repository.NewOrderRepository(w.db).ReleaseClosedReturnWindows(ctx)
 	}
 	if releaseErr != nil {
-		w.recordJobRun(ctx, started, 0, confirmed, releaseErr)
-		return 0, confirmed, releaseErr
+		return released, confirmed, errors.Join(append(failures, releaseErr)...)
 	}
 
 	if released > 0 || confirmed > 0 {
 		log.Printf("[INFO] Background Worker delivery-lock-releaser: confirmed %d, released %d", confirmed, released)
 	}
-	w.recordJobRun(ctx, started, released, confirmed, nil)
-	return released, confirmed, nil
+	return released, confirmed, errors.Join(failures...)
 }
 
-// recordJobRun inserts one row into job_runs. The table is defined
-// by migration 202610310008; the CREATE TABLE IF NOT EXISTS here is
-// belt-and-braces with the identical shape, so a worker started
-// against a database whose migration directory was missing (the
-// runner skips silently in that case) does not fail the cycle.
-// A failed insert is logged, never fatal to the worker loop.
+func (w *BackgroundWorker) confirmDelivery(ctx context.Context, id string) (bool, error) {
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err == nil {
+		defer tx.Rollback()
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := repository.LockOrderAccountsTx(ctx, tx, id); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	// Read the configured window in the same guarded transaction as confirmation.
+	var configured int
+	settingErr := tx.QueryRowContext(ctx, `SELECT COALESCE(return_window_days,7) FROM platform_settings ORDER BY id LIMIT 1`).Scan(&configured)
+	if settingErr != nil && !errors.Is(settingErr, sql.ErrNoRows) {
+		return false, settingErr
+	}
+	windowDays := 7
+	if configured >= 1 && configured <= 365 {
+		windowDays = configured
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+($1*INTERVAL '1 day'),updated_at=NOW() WHERE id=$2 AND status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed')`, windowDays, id)
+	if err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// recordJobRun preserves the compatibility direct-cycle history with a fresh
+// bounded metadata context. Scheduled runs are recorded atomically by JobStore.
 func (w *BackgroundWorker) recordJobRun(ctx context.Context, started time.Time, released, confirmed int64, runErr error) {
+	outcome := "success"
+	if runErr != nil {
+		outcome = "error"
+	}
+	observability.LogOperation(ctx, "worker", "settlement", outcome, time.Since(started))
 	if w.db == nil {
 		return
 	}
-	_, err := w.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS job_runs (
-		  id BIGSERIAL PRIMARY KEY,
-		  job_id TEXT NOT NULL,
-		  started_at TIMESTAMPTZ NOT NULL,
-		  released BIGINT NOT NULL DEFAULT 0,
-		  confirmed BIGINT NOT NULL DEFAULT 0,
-		  duration_ms BIGINT NOT NULL DEFAULT 0,
-		  error TEXT NOT NULL DEFAULT '',
-		  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)
-	`)
-	if err != nil {
-		log.Printf("[WARN] Background Worker failed to ensure job_runs table: %v", err)
-		return
-	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
 	errText := ""
 	if runErr != nil {
-		errText = runErr.Error()
+		errText = jobrunner.ErrorCode(runErr)
 	}
-	_, err = w.db.ExecContext(ctx, `
+	_, err := w.db.ExecContext(ctx, `
 		INSERT INTO job_runs (job_id, started_at, released, confirmed, duration_ms, error)
 		VALUES ('delivery-lock-releaser', $1, $2, $3, $4, $5)
 	`, started, released, confirmed, time.Since(started).Milliseconds(), errText)

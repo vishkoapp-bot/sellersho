@@ -20,12 +20,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
@@ -185,7 +188,7 @@ CREATE TABLE orders (
 	dispute_reason TEXT, carrier TEXT, tracking_number TEXT, shipping_label TEXT,
 	packed_at TIMESTAMPTZ, box_size TEXT, weight_grams INT,
 	idempotency_key TEXT, return_window_ends_at TIMESTAMPTZ,
-	seller_discount_amount BIGINT DEFAULT 0, discount_code TEXT DEFAULT '',
+	seller_discount_amount BIGINT DEFAULT 0, discount_code TEXT DEFAULT '', coupon_discount_amount BIGINT,
 	shipping_quote_id TEXT
 );
 CREATE TABLE order_items (
@@ -261,7 +264,7 @@ func suspensionTestSetup(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping disposable-DB suspension test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
@@ -505,6 +508,12 @@ func TestSupplierSuspensionPublicDetail404(t *testing.T) {
 
 func TestSupplierSuspensionOrderGate(t *testing.T) {
 	db := suspensionTestSetup(t)
+	prepareShippingInventoryFixture(t, db)
+	if _, err := db.Exec(`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES('wh-suspension','Suspension fixture warehouse',1,1,'تهران','تهران')`); err != nil {
+		t.Fatal(err)
+	}
+	seedShippingInventoryFixtureLot(t, db, "prod-a1", "sup-a", "wh-suspension", "", 10)
+	seedShippingInventoryFixtureLot(t, db, "prod-b1", "sup-b", "wh-suspension", "", 10)
 	supRepo := repository.NewSupplierRepository(db)
 	catRepo := repository.NewCatalogRepository(db)
 	storeRepo := repository.NewStoreRepository(db)
@@ -513,8 +522,33 @@ func TestSupplierSuspensionOrderGate(t *testing.T) {
 	pricingRepo := repository.NewPricingRepository(db)
 	ctx := context.WithValue(context.Background(), userClaimsKey, &auth.UserClaims{UserID: "user-cust", Mobile: "09120000009", Role: "customer"})
 
-	create := func(body string) *httptest.ResponseRecorder {
+	create := func(body string, quoted bool) *httptest.ResponseRecorder {
 		t.Helper()
+		if quoted {
+			var payload map[string]interface{}
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatal(err)
+			}
+			quoteBody, err := json.Marshal(map[string]interface{}{"items": payload["items"], "destination": shippingQuoteDestination{Province: "قم", City: "قم", Address: "x", PostalCode: "3711111111"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			qreq := httptest.NewRequest(http.MethodPost, "/api/v1/shipping/quote", strings.NewReader(string(quoteBody)))
+			qrec := httptest.NewRecorder()
+			handleShippingQuote(qrec, qreq, ctx, catRepo, supRepo, db)
+			var quote struct {
+				QuoteID string `json:"quoteId"`
+			}
+			if qrec.Code != http.StatusOK || json.Unmarshal(qrec.Body.Bytes(), &quote) != nil || quote.QuoteID == "" {
+				t.Fatalf("active cart quote: %d %s", qrec.Code, qrec.Body.String())
+			}
+			payload["shippingQuoteId"] = quote.QuoteID
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = string(raw)
+		}
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/orders", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handleCreateOrder(rec, req, ctx, orderRepo, catRepo, storeRepo, shipmentRepo, pricingRepo, supRepo, db)
@@ -527,17 +561,17 @@ func TestSupplierSuspensionOrderGate(t *testing.T) {
 	if err := supRepo.SuspendSupplier(ctx, "sup-a", "admin-1", "x"); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
-	rec := create(suspendedBody)
+	rec := create(suspendedBody, false)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Product prod-a1 is unavailable because its supplier is suspended") {
 		t.Fatalf("suspended cart: code=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := create(cleanBody); rec.Code != http.StatusCreated {
+	if rec := create(cleanBody, true); rec.Code != http.StatusCreated {
 		t.Fatalf("clean cart: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if err := supRepo.ReactivateSupplier(ctx, "sup-a", "admin-1"); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	if rec := create(suspendedBody); rec.Code != http.StatusCreated {
+	if rec := create(suspendedBody, true); rec.Code != http.StatusCreated {
 		t.Fatalf("cart after reactivate: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -553,6 +587,10 @@ func TestSupplierSuspensionSettlementFreeze(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost) VALUES (gen_random_uuid(), 'ord-paid-1', 'prod-b1', 1, 500000)`); err != nil {
 		t.Fatalf("seed order item: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,origin_type,supplier_id,quantity)
+		SELECT 'suspension-origin',order_id,id,'legacy','sup-b',quantity FROM order_items WHERE order_id='ord-paid-1'`); err != nil {
+		t.Fatalf("seed immutable supplier earnings origin: %v", err)
 	}
 
 	if _, err := repo.RequestSettlement(ctx, "sup-b", 100000, "IR000000000000000000000000", "بانک", "مالک ب"); err != nil {

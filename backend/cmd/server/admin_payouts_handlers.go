@@ -2,59 +2,18 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"github.com/drup/platform/internal/pricing"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/drup/platform/internal/repository"
-	"github.com/google/uuid"
 )
 
-// Fix69 (W-ROUTES) R4: admin payout confirmation + admin payment refund.
-//
-// Live evidence (live bundles, /opt/drup/dist/assets, read-only):
-//   AdminDashboardView-MERGED.js:
-//     confirmManualTransfer: POST /admin/payouts/<id>/confirm-manual-transfer
-//       body {transfer_reference, transfer_date} where transfer_date
-//       defaults client-side to new Date().toISOString().
-//     refundPayment: POST /admin/payments/<id>/refund
-//       body {reason, amount?} where amount is omitted for a full
-//       refund (UI: "یا خالی برای کل مبلغ"); the client requires
-//       reason, requires amount > 0 when given, and treats a
-//       {success: true} response as done. The refund form text says
-//       only paid orders are refundable and that the PSP refunds
-//       first and the ledger entry follows.
-//
-// Payout confirm: delegates to
-// FinanceRepository.ConfirmManualTransferWithDate, which is the ONLY
-// step that writes the ledger debit (D32: approval writes no ledger
-// entry; nothing here touches any approval path) and which stores the
-// client-supplied transfer_date INSIDE the same transaction as the
-// status move and the ledger debit (W2 fix: the Fix69 handler stored
-// it with a second UPDATE after the confirmed commit, so a failure
-// there left a confirmed payout with no date). The transfer_date
-// column EXISTS (migration 202610190002); when it is absent the date
-// is not passed in and transfer_confirmed_at=NOW() (set by the repo)
-// stands, as the task's fallback requires. transfer_date accepts
-// RFC3339 or a YYYY-MM-DD date.
-//
-// Payment refund: NO PSP call is made here. That matches the
-// codebase's own convention (order_repo ApplyDisputeRefundEffect
-// documents U21: whether live refunds move real PSP money is
-// unverified, and no PSP gateway is configured in this candidate).
-// This handler records the refund locally in one transaction:
-// paid payment validation, cumulative-refund cap, status moves
-// (full refund only: payment_transactions -> refunded and
-// orders.payment_status -> refunded; partial refunds leave both
-// statuses untouched), and one ledger entry. The <id> is resolved
-// as a payment_transactions id first, then as an order id /
-// order_number (W2 bundle check: the live refund form's <id> IS the
-// typed order id — input placeholder "شناسه سفارش (الزامی)" — so the
-// live-shaped call resolves through the order path; the payment-id
-// reading is extra, not live-proven). The ledger target/type for a refund is a
-// candidate-local choice (target_account = order id,
-// target_type = platform, type = credit) and is NOT claimed as
-// live: the live ledger shape for refunds is unproven.
+// Admin payout confirmation preserves its existing bank-transfer contract.
+// Admin order refunds reserve a source-bound original-payment request and return
+// accepted/pending or review state. A request is never proof of a PSP payout.
 
 func wr69AdminPayouts(w http.ResponseWriter, r *http.Request, db *sql.DB, finRepo *repository.FinanceRepository) {
 	if t01DBNil(w, db) {
@@ -148,6 +107,9 @@ func wr69AdminPayoutConfirm(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 		stored = true
 	}
 	if err := finRepo.ConfirmManualTransferWithDate(ctx, id, ref, wr69Operator(r), transferDateArg); err != nil {
+		if writeFinanceBusy(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not approved") {
 			http.Error(w, `{"error":"Payout is not approved"}`, http.StatusConflict)
 			return
@@ -194,97 +156,19 @@ func wr69AdminPaymentRefund(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 	if !t01DecodeJSON(w, r, &req) {
 		return
 	}
-	reason := strings.TrimSpace(req.Reason)
-	if reason == "" {
-		http.Error(w, `{"error":"reason is required"}`, http.StatusBadRequest)
-		return
-	}
-	if req.Amount != nil && *req.Amount <= 0 {
-		http.Error(w, `{"error":"amount must be greater than 0"}`, http.StatusBadRequest)
-		return
-	}
-	ctx := r.Context()
-	tx, err := db.BeginTx(ctx, nil)
+	result, err := repository.NewOrderRepository(db).RequestAdminPaymentRefund(r.Context(), id, r.Header.Get("Idempotency-Key"), req.Reason, wr69Operator(r), req.Amount)
 	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	defer tx.Rollback()
-	// Resolve <id>: payment id, then order id on payment_transactions,
-	// then order id / order_number via orders.
-	var paymentID, orderID string
-	var paidAmount int64
-	var payStatus string
-	err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE id = $1 FOR UPDATE`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
-	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, id).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
-	}
-	if err == sql.ErrNoRows {
-		var resolvedOrder string
-		if oerr := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id = $1 OR order_number = $1`, id).Scan(&resolvedOrder); oerr == nil {
-			err = tx.QueryRowContext(ctx, `SELECT id, order_id, amount, status FROM payment_transactions WHERE order_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, resolvedOrder).Scan(&paymentID, &orderID, &paidAmount, &payStatus)
-		} else if oerr == sql.ErrNoRows {
-			err = sql.ErrNoRows
-		} else {
-			writeInternalError(w, oerr)
-			return
-		}
-	}
-	if err == sql.ErrNoRows {
-		http.Error(w, `{"error":"Payment not found"}`, http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if payStatus != "paid" {
-		http.Error(w, `{"error":"Only paid payments can be refunded"}`, http.StatusConflict)
-		return
-	}
-	// Cumulative refunds already recorded by this handler (same
-	// reason prefix + related order id) cap further refunds.
-	var alreadyRefunded int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM ledger_entries WHERE related_order_or_dispute = $1 AND reason LIKE 'استرداد وجه سفارش:%'`, orderID).Scan(&alreadyRefunded); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	refundAmount := paidAmount - alreadyRefunded
-	if req.Amount != nil {
-		refundAmount = *req.Amount
-	}
-	if refundAmount <= 0 {
-		http.Error(w, `{"error":"Payment already fully refunded"}`, http.StatusConflict)
-		return
-	}
-	if alreadyRefunded+refundAmount > paidAmount {
-		http.Error(w, `{"error":"refund amount exceeds the paid amount"}`, http.StatusBadRequest)
-		return
-	}
-	full := alreadyRefunded+refundAmount == paidAmount
-	now := time.Now()
-	ledgerID := "REF-LED-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
-		VALUES ($1, $2, $3, 'platform', 'credit', $4, $5, $6, $7)`, ledgerID, now, orderID, refundAmount, "استرداد وجه سفارش: "+reason, wr69Operator(r), orderID); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if full {
-		if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status = 'refunded' WHERE id = $1`, paymentID); err != nil {
+		switch {
+		case errors.Is(err, repository.ErrStoreInput), errors.Is(err, pricing.ErrInvalidMoney):
+			http.Error(w, `{"error":"valid reason, amount and Idempotency-Key are required"}`, http.StatusBadRequest)
+		case errors.Is(err, sql.ErrNoRows):
+			http.Error(w, `{"error":"Payment not found"}`, http.StatusNotFound)
+		case errors.Is(err, repository.ErrRefundPrincipalUnresolved), errors.Is(err, repository.ErrFinanceCommandConflict):
+			http.Error(w, `{"error":"refund principal is reserved, unresolved or request identity changed"}`, http.StatusConflict)
+		default:
 			writeInternalError(w, err)
-			return
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE orders SET payment_status = 'refunded' WHERE id = $1 AND payment_status = 'paid'`, orderID); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		writeInternalError(w, err)
 		return
 	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true, "paymentId": paymentID, "orderId": orderID,
-		"refundedAmount": refundAmount, "alreadyRefunded": alreadyRefunded, "fullRefund": full,
-	})
+	t01WriteJSON(w, http.StatusAccepted, result)
 }

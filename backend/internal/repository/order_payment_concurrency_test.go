@@ -4,16 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 
 	"github.com/google/uuid"
 )
 
 func openPaymentConcurrencyDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("postgres", "postgres://drup_admin:drup_secure_password_2026@localhost:5432/drup_db?sslmode=disable")
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Skipf("Postgres integration test unavailable: %v", err)
 	}
@@ -73,6 +76,8 @@ func TestConcurrentPaymentCallbacksConsumeInventoryOnce(t *testing.T) {
 	})
 
 	repo := NewOrderRepository(db)
+	warehouse := seedCanonicalWarehouseStock(t, db, productID, "sup-ali", 1)
+	seedCanonicalWarehouseOrderOrigins(t, db, orderID, warehouse)
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var wg sync.WaitGroup

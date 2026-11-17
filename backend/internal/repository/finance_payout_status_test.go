@@ -15,10 +15,11 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -77,7 +78,7 @@ func TestPayoutStatusAvailableNeverJumpsBack(t *testing.T) {
 		t.Skip("FINANCE_PAYOUT_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
 	ctx := context.Background()
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}

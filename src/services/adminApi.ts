@@ -57,6 +57,9 @@ export interface StorageFeeSettingsDto {
 }
 
 export interface StorageFeeRunSummaryDto {
+  moreWork?: boolean;
+  verifiedReceiptHistoryOnly?: boolean;
+  unresolvedSampleLimited?: boolean;
   positionsCharged: number;
   positionsSkippedNoMeasurement: number;
   chargesCreated: number;

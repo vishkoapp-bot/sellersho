@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -138,25 +139,46 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 		owedToSuppliers, owedErr := supplierRepo.SumAllSuppliersAvailable(ctx)
 		if owedErr != nil {
 			log.Printf("finance treasury cash-position: SumAllSuppliersAvailable failed: %v", owedErr)
-			writeInternalError(w, owedErr)
+			sellerError(w, owedErr)
 			return
 		}
 		financeRepo := repository.NewFinanceRepository(db)
 		var owedToStores int64
-		if storeRows, err := db.QueryContext(ctx, `SELECT id FROM stores`); err == nil {
-			var storeIDs []string
-			for storeRows.Next() {
-				var storeID string
-				if err := storeRows.Scan(&storeID); err == nil {
-					storeIDs = append(storeIDs, storeID)
-				}
+		storeRows, storeErr := db.QueryContext(ctx, `SELECT id FROM stores`)
+		if storeErr != nil {
+			sellerError(w, storeErr)
+			return
+		}
+		var storeIDs []string
+		for storeRows.Next() {
+			var id string
+			if err := storeRows.Scan(&id); err != nil {
+				storeRows.Close()
+				sellerError(w, err)
+				return
 			}
-			storeRows.Close()
-			for _, storeID := range storeIDs {
-				if bal, err := financeRepo.GetStoreBalance(ctx, storeID); err == nil {
-					owedToStores += bal.AvailableAmount
-				}
+			storeIDs = append(storeIDs, id)
+		}
+		rowsErr := storeRows.Err()
+		storeRows.Close()
+		if rowsErr != nil {
+			sellerError(w, rowsErr)
+			return
+		}
+		var signedStoreAmounts []int64
+		for _, storeID := range storeIDs {
+			bal, err := financeRepo.GetStoreBalance(ctx, storeID)
+			if err != nil {
+				sellerError(w, err)
+				return
 			}
+			signedStoreAmounts = append(signedStoreAmounts, bal.AvailableAmount)
+		}
+		var sumErr error
+		owedToStores, sumErr = repository.SumSignedFinanceBalances(signedStoreAmounts...)
+		if sumErr != nil {
+			sellerError(w, sumErr)
+			return
 		}
 		pendingRefundCount := t01Count(ctx, db, `SELECT COUNT(*) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
 		pendingRefunds := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
@@ -228,7 +250,7 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 			"success": true, "days": days,
 			"allTimeIn": allTimeIn, "allTimeOut": allTimeOut,
 			"overObligated": overObligated, "safeToSpend": safeToSpend,
-			"period": map[string]interface{}{"in": periodIn, "out": periodOut, "trend": trend},
+			"period":         map[string]interface{}{"in": periodIn, "out": periodOut, "trend": trend},
 			"heldOrderCount": heldOrderCount, "heldInOrders": heldInOrders,
 			"owedToStores": owedToStores, "owedToSuppliers": owedToSuppliers,
 			"pendingRefundCount": pendingRefundCount, "pendingRefunds": pendingRefunds,
@@ -490,53 +512,21 @@ func handleT01MonthlyList(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"cycles": []interface{}{}})
 		return
 	}
-	rows, err := db.QueryContext(r.Context(),
-		`SELECT period, settlement_day, status, total_stores, total_gross, total_net, skipped_stores, created_at, created_by
-		FROM monthly_settlement_cycles ORDER BY period DESC`)
+	cycles, err := repository.NewFinanceRepository(db).ListMonthlyCycles(r.Context())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	defer rows.Close()
-	out := []map[string]interface{}{}
-	for rows.Next() {
-		var period, status, createdBy string
-		var day, totalStores int
-		var gross, net int64
-		var skipped int
-		var created time.Time
-		if err := rows.Scan(&period, &day, &status, &totalStores, &gross, &net, &skipped, &created, &createdBy); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		out = append(out, map[string]interface{}{
-			"period": period, "settlementDay": day, "status": status,
-			"totalStores": totalStores, "totalGross": gross, "totalNet": net,
-			"skippedStores": skipped, "createdAt": created.Format(time.RFC3339), "createdBy": createdBy,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"cycles": out})
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"cycles": cycles})
 }
 
 func handleT01MonthlyDetail(w http.ResponseWriter, r *http.Request, db *sql.DB, period string) {
 	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
 		return
 	}
-	ctx := r.Context()
-	var day, totalStores, skipped int
-	var gross, net int64
-	var status, createdBy string
-	var created time.Time
-	var cyclePeriod string
-	err := db.QueryRowContext(ctx,
-		`SELECT period, settlement_day, status, total_stores, total_gross, total_net, skipped_stores, created_at, created_by
-		FROM monthly_settlement_cycles WHERE period = $1`, period).Scan(
-		&cyclePeriod, &day, &status, &totalStores, &gross, &net, &skipped, &created, &createdBy)
-	if err == sql.ErrNoRows {
+	repo := repository.NewFinanceRepository(db)
+	cycle, lines, err := repo.GetMonthlySettlementDetail(r.Context(), period)
+	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, `{"error":"Cycle not found"}`, http.StatusNotFound)
 		return
 	}
@@ -544,45 +534,18 @@ func handleT01MonthlyDetail(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 		writeInternalError(w, err)
 		return
 	}
-	rows, err := db.QueryContext(ctx,
-		`SELECT id, store_id, gross_amount, fee_amount, net_amount, payout_request_id, status
-		FROM monthly_settlement_items WHERE cycle_period = $1 ORDER BY store_id`, period)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	defer rows.Close()
 	items := []map[string]interface{}{}
-	for rows.Next() {
-		var id, storeID, itemStatus string
-		var grossAmt, feeAmt, netAmt int64
-		var payoutID sql.NullString
-		if err := rows.Scan(&id, &storeID, &grossAmt, &feeAmt, &netAmt, &payoutID, &itemStatus); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		items = append(items, map[string]interface{}{
-			"id": id, "storeId": storeID, "grossAmount": grossAmt, "feeAmount": feeAmt,
-			"netAmount": netAmt, "payoutRequestId": payoutID.String, "status": itemStatus,
-		})
+	for _, it := range lines {
+		items = append(items, map[string]interface{}{"id": it.ID, "storeId": it.StoreID, "grossAmount": it.GrossAmount, "feeAmount": it.FeeAmount, "netAmount": it.NetAmount, "payoutRequestId": it.PayoutRequestID, "status": it.Status})
 	}
-	if err := rows.Err(); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"period": period, "settlementDay": day, "status": status,
-		"totalStores": totalStores, "totalGross": gross, "totalNet": net,
-		"skippedStores": skipped, "createdAt": created.Format(time.RFC3339), "createdBy": createdBy,
-		"items": items,
-	})
+	t01WriteJSON(w, http.StatusOK, struct {
+		*repository.MonthlySettlementCycle
+		Items []map[string]interface{} `json:"items"`
+	}{cycle, items})
 }
 
-// handleT01MonthlyRun serves POST /api/v1/finance/settlements/monthly/run.
-// MANUAL trigger only: the caller supplies {"period": "YYYY-MM"} and the
-// run settles that month exactly once (period is the cycle PK).
-// TODO (U02): whether live also runs this automatically is unverified;
-// no worker is registered here.
+// handleT01MonthlyRun starts/resumes the shared durable reservation service.
+// A completed period stays sealed; partial work is acknowledged truthfully.
 func handleT01MonthlyRun(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if !t01MethodOnly(w, r, http.MethodPost) || t01DBNil(w, db) {
 		return
@@ -593,172 +556,31 @@ func handleT01MonthlyRun(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if !t01DecodeJSON(w, r, &req) {
 		return
 	}
-	period := strings.TrimSpace(req.Period)
-	if !t01PeriodRe.MatchString(period) {
+	cycle, err := repository.NewFinanceRepository(db).RunMonthlySettlementForPeriod(r.Context(), strings.TrimSpace(req.Period), t01ClaimsUserID(r))
+	if errors.Is(err, repository.ErrInvalidSettlementPeriod) {
 		http.Error(w, `{"error":"period (YYYY-MM) is required"}`, http.StatusBadRequest)
 		return
 	}
-	ctx := r.Context()
-	// Settlement must be configured by an admin: settlement_day NULL
-	// means the engine stays inert (live message, Team 02 §6).
-	var settlementDay sql.NullInt64
-	if t01ColumnExists(ctx, db, "platform_settings", "settlement_day") {
-		_ = db.QueryRowContext(ctx,
-			`SELECT settlement_day FROM platform_settings WHERE id = 1`).Scan(&settlementDay)
-	}
-	if !settlementDay.Valid {
+	if errors.Is(err, repository.ErrSettlementNotConfigured) {
 		http.Error(w, `{"error":"monthly settlement is not configured by an admin"}`, http.StatusConflict)
 		return
 	}
-	finRepo := repository.NewFinanceRepository(db)
-	createdBy := t01ClaimsUserID(r)
-
-	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	defer tx.Rollback()
-	// Advisory lock mirroring the automatic sweep
-	// (repository.RunMonthlySettlement, same key 91827364): serialize
-	// concurrent runs across the check-then-insert, so a second
-	// concurrent run for the same period waits, then re-checks and
-	// gets the clean 409 below instead of 500ing on the cycle-PK
-	// insert. pg_advisory_xact_lock is released at commit/rollback
-	// (the deferred Rollback covers the early-return paths). The key
-	// is global, not per-period, so this also serializes a manual run
-	// against a concurrent automatic sweep.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(91827364)`); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	var existing string
-	err = tx.QueryRowContext(ctx,
-		`SELECT period FROM monthly_settlement_cycles WHERE period = $1`, period).Scan(&existing)
-	if err == nil {
+	if cycle.AlreadyCompleted {
 		http.Error(w, `{"error":"Settlement cycle already exists for this period"}`, http.StatusConflict)
 		return
 	}
-	if err != nil && err != sql.ErrNoRows {
-		writeInternalError(w, err)
-		return
+	status := http.StatusOK
+	if cycle.Status != "completed" {
+		status = http.StatusAccepted
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO monthly_settlement_cycles (period, settlement_day, status, created_by)
-		VALUES ($1, $2, 'completed', $3)`, period, settlementDay.Int64, createdBy); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	// Candidate stores: dropshipper stores (central excluded: settling
-	// the platform's own store to itself is meaningless; TODO: the live
-	// store filter is unverified).
-	storeRows, err := tx.QueryContext(ctx,
-		`SELECT id, name FROM stores WHERE owner_type != 'central' ORDER BY id`)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	type storeRow struct{ id, name string }
-	stores := []storeRow{}
-	for storeRows.Next() {
-		var s storeRow
-		if err := storeRows.Scan(&s.id, &s.name); err != nil {
-			storeRows.Close()
-			writeInternalError(w, err)
-			return
-		}
-		stores = append(stores, s)
-	}
-	if err := storeRows.Err(); err != nil {
-		storeRows.Close()
-		writeInternalError(w, err)
-		return
-	}
-	storeRows.Close()
-
-	var totalStores, skippedStores int
-	var totalGross, totalNet int64
-	for _, s := range stores {
-		// Balance is read through the existing finance repo function
-		// (Team 02 D31 formula, including early-withdrawal deductions),
-		// outside the cycle transaction: it only reads.
-		bal, err := finRepo.GetStoreBalance(ctx, s.id)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		available := bal.AvailableAmount
-		if available <= 0 {
-			continue
-		}
-		// Bank details on record: the store's most recent payout
-		// request (TODO: source unverified, see file header).
-		var shaba, bankName string
-		err = tx.QueryRowContext(ctx,
-			`SELECT shaba, bank_name FROM payout_requests WHERE store_id = $1 ORDER BY created_at DESC LIMIT 1`,
-			s.id).Scan(&shaba, &bankName)
-		itemID := "msi-" + uuid.NewString()
-		if err == sql.ErrNoRows || strings.TrimSpace(shaba) == "" {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO monthly_settlement_items (id, cycle_period, store_id, gross_amount, fee_amount, net_amount, status)
-				VALUES ($1, $2, $3, $4, 0, $4, 'skipped_no_bank_details')`,
-				itemID, period, s.id, available); err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			skippedStores++
-			totalStores++
-			totalGross += available
-			totalNet += available
-			continue
-		}
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		// Pending payout request for the full (fee-free) amount. The
-		// request stays 'pending' for the existing finance review /
-		// transfer-confirmation flow (D32); no ledger entry is written
-		// here, because approval alone never writes the ledger.
-		// NOTE: recipient_type is 'seller' because the payout_requests CHECK
-		// constraint (migration 000003) allows only ('seller','supplier');
-		// finance_repo.go uses 'dropshipper' but no migration has legalised
-		// that value yet, so it would fail at runtime. Revisit if the
-		// schema team relaxes the constraint (supervisor: see report).
-		payoutID := "pay-req-" + uuid.NewString()
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO payout_requests (id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status, available_balance, created_at)
-			VALUES ($1, $2, 'seller', $3, $4, $5, $6, 'pending', $6, NOW())`,
-			payoutID, s.id, s.name, shaba, bankName, available); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO monthly_settlement_items (id, cycle_period, store_id, gross_amount, fee_amount, net_amount, payout_request_id, status)
-			VALUES ($1, $2, $3, $4, 0, $4, $5, 'pending_payout')`,
-			itemID, period, s.id, available, payoutID); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		totalStores++
-		totalGross += available
-		totalNet += available
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE monthly_settlement_cycles SET total_stores = $1, total_gross = $2, total_net = $3, skipped_stores = $4 WHERE period = $5`,
-		totalStores, totalGross, totalNet, skippedStores, period); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true, "period": period, "status": "completed",
-		"totalStores": totalStores, "totalGross": totalGross, "totalNet": totalNet,
-		"skippedStores": skippedStores,
-	})
+	t01WriteJSON(w, status, struct {
+		*repository.MonthlySettlementCycle
+		Success bool `json:"success"`
+	}{cycle, true})
 }
 
 // handleT01SettlementsApproved serves GET
@@ -884,6 +706,20 @@ func handleT01EarlyWithdrawalReview(w http.ResponseWriter, r *http.Request, db *
 		return
 	}
 	defer tx.Rollback()
+	var accountStoreID string
+	if err := tx.QueryRowContext(ctx, `SELECT store_id FROM seller_early_withdrawals WHERE id=$1`, id).Scan(&accountStoreID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Withdrawal not found"}`, http.StatusNotFound)
+		} else {
+			writeInternalError(w, err)
+		}
+		return
+	}
+	var accountLocks repository.TransactionLockSet
+	if err := repository.LockAccountsTx(ctx, tx, &accountLocks, repository.FinancialAccount{Type: "seller", ID: accountStoreID}); err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	var storeID, storeName, shaba, bankName, oldStatus string
 	var netAmount int64
 	err = tx.QueryRowContext(ctx,

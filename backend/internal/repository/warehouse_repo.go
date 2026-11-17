@@ -32,33 +32,43 @@ type WarehouseInbound struct {
 }
 
 type QCQueueItem struct {
-	ID               string    `json:"id"`
-	ProductID        string    `json:"productId"`
-	ProductTitle     string    `json:"productTitle"`
-	InboundID        string    `json:"inboundId"`
-	SupplierName     string    `json:"supplierName"`
-	ExpectedQuantity int       `json:"expectedQuantity"`
-	ReceivedQuantity int       `json:"receivedQuantity"`
-	CreatedAt        time.Time `json:"createdAt"`
+	ReconciliationRequired bool      `json:"reconciliationRequired"`
+	ReceiptLineID          string    `json:"receiptLineId"`
+	VariantID              string    `json:"variantId,omitempty"`
+	PassedQuantity         int       `json:"passedQuantity"`
+	FailedQuantity         int       `json:"failedQuantity"`
+	ShortageQuantity       int       `json:"shortageQuantity"`
+	RemainingQuantity      int       `json:"remainingQuantity"`
+	ID                     string    `json:"id"`
+	ProductID              string    `json:"productId"`
+	ProductTitle           string    `json:"productTitle"`
+	InboundID              string    `json:"inboundId"`
+	SupplierName           string    `json:"supplierName"`
+	ExpectedQuantity       int       `json:"expectedQuantity"`
+	ReceivedQuantity       int       `json:"receivedQuantity"`
+	CreatedAt              time.Time `json:"createdAt"`
 }
 
 type PutawayQueueItem struct {
-	ID                string    `json:"id"`
-	ProductID         string    `json:"productId"`
-	VariantID         string    `json:"variantId,omitempty"`
-	VariantName       string    `json:"variantName,omitempty"`
-	VariantSPNC       string    `json:"variantSpnc,omitempty"`
-	Title             string    `json:"title"`
-	InboundID         string    `json:"inboundId"`
-	BinLocation       string    `json:"binLocation"`
-	Quantity          int       `json:"quantity"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"createdAt"`
-	LengthMM          int       `json:"lengthMm"`
-	WidthMM           int       `json:"widthMm"`
-	HeightMM          int       `json:"heightMm"`
-	WeightGrams       int       `json:"weightGrams"`
-	MeasurementStatus string    `json:"measurementStatus"`
+	ReconciliationRequired bool      `json:"reconciliationRequired"`
+	ID                     string    `json:"id"`
+	ProductID              string    `json:"productId"`
+	VariantID              string    `json:"variantId,omitempty"`
+	VariantName            string    `json:"variantName,omitempty"`
+	VariantSPNC            string    `json:"variantSpnc,omitempty"`
+	Title                  string    `json:"title"`
+	InboundID              string    `json:"inboundId"`
+	BinLocation            string    `json:"binLocation"`
+	Quantity               int       `json:"quantity"`
+	Status                 string    `json:"status"`
+	CreatedAt              time.Time `json:"createdAt"`
+	LengthMM               int       `json:"lengthMm"`
+	WidthMM                int       `json:"widthMm"`
+	HeightMM               int       `json:"heightMm"`
+	WeightGrams            int       `json:"weightGrams"`
+	MeasurementStatus      string    `json:"measurementStatus"`
+	MeasurementRevision    string    `json:"measurementRevision,omitempty"`
+	MeasurementSource      string    `json:"measurementSource"`
 }
 
 type ReadyToPickOrder struct {
@@ -257,26 +267,46 @@ func (r *WarehouseRepository) ScanItem(ctx context.Context, inboundID string, it
 
 // CompleteInbound completes inbound receiving and queues items for QC
 func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, staffUserID string) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	now := time.Now()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE inbound_shipments
-		SET status = 'received', completed_at = $1
-		WHERE id = $2 AND status IN ('receiving', 'pending', 'in_transit')
-	`, now, inboundID)
-	if err != nil {
+	if err := lockInboundShipmentTx(ctx, tx, inboundID); err != nil {
 		return err
 	}
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("محموله ورودی یافت نشد: %s", inboundID)
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM inbound_shipments WHERE id=$1`, inboundID).Scan(&current); err != nil {
+		return err
+	}
+	if current != "receiving" && current != "pending" && current != "in_transit" && current != "received" {
+		return ErrInboundProvenance
+	}
+	var before int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(received_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inboundID).Scan(&before); err != nil {
+		return err
 	}
 	if err := applyInboundInventoryTx(ctx, tx, inboundID, staffUserID); err != nil {
+		return err
+	}
+	var outstanding, received int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(dispatched_quantity-received_quantity),0),COALESCE(SUM(received_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, inboundID).Scan(&outstanding, &received); err != nil {
+		return err
+	}
+	status := "received"
+	if outstanding > 0 {
+		status = "receiving"
+	}
+	// A completed replay has already validated every cumulative quantity above.
+	// Acknowledge without rewriting timestamps or appending another completion.
+	if before == received && ((current == "received" && outstanding == 0) || (current == "receiving" && outstanding > 0)) {
+		return tx.Commit()
+	}
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE inbound_shipments SET status=$2::text,completed_at=CASE WHEN $2::text='received' THEN COALESCE(completed_at,$3) ELSE completed_at END WHERE id=$1`, inboundID, status, now); err != nil {
 		return err
 	}
 
@@ -295,32 +325,50 @@ func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, st
 // GetQCQueue returns items pending quality check inspection
 func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, error) {
 	query := `
-		SELECT i.id || ':' || COALESCE(item->>'productId', item->>'product_id'),
-		       COALESCE(item->>'productId', item->>'product_id'), COALESCE(p.title, ''),
-		       i.id, i.supplier_name, COALESCE((item->>'quantity')::int, 0),
-		       COALESCE(scanned.received_quantity, 0), i.created_at
-		FROM inbound_shipments i
-		CROSS JOIN LATERAL jsonb_array_elements(COALESCE(i.items, '[]'::jsonb)) item
-		JOIN products p ON p.id = COALESCE(item->>'productId', item->>'product_id')
-		LEFT JOIN LATERAL (
-			SELECT COALESCE(SUM(COALESCE((scan->>'quantity')::int, 0)), 0) AS received_quantity
-			FROM jsonb_array_elements(COALESCE(i.scanned_items, '[]'::jsonb)) scan
-			WHERE COALESCE(scan->>'productId', scan->>'product_id') = COALESCE(item->>'productId', item->>'product_id')
-		) scanned ON TRUE
-		WHERE i.status = 'received'
-		  AND NOT EXISTS (
-			-- Fix P3-15: a 'passed' qc_result means the item already went
-			-- through QC (RecordQCPass is now a full pass with inventory
-			-- movement). Keeping it in the queue let the dual QC paths run
-			-- on the same item and double-credit inventory.
-			SELECT 1 FROM qc_results q
-			WHERE q.inbound_id = i.id
-			  AND q.product_id = COALESCE(item->>'productId', item->>'product_id')
-			  AND q.status IN ('passed', 'completed')
-		  )
-		ORDER BY i.created_at DESC
-		LIMIT 20
-	`
+        WITH queue(id,product_id,title,inbound_id,supplier_name,expected,received,created_at,line_id,variant_id,passed,failed,shortage,remaining,reconciliation_required) AS (
+            SELECT l.id,l.product_id,COALESCE(p.title,''),l.shipment_id,h.supplier_name,
+                   l.quantity,l.received_quantity,h.created_at,l.id,l.variant_id,
+                   COALESCE(d.quantity_passed,0),COALESCE(d.quantity_failed,0),
+                   COALESCE(d.quantity_shortage,0),l.received_quantity-COALESCE(d.cumulative_disposed,0),
+                   EXISTS(SELECT 1 FROM qc_results q WHERE q.inbound_id=l.shipment_id AND q.product_id=l.product_id AND NOT EXISTS(SELECT 1 FROM inbound_qc_dispositions evidence WHERE evidence.id=q.id))
+            FROM inbound_inventory_lines l
+            JOIN products p ON p.id=l.product_id
+            JOIN (
+                SELECT id::text AS id,COALESCE(supplier_name,'') AS supplier_name,created_at FROM inbound_shipments WHERE status IN ('receiving','received')
+                UNION ALL
+                SELECT id::text,'' AS supplier_name,created_at FROM shipments WHERE status IN ('received','partially_received')
+            ) h ON h.id=l.shipment_id
+            LEFT JOIN LATERAL (
+                SELECT quantity_passed,quantity_failed,quantity_shortage,cumulative_disposed
+                FROM inbound_qc_dispositions WHERE receipt_line_id=l.id ORDER BY cumulative_disposed DESC LIMIT 1
+            ) d ON TRUE
+            WHERE l.received_quantity>COALESCE(d.cumulative_disposed,0)
+            UNION ALL
+            -- Preserve unallocated history as an explicit, unactionable exception.
+            -- Scan quantities are evidence to review, never stock to credit.
+            SELECT 'legacy:'||i.id||':'||COALESCE(item->>'productId',item->>'product_id'),
+                   COALESCE(item->>'productId',item->>'product_id'),COALESCE(p.title,''),i.id,COALESCE(i.supplier_name,''),
+                   COALESCE((item->>'quantity')::int,0),scanned.received_quantity,i.created_at,'','',0,0,0,scanned.received_quantity,TRUE
+            FROM inbound_shipments i
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(i.items,'[]'::jsonb)) item
+            LEFT JOIN products p ON p.id=COALESCE(item->>'productId',item->>'product_id')
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(SUM(COALESCE((scan->>'quantity')::int,0)),0)::int AS received_quantity
+                FROM jsonb_array_elements(COALESCE(i.scanned_items,'[]'::jsonb)) scan
+                WHERE COALESCE(scan->>'productId',scan->>'product_id')=COALESCE(item->>'productId',item->>'product_id')
+            ) scanned
+            WHERE i.status IN ('receiving','received') AND NOT EXISTS(
+                SELECT 1 FROM inbound_inventory_lines l WHERE l.shipment_id=i.id AND l.product_id=COALESCE(item->>'productId',item->>'product_id'))
+            UNION ALL
+            SELECT 'legacy:'||s.id::text||':'||si.variant_id::text,COALESCE(v.product_id,''),COALESCE(p.title,''),s.id::text,'',
+                   si.expected_qty,si.received_qty,s.created_at,'',si.variant_id::text,0,0,0,si.received_qty,TRUE
+            FROM shipments s JOIN shipment_items si ON si.shipment_id=s.id
+            LEFT JOIN product_variants v ON v.id=si.variant_id LEFT JOIN products p ON p.id=v.product_id
+            WHERE s.status IN ('received','partially_received') AND si.received_qty>0 AND NOT EXISTS(
+                SELECT 1 FROM inbound_inventory_lines l WHERE l.shipment_id=s.id::text AND l.variant_id=si.variant_id::text)
+        )
+        SELECT * FROM queue ORDER BY created_at DESC,id COLLATE "C" LIMIT 20
+    `
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -333,6 +381,7 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 		if err := rows.Scan(
 			&item.ID, &item.ProductID, &item.ProductTitle,
 			&item.InboundID, &item.SupplierName, &item.ExpectedQuantity, &item.ReceivedQuantity, &item.CreatedAt,
+			&item.ReceiptLineID, &item.VariantID, &item.PassedQuantity, &item.FailedQuantity, &item.ShortageQuantity, &item.RemainingQuantity, &item.ReconciliationRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -341,322 +390,106 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 	return list, nil
 }
 
-// RecordQCPass records successful quality inspection and enqueues putaway.
-// (Fix P3-15) Hardened against the dual-QC double-credit hazard:
-//  1. Idempotency guard: an existing 'passed'/'completed' qc_result for the
-//     item makes a re-run a silent no-op — a QC pass can never credit the
-//     same item twice (no duplicate putaway task, no second movement). The
-//     shipment row is locked FOR UPDATE so concurrent passes serialize.
-//  2. Inventory movement: this used to leave goods stranded in 'physical'
-//     forever (never sellable). It now performs the same physical→sellable
-//     movement as CompleteQC, with a DETERMINISTIC movement idempotency key
-//     ("qc-pass:<inbound>:<product>") so even a guard bypass could not
-//     double-credit balances.
-//
-// debitSupplierSellableForQCReceiptTx is the legacy-ASN counterpart of the C3
-// true-transfer debit in the SKU receive path (sku_returns_handlers.go).
-//
-// The supplier's declared sellable total (the 'supplier:<id>' balance row,
-// maintained by setSupplierSellableTotalTx) is the canonical sellable pool —
-// it already includes stock physically held at the warehouse. When QC-pass
-// moves units from 'physical' to 'sellable', those units would otherwise be
-// counted TWICE (once in the supplier row, once at the warehouse), inflating
-// the canonical pool on every QC pass (oversell risk).
-//
-// So in the same transaction, debit the supplier's own sellable row by
-// min(qty, available) — clamped at zero, never negative — and record the
-// actual debited amount as a transfer movement. No-op when the product has no
-// supplier sellable row (legacy products): the QC-pass mint is then a genuine
-// addition, matching the SKU path's legacy fallback.
-func debitSupplierSellableForQCReceiptTx(ctx context.Context, tx *sql.Tx, productID string, qty int, referenceType, referenceID, actorUserID, toLocationKey string) error {
-	if qty <= 0 {
-		return nil
-	}
-	var prodSupplierID string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id = $1`, productID).Scan(&prodSupplierID); err != nil {
-		return err
-	}
-	if prodSupplierID == "" {
-		return nil
-	}
-	supplierKey := "supplier:" + prodSupplierID
-	// Race-safe: lock the row, clamp at zero, and learn the actual debited
-	// amount so the audit movement reflects reality (not the requested qty).
-	var oldQty, newQty sql.NullInt64
-	err := tx.QueryRowContext(ctx, `
-		WITH prev AS (
-			SELECT quantity AS old_qty FROM inventory_balances
-			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
-			  AND owner_type = 'supplier' AND location_type = 'supplier'
-			  AND location_key = $3
-			FOR UPDATE
-		),
-		upd AS (
-			UPDATE inventory_balances
-			SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW()
-			WHERE product_id = $2 AND variant_id IS NULL AND status = 'sellable'
-			  AND owner_type = 'supplier' AND location_type = 'supplier'
-			  AND location_key = $3
-			RETURNING quantity AS new_qty
-		)
-		SELECT (SELECT old_qty FROM prev), (SELECT new_qty FROM upd)`,
-		qty, productID, supplierKey).Scan(&oldQty, &newQty)
-	if err != nil {
-		return err
-	}
-	if !oldQty.Valid || !newQty.Valid {
-		return nil // no supplier sellable row — nothing to transfer from
-	}
-	actualDebit := int(oldQty.Int64 - newQty.Int64)
-	if actualDebit <= 0 {
-		return nil
-	}
-	mvID := "IM-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO inventory_movements
-			(id, product_id, supplier_id, quantity, from_status, to_status,
-			 from_location_key, to_location_key, reference_type, reference_id,
-			 idempotency_key, actor_user_id, metadata)
-		VALUES ($1,$2,$3,$4,'sellable','sellable',$5,$6,$7,$8,$1,NULLIF($9,''),'{}'::jsonb)`,
-		mvID, productID, prodSupplierID, actualDebit,
-		supplierKey, toLocationKey, referenceType, referenceID, actorUserID); err != nil {
-		return err
-	}
-	return nil
+// RecordQCPass accepts cumulative all-passed counts through the same durable
+// receipt-line identity as CompleteQC. Accepted stock awaits exact putaway.
+func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int, receiptLineID ...string) error {
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, qty, 0, 0, "", receiptLineID...)
 }
 
-func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int) error {
+// CompleteQC accepts cumulative disposition counts, never a second source debit.
+func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("QC reason is required")
+	}
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, passed, failed, shortage, strings.TrimSpace(reason), receiptLineID...)
+}
+
+func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, productID, shipmentID, actor string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+	if len(receiptLineID) > 1 || (len(receiptLineID) == 1 && strings.TrimSpace(receiptLineID[0]) == "") {
+		return ErrInboundProvenance
+	}
+	if strings.TrimSpace(productID) == "" || strings.TrimSpace(shipmentID) == "" || passed < 0 || failed < 0 || shortage < 0 || int64(passed)+int64(failed) <= 0 || int64(passed)+int64(failed) > 2147483647 || int64(shortage) > 2147483647 {
+		return ErrInboundProvenance
+	}
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	if qty <= 0 {
-		return fmt.Errorf("positive QC quantity required")
-	}
-	// Serialize concurrent passes on the shipment row (mirrors CompleteQC).
-	var supplierID string
-	var warehouseID string
-	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
+	if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
 		return err
 	}
-	if qty > received {
-		return fmt.Errorf("QC quantity exceeds physically received quantity")
-	}
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM qc_results WHERE inbound_id=$1 AND product_id=$2 AND status IN ('passed','completed')`, inboundID, productID).Scan(&existing); err == nil {
-		return tx.Commit()
-	}
-
-	resID := "QC-" + uuid.NewString()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO qc_results (id, product_id, inbound_id, inspector_user_id, status, quantity_passed, created_at)
-		VALUES ($1, $2, $3, $4, 'passed', $5, NOW())
-	`, resID, productID, inboundID, inspectorUserID, qty)
+	lines, err := inboundLinesTx(ctx, tx, shipmentID)
 	if err != nil {
 		return err
 	}
-
-	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
-	if err != nil {
-		return err
-	}
-	if err := moveInventoryTx(ctx, tx, productID, supplierID, qty, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", resID, "qc-pass:"+inboundID+":"+productID, inspectorUserID, `{}`); err != nil {
-		return err
-	}
-
-	// P0 2026-10-20: true-transfer debit — QC-pass mints sellable at the
-	// warehouse, so the supplier's canonical sellable row is debited in the
-	// same tx (cf. C3 in the SKU receive path); otherwise every pass
-	// inflates the pool. Runs after the move so its products.stock re-sync
-	// (inside moveInventoryTx) already covered the credit; re-sync again
-	// for the debit leg.
-	if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, qty, "inbound_qc_pass_transfer", resID, inspectorUserID, "warehouse:"+inboundID); err != nil {
-		return err
-	}
-	if err := syncProductStockTx(ctx, tx, productID); err != nil {
-		return err
-	}
-
-	putID := "PUT-" + uuid.NewString()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO putaway_tasks (id, product_id, inbound_id, bin_location, quantity, status, created_at)
-		VALUES ($1, $2, $3, NULL, $4, 'pending', NOW())
-	`, putID, productID, inboundID, qty)
-	if err != nil {
-		return err
-	}
-
-	// Storage-fee position (gap 7 lifecycle): this pass minted the
-	// sellable warehouse stock above, so the same quantity joins the
-	// position ledger in this transaction (skipped when an earlier
-	// QC path already credited this inbound's sellable move).
-	if !qcCredited {
-		if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, qty); err != nil {
-			return err
+	// The legacy endpoint names a product, not a SKU. Never spread a QC
+	// decision across multiple SKU lines or infer one from today's catalog.
+	var selected *inboundPersistedLine
+	for i := range lines {
+		if lines[i].Product != productID || (len(receiptLineID) == 1 && lines[i].ID != receiptLineID[0]) {
+			continue
 		}
+		if selected != nil {
+			return ErrInboundProvenance
+		}
+		selected = &lines[i]
 	}
-
-	return tx.Commit()
-}
-
-func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string) error {
-	if strings.TrimSpace(productID) == "" || strings.TrimSpace(inboundID) == "" || passed < 0 || failed < 0 || shortage < 0 || passed+failed == 0 || strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("valid QC quantities and reason are required")
+	if selected == nil {
+		return ErrInboundProvenance
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
+	if err := dispositionInboundLineTx(ctx, tx, *selected, actor, passed, failed, shortage, reason); err != nil {
 		return err
-	}
-	defer tx.Rollback()
-	var supplierID string
-	var warehouseID string
-	var received int
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,items_count,COALESCE(warehouse_id,'') FROM inbound_shipments WHERE id=$1 AND status='received' FOR UPDATE`, inboundID).Scan(&supplierID, &received, &warehouseID); err != nil {
-		return err
-	}
-	if passed+failed > received {
-		return fmt.Errorf("QC quantities exceed physically received quantity")
-	}
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM qc_results WHERE inbound_id=$1 AND product_id=$2 AND status='completed'`, inboundID, productID).Scan(&existing); err == nil {
-		return tx.Commit()
-	}
-	qcID := "QC-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO qc_results (id,product_id,inbound_id,inspector_user_id,status,defect_reason,quantity_passed,quantity_failed,created_at) VALUES ($1,$2,$3,$4,'completed',$5,$6,$7,NOW())`, qcID, productID, inboundID, inspectorUserID, reason, passed, failed); err != nil {
-		return err
-	}
-	if shortage > 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO qc_discrepancies (id,inbound_id,supplier_id,product_id,expected_quantity,received_quantity,defect_count,reason,status,created_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,'open',NOW()`, "DISP-QC-"+uuid.NewString(), inboundID, supplierID, productID, received+shortage, received, failed, reason); err != nil {
-			return err
-		}
-	}
-	qcCredited, err := qcSellableAlreadyCreditedTx(ctx, tx, productID, inboundID)
-	if err != nil {
-		return err
-	}
-	if passed > 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,inbound_id,bin_location,quantity,status,created_at) VALUES ($1,$2,$3,NULL,$4,'pending',NOW())`, "PUT-"+uuid.NewString(), productID, inboundID, passed); err != nil {
-			return err
-		}
-		if err := moveInventoryTx(ctx, tx, productID, supplierID, passed, "physical", "sellable", "inbound:"+inboundID, "warehouse:"+inboundID, "qc_pass", qcID, "qc:"+qcID+":passed", inspectorUserID, `{"failed":%d,"shortage":%d}`, failed, shortage); err != nil {
-			return err
-		}
-		// P0 2026-10-20: true-transfer debit, same as RecordQCPass above —
-		// only the passed units become sellable, so only they are debited
-		// from the supplier's canonical sellable row (failed units go to
-		// 'damaged' and never enter the sellable pool).
-		if err := debitSupplierSellableForQCReceiptTx(ctx, tx, productID, passed, "inbound_qc_pass_transfer", qcID, inspectorUserID, "warehouse:"+inboundID); err != nil {
-			return err
-		}
-		if err := syncProductStockTx(ctx, tx, productID); err != nil {
-			return err
-		}
-		// Storage-fee position (gap 7 lifecycle): same rule as
-		// RecordQCPass — the passed quantity joins the position
-		// ledger in this transaction, once per inbound QC credit.
-		if !qcCredited {
-			if err := creditStoragePositionTx(ctx, tx, productID, supplierID, warehouseID, inboundID, passed); err != nil {
-				return err
-			}
-		}
-	}
-	if failed > 0 {
-		if err := moveInventoryTx(ctx, tx, productID, supplierID, failed, "physical", "damaged", "inbound:"+inboundID, "quarantine:"+inboundID, "qc_failed", qcID, "qc:"+qcID+":failed", inspectorUserID, `{"reason":%q}`, reason); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }
 
 func applyInboundInventoryTx(ctx context.Context, tx *sql.Tx, inboundID, actor string) error {
-	var supplierID string
-	var items []byte
-	var scanned []byte
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,COALESCE(items,'[]'::jsonb),COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments WHERE id=$1 FOR UPDATE`, inboundID).Scan(&supplierID, &items, &scanned); err != nil {
+	lines, err := inboundLinesTx(ctx, tx, inboundID)
+	if err != nil {
 		return err
 	}
-	var entries []struct {
-		ProductID       string `json:"productId"`
-		ProductIDLegacy string `json:"product_id"`
-		Quantity        int    `json:"quantity"`
+	if len(lines) == 0 {
+		return ErrInboundProvenance
 	}
-	if err := json.Unmarshal(items, &entries); err != nil {
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments WHERE id=$1`, inboundID).Scan(&raw); err != nil {
 		return err
 	}
-	// Aggregate verified scans per product (both key spellings). Only
-	// physically scanned units may enter canonical inventory — the declared
-	// manifest quantities are never booked blindly (Fix 7).
-	scannedQty := map[string]int{}
 	var scans []struct {
-		ProductID       string `json:"productId"`
-		ProductIDLegacy string `json:"product_id"`
-		Quantity        int    `json:"quantity"`
+		Product  string `json:"productId"`
+		Legacy   string `json:"product_id"`
+		Quantity int    `json:"quantity"`
 	}
-	if err := json.Unmarshal(scanned, &scans); err != nil {
+	if err := json.Unmarshal(raw, &scans); err != nil {
 		return err
 	}
-	totalScanned := 0
-	for _, s := range scans {
-		pid := s.ProductID
+	quantities := map[string]int{}
+	known := map[string]bool{}
+	for _, l := range lines {
+		if l.Variant != "" {
+			return ErrInboundProvenance
+		}
+		known[l.Product] = true
+	}
+	for _, scan := range scans {
+		pid := scan.Product
 		if pid == "" {
-			pid = s.ProductIDLegacy
+			pid = scan.Legacy
 		}
-		if pid == "" || s.Quantity <= 0 {
-			continue
+		if !known[pid] || scan.Quantity <= 0 || scan.Quantity > 2147483647-quantities[pid] {
+			return ErrInboundProvenance
 		}
-		scannedQty[pid] += s.Quantity
-		totalScanned += s.Quantity
+		quantities[pid] += scan.Quantity
 	}
-	// Fail-closed: completing a receipt with zero verified scans books
-	// nothing. The warehouse must scan what physically arrived.
-	if totalScanned == 0 {
-		return fmt.Errorf("هیچ کالایی اسکن نشده است؛ تکمیل دریافت بدون اسکن واقعی مجاز نیست")
+	if len(quantities) == 0 {
+		return ErrInboundProvenance
 	}
-	for _, entry := range entries {
-		productID := entry.ProductID
-		if productID == "" {
-			productID = entry.ProductIDLegacy
-		}
-		if productID == "" || entry.Quantity <= 0 {
-			continue
-		}
-		verified := scannedQty[productID]
-		// Fail-closed: more scanned than declared is a data anomaly —
-		// crediting it would corrupt canonical inventory. Nothing is
-		// booked; the whole completion rolls back for investigation.
-		if verified > entry.Quantity {
-			return fmt.Errorf("تعداد اسکن‌شده کالای %s (%d) از تعداد اعلامی مانیفست (%d) بیشتر است؛ مغایرت باید بررسی شود", productID, verified, entry.Quantity)
-		}
-		if verified > 0 {
-			// Canonical-coverage bootstrap (Team 4, 2026-10-19): a product
-			// that has never touched the canonical ledger still carries its
-			// stock in the legacy products.stock column. moveInventoryTx
-			// below would flip it to canonical authority with a zero
-			// sellable balance, and syncProductStockTx would then WIPE the
-			// legacy stock (e.g. 50 -> 0). Migrate the legacy quantity into
-			// the canonical sellable balance first, in the same transaction,
-			// so no unit is ever lost in the transition.
-			if err := ensureCanonicalCoverageTx(ctx, tx, productID, supplierID); err != nil {
-				return err
-			}
-			if err := ensureInboundSourceBalanceTx(ctx, tx, productID, supplierID, inboundID, verified); err != nil {
-				return err
-			}
-			if err := moveInventoryTx(ctx, tx, productID, supplierID, verified, "in_transit", "physical", "inbound:"+inboundID, "inbound:"+inboundID, "inbound_received", inboundID, "inbound:"+inboundID+":"+productID, actor, `{}`); err != nil {
-				return err
-			}
-		}
-		// Shortage (declared but unscanned) never becomes phantom stock:
-		// only the verified quantity was booked above, and the shortfall
-		// is filed as an open QC discrepancy for the supplier/finance
-		// trail instead of silently vanishing.
-		if verified < entry.Quantity {
-			if err := fileInboundShortageTx(ctx, tx, inboundID, supplierID, productID, entry.Quantity, verified); err != nil {
-				return err
-			}
+	for _, l := range lines {
+		if err := receiveInboundLineTx(ctx, tx, l.ID, quantities[l.Product], actor); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -708,15 +541,6 @@ func ensureCanonicalCoverageTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	return err
 }
 
-func ensureInboundSourceBalanceTx(ctx context.Context, tx *sql.Tx, productID, supplierID, inboundID string, quantity int) error {
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
-		VALUES ($1,$2,$3,'supplier','in_transit',$4,'in_transit',$5,TRUE)
-		ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO NOTHING`,
-		"INV-"+uuid.NewString(), productID, supplierID, "inbound:"+inboundID, quantity)
-	return err
-}
-
 func upsertInventoryMovementTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, quantity int, fromStatus, toStatus, fromLocation, toLocation, referenceType, referenceID, idempotency, actor, metadataFormat string, metadataArgs ...interface{}) error {
 	if quantity <= 0 {
 		return nil
@@ -730,13 +554,22 @@ func upsertInventoryMovementTx(ctx context.Context, tx *sql.Tx, productID, suppl
 	if err != nil || inserted == 0 {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier',CASE WHEN $4::text LIKE 'supplier_warehouse:%' THEN 'supplier' ELSE 'warehouse' END,$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	return err
 }
 
 func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, quantity int, fromStatus, toStatus, fromLocation, toLocation, referenceType, referenceID, idempotency, actor, metadataFormat string, metadataArgs ...interface{}) error {
 	if quantity <= 0 {
 		return nil
+	}
+	if strings.HasPrefix(toLocation, "bin:") {
+		var matches bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_balances s JOIN warehouse_bins b ON b.warehouse_id=s.warehouse_id WHERE s.product_id=$1 AND s.supplier_id=$2 AND s.variant_id IS NULL AND s.location_key=$3 AND s.status=$4 AND b.bin_code=$5 AND s.warehouse_id IS NOT NULL)`, productID, supplierID, fromLocation, fromStatus, strings.TrimPrefix(toLocation, "bin:")).Scan(&matches); err != nil {
+			return err
+		}
+		if !matches {
+			return fmt.Errorf("putaway requires matching immutable warehouse identities")
+		}
 	}
 	metadata := fmt.Sprintf(metadataFormat, metadataArgs...)
 	result, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, quantity, fromStatus, toStatus, fromLocation, toLocation, referenceType, referenceID, idempotency, actor, metadata)
@@ -759,7 +592,7 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 	if err != nil || changed != 1 {
 		return fmt.Errorf("insufficient canonical source balance")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
+	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier',CASE WHEN $4::text LIKE 'supplier_warehouse:%' THEN 'supplier' ELSE 'warehouse' END,$4,$5,$6,TRUE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, toLocation, toStatus, quantity)
 	if err != nil {
 		return err
 	}
@@ -770,15 +603,9 @@ func moveInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID stri
 
 // RecordQCFail records quality defect
 func (r *WarehouseRepository) RecordQCFail(ctx context.Context, productID, inboundID, inspectorUserID, reason string, qty int) error {
-	if qty <= 0 {
-		qty = 1
-	}
-	resID := fmt.Sprintf("QC-FAIL-%d", time.Now().UnixMilli()%100000)
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO qc_results (id, product_id, inbound_id, inspector_user_id, status, defect_reason, quantity_failed, created_at)
-		VALUES ($1, $2, $3, $4, 'failed', $5, $6, NOW())
-	`, resID, productID, inboundID, inspectorUserID, reason, qty)
-	return err
+	// This obsolete endpoint cannot identify a cumulative pass/fail partition or
+	// exact receipt line. CompleteQC records failures through conserved disposition.
+	return ErrInboundLifecycleClosed
 }
 
 // ErrQCDiscrepancyMissingIdentity is returned when a QC discrepancy is filed
@@ -822,11 +649,13 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 	query := `
 		SELECT pt.id, pt.product_id, COALESCE(p.title, 'کالای بدون عنوان'),
 		       COALESCE(pt.inbound_id, ''), COALESCE(pt.bin_location, ''),
-		       pt.quantity, pt.status, pt.created_at, COALESCE(p.length_mm,0), COALESCE(p.width_mm,0), COALESCE(p.height_mm,0), COALESCE(p.weight_grams,0), COALESCE(p.measurement_status,'unverified'),
-		       COALESCE(pt.variant_id::text,''), COALESCE(pv.variant_name,''), COALESCE(pv.spnc,'')
+		       pt.quantity, pt.status, pt.created_at, COALESCE(m.length_mm,0), COALESCE(m.width_mm,0), COALESCE(m.height_mm,0), COALESCE(m.weight_grams,0), COALESCE(m.measurement_status,'unverified'),
+		       COALESCE(pt.variant_id::text,''), COALESCE(pv.variant_name,''), COALESCE(pv.spnc,''),
+		       NOT EXISTS(SELECT 1 FROM inbound_putaway_allocations a WHERE a.task_id=pt.id) OR m.product_id IS NULL,COALESCE(m.revision,''),COALESCE(m.source,'')
 		FROM putaway_tasks pt
 		LEFT JOIN products p ON pt.product_id = p.id
 		LEFT JOIN product_variants pv ON pv.id=pt.variant_id
+		LEFT JOIN inventory_effective_measurements m ON m.product_id=pt.product_id AND m.variant_id=COALESCE(pt.variant_id::text,'')
 		WHERE pt.status IN ('pending', 'assigned')
 		ORDER BY pt.created_at DESC
 	`
@@ -843,15 +672,41 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 			&item.ID, &item.ProductID, &item.Title,
 			&item.InboundID, &item.BinLocation, &item.Quantity, &item.Status, &item.CreatedAt, &item.LengthMM, &item.WidthMM, &item.HeightMM, &item.WeightGrams, &item.MeasurementStatus,
 			&item.VariantID, &item.VariantName, &item.VariantSPNC,
+			&item.ReconciliationRequired,
+			&item.MeasurementRevision, &item.MeasurementSource,
 		); err != nil {
 			return nil, err
 		}
 		list = append(list, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Accepted history without a task remains visible but cannot be guessed into
+	// a new physical placement. Counts here are recorded evidence, not availability.
+	history, err := r.db.QueryContext(ctx, `SELECT r.task_id,r.product_id,COALESCE(p.title,''),r.quantity FROM inbound_putaway_reconciliation r LEFT JOIN products p ON p.id=r.product_id WHERE r.exception='accepted_history_without_exact_task' ORDER BY r.task_id COLLATE "C" LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer history.Close()
+	for history.Next() {
+		item := PutawayQueueItem{ReconciliationRequired: true, Status: "reconciliation_required"}
+		if err = history.Scan(&item.ID, &item.ProductID, &item.Title, &item.Quantity); err != nil {
+			return nil, err
+		}
+		item.ID = "reconcile:" + item.ID
+		list = append(list, item)
+	}
+	if err = history.Err(); err != nil {
+		return nil, err
+	}
 	return list, nil
 }
 
 func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, binLocation, staffUserID string) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
 	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(binLocation) == "" || strings.TrimSpace(staffUserID) == "" {
 		return fmt.Errorf("task, bin and actor are required")
 	}
@@ -860,19 +715,25 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 		return err
 	}
 	defer tx.Rollback()
-	var productID string
-	var quantity, lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus, status, sourceWarehouse string
-	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),COALESCE(p.measurement_status,'unverified'),COALESCE((SELECT warehouse_name FROM inbound_shipments WHERE id=pt.inbound_id),p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE`, taskID).Scan(&productID, &quantity, &status, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
+	if err := lockPutawayParentsTx(ctx, tx, taskID); err != nil {
+		return err
+	}
+	var productID, variantID, status, sourceWarehouse string
+	var quantity int
+	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(pt.variant_id::text,''),COALESCE((SELECT w.name FROM inbound_putaway_allocations a JOIN warehouses w ON w.id=a.warehouse_id WHERE a.task_id=pt.id),(SELECT warehouse_name FROM inbound_shipments WHERE id=pt.inbound_id),p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE OF pt,p`, taskID).Scan(&productID, &quantity, &status, &variantID, &sourceWarehouse); err != nil {
 		return err
 	}
 	if status == "completed" {
 		return tx.Commit()
 	}
-	if quantity <= 0 || measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
-		return fmt.Errorf("task measurements are not verified")
+	physical, err := loadEffectiveSKUPhysicalTx(ctx, tx, productID, variantID)
+	if err != nil {
+		return err
 	}
-	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	if !physical.Verified {
+		return ErrSKUPhysicalUnverified
+	}
+	volume, requiredWeight, err := warehouseopt.Capacity(physical.LengthMM, physical.WidthMM, physical.HeightMM, physical.WeightGrams, int64(quantity))
 	if err != nil {
 		return err
 	}
@@ -887,93 +748,95 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
 		return fmt.Errorf("قفسه باید در انبار همان محموله باشد")
 	}
+	var exactWarehouse string
+	if err := tx.QueryRowContext(ctx, `SELECT warehouse_id FROM inbound_putaway_allocations WHERE task_id=$1`, taskID).Scan(&exactWarehouse); err == nil {
+		var binWarehouseID string
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(warehouse_id,'') FROM warehouse_bins WHERE bin_code=$1`, binLocation).Scan(&binWarehouseID); err != nil {
+			return err
+		}
+		if binWarehouseID != exactWarehouse {
+			return ErrInboundProvenance
+		}
+	} else if err != sql.ErrNoRows {
+		return err
+	}
 	var reserved, reservedWeight int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active' AND task_id<>$2`, binLocation, taskID).Scan(&reserved, &reservedWeight); err != nil {
 		return err
 	}
-	if occupied+reserved+volume > capacity {
+	if occupied < 0 || occupied > capacity || reserved < 0 || reserved > capacity-occupied || volume > capacity-occupied-reserved {
 		return fmt.Errorf("insufficient bin volume capacity")
 	}
-	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
+	if maxWeight <= 0 || occupiedWeight < 0 || occupiedWeight > maxWeight || reservedWeight < 0 || reservedWeight > maxWeight-occupiedWeight || requiredWeight > maxWeight-occupiedWeight-reservedWeight {
 		return fmt.Errorf("bin weight capacity exceeded")
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE putaway_tasks SET bin_location=$1,status='assigned',assigned_to=$2 WHERE id=$3 AND status IN ('pending','assigned')`, binLocation, staffUserID, taskID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active'`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key,measurement_revision_id) VALUES ($1,$2,$3,$4,$5,'active',$6,$7) ON CONFLICT (task_id) DO UPDATE SET bin_code=EXCLUDED.bin_code,volume_cm3=EXCLUDED.volume_cm3,weight_grams=EXCLUDED.weight_grams,status='active',released_at=NULL,measurement_revision_id=EXCLUDED.measurement_revision_id`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID, physical.Revision); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 // AssignPutaway allocates a shelf bin location for putaway
-func (r *WarehouseRepository) AssignPutaway(ctx context.Context, productID, binLocation string, quantity int, staffUserID string) (string, error) {
-	if quantity <= 0 || strings.TrimSpace(binLocation) == "" || strings.TrimSpace(staffUserID) == "" {
-		return "", fmt.Errorf("product, bin, quantity and actor are required")
+func (r *WarehouseRepository) AssignPutaway(ctx context.Context, productID, binLocation string, quantity int, actor string) (string, error) {
+	if quantity <= 0 || strings.TrimSpace(actor) == "" || strings.TrimSpace(binLocation) == "" {
+		return "", ErrInboundProvenance
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	rows, err := r.db.QueryContext(ctx, `SELECT pt.id FROM putaway_tasks pt JOIN inbound_putaway_allocations a ON a.task_id=pt.id WHERE pt.product_id=$1 AND pt.variant_id IS NULL AND pt.quantity=$2 AND pt.status IN ('pending','assigned') ORDER BY pt.id COLLATE "C" LIMIT 2`, productID, quantity)
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
-	var lengthMM, widthMM, heightMM, weightGrams int
-	var measurementStatus, sourceWarehouse string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(length_mm,0),COALESCE(width_mm,0),COALESCE(height_mm,0),COALESCE(weight_grams,0),measurement_status,COALESCE(warehouse_name,'') FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &sourceWarehouse); err != nil {
-		return "", err
+	var tasks []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return "", err
+		}
+		tasks = append(tasks, id)
 	}
-	if measurementStatus != "verified" || lengthMM <= 0 || widthMM <= 0 || heightMM <= 0 || weightGrams <= 0 {
-		return "", fmt.Errorf("product measurements are not verified")
-	}
-	volume, requiredWeight, err := warehouseopt.Capacity(int64(lengthMM), int64(widthMM), int64(heightMM), int64(weightGrams), int64(quantity))
+	err = rows.Err()
+	rows.Close()
 	if err != nil {
 		return "", err
 	}
-	taskID := "PUT-TSK-" + uuid.NewString()
-	var capacity, occupied, maxWeight, occupiedWeight int64
-	var capacityStatus, binWarehouse string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),occupied_volume_cm3,COALESCE(max_weight_grams,0),occupied_weight_grams,capacity_status,COALESCE(warehouse_name,'') FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binLocation).Scan(&capacity, &occupied, &maxWeight, &occupiedWeight, &capacityStatus, &binWarehouse); err != nil {
+	if len(tasks) != 1 {
+		return "", ErrInboundProvenance
+	}
+	if err = r.AssignPutawayTask(ctx, tasks[0], binLocation, actor); err != nil {
 		return "", err
 	}
-	if capacityStatus != "verified" || capacity <= 0 {
-		return "", fmt.Errorf("bin capacity is not verified")
-	}
-	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
-		return "", fmt.Errorf("قفسه باید در انبار همان کالا باشد")
-	}
-	var reserved, reservedWeight int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active'`, binLocation).Scan(&reserved, &reservedWeight); err != nil {
-		return "", err
-	}
-	if occupied+reserved+volume > capacity {
-		return "", fmt.Errorf("insufficient bin volume capacity")
-	}
-	if maxWeight <= 0 || occupiedWeight+reservedWeight+requiredWeight > maxWeight {
-		return "", fmt.Errorf("bin weight capacity exceeded")
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks (id,product_id,bin_location,quantity,status,assigned_to,created_at) VALUES ($1,$2,$3,$4,'assigned',$5,NOW())`, taskID, productID, binLocation, quantity, staffUserID); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_capacity_reservations (id,task_id,bin_code,volume_cm3,weight_grams,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'active',$6)`, "CAP-"+uuid.NewString(), taskID, binLocation, volume, requiredWeight, "putaway:"+taskID); err != nil {
-		return "", err
-	}
-	return taskID, tx.Commit()
+	return tasks[0], nil
 }
 
 // ConfirmPutaway finishes putaway and increases physical bin inventory
 func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor string) error {
+	ctx, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	if strings.TrimSpace(actor) == "" {
+		return ErrInboundProvenance
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockPutawayParentsTx(ctx, tx, taskID); err != nil {
+		return err
+	}
+	allocation, err := loadExactPutawayTx(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now()
 	var binCode string
 	var productID, supplierID, inboundID, variantID, sourceLocation string
 	var quantity int
 	var volume, weight int64
-	var lengthMM, widthMM, heightMM, weightGrams int64
-	var measurementStatus string
+	var measurementRevision string
 	var taskStatus string
 	if err = tx.QueryRowContext(ctx, `SELECT status FROM putaway_tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&taskStatus); err != nil {
 		return err
@@ -981,20 +844,47 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if taskStatus == "completed" {
 		return tx.Commit()
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT bin_code,volume_cm3,weight_grams FROM putaway_capacity_reservations WHERE task_id=$1 AND status='active' FOR UPDATE`, taskID).Scan(&binCode, &volume, &weight); err != nil {
+	if taskStatus != "assigned" {
+		return ErrInboundProvenance
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT bin_code,volume_cm3,weight_grams,COALESCE(measurement_revision_id,'') FROM putaway_capacity_reservations WHERE task_id=$1 AND status='active'`, taskID).Scan(&binCode, &volume, &weight, &measurementRevision); err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(p.length_mm,0),COALESCE(p.width_mm,0),COALESCE(p.height_mm,0),COALESCE(p.weight_grams,0),p.measurement_status,COALESCE(pt.variant_id::text,''),COALESCE(pt.inventory_source_location_key,'warehouse:'||pt.inbound_id) FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &lengthMM, &widthMM, &heightMM, &weightGrams, &measurementStatus, &variantID, &sourceLocation); err != nil {
+	if err = lockPutawayPhysicalTx(ctx, tx, taskID, binCode, allocation); err != nil {
 		return err
 	}
-	currentVolume, currentWeight, err := warehouseopt.Capacity(lengthMM, widthMM, heightMM, weightGrams, int64(quantity))
+	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(pt.variant_id::text,''),COALESCE(pt.inventory_source_location_key,'warehouse:'||pt.inbound_id) FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &variantID, &sourceLocation); err != nil {
+		return err
+	}
+	physical, err := loadEffectiveSKUPhysicalTx(ctx, tx, productID, variantID)
 	if err != nil {
 		return err
 	}
-	if measurementStatus != "verified" || currentVolume != volume || currentWeight != weight {
+	currentVolume, currentWeight, err := warehouseopt.Capacity(physical.LengthMM, physical.WidthMM, physical.HeightMM, physical.WeightGrams, int64(quantity))
+	if err != nil {
+		return err
+	}
+	if !physical.Verified || physical.Revision != measurementRevision || currentVolume != volume || currentWeight != weight {
 		return fmt.Errorf("ابعاد یا وزن کالا تغییر کرده است؛ تخصیص قفسه را دوباره انجام دهید")
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT occupied_volume_cm3,occupied_weight_grams FROM warehouse_bins WHERE bin_code=$1 FOR UPDATE`, binCode); err != nil {
+		return err
+	}
+	var capacity, maxWeight, occupied, occupiedWeight, reserved, reservedWeight int64
+	var capacityStatus string
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(capacity_volume_cm3,0),COALESCE(max_weight_grams,0),occupied_volume_cm3,occupied_weight_grams,capacity_status FROM warehouse_bins WHERE bin_code=$1`, binCode).Scan(&capacity, &maxWeight, &occupied, &occupiedWeight, &capacityStatus); err != nil {
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(volume_cm3),0),COALESCE(SUM(weight_grams),0) FROM putaway_capacity_reservations WHERE bin_code=$1 AND status='active'`, binCode).Scan(&reserved, &reservedWeight); err != nil {
+		return err
+	}
+	if capacityStatus != "verified" || capacity <= 0 || maxWeight <= 0 || occupied < 0 || occupiedWeight < 0 || occupied > capacity || occupiedWeight > maxWeight || reserved < volume || reservedWeight < weight || reserved > capacity-occupied || reservedWeight > maxWeight-occupiedWeight {
+		return fmt.Errorf("bin capacity changed; reassign putaway")
+	}
+	if err = consumeExactPutawayTx(ctx, tx, taskID, binCode, actor, allocation); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO warehouse_placements(id,task_id,product_id,variant_id,supplier_id,warehouse_id,bin_code,quantity,volume_cm3,weight_grams,measurement_revision_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, "PLACE-"+uuid.NewString(), taskID, allocation.product, allocation.variant, allocation.supplier, allocation.warehouse, binCode, quantity, volume, weight, physical.Revision); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE putaway_tasks SET status='completed',completed_at=$1 WHERE id=$2 AND status IN ('pending','assigned')`, now, taskID); err != nil {
@@ -1004,13 +894,6 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE putaway_capacity_reservations SET status='consumed',released_at=$1 WHERE task_id=$2 AND status='active'`, now, taskID); err != nil {
-		return err
-	}
-	if variantID != "" {
-		if err := putawayTrackedSKUInventoryTx(ctx, tx, productID, supplierID, variantID, quantity, sourceLocation, binCode, taskID, actor); err != nil {
-			return err
-		}
-	} else if err := moveInventoryTx(ctx, tx, productID, supplierID, quantity, "sellable", "sellable", "warehouse:"+inboundID, "bin:"+binCode, "putaway_confirmed", taskID, "putaway:"+taskID, actor, `{}`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1064,7 +947,8 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 			           'variantId', oi.variant_id,
 			           'variantName', oi.variant_name,
 			           'variantSpnc', oi.variant_spnc,
-			           'quantity', oi.quantity,
+			           'quantity', COALESCE(oio.warehouse_quantity,oi.quantity),
+                           'originReconciliationRequired',COALESCE(oio.unresolved,TRUE),
 			           'unitPrice', oi.final_unit_price,
 			           'fulfillmentMethod', r.routing,
 			           'binLocation', CASE WHEN COALESCE(pv.inventory_mode,'legacy')='tracked' THEN (
@@ -1084,10 +968,10 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 			LEFT JOIN products p ON p.id = oi.product_id
 			LEFT JOIN product_variants pv ON pv.id=oi.variant_id
 			LEFT JOIN LATERAL (
-				SELECT origin_type FROM order_item_origins
-				WHERE order_item_id = oi.id
-				ORDER BY leg_index ASC
-				LIMIT 1
+				SELECT CASE WHEN bool_or(origin_type='warehouse') THEN 'warehouse' WHEN bool_or(origin_type='supplier') THEN 'supplier' END AS origin_type,
+                SUM(quantity) FILTER(WHERE origin_type='warehouse') AS warehouse_quantity,
+                bool_or(origin_type='legacy' OR (origin_type='warehouse' AND warehouse_id IS NULL) OR (origin_type='supplier' AND supplier_warehouse_id IS NULL)) AS unresolved
+                FROM order_item_origins WHERE order_item_id=oi.id
 			) oio ON true
 			CROSS JOIN LATERAL (
 				SELECT CASE
@@ -1309,12 +1193,31 @@ func (r *WarehouseRepository) PackOrder(ctx context.Context, orderID string, wei
 // flip and the customer notification are one transaction — the customer is
 // told about the shipment only when the shipment actually happened.
 func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, trackingNumber string) error {
+	return r.ShipOrderWithActor(ctx, orderID, carrier, trackingNumber, "warehouse-dispatch")
+}
+
+func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, carrier, trackingNumber, actor string) error {
+	if strings.TrimSpace(actor) == "" {
+		return ErrShipmentState
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	now := time.Now()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var canonicalID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+		return err
+	}
+	if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
+	if err := lockWarehouseDispatchInventoryTx(ctx, tx, canonicalID); err != nil {
+		return err
+	}
 	var updatedID, orderNumber, customerUserID string
 	var storeID sql.NullString
 	err = tx.QueryRowContext(ctx, `
@@ -1336,16 +1239,23 @@ func (r *WarehouseRepository) ShipOrder(ctx context.Context, orderID, carrier, t
 	if err == sql.ErrNoRows {
 		// Fail-closed: unpaid, supplier-direct-only, missing, or
 		// out-of-sequence (not packed) orders can never ship.
-		return fmt.Errorf("سفارش یافت نشد، هنوز پرداخت نشده است، روش ارسال آن مستقیم است، در مرحله بسته‌بندی (packed) نیست یا سفارش ترکیبی (mixed) هنوز محموله مستقیم ارسال‌نشده دارد: %s", orderID)
+		return fmt.Errorf("%w: order %s is unpaid, cancelled, not packed, or has pending direct legs", ErrShipmentState, orderID)
 	}
 	if err != nil {
+		return err
+	}
+	allocations, err := loadOrderDepartureAllocationsTx(ctx, tx, updatedID)
+	if err != nil {
+		return err
+	}
+	if err = releasePlacementOccupancyTx(ctx, tx, updatedID, "warehouse_shipment", actor, allocations); err != nil {
 		return err
 	}
 	// Storage-fee positions (gap 7 lifecycle): the goods physically
 	// leave the warehouse at this carrier handover, so the order's
 	// warehouse-routed quantities leave the position ledger (FIFO)
 	// in the same transaction.
-	if err := consumeShippedOrderPositionsTx(ctx, tx, updatedID); err != nil {
+	if err := consumeShippedOrderPositionsTx(ctx, tx, updatedID, actor); err != nil {
 		return err
 	}
 	if err := NotifyUser(ctx, tx, customerUserID, NotifKindOrderStatus,

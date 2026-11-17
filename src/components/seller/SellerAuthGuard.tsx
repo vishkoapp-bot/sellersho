@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { isValidIranianMobile, validateStoreSlug } from '../../utils/validators';
 import {
@@ -19,7 +20,7 @@ import {
 } from 'lucide-react';
 import { authApi } from '../../services/authApi';
 import { storeApi } from '../../services/storeApi';
-import { tokenStore, isMockMode } from '../../services/apiClient';
+import { isMockMode } from '../../services/apiClient';
 
 interface SellerAuthGuardProps {
   onBackToCustomerSite: () => void;
@@ -40,6 +41,7 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
     storeStatuses,
     toPersianDigits,
   } = useStore();
+  const { authenticate } = useAuth();
   const { success, error, warning, info } = useToast();
 
   // Login Step States
@@ -152,19 +154,23 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
     let userFullName = '';
 
     if (!isMockMode()) {
+      let requestIsCurrent = () => true;
       try {
         // Seller capability is granted only after the store onboarding flow
         // succeeds. OTP authenticates the existing normalized identity.
-        const res = await authApi.verifyOTP(cleanMobile, otpCode.trim());
+        const res = await authenticate(() => authApi.verifyOTP(cleanMobile, otpCode.trim()));
+        requestIsCurrent = res.isCurrent;
+        if (!requestIsCurrent()) return;
         token = res.token;
         userFullName = res.user?.fullName || '';
-        tokenStore.setToken(res.token);
         const owned = await storeApi.getOwnedStores();
+        if (!requestIsCurrent()) return;
         const selected = owned[0];
         if (selected) { addStore(selected); setCurrentStore(selected); }
         setSellerSession({ token, mobile: cleanMobile, fullName: userFullName, status: selected ? 'active' : 'onboarding', storeId: selected?.id, loginAt: new Date().toISOString() });
         return;
       } catch (err: any) {
+        if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
         setOtpError(err.message || 'کد تایید واردشده صحیح نیست.');
         error(err.message || 'کد یکبارمصرف نامعتبر است.');
         return;

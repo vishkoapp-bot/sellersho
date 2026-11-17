@@ -9,7 +9,9 @@
 //
 // Every upstream method answers with the envelope
 // { "returns": { "status": <int>, "message": <string> },
-//   "entries": <object|null> }.
+//
+//	"entries": <object|null> }.
+//
 // The guide's own response examples show exactly two success codes:
 // 20 («موفق») and 21 («عملیات با موفقیت انجام شد»). Any other status
 // is an upstream failure whose Persian message is surfaced verbatim —
@@ -24,8 +26,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+	"github.com/drup/platform/internal/dependencybudget"
+	"github.com/drup/platform/internal/observability"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -131,8 +136,8 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 }
 
 type envelopeReturns struct {
-	Status  flexInt `json:"status"`
-	Message string  `json:"message"`
+	Status  *flexInt `json:"status"`
+	Message string   `json:"message"`
 }
 
 type envelope struct {
@@ -143,20 +148,45 @@ type envelope struct {
 // Client talks to one Tapin API host with a bounded timeout. The
 // zero-value base falls back to DefaultBaseURL; tests point the
 // client at an httptest server.
+var sharedBudget = func() *dependencybudget.Executor {
+	p := dependencybudget.DefaultPolicy(16, 32)
+	p.Observe = func(ctx context.Context, outcome string, d time.Duration) {
+		observability.LogOperation(ctx, "provider", "tapin_request", outcome, d)
+	}
+	return dependencybudget.New(p)
+}()
+var sharedHTTP = func() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: time.Second, KeepAlive: 30 * time.Second}).DialContext
+	tr.ResponseHeaderTimeout = 3 * time.Second
+	tr.MaxResponseHeaderBytes = 64 * 1024
+	tr.MaxConnsPerHost = 16
+	tr.MaxIdleConnsPerHost = 16
+	return &http.Client{Timeout: 6 * time.Second, Transport: tr}
+}()
+
+func safeReadPath(path string) bool {
+	switch path {
+	case "/api/v4/tipax/public/user/order/options/", "/api/v4/tipax/public/user/order/check-price/", "/api/v4/tipax/public/user/order/filter/":
+		return true
+	}
+	return false
+}
+
 type Client struct {
 	baseURL string
 	http    *http.Client
 }
 
 // NewClient builds a client for baseURL ("" = DefaultBaseURL) with
-// the same 10s timeout the previous inline test call used.
+// a shared connection pool and the bounded five-second logical-call budget.
 func NewClient(baseURL string) *Client {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = DefaultBaseURL
 	}
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
-		http:    &http.Client{Timeout: 10 * time.Second},
+		http:    sharedHTTP,
 	}
 }
 
@@ -173,27 +203,37 @@ func (c *Client) Call(ctx context.Context, token, path string, payload interface
 	if err != nil {
 		return nil, fmt.Errorf("tapin: encode request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	safe := safeReadPath(path)
+	reply, err := sharedBudget.Do(ctx, c.http, func(callCtx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req, nil
+	}, safe, 1<<20)
 	if err != nil {
-		return nil, fmt.Errorf("tapin: build request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("tapin: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("tapin: read response: %w", err)
-	}
+	raw := reply.Body
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("tapin: undecodable response (http %d)", resp.StatusCode)
+		err := fmt.Errorf("tapin: undecodable response (http %d)", reply.StatusCode)
+		if !safe {
+			return nil, dependencybudget.MarkAmbiguous(err)
+		}
+		return nil, err
 	}
-	if !IsSuccessStatus(int(env.Returns.Status)) {
-		return nil, &UpstreamError{Status: int(env.Returns.Status), Message: env.Returns.Message}
+	if env.Returns.Status == nil || *env.Returns.Status <= 0 {
+		err := fmt.Errorf("tapin: missing or invalid acknowledgement status")
+		if !safe {
+			return nil, dependencybudget.MarkAmbiguous(err)
+		}
+		return nil, err
+	}
+	if !IsSuccessStatus(int(*env.Returns.Status)) {
+		return nil, &UpstreamError{Status: int(*env.Returns.Status), Message: env.Returns.Message}
 	}
 	return env.Entries, nil
 }
@@ -204,21 +244,19 @@ func (c *Client) Call(ctx context.Context, token, path string, payload interface
 // the hash_raw lookup but not the response format (capture file,
 // NOT-CAPTURED item 2), so the bytes are streamed through untouched.
 func (c *Client) GetRaw(ctx context.Context, token, path string) (int, string, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return 0, "", nil, fmt.Errorf("tapin: build request: %w", err)
+	reply, err := sharedBudget.Do(ctx, c.http, func(callCtx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(callCtx, http.MethodGet, c.baseURL+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req, nil
+	}, true, 8<<20)
+	if err != nil && (reply.StatusCode == 0 || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+		return 0, "", nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, "", nil, fmt.Errorf("tapin: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return 0, "", nil, fmt.Errorf("tapin: read response: %w", err)
-	}
-	return resp.StatusCode, resp.Header.Get("Content-Type"), raw, nil
+	return reply.StatusCode, reply.Header.Get("Content-Type"), reply.Body, nil
+
 }
 
 // Options calls the Tipax options method (guide p.7) with the shop
@@ -328,21 +366,21 @@ type TipaxRegisterRequest struct {
 // TipaxRegisterResult is the register entries object (guide p.19).
 // ContractCode is the Tipax barcode — the shipment's tracking code.
 type TipaxRegisterResult struct {
-	UUID              string `json:"uuid"`
-	Status            int    `json:"status"`
-	ContractCode      string `json:"contract_code"`
+	UUID              string  `json:"uuid"`
+	Status            int     `json:"status"`
+	ContractCode      string  `json:"contract_code"`
 	ContractID        flexInt `json:"contract_id"` // guide example sends a number; flexInt also accepts a string
-	PanelServicePrice int64  `json:"panel_service_price"`
-	PanelServiceTax   int64  `json:"panel_service_tax"`
-	PanelSMSPrice     int64  `json:"panel_sms_price"`
-	PanelSMSTax       int64  `json:"panel_sms_tax"`
-	SendPrice         int64  `json:"send_price"`
-	SendTax           int64  `json:"send_tax"`
-	TotalSendPrice    int64  `json:"total_send_price"`
-	TotalPanelPrice   int64  `json:"total_panel_price"`
-	TotalReceivePrice int64  `json:"total_receive_price"`
-	TotalProductPrice int64  `json:"total_product_price"`
-	TotalWeight       int    `json:"total_weight"`
+	PanelServicePrice int64   `json:"panel_service_price"`
+	PanelServiceTax   int64   `json:"panel_service_tax"`
+	PanelSMSPrice     int64   `json:"panel_sms_price"`
+	PanelSMSTax       int64   `json:"panel_sms_tax"`
+	SendPrice         int64   `json:"send_price"`
+	SendTax           int64   `json:"send_tax"`
+	TotalSendPrice    int64   `json:"total_send_price"`
+	TotalPanelPrice   int64   `json:"total_panel_price"`
+	TotalReceivePrice int64   `json:"total_receive_price"`
+	TotalProductPrice int64   `json:"total_product_price"`
+	TotalWeight       int     `json:"total_weight"`
 }
 
 // TipaxRegisterOrder registers an order with Tipax (guide p.18).

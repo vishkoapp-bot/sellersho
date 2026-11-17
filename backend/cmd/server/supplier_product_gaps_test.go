@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -67,8 +69,27 @@ func TestProposeProductRejectsMissingMeasurements(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Physical validation follows the V2 publication contract. Keep the
+			// intended missing parent measurements, but provide a valid simple
+			// schema and SKU so the request reaches that validation boundary.
+			var payload map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.body), &payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["schemaVersion"] = 2
+			payload["productType"] = "simple"
+			payload["productSchema"] = map[string]interface{}{"version": 2, "type": "simple", "attributes": []interface{}{}}
+			payload["nicheIds"] = []string{"niche-measurement-fixture"}
+			payload["variants"] = []interface{}{map[string]interface{}{
+				"id": "00000000-0000-4000-8000-000000000001", "is_active": true,
+				"selection": map[string]string{}, "supplier_base_cost": 100000, "stock": 5,
+			}}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
 			rec := httptest.NewRecorder()
-			h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", tc.body))
+			h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", string(body)))
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 			}
@@ -79,6 +100,21 @@ func TestProposeProductRejectsMissingMeasurements(t *testing.T) {
 				t.Errorf("error body %q does not state the requirement", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestProposeProductRequiresV2BeforeMeasurementValidation(t *testing.T) {
+	h := NewSupplierHandlers(nil, auth.NewJWTService("gaps-test"), false)
+	for _, body := range []string{
+		`{"title":"Legacy product","supplierBaseCost":100000,"stock":5}`,
+		`{"schemaVersion":1,"title":"Legacy product","supplierBaseCost":100000,"stock":5}`,
+		`{"schemaVersion":3,"title":"Future product","supplierBaseCost":100000,"stock":5}`,
+	} {
+		rec := httptest.NewRecorder()
+		h.HandleProposeProduct(rec, proposeRequest(t, "sup-gap-a", body))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Product schema version 2 is required") {
+			t.Fatalf("publication schema gate: status %d, body %s", rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -111,7 +147,7 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 	if url == "" {
 		t.Skip("TEAM04_TEST_DATABASE_URL not set; skipping DB-gated product-gap test")
 	}
-	db, err := sql.Open("postgres", url)
+	db, err := testdb.Open(t, url)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -140,6 +176,17 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 			t.Fatalf("ddl %q: %v", stmt[:40], err)
 		}
 	}
+	for _, stmt := range []string{
+		`CREATE TABLE proposal_field_reviews (LIKE public.proposal_field_reviews INCLUDING ALL)`,
+		`CREATE TABLE proposal_review_history (LIKE public.proposal_review_history INCLUDING ALL)`,
+		`CREATE TABLE supplier_warehouses (LIKE public.supplier_warehouses INCLUDING ALL)`,
+		`ALTER TABLE products ADD COLUMN origin_supplier_warehouse_id TEXT, ADD COLUMN schema_version INT DEFAULT 0`,
+		`ALTER TABLE inventory_balances ADD COLUMN variant_id TEXT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 		_ = db.Close()
@@ -149,8 +196,31 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 
 func seedProposal(t *testing.T, db *sql.DB, id, supplierID, payload string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO pending_approvals (id, title, requested_data, requested_by, entity_type, status) VALUES ($1, 'کالای تست گپ', $2, $3, 'proposed_product', 'pending')`, id, payload, supplierID); err != nil {
+	source := "gap-source-" + supplierID
+	if _, err := db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,'Product gap source','Test','Test') ON CONFLICT(id) DO NOTHING`, source, supplierID); err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.NormalizeReviewAliases(data); err != nil {
+		t.Fatal(err)
+	}
+	data["supplierWarehouseId"] = source
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO pending_approvals (id, title, requested_data, requested_by, entity_type, status) VALUES ($1, 'کالای تست گپ', $2, $3, 'proposed_product', 'pending')`, id, string(raw), supplierID); err != nil {
 		t.Fatalf("seed proposal: %v", err)
+	}
+	var decisions []repository.FieldDecision
+	for key, value := range repository.ReviewLeaves(data) {
+		decisions = append(decisions, repository.FieldDecision{Key: key, Decision: "approved", ValueHash: repository.ReviewValueHash(value)})
+	}
+	if err := repository.NewSupplierRepository(db).SaveFieldReview(context.Background(), id, "test-admin", decisions); err != nil {
+		t.Fatal(err)
 	}
 }
 

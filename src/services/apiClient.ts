@@ -18,19 +18,24 @@ export class ApiError extends Error {
 // Token Storage and Session Management
 const TOKEN_KEY = 'seler_sho_jwt_token';
 let onUnauthorizedCallback: (() => void) | null = null;
+let sessionGeneration = 0;
 
 export const tokenStore = {
+  getGeneration: (): number => sessionGeneration,
+  invalidateRequests: (): void => { sessionGeneration++; },
   getToken: (): string | null => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem(TOKEN_KEY);
   },
   setToken: (token: string): void => {
     if (typeof window === 'undefined') return;
+    sessionGeneration++;
     localStorage.setItem(TOKEN_KEY, token);
     window.dispatchEvent(new Event('drup-session-changed'));
   },
   clearToken: (): void => {
     if (typeof window === 'undefined') return;
+    sessionGeneration++;
     localStorage.removeItem(TOKEN_KEY);
   },
   onUnauthorized: (callback: () => void): void => {
@@ -49,7 +54,7 @@ export const getApiBase = (): string => API_BASE;
 
 export interface RequestOptions extends RequestInit {
   auth?: boolean;
-  /** حداکثر زمان انتظار پاسخ بر حسب میلی‌ثانیه (فقط وقتی signal دستی داده نشده باشد اعمال می‌شود) */
+  /** حداکثر زمان انتظار پاسخ بر حسب میلی‌ثانیه؛ همراه با signal دستی نیز اعمال می‌شود */
   timeout?: number;
 }
 
@@ -63,6 +68,7 @@ export async function apiRequest<T>(
     'Content-Type': 'application/json',
     ...(headers as Record<string, string>),
   };
+  const requestGeneration = tokenStore.getGeneration();
 
   if (auth) {
     const token = tokenStore.getToken();
@@ -80,7 +86,7 @@ export async function apiRequest<T>(
     response = await fetch(url, {
       ...rest,
       headers: reqHeaders,
-      signal: rest.signal ?? AbortSignal.timeout(timeout),
+      signal: rest.signal ? AbortSignal.any([rest.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
     });
   } catch (err: any) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
@@ -91,8 +97,9 @@ export async function apiRequest<T>(
 
   if (response.status === 401) {
     const requestToken = reqHeaders['Authorization']?.replace(/^Bearer\s+/, '');
-    if (auth && requestToken && requestToken === tokenStore.getToken()) {
+    if (auth && requestToken && requestToken === tokenStore.getToken() && requestGeneration === tokenStore.getGeneration()) {
       tokenStore.clearToken();
+      window.dispatchEvent(new Event('drup-session-expired'));
       if (onUnauthorizedCallback) {
         onUnauthorizedCallback();
       }
@@ -105,6 +112,12 @@ export async function apiRequest<T>(
     try {
       data = await response.json();
     } catch {
+      // A committed mutation can lose/truncate its response body. This is not
+      // an acknowledgement; callers must keep their operation identity for a
+      // safe replay. HTTP 204 intentionally has no representation.
+      if (response.ok && response.status !== 204) {
+        throw new ApiError(0, 'پاسخ سرور کامل دریافت نشد؛ نتیجه درخواست هنوز مشخص نیست.');
+      }
       data = null;
     }
   } else {

@@ -1,0 +1,16 @@
+DROP TRIGGER IF EXISTS inventory_assign_origin ON inventory_balances;
+DROP FUNCTION IF EXISTS inventory_assign_origin();
+DROP VIEW IF EXISTS inbound_origin_reconciliation;
+DROP VIEW IF EXISTS carton_origin_reconciliation;
+DROP VIEW IF EXISTS order_origin_reconciliation;
+DROP VIEW IF EXISTS inventory_origin_reconciliation;
+DROP INDEX IF EXISTS inventory_origin_warehouse_sellable;
+DROP INDEX IF EXISTS inventory_origin_supplier_sellable;
+ALTER TABLE putaway_tasks DROP COLUMN warehouse_id;
+ALTER TABLE inbound_shipments DROP COLUMN supplier_warehouse_id;
+ALTER TABLE shipments DROP COLUMN warehouse_id;
+ALTER TABLE shipments DROP COLUMN supplier_warehouse_id;
+ALTER TABLE warehouse_bins DROP COLUMN warehouse_id;
+ALTER TABLE inventory_balances DROP COLUMN supplier_warehouse_id;
+ALTER TABLE inventory_balances DROP CONSTRAINT inventory_balances_warehouse_id_fkey;
+ALTER TABLE inventory_balances ADD CONSTRAINT inventory_balances_warehouse_id_fkey FOREIGN KEY(warehouse_id) REFERENCES warehouses(id) ON DELETE SET NULL;

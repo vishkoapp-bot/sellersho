@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
+
 	"github.com/google/uuid"
 )
 
@@ -20,7 +22,7 @@ func productModelV2Fixture(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("requires disposable migrated SKU_COMMERCE_DATABASE_URL")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := testdb.Open(t, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,12 +34,16 @@ func productModelV2Fixture(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); db.Close() })
 	tx := skuTestTx(t, db, schema)
 	defer tx.Rollback()
-	for _, table := range []string{"products", "product_variants", "categories", "suppliers", "niches", "product_niches", "product_images", "pending_approvals", "proposal_field_reviews", "proposal_review_history", "product_draft_sku_reservations", "inventory_balances", "inventory_movements", "inventory_reservations", "dk_attributes", "dk_attribute_values", "dk_category_attributes", "dk_category_attribute_values", "dk_category_colors", "dk_category_brands", "product_attribute_values", "local_product_attributes", "local_product_attribute_values", "category_local_product_attributes", "category_local_product_attribute_values", "product_attribute_option_extensions", "category_product_attribute_option_extensions", "product_canonical_attribute_values", "platform_settings", "supplier_return_requests", "supplier_return_events", "supplier_return_parcels", "warehouse_storage_positions"} {
+	for _, table := range []string{"products", "product_variants", "categories", "suppliers", "niches", "product_niches", "product_images", "pending_approvals", "proposal_field_reviews", "proposal_review_history", "product_draft_sku_reservations", "inventory_balances", "inventory_movements", "inventory_reservations", "dk_attributes", "dk_attribute_values", "dk_category_attributes", "dk_category_attribute_values", "dk_category_colors", "dk_category_brands", "product_attribute_values", "local_product_attributes", "local_product_attribute_values", "category_local_product_attributes", "category_local_product_attribute_values", "product_attribute_option_extensions", "category_product_attribute_option_extensions", "product_canonical_attribute_values", "platform_settings", "supplier_return_requests", "supplier_return_events", "supplier_return_parcels", "warehouse_storage_positions", "warehouse_storage_receipt_lots"} {
 		if _, err = tx.Exec(fmt.Sprintf(`CREATE TABLE %s (LIKE public.%s INCLUDING ALL)`, table, table)); err != nil {
 			t.Fatalf("clone %s: %v", table, err)
 		}
 	}
-	for _, ddl := range []string{`CREATE TRIGGER model_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`, `INSERT INTO categories(id,title,slug,icon_name) VALUES('category-test','Test shirts','test-shirts','Package')`, `INSERT INTO dk_category_colors(category_id,dk_color_id,title) VALUES('category-test',1,'Color 1'),('category-test',2,'Color 2')`, `INSERT INTO dk_attributes(dk_attr_id,title,type) VALUES(-1,'Size','checkbox')`, `INSERT INTO dk_attribute_values(dk_attr_id,dk_value_id,title_fa) VALUES(-1,-1,'Size 1'),(-1,-2,'Size 2')`, `INSERT INTO dk_category_attributes VALUES('category-test',-1)`, `INSERT INTO dk_category_attribute_values VALUES('category-test',-1,-1),('category-test',-1,-2)`, `INSERT INTO platform_settings(id,supplier_return_postal_charge) VALUES(1,10)`} {
+	if _, err := tx.Exec(`CREATE TABLE supplier_warehouses (LIKE public.supplier_warehouses INCLUDING ALL);
+		INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES('model-source','supplier-test','Model source','Test','Test')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range []string{`INSERT INTO suppliers(id,name,approval_status) VALUES('supplier-test','Model fixture supplier','approved')`, `CREATE TRIGGER model_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`, `INSERT INTO categories(id,title,slug,icon_name) VALUES('category-test','Test shirts','test-shirts','Package')`, `INSERT INTO dk_category_colors(category_id,dk_color_id,title) VALUES('category-test',1,'Color 1'),('category-test',2,'Color 2')`, `INSERT INTO dk_attributes(dk_attr_id,title,type) VALUES(-1,'Size','checkbox')`, `INSERT INTO dk_attribute_values(dk_attr_id,dk_value_id,title_fa) VALUES(-1,-1,'Size 1'),(-1,-2,'Size 2')`, `INSERT INTO dk_category_attributes VALUES('category-test',-1)`, `INSERT INTO dk_category_attribute_values VALUES('category-test',-1,-1),('category-test',-1,-2)`, `INSERT INTO platform_settings(id,supplier_return_postal_charge) VALUES(1,10)`} {
 		if _, err = tx.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
@@ -53,6 +59,7 @@ func TestProductModelV2IsolatedSupplierReturnLifecycleKeepsExactSKU(t *testing.T
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	d := v2Fixture(t, 2, 1)
+	d["supplierWarehouseId"] = "model-source"
 	d["title"] = "Return shirts"
 	d["description"] = "test"
 	d["categorySlug"] = "test-shirts"
@@ -97,7 +104,7 @@ func TestProductModelV2IsolatedSupplierReturnLifecycleKeepsExactSKU(t *testing.T
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err = repo.HandoverReturn(ctx, second.ID, "", "handover-sku"); err != nil {
+		if err = repo.HandoverReturn(ctx, second.ID, "model-operator", "handover-sku"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -155,6 +162,7 @@ func TestProductModelV2IsolatedPublicationPreservesUUIDsAndRegistry(t *testing.T
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	d := v2Fixture(t, 2, 2)
+	d["supplierWarehouseId"] = "model-source"
 	d["title"] = "V2 shirts"
 	d["description"] = "test"
 	d["categorySlug"] = "test-shirts"
@@ -259,6 +267,7 @@ func TestProductModelV2IsolatedRequestedAxisAndDraftOwnership(t *testing.T) {
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	d := v2Fixture(t, 1, 1)
+	d["supplierWarehouseId"] = "model-source"
 	d["title"] = "Requested size"
 	d["description"] = "test"
 	d["categorySlug"] = "test-shirts"
@@ -320,6 +329,7 @@ func TestProductModelV2IsolatedStablePriceCorrectionKeepsOtherApprovals(t *testi
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	d := v2Fixture(t, 2, 1)
+	d["supplierWarehouseId"] = "model-source"
 	d["title"] = "Review shirts"
 	d["description"] = "test"
 	d["categorySlug"] = "test-shirts"
@@ -394,6 +404,7 @@ func TestProductModelV2IsolatedLegacyInboundCannotAllocateTrackedProduct(t *test
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()
 	d := v2Fixture(t, 1, 1)
+	d["supplierWarehouseId"] = "model-source"
 	d["title"] = "Inbound shirts"
 	d["description"] = "test"
 	d["categorySlug"] = "test-shirts"

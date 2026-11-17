@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,8 +14,36 @@ import (
 	"github.com/drup/platform/internal/repository"
 )
 
+func writeFinanceBusy(w http.ResponseWriter, err error) bool {
+	var state interface{ SQLState() string }
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &state) && (state.SQLState() == "40001" || state.SQLState() == "40P01" || state.SQLState() == "55P03")) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, `{"error":"Financial account is busy; retry with the same Idempotency-Key"}`, http.StatusServiceUnavailable)
+		return true
+	}
+	return false
+}
+
+func requireFinanceRequestKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 128 {
+		http.Error(w, `{"error":"Idempotency-Key is required and must be at most 128 bytes"}`, http.StatusBadRequest)
+		return "", false
+	}
+	return key, true
+}
+
 func sellerError(w http.ResponseWriter, err error) {
+	if writeFinanceBusy(w, err) {
+		return
+	}
 	switch {
+	case errors.Is(err, repository.ErrFinancePrincipalUnresolved):
+		http.Error(w, `{"error":"Immutable financial principal requires reconciliation"}`, http.StatusConflict)
+	case errors.Is(err, repository.ErrFinanceAccountChanged):
+		http.Error(w, `{"error":"Financial account changed; retry with the same Idempotency-Key"}`, http.StatusConflict)
+	case errors.Is(err, repository.ErrFinanceCommandConflict):
+		http.Error(w, `{"error":"Financial request payload conflict"}`, http.StatusConflict)
 	case errors.Is(err, repository.ErrStoreForbidden):
 		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 	case errors.Is(err, sql.ErrNoRows):
@@ -49,6 +78,10 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			writeMethodNotAllowed(w)
 			return
 		}
+		requestKey, ok := requireFinanceRequestKey(w, r)
+		if !ok {
+			return
+		}
 		var payload struct {
 			Service string `json:"service"`
 		}
@@ -56,7 +89,13 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			http.Error(w, `{"error":"اطلاعات ارسالی نامعتبر است."}`, http.StatusBadRequest)
 			return
 		}
-		err = fin.PurchaseSellerService(r.Context(), claims.UserID, store.ID, payload.Service)
+		acknowledgment, purchaseErr := fin.PurchaseSellerServiceAcknowledgment(r.Context(), claims.UserID, store.ID, payload.Service, requestKey)
+		if purchaseErr != nil {
+			sellerError(w, purchaseErr)
+			return
+		}
+		json.NewEncoder(w).Encode(acknowledgment)
+		return
 	case "settings":
 		if r.Method != http.MethodPut {
 			writeMethodNotAllowed(w)
@@ -76,7 +115,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 		var payload struct {
 			ProductIDs []string `json:"productIds"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.ProductIDs == nil {
+		if decodeMoneyJSON(r.Body, &payload) != nil || payload.ProductIDs == nil {
 			http.Error(w, `{"error":"Product IDs required"}`, 400)
 			return
 		}
@@ -132,11 +171,15 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			writeMethodNotAllowed(w)
 			return
 		}
+		requestKey, ok := requireFinanceRequestKey(w, r)
+		if !ok {
+			return
+		}
 		var payload struct {
 			Amount int64  `json:"amount"`
 			Shaba  string `json:"shaba"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Amount <= 0 {
+		if decodeMoneyJSON(r.Body, &payload) != nil || payload.Amount <= 0 {
 			http.Error(w, `{"error":"Invalid payout"}`, 400)
 			return
 		}
@@ -145,7 +188,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			http.Error(w, `{"error":"Invalid IBAN"}`, 400)
 			return
 		}
-		item, err := fin.RequestOwnedStorePayout(r.Context(), claims.UserID, store.ID, strings.ToUpper(strings.TrimSpace(payload.Shaba)), check.BankName, payload.Amount)
+		item, err := fin.RequestOwnedStorePayout(r.Context(), claims.UserID, store.ID, strings.ToUpper(strings.TrimSpace(payload.Shaba)), check.BankName, payload.Amount, requestKey)
 		if err != nil {
 			sellerError(w, err)
 			return
@@ -179,11 +222,15 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			writeMethodNotAllowed(w)
 			return
 		}
+		requestKey, ok := requireFinanceRequestKey(w, r)
+		if !ok {
+			return
+		}
 		var payload struct {
 			Amount int64  `json:"amount"`
 			Shaba  string `json:"shaba"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Amount <= 0 {
+		if decodeMoneyJSON(r.Body, &payload) != nil || payload.Amount <= 0 {
 			http.Error(w, `{"error":"Invalid early withdrawal"}`, 400)
 			return
 		}
@@ -192,7 +239,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			http.Error(w, `{"error":"Invalid IBAN"}`, 400)
 			return
 		}
-		item, err := fin.RequestEarlyWithdrawal(r.Context(), claims.UserID, store.ID, payload.Amount, strings.ToUpper(strings.TrimSpace(payload.Shaba)), check.BankName)
+		item, err := fin.RequestEarlyWithdrawal(r.Context(), claims.UserID, store.ID, payload.Amount, strings.ToUpper(strings.TrimSpace(payload.Shaba)), check.BankName, requestKey)
 		if err != nil {
 			settlementSellerError(w, err)
 			return
@@ -225,7 +272,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 				ID       string `json:"id"`
 				IsActive bool   `json:"isActive"`
 			}
-			if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.ID == "" {
+			if decodeMoneyJSON(r.Body, &payload) != nil || payload.ID == "" {
 				http.Error(w, `{"error":"Invalid request"}`, 400)
 				return
 			}
@@ -248,7 +295,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			EndsAt   time.Time `json:"endsAt"`
 			MaxUses  *int      `json:"maxUses"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Code == "" {
+		if decodeMoneyJSON(r.Body, &payload) != nil || payload.Code == "" {
 			http.Error(w, `{"error":"Invalid code"}`, 400)
 			return
 		}
@@ -269,7 +316,7 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			Kind  string `json:"kind"`
 			Value string `json:"value"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+		if decodeMoneyJSON(r.Body, &payload) != nil {
 			http.Error(w, `{"error":"Invalid request"}`, 400)
 			return
 		}
@@ -298,7 +345,7 @@ func handleSellerTickets(w http.ResponseWriter, r *http.Request, repo *repositor
 			Subject string `json:"subject"`
 			Message string `json:"message"`
 		}
-		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+		if decodeMoneyJSON(r.Body, &payload) != nil {
 			http.Error(w, `{"error":"Invalid ticket"}`, 400)
 			return
 		}

@@ -461,6 +461,31 @@ func (r *OrderRepository) UpdateOrderStatusFromCarrier(ctx context.Context, idOr
 	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
 		return err
 	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return err
+	}
+	if targetStatus == "delivery_disputed" {
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, financeOrderID).Scan(&current); err != nil {
+			return err
+		}
+		switch current {
+		case "processing", "shipped", "delivered_unconfirmed", "delivered", "delivery_disputed":
+		default:
+			return sql.ErrNoRows
+		}
+		changed, err := applyCarrierFailureHoldTx(ctx, tx, financeOrderID)
+		if err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		if changed {
+			notifyCarrierFailed(ctx, r.db, financeOrderID)
+		}
+		return nil
+	}
 	query := `
 		UPDATE orders
 		SET status = $2,
@@ -517,17 +542,6 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 		return nil, sql.ErrNoRows
 	}
 
-	// Critic fix (Phase 2): a repeated webhook for an order ALREADY in
-	// the target state is a no-op success — return the order, notify
-	// nobody. The transition UPDATE below has NO `status = $2` leg
-	// (the old leg re-matched an already-disputed order and re-notified
-	// on every repeated 'failed' webhook); without the pre-check here,
-	// removing that leg would turn a duplicate webhook into a 404.
-	var existingID, currentStatus string
-	if err := r.db.QueryRowContext(ctx, `SELECT id, status FROM orders WHERE tracking_number = $1 AND fulfillment_method IN ('warehouse', 'mixed')`, trackingNumber).Scan(&existingID, &currentStatus); err == nil && currentStatus == targetStatus {
-		return r.GetOrderByID(ctx, existingID)
-	}
-
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -539,6 +553,37 @@ func (r *OrderRepository) UpdateWarehouseOrderStatusFromCarrier(ctx context.Cont
 	}
 	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
 		return nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, financeOrderID).Scan(&current); err != nil {
+		return nil, err
+	}
+	if targetStatus == "delivery_disputed" {
+		switch current {
+		case "processing", "picking", "picked", "packed", "shipped", "delivery_disputed":
+		default:
+			return nil, sql.ErrNoRows
+		}
+		changed, err := applyCarrierFailureHoldTx(ctx, tx, financeOrderID)
+		if err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		if changed {
+			notifyCarrierFailed(ctx, r.db, financeOrderID)
+		}
+		return r.GetOrderByID(ctx, financeOrderID)
+	}
+	if current == targetStatus {
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return r.GetOrderByID(ctx, financeOrderID)
 	}
 	var orderID string
 	query := `
@@ -1142,7 +1187,18 @@ func returnWindowDaysFromTx(ctx context.Context, tx *sql.Tx) int {
 // rule is unverified. TODO(U26): no staged threshold beyond the
 // 20-day auto-confirm and the window close is implemented here.
 func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-release' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY return_window_ends_at,id LIMIT 100`)
+	// Exclude review-only window/profit/release history before LIMIT, including
+	// orders without a dispute transition. The locked shared guard rechecks all
+	// predicates; this read-only filter grants no financial authority.
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM orders WHERE NOT profit_released AND (
+ (status='delivered_confirmed' AND confirmed_at IS NOT NULL AND return_window_ends_at>=confirmed_at AND return_window_ends_at<=NOW()) OR
+ (status='delivery_disputed' AND EXISTS(SELECT 1 FROM dispute_order_evidence e JOIN disputes f ON f.id=e.dispute_id WHERE e.order_id=orders.id AND f.status='resolved' AND f.resolution_action='release_to_seller' AND e.hold_at=orders.disputed_at AND e.prior_status IN ('shipped','delivered_unconfirmed','delivered','delivered_confirmed')))
+ ) AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed') AND referral_commission_released=FALSE AND dropshipper_profit BETWEEN 0 AND 9007199254740991
+ AND NOT EXISTS(SELECT 1 FROM ledger_entries l WHERE l.related_order_or_dispute=orders.id AND l.reason='Staged profit release after return window closed')
+ AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=orders.id AND d.status='pending')
+ AND NOT EXISTS(SELECT 1 FROM customer_returns cr WHERE cr.order_id=orders.id AND cr.status NOT IN ('rejected','cancelled','refunded'))
+ AND NOT EXISTS(SELECT 1 FROM customer_returns cr WHERE cr.order_id=orders.id AND cr.status='refunded' AND NOT fin005_return_entitlement_proven(orders.id,cr.id::text)) AND NOT EXISTS(SELECT 1 FROM order_refund_obligations o WHERE o.order_id=orders.id AND (o.purpose<>'customer_return' OR COALESCE((SELECT e.status FROM order_refund_events e WHERE e.obligation_id=o.id ORDER BY event_no DESC LIMIT 1),o.status)<>'succeeded'))
+ AND NOT EXISTS(SELECT 1 FROM dispute_order_transitions t WHERE t.order_id=orders.id AND t.result='needs_review' AND t.reason NOT IN ('pending_dispute','active_return') AND NOT EXISTS(SELECT 1 FROM dispute_order_transitions fixed WHERE fixed.order_id=t.order_id AND fixed.created_at>t.created_at AND fixed.result='restored')) AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-release' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY return_window_ends_at NULLS LAST,id LIMIT 100`)
 	if err != nil {
 		return 0, err
 	}
@@ -1183,21 +1239,49 @@ func (r *OrderRepository) ReleaseClosedReturnWindows(ctx context.Context) (int64
 	return released, errors.Join(failures...)
 }
 func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id string) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err = lockOrderFinanceTx(ctx, tx, id); err != nil {
+		return false, err
+	}
+	if _, err = reconcileDisputeEligibilityTx(ctx, tx, id); err != nil {
+		return false, err
+	}
+	released, err := releaseClosedReturnWindowTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	if released {
+		var profit int64
+		if err := r.db.QueryRowContext(ctx, `SELECT dropshipper_profit FROM orders WHERE id=$1`, id).Scan(&profit); err == nil {
+			notifyProfitReleased(ctx, r.db, id, profit)
+		}
+	}
+	return released, nil
+}
+
+// Consumes the caller's canonical financial prefix.
+func releaseClosedReturnWindowTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	state, _, err := disputeReleaseStateTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if state != "eligible" {
+		return false, nil
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		return false, err
+	}
 	c := struct {
 		id, storeID string
 		profit      int64
 	}{id: id}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err == nil {
-		defer tx.Rollback()
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := lockOrderFinanceTx(ctx, tx, c.id); err != nil {
-		tx.Rollback()
-		return false, err
-	}
 	err = tx.QueryRowContext(ctx, `SELECT store_id,dropshipper_profit FROM orders WHERE id=$1 AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() FOR UPDATE`, c.id).Scan(&c.storeID, &c.profit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -1214,14 +1298,12 @@ func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id stri
 			WHERE id = $1 AND profit_released = FALSE AND status='delivered_confirmed' AND return_window_ends_at<=NOW()
 		`, c.id)
 	if err != nil {
-		tx.Rollback()
 		return false, err
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		// Won by a concurrent releaser; its ledger (if any) is
 		// that releaser's responsibility, never written twice.
-		tx.Rollback()
 		return false, nil
 	}
 	if c.profit > 0 {
@@ -1232,14 +1314,12 @@ func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id stri
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, $3, 'seller', 'credit', $4, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $5)
 			`, creditID, now, c.storeID, c.profit, c.id); err != nil {
-			tx.Rollback()
 			return false, err
 		}
 		if _, err := tx.ExecContext(ctx, `
 				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
 				VALUES ($1, $2, 'platform', 'platform', 'debit', $3, 'Staged profit release after return window closed', 'system:delivery-lock-releaser', $4)
 			`, debitID, now, c.profit, c.id); err != nil {
-			tx.Rollback()
 			return false, err
 		}
 	}
@@ -1254,10 +1334,6 @@ func (r *OrderRepository) releaseClosedReturnWindow(ctx context.Context, id stri
 	if err != nil {
 		return false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	notifyProfitReleased(ctx, r.db, c.id, c.profit)
 	return true, nil
 }
 
@@ -1988,6 +2064,16 @@ func (r *OrderRepository) CreateCustomerReturn(ctx context.Context, customerID, 
 	if _, err := tx.ExecContext(ctx, `SELECT id FROM orders WHERE id = $1 FOR UPDATE`, order.ID); err != nil {
 		return nil, err
 	}
+	var admissible bool
+	if err := tx.QueryRowContext(ctx, `SELECT status='delivered_confirmed' AND NOT profit_released AND (return_window_ends_at IS NULL OR return_window_ends_at>NOW()) AND customer_user_id::text=$2 FROM orders WHERE id=$1`, order.ID, customerID).Scan(&admissible); err != nil {
+		return nil, err
+	}
+	if !admissible {
+		return nil, ErrReturnWindowClosed
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
 	returnID := uuid.NewString()
 	now := time.Now()
 	// Destination (owner rule, Oct 28 2026): derived from the returned
@@ -2161,6 +2247,32 @@ func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, d
 	`, dest)
 }
 
+func (r *OrderRepository) guardedReturnExec(ctx context.Context, id, query string, args ...any) (sql.Result, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var order string
+	if err = tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&order); err != nil {
+		return nil, err
+	}
+	if err = lockOrderFinanceTx(ctx, tx, order); err != nil {
+		return nil, err
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 func (r *OrderRepository) transitionCustomerReturn(ctx context.Context, id, fromStatus, toStatus, adminNote string) error {
 	var q string
 	var args []interface{}
@@ -2171,7 +2283,7 @@ func (r *OrderRepository) transitionCustomerReturn(ctx context.Context, id, from
 		q = `UPDATE customer_returns SET status = $1, updated_at = NOW() WHERE id = $2 AND status = $3`
 		args = []interface{}{toStatus, id, fromStatus}
 	}
-	res, err := r.db.ExecContext(ctx, q, args...)
+	res, err := r.guardedReturnExec(ctx, id, q, args...)
 	if err != nil {
 		return err
 	}
@@ -2216,7 +2328,7 @@ func (r *OrderRepository) RejectCustomerReturn(ctx context.Context, id, adminNot
 }
 
 func (r *OrderRepository) CancelCustomerReturn(ctx context.Context, id string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'cancelled', updated_at = NOW() WHERE id = $1 AND status IN ('requested', 'approved')`, id)
+	res, err := r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'cancelled', updated_at = NOW() WHERE id = $1 AND status IN ('requested', 'approved')`, id)
 	if err != nil {
 		return err
 	}
@@ -2235,9 +2347,9 @@ func (r *OrderRepository) ShipCustomerReturn(ctx context.Context, id, trackingNu
 	var res sql.Result
 	var err error
 	if prepaid == nil {
-		res, err = r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber)
+		res, err = r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber)
 	} else {
-		res, err = r.db.ExecContext(ctx, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), prepaid = $3, updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber, *prepaid)
+		res, err = r.guardedReturnExec(ctx, id, `UPDATE customer_returns SET status = 'shipped', shipped_at = NOW(), tracking_number = NULLIF($2, ''), prepaid = $3, updated_at = NOW() WHERE id = $1 AND status = 'approved'`, id, trackingNumber, *prepaid)
 	}
 	if err != nil {
 		return err
@@ -2293,6 +2405,9 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, err
 	}
 	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
+		return nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
 		return nil, err
 	}
 	var status string
@@ -2771,6 +2886,9 @@ func (r *OrderRepository) RefundCustomerReturn(ctx context.Context, id string, a
 		return 0, nil, err
 	}
 	if err := lockOrderFinanceTx(ctx, tx, financeOrderID, true); err != nil {
+		return 0, nil, err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
 		return 0, nil, err
 	}
 	var customerID string

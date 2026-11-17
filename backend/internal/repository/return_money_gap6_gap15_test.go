@@ -498,9 +498,34 @@ func TestGap6SellerProfitReversal(t *testing.T) {
 	}
 	gmProduct(t, db, "p-t4", "sup-t4", 3)
 	gmBalance(t, db, "p-t4", "sup-t4", "warehouse:wh-1", 3)
-	gmOrder(t, db, "ord-t4", customerID, "store-t4", true, true, 7000)
+	gmOrder(t, db, "ord-t4", customerID, "store-t4", true, false, 7000)
 	itemID := gmItem(t, db, "ord-t4", "p-t4", 1, 10000, 7000, 20000, "")
 
+	// File while admission is open/unreleased, then load the retained historical
+	// release before refund. This represents an old recorded release, not a call
+	// asking the guarded current releaser to release an active return.
+	opsExec(t, db, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '1 day',return_window_ends_at=NOW()+INTERVAL '6 days' WHERE id='ord-t4'`)
+	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t4", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = lockOrderFinanceTx(ctx, tx, "ord-t4"); err != nil {
+		t.Fatal(err)
+	}
+	if err = markDisputeWriterTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET profit_released=TRUE,profit_released_at=NOW(),referral_commission_released=TRUE WHERE id='ord-t4'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO ledger_entries(id,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES($1,'store-t4','seller','credit',7000,'Staged profit release after return window closed','fixture:retained-release','ord-t4'),($2,'platform','platform','debit',7000,'Staged profit release after return window closed','fixture:retained-release','ord-t4')`, "REL-"+uuid.NewString(), "REL-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	before, err := financeRepo.GetStoreBalance(ctx, "store-t4")
 	if err != nil {
 		t.Fatalf("store balance before: %v", err)
@@ -509,7 +534,6 @@ func TestGap6SellerProfitReversal(t *testing.T) {
 		t.Fatalf("store available before = %d, want 7000 (released profit)", before.AvailableAmount)
 	}
 
-	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t4", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "ok"})
 	if _, _, err := repo.RefundCustomerReturn(ctx, returnID, "finance-gap"); err != nil {
 		t.Fatalf("refund: %v", err)
@@ -710,6 +734,7 @@ func TestGap6DisputeCannotRefundAlreadyReturnedPrincipal(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO disputes(id,order_id,resolution_action,status,claim_amount) VALUES('dsp-t9','ord-t9a',NULL,'pending',20000)`); err != nil {
 		t.Fatal(err)
 	}
+	installFIN005PrivateFixture(t, db)
 	if err := NewFinanceRepository(db).ResolveDispute(ctx, "dsp-t9", "refund_supplier", "supplier", "finance-gap", 20000); !errors.Is(err, ErrRefundPrincipalUnresolved) {
 		t.Fatalf("dispute double-spent returned principal %v", err)
 	}

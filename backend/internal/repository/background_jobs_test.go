@@ -64,7 +64,7 @@ func TestDeliveryReleaseTwoWorkersPostsExactlyOneBalancedPair(t *testing.T) {
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	id, _ := opsOrder(t, db, f, true)
-	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',dropshipper_profit=7000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
+	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW()-INTERVAL '8 days',dropshipper_profit=7000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
 	var wg sync.WaitGroup
 	results := make(chan int64, 2)
 	failures := make(chan error, 2)
@@ -108,7 +108,7 @@ func TestDeliveryReleaseContendedDeadlineRollsBackAndPersistsRetry(t *testing.T)
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	id, _ := opsOrder(t, db, f, true)
-	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',dropshipper_profit=7000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
+	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW()-INTERVAL '8 days',dropshipper_profit=7000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
 	blocker, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestDeliveryReleaseRevalidatesEligibilityAndAmountAfterGuard(t *testing.T) 
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	id, _ := opsOrder(t, db, f, true)
-	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',dropshipper_profit=1000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
+	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW()-INTERVAL '8 days',dropshipper_profit=1000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
 	repo := NewOrderRepository(db)
 	for _, eligible := range []bool{false, true} {
 		opsExec(t, db, `UPDATE orders SET return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
@@ -322,7 +322,7 @@ func TestDeliveryReleaseTransactionUsesGuardedSnapshot(t *testing.T) {
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	id, _ := opsOrder(t, db, f, true)
-	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',dropshipper_profit=1000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
+	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW()-INTERVAL '8 days',dropshipper_profit=1000,return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, id)
 	for _, eligible := range []bool{false, true} {
 		tx, err := db.Begin()
 		if err != nil {

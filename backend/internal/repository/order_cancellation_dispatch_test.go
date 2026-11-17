@@ -282,13 +282,28 @@ func TestCancelledOrderRejectsAlternateDispatchWriters(t *testing.T) {
 }
 
 func TestCarrierFailurePreservesLegacyDispatchEvidence(t *testing.T) {
-	db := openCancellationDB(t)
-	seedCancellation(t, db, "legacy-failure", "mixed")
-	if _, err := db.Exec(`INSERT INTO supplier_shipments(id,order_id,supplier_id,status,tracking_number) VALUES('leg','legacy-failure','s','shipped','track')`); err != nil {
+	// This case executes the current carrier writer, so use the real private
+	// finance/carrier fixture and actual FIN005 guard DDL rather than extending
+	// the older cancellation-only schema used by the unrelated inventory races.
+	db := notifyWritersTestDB(t)
+	customer, _, _, _, _, _, supplier, _ := seedNotifyOrderWorld(t, db)
+	seedNotifyOrder(t, db, "legacy-failure", "LEGACY-FAILURE", customer, "packed", "paid")
+	if _, err := db.Exec(`UPDATE orders SET fulfillment_method='mixed',inventory_captured=TRUE WHERE id='legacy-failure'`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO supplier_shipments(id,order_id,supplier_id,status,tracking_number) VALUES('leg','legacy-failure',$1,'shipped','track')`, supplier); err != nil {
+		t.Fatal(err)
+	}
+	installFIN005PrivateFixture(t, db)
 	if _, err := NewSupplierShipmentRepository(db).UpdateShipmentStatus(context.Background(), "track", "failed"); err != nil {
 		t.Fatal(err)
+	}
+	// The legacy row started without a timestamp. Its known dispatched status
+	// must survive the accepted failure as retained custody evidence, even though
+	// the current aggregate order now independently carries a failed-delivery hold.
+	var retained bool
+	if err := db.QueryRow(`SELECT s.status='failed' AND s.shipped_at IS NOT NULL AND o.status='delivery_disputed' AND o.disputed_at IS NOT NULL FROM supplier_shipments s JOIN orders o ON o.id=s.order_id WHERE s.id='leg'`).Scan(&retained); err != nil || !retained {
+		t.Fatalf("carrier failure lost retained dispatch/hold evidence: %v %v", retained, err)
 	}
 	if err := NewOrderRepository(db).CancelOrder(context.Background(), "legacy-failure", "", true); !errors.Is(err, ErrOrderPartiallyDispatched) {
 		t.Fatalf("failure erased custody evidence: %v", err)

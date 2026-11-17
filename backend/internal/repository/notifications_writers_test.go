@@ -14,8 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/drup/platform/internal/testdb"
-
 	"github.com/drup/platform/internal/domain"
 	_ "github.com/lib/pq"
 )
@@ -137,7 +135,7 @@ CREATE TABLE product_variants (
 	stock INT NOT NULL DEFAULT 0
 );
 CREATE TABLE customer_returns (
-	id VARCHAR(50) PRIMARY KEY,
+	id UUID PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
 	customer_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'requested',
@@ -294,10 +292,7 @@ func notifyWritersTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("NOTIFY_WRITERS_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := testdb.Open(t, dsn)
-	if err != nil {
-		t.Fatalf("open test DB: %v", err)
-	}
+	db := openPrivateFinanceFixture(t, dsn)
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping test DB: %v", err)
 	}
@@ -458,6 +453,7 @@ func TestDisputeFiledAndResolvedNotify(t *testing.T) {
 	ctx := context.Background()
 	customerID, _, _, adminID, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "ord-4", "ORD-4", customerID, "shipped", "paid")
+	installFIN005PrivateFixture(t, db)
 	fin := NewFinanceRepository(db)
 	if err := fin.CreateDispute(ctx, DisputeForTest("disp-1", "ord-4", "ORD-4")); err != nil {
 		t.Fatalf("CreateDispute: %v", err)
@@ -466,7 +462,7 @@ func TestDisputeFiledAndResolvedNotify(t *testing.T) {
 	if len(kinds["dispute_filed"]) != 1 || kinds["dispute_filed"][0] != adminID {
 		t.Fatalf("dispute_filed = %v, want [admin %s]", kinds["dispute_filed"], adminID)
 	}
-	if err := fin.ResolveDispute(ctx, "disp-1", "release_to_seller", "supplier", "admin", 500000); err != nil {
+	if err := fin.ResolveDispute(ctx, "disp-1", "release_to_seller", "seller", "admin", 500000); err != nil {
 		t.Fatalf("ResolveDispute: %v", err)
 	}
 	kinds = outboxKinds(t, db)
@@ -703,6 +699,7 @@ func TestWarehouseCarrierFailedRepeatIsNoop(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, quantity) VALUES ('item-ord-wh', 'ord-wh', 'prod-1', 1)`); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
+	installFIN005PrivateFixture(t, db)
 	repo := NewOrderRepository(db)
 	order, err := repo.UpdateWarehouseOrderStatusFromCarrier(ctx, "TRK-WH1", "failed")
 	if err != nil || order == nil {
@@ -731,18 +728,18 @@ func TestReceiveCustomerReturnCODRefusedRepeatNotifiesOnce(t *testing.T) {
 	ctx := context.Background()
 	customerID, _, _, _, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "ord-9", "ORD-9", customerID, "delivered", "paid")
-	if _, err := db.Exec(`INSERT INTO customer_returns (id, order_id, customer_id, status, prepaid) VALUES ('ret-cod', 'ord-9', $1, 'approved', FALSE)`, customerID); err != nil {
+	if _, err := db.Exec(`INSERT INTO customer_returns (id, order_id, customer_id, status, prepaid) VALUES ('550e8400-e29b-41d4-a716-446655440000', 'ord-9', $1, 'approved', FALSE)`, customerID); err != nil {
 		t.Fatalf("seed return: %v", err)
 	}
 	repo := NewOrderRepository(db)
 	qc := []CustomerReturnItemQC{{ReturnItemID: "ri-1", QCStatus: "ok"}}
-	if _, err := repo.ReceiveCustomerReturn(ctx, "ret-cod", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
+	if _, err := repo.ReceiveCustomerReturn(ctx, "550e8400-e29b-41d4-a716-446655440000", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
 		t.Fatalf("first COD receive err = %v, want ErrReturnCODRefused", err)
 	}
 	if n := len(outboxKinds(t, db)["return_cod_refused"]); n != 1 {
 		t.Fatalf("return_cod_refused rows after first refusal = %d, want 1", n)
 	}
-	if _, err := repo.ReceiveCustomerReturn(ctx, "ret-cod", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
+	if _, err := repo.ReceiveCustomerReturn(ctx, "550e8400-e29b-41d4-a716-446655440000", qc, "wh-1"); !errors.Is(err, ErrReturnCODRefused) {
 		t.Fatalf("second COD receive err = %v, want ErrReturnCODRefused again", err)
 	}
 	if n := len(outboxKinds(t, db)["return_cod_refused"]); n != 1 {
@@ -799,6 +796,7 @@ func TestApplyDisputeRefundEffectSingleClaimFigure(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO payment_transactions(id,order_id,order_number,gateway_token,amount,status) VALUES('paytx-11','ord-11','ORD-11','tok-11',500000,'paid')`); err != nil {
 		t.Fatal(err)
 	}
+	installFIN005PrivateFixture(t, db)
 	if err = NewFinanceRepository(db).ResolveDispute(ctx, "disp-10b", "refund_carrier", "carrier", "test", 100000); err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -40,7 +41,14 @@ func (r *OrderRepository) CancelOrderWithRefund(ctx context.Context, idOrNumber,
 
 // Bounded batched projection; no tokens, provider references, raw source IDs or
 // another customer's journal appear in the customer DTO. Read errors fail closed.
+type refundSummaryQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func (r *OrderRepository) attachRefundSummaries(ctx context.Context, orders []domain.Order) error {
+	return attachRefundSummariesFrom(ctx, r.db, orders)
+}
+func attachRefundSummariesFrom(ctx context.Context, q refundSummaryQueryer, orders []domain.Order) error {
 	for start := 0; start < len(orders); start += 200 {
 		end := min(start+200, len(orders))
 		ids := make([]string, 0, end-start)
@@ -49,7 +57,7 @@ func (r *OrderRepository) attachRefundSummaries(ctx context.Context, orders []do
 			ids = append(ids, orders[i].ID)
 			byID[orders[i].ID] = i
 		}
-		rows, err := r.db.QueryContext(ctx, `WITH claims AS (
+		rows, err := q.QueryContext(ctx, `WITH claims AS (
  SELECT o.*,COALESCE((SELECT e.status FROM order_refund_events e WHERE e.obligation_id=o.id ORDER BY event_no DESC LIMIT 1),CASE WHEN o.status='unknown' AND o.destination<>'review' AND EXISTS(SELECT 1 FROM order_payment_receipts r WHERE r.payment_id=o.source_payment_id AND r.funding_kind='gateway' AND r.amount_toman=o.source_amount_toman) THEN 'pending' ELSE o.status END) AS current_state
  FROM order_refund_obligations o WHERE o.order_id=ANY($1)
 ) SELECT o.id,COALESCE(SUM(c.amount_toman),0),COALESCE(SUM(c.amount_toman) FILTER(WHERE c.current_state='pending'),0),COALESCE(SUM(c.amount_toman) FILTER(WHERE c.current_state='succeeded'),0),COALESCE(SUM(c.amount_toman) FILTER(WHERE c.current_state='failed'),0),COALESCE(SUM(c.amount_toman) FILTER(WHERE c.current_state='unknown'),0),COUNT(DISTINCT c.destination),COALESCE(MIN(c.destination),'none'),

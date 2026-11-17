@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/domain"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -131,12 +132,15 @@ func TestFIN003CustomerCancellationReturnsOwnedPersistentRefundState(t *testing.
 func TestFIN003DisputeHTTPDoesNotAssertBankRefundSuccess(t *testing.T) {
 	db, _, order, _ := fin003HTTPPaidOrder(t)
 	id := "http-dispute-" + uuid.NewString()[:12]
-	if _, err := db.Exec(`INSERT INTO disputes(id,order_id,order_number,type,customer_name,product_title,claim_amount,reason,status) VALUES($1,$2,$2,'delivery_undelivered','fixture','fixture',2000000,'partial dispute','pending')`, id, order); err != nil {
+	if _, err := db.Exec(`UPDATE orders SET status='shipped' WHERE id=$1`, order); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.NewFinanceRepository(db).CreateDispute(context.Background(), domain.Dispute{ID: id, OrderID: order, Type: "delivery_undelivered", ProductTitle: "fixture", ClaimAmount: 2000000, Reason: "partial dispute"}); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"action":"refund_carrier","responsibleParty":"carrier","claimAmount":2000000}`))
 	w := httptest.NewRecorder()
-	handleResolveDispute(w, req, context.Background(), id, repository.NewFinanceRepository(db), repository.NewOrderRepository(db))
+	handleResolveDispute(w, req, context.WithValue(context.Background(), userClaimsKey, &auth.UserClaims{UserID: "authenticated-finance", Role: "admin"}), id, repository.NewFinanceRepository(db), repository.NewOrderRepository(db))
 	if w.Code != 200 {
 		t.Fatalf("dispute %d %s", w.Code, w.Body.String())
 	}
@@ -144,7 +148,7 @@ func TestFIN003DisputeHTTPDoesNotAssertBankRefundSuccess(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["orderRefunded"] != false || result["refundRequested"] != true {
+	if result["refundScope"] != "order" || result["refund"].(map[string]any)["status"] == "succeeded" {
 		t.Fatalf("adjudication pretended PSP completed: %s", w.Body.String())
 	}
 }

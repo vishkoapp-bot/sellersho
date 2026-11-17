@@ -372,6 +372,9 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE tracking_number=$1`, trackingNumber).Scan(&orderID); err != nil {
 		return nil, err
 	}
+	if err := lockOrderFinanceTx(ctx, tx, orderID); err != nil {
+		return nil, err
+	}
 	if err := assertOrderDispatchAllowedTx(ctx, tx, orderID); err != nil {
 		return nil, err
 	}
@@ -382,7 +385,7 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
  shipped_at = CASE WHEN $2 IN ('shipped','in_transit','delivered') OR status IN ('shipped','in_transit','delivered') THEN COALESCE(shipped_at,now()) ELSE shipped_at END,
 		    delivered_at = CASE WHEN $2 = 'delivered' THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
 		    updated_at = NOW()
-		WHERE tracking_number = $1
+		WHERE tracking_number = $1 AND order_id=$3
 		  AND (
 			status = $2 OR
 			(status IN ('shipped', 'in_transit') AND $2 IN ('in_transit', 'delivered')) OR
@@ -398,13 +401,22 @@ func (r *SupplierShipmentRepository) UpdateShipmentStatus(ctx context.Context, t
 			(status IN ('shipped', 'in_transit') AND $2 = 'failed')
 		  )
 		RETURNING id, order_id, supplier_id, status
-	`, trackingNumber, status).Scan(&s.ID, &s.OrderID, &s.SupplierID, &s.Status)
+	`, trackingNumber, status, orderID).Scan(&s.ID, &s.OrderID, &s.SupplierID, &s.Status)
 	if err != nil {
 		return nil, err
 	}
 
+	failureActivated := false
+	if status == "failed" {
+		if failureActivated, err = applyCarrierFailureHoldTx(ctx, tx, orderID); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	if failureActivated {
+		notifyCarrierFailed(ctx, r.db, orderID)
 	}
 	return &s, nil
 }

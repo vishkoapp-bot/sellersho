@@ -40,8 +40,8 @@ DONE refers to the task-specific local gate described below. It does not certify
 | SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
 | FIN-010 | TODO | — | Sandbox access not yet available; owner requested independent work |
 | INV-12 | TODO | — | — |
-| FIN-004 | DONE | this commit | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
-| FIN-005 | TODO | — | — |
+| FIN-004 | DONE | afb401e / c270fcc | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
+| FIN-005 | DONE | this commit | [Dispute eligibility contract](../specs/2026-11-16-dispute-eligibility-design.md) |
 | FIN-007 | TODO | — | — |
 | FIN-008 | TODO | — | — |
 | FIN-011 | TODO | — | — |
@@ -836,3 +836,104 @@ backup,applied checksum,health/jobs,and old money/monthly-history postchecks mus
 be recorded before production completion. Older binaries cannot write the new
 charge evidence; a code rollback keeps charge mutations held for compatible
 roll-forward,never destructive schema down or restoring over new orders.
+
+
+FIN-004 production completion (2026-11-16): finance commit `afb401e` and
+server-build compatibility commit `c270fcc` are pushed; independent checks confirm
+HEAD/origin/production `c270fcc2025d86946f9314747cb60300b0b67c99`.
+`deploy.ps1 -BuildOnServer` exited 0. Restricted server backup:
+`/opt/drup/backups/deploy-20261116T140303Z-c270fcc2` (0700).
+Migration160001 is applied with the checksum above and is now immutable.
+Liveness/readiness200, six jobs successful, protected paths absent; existing
+financial aggregates and monthly history hash unchanged. Secrets stayed on-server.
+Release receipt: `releases/fin004-production-receipt.json`.
+The server build uses Node24 for locked dependency compatibility and an ephemeral
+Go compiler cache; five focused delivery tests and a fresh frozen frontend build
+passed. Full application evidence is reused only by exact subtree/harness blob
+identity. No hardware capacity certification or real PSP transaction is claimed.
+FIN-005 is now in progress; its completion is not yet claimed.
+
+
+## FIN-005 — atomic dispute verdict and guarded seller eligibility
+
+Local acceptance completed on 2026-11-17, exact frozen tree
+`bd7c15865616af57aca4dbdcff3f7e8266449c54`, based on deployed/origin `c270fcc`.
+Totals are28 DONE local gates,5 checkpoints OPEN,21 TODO (26 not closed).
+Production release follows the authorized commit/push/deploy.ps1 sequence;
+this local receipt does not claim that production has already changed.
+
+Dispute admission captures the actual locked physical state. Immutable decisions
+make identical verdict retries safe and conflicting verdicts explicit. Customer
+wins reserve the persisted claim through FIN-003 and record the existing party
+adjustment atomically; operator identity comes from authentication. Refund
+reservation is never reported as a completed bank payment.
+
+Seller wins restore only proven original fulfillment facts and recorded windows.
+Other claims, active returns, unresolved refund work, inconsistent release history
+and unproven entitlement remain held. Completed returns require exact per-return
+successful obligations and captured item/reversal/linked-ledger proof. Parent-first
+return admission and closure serialize with the canonical release helper. The
+bounded worker filters held/review-only rows before its100-candidate limit and
+rechecks under lock with its unchanged300ms candidate budget.
+
+Accepted supplier carrier failures and the independent order hold now commit in
+one guarded transaction. Retained failed shipment evidence also prevents stale
+restoration, automatic confirmation and release after an old propagation gap.
+Warehouse/direct duplicates preserve the hold and notification identity. Reviewed
+legacy reconciliation replays preserve an unexpired original window and eventual
+exactly-once release; genuine newer facts remain visibly review-held. No historical
+production repair or evidence import is presumed.
+
+Live dispute UI uses authoritative server rows, including empty/error states,
+disables in-flight duplicate actions and shows actual hold/refund progress. Local
+accounting remains mock-only. The live page makes no immediate-release/refund or
+wallet-immunity promise; lost responses recover through the durable verdict/GET.
+
+Additive160002 contains no financial-history rewrite. NOWAIT drain and narrow
+transaction-local version fences protect the live-old-binary upgrade interval;
+actual immutable admission/decision consistency is required at commit. Old affected
+mutations remain held after binary rollback; roll forward without destructive down
+or restoring a database over newer orders. All previously applied migration blobs
+are unchanged, including sealed160001. New normalized160002up checksum:
+`b067e688f8491a7fe088e5ba022cecc160718f3326a1f25f4910d3ab5f5143b8`.
+
+A separately proven expiry-classification gap found during acceptance is corrected:
+all error-tree leaves must be known transient causes; connection/transaction-done
+sentinels require captured actual cancellation, while unknown/financial/metadata
+causes remain review-held. Job/candidate/retry/SLO budgets are unchanged. The old
+intermittent burst failure's original cause remains UNKNOWN; deterministic proof
+and subsequent passing gates do not retroactively relabel that failed run.
+
+- Full backend:862 discovered top-level entries,0 failures,all33 packages;
+  disjoint221+220+227+194,all8 owned PostgreSQL/Redis containers removed.
+- Full frontend:309 tests passed,0 failed/cancelled/skipped; TypeScript/Vite build
+  passes (existing bundle-size warning retained).
+- Linux CGO race:45/45 selected repository/server/worker tests,0 failures/skips,
+  no race warning; fresh guarded database clone per top-level test; owned clones,
+  containers and binary volume cleaned. Vet and cold Linux server/migrator builds
+  pass. No provider or production-money request was made.
+- Literal source proof:1523 Git blobs; protected paths absent,all applied migration
+  blobs unchanged. Completion notes are Markdown-only deltas from tested source.
+  Main receipt:`releases/fin005-final-gates.json`; full/race/source manifests and
+  exact command logs remain under ignored `releases/` and `logs/`.
+
+Earlier855/5 and862/3 full receipts remain NONPASSING. Two latter timeouts were
+correlated with the host's overnight sleep and passed unchanged after resume;
+the actual legacy private-schema failure was corrected without weakening guards.
+The first Linux race setup incorrectly shared one database across package tests;
+its count-contamination failure is retained. The corrected per-test clone gate
+passes all45 cases. A separate unchanged8s test-context failure and its later
+isolated pass remain recorded with UNKNOWN causation; the final exact-source full
+gate above is the acceptance receipt.
+
+The existing one-active-payment/fully-reserved-extra-capture contract does not
+admit a positive single-dispute split across two unreserved checkout sources.
+Supported extra-capture/original-principal conservation and rejection are tested;
+no checkout index, payment evidence or entitlement policy was weakened to invent
+that case. Confirmed/released-order dispute admission and general partial-profit
+release after a non-return refund remain excluded/review-held.
+
+FIN-010 sandbox execution and final hardware1000-user/100RPS certification remain
+OPEN under the owner's existing instructions. Production backup/checksum/health,
+existing money/monthly-history conservation and read-only FIN005 audit still form
+the official release/postcheck gate.

@@ -50,26 +50,31 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	store := "worker-store-" + uuid.NewString()[:12]
+	if _, err := db.Exec(`INSERT INTO stores(id,name,slug,owner_name,owner_user_id,owner_type) VALUES($1,'Worker fixture',$1,'Worker fixture',$2,'dropshipper')`, store, customer); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	seed := []struct {
-		name   string
-		status string
-		ship   *time.Time
-		window *time.Time
+		name      string
+		status    string
+		ship      *time.Time
+		confirmed *time.Time
+		window    *time.Time
 	}{
-		{"confirm-only", "shipped", timePtr(now.AddDate(0, 0, -21)), nil},
-		{"release-closed-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.Add(-time.Hour))},
-		{"open-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.Add(24 * time.Hour))},
-		{"null-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), nil},
-		{"recent-shipment", "shipped", timePtr(now.Add(-24 * time.Hour)), nil},
+		{"confirm-only", "shipped", timePtr(now.AddDate(0, 0, -21)), nil, nil},
+		{"release-closed-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -8)), timePtr(now.Add(-time.Hour))},
+		{"open-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -6)), timePtr(now.Add(24 * time.Hour))},
+		{"null-window", "delivered_confirmed", timePtr(now.AddDate(0, 0, -30)), timePtr(now.AddDate(0, 0, -7)), nil},
+		{"recent-shipment", "shipped", timePtr(now.Add(-24 * time.Hour)), nil, nil},
 	}
 	ids := map[string]string{}
 	for _, s := range seed {
 		id := "worker-" + uuid.NewString()[:20]
 		_, err := db.Exec(
-			`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,customer_user_id,status,shipped_at,return_window_ends_at)
-			VALUES($1,$1,'store-central','Worker fixture',0,0,'Worker customer','09123456789','Test','Test','Test','1234512345',$1,$2,$3,$4,$5)`,
-			id, customer, s.status, s.ship, s.window,
+			`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,customer_user_id,status,shipped_at,confirmed_at,return_window_ends_at,dropshipper_profit,payment_status)
+			VALUES($1,$1,$3,'Worker fixture',20000,20000,'Worker customer','09123456789','Test','Test','Test','1234512345',$1,$2,$4,$5,$6,$7,7000,'paid')`,
+			id, customer, store, s.status, s.ship, s.confirmed, s.window,
 		)
 		if err != nil {
 			t.Fatalf("seed %s: %v", s.name, err)
@@ -108,6 +113,22 @@ func TestDeliveryLockReleaserStagedCycle(t *testing.T) {
 	check("null-window", "delivered_confirmed", false)
 	check("recent-shipment", "shipped", false)
 
+	// The closed recorded window releases exactly the captured7000 once;
+	// pre-existing confirmation/window facts must survive the cycle verbatim.
+	for _, s := range seed {
+		if s.status != "delivered_confirmed" {
+			continue
+		}
+		var preserved bool
+		if err := db.QueryRow(`SELECT confirmed_at IS NOT DISTINCT FROM $2::timestamptz AND return_window_ends_at IS NOT DISTINCT FROM $3::timestamptz FROM orders WHERE id=$1`, ids[s.name], s.confirmed, s.window).Scan(&preserved); err != nil || !preserved {
+			t.Fatalf("%s recorded facts rewritten %v %v", s.name, preserved, err)
+		}
+	}
+	var pairs int
+	var credit, debit int64
+	if err := db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(amount) FILTER(WHERE type='credit'),0),COALESCE(SUM(amount) FILTER(WHERE type='debit'),0) FROM ledger_entries WHERE related_order_or_dispute=$1 AND operator='system:delivery-lock-releaser'`, ids["release-closed-window"]).Scan(&pairs, &credit, &debit); err != nil || pairs != 2 || credit != 7000 || debit != 7000 {
+		t.Fatalf("captured release pair count=%d credit=%d debit=%d %v", pairs, credit, debit, err)
+	}
 	var jobID string
 	var jobReleased, jobConfirmed int64
 	var jobErr string

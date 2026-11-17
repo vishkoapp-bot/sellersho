@@ -113,7 +113,7 @@ func (w *BackgroundWorker) deliveryCycle(ctx context.Context) (released int64, c
 	// locked until stage 2. It does not set profit_released,
 	// profit_released_at or referral_commission_released (those move
 	// with the release).
-	confirmRows, confirmErr := w.db.QueryContext(ctx, `SELECT id FROM orders WHERE status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-confirm' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY shipped_at,id LIMIT 100`)
+	confirmRows, confirmErr := w.db.QueryContext(ctx, `SELECT id FROM orders WHERE status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed') AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-confirm' AND r.candidate=orders.id AND r.next_retry_at>clock_timestamp()) ORDER BY shipped_at,id LIMIT 100`)
 	if confirmErr != nil {
 		return 0, 0, confirmErr
 	}
@@ -203,7 +203,7 @@ func (w *BackgroundWorker) confirmDelivery(ctx context.Context, id string) (bool
 	if configured >= 1 && configured <= 365 {
 		windowDays = configured
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+($1*INTERVAL '1 day'),updated_at=NOW() WHERE id=$2 AND status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE`, windowDays, id)
+	result, err := tx.ExecContext(ctx, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW(),return_window_ends_at=NOW()+($1*INTERVAL '1 day'),updated_at=NOW() WHERE id=$2 AND status IN ('shipped','delivered_unconfirmed') AND shipped_at IS NOT NULL AND shipped_at<=NOW()-INTERVAL '20 days' AND profit_released=FALSE AND NOT EXISTS(SELECT 1 FROM supplier_shipments s WHERE s.order_id=orders.id AND s.status='failed')`, windowDays, id)
 	if err != nil {
 		tx.Rollback()
 		return false, err

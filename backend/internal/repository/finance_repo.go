@@ -103,7 +103,7 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 	}
 	defer rows.Close()
 
-	var list []domain.Dispute
+	list := []domain.Dispute{}
 	for rows.Next() {
 		var d domain.Dispute
 		if err := rows.Scan(
@@ -114,6 +114,17 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 			return nil, err
 		}
 		list = append(list, d)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range list {
+		out, err := r.GetDisputeOutcome(ctx, list[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		list[i].Outcome = &out
 	}
 	return list, nil
 }
@@ -128,6 +139,7 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 // mismatch and also fails closed. The dispute type is stored as given;
 // handlers validate it against the disputes CHECK values.
 func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute) error {
+ if d.ClaimAmount<=0||validateSignedFinanceMoney(d.ClaimAmount)!=nil{return ErrDisputeInput}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -152,6 +164,12 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 		return err
 	}
 	if err := lockOrderFinanceTx(ctx, tx, resolvedID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT order_number,store_id,customer_full_name FROM orders WHERE id=$1`, resolvedID).Scan(&resolvedNumber, &orderStoreID, &customerName); err != nil {
+		return err
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
 		return err
 	}
 	d.OrderID = resolvedID
@@ -196,6 +214,9 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 	// un-confirm the order, and two concurrent disputes cannot both
 	// insert: the loser's UPDATE affects 0 rows and its tx rolls back.
 	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO dispute_order_evidence(dispute_id,order_id,prior_status,prior_disputed_at,prior_delivered_at,prior_confirmed_at,prior_window_ends_at,prior_profit_released,prior_profit_released_at,prior_referral_released,hold_at,evidence_kind,actor_user_id) SELECT $1,id,status,disputed_at,NULL,confirmed_at,return_window_ends_at,profit_released,profit_released_at,referral_commission_released,$2,'admission',COALESCE(customer_user_id::text,'') FROM orders WHERE id=$3`, d.ID, now, resolvedID); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'delivery_disputed', disputed_at = $1 WHERE id = $2 AND status IN ('shipped','delivered_unconfirmed','delivered')`, now, resolvedID)
 	if err != nil {
 		return err
@@ -225,63 +246,8 @@ func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute)
 //     resolution fails closed instead of silently defaulting to carrier.
 //   - ledger ids are UUIDs (ADJ- + UUID), never ADJ- + millis%10000.
 func (r *FinanceRepository) ResolveDispute(ctx context.Context, disputeID, action, party, operator string, claimAmount int64) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var orderID string
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,'') FROM disputes WHERE id=$1`, disputeID).Scan(&orderID); err != nil {
-		return fmt.Errorf("dispute not found: %w", err)
-	}
-	if orderID != "" {
-		if err = lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
-			return err
-		}
-	}
-	var actualOrder, status string
-	var actualClaim int64
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(order_id,''),status,COALESCE(claim_amount,0) FROM disputes WHERE id=$1 FOR UPDATE`, disputeID).Scan(&actualOrder, &status, &actualClaim); err != nil {
-		return err
-	}
-	if actualOrder != orderID {
-		return ErrFinanceAccountChanged
-	}
-	if status != "pending" {
-		return fmt.Errorf("dispute already resolved: %s", disputeID)
-	}
-	if action != "release_to_seller" {
-		if !strings.HasPrefix(action, "refund") || orderID == "" || claimAmount <= 0 || claimAmount != actualClaim {
-			return ErrRefundPrincipalUnresolved
-		}
-		if err = validateSignedFinanceMoney(claimAmount); err != nil {
-			return err
-		}
-		targetType, ok := disputePartyLedgerType(party, action)
-		if !ok {
-			return fmt.Errorf("unknown responsible party: %s", party)
-		}
-		// Record the authorized request before resolving. The pending status keeps
-		// this new decision distinct from unproven historical resolved disputes.
-		if _, err = tx.ExecContext(ctx, `UPDATE disputes SET resolution_action=$2,responsible_party=$3 WHERE id=$1`, disputeID, action, party); err != nil {
-			return err
-		}
-		if _, err = reserveOrderRefundTx(ctx, tx, orderID, "dispute", disputeID, "original_payment", operator, claimAmount, ""); err != nil {
-			return err
-		}
-		reason := fmt.Sprintf("صدور حکم داوری پرونده %s به مسئولیت %s", disputeID, party)
-		if _, err = tx.ExecContext(ctx, `INSERT INTO ledger_entries(id,date,target_account,target_type,type,amount,reason,operator,related_order_or_dispute) VALUES($1,NOW(),$2,$3,'debit',$4,$5,$6,$7)`, "ADJ-"+uuid.NewString(), party, targetType, claimAmount, reason, operator, disputeID); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE disputes SET status='resolved',resolution_action=$2,responsible_party=$3,resolution_date=NOW() WHERE id=$1`, disputeID, action, party); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	notifyDisputeResolved(ctx, r.db, disputeID, orderID, action, party, claimAmount)
-	return nil
+	_, err := r.ResolveDisputeWithOutcome(ctx, disputeID, DisputeResolutionInput{Action: action, ResponsibleParty: party, ActorUserID: operator, ExpectedClaimAmount: &claimAmount})
+	return err
 }
 
 // disputePartyLedgerType maps a responsible-party value to a

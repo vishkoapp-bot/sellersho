@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -176,7 +178,7 @@ func handleCreateDispute(w http.ResponseWriter, r *http.Request, ctx context.Con
 
 	if err := finRepo.CreateDispute(ctx, dispute); err != nil {
 		msg := err.Error()
-		if strings.Contains(msg, "order not found") || strings.Contains(msg, "order reference") || strings.Contains(msg, "store mismatch") || strings.Contains(msg, "product title") {
+		if errors.Is(err,repository.ErrDisputeInput)||strings.Contains(msg, "order not found") || strings.Contains(msg, "order reference") || strings.Contains(msg, "store mismatch") || strings.Contains(msg, "product title") {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 			return
 		}
@@ -188,69 +190,40 @@ func handleCreateDispute(w http.ResponseWriter, r *http.Request, ctx context.Con
 	json.NewEncoder(w).Encode(dispute)
 }
 
-// handleResolveDispute resolves a dispute via finance_repo.go
-// (called, never modified) and then applies the D37 live effect: a
-// refund resolution also moves the order to cancelled and its payment
-// transaction to refunded (OrderRepository.ApplyDisputeRefundEffect).
-// TODO(U21): no PSP money movement is claimed or attempted here.
+// The transaction records a verdict and reserves a refund; payment progress is order-level.
 func handleResolveDispute(w http.ResponseWriter, r *http.Request, ctx context.Context, id string, finRepo *repository.FinanceRepository, orderRepo *repository.OrderRepository) {
 	w.Header().Set("Content-Type", "application/json")
+	claims, _ := ctx.Value(userClaimsKey).(*auth.UserClaims)
+	if claims == nil || claims.UserID == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
 	if finRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-
 	var req struct {
-		Action      string `json:"action"` // "release_to_seller" | "refund_carrier" | "refund_supplier"
+		Action      string `json:"action"`
 		Party       string `json:"responsibleParty"`
-		Operator    string `json:"operator"`
-		ClaimAmount int64  `json:"claimAmount"`
+		ClaimAmount *int64 `json:"claimAmount"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
 		return
 	}
-
-	if req.Operator == "" {
-		req.Operator = "کارشناس ارشد داوری و مالی"
-	}
-
-	if err := finRepo.ResolveDispute(ctx, id, req.Action, req.Party, req.Operator, req.ClaimAmount); err != nil {
-		msg := err.Error()
+	outcome, err := finRepo.ResolveDisputeWithOutcome(ctx, id, repository.DisputeResolutionInput{Action: req.Action, ResponsibleParty: req.Party, ActorUserID: claims.UserID, ExpectedClaimAmount: req.ClaimAmount})
+	if err != nil {
 		switch {
-		case strings.Contains(msg, "already resolved"):
-			http.Error(w, `{"error":"Dispute is already resolved"}`, http.StatusConflict)
-		case strings.Contains(msg, "dispute not found"):
+		case errors.Is(err, sql.ErrNoRows):
 			http.Error(w, `{"error":"Dispute not found"}`, http.StatusNotFound)
-		case strings.Contains(msg, "unknown responsible party"):
-			http.Error(w, `{"error":"Unknown responsible party"}`, http.StatusBadRequest)
+		case errors.Is(err, repository.ErrDisputeInput):
+			http.Error(w, `{"error":"Invalid dispute verdict"}`, http.StatusBadRequest)
+		case errors.Is(err, repository.ErrDisputeConflict):
+			http.Error(w, `{"error":"Conflicting dispute verdict"}`, http.StatusConflict)
 		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, `{"error":"Decision outcome could not be confirmed. Reload or retry the same verdict."}`, http.StatusInternalServerError)
 		}
 		return
 	}
-
-	// D37: refund resolutions move order + payment transaction state.
-	// A failure here is reported (the dispute itself is already
-	// resolved in finance_repo.go); the effect is idempotent on retry
-	// because it only touches orders not already cancelled.
-	refundRequested := false
-	if orderRepo != nil {
-		applied, effErr := orderRepo.ApplyDisputeRefundEffect(ctx, id)
-		if effErr != nil {
-			http.Error(w, effErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		refundRequested = applied
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":         true,
-		"disputeId":       id,
-		"status":          "resolved",
-		"orderRefunded":   false,
-		"refundRequested": refundRequested,
-		"message":         "Dispute resolved",
-	})
+	json.NewEncoder(w).Encode(outcome)
 }

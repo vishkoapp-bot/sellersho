@@ -442,22 +442,40 @@ type SupplierShipmentAuditLog struct {
 }
 
 // Dispute represents a return claim or undelivered shipment dispute
+// DisputeOutcome separates immutable adjudication from evolving order-level money progress.
+type DisputeOutcome struct {
+	DisputeID          string             `json:"disputeId"`
+	OrderID            string             `json:"orderId"`
+	Action             string             `json:"action"`
+	ResponsibleParty   string             `json:"responsibleParty"`
+	ClaimAmount        int64              `json:"claimAmount"`
+	ActorUserID        string             `json:"actorUserId,omitempty"`
+	DecisionTime       *time.Time         `json:"decisionTime,omitempty"`
+	Replay             bool               `json:"replay"`
+	OrderStatus        string             `json:"orderStatus"`
+	SellerReleaseState string             `json:"sellerReleaseState"`
+	HoldReasons        []string           `json:"holdReasons"`
+	RefundScope        string             `json:"refundScope"`
+	Refund             OrderRefundSummary `json:"refund"`
+}
+
 type Dispute struct {
-	ID               string     `json:"id" db:"id"`
-	OrderID          string     `json:"orderId" db:"order_id"`
-	OrderNumber      string     `json:"orderNumber" db:"order_number"`
-	Type             string     `json:"type" db:"type"` // 'return_7day' | 'delivery_undelivered'
-	CustomerName     string     `json:"customerName" db:"customer_name"`
-	ProductTitle     string     `json:"productTitle" db:"product_title"`
-	ClaimAmount      int64      `json:"claimAmount" db:"claim_amount"`
-	Reason           string     `json:"reason" db:"reason"`
-	StoreID          string     `json:"storeId" db:"store_id"`
-	SupplierName     string     `json:"supplierName" db:"supplier_name"`
-	Status           string     `json:"status" db:"status"` // 'pending' | 'resolved'
-	ResponsibleParty string     `json:"responsibleParty" db:"responsible_party"`
-	ResolutionAction string     `json:"resolutionAction" db:"resolution_action"`
-	ResolutionDate   *time.Time `json:"resolutionDate" db:"resolution_date"`
-	CreatedAt        time.Time  `json:"createdAt" db:"created_at"`
+	Outcome          *DisputeOutcome `json:"outcome,omitempty"`
+	ID               string          `json:"id" db:"id"`
+	OrderID          string          `json:"orderId" db:"order_id"`
+	OrderNumber      string          `json:"orderNumber" db:"order_number"`
+	Type             string          `json:"type" db:"type"` // 'return_7day' | 'delivery_undelivered'
+	CustomerName     string          `json:"customerName" db:"customer_name"`
+	ProductTitle     string          `json:"productTitle" db:"product_title"`
+	ClaimAmount      int64           `json:"claimAmount" db:"claim_amount"`
+	Reason           string          `json:"reason" db:"reason"`
+	StoreID          string          `json:"storeId" db:"store_id"`
+	SupplierName     string          `json:"supplierName" db:"supplier_name"`
+	Status           string          `json:"status" db:"status"` // 'pending' | 'resolved'
+	ResponsibleParty string          `json:"responsibleParty" db:"responsible_party"`
+	ResolutionAction string          `json:"resolutionAction" db:"resolution_action"`
+	ResolutionDate   *time.Time      `json:"resolutionDate" db:"resolution_date"`
+	CreatedAt        time.Time       `json:"createdAt" db:"created_at"`
 }
 
 // LedgerEntry represents immutable double-entry bookkeeping journal entry

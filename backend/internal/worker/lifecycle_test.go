@@ -92,7 +92,23 @@ func TestDeliveryConfirmationKeepsGuardedConfiguredWindow(t *testing.T) {
 	jobExec(t, db, `UPDATE platform_settings SET return_window_days=13`)
 	jobExec(t, db, `UPDATE orders SET status='shipped',shipped_at=NOW()-INTERVAL '21 days' WHERE id LIKE $1`, f.prefix+"%")
 	jobExec(t, db, `UPDATE orders SET shipped_at=NOW()-INTERVAL '19 days' WHERE id=$1`, f.prefix+"2")
-	jobExec(t, db, `UPDATE orders SET profit_released=TRUE WHERE id=$1`, f.prefix+"3")
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = repository.LockOrderAccountsTx(context.Background(), tx, f.prefix+"3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`SELECT set_config('sellersho.fin005_writer','v1',true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`UPDATE orders SET profit_released=TRUE WHERE id=$1`, f.prefix+"3"); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	w := NewBackgroundWorker(db)
 	for i, id := range []string{f.prefix + "1", f.prefix + "2", f.prefix + "3"} {
 		ok, err := w.confirmDelivery(context.Background(), id)

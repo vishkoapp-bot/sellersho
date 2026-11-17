@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"github.com/drup/platform/internal/jobrunner"
 	"time"
 )
 
@@ -74,23 +76,52 @@ func (r *OrderRepository) ExpireUnpaidOrders(ctx context.Context) ([]ExpiredOrde
 	return out, errors.Join(failures...)
 }
 
-// Ordinary bounded cancellation/lock retries do not authorize human financial
-// review. A bare ErrTxDone is transient only when this candidate's context ended.
+// Every leaf must be an ordinary cancellation or known PostgreSQL retry.
+// Driver rollback/connection sentinels additionally require the candidate's
+// captured context to have ended; arbitrary errors or our own cleanup cancel
+// do not provide that evidence. Semantic metadata failures stay review-held.
 func expiryCandidateTransient(err, contextErr error) bool {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	if errors.Is(err, sql.ErrTxDone) {
-		return contextErr != nil
-	}
-	var state interface{ SQLState() string }
-	if errors.As(err, &state) {
-		switch state.SQLState() {
-		case "57014", "55P03", "40001", "40P01":
+	candidateEnded := contextErr == context.Canceled || contextErr == context.DeadlineExceeded
+	var transient func(error) bool
+	transient = func(part error) bool {
+		if part == nil || errors.Is(part, jobrunner.ErrMetadata) {
+			return false
+		}
+		knownSQL := false
+		if state, ok := part.(interface{ SQLState() string }); ok {
+			switch state.SQLState() {
+			case "57014", "55P03", "40001", "40P01":
+				knownSQL = true
+			default:
+				return false
+			}
+		}
+		if joined, ok := part.(interface{ Unwrap() []error }); ok {
+			children := joined.Unwrap()
+			if len(children) == 0 {
+				return knownSQL
+			}
+			for _, child := range children {
+				if !transient(child) {
+					return false
+				}
+			}
 			return true
 		}
+		if wrapped, ok := part.(interface{ Unwrap() error }); ok {
+			if child := wrapped.Unwrap(); child != nil {
+				return transient(child)
+			}
+		}
+		switch part {
+		case context.DeadlineExceeded, context.Canceled:
+			return true
+		case sql.ErrTxDone, driver.ErrBadConn:
+			return candidateEnded
+		}
+		return knownSQL
 	}
-	return false
+	return transient(err)
 }
 
 func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*ExpiredOrder, error) {

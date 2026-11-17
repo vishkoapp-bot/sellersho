@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/payment"
 	"os"
 	"sync"
@@ -156,7 +157,7 @@ func TestFIN003SQLCannotRewriteOrOverreserveCancellation(t *testing.T) {
 func TestFIN003LegacyRefundedReturnNeedsReviewNotNewRefund(t *testing.T) {
 	db, f, warehouse, order := fin003PaidOrder(t)
 	ret := uuid.NewString()
-	opsExec(t, db, `INSERT INTO customer_returns(id,order_id,customer_id,status,reason,warehouse_id,prepaid) VALUES($1,$2,$3,'refunded','historical refund lacks immutable principal evidence',$4,TRUE)`, ret, order, f.user, warehouse)
+	fin005ReturnFixtureExec(t, db, order, `INSERT INTO customer_returns(id,order_id,customer_id,status,reason,warehouse_id,prepaid) VALUES($1,$2,$3,'refunded','historical refund lacks immutable principal evidence',$4,TRUE)`, ret, order, f.user, warehouse)
 	opsExec(t, db, `INSERT INTO return_items(id,return_id,order_item_id,qty,qc_status,received_at) SELECT $1,$2,id::text,1,'ok',NOW() FROM order_items WHERE order_id=$3`, uuid.NewString(), ret, order)
 	if err := NewOrderRepository(db).CancelOrder(context.Background(), order, f.user, false); err != nil {
 		t.Fatal(err)
@@ -480,7 +481,7 @@ func fin003VerifiedPaidOrder(t *testing.T) (*sql.DB, opsFixture, string, string)
 func fin003ReceivedReturn(t *testing.T, db *sql.DB, f opsFixture, warehouse, order string) string {
 	t.Helper()
 	ret := uuid.NewString()
-	opsExec(t, db, `INSERT INTO customer_returns(id,order_id,customer_id,status,reason,warehouse_id,prepaid) VALUES($1,$2,$3,'received','received customer return',$4,TRUE)`, ret, order, f.user, warehouse)
+	fin005ReturnFixtureExec(t, db, order, `INSERT INTO customer_returns(id,order_id,customer_id,status,reason,warehouse_id,prepaid) VALUES($1,$2,$3,'received','received customer return',$4,TRUE)`, ret, order, f.user, warehouse)
 	opsExec(t, db, `INSERT INTO return_items(id,return_id,order_item_id,qty,qc_status,received_at) SELECT $1,$2,id::text,1,'ok',NOW() FROM order_items WHERE order_id=$3`, uuid.NewString(), ret, order)
 	return ret
 }
@@ -531,9 +532,18 @@ func TestFIN003UnverifiedHistoricalPaidRowCannotMintWalletMoney(t *testing.T) {
 func fin003Dispute(t *testing.T, db *sql.DB, order string) string {
 	t.Helper()
 	id := "fin-dispute-" + uuid.NewString()[:12]
-	opsExec(t, db, `INSERT INTO disputes(id,order_id,order_number,type,customer_name,product_title,claim_amount,reason,status) VALUES($1,$2,$2,'delivery_undelivered','fixture','fixture',2000000,'partial claim','pending')`, id, order)
+	var previous string
+	if err := db.QueryRow(`SELECT status FROM orders WHERE id=$1`, order).Scan(&previous); err != nil {
+		t.Fatal(err)
+	}
+	opsExec(t, db, `UPDATE orders SET status='shipped' WHERE id=$1`, order)
+	if err := NewFinanceRepository(db).CreateDispute(context.Background(), domain.Dispute{ID: id, OrderID: order, Type: "delivery_undelivered", ProductTitle: "fixture", ClaimAmount: 2000000, Reason: "partial claim"}); err != nil {
+		t.Fatal(err)
+	}
+	opsExec(t, db, `UPDATE orders SET status=$2 WHERE id=$1`, order, previous)
 	return id
 }
+
 func TestFIN003DisputeCannotSpendPendingCancellation(t *testing.T) {
 	db, f, _, order := fin003VerifiedPaidOrder(t)
 	ctx := context.Background()

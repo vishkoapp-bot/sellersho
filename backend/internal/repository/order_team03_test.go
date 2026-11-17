@@ -155,6 +155,10 @@ func TestTeam03ConfirmDoesNotReleaseAndReleaseAfterWindowCloseDoes(t *testing.T)
 	db := openTeam03DB(t)
 	defer db.Close()
 	ctx := context.Background()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS suppliers(id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	installFIN005PrivateFixture(t, db)
 	repo := NewOrderRepository(db)
 	customerID := uuid.NewString()
 	orderID := "ord-team03-a"
@@ -192,7 +196,7 @@ func TestTeam03ConfirmDoesNotReleaseAndReleaseAfterWindowCloseDoes(t *testing.T)
 		t.Fatalf("release with open/NULL windows = %d, %v; want 0", released, err)
 	}
 
-	if _, err := db.Exec(`UPDATE orders SET return_window_ends_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, orderID); err != nil {
+	if _, err := db.Exec(`UPDATE orders SET confirmed_at=NOW()-INTERVAL '8 days',return_window_ends_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, orderID); err != nil {
 		t.Fatalf("close window: %v", err)
 	}
 	released, err := repo.ReleaseClosedReturnWindows(ctx)

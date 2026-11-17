@@ -60,6 +60,6 @@ metadata, never independently acquired late locks.
       existing financial/return/inventory regressions must pass.
 - [x] Self-review, exact allowlist and report with persisted RED/GREEN evidence;
       do not stage/commit/push/deploy or spawn subagents.
-- [ ] Root fresh task/final reviews, frozen backend gates, unchanged frontend input
+- [x] Root fresh task/final reviews, frozen backend gates, unchanged frontend input
       proof/build, production read-only reconciliation/headroom audit, commit/push,
       deploy.ps1, independent financial/history/migration/health postcheck.

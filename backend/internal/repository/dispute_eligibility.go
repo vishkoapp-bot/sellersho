@@ -93,6 +93,28 @@ func disputeReleaseStateTx(ctx context.Context, tx *sql.Tx, id string) (string, 
 	if held {
 		return result("needs_review", "refund_entitlement_unproven")
 	}
+	// FIN-011 (Q-01): the referral reversal must be complete before
+	// any release. fin005_return_entitlement_proven covers cost +
+	// margin per return item only — it cannot see the order-level
+	// referral reversal (see migration 202611180005: dispute refunds
+	// have no customer_returns row, and the commission is not
+	// per-item) — so this check is the control that replaces it: the
+	// recorded reversals must equal the total the order's succeeded
+	// refunds imply, computed by the same cumulative rule the writers
+	// use. A mismatch holds the release for review, never an error.
+	// It runs only for delivered_confirmed orders: only those can
+	// release (the tx below requires that status), and a cancelled
+	// order's unreversed commission was never earned, so it must not
+	// be reported as an incomplete reversal.
+	if status == "delivered_confirmed" {
+		complete, err := referralReversalCompleteTx(ctx, tx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if !complete {
+			return result("needs_review", "referral_reversal_incomplete")
+		}
+	}
 	var reviewHold bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dispute_order_transitions t WHERE t.order_id=$1 AND t.result='needs_review' AND t.reason NOT IN ('pending_dispute','active_return') AND NOT EXISTS(SELECT 1 FROM dispute_order_transitions fixed WHERE fixed.order_id=t.order_id AND fixed.created_at>t.created_at AND fixed.result='restored'))`, id).Scan(&reviewHold); err != nil {
 		return "", nil, err

@@ -119,6 +119,7 @@ const sellerAvailableSQL = `SELECT (
  COALESCE((SELECT SUM(dropshipper_profit) FROM orders WHERE store_id=$1 AND profit_released=TRUE AND status IN ('delivered','delivered_confirmed')),0)
  + COALESCE((SELECT SUM(amount) FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'),0)
  + COALESCE((SELECT SUM(referral_commission) FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released=TRUE AND status<>'cancelled'),0)
+ - COALESCE((SELECT SUM(r.amount) FROM referral_commission_reversals r WHERE r.referrer_store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.referral_commission_released AND o.status<>'cancelled')),0)
  - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'),0)
  + COALESCE((SELECT SUM(CASE WHEN type='credit' THEN amount ELSE -amount END) FROM ledger_entries WHERE target_account='store_payable:' || $1 AND target_type='seller' AND reason LIKE 'سند تعدیل%'),0)
  - COALESCE((SELECT SUM(amount) FROM payout_requests WHERE store_id=$1 AND status IN ('pending','approved','paid','processing','completed','transfer_confirmed')),0)
@@ -155,7 +156,8 @@ func scanStoreBalance(ctx context.Context, q queryRower, storeID string) (*Store
   COALESCE((SELECT SUM(amount) FROM referral_bonuses WHERE referrer_store_id=$1 AND status='locked'),0),
   COALESCE((SELECT SUM(amount) FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'),0),
   (SELECT MAX(released_at) FROM referral_bonuses WHERE referrer_store_id=$1),
-  COALESCE((SELECT SUM(referral_commission) FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released=TRUE AND status<>'cancelled'),0),
+  COALESCE((SELECT SUM(referral_commission) FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released=TRUE AND status<>'cancelled'),0)
+  - COALESCE((SELECT SUM(r.amount) FROM referral_commission_reversals r WHERE r.referrer_store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.referral_commission_released AND o.status<>'cancelled')),0),
   COALESCE((SELECT SUM(fee_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='approved'),0),
   COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND status='pending'),0),
   COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'),0),

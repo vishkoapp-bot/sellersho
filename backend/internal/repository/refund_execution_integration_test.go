@@ -24,6 +24,13 @@ type fin003LocalRefundProvider struct {
 	status         string
 	wrongAmount    bool
 	onSend         func()
+	// reference overrides the provider reference recorded on a
+	// succeeded refund. Empty = the historic constant
+	// "local-refund-confirmation". FIN-011 needs distinct references
+	// per test: order_refund_events has a UNIQUE index on
+	// provider_reference for succeeded original_payment refunds, so
+	// two succeeded dispute refunds in one DB cannot share it.
+	reference string
 }
 
 func (f *fin003LocalRefundProvider) outcome(q payment.RefundRequest) *payment.RefundOutcome {
@@ -31,7 +38,11 @@ func (f *fin003LocalRefundProvider) outcome(q payment.RefundRequest) *payment.Re
 	if f.wrongAmount {
 		n++
 	}
-	return &payment.RefundOutcome{OperationKey: q.OperationKey, PaymentID: q.PaymentID, AmountToman: n, Currency: q.Currency, Destination: q.Destination, Status: f.status, ProviderReference: "local-refund-confirmation"}
+	ref := f.reference
+	if ref == "" {
+		ref = "local-refund-confirmation"
+	}
+	return &payment.RefundOutcome{OperationKey: q.OperationKey, PaymentID: q.PaymentID, AmountToman: n, Currency: q.Currency, Destination: q.Destination, Status: f.status, ProviderReference: ref}
 }
 func (f *fin003LocalRefundProvider) Refund(ctx context.Context, q payment.RefundRequest) (*payment.RefundOutcome, error) {
 	f.mu.Lock()

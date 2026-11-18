@@ -190,9 +190,14 @@ type treasuryOrderSpec struct {
 	Profit         int64 // dropshipper_profit
 	PlatformProfit int64
 	Wholesale      int64
-	Status         string // default "delivered"
-	ProfitReleased bool
-	Funding        string // "gateway" | "simulated" | ""
+	// FIN-011: referral fields. Zero-value default = no behaviour
+	// change for existing tests (commission 0, no referrer).
+	ReferrerStoreID    string
+	ReferralCommission int64
+	CommissionReleased bool
+	Status             string // default "delivered"
+	ProfitReleased     bool
+	Funding            string // "gateway" | "simulated" | ""
 }
 
 type treasurySeededOrder struct {
@@ -232,9 +237,13 @@ func treasurySeedOrder(t *testing.T, db *sql.DB, f *treasuryFixture, spec treasu
 	if spec.StoreID != "" {
 		storeID = spec.StoreID
 	}
-	if _, err := tx.Exec(`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,payment_method,payment_status,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,status,tracking_code,dropshipper_profit,platform_profit,profit_released,customer_user_id,wallet_amount,gateway_amount)
-		VALUES($1,$2,$3,'fin008 fixture',$4,$4,'cash','paid','fin008 fixture','09120000000','Qom','Qom','fin008 fixture','1234567890',$5,$12,$6,$7,$8,$9::uuid,$10,$11)`,
-		orderID, "ORD-"+orderID, storeID, spec.Payable, status, spec.Profit, spec.PlatformProfit, spec.ProfitReleased, customerID, spec.WalletAmount, spec.GatewayAmount, "TRK-"+orderID); err != nil {
+	var referrerID interface{}
+	if spec.ReferrerStoreID != "" {
+		referrerID = spec.ReferrerStoreID
+	}
+	if _, err := tx.Exec(`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,payment_method,payment_status,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,status,tracking_code,dropshipper_profit,platform_profit,profit_released,customer_user_id,wallet_amount,gateway_amount,referral_commission,referrer_seller_id,referral_commission_released)
+		VALUES($1,$2,$3,'fin008 fixture',$4,$4,'cash','paid','fin008 fixture','09120000000','Qom','Qom','fin008 fixture','1234567890',$5,$12,$6,$7,$8,$9::uuid,$10,$11,$13,$14,$15)`,
+		orderID, "ORD-"+orderID, storeID, spec.Payable, status, spec.Profit, spec.PlatformProfit, spec.ProfitReleased, customerID, spec.WalletAmount, spec.GatewayAmount, "TRK-"+orderID, spec.ReferralCommission, referrerID, spec.CommissionReleased); err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 	f.orderIDs = append(f.orderIDs, orderID)

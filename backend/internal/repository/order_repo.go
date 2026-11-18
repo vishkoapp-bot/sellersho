@@ -319,10 +319,15 @@ func (r *OrderRepository) GetOrdersByStoreID(ctx context.Context, storeID string
 // point Team 09's delivery-lock-releaser worker must call) or in the
 // worker's own stage 2. The old source behaviour of releasing profit
 // in this UPDATE is deliberately removed; the handler message was
-// changed with it. The locked referral BONUS row release below is
-// retained from source (it is a bonus, not order profit) and is
-// idempotent with the release-time backstop in
-// ReleaseClosedReturnWindows.
+// changed with it.
+//
+// FIN-011 (Q-02 retained-value): confirmation does NOT release the
+// locked referral BONUS either. The bonus becomes withdrawable only
+// when the referred store has an order that CLOSED its 7-day return
+// window with retained value > 0, so it releases only in
+// releaseClosedReturnWindowTx (the sole release path). Releasing it
+// here, before the window opens, was defect D-03: a later full return
+// could never reverse it.
 // customerUserID MUST be non-empty and match the order owner. Empty customerUserID will fail immediately (fail-closed).
 // Only orders in 'shipped', 'delivered_unconfirmed', or 'delivered' can be confirmed.
 // If this is the referred store's first delivered_confirmed order, any locked referral bonus for the referrer is atomically released.
@@ -374,18 +379,9 @@ func (r *OrderRepository) ConfirmOrderDelivery(ctx context.Context, idOrNumber, 
 		}
 		return err
 	}
-
-	// Atomic release of locked referral bonus if this is the referred store's first confirmed order
-	if orderStoreID != "" {
-		releaseBonusQuery := `
-			UPDATE referral_bonuses
-			SET status = 'released',
-			    released_at = $1
-			WHERE referred_store_id = $2
-			  AND status = 'locked'
-		`
-		_, _ = tx.ExecContext(ctx, releaseBonusQuery, now, orderStoreID)
-	}
+	// FIN-011 (Q-02): the referral bonus is NOT released here. It
+	// releases only at window close (releaseClosedReturnWindowTx).
+	_ = orderStoreID
 
 	if err := tx.Commit(); err != nil {
 		return err
@@ -437,17 +433,9 @@ func (r *OrderRepository) ConfirmOrderDeliverySystem(ctx context.Context, idOrNu
 		return err
 	}
 
-	// Atomic release of locked referral bonus if this is the referred store's first confirmed order
-	if orderStoreID != "" {
-		releaseBonusQuery := `
-			UPDATE referral_bonuses
-			SET status = 'released',
-			    released_at = $1
-			WHERE referred_store_id = $2
-			  AND status = 'locked'
-		`
-		_, _ = tx.ExecContext(ctx, releaseBonusQuery, now, orderStoreID)
-	}
+	// FIN-011 (Q-02): the referral bonus is NOT released here. It
+	// releases only at window close (releaseClosedReturnWindowTx).
+	_ = orderStoreID
 
 	if err := tx.Commit(); err != nil {
 		return err
@@ -1410,8 +1398,10 @@ func releaseClosedReturnWindowTx(ctx context.Context, tx *sql.Tx, id string) (bo
 	c := struct {
 		id, storeID string
 		profit      int64
+		referrer    sql.NullString
+		commission  int64
 	}{id: id}
-	err = tx.QueryRowContext(ctx, `SELECT store_id,dropshipper_profit FROM orders WHERE id=$1 AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() FOR UPDATE`, c.id).Scan(&c.storeID, &c.profit)
+	err = tx.QueryRowContext(ctx, `SELECT store_id,dropshipper_profit,referrer_seller_id,COALESCE(referral_commission,0) FROM orders WHERE id=$1 AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() FOR UPDATE`, c.id).Scan(&c.storeID, &c.profit, &c.referrer, &c.commission)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1452,16 +1442,58 @@ func releaseClosedReturnWindowTx(ctx context.Context, tx *sql.Tx, id string) (bo
 			return false, err
 		}
 	}
-	// Idempotent backstop for the locked referral bonus of the
-	// referred store (source released it at confirmation; the
-	// status filter makes a second release a no-op).
-	_, err = tx.ExecContext(ctx, `
+	// FIN-011 (Q-03 carve-out, G-11): the commission release writes a
+	// ledger leg (platform debit / referrer credit) for the RETAINED
+	// commission only — the snapshot minus pre-release reversals — so
+	// ledger_entries reconciles referral without reading the orders row.
+	// The leg uses its own reason: the release-state check counts only
+	// the profit-release reason, so this pair never disturbs it. The
+	// released flag and the snapshot amount are NOT rewritten here;
+	// balances net the reversals (see sellerAvailableSQL). A
+	// post-release refund writes its own compensating reversal event.
+	if c.referrer.Valid && c.referrer.String != "" && c.commission > 0 {
+		var reversed int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount),0) FROM referral_commission_reversals WHERE order_id=$1`, c.id).Scan(&reversed); err != nil {
+			return false, err
+		}
+		if retained := c.commission - reversed; retained > 0 {
+			now := time.Now()
+			creditID := "REL-REF-" + uuid.NewString()
+			debitID := "REL-REF-" + uuid.NewString()
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
+				VALUES ($1, $2, $3, 'seller', 'credit', $4, 'Referral commission release after return window closed', 'system:delivery-lock-releaser', $5)
+			`, creditID, now, c.referrer.String, retained, c.id); err != nil {
+				return false, err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO ledger_entries (id, date, target_account, target_type, type, amount, reason, operator, related_order_or_dispute)
+				VALUES ($1, $2, 'platform', 'platform', 'debit', $3, 'Referral commission release after return window closed', 'system:delivery-lock-releaser', $4)
+			`, debitID, now, retained, c.id); err != nil {
+				return false, err
+			}
+		}
+	}
+	// FIN-011 (Q-02/I-01/I-03): the locked referral bonus releases ONLY
+	// here, at window close, and ONLY when the referred store has >=1
+	// order that closed its window with retained value > 0 (see
+	// referredStoreHasRetainedClosedOrderTx). A fully returned first
+	// order keeps it locked; a later order closing with retained value
+	// > 0 unlocks it. This is the sole release path (confirmation-time
+	// release was defect D-03).
+	unlock, err := referredStoreHasRetainedClosedOrderTx(ctx, tx, c.storeID)
+	if err != nil {
+		return false, err
+	}
+	if unlock {
+		_, err = tx.ExecContext(ctx, `
 			UPDATE referral_bonuses
 			SET status = 'released', released_at = NOW()
 			WHERE referred_store_id = $1 AND status = 'locked'
 		`, c.storeID)
-	if err != nil {
-		return false, err
+		if err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -2881,6 +2913,11 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 // unconditionally: a party that already withdrew the money simply
 // goes negative, the established pattern for return charges. The
 // whole block is a no-op on a database without the events table.
+// FIN-011 (Q-01 retained-value): the referral commission reverses
+// too, as ONE order-level event (not per item — the commission is a
+// share of order-level platform profit), via
+// recordReferralCommissionReversalForReturnTx. The order row and the
+// released flag are never mutated by a reversal.
 func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.Tx, returnID, orderID, actorUserID string) error {
 	var hasReturnEvents bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('customer_return_financial_events') IS NOT NULL`).Scan(&hasReturnEvents); err != nil {
@@ -2963,6 +3000,11 @@ func (r *OrderRepository) recordReturnReversalsTx(ctx context.Context, tx *sql.T
 				}
 			}
 		}
+	}
+	// FIN-011 (Q-01): order-level referral-commission reversal, written
+	// in the same transaction as the cost/margin reversals above.
+	if err := recordReferralCommissionReversalForReturnTx(ctx, tx, returnID, orderID, actorUserID); err != nil {
+		return err
 	}
 	return nil
 }

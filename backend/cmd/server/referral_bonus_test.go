@@ -171,7 +171,10 @@ func TestReferralBonusLifecycle(t *testing.T) {
 		t.Errorf("self-referral must not assign ReferrerSellerID, got %v", *createdSelf.ReferrerSellerID)
 	}
 
-	// 5. Test First ConfirmOrderDelivery -> Releases bonus
+	// 5. Test First ConfirmOrderDelivery -> bonus must STAY LOCKED.
+	// FIN-011 (Q-02 retained-value): confirmation no longer releases
+	// the bonus; it releases only at window close, when the referred
+	// store has an order that closed its window with retained value > 0.
 	customerUser := uuid.New().String()
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO users (id, mobile, full_name, role, is_active)
@@ -202,6 +205,27 @@ func TestReferralBonusLifecycle(t *testing.T) {
 		t.Fatalf("ConfirmOrderDelivery failed: %v", err)
 	}
 
+	// Verify bonus is still LOCKED after confirmation (FIN-011/Q-02).
+	err = db.QueryRowContext(ctx, `
+		SELECT status FROM referral_bonuses
+		WHERE referrer_store_id = $1 AND referred_store_id = $2
+	`, referrerStoreID, referredStore.ID).Scan(&bonusStatus)
+	if err != nil {
+		t.Fatalf("failed to query bonus status: %v", err)
+	}
+	if bonusStatus != "locked" {
+		t.Errorf("expected bonus to stay 'locked' after confirmation, got %s", bonusStatus)
+	}
+
+	// Close the return window and run the window-close release: the
+	// order retained its full 500,000 value, so the bonus unlocks now.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '8 days', return_window_ends_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, orderID); err != nil {
+		t.Fatalf("failed to close return window: %v", err)
+	}
+	if _, err := orderRepo.ReleaseClosedReturnWindows(ctx); err != nil {
+		t.Fatalf("ReleaseClosedReturnWindows failed: %v", err)
+	}
+
 	// Verify bonus is now RELEASED
 	err = db.QueryRowContext(ctx, `
 		SELECT status FROM referral_bonuses
@@ -211,7 +235,7 @@ func TestReferralBonusLifecycle(t *testing.T) {
 		t.Fatalf("failed to query bonus status: %v", err)
 	}
 	if bonusStatus != "released" {
-		t.Errorf("expected bonus to be 'released' after first delivery, got %s", bonusStatus)
+		t.Errorf("expected bonus to be 'released' after window close, got %s", bonusStatus)
 	}
 
 	// Verify GetStoreBalance reflects released bonus

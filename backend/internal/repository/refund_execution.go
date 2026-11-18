@@ -125,6 +125,19 @@ func (r *OrderRepository) recordRefundOutcome(ctx context.Context, id, status, r
 	if err = appendRefundOutcomeTx(ctx, tx, id, status, reference, reason); err != nil {
 		return "", err
 	}
+	// FIN-011 (Q-01 retained-value): when an original_payment refund
+	// reaches 'succeeded', the referral commission reverses pro-rata
+	// (dispute / admin_refund). The reversal is a compensating event
+	// in referral_commission_reversals, never a mutation of the order
+	// row or the released flag; a party that already withdrew the
+	// money goes negative, the established pattern for return charges.
+	// Customer-return (wallet) refunds reverse in
+	// recordReturnReversalsTx instead; cancellations write nothing.
+	if status == "succeeded" {
+		if err = recordReferralCommissionReversalForOrderRefundTx(ctx, tx, id, "system:refund-execution"); err != nil {
+			return "unknown", err
+		}
+	}
 	return status, tx.Commit()
 }
 

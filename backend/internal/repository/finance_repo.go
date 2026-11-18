@@ -541,6 +541,7 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 	posted := `SELECT id::text,profit_released_at occurred,'credit' direction,dropshipper_profit amount,'released_profit' reason FROM orders WHERE store_id=$1 AND profit_released AND status IN ('delivered','delivered_confirmed')
  UNION ALL SELECT id::text,released_at,'credit',amount,'referral_bonus' FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'
  UNION ALL SELECT id::text,profit_released_at,'credit',referral_commission,'referral_commission' FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released AND status<>'cancelled'
+ UNION ALL SELECT r.id,r.created_at,'debit',r.amount,'referral_commission_reversal' FROM referral_commission_reversals r WHERE r.referrer_store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.referral_commission_released AND o.status<>'cancelled')
  UNION ALL SELECT id::text,created_at,CASE WHEN operation='debit' THEN 'debit' ELSE 'credit' END,amount,'seller_return' FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'
  UNION ALL SELECT id::text,date,type,amount,'finance_adjustment' FROM ledger_entries WHERE target_account='store_payable:' || $1 AND target_type='seller' AND reason LIKE 'سند تعدیل%'
  UNION ALL SELECT id::text,COALESCE(processed_at,created_at),'debit',amount,'payout' FROM payout_requests WHERE store_id=$1 AND status IN ('paid','processing','completed','transfer_confirmed')
@@ -565,7 +566,7 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 			rows.Close()
 			return nil, err
 		}
-		e.Reason = map[string]string{"released_profit": "سود آزادشده سفارش", "referral_bonus": "پاداش معرف آزادشده", "referral_commission": "کمیسیون معرفی آزادشده", "seller_return": "برگشت سود فروشنده", "finance_adjustment": "سند تعدیل حساب", "payout": "تسویه و واریز به حساب شبا", "service": "خرید سرویس", "early_fee": "کارمزد برداشت زودهنگام"}[e.Reason]
+		e.Reason = map[string]string{"released_profit": "سود آزادشده سفارش", "referral_bonus": "پاداش معرف آزادشده", "referral_commission": "کمیسیون معرفی آزادشده", "referral_commission_reversal": "برگشت کمیسیون معرفی", "seller_return": "برگشت سود فروشنده", "finance_adjustment": "سند تعدیل حساب", "payout": "تسویه و واریز به حساب شبا", "service": "خرید سرویس", "early_fee": "کارمزد برداشت زودهنگام"}[e.Reason]
 		e.Reference = e.ID
 		result.Entries = append(result.Entries, e)
 		if e.Type == "credit" {

@@ -378,10 +378,19 @@ func computeTreasuryCashPosition(ctx context.Context, q repository.TreasuryQueri
 	// (recovery). The matching add-back in
 	// SumAllStoresAvailableSplit keeps the store side coherent: the
 	// reversal reduces the hold, never the released availability.
+	// FIN-011 (D-05, I-06): an unreleased referral commission joins
+	// the hold exactly like unreleased seller profit — same F-02
+	// treatment. A reversal on an UNRELEASED order nets against the
+	// hold (floored at 0 per order), never against released
+	// availability: the canonical availability subtracts referral
+	// reversals only on RELEASED orders (see sellerAvailableSQL), so
+	// no add-back is needed for referral in
+	// SumAllStoresAvailableSplit — the hold is the only place an
+	// unreleased-order reversal is netted, exactly once.
 	var heldInOrders, heldOrderCount int64
 	{
 		err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(net),0), COALESCE(COUNT(*) FILTER (WHERE net > 0),0) FROM (
-			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0), 0) AS net
+			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0), 0) + GREATEST(COALESCE(o.referral_commission,0) - COALESCE((SELECT SUM(amount) FROM referral_commission_reversals WHERE order_id=o.id),0), 0) AS net
 			FROM orders o WHERE o.payment_status='paid' AND COALESCE(o.profit_released,FALSE)=FALSE AND o.status IN ('delivered','delivered_confirmed')
 		) s`).Scan(&heldInOrders, &heldOrderCount)
 		if err != nil {
@@ -428,10 +437,30 @@ func computeTreasuryCashPosition(ctx context.Context, q repository.TreasuryQueri
 	// Only profit on orders with verified capture and no succeeded
 	// gateway refund counts as realised; anything else is labelled
 	// "recorded", not "realised".
-	platformEarned, err := treasuryQuerySum(ctx, q, `SELECT COALESCE(SUM(o.platform_profit),0) FROM orders o
+	// FIN-011 (Q-03 carve-out): the referral commission is deducted
+	// FROM platform profit (platform net = profit - commission), so
+	// platformEarned nets the RELEASED commission (retained: snapshot
+	// minus referral reversals on released orders). Before release the
+	// commission is not yet a realised platform cost — it sits in the
+	// unreleased-profit hold instead — so only released commission is
+	// netted here.
+	platformProfit, err := treasuryQuerySum(ctx, q, `SELECT COALESCE(SUM(o.platform_profit),0) FROM orders o
 		WHERE o.payment_status='paid' AND o.status != 'cancelled'
 		AND EXISTS (SELECT 1 FROM order_payment_receipts r WHERE r.order_id=o.id AND r.funding_kind='gateway')
 		AND NOT EXISTS (SELECT 1 FROM order_refund_obligations ob WHERE ob.order_id=o.id AND ob.destination='original_payment' AND `+treasuryRefundCurrentState("ob")+`='succeeded')`)
+	if err != nil {
+		return nil, err
+	}
+	releasedCommissionNet, err := treasuryQuerySum(ctx, q, `SELECT COALESCE(SUM(net),0) FROM (
+		SELECT GREATEST(COALESCE(o.referral_commission,0) - COALESCE((SELECT SUM(amount) FROM referral_commission_reversals WHERE order_id=o.id),0), 0) AS net
+		FROM orders o
+		WHERE o.payment_status='paid' AND o.status != 'cancelled' AND COALESCE(o.referral_commission_released,FALSE)
+		AND EXISTS (SELECT 1 FROM order_payment_receipts r WHERE r.order_id=o.id AND r.funding_kind='gateway')
+		AND NOT EXISTS (SELECT 1 FROM order_refund_obligations ob WHERE ob.order_id=o.id AND ob.destination='original_payment' AND `+treasuryRefundCurrentState("ob")+`='succeeded')) s`)
+	if err != nil {
+		return nil, err
+	}
+	platformEarned, err := treasuryCheckedSum([]int64{platformProfit}, []int64{releasedCommissionNet})
 	if err != nil {
 		return nil, err
 	}

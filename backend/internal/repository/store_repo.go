@@ -423,7 +423,13 @@ func (r *StoreRepository) GetReferredStoresWithStatus(ctx context.Context, store
 		             AND o.referrer_seller_id = $1
 		             AND o.referral_commission_released = TRUE
 		             AND o.status != 'cancelled'
-		       ), 0) as earned_commission,
+		       ), 0)
+	       - COALESCE((
+	           SELECT SUM(r.amount)
+	           FROM referral_commission_reversals r
+	           WHERE r.referrer_store_id = $1
+	             AND EXISTS(SELECT 1 FROM orders o WHERE o.id = r.order_id AND o.referral_commission_released AND o.status != 'cancelled')
+	       ), 0) as earned_commission,
 		       COALESCE((
 		           SELECT SUM(platform_profit)
 		           FROM orders o

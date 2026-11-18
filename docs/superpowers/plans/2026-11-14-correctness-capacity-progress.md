@@ -43,7 +43,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-004 | DONE | afb401e / c270fcc | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
 | FIN-005 | DONE | 08c6d5b | [Dispute eligibility contract](../specs/2026-11-16-dispute-eligibility-design.md) |
 | FIN-007 | DONE | current FIN007 release; see git log | [Coupon reservation contract](../specs/2026-11-17-coupon-reservations-design.md) |
-| FIN-008 | TODO | — | — |
+| FIN-008 | DONE | f5203a4 | [Treasury cash evidence](../../../backend/migrations/202611180001_treasury_cash_evidence.up.sql) |
 | FIN-011 | TODO | — | — |
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |

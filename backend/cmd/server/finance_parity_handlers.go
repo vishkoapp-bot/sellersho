@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -110,154 +109,14 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 	ctx := r.Context()
 	switch area {
 	case "cash-position":
-		days := t01TreasuryDays(r)
-		cutoff := time.Now().AddDate(0, 0, -days)
-		// INFERRED derivations (the bundle proves names/labels only).
-		allTimeIn := t01Sum(ctx, db, `SELECT COALESCE(SUM(payable_amount), 0) FROM orders WHERE payment_status = 'paid' AND status != 'cancelled'`)
-		paidOut := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed')`)
-		customerPaid := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status = 'paid'`)
-		allTimeOut := paidOut + customerPaid
-		periodIn := t01Sum(ctx, db, `SELECT COALESCE(SUM(payable_amount), 0) FROM orders WHERE payment_status = 'paid' AND status != 'cancelled' AND created_at >= $1`, cutoff)
-		periodOut := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed') AND created_at >= $1`, cutoff) +
-			t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status = 'paid' AND created_at >= $1`, cutoff)
-		heldInOrders := t01Sum(ctx, db, `SELECT COALESCE(SUM(payable_amount), 0) FROM orders WHERE payment_status = 'paid' AND COALESCE(profit_released, FALSE) = FALSE AND status != 'cancelled'`)
-		heldOrderCount := t01Count(ctx, db, `SELECT COUNT(*) FROM orders WHERE payment_status = 'paid' AND COALESCE(profit_released, FALSE) = FALSE AND status != 'cancelled'`)
-		// GAP 15: the owed figures are the canonical balances, never
-		// a second definition. owedToSuppliers is the signed sum of
-		// every supplier's Available (the figure the payout gate
-		// itself trusts, built from the same SQL fragments);
-		// owedToStores is the sum of every store's GetStoreBalance
-		// AvailableAmount. Both already net payouts, charges,
-		// customer-return reversals and finance adjustments, so
-		// safeToSpend no longer double-counts money that has
-		// already left through payout_requests.
-		supplierRepo := repository.NewSupplierRepository(db)
-		// F11 (critic): this figure feeds safeToSpend directly, so a
-		// failed read must never silently render as "owes suppliers
-		// 0" — log it and fail the response like the neighbouring
-		// handlers in this file do (writeInternalError).
-		owedToSuppliers, owedErr := supplierRepo.SumAllSuppliersAvailable(ctx)
-		if owedErr != nil {
-			log.Printf("finance treasury cash-position: SumAllSuppliersAvailable failed: %v", owedErr)
-			sellerError(w, owedErr)
-			return
-		}
-		financeRepo := repository.NewFinanceRepository(db)
-		var owedToStores int64
-		storeRows, storeErr := db.QueryContext(ctx, `SELECT id FROM stores`)
-		if storeErr != nil {
-			sellerError(w, storeErr)
-			return
-		}
-		var storeIDs []string
-		for storeRows.Next() {
-			var id string
-			if err := storeRows.Scan(&id); err != nil {
-				storeRows.Close()
-				sellerError(w, err)
-				return
-			}
-			storeIDs = append(storeIDs, id)
-		}
-		rowsErr := storeRows.Err()
-		storeRows.Close()
-		if rowsErr != nil {
-			sellerError(w, rowsErr)
-			return
-		}
-		var signedStoreAmounts []int64
-		for _, storeID := range storeIDs {
-			bal, err := financeRepo.GetStoreBalance(ctx, storeID)
-			if err != nil {
-				sellerError(w, err)
-				return
-			}
-			signedStoreAmounts = append(signedStoreAmounts, bal.AvailableAmount)
-		}
-		var sumErr error
-		owedToStores, sumErr = repository.SumSignedFinanceBalances(signedStoreAmounts...)
-		if sumErr != nil {
-			sellerError(w, sumErr)
-			return
-		}
-		pendingRefundCount := t01Count(ctx, db, `SELECT COUNT(*) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
-		pendingRefunds := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM customer_withdrawal_requests WHERE status IN ('pending', 'approved')`)
-		pendingPayouts := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'pending'`)
-		pendingCount := t01Count(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status = 'pending'`)
-		platformEarned := t01Sum(ctx, db, `SELECT COALESCE(SUM(platform_profit), 0) FROM orders WHERE payment_status = 'paid' AND status != 'cancelled'`)
-		sellerInFlight := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'approved' AND recipient_type = 'seller'`)
-		supplierInFlight := t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'approved' AND recipient_type = 'supplier'`)
-		// Live subtitle: safeToSpend = allTimeIn - allTimeOut -
-		// pendingPayouts - heldInOrders - owedToStores -
-		// owedToSuppliers. A negative result is shown as 0 with
-		// overObligated set (INFERRED: the bundle proves the
-		// overObligated flag and banner, not the negative display).
-		safeRaw := allTimeIn - allTimeOut - pendingPayouts - heldInOrders - owedToStores - owedToSuppliers
-		safeToSpend := safeRaw
-		overObligated := false
-		if safeRaw < 0 {
-			safeToSpend = 0
-			overObligated = true
-		}
-		// Daily period trend (INFERRED granularity: one bucket per
-		// calendar day; the bundle proves only trend[].in/out).
-		inByDay := map[string]int64{}
-		if rows, err := db.QueryContext(ctx,
-			`SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS day, COALESCE(SUM(payable_amount), 0)
-			 FROM orders WHERE payment_status = 'paid' AND status != 'cancelled' AND created_at >= $1
-			 GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') ORDER BY day`, cutoff); err == nil {
-			for rows.Next() {
-				var day string
-				var v int64
-				if err := rows.Scan(&day, &v); err == nil {
-					inByDay[day] = v
-				}
-			}
-			rows.Close()
-		}
-		outByDay := map[string]int64{}
-		if rows, err := db.QueryContext(ctx,
-			`SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS day, COALESCE(SUM(amount), 0)
-			 FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed') AND created_at >= $1
-			 GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') ORDER BY day`, cutoff); err == nil {
-			for rows.Next() {
-				var day string
-				var v int64
-				if err := rows.Scan(&day, &v); err == nil {
-					outByDay[day] += v
-				}
-			}
-			rows.Close()
-		}
-		if rows, err := db.QueryContext(ctx,
-			`SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS day, COALESCE(SUM(amount), 0)
-			 FROM customer_withdrawal_requests WHERE status = 'paid' AND created_at >= $1
-			 GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') ORDER BY day`, cutoff); err == nil {
-			for rows.Next() {
-				var day string
-				var v int64
-				if err := rows.Scan(&day, &v); err == nil {
-					outByDay[day] += v
-				}
-			}
-			rows.Close()
-		}
-		trend := []map[string]interface{}{}
-		for _, day := range t01DayLabels(days) {
-			trend = append(trend, map[string]interface{}{"date": day, "in": inByDay[day], "out": outByDay[day]})
-		}
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true, "days": days,
-			"allTimeIn": allTimeIn, "allTimeOut": allTimeOut,
-			"overObligated": overObligated, "safeToSpend": safeToSpend,
-			"period":         map[string]interface{}{"in": periodIn, "out": periodOut, "trend": trend},
-			"heldOrderCount": heldOrderCount, "heldInOrders": heldInOrders,
-			"owedToStores": owedToStores, "owedToSuppliers": owedToSuppliers,
-			"pendingRefundCount": pendingRefundCount, "pendingRefunds": pendingRefunds,
-			"pendingCount": pendingCount, "pendingPayouts": pendingPayouts,
-			"platformEarned": platformEarned,
-			"sellerInFlight": sellerInFlight, "supplierInFlight": supplierInFlight,
-		})
+		// FIN-008: the cash position is computed by the set-based,
+		// single-REPEATABLE-READ-snapshot implementation in
+		// finance_treasury.go. The old allTimeIn-minus-everything
+		// formula (paid orders treated as bank cash, pending payouts
+		// double-subtracted, negative balances netted, silent-zero
+		// reads) is retired; see D-01..D-17 in fin008-audit.md.
+		handleTreasuryCashPosition(w, r, db)
+
 	case "commission":
 		days := t01TreasuryDays(r)
 		cutoff := time.Now().AddDate(0, 0, -days)
@@ -316,14 +175,41 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 			"orderCount": orderCount, "trend": ctrend,
 		})
 	case "payouts-summary":
+		// FIN-008 D-15: a failed read fails the response instead of
+		// silently rendering 0.
+		pending, err := t01SumErr(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'pending'`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		pendingCount, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status = 'pending'`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// D32: only completed/transfer_confirmed are money out.
+		paid, err := t01SumErr(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed')`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		paidCount, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed')`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		rejected, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status = 'rejected'`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success":      true,
-			"pending":      t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status = 'pending'`),
-			"pendingCount": t01Count(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status = 'pending'`),
-			// D32: only completed/transfer_confirmed are money out.
-			"paid":      t01Sum(ctx, db, `SELECT COALESCE(SUM(amount), 0) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed')`),
-			"paidCount": t01Count(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status IN ('completed', 'transfer_confirmed')`),
-			"rejected":  t01Count(ctx, db, `SELECT COUNT(*) FROM payout_requests WHERE status = 'rejected'`),
+			"pending":      pending,
+			"pendingCount": pendingCount,
+			"paid":         paid,
+			"paidCount":    paidCount,
+			"rejected":     rejected,
 		})
 	case "profit-locks":
 		// Live shape: {success, totals:{locked, lockedCount,
@@ -376,14 +262,10 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 			return
 		}
 		// No view and no return-window column: the classification
-		// cannot be computed honestly; the live tab hides the card
-		// when both totals are 0.
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"totals": map[string]interface{}{
-				"locked": 0, "lockedCount": 0, "releasable": 0, "releasableCount": 0,
-			},
-		})
+		// cannot be computed honestly. FIN-008 D-15: fail the
+		// response (the tab renders an error state) instead of
+		// returning zeros with success:true.
+		writeInternalError(w, errors.New("finance treasury profit-locks: neither v_fin_store_profit_lock nor orders.return_window_ends_at exists; locks cannot be computed"))
 	case "reconciliation":
 		rows, err := db.QueryContext(ctx,
 			`SELECT target_type, type, COUNT(*) AS entries, COALESCE(SUM(amount), 0) AS total
@@ -411,11 +293,28 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 		}
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "reconciliation": out})
 	case "returns":
+		// FIN-008 D-15: a failed read fails the response instead of
+		// silently rendering 0.
+		total, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM customer_returns`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		requested, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM customer_returns WHERE status = 'requested'`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		refunded, err := t01CountErr(ctx, db, `SELECT COUNT(*) FROM customer_returns WHERE status = 'refunded'`)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success":   true,
-			"total":     t01Count(ctx, db, `SELECT COUNT(*) FROM customer_returns`),
-			"requested": t01Count(ctx, db, `SELECT COUNT(*) FROM customer_returns WHERE status = 'requested'`),
-			"refunded":  t01Count(ctx, db, `SELECT COUNT(*) FROM customer_returns WHERE status = 'refunded'`),
+			"total":     total,
+			"requested": requested,
+			"refunded":  refunded,
 		})
 	case "supplier-aging":
 		// Aging of supplier payout requests by creation age bucket.

@@ -144,8 +144,13 @@ export const financeApi = {
 export interface TreasuryTrendPoint {
   date: string;
   commission?: number;
-  in?: number;
-  out?: number;
+  in?: number | null;
+  out?: number | null;
+  /**
+   * false = this day could not be computed honestly. The UI renders it as
+   * a gap ("\u2014"), never as 0 (FIN-008 D-18/D-15).
+   */
+  available?: boolean;
 }
 
 export interface CommissionDto {
@@ -159,19 +164,62 @@ export interface CommissionDto {
   note?: string;
 }
 
+// FIN-008 (D-16/D-18): treasury cash position. All money is integer Toman.
+// Unknown cash is null, never 0 and never a guess: liquidCash/safeToSpend
+// are `number | null`, with cashStatus + reconciliationRequired saying so.
+// Read path: GET /finance/treasury/cash-position?days=N (financeApi.getCashPosition).
 export interface CashPositionDto {
   success: boolean;
   days: number;
+  /** Gross paid-order value — diagnostic ONLY, never cash (D-01). */
   allTimeIn: number;
   allTimeOut: number;
   overObligated: boolean;
-  safeToSpend: number;
-  period: { in: number; out: number; trend: TreasuryTrendPoint[] };
+  /** Unclamped shortfall, negative when over-obligated; UI shows its magnitude. */
+  overObligatedAmount: number;
+  /** Verified liquid cash (Toman). null = unknown, never 0. */
+  liquidCash: number | null;
+  /** null = unknown cash, never a guessed number. */
+  safeToSpend: number | null;
+  cashStatus: 'verified' | 'unknown' | 'partial';
+  reconciliationRequired: boolean;
+  /** Paid-order value with no capture/settlement evidence + legacy simulator value. */
+  unresolvedProviderCash: number;
+  /** Itemisation of unresolvedProviderCash (G-13); optional for older responses. */
+  unverifiedPaidOrders?: number;
+  legacySimulator?: number;
+  /** Total liability = sum of positive available + holds (Toman). */
+  liability: number;
+  /** Negative balances, reported separately, NEVER netted into liabilities (D-10). */
+  recoveryReceivableStores: number;
+  recoveryReceivableSuppliers: number;
+  /** Sum of customer_wallets.balance (Toman). */
+  walletLiability: number;
+  /** Pending/unknown/failed refund obligations (Toman) — gateway +
+      wallet destinations (F-01/F-07). The split is
+      refundLiabilityGateway / refundLiabilityWallet. */
+  refundLiability: number;
+  /** Gateway-destination slice of refundLiability (optional: older responses omit it). */
+  refundLiabilityGateway?: number;
+  /** Wallet-destination slice of refundLiability. */
+  refundLiabilityWallet?: number;
+  /** Review-destination obligations (legacy_reservation, FIN-003):
+      computed by the server but NOT part of refundLiability and NOT
+      rendered yet — treatment is decided before FIN-014 (F-04). */
+  refundLiabilityReview?: number;
+  /** Unreleased seller-profit hold (same value as heldInOrders). */
+  unreleasedProfitHold?: number;
+  /** Unconfirmed transfer holds: payouts pending/approved/processing + pending early withdrawals. */
+  holds: number;
+  holdsByStatus?: { pending?: number; approved?: number; processing?: number; earlyWithdrawal?: number };
+  period: { in: number; out: number; trend: TreasuryTrendPoint[]; trendAvailable?: boolean };
   heldOrderCount: number;
+  /** Unreleased SELLER PROFIT only — never the whole order (D-11). */
   heldInOrders: number;
   owedToStores: number;
   owedToSuppliers: number;
   pendingRefundCount: number;
+  /** Informational only: subset of walletLiability, never additive (D-08). */
   pendingRefunds: number;
   pendingCount: number;
   pendingPayouts: number;
@@ -183,6 +231,8 @@ export interface CashPositionDto {
 
 export interface ProfitLocksDto {
   success: boolean;
+  /** false = the locks cannot be computed honestly; UI shows an error, never zeros (D-15). */
+  available?: boolean;
   totals: { locked: number; lockedCount: number; releasable: number; releasableCount: number };
   rule?: string;
 }

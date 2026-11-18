@@ -395,3 +395,62 @@ func immutableOrderItemSupplierTx(ctx context.Context, tx *sql.Tx, itemID string
 
 // SumSignedFinanceBalances preserves debt in cross-account read aggregates.
 func SumSignedFinanceBalances(amounts ...int64) (int64, error) { return signedBalanceSum(amounts, nil) }
+
+// TreasuryQuerier is the minimal read interface a snapshot transaction
+// (or a counting wrapper around one) satisfies. *sql.Tx and *sql.DB
+// both satisfy it; treasury reads run through it so a test can count
+// the queries the snapshot issues (FIN-008 G-17).
+type TreasuryQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+}
+
+// storeAvailableExpr is the canonical sellerAvailableSQL expression with
+// its $1 store-id parameter replaced by a per-row expression, so one
+// set-based SELECT can aggregate every store's signed availability
+// without the per-store GetStoreBalance loop (FIN-008 D-13).
+func storeAvailableExpr(storeExpr string) string {
+	expr := strings.TrimPrefix(sellerAvailableSQL, "SELECT ")
+	return strings.ReplaceAll(expr, "$1", storeExpr)
+}
+
+// SumAllStoresAvailableSplit aggregates every store's canonical signed
+// availability in ONE query (FIN-008 D-13/G-17). positive is the
+// liability (sum of max(available,0) per store); recovery is the
+// separately reported receivable (sum of max(-available,0)). Negatives
+// are NEVER netted into the liability (D-10): money owed back by a
+// store is not spendable bank cash.
+//
+// F-02: the per-store availability is adjusted by adding back the
+// seller_profit return reversals that belong to delivered-but-unreleased
+// orders, capped per order at that order's dropshipper_profit. Those
+// reversals are netted against the unreleased-profit hold
+// (heldInOrders, finance_treasury.go), not against released
+// availability: recordReturnReversalsTx writes them unconditionally
+// even when the profit was never released, so without this add-back a
+// refunded return would drive the store's available negative and
+// manufacture a recovery receivable out of profit the seller never
+// received — the same money stated as both owed and owed-back. A
+// reversal on a RELEASED order is not added back (it correctly
+// reduces released availability), and any reversal above the order's
+// profit stays in the availability. This function is used only by
+// the treasury; the per-store panel (GetStoreBalance) keeps the
+// unadjusted canonical balance (FIN-001).
+func SumAllStoresAvailableSplit(ctx context.Context, q TreasuryQuerier) (positive, recovery int64, err error) {
+	query := `SELECT COALESCE(SUM(CASE WHEN avail > 0 THEN avail ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN avail < 0 THEN -avail ELSE 0 END),0)
+		FROM (SELECT ` + storeAvailableExpr("s.id") + ` + COALESCE((SELECT SUM(LEAST(GREATEST(COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0),0), GREATEST(o.dropshipper_profit,0))) FROM orders o WHERE o.store_id=s.id AND o.payment_status='paid' AND COALESCE(o.profit_released,FALSE)=FALSE AND o.status IN ('delivered','delivered_confirmed')),0) AS avail FROM stores s) t`
+	if err := q.QueryRowContext(ctx, query).Scan(&positive, &recovery); err != nil {
+		return 0, 0, err
+	}
+	if err := validateSignedFinanceMoney(positive); err != nil {
+		return 0, 0, err
+	}
+	if err := validateSignedFinanceMoney(recovery); err != nil {
+		return 0, 0, err
+	}
+	if _, err := signedBalanceSum([]int64{positive}, []int64{recovery}); err != nil {
+		return 0, 0, err
+	}
+	return positive, recovery, nil
+}

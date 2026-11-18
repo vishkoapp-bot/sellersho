@@ -205,11 +205,60 @@ func (r *SupplierRepository) GetSettlementBalance(ctx context.Context, supplierI
 	return &balance, nil
 }
 
+// SumAllSuppliersAvailableSplit aggregates every supplier's canonical
+// signed availability in ONE query (FIN-008 D-13/G-17), split the same
+// way as the store aggregate: positive is the liability, recovery is
+// the separately reported receivable, never netted (D-10). Unresolved
+// supplier earnings fail the aggregate, never zero (C-04).
+//
+// The signed-sum SumAllSuppliersAvailable below is deliberately KEPT
+// unchanged: it is the panel identity (owedToSuppliers == Σ panel
+// Available, signed) pinned by the GAP-15 tests. Treasury must NOT use
+// it — treasury uses this split variant.
+func SumAllSuppliersAvailableSplit(ctx context.Context, q TreasuryQuerier) (positive, recovery int64, err error) {
+	flags, err := probeBalanceTables(ctx, q)
+	if err != nil {
+		return 0, 0, err
+	}
+	available := "(" + supplierTermFor(supplierTermEarned, "s.id") + ")" +
+		" - (" + supplierTermFor(supplierTermReserved, "s.id") + ")" +
+		" - (" + supplierTermFor(supplierTermPaid, "s.id") + ")" +
+		" - (" + flags.returnChargesExpr("s.id") + ")" +
+		" - (" + flags.returnClawbacksExpr("s.id") + ")" +
+		" + (" + supplierTermFor(supplierTermAdjustments, "s.id") + ")" +
+		" - (" + flags.storageFeesExpr("s.id") + ")"
+	var unresolved int64
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN avail > 0 THEN avail ELSE 0 END),0),`+
+		`COALESCE(SUM(CASE WHEN avail < 0 THEN -avail ELSE 0 END),0),`+unresolvedSupplierEarningsExpr("")+
+		` FROM (SELECT `+available+` AS avail FROM suppliers s) t`).Scan(&positive, &recovery, &unresolved); err != nil {
+		return 0, 0, err
+	}
+	if unresolved > 0 {
+		return 0, 0, ErrFinancePrincipalUnresolved
+	}
+	if err := validateSignedFinanceMoney(positive); err != nil {
+		return 0, 0, err
+	}
+	if err := validateSignedFinanceMoney(recovery); err != nil {
+		return 0, 0, err
+	}
+	if _, err := signedBalanceSum([]int64{positive}, []int64{recovery}); err != nil {
+		return 0, 0, err
+	}
+	return positive, recovery, nil
+}
+
 // SumAllSuppliersAvailable is the treasury's canonical "owed to
 // suppliers" (GAP 15): the signed sum of every supplier's Available,
 // assembled from the same fragments as the per-supplier balance.
 // Negative balances net against the total (no per-supplier flooring),
 // keeping the identity owedToSuppliers == Σ panel Available exact.
+//
+// NOTE (FIN-008 D-10): this signed identity is the PANEL identity and
+// is kept for it. The treasury cash position must NOT use it —
+// negatives netted here would inflate safeToSpend. Treasury uses
+// SumAllSuppliersAvailableSplit, which reports positives as the
+// liability and negatives as a separate recovery receivable.
 func (r *SupplierRepository) SumAllSuppliersAvailable(ctx context.Context) (int64, error) {
 	flags, err := probeBalanceTables(ctx, r.db)
 	if err != nil {

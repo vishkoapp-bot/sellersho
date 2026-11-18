@@ -17,6 +17,269 @@ interface Props {
 // version derived its figures from client orders plus hard-coded
 // constants and never called the ledger endpoint, so the ledger rows
 // could never appear here.
+//
+// FIN-008 (D-18): the cash card is a pure component (TreasuryCashCard)
+// so its null/error/trend rendering is testable without a browser.
+// Unknown cash (safeToSpend/liquidCash null) renders an explicit
+// "unknown — needs reconciliation" panel, never 0 and never the
+// "no paid orders yet" empty state. Failed loads render error states,
+// never silent zero-fill. Trend days with available:false render as a
+// gap ("—"), never as 0.
+
+export interface TreasuryCashCardProps {
+  cash: CashPositionDto | null;
+  cashLoaded: boolean;
+  cashError: boolean;
+  cashDays: number;
+  onCashDaysChange: (days: number) => void;
+  formatPrice: (n: number) => string;
+  toPersianDigits: (v: string | number) => string;
+}
+
+/**
+ * Pure treasury cash-position card. All money is integer Toman.
+ * Read path: GET /finance/treasury/cash-position?days=N -> CashPositionDto.
+ */
+export const TreasuryCashCard: React.FC<TreasuryCashCardProps> = ({ cash, cashLoaded, cashError, cashDays, onCashDaysChange, formatPrice, toPersianDigits }) => {
+  // Trend: only days with a real computed value reach the sparkline.
+  // A day with available:false (or a null in/out) is a gap, never 0.
+  const trend = cash?.period.trend ?? [];
+  const trendAvailable = !!cash && cash.period.trendAvailable !== false;
+  const trendIn = trend.filter((t) => t.available !== false && typeof t.in === 'number').map((t) => t.in as number);
+  const trendOut = trend.filter((t) => t.available !== false && typeof t.out === 'number').map((t) => t.out as number);
+  const trendGapCount = trend.filter((t) => t.available === false || t.in == null || t.out == null).length;
+  const moneyOrDash = (v: number | null | undefined) => (typeof v === 'number' ? `${formatPrice(v)} تومان` : '—');
+
+  const renderDetails = (c: CashPositionDto) => (
+    <>
+      <div className="grid grid-cols-2 gap-2 px-4">
+        <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-2.5">
+          <div className="flex items-center gap-1 text-emerald-700">
+            <span className="text-[10px] font-bold">ورودی {toPersianDigits(cashDays)} روز</span>
+          </div>
+          <div className="text-sm font-extrabold text-slate-900 mt-0.5">{formatPrice(c.period.in)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
+          {trendAvailable && <Sparkline data={trendIn} color="#059669" height={38} ariaLabel="روند ورودی نقدینگی" />}
+        </div>
+        <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-2.5">
+          <div className="flex items-center gap-1 text-rose-700">
+            <span className="text-[10px] font-bold">خروجی {toPersianDigits(cashDays)} روز</span>
+          </div>
+          <div className="text-sm font-extrabold text-slate-900 mt-0.5">{formatPrice(c.period.out)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
+          {trendAvailable && <Sparkline data={trendOut} color="#e11d48" height={38} ariaLabel="روند خروجی نقدینگی" />}
+        </div>
+      </div>
+      {!trendAvailable ? (
+        <p className="px-4 pt-1.5 text-[10px] text-slate-500 leading-relaxed">روند روزانه در دسترس نیست؛ صفر فرض نشده است.</p>
+      ) : trendGapCount > 0 ? (
+        <p className="px-4 pt-1.5 text-[10px] text-amber-600 leading-relaxed">روند {toPersianDigits(trendGapCount)} روز در دسترس نیست و با «—» نمایش داده می‌شود؛ صفر فرض نشده است.</p>
+      ) : null}
+      <div className="p-4 pt-2.5 space-y-1.5 text-[11px]">
+        <div className="flex justify-between"><span className="text-slate-500">نقدینگی تأییدشده (بانک/درگاه)</span><strong className="text-slate-700">{c.liquidCash == null ? 'نامشخص — نیازمند تطبیق' : `${formatPrice(c.liquidCash)} تومان`}</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بدهی کل (سود آزادشده + تعهدات در صف)</span><strong className="text-slate-700">{moneyOrDash(c.liability)}</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بلوکه در سفارش‌ها — فقط سود آزادنشده فروشنده ({toPersianDigits(c.heldOrderCount)} سفارش پرداخت‌شده آزادنشده)</span><strong className="text-slate-700">{formatPrice(c.heldInOrders)} تومان</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بدهی به دراپ‌شیپرها (سود آزادشده)</span><strong className="text-slate-700">{formatPrice(c.owedToStores)} تومان</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بدهی به تأمین‌کنندگان (سهم عمده‌فروشی آزادشده)</span><strong className="text-slate-700">{formatPrice(c.owedToSuppliers)} تومان</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">موجودی کیف پول مشتریان</span><strong className="text-slate-700">{moneyOrDash(c.walletLiability)}</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بازپرداخت‌های در انتظار (درگاه و کیف پول)</span><strong className="text-amber-700">{moneyOrDash(c.refundLiability)}</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">بازپرداخت‌های در انتظار مشتری ({toPersianDigits(typeof c.pendingRefundCount === 'number' ? c.pendingRefundCount : '—')} مورد — زیرمجموعه موجودی کیف پول، جمع نمی‌شود)</span><strong className="text-amber-700">{moneyOrDash(c.pendingRefunds)}</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">در صف تسویه شبا ({toPersianDigits(c.pendingCount)} درخواست)</span><strong className="text-amber-700">{formatPrice(c.pendingPayouts)} تومان</strong></div>
+        <div className="flex justify-between"><span className="text-slate-500">تعهدات در صف تسویه (در انتظار/تأییدشده/در حال پردازش)</span><strong className="text-amber-700">{moneyOrDash(c.holds)}</strong></div>
+        {(c.recoveryReceivableStores || 0) > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">بازیافتی از فروشگاه‌ها (مانده منفی؛ پول نقد نیست)</span><strong className="text-slate-700">{formatPrice(c.recoveryReceivableStores)} تومان</strong></div>
+        )}
+        {(c.recoveryReceivableSuppliers || 0) > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">بازیافتی از تأمین‌کنندگان (مانده منفی؛ پول نقد نیست)</span><strong className="text-slate-700">{formatPrice(c.recoveryReceivableSuppliers)} تومان</strong></div>
+        )}
+        {(c.unresolvedProviderCash || 0) > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">مبلغ تطبیق‌نشده درگاه/بانک (پول نقد نیست)</span><strong className="text-amber-700">{formatPrice(c.unresolvedProviderCash)} تومان</strong></div>
+        )}
+        <div className="flex justify-between"><span className="text-slate-500">سهم ثبت‌شده پلتفرم روی سفارش‌های پرداخت‌شده (پیش از تطبیق)</span><strong className="text-slate-700">{formatPrice(c.platformEarned)} تومان</strong></div>
+        {c.note && (
+          <p className="text-[9px] text-slate-400 leading-relaxed pt-1">{c.note}</p>
+        )}
+        {(c.sellerInFlight || 0) + (c.supplierInFlight || 0) > 0 && (
+          <p className="text-[9px] text-slate-400 leading-relaxed">از بدهی‌های بالا، {formatPrice((c.sellerInFlight || 0) + (c.supplierInFlight || 0))} تومان تأیید شده اما هنوز منتقل نشده است (در مسیر پایا) — فقط «تکمیل‌شده» یعنی پول خارج‌شده.</p>
+        )}
+      </div>
+    </>
+  );
+
+  let body: React.ReactNode;
+  if (cashError) {
+    body = <div className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری موقعیت نقدینگی.</div>;
+  } else if (!cashLoaded) {
+    body = <div className="p-3.5 text-[11px] text-slate-400">در حال محاسبه از داده‌های واقعی…</div>;
+  } else if (!cash) {
+    body = <div className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری موقعیت نقدینگی؛ هیچ عددی حدس زده نمی‌شود.</div>;
+  } else if (cash.safeToSpend == null) {
+    // Unknown cash: explicit reconciliation panel — never 0, never a
+    // guessed number, and never the "no paid orders yet" empty state.
+    body = (
+      <>
+        <div className="mx-4 mb-2.5 mt-2.5 rounded-xl p-3 bg-amber-50 border border-amber-200">
+          <div className="text-[11px] font-bold text-amber-800">مبلغ قابل خرج‌کرد امن: نامشخص — نیازمند تطبیق</div>
+          <p className="text-[10px] text-amber-700 mt-1 leading-relaxed">نقدینگی تأییدشده بانک/درگاه هنوز تطبیق نشده است؛ هیچ عددی حدس زده نمی‌شود و مبلغ قابل خرج‌کرد امن صفر فرض نشده است.</p>
+          <div className="mt-2 space-y-1 text-[11px]">
+            <div className="flex justify-between"><span className="text-amber-700">نقدینگی تأییدشده</span><strong className="text-amber-800">نامشخص</strong></div>
+            <div className="flex justify-between"><span className="text-amber-700">مبلغ تطبیق‌نشده (ورودی پرداخت‌شده بدون سند تسویه)</span><strong className="text-amber-800">{moneyOrDash(cash.unresolvedProviderCash)}</strong></div>
+            <div className="flex justify-between"><span className="text-amber-700">ورودی کل ثبت‌شده (فقط برای اطلاع؛ پول نقد نیست)</span><strong className="text-amber-800">{formatPrice(cash.allTimeIn)} تومان</strong></div>
+          </div>
+        </div>
+        {renderDetails(cash)}
+      </>
+    );
+  } else if (cash.allTimeIn === 0 && cash.allTimeOut === 0 && (cash.liquidCash ?? 0) === 0 && cash.liability === 0 && !cash.overObligated) {
+    // F-06: the "no paid orders yet" empty state fires ONLY for a
+    // genuinely empty position — cash known (safeToSpend numeric,
+    // guaranteed by the branch order above), no orders, no verified
+    // opening cash (liquidCash 0 with no orders means no opening
+    // cash), and no liabilities at all. Verified opening cash alone
+    // or adjustment-created liabilities must render their numbers,
+    // never this text.
+    body = (
+      <div className="p-3.5 text-[11px] text-slate-500 leading-relaxed">
+        <span className="font-bold text-slate-600 block mb-1">—</span>
+        هنوز هیچ سفارش پرداخت‌شده‌ای در سیستم ثبت نشده است؛ پس از اولین پرداخت قطعی، ورودی/خروجی و مبلغ قابل خرج‌کرد امن اینجا محاسبه می‌شود.
+      </div>
+    );
+  } else {
+    body = (
+      <>
+        <div className={`mx-4 mb-2.5 mt-2.5 rounded-xl p-3 text-white ${cash.overObligated ? 'bg-gradient-to-l from-rose-700 via-rose-800 to-rose-900' : 'bg-gradient-to-l from-slate-900 via-teal-950 to-slate-900'}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold opacity-90 flex items-center">مبلغ قابل خرج‌کرد امن</span>
+            {cash.overObligated && (
+              <span className="text-[9px] bg-white/20 border border-white/30 px-1.5 py-0.5 rounded-full font-bold">تعهدات بیش از نقدینگی!</span>
+            )}
+          </div>
+          <div className="text-xl font-extrabold mt-1" dir="rtl">{formatPrice(cash.safeToSpend)} <span className="text-[10px] font-normal opacity-80">تومان</span></div>
+          {cash.overObligated && typeof cash.overObligatedAmount === 'number' && (
+            <div className="text-[11px] font-bold mt-1">کسری نقدینگی: {formatPrice(Math.abs(cash.overObligatedAmount))} تومان</div>
+          )}
+          <p className="text-[9px] opacity-70 mt-1 leading-relaxed">مبلغ قابل خرج‌کرد امن = نقدینگی تأییدشده منهای بدهی‌ها (سود آزادشده فروشگاه‌ها و تأمین‌کننده‌ها، موجودی کیف پول مشتریان، بازپرداخت‌های در انتظار و تسویه‌های در صف). سود آزادنشده فقط سود فروشنده است، نه کل مبلغ سفارش؛ مبلغ تطبیق‌نشده پول نقد نیست.</p>
+        </div>
+        {renderDetails(cash)}
+      </>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+      <div className="p-4 pb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-teal-700">
+          <DollarSign className="w-4 h-4" strokeWidth={1.5} />
+          <h3 className="text-xs font-bold text-slate-800">موقعیت نقدینگی خزانه</h3>
+        </div>
+        <div className="flex bg-slate-100 p-0.5 rounded-lg text-[10px] font-bold gap-0.5">
+          {[7, 30].map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => onCashDaysChange(d)}
+              className={`px-2 py-0.5 rounded-md transition-all ${cashDays === d ? 'bg-white text-teal-700 shadow-2xs' : 'text-slate-500'}`}
+            >
+              {toPersianDigits(d)} روزه
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="px-4 text-[10px] text-slate-400 leading-relaxed">یعنی همین حالا چقدر پول واقعاً دست پلتفرم است و چقدر از آن را بدهکار دیگرانیم. عدد مهم این کارت، «مبلغ قابل خرج‌کرد امن» است، نه ورودی کل.</p>
+      {body}
+    </div>
+  );
+};
+
+export interface ProfitLocksCardProps {
+  locks: ProfitLocksDto | null;
+  locksError: boolean;
+  onNavigateTab: (tab: string) => void;
+  formatPrice: (n: number) => string;
+  toPersianDigits: (v: string | number) => string;
+}
+
+/** Pure profit-locks card. A failed load renders an error state — the card is never silently hidden (FIN-008 D-18). */
+export const ProfitLocksCard: React.FC<ProfitLocksCardProps> = ({ locks, locksError, onNavigateTab, formatPrice, toPersianDigits }) => {
+  if (locksError || (locks && locks.available === false)) {
+    return (
+      <div className="bg-white rounded-2xl border border-rose-200/90 shadow-2xs p-4 space-y-2">
+        <div className="flex items-center gap-1.5 text-rose-700">
+          <DollarSign className="w-4 h-4" strokeWidth={1.5} />
+          <h3 className="text-xs font-bold text-slate-800">سود دراپ‌شیپرها: قفل‌شده در برابر قابل آزادسازی</h3>
+        </div>
+        <p className="text-[11px] text-rose-600 leading-relaxed" role="alert">خطا در بارگذاری سودهای قفل‌شده؛ کارت پنهان نشده و هیچ عددی حدس زده نمی‌شود.</p>
+      </div>
+    );
+  }
+  if (!locks || (locks.totals.locked <= 0 && locks.totals.releasable <= 0)) return null;
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-teal-700">
+          <DollarSign className="w-4 h-4" strokeWidth={1.5} />
+          <h3 className="text-xs font-bold text-slate-800">سود دراپ‌شیپرها: قفل‌شده در برابر قابل آزادسازی</h3>
+        </div>
+        <button type="button" onClick={() => onNavigateTab('payouts')} className="text-[10px] font-bold text-teal-700 hover:underline">جزئیات در صف تسویه</button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+          <span className="text-[10px] font-bold text-slate-500 block">قفل‌شده (مهلت مرجوعی)</span>
+          <div className="text-sm font-extrabold text-slate-800 mt-0.5">{formatPrice(locks.totals.locked)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
+          <span className="text-[9px] text-slate-400">{toPersianDigits(locks.totals.lockedCount)} سفارش</span>
+        </div>
+        <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-2.5">
+          <span className="text-[10px] font-bold text-emerald-700 block">آماده آزادسازی</span>
+          <div className="text-sm font-extrabold text-emerald-700 mt-0.5">{formatPrice(locks.totals.releasable)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
+          <span className="text-[9px] text-emerald-600">{toPersianDigits(locks.totals.releasableCount)} سفارش</span>
+        </div>
+      </div>
+      {locks.rule && (
+        <p className="text-[9px] text-slate-400 leading-relaxed">{locks.rule}</p>
+      )}
+    </div>
+  );
+};
+
+export interface PendingSettlementsCardProps {
+  pending: PendingSettlementDto[];
+  pendingError: boolean;
+  pendingLoaded: boolean;
+  formatPrice: (n: number) => string;
+  toPersianDigits: (v: string | number) => string;
+}
+
+/** Pure pending-settlements summary card. A failed load renders an error state — never "0 requests" (FIN-008 D-18). */
+export const PendingSettlementsCard: React.FC<PendingSettlementsCardProps> = ({ pending, pendingError, pendingLoaded, formatPrice, toPersianDigits }) => {
+  const pendingSum = pending.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  return (
+    <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[11px] font-bold text-slate-700">در صف تسویه</span>
+        <ArrowDownToLine className="w-3.5 h-3.5 text-amber-600" strokeWidth={1.5} />
+      </div>
+      {pendingError ? (
+        <>
+          <div className="text-sm font-extrabold text-rose-600">خطا در بارگذاری</div>
+          <span className="text-[9px] text-rose-600 font-medium block mt-1">تسویه‌های در صف بارگذاری نشد؛ صفر فرض نشده است.</span>
+        </>
+      ) : !pendingLoaded ? (
+        <>
+          <div className="text-sm font-extrabold text-slate-900">—</div>
+          <span className="text-[9px] text-slate-400 font-medium block mt-1">در حال بارگذاری…</span>
+        </>
+      ) : (
+        <>
+          <div className="text-sm font-extrabold text-slate-900">
+            {formatPrice(pendingSum)} <span className="text-[9px] font-normal text-slate-500">تومان</span>
+          </div>
+          <span className="text-[9px] text-amber-600 font-medium block mt-1">
+            {toPersianDigits(pending.length)} درخواست شبا
+          </span>
+        </>
+      )}
+    </div>
+  );
+};
+
 export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const { formatPrice, toPersianDigits } = useStore();
   const [showLedgerModal, setShowLedgerModal] = useState(false);
@@ -31,13 +294,20 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const [cashError, setCashError] = useState(false);
 
   const [pending, setPending] = useState<PendingSettlementDto[]>([]);
+  const [pendingLoaded, setPendingLoaded] = useState(false);
+  const [pendingError, setPendingError] = useState(false);
   const [locks, setLocks] = useState<ProfitLocksDto | null>(null);
+  const [locksError, setLocksError] = useState(false);
 
   useEffect(() => {
     setCashLoaded(false);
     setCashError(false);
     financeApi.getCashPosition(cashDays)
-      .then((res) => { setCash(res && res.success ? res : null); setCashLoaded(true); })
+      .then((res) => {
+        if (res && res.success) { setCash(res); }
+        else { setCash(null); setCashError(true); }
+        setCashLoaded(true);
+      })
       .catch(() => { setCashError(true); setCashLoaded(true); });
   }, [cashDays]);
 
@@ -46,11 +316,14 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
       .then((data) => { setLedger(Array.isArray(data) ? data : []); setLedgerLoaded(true); })
       .catch(() => { setLedgerError(true); setLedgerLoaded(true); });
     financeApi.getPendingSettlements()
-      .then((data) => setPending(data))
-      .catch(() => setPending([]));
+      .then((data) => { setPending(data); setPendingLoaded(true); })
+      .catch(() => { setPendingError(true); setPendingLoaded(true); });
     financeApi.getProfitLocks()
-      .then((res) => setLocks(res && res.success ? res : null))
-      .catch(() => setLocks(null));
+      .then((res) => {
+        if (res && res.success) { setLocks(res); }
+        else { setLocksError(true); }
+      })
+      .catch(() => setLocksError(true));
   }, []);
 
   const sumWhere = (pred: (e: LedgerEntryDto) => boolean) =>
@@ -60,7 +333,6 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const totalDebit = sumWhere((e) => e.type === 'debit');
   const totalCredit = sumWhere((e) => e.type === 'credit');
   const imbalance = totalDebit - totalCredit;
-  const pendingSum = pending.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
   const balanced = ledgerLoaded && !ledgerError && ledger.length > 0 && imbalance === 0;
   const ledgerValue = (v: number) => {
     if (!ledgerLoaded) return '—';
@@ -126,108 +398,24 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
       )}
 
       {/* 2. Treasury cash position */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
-        <div className="p-4 pb-2 flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-teal-700">
-            <DollarSign className="w-4 h-4" strokeWidth={1.5} />
-            <h3 className="text-xs font-bold text-slate-800">موقعیت نقدینگی خزانه</h3>
-          </div>
-          <div className="flex bg-slate-100 p-0.5 rounded-lg text-[10px] font-bold gap-0.5">
-            {[7, 30].map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setCashDays(d)}
-                className={`px-2 py-0.5 rounded-md transition-all ${cashDays === d ? 'bg-white text-teal-700 shadow-2xs' : 'text-slate-500'}`}
-              >
-                {toPersianDigits(d)} روزه
-              </button>
-            ))}
-          </div>
-        </div>
-        <p className="px-4 text-[10px] text-slate-400 leading-relaxed">یعنی همین حالا چقدر پول واقعاً دست پلتفرم است و چقدر از آن را بدهکار دیگرانیم. عدد مهم این کارت، «مبلغ قابل خرج‌کرد امن» است، نه ورودی کل.</p>
-        {cashError ? (
-          <div className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری موقعیت نقدینگی.</div>
-        ) : !cashLoaded ? (
-          <div className="p-3.5 text-[11px] text-slate-400">در حال محاسبه از داده‌های واقعی…</div>
-        ) : !cash || (cash.allTimeIn === 0 && cash.allTimeOut === 0) ? (
-          <div className="p-3.5 text-[11px] text-slate-500 leading-relaxed">
-            <span className="font-bold text-slate-600 block mb-1">—</span>
-            هنوز هیچ سفارش پرداخت‌شده‌ای در سیستم ثبت نشده است؛ پس از اولین پرداخت قطعی، ورودی/خروجی و مبلغ قابل خرج‌کرد امن اینجا محاسبه می‌شود.
-          </div>
-        ) : (
-          <>
-            <div className={`mx-4 mb-2.5 mt-2.5 rounded-xl p-3 text-white ${cash.overObligated ? 'bg-gradient-to-l from-rose-700 via-rose-800 to-rose-900' : 'bg-gradient-to-l from-slate-900 via-teal-950 to-slate-900'}`}>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold opacity-90 flex items-center">مبلغ قابل خرج‌کرد امن</span>
-                {cash.overObligated && (
-                  <span className="text-[9px] bg-white/20 border border-white/30 px-1.5 py-0.5 rounded-full font-bold">تعهدات بیش از نقدینگی!</span>
-                )}
-              </div>
-              <div className="text-xl font-extrabold mt-1" dir="rtl">{formatPrice(cash.safeToSpend)} <span className="text-[10px] font-normal opacity-80">تومان</span></div>
-              <p className="text-[9px] opacity-70 mt-1 leading-relaxed">ورودی کل منهای خروجی کل، تسویه‌های در صف، مبالغ بلوکه در سفارش‌ها و بدهی به فروشگاه‌ها و تأمین‌کنندگان</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 px-4">
-              <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-2.5">
-                <div className="flex items-center gap-1 text-emerald-700">
-                  <span className="text-[10px] font-bold">ورودی {toPersianDigits(cashDays)} روز</span>
-                </div>
-                <div className="text-sm font-extrabold text-slate-900 mt-0.5">{formatPrice(cash.period.in)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
-                <Sparkline data={(cash.period.trend || []).map((t) => t.in ?? 0)} color="#059669" height={38} ariaLabel="روند ورودی نقدینگی" />
-              </div>
-              <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-2.5">
-                <div className="flex items-center gap-1 text-rose-700">
-                  <span className="text-[10px] font-bold">خروجی {toPersianDigits(cashDays)} روز</span>
-                </div>
-                <div className="text-sm font-extrabold text-slate-900 mt-0.5">{formatPrice(cash.period.out)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
-                <Sparkline data={(cash.period.trend || []).map((t) => t.out ?? 0)} color="#e11d48" height={38} ariaLabel="روند خروجی نقدینگی" />
-              </div>
-            </div>
-            <div className="p-4 pt-2.5 space-y-1.5 text-[11px]">
-              <div className="flex justify-between"><span className="text-slate-500">بلوکه در سفارش‌ها ({toPersianDigits(cash.heldOrderCount)} سفارش پرداخت‌شده آزادنشده)</span><strong className="text-slate-700">{formatPrice(cash.heldInOrders)} تومان</strong></div>
-              <div className="flex justify-between"><span className="text-slate-500">بدهی به دراپ‌شیپرها (سود آزادشده)</span><strong className="text-slate-700">{formatPrice(cash.owedToStores)} تومان</strong></div>
-              <div className="flex justify-between"><span className="text-slate-500">بدهی به تأمین‌کنندگان (سهم عمده‌فروشی آزادشده)</span><strong className="text-slate-700">{formatPrice(cash.owedToSuppliers)} تومان</strong></div>
-              <div className="flex justify-between"><span className="text-slate-500">بازپرداخت‌های در انتظار مشتری ({toPersianDigits(cash.pendingRefundCount || 0)} مورد)</span><strong className="text-amber-700">{formatPrice(cash.pendingRefunds || 0)} تومان</strong></div>
-              <div className="flex justify-between"><span className="text-slate-500">در صف تسویه شبا ({toPersianDigits(cash.pendingCount)} درخواست)</span><strong className="text-amber-700">{formatPrice(cash.pendingPayouts)} تومان</strong></div>
-              <div className="flex justify-between"><span className="text-slate-500">سهم محقق‌شده پلتفرم</span><strong className="text-slate-700">{formatPrice(cash.platformEarned)} تومان</strong></div>
-              {cash.note && (
-                <p className="text-[9px] text-slate-400 leading-relaxed pt-1">{cash.note}</p>
-              )}
-              {(cash.sellerInFlight || 0) + (cash.supplierInFlight || 0) > 0 && (
-                <p className="text-[9px] text-slate-400 leading-relaxed">از بدهی‌های بالا، {formatPrice((cash.sellerInFlight || 0) + (cash.supplierInFlight || 0))} تومان تأیید شده اما هنوز منتقل نشده است (در مسیر پایا) — فقط «تکمیل‌شده» یعنی پول خارج‌شده.</p>
-              )}
-            </div>
-          </>
-        )}
-      </div>
+      <TreasuryCashCard
+        cash={cash}
+        cashLoaded={cashLoaded}
+        cashError={cashError}
+        cashDays={cashDays}
+        onCashDaysChange={setCashDays}
+        formatPrice={formatPrice}
+        toPersianDigits={toPersianDigits}
+      />
 
       {/* 3. Profit locks */}
-      {locks && (locks.totals.locked > 0 || locks.totals.releasable > 0) && (
-        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-teal-700">
-              <DollarSign className="w-4 h-4" strokeWidth={1.5} />
-              <h3 className="text-xs font-bold text-slate-800">سود دراپ‌شیپرها: قفل‌شده در برابر قابل آزادسازی</h3>
-            </div>
-            <button type="button" onClick={() => onNavigateTab('payouts')} className="text-[10px] font-bold text-teal-700 hover:underline">جزئیات در صف تسویه</button>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-              <span className="text-[10px] font-bold text-slate-500 block">قفل‌شده (مهلت مرجوعی)</span>
-              <div className="text-sm font-extrabold text-slate-800 mt-0.5">{formatPrice(locks.totals.locked)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
-              <span className="text-[9px] text-slate-400">{toPersianDigits(locks.totals.lockedCount)} سفارش</span>
-            </div>
-            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-2.5">
-              <span className="text-[10px] font-bold text-emerald-700 block">آماده آزادسازی</span>
-              <div className="text-sm font-extrabold text-emerald-700 mt-0.5">{formatPrice(locks.totals.releasable)} <span className="text-[9px] font-normal text-slate-500">تومان</span></div>
-              <span className="text-[9px] text-emerald-600">{toPersianDigits(locks.totals.releasableCount)} سفارش</span>
-            </div>
-          </div>
-          {locks.rule && (
-            <p className="text-[9px] text-slate-400 leading-relaxed">{locks.rule}</p>
-          )}
-        </div>
-      )}
+      <ProfitLocksCard
+        locks={locks}
+        locksError={locksError}
+        onNavigateTab={onNavigateTab}
+        formatPrice={formatPrice}
+        toPersianDigits={toPersianDigits}
+      />
 
       {/* 4. Key Balances */}
       <div className="grid grid-cols-2 gap-2">
@@ -242,18 +430,13 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           <span className="text-[9px] text-blue-600 font-bold block mt-1">تراکنش‌های تأییدشده در دفتر کل</span>
         </div>
 
-        <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold text-slate-700">در صف تسویه</span>
-            <ArrowDownToLine className="w-3.5 h-3.5 text-amber-600" strokeWidth={1.5} />
-          </div>
-          <div className="text-sm font-extrabold text-slate-900">
-            {ledgerLoaded ? formatPrice(pendingSum) : '—'} <span className="text-[9px] font-normal text-slate-500">تومان</span>
-          </div>
-          <span className="text-[9px] text-amber-600 font-medium block mt-1">
-            {toPersianDigits(pending.length)} درخواست شبا
-          </span>
-        </div>
+        <PendingSettlementsCard
+          pending={pending}
+          pendingError={pendingError}
+          pendingLoaded={pendingLoaded}
+          formatPrice={formatPrice}
+          toPersianDigits={toPersianDigits}
+        />
 
         <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
           <div className="flex items-center justify-between mb-1">

@@ -27,7 +27,7 @@ export const AdminCommissionTab: React.FC = () => {
   const [showConfirm, setShowConfirm] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Live "سهم محقق‌شده پلتفرم" stats (GET /finance/treasury/commission?days=).
+  // Live "سهم ثبت‌شده پلتفرم" stats (GET /finance/treasury/commission?days=).
   const [commissionDays, setCommissionDays] = useState(30);
   const [commission, setCommission] = useState<CommissionDto | null>(null);
   const [commissionError, setCommissionError] = useState(false);
@@ -143,12 +143,12 @@ export const AdminCommissionTab: React.FC = () => {
 
   return (
     <div className="space-y-3.5 pb-6">
-      {/* Live commission stats: realised platform share on paid orders */}
+      {/* Live commission stats: recorded platform share on paid orders */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
         <div className="p-3.5 pb-2 flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-teal-700">
             <DollarSign className="w-4 h-4" strokeWidth={1.5} />
-            <h3 className="text-xs font-bold text-slate-800">سهم محقق‌شده پلتفرم</h3>
+            <h3 className="text-xs font-bold text-slate-800">سهم ثبت‌شده پلتفرم</h3>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-[9px] bg-slate-900 text-white font-bold px-1.5 py-0.5 rounded-full">محرمانه · فقط مدیر</span>
@@ -167,7 +167,7 @@ export const AdminCommissionTab: React.FC = () => {
           </div>
         </div>
         {commissionError ? (
-          <p className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری سهم محقق‌شده.</p>
+          <p className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری سهم ثبت‌شده.</p>
         ) : commission ? commission.total === 0 ? (
           <div className="p-3.5 text-[11px] text-slate-500 leading-relaxed">
             <span className="font-bold text-slate-600 block mb-1">—</span>

@@ -37,7 +37,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | OPS-02 | DONE | 8c0c7c6 | [Request/provider budgets](../../operations/request-budgets.md) |
 | FIN-002 | DONE | aeed326 | [Durable monthly settlement](../../architecture/monthly-settlement.md) |
 | JOB-01 | DONE | 12d2018 / 52e6edc | [Background jobs](../../operations/background-jobs.md) |
-| SEC-01 | Checkpoint OPEN | 409dc02 / 03a5051 | [Credential gates](../../operations/credential-lifecycle.md) |
+| SEC-01 | DONE | ef0120dc | [Credential gates](../../operations/credential-lifecycle.md) |
 | FIN-010 | TODO | — | Sandbox access not yet available; owner requested independent work |
 | INV-12 | TODO | — | — |
 | FIN-004 | DONE | afb401e / c270fcc | [Parcel charge contract](../specs/2026-11-16-parcel-charge-design.md) |
@@ -172,13 +172,15 @@ Final integrated verification at `efb37fc`: three independent disposable migrate
 
 Ruling: this checkpoint does not close OBS-01. Other worker metrics, collector integration, qualified edge traffic, admission rejection metrics, host monitoring, backup signal and alert-rule fixtures remain required. Admin notification during total DB outage stays in process memory until recovery; simultaneous process loss needs independent monitoring. No production access or deployment occurred.
 
-## SEC-01 — source hardening checkpoint; acceptance remains OPEN
+## SEC-01 — DONE (source hardening; deployed ef0120dc)
 
 Commit/push: `409dc02`. Production Compose requires seven injected credential keys; Redis health checks use an environment value and AOF is explicit. Production configuration rejects known development JWT/webhook material and short webhook secrets. The scoped Compose inventory contains 17 metadata-only current/history records. Its current source has seven required injections, two runtime expressions and no literal credential candidates. Active use is unknown; no runtime/private file was read and no key was rotated.
 
 RED/GREEN: configuration tests first reproduced unsafe development signing/webhook acceptance. All now reject. Six Python checks passed (final 1.865s), including missing-secret refusal and ephemeral injection through `docker compose config --quiet`, plus actual disposable Redis process UID verification. JWT rotation with fresh random keys rejected old sessions and accepted new sessions; auth/config suites passed (1.688s/0.897s), and the backend server built. Review `remaining_backlog/review_sec_checkpoint` caught a shell launcher bypassing Redis privilege dropping; the actual UID test first failed at root, then passed after re-entering the official entrypoint. Scoped review found the fix addressed. Container cleanup checked the exact unique name and test label.
 
 Ruling: SEC-01 stays open for full source/history/artifact inventory, restricted active-use comparison, coordinated rotation, ciphertext/provider compatibility, permissions and rollback. No current Go/TypeScript Tapin encryption consumer was found; that does not establish historical ciphertext absence. Existing runtime configuration must provide the newly required names before deployment. The runbook is `docs/operations/credential-lifecycle.md`. No credentials or raw Compose output are included in the inventory or tests, and no production deployment occurred.
+
+Completion (2026-11-18, commit `ef0120dc`, deployed + verified on prod): re-verification supervisor GO — all 13 fix items pass with independent re-runs (probe 29/29; scan 90 assignments, 0 UNCLASSIFIED, 0 compose literals, 0 `.env`; config 45/45; tapin 36/36; `TestTapinReencryptTotalFailure` 7/7; `TestRouteTableNoConflicts` PASS; go vet clean). Gates now passing: G-01, G-03, G-04 (live-bundle check post-deploy: bundle `index-O3TbRaiY.js`, 2,108,951 bytes — `secret` ×0, JWT-shaped ×0, `BEGIN PRIVATE KEY` ×0, Jibit placeholder gone, credential-named keys with literal values ×0), G-05, G-10, G-12, G-13, G-15. Still BLOCKED by unchanged preconditions: G-02 (full-clone history scan), G-06 (no staging), G-07/08/09 (live rotation drills), G-11, G-14 (server-log scan). Deploy: migration `202611180002_sec01_tapin_token_encryption` applied; prod Tapin tokens 2/2 `enc:v1:` (0 plaintext); prod file permissions hardened (`.env`/compose/backups 600/700); boot gate passed (route table + local binary boot, health 200). Plain statement, unchanged: shipping SEC-01 does NOT mean rotation is done — the Nov 4 values remain live until G-07 executes under owner approval. Minor findings NF-01/02/03 deferred to the OBS-01 fix list.
 
 ## SEC-01 — constructor diagnostic privacy follow-up
 

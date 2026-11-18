@@ -19,9 +19,17 @@ class ProductionSecrets(unittest.TestCase):
   self.assertEqual(len(rows[0]['sha256']),64)
  def test_prod_uses_required_runtime_injection(self):
   text=Path('docker-compose.prod.yml').read_text()
+  # SEC-01 PSP re-scope (supervisor F-02): PSP_TERMINAL_ID /
+  # PSP_API_KEY are OPTIONAL in compose (${...:-}) — both absent
+  # boots with a warning, only a partial pair fails startup. They
+  # are therefore NOT in the required-injection list below; the
+  # separate assertion after the loop pins the optional form.
   for key in ['POSTGRES_PASSWORD','REDIS_PASSWORD','DATABASE_URL','REDIS_URL','JWT_SECRET','TRACKING_WEBHOOK_SECRET','TAPIN_TOKEN_KEY']:
    value=next((line.split(':',1)[1].strip().strip('"') for line in text.splitlines() if line.strip().startswith(key+':')),None)
    self.assertTrue(value and re.fullmatch(r'\$\{'+key+r':\?[^}]+\}',value),key+' must require runtime injection')
+  for key in ['PSP_TERMINAL_ID','PSP_API_KEY']:
+   value=next((line.split(':',1)[1].strip().strip('"') for line in text.splitlines() if line.strip().startswith(key+':')),None)
+   self.assertTrue(value and re.fullmatch(r'\$\{'+key+r':-\}',value),key+' must be optional runtime injection (${...:-})')
  def test_current_production_inventory_has_no_literal_credentials(self):
   rows=scan(Path('docker-compose.prod.yml').read_text(),'docker-compose.prod.yml','working-tree')
   self.assertTrue(all(r['classification']!='source_literal_usage_unverified' for r in rows),'production credential expressions must use runtime injection')
@@ -49,6 +57,10 @@ class ProductionSecrets(unittest.TestCase):
    label=subprocess.run(['docker','inspect','--format','{{ index .Config.Labels "sellersho.test-run" }}',name],capture_output=True,text=True)
    if label.returncode==0 and label.stdout.strip()=='true':subprocess.run(['docker','rm','--force',name],capture_output=True)
  def test_merged_compose_requires_and_uses_injection(self):
+  # SEC-01 PSP re-scope (supervisor F-02): PSP_TERMINAL_ID /
+  # PSP_API_KEY are optional (${...:-}), so they are NOT in the
+  # required list — the merged compose must still refuse to render
+  # when the other required keys are absent.
   keys=['POSTGRES_PASSWORD','REDIS_PASSWORD','DATABASE_URL','REDIS_URL','JWT_SECRET','TRACKING_WEBHOOK_SECRET','TAPIN_TOKEN_KEY']
   env=os.environ.copy()
   for key in keys:env.pop(key,None)

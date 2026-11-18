@@ -882,7 +882,7 @@ func handleCreateOrder(
 		// reads — a Tapin-priced quote re-derives the same quoteId
 		// here; a Tapin failure fails the order with the upstream
 		// message instead of silently repricing by formula.
-		if terr := priceTapinQuoteLegs(ctx, db, &quote, quoteLines, quoteDest); terr != nil {
+		if terr := priceTapinQuoteLegs(ctx, tapinRepositoryFor(db, supplierRepo), &quote, quoteLines, quoteDest); terr != nil {
 			if writeDependencyOverload(w, terr) {
 				return
 			}

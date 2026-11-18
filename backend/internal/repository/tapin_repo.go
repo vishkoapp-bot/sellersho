@@ -29,10 +29,23 @@ var ErrTapinAttemptConflict = errors.New("Tapin registration is already attempte
 
 type TapinRepository struct {
 	db *sql.DB
+	// tokenCipher decrypts stored supplier Tapin tokens. It is nil
+	// when the caller did not configure encryption (tests, or a path
+	// that never reads tokens): legacy plaintext still reads through,
+	// but an "enc:v1:" value then fails closed instead of being
+	// returned as a token. See WithTokenCipher.
+	tokenCipher *tapin.TokenCipher
 }
 
 func NewTapinRepository(db *sql.DB) *TapinRepository {
 	return &TapinRepository{db: db}
+}
+
+// WithTokenCipher attaches the Tapin token cipher (SEC-01). It returns
+// the receiver so call sites can chain it on the constructor.
+func (r *TapinRepository) WithTokenCipher(c *tapin.TokenCipher) *TapinRepository {
+	r.tokenCipher = c
+	return r
 }
 
 // --- Box catalogue -------------------------------------------------
@@ -154,7 +167,11 @@ func (c SupplierTapinCredentials) Connected() bool {
 }
 
 // GetSupplierCredentials loads the stored token + shop id. The token
-// is for server-side upstream calls only.
+// is for server-side upstream calls only. A stored "enc:v1:" token is
+// decrypted with the attached cipher; a legacy plaintext token is
+// returned as-is (the in-place migration has not re-encrypted it
+// yet). Without a cipher, an encrypted value fails closed — it is
+// never returned as a usable token.
 func (r *TapinRepository) GetSupplierCredentials(ctx context.Context, supplierID string) (SupplierTapinCredentials, error) {
 	var creds SupplierTapinCredentials
 	creds.SupplierID = supplierID
@@ -169,7 +186,176 @@ func (r *TapinRepository) GetSupplierCredentials(ctx context.Context, supplierID
 	}
 	creds.ShopID = strings.TrimSpace(shop.String)
 	creds.Token = strings.TrimSpace(token.String)
+	if creds.Token == "" {
+		return creds, nil
+	}
+	plain, _, err := r.decodeStoredToken(creds.Token)
+	if err != nil {
+		return creds, err
+	}
+	creds.Token = plain
 	return creds, nil
+}
+
+// decodeStoredToken decodes one stored tapin_token value. With a
+// cipher it decrypts "enc:v1:" values and passes legacy plaintext
+// through; without a cipher it passes legacy plaintext through and
+// fails closed on ciphertext.
+func (r *TapinRepository) decodeStoredToken(stored string) (string, bool, error) {
+	if !strings.HasPrefix(stored, tapin.TokenCipherPrefix) {
+		return stored, false, nil
+	}
+	if r.tokenCipher == nil {
+		return "", true, tapin.ErrTokenCipherNotConfigured
+	}
+	plain, encrypted, err := r.tokenCipher.DecodeStoredToken(stored)
+	if err != nil {
+		return "", true, fmt.Errorf("decrypt supplier tapin token: %w", err)
+	}
+	return plain, encrypted, nil
+}
+
+// ReencryptReport is the audited outcome of one in-place migration
+// pass over suppliers.tapin_token. Counts only — no token material.
+// FailedIDs are supplier ids whose rows could not be verified (left
+// untouched for manual handling); they are safe to log.
+type ReencryptReport struct {
+	Examined         int
+	Encrypted        int // legacy plaintext rows re-encrypted in place
+	AlreadyEncrypted int // rows already "enc:v1:" and decryptable
+	SkippedEmpty     int // NULL/blank tokens
+	Failed           int
+	FailedIDs        []string
+}
+
+// ReencryptSupplierTapinTokens encrypts every legacy-plaintext
+// suppliers.tapin_token IN PLACE under the attached cipher (SEC-01,
+// gate G-10). It is idempotent: rows already "enc:v1:" under the
+// CURRENT key are left alone, and re-running it after a completed
+// pass encrypts nothing. Rows encrypted under the PREVIOUS key (a
+// rotation in progress) are re-encrypted under the current key —
+// that is what makes a key rotation actually move the data.
+//
+// Per row, the new ciphertext is produced and decrypt-checked IN
+// MEMORY before the UPDATE; the write is a compare-and-swap on the
+// old value (a concurrent panel edit wins over the migration instead
+// of being overwritten); the new value is then read back and
+// decrypt-checked again. A row that fails any step is left exactly
+// as it was and counted in Failed — the migration never drops,
+// revokes, or loses a token, and it never blocks startup on a single
+// bad row (the caller logs the report and continues; see cmd/server).
+//
+// A nil cipher is a hard error: the migration must never run without
+// a key.
+func (r *TapinRepository) ReencryptSupplierTapinTokens(ctx context.Context) (ReencryptReport, error) {
+	var rep ReencryptReport
+	if r.tokenCipher == nil {
+		return rep, tapin.ErrTokenCipherNotConfigured
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, tapin_token FROM suppliers WHERE tapin_token IS NOT NULL`)
+	if err != nil {
+		return rep, fmt.Errorf("list supplier tapin tokens for re-encryption: %w", err)
+	}
+	type row struct{ id, token string }
+	var pending []row
+	for rows.Next() {
+		var id string
+		var tok sql.NullString
+		if err := rows.Scan(&id, &tok); err != nil {
+			rows.Close()
+			return rep, fmt.Errorf("scan supplier tapin token: %w", err)
+		}
+		pending = append(pending, row{id, tok.String})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return rep, fmt.Errorf("list supplier tapin tokens for re-encryption: %w", err)
+	}
+	rows.Close()
+
+	for _, p := range pending {
+		rep.Examined++
+		stored := strings.TrimSpace(p.token)
+		if stored == "" {
+			rep.SkippedEmpty++
+			continue
+		}
+		// Produce the desired stored value (enc) and the plaintext
+		// it must decrypt to, then verify, then write.
+		var enc, plain string
+		if strings.HasPrefix(stored, tapin.TokenCipherPrefix) {
+			// Already encrypted. If it decrypts under the current
+			// key, leave it; if only under the previous key, the
+			// rotation re-encrypts it under the current key.
+			// Undecryptable under both keys is a failure (e.g. a
+			// rotation that dropped the previous key too early).
+			var err error
+			plain, _, err = r.tokenCipher.DecodeStoredToken(stored)
+			if err != nil {
+				rep.Failed++
+				rep.FailedIDs = append(rep.FailedIDs, p.id)
+				continue
+			}
+			enc, err = r.tokenCipher.ReencryptToken(stored)
+			if err != nil {
+				rep.Failed++
+				rep.FailedIDs = append(rep.FailedIDs, p.id)
+				continue
+			}
+			if enc == stored {
+				rep.AlreadyEncrypted++
+				continue
+			}
+		} else {
+			// Legacy plaintext: encrypt + decrypt-check in memory.
+			plain = stored
+			var err error
+			enc, err = r.tokenCipher.EncryptToken(stored)
+			if err != nil {
+				rep.Failed++
+				rep.FailedIDs = append(rep.FailedIDs, p.id)
+				continue
+			}
+			if dec, err := r.tokenCipher.DecryptToken(enc); err != nil || dec != stored {
+				rep.Failed++
+				rep.FailedIDs = append(rep.FailedIDs, p.id)
+				continue
+			}
+		}
+		// Compare-and-swap: only overwrite the exact value we read.
+		res, err := r.db.ExecContext(ctx,
+			`UPDATE suppliers SET tapin_token = $2 WHERE id = $1 AND tapin_token = $3`,
+			p.id, enc, p.token)
+		if err != nil {
+			rep.Failed++
+			rep.FailedIDs = append(rep.FailedIDs, p.id)
+			continue
+		}
+		n, err := res.RowsAffected()
+		if err != nil || n != 1 {
+			// Concurrently changed (or vanished): leave it for the
+			// next pass; never overwrite a newer value.
+			rep.Failed++
+			rep.FailedIDs = append(rep.FailedIDs, p.id)
+			continue
+		}
+		// Read back and decrypt-check the stored value.
+		var back sql.NullString
+		if err := r.db.QueryRowContext(ctx,
+			`SELECT tapin_token FROM suppliers WHERE id = $1`, p.id).Scan(&back); err != nil {
+			rep.Failed++
+			rep.FailedIDs = append(rep.FailedIDs, p.id)
+			continue
+		}
+		if dec, _, err := r.tokenCipher.DecodeStoredToken(strings.TrimSpace(back.String)); err != nil || dec != plain {
+			rep.Failed++
+			rep.FailedIDs = append(rep.FailedIDs, p.id)
+			continue
+		}
+		rep.Encrypted++
+	}
+	return rep, nil
 }
 
 // SupplierOriginWarehouse is the geo identity of a supplier's own

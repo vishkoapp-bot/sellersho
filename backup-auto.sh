@@ -3,7 +3,9 @@
 # Nightly: Postgres dump + uploads archive + config archive.
 # Layout: /opt/drup/backups/auto/<YYYY-MM-DD>/  — keeps the last 7 days.
 # DB access is via `docker exec` local-socket auth: no credentials in this file.
+# Backup files are created mode 0600 (umask 077, SEC-01 gate G-13).
 set -euo pipefail
+umask 077
 BASE=/opt/drup/backups/auto
 DATE=$(date +%F)
 DEST="$BASE/$DATE"

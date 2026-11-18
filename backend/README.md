@@ -43,6 +43,24 @@ cd backend
 docker-compose up -d postgres redis
 ```
 
+SEC-01: the dev compose file holds no literal passwords, so the stack
+needs its credentials set explicitly first (placeholders only - use
+your own dev-only passwords):
+
+```bash
+export POSTGRES_PASSWORD='<choose-a-dev-password>'
+export REDIS_PASSWORD='<choose-a-dev-password>'
+# API inside compose:
+export DATABASE_URL='postgres://drup_admin:<POSTGRES_PASSWORD>@postgres:5432/drup_db?sslmode=disable'
+export REDIS_URL='redis://:<REDIS_PASSWORD>@redis:6379/0'
+# ... or API on the host (go run): same passwords, localhost hosts.
+```
+
+Existing dev volumes were initialised with the retired dev password -
+recreate them (`docker compose -f backend/docker-compose.yml down -v`)
+or set the variables to the password the volumes were created with.
+Full detail: `DEV-WORKFLOW.md`.
+
 ## Running the Server
 
 ```bash

@@ -29,6 +29,8 @@ graphify-out/
 *.png
 *.jpeg
 *.jpg
+__pycache__/
+*.pyc
 backend/.env
 *.exe
 backend/bin/

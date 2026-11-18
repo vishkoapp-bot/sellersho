@@ -18,6 +18,7 @@ import (
 	"github.com/drup/platform/internal/domain"
 	phoneutil "github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/pricing"
+	"github.com/drup/platform/internal/tapin"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -25,6 +26,11 @@ import (
 
 type SupplierRepository struct {
 	db *sql.DB
+	// tokenCipher encrypts/decrypts suppliers.tapin_token (SEC-01).
+	// Nil means encryption is not configured: UpdateTapinToken then
+	// fails closed (it must never silently store plaintext) while
+	// reads still pass legacy plaintext through. See WithTapinCipher.
+	tokenCipher *tapin.TokenCipher
 }
 
 // FindUserByMobile resolves an existing supplier owner/member without trusting a client-supplied supplier ID.
@@ -230,6 +236,41 @@ func (r *SupplierRepository) UpdateMemberRole(ctx context.Context, supplierID, m
 
 func NewSupplierRepository(db *sql.DB) *SupplierRepository {
 	return &SupplierRepository{db: db}
+}
+
+// WithTapinCipher attaches the Tapin token cipher (SEC-01). It returns
+// the receiver so call sites can chain it on the constructor.
+func (r *SupplierRepository) WithTapinCipher(c *tapin.TokenCipher) *SupplierRepository {
+	r.tokenCipher = c
+	return r
+}
+
+// TapinCipher returns the attached Tapin token cipher, or nil when
+// encryption is not configured. Other repositories (TapinRepository)
+// borrow it so every credential read shares one cipher instance.
+func (r *SupplierRepository) TapinCipher() *tapin.TokenCipher {
+	if r == nil {
+		return nil
+	}
+	return r.tokenCipher
+}
+
+// decodeStoredTapinToken decodes one stored tapin_token value: an
+// "enc:v1:" value is decrypted with the attached cipher, legacy
+// plaintext passes through, and ciphertext without a cipher fails
+// closed (never returned as a usable token).
+func (r *SupplierRepository) decodeStoredTapinToken(stored string) (string, error) {
+	if stored == "" || !strings.HasPrefix(stored, tapin.TokenCipherPrefix) {
+		return stored, nil
+	}
+	if r.tokenCipher == nil {
+		return "", tapin.ErrTokenCipherNotConfigured
+	}
+	plain, _, err := r.tokenCipher.DecodeStoredToken(stored)
+	if err != nil {
+		return "", fmt.Errorf("decrypt supplier tapin token: %w", err)
+	}
+	return plain, nil
 }
 
 func (r *SupplierRepository) OwnsSupplierResource(ctx context.Context, supplierID, path string) bool {
@@ -907,7 +948,14 @@ func (r *SupplierRepository) GetSupplierByID(ctx context.Context, id string) (*d
 		s.TapinShopID = &tapinShopID.String
 	}
 	if tapinToken.Valid {
-		s.TapinToken = tapinToken.String
+		// SEC-01: a stored "enc:v1:" token is decrypted here so the
+		// server-side Tapin connectivity test keeps receiving the
+		// plaintext token; legacy plaintext passes through unchanged.
+		plain, err := r.decodeStoredTapinToken(tapinToken.String)
+		if err != nil {
+			return nil, err
+		}
+		s.TapinToken = plain
 	}
 	if warehouseCitySource.Valid {
 		s.WarehouseCitySource = &warehouseCitySource.String
@@ -4814,6 +4862,10 @@ func (r *SupplierRepository) UpdateTapinShopID(ctx context.Context, supplierID, 
 // UpdateTapinShopID. An empty token clears the stored value (NULL).
 // The token is internal only: it is selected solely for the server-side
 // connectivity test and is never emitted in any API response.
+//
+// SEC-01: the token is stored AES-256-GCM encrypted ("enc:v1:") under
+// the attached cipher. Without a cipher this fails closed — it never
+// silently stores plaintext.
 func (r *SupplierRepository) UpdateTapinToken(ctx context.Context, supplierID, token string) error {
 	if strings.TrimSpace(token) == "" {
 		res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_token = NULL WHERE id = $1`, supplierID)
@@ -4829,7 +4881,14 @@ func (r *SupplierRepository) UpdateTapinToken(ctx context.Context, supplierID, t
 		}
 		return nil
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_token = $2 WHERE id = $1`, supplierID, token)
+	if r.tokenCipher == nil {
+		return tapin.ErrTokenCipherNotConfigured
+	}
+	enc, err := r.tokenCipher.EncryptToken(strings.TrimSpace(token))
+	if err != nil {
+		return fmt.Errorf("encrypt supplier tapin token: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_token = $2 WHERE id = $1`, supplierID, enc)
 	if err != nil {
 		return err
 	}

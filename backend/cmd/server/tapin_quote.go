@@ -190,11 +190,32 @@ func checkedTapinGoods(lines []shippingQuoteLine) ([]tapin.TipaxProduct, int64, 
 // already-computed formula quote, in place, and re-derives the
 // total + quoteId when at least one leg changed. See the file
 // header for the fail-closed and parity rules.
-func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, lines []shippingQuoteLine, dest shippingQuoteDestination) error {
+//
+// tapinRepo must carry the Tapin token cipher (SEC-01): it is built
+// by tapinRepositoryFor from the supplier repo's cipher, so stored
+// "enc:v1:" tokens decrypt on read. A nil repo means "no Tapin
+// pricing" (same as the old nil-db case) and leaves the formula
+// quote untouched.
+// tapinRepositoryFor builds the Tapin repository for the quote step,
+// carrying the supplier Tapin-token cipher when the supplier repo has
+// one (SEC-01). A nil db yields a nil repo, which priceTapinQuoteLegs
+// treats as "no Tapin pricing".
+func tapinRepositoryFor(db *sql.DB, supplierRepo *repository.SupplierRepository) *repository.TapinRepository {
+	if db == nil {
+		return nil
+	}
+	repo := repository.NewTapinRepository(db)
+	if supplierRepo != nil {
+		repo.WithTokenCipher(supplierRepo.TapinCipher())
+	}
+	return repo
+}
+
+func priceTapinQuoteLegs(ctx context.Context, tapinRepo *repository.TapinRepository, quote *shippingQuote, lines []shippingQuoteLine, dest shippingQuoteDestination) error {
 	if quote != nil && quote.PricingError != nil {
 		return quote.PricingError
 	}
-	if db == nil || quote == nil {
+	if tapinRepo == nil || quote == nil {
 		return nil
 	}
 	// Group lines by leg origin key, exactly as computeShippingQuote
@@ -207,7 +228,7 @@ func priceTapinQuoteLegs(ctx context.Context, db *sql.DB, quote *shippingQuote, 
 		key, _ := legOrigin(line)
 		linesByLeg[key] = append(linesByLeg[key], line)
 	}
-	repo := repository.NewTapinRepository(db)
+	repo := tapinRepo
 	client := newTapinClient()
 	changed := false
 	for i := range quote.Legs {

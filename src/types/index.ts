@@ -491,7 +491,10 @@ export interface PlatformSettings {
   integrations: {
     shebaVerificationApi: {
       apiUrl: string;
-      apiKey: string;
+      // SEC-01: optional on purpose — no API key may ever be set as a
+      // frontend default. A real key, if ever needed, must be injected
+      // server-side and never shipped in the bundle.
+      apiKey?: string;
       isEnabled: boolean;
     };
   };

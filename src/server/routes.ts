@@ -38,7 +38,11 @@ const serverPlatformSettings: PlatformSettings = {
     platformViewShareOnSellerCPM: 10000,
   },
   integrations: {
-    shebaVerificationApi: { apiUrl: '', apiKey: '', isEnabled: true },
+    // SEC-01 (critic F-12): the Sheba/Jibit verification integration
+    // stays DISABLED in the mock/dev server — never enabled with an
+    // empty key. (The real integration lives in FinanceContext, also
+    // disabled; apiKey is kept as a type-only optional field.)
+    shebaVerificationApi: { apiUrl: '', apiKey: '', isEnabled: false },
   },
 };
 

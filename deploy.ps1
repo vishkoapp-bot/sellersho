@@ -25,6 +25,19 @@ $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
+# SEC-01 (supervisor F-03, gate G-15): fail fast on a reintroduced
+# secret literal before any build or upload. Only the non-Docker
+# checks run here; the 2 Docker-dependent checks are Docker-host-only
+# (see scripts/run_secret_checks_nodocker.py).
+$pythonExe = $null
+$pythonCmd = Get-Command python3 -ErrorAction SilentlyContinue
+if ($pythonCmd) { $pythonExe = $pythonCmd.Source } else {
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) { $pythonExe = $pythonCmd.Source }
+}
+if (-not $pythonExe) { throw 'SEC-01 secret checks need python3 (or python) on PATH; refusing to deploy.' }
+& $pythonExe scripts/run_secret_checks_nodocker.py $root
+if ($LASTEXITCODE -ne 0) { throw 'SEC-01 production-secret checks failed; refusing to deploy.' }
 # The release runner performs reviewed legacy adoption only after its verified
 # database backup. This early check is deliberately read-only.
 Remote @'

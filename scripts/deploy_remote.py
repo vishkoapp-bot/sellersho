@@ -133,6 +133,18 @@ def health():
 
 
 try:
+    # SEC-01 (supervisor F-03, gate G-15): fail fast on a reintroduced
+    # secret literal BEFORE any migration or compose change. Only the
+    # non-Docker checks run here; the 2 Docker-dependent checks are
+    # Docker-host-only and are not claimed by this step (see
+    # scripts/run_secret_checks_nodocker.py).
+    run('python3', str(release / 'scripts/run_secret_checks_nodocker.py'), str(release))
+    # SEC-01 (critic F-02 #4): validate the merged compose BEFORE any
+    # SQL migration runs, so a bad compose fails fast with no DB
+    # change. The runtime file is written first: compose config reads
+    # it as the last -f file.
+    runtime_file.write_text(json.dumps(runtime))
+    compose('config', '--quiet')
     run('docker', 'exec', 'drup_backend', 'mkdir', '-p', migration_stage + '/migrations')
     run('docker', 'cp', str(release / 'backend/bin/migrate-linux'), 'drup_backend:' + migration_stage + '/migrate')
     prepare_migrator(run, 'drup_backend', migration_stage + '/migrate')
@@ -148,10 +160,10 @@ try:
     if missing_checksums != '0':
         raise RuntimeError('Migration checksum adoption incomplete')
     changed = True
-    runtime_file.write_text(json.dumps(runtime))
     for name in ['Caddyfile', 'docker-compose.ssl.yml']:
         shutil.copy2(release / name, root / name)
-    compose('config', '--quiet')
+    # Compose was already validated above (before migrations); it is
+    # not re-run here.
     # Keep old hashed assets available to clients with already-open pages.
     assets = root / 'dist/assets'
     if assets.exists():

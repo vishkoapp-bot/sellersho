@@ -7,7 +7,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: drup_admin
-      POSTGRES_PASSWORD: drup_secure_password_2026
+      # SEC-01 (supervisor F-01): no literal password here - the dev
+      # stack reads it from the host env. NOTE: existing dev volumes
+      # were initialised with the retired dev password; after this
+      # change either recreate the volume (`docker compose -f
+      # backend/docker-compose.yml down -v`) or set
+      # POSTGRES_PASSWORD to the password the volume was created
+      # with. See DEV-WORKFLOW.md for the exact commands.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD for the dev stack}"
       POSTGRES_DB: drup_db
     ports:
       - "5432:5432"
@@ -24,13 +31,20 @@ services:
     image: redis:7-alpine
     container_name: drup_redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "drup_redis_pass_2026"]
+    # SEC-01 (supervisor F-01): no literal password in the command or
+    # healthcheck argv - the value comes from the host env via
+    # $$REDIS_PASSWORD (same pattern as docker-compose.prod.yml).
+    # Same volume note as postgres above: recreate the redis volume
+    # or set REDIS_PASSWORD to the password it was created with.
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD for the dev stack}"
+    command: ["sh", "-ec", 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "drup_redis_pass_2026", "ping"]
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
       interval: 10s
       timeout: 5s
       retries: 5

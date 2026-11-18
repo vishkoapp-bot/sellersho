@@ -114,8 +114,10 @@ const INITIAL_PLATFORM_SETTINGS: PlatformSettings = {
   integrations: {
     shebaVerificationApi: {
       apiUrl: 'https://api.jibit.ir/v1/cards/sheba',
-      apiKey: 'live_sec_fake_jibit_token',
-      isEnabled: true,
+      // SEC-01: no credential may ship in the frontend bundle. The Sheba
+      // verification integration stays DISABLED until a real key is injected
+      // server-side; the previous fake placeholder apiKey has been removed.
+      isEnabled: false,
     },
   },
 };

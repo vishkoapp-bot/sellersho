@@ -474,7 +474,7 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 	// fails closed: an inquiry error fails the whole quote with the
 	// upstream message — a connected leg is never silently repriced
 	// by the formula.
-	if err := priceTapinQuoteLegs(ctx, db, &quote, lines, *req.Destination); err != nil {
+	if err := priceTapinQuoteLegs(ctx, tapinRepositoryFor(db, supplierRepo), &quote, lines, *req.Destination); err != nil {
 		if writeDependencyOverload(w, err) {
 			return
 		}

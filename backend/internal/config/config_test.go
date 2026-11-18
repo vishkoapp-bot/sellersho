@@ -153,6 +153,14 @@ func TestLoadConfig_Production_FailClosed(t *testing.T) {
 			t.Setenv("IPPANEL_API_KEY", "test-ippanel-key")
 			t.Setenv("IPPANEL_SENDER", "+983000505")
 			t.Setenv("IPPANEL_PATTERN_CODE", "test-pattern")
+			// SEC-01: production now also requires PSP credentials
+			// (real mode), TAPIN_TOKEN_KEY and explicit ALLOWED_ORIGINS.
+			// SEC-01 fix (critic F-06): PSP/Tapin keys must be >=32 chars
+			// in production, like JWT/webhook.
+			t.Setenv("PSP_TERMINAL_ID", "synthetic-test-psp-terminal-0123456789")
+			t.Setenv("PSP_API_KEY", "synthetic-test-psp-api-key-0123456789")
+			t.Setenv("TAPIN_TOKEN_KEY", "synthetic-test-tapin-token-key-0123456789")
+			t.Setenv("ALLOWED_ORIGINS", "https://shop.test.invalid")
 
 			cfg, err := LoadConfig()
 			if tc.expectErr && err == nil {

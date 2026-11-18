@@ -85,7 +85,7 @@ The codebase enforces strict separation of concerns following clean modular desi
 - `backend/migrations/`: Sequential database schema migration files (`.up.sql` and `.down.sql`).
 
 ### 2.2 Server Bootstrapping & Fail-Closed Lifecycle (`main.go`)
-1. **Config Ingestion (`config.LoadConfig`):** Loads runtime settings. In non-dev environments (`APP_ENV=production`), it enforces **fail-closed validation**: `JWT_SECRET` must be $\ge 32$ characters, default passwords (`drup_secure_password_2026`, `drup_redis_pass_2026`) are rejected, `PAYMENT_GATEWAY_MODE` must be `real`, and IPPanel credentials must be fully configured.
+1. **Config Ingestion (`config.LoadConfig`):** Loads runtime settings. In non-dev environments (`APP_ENV=production`), it enforces **fail-closed validation**: `JWT_SECRET` must be $\ge 32$ characters, default passwords (retired dev passwords, redacted — see SEC-01 scan) are rejected, `PAYMENT_GATEWAY_MODE` must be `real`, and IPPanel credentials must be fully configured.
 2. **Transactional Database Auto-Migration (`runAutoMigrations`):**
    - Checks or creates the `schema_migrations (version, applied_at)` tracking table.
    - Reads all `*.up.sql` files in alphanumeric order.

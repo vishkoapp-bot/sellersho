@@ -31,6 +31,7 @@ import (
 	"github.com/drup/platform/internal/privacy"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/requestbudget"
+	"github.com/drup/platform/internal/tapin"
 	"github.com/drup/platform/internal/worker"
 	"github.com/google/uuid"
 )
@@ -73,6 +74,21 @@ func enableCORS(next http.Handler, cfg *config.Config) http.Handler {
 	})
 }
 
+// tapinReencryptTotalFailure reports whether a re-encryption pass
+// failed at the key level (SEC-01 fix, critic F-04): at least one
+// non-empty token row exists, some rows failed, and NOT ONE row
+// succeeded (neither re-encrypted nor already decryptable). That
+// shape means the current key cannot read the stored tokens at all —
+// booting would 500 every supplier profile that reads a token — so
+// the caller fails startup instead of logging and continuing.
+// Partial failures (some rows succeeded) return false: the key is
+// fine and the failed rows stay untouched for manual handling.
+func tapinReencryptTotalFailure(rep repository.ReencryptReport) bool {
+	succeeded := rep.Encrypted + rep.AlreadyEncrypted
+	nonEmpty := rep.Examined - rep.SkippedEmpty
+	return rep.Failed > 0 && succeeded == 0 && nonEmpty > 0
+}
+
 func runAutoMigrations(ctx context.Context, db *sql.DB) error {
 	dirs := []string{"migrations", "../migrations", "./backend/migrations", "/app/migrations"}
 	migrationDir := os.Getenv("MIGRATIONS_DIR")
@@ -108,6 +124,16 @@ func run(signalCtx context.Context) (result error) {
 	if err != nil {
 		return fmt.Errorf("configuration error: %w", err)
 	}
+	// SEC-01: Tapin token cipher. In production TAPIN_TOKEN_KEY is
+	// required (LoadConfig fails closed without it); in an explicitly
+	// dev environment it is an ephemeral per-process key, also from
+	// LoadConfig. The previous key is only a decryption fallback
+	// during a rotation window (gate G-10).
+	tapinCipher, err := tapin.NewTokenCipher(cfg.TapinTokenKey)
+	if err != nil {
+		return fmt.Errorf("tapin token cipher: %w", err)
+	}
+	tapinCipher.WithPreviousKey(cfg.TapinPreviousTokenKey)
 	startupCtx, stopStartup := context.WithTimeout(signalCtx, cfg.StartupTimeout)
 	defer stopStartup()
 	process := &lifecycle.Process{Grace: cfg.ShutdownGrace}
@@ -138,6 +164,7 @@ func run(signalCtx context.Context) (result error) {
 	var pricingRepo *repository.PricingRepository
 	var adminRepo *repository.AdminRepository
 	var supplierRepo *repository.SupplierRepository
+	var tapinRepo *repository.TapinRepository
 	var warehouseRepo *repository.WarehouseRepository
 	var backgroundWorker *worker.BackgroundWorker
 
@@ -167,7 +194,7 @@ func run(signalCtx context.Context) (result error) {
 	var shipmentRepo *repository.SupplierShipmentRepository
 	var gatewayClient payment.PaymentGatewayClient
 	if cfg.PaymentGatewayMode == "real" {
-		gatewayClient = payment.NewRealShaparakGatewayClient(os.Getenv("PSP_TERMINAL_ID"), os.Getenv("PSP_API_KEY"))
+		gatewayClient = payment.NewRealShaparakGatewayClient(cfg.PSPTerminalID, cfg.PSPAPIKey)
 	} else {
 		gatewayClient = payment.NewMockPaymentGatewayClient(true)
 	}
@@ -195,7 +222,8 @@ func run(signalCtx context.Context) (result error) {
 			return errors.New("capability ownership bootstrap failed; check database availability")
 		}
 		adminRepo = repository.NewAdminRepository(db.DB)
-		supplierRepo = repository.NewSupplierRepository(db.DB)
+		supplierRepo = repository.NewSupplierRepository(db.DB).WithTapinCipher(tapinCipher)
+		tapinRepo = repository.NewTapinRepository(db.DB).WithTokenCipher(tapinCipher)
 		warehouseRepo = repository.NewWarehouseRepository(db.DB)
 		shipmentRepo = repository.NewSupplierShipmentRepository(db.DB)
 		backgroundWorker = worker.NewBackgroundWorker(db.DB)
@@ -203,6 +231,34 @@ func run(signalCtx context.Context) (result error) {
 		backgroundWorker.SetRedisClient(redisClient)
 		backgroundWorker.SetFinanceRepository(finRepo)
 		process.StopWorker = backgroundWorker.StopContext
+		// SEC-01: encrypt legacy-plaintext supplier Tapin tokens in
+		// place (gate G-10). Idempotent; a row that fails any check
+		// is left untouched and reported, never dropped or lost.
+		// A DB-level error fails startup. A per-row failure does
+		// not - EXCEPT a total failure (critic F-04): if token rows
+		// exist and NOT ONE could be re-encrypted, the key itself
+		// is wrong (e.g. rotated without TAPIN_TOKEN_PREVIOUS_KEY)
+		// and every supplier profile would 500 on decrypt, while
+		// the deploy health gate (/api/health) would still pass.
+		// Failing the boot rolls the deploy back to the old binary,
+		// which still reads the untouched plaintext rows.
+		// Skipped in dev when the Tapin key is ephemeral (critic
+		// F-11): the key dies with the process, so encrypting dev
+		// tokens under it would orphan them on the next restart.
+		// Set TAPIN_TOKEN_KEY explicitly for a persistent dev key.
+		if cfg.TapinTokenKeyExplicit {
+			if rep, err := tapinRepo.ReencryptSupplierTapinTokens(startupCtx); err != nil {
+				return fmt.Errorf("tapin token re-encryption: %w", err)
+			} else if tapinReencryptTotalFailure(rep) {
+				return fmt.Errorf("tapin token re-encryption: %d of %d non-empty rows failed and none succeeded \u2014 refusing to boot: TAPIN_TOKEN_KEY cannot decrypt the stored tokens (check TAPIN_TOKEN_PREVIOUS_KEY); rows left untouched", rep.Failed, rep.Examined-rep.SkippedEmpty)
+			} else if rep.Failed > 0 {
+				log.Printf("[ERROR] tapin token re-encryption: %d of %d rows failed verification (supplier ids: %v); rows left untouched for manual handling", rep.Failed, rep.Examined, rep.FailedIDs)
+			} else if rep.Encrypted > 0 {
+				log.Printf("[INFO] tapin token re-encryption: %d plaintext token(s) encrypted in place, %d already encrypted", rep.Encrypted, rep.AlreadyEncrypted)
+			}
+		} else {
+			log.Printf("[INFO] tapin token re-encryption skipped: TAPIN_TOKEN_KEY is ephemeral (dev); set it explicitly to persist dev tokens")
+		}
 
 	}
 
@@ -211,7 +267,7 @@ func run(signalCtx context.Context) (result error) {
 		jwtService,
 		cfg.NetworkVolumeIncentiveEnabled,
 		capabilityRepo,
-	).WithPricingRepository(pricingRepo).WithTapinRepository(repository.NewTapinRepository(db.DB))
+	).WithPricingRepository(pricingRepo).WithTapinRepository(tapinRepo)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/admin/ad-network/report", RequireRoles(jwtService, "admin", "support_specialist")(func(w http.ResponseWriter, r *http.Request) { handleAdNetworkReport(w, r, storeRepo) }))
@@ -1401,7 +1457,7 @@ func run(signalCtx context.Context) (result error) {
 		if strings.HasSuffix(sub, "/tapin-label") && r.Method == http.MethodGet {
 			shipmentID := strings.TrimSuffix(sub, "/tapin-label")
 			shipmentID = strings.Trim(shipmentID, "/")
-			handleSupplierTapinLabel(w, r, r.Context(), shipmentID, supplierRepo, repository.NewTapinRepository(db.DB))
+			handleSupplierTapinLabel(w, r, r.Context(), shipmentID, supplierRepo, tapinRepo)
 			return
 		}
 		if strings.HasSuffix(sub, "/ship") && r.Method == http.MethodPost {
@@ -1454,7 +1510,7 @@ func run(signalCtx context.Context) (result error) {
 			orderID := strings.TrimSuffix(sub, "/shipping")
 			orderID = strings.TrimSuffix(orderID, "/ship")
 			orderID = strings.Trim(orderID, "/")
-			handleSupplierSubmitShipping(w, r, r.Context(), orderID, shipmentRepo, orderRepo, supplierRepo, repository.NewTapinRepository(db.DB))
+			handleSupplierSubmitShipping(w, r, r.Context(), orderID, shipmentRepo, orderRepo, supplierRepo, tapinRepo)
 			return
 		}
 		if strings.HasSuffix(sub, "/accept") && r.Method == http.MethodPost {

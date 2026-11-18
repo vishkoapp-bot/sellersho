@@ -27,7 +27,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-001 | DONE | 64d235c | [Financial contract](../../architecture/financial-balances.md) |
 | FIN-006 | DONE | 4524ee3 | [Quantity/time contract](2026-11-15-storage-quantity-time.md) |
 | INV-10 | DONE | 4524ee3 | [Exact receipt adoption](2026-11-15-storage-quantity-time.md) |
-| OBS-01 | Checkpoint OPEN | 3983baa | [Telemetry gates](../../operations/observability.md) |
+| OBS-01 | DONE | 482b2eb7 | [Telemetry gates](../../operations/observability.md) |
 | CAP-01 | Checkpoint OPEN | ff4ff13 / Harness checkpoint | [Harness and failed evidence](../../../load-tests/README.txt) |
 | FIN-003 | DONE | 79ee940 | [Paid cancellation](2026-11-15-paid-cancellation-refund.md) |
 | AUTH-01 | DONE | e0c25ca | [Session lifecycle](../../auth-session-lifecycle.md) |
@@ -47,7 +47,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-011 | TODO | — | — |
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
-| CHECKOUT-02 | TODO | — | — |
+| CHECKOUT-02 | DONE | 9122e4de | Completion section below (gates G-01…G-15) |
 | TEST-02 | Checkpoint OPEN | 8302d23 / 1ef7092 | [Frontend baseline](../../frontend-test-baseline.md) |
 | OPS-01 | DONE | 7ee671b | [Process lifecycle](../../operations/process-lifecycle.md) |
 | REL-01 | TODO | — | — |
@@ -951,4 +951,8 @@ Final tested tree432e76625223b4ce65104d9505b5e38389da2908 passed root's serial t
 
 Evidence is in local ignored releases/fin007-final-gates.json, fin007-linux-race-proof.json, fin007-go-skip-audit.json, fin007-old-binary-run-9/manifest.json, source/compatibility proofs and the SDD task/review reports. The final release adds only completion/handoff documentation to the tested tree. Actual production deployment/postchecks are recorded after the commit in releases/fin007-production-receipt.json; this local DONE is not PSP/hardware or historical repair certification.
 
-The owner requested publishing this stage and handing all remaining work to another agent. See [agent handoff](../../operations/agent-handoff-2026-11-17.md). No FIN008 implementation or additional feature was started. Current task gates:29 DONE,5 Checkpoint OPEN,20 TODO;25 not closed. Sandbox Zarinpal access is not ready; intended-hardware1000-user/100-RPS certification remains OPEN by owner choice.
+The owner requested publishing this stage and handing all remaining work to another agent. See [agent handoff](../../operations/agent-handoff-2026-11-17.md). No FIN008 implementation or additional feature was started. Current task gates:33 DONE,3 Checkpoint OPEN,18 TODO;21 not closed. Sandbox Zarinpal access is not ready; intended-hardware1000-user/100-RPS certification remains OPEN by owner choice.
+
+## CHECKOUT-02 — DONE (mismatch review + abandon-and-reclaim; pushed 9122e4de)
+
+Commit `9122e4de` (11 files, 186,936 bytes): sequence shipping quotes and recover from server mismatch — mismatch review + abandon-and-reclaim + allocation-aware quoteId (B1/B2/S1 fix round + B3/S2/S3/N1 round + B4 round). Critic GO (bb36b8b2) after three fix rounds, no blockers. Final counts: both CHECKOUT-02 test files 31/31, full node-safe suite 281/281, tsc 18 errors, 0 in changed files. Gates: G-01, G-02, G-04–G-11, G-14, G-15 PASS; G-03 (a)/(c) + direct-buy limb PASS at staged level; G-12 PASS both modes; G-13(b) PASS. No backend touched (frontend-only). Outstanding as live-browser drills only (honest, not runnable on this VM — no live browser here): G-03(b), G-13(a)/(c), S1 rendered-drawer wiring, B3 rendered direct-buy drill, B4 rendered direct-buy drill. Prod verification record: see the progress file heartbeat and the Notion row after deploy.

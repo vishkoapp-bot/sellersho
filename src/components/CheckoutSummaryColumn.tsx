@@ -11,8 +11,21 @@ import { Truck } from 'lucide-react';
 export const CheckoutSummaryColumn: React.FC<{
   shippingSlot?: ReactNode;
   walletSlot?: ReactNode;
+  // CHECKOUT-02 (D-13/G-07): when no slot is rendered, the fallback
+  // must never misstate a loading / warning / error state as
+  // "محاسبه در مرحله بعد". The drawer always passes a slot during
+  // checkout, so this is defence in depth for the cart step.
+  shippingState?: 'idle' | 'loading' | 'quoted' | 'free' | 'warning' | 'error';
   children: ReactNode;
-}> = ({ shippingSlot, walletSlot, children }) => {
+}> = ({ shippingSlot, walletSlot, shippingState, children }) => {
+  const fallbackCopy =
+    shippingState === 'loading'
+      ? 'هزینه بسته‌بندی و ارسال: در حال محاسبه…'
+      : shippingState === 'error'
+        ? 'هزینه بسته‌بندی و ارسال: محاسبه نشد — ثبت سفارش ممکن نیست'
+        : shippingState === 'warning'
+          ? 'هزینه بسته‌بندی و ارسال: تکمیل نشانی لازم است'
+          : 'هزینه بسته‌بندی و ارسال: محاسبه در مرحله بعد';
   return (
     <div className="hidden lg:block lg:sticky lg:top-4 lg:self-start">
       <div className="space-y-4">
@@ -21,7 +34,7 @@ export const CheckoutSummaryColumn: React.FC<{
             <>
               <div className="flex items-center gap-1.5 text-brand-deep font-bold">
                 <Truck className="w-4 h-4" strokeWidth={1.5} />
-                <span>هزینه بسته‌بندی و ارسال: محاسبه در مرحله بعد</span>
+                <span>{fallbackCopy}</span>
               </div>
               <p className="text-[10px] text-slate-500 mt-1 leading-5">
                 مبلغ دقیق ارسال هنگام ثبت سفارش، بر اساس وزن مرسوله و مقصد محاسبه و به فاکتور اضافه می‌شود.

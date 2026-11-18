@@ -43,6 +43,18 @@ export function normalizeCheckoutPayload(payload: CreateOrderPayload): CreateOrd
     discountCode: trim(payload.discountCode), shippingQuoteId: trim(payload.shippingQuoteId), addressId: trim(payload.addressId), saveAddress: payload.saveAddress ?? false,
   };
 }
+// CHECKOUT-02 fix S1: the fingerprint-conflict error claimCheckoutAttempt
+// throws when a submit's payload differs from the open attempt's
+// fingerprint (e.g. the quote changed after a mismatch acknowledgement
+// and the input change cleared the mismatch, or the mode switched).
+// The message is the single source of truth here: the throw site above
+// and this detector share the constant, so they cannot drift apart.
+export const CHECKOUT_FINGERPRINT_CONFLICT_MESSAGE = 'خرید قبلی هنوز بسته نشده است؛ ابتدا نتیجه آن را بازیابی کنید یا «شروع خرید تازه» را بزنید.';
+export function isCheckoutFingerprintConflictError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  return message.includes(CHECKOUT_FINGERPRINT_CONFLICT_MESSAGE);
+}
+
 export const readCheckoutAttempt = (scope: string, isCurrent: () => boolean) => operate(scope, isCurrent, current => current);
 
 export async function claimCheckoutAttempt(scope: string, payload: CreateOrderPayload, isCurrent: () => boolean): Promise<CheckoutAttempt> {
@@ -52,7 +64,7 @@ export async function claimCheckoutAttempt(scope: string, payload: CreateOrderPa
   requireCurrent(isCurrent);
   return operate(scope, isCurrent, (current, store) => {
     if (current) {
-      if (current.fingerprint !== fingerprint) throw new Error('خرید قبلی هنوز بسته نشده است؛ ابتدا نتیجه آن را بازیابی کنید یا «شروع خرید تازه» را بزنید.');
+      if (current.fingerprint !== fingerprint) throw new Error(CHECKOUT_FINGERPRINT_CONFLICT_MESSAGE);
       return current;
     }
     const attempt: CheckoutAttempt = { scope, id: crypto.randomUUID(), fingerprint, state: 'open' };

@@ -6,7 +6,7 @@ import { isValidIranianMobile, isValidIranianPostalCode } from '../utils/validat
 import { resolvePackagingAndShippingFee } from '../utils/pricingEngine';
 import { AddressBook } from './AddressBook';
 import { ProvinceCityPicker, toLatinDigits } from './ProvinceCityPicker';
-import { addressApi, SavedAddress, selectionForOrder, stageAddressSelection } from '../services/addressApi';
+import { addressApi, SavedAddress, stageSelectionForOrder } from '../services/addressApi';
 
 interface CartCheckoutFormProps {
   paymentMethod: 'cash';
@@ -24,6 +24,14 @@ interface CartCheckoutFormProps {
     postalCode: string;
   };
   setCustomerInfo: React.Dispatch<React.SetStateAction<any>>;
+}
+
+// CHECKOUT-02 (Q8): an edit touches the saved-address selection
+// exactly when it changes an address field (province, city, street
+// address, postal code). Name/phone edits leave it alone.
+export const ADDRESS_FIELDS = ['province', 'city', 'address', 'postalCode'] as const;
+export function addressPatchClearsSavedSelection(patch: Record<string, unknown>): boolean {
+  return ADDRESS_FIELDS.some((field) => field in patch);
 }
 
 export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
@@ -52,16 +60,34 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
   }, [customerUser.isLoggedIn]);
   // ISO-B: live checkout tracks a SELECTED saved address, not just
   // prefilled fields (index-MERGED.js iC hook). saveAddress defaults
-  // to true, like live. Manual edits do not clear the selection: the
-  // backend then uses the saved address over edited fields (live
-  // behaviour, also true for direct-buy). The selection is staged for
-  // OrderContext on every relevant change; the direct-buy form
+  // to true, like live. The selection is staged for OrderContext on
+  // every relevant change; the direct-buy form
   // (hideSavedAddressSelector) never stages, so it can never
   // overwrite the modal's explicit address.
+  // CHECKOUT-02 (Q8): editing any address field clears the saved
+  // selection, so the quote and the order are always computed from
+  // the same typed fields. This reverses the old deliberate "live
+  // behaviour" (manual edits kept the selection, so the backend
+  // loaded the saved address over the edited fields and the submit
+  // deterministically failed with shipping_quote_changed - D-06).
+  // Full name / phone edits are NOT address edits and keep the
+  // selection.
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
   const [saveAddress, setSaveAddress] = useState<boolean>(true);
+  // CHECKOUT-02 fix B1: an explicit deselection that STICKS. Clearing
+  // selectedAddressId alone was not enough - the staging effect
+  // re-attached the same saved address from the unchanged fields.
+  // Set by any address-field edit and by the explicit "new address"
+  // choice; cleared only by explicitly picking a saved address.
+  // The direct-buy form never stages, so this flag is cart-only.
+  const [deselectedSaved, setDeselectedSaved] = useState<boolean>(false);
+  const updateCustomerInfo = (patch: Record<string, any>) => {
+    if (addressPatchClearsSavedSelection(patch)) { setSelectedAddressId(null); setDeselectedSaved(true); }
+    setCustomerInfo((prev: any) => ({ ...prev, ...patch }));
+  };
   const applySavedAddress = (saved: SavedAddress) => {
     setSelectedAddressId(saved.id);
+    setDeselectedSaved(false);
     setCustomerInfo((prev: any) => ({
       ...prev,
       fullName: saved.fullName || prev.fullName,
@@ -74,11 +100,15 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
   };
   const selectNewAddress = () => {
     setSelectedAddressId(null);
+    setDeselectedSaved(true);
   };
   useEffect(() => {
     if (hideSavedAddressSelector) return;
-    stageAddressSelection(selectionForOrder(customerInfo, addressBook, selectedAddressId, saveAddress));
-  }, [hideSavedAddressSelector, customerInfo.province, customerInfo.city, customerInfo.address, addressBook, selectedAddressId, saveAddress]);
+    // CHECKOUT-02 fix B1: the staged selection carries the explicit
+    // deselection, and postalCode is a staging dep (it was omitted
+    // before, so a postal-code-only edit never re-staged at all).
+    stageSelectionForOrder(customerInfo, addressBook, selectedAddressId, saveAddress, deselectedSaved);
+  }, [hideSavedAddressSelector, customerInfo.province, customerInfo.city, customerInfo.address, customerInfo.postalCode, addressBook, selectedAddressId, saveAddress, deselectedSaved]);
   const isPhoneValid = !customerInfo.phone || isValidIranianMobile(customerInfo.phone);
   const isPostalValid = !customerInfo.postalCode || isValidIranianPostalCode(customerInfo.postalCode);
 
@@ -203,8 +233,8 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
           <ProvinceCityPicker
             province={customerInfo.province}
             city={customerInfo.city}
-            onProvinceChange={(value, fromList) => setCustomerInfo((prev: any) => (fromList ? { ...prev, province: value, city: '' } : { ...prev, province: value }))}
-            onCityChange={(value) => setCustomerInfo((prev: any) => ({ ...prev, city: value }))}
+            onProvinceChange={(value, fromList) => updateCustomerInfo(fromList ? { province: value, city: '' } : { province: value })}
+            onCityChange={(value) => updateCustomerInfo({ city: value })}
             inputClassName="w-full text-base p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
             provinceId="cart-checkout-province"
             cityId="cart-checkout-city"
@@ -218,7 +248,7 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
             type="text"
             placeholder="کد پستی ۱۰ رقمی (بدون خط تیره)"
             value={customerInfo.postalCode}
-            onChange={(e) => setCustomerInfo((prev: any) => ({ ...prev, postalCode: toLatinDigits(e.target.value) }))}
+            onChange={(e) => updateCustomerInfo({ postalCode: toLatinDigits(e.target.value) })}
             className={`w-full text-base p-2.5 rounded-xl bg-slate-50 border ${
               !isPostalValid ? 'border-rose-400 bg-rose-50/40' : 'border-slate-200'
             } focus:bg-white focus:border-brand outline-hidden`}
@@ -236,7 +266,7 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
           placeholder="آدرس دقیق پستی، پلاک و زنگ"
           rows={2}
           value={customerInfo.address}
-          onChange={(e) => setCustomerInfo((prev: any) => ({ ...prev, address: e.target.value }))}
+          onChange={(e) => updateCustomerInfo({ address: e.target.value })}
           className="w-full text-base p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden resize-none"
         />
       </div>

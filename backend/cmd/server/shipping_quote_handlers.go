@@ -221,21 +221,33 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 		})
 	}
 	out.TotalShipping = total
-	out.QuoteID = shippingQuoteIDFor(out.Legs, total, destination)
+	out.QuoteID = shippingQuoteIDFor(out.Legs, out.Allocations, total, destination)
 	return out
 }
 
 // shippingQuoteIDFor is the deterministic quote id over the priced
-// quote + destination. computeShippingQuote uses it for formula
-// quotes; the Tapin repricing step (tapin_quote.go) re-derives it
-// after replacing leg fares, so a Tapin-priced quote and its
+// quote + destination + allocations. computeShippingQuote uses it for
+// formula quotes; the Tapin repricing step (tapin_quote.go) re-derives
+// it after replacing leg fares, so a Tapin-priced quote and its
 // order-time recompute hash identically.
-func shippingQuoteIDFor(legs []shippingQuoteLeg, total int64, destination string) string {
+//
+// CHECKOUT-02 Q6/D-12: allocations join the hash. Two different line
+// sets with identical legs/total/destination (e.g. the same weight
+// from two different products) must NOT share a quoteId — otherwise
+// the server would accept a quote issued for one cart against a
+// different cart. There is deliberately no version / issued-at / TTL:
+// the deterministic hash + submit-time recompute is the staleness
+// detector. Both callers (quote endpoint and order-time recompute)
+// pass the allocations produced by computeShippingQuote, so an old
+// quoteId simply becomes invalid and is recomputed, never silently
+// accepted.
+func shippingQuoteIDFor(legs []shippingQuoteLeg, allocs []shippingQuoteAllocation, total int64, destination string) string {
 	canonical, _ := json.Marshal(struct {
-		Legs  []shippingQuoteLeg `json:"legs"`
-		Total int64              `json:"totalShipping"`
-		Dest  string             `json:"destination"`
-	}{Legs: legs, Total: total, Dest: destination})
+		Legs  []shippingQuoteLeg        `json:"legs"`
+		Alloc []shippingQuoteAllocation `json:"allocations"`
+		Total int64                     `json:"totalShipping"`
+		Dest  string                    `json:"destination"`
+	}{Legs: legs, Alloc: allocs, Total: total, Dest: destination})
 	sum := sha256.Sum256(canonical)
 	return "sq_" + fmt.Sprintf("%x", sum)[:24]
 }

@@ -56,20 +56,35 @@ export const takeStagedAddressSelection = (): StagedAddressSelection | null => {
 // Live selectionForOrder (index-MERGED.js @463099): when saving is on
 // and the current fields match a saved address on province/city/detail
 // (trimmed), that address wins with saveAddress; otherwise the selected
-// saved id wins; otherwise saving alone stages saveAddress. Manual
-// edits deliberately do NOT clear the selection (live's
-// notifyManualEdit is an identity): a selected saved address wins over
-// edited fields at the backend, exactly like live direct-buy.
+// saved id wins; otherwise saving alone stages saveAddress.
+// CHECKOUT-02 (Q8) reversed the old live behaviour in the form:
+// editing any address field clears the saved selection, so the quote
+// and the order are always computed from the same typed fields.
+// CHECKOUT-02 fix B1: the clear must STICK in staging. The old code
+// cleared only the React state (selectedAddressId); this helper then
+// re-attached the same saved address from the unchanged fields, so
+// after a postal-code-only edit (or an explicit "new address" click)
+// the order recompute used the saved postal code while the quote used
+// the typed one -> deterministic shipping_quote_changed, looping on
+// every G-12 retry. Two defences:
+//  (a) an explicit deselection (deselectedSaved, set by the form's
+//      updateCustomerInfo / selectNewAddress and cleared only by an
+//      explicit pick in applySavedAddress) disables the field-match
+//      branch for the current fields - an explicitly picked
+//      selectedId still wins below it;
+//  (b) postalCode joins the match key, so a postal-code-only edit
+//      breaks the match even without the flag.
 export const selectionForOrder = (
-  fields: { province: string; city: string; address: string },
+  fields: { province: string; city: string; address: string; postalCode?: string },
   book: SavedAddress[],
   selectedId: string | null,
   saveAddress: boolean,
+  deselectedSaved = false,
 ): StagedAddressSelection | null => {
   const trim = (v: string) => (v || '').trim();
-  if (saveAddress && trim(fields.address) !== '') {
+  if (saveAddress && !deselectedSaved && trim(fields.address) !== '') {
     const match = book.find(
-      (a) => trim(a.province) === trim(fields.province) && trim(a.city) === trim(fields.city) && trim(a.address) === trim(fields.address),
+      (a) => trim(a.province) === trim(fields.province) && trim(a.city) === trim(fields.city) && trim(a.address) === trim(fields.address) && trim(a.postalCode) === trim(fields.postalCode ?? ''),
     );
     if (match) return { addressId: match.id, saveAddress: true };
   }
@@ -77,6 +92,24 @@ export const selectionForOrder = (
   if (saveAddress) return { saveAddress: true };
   return null;
 };
+
+// CHECKOUT-02 fix B1: the exact staging step the cart form's effect
+// runs (and the only staging step the form runs). Tests drive this
+// function and read the staged value back with
+// takeStagedAddressSelection() - the same value placeOrder consumes -
+// so the regression tests assert the STAGED selection, not just the
+// helper above.
+export function stageSelectionForOrder(
+  fields: { province: string; city: string; address: string; postalCode?: string },
+  book: SavedAddress[],
+  selectedId: string | null,
+  saveAddress: boolean,
+  deselectedSaved = false,
+): StagedAddressSelection | null {
+  const selection = selectionForOrder(fields, book, selectedId, saveAddress, deselectedSaved);
+  stageAddressSelection(selection);
+  return selection;
+}
 
 export const addressApi = {
   getSavedAddresses: async (): Promise<SavedAddress[]> => {

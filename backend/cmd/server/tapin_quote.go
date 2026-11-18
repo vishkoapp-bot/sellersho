@@ -270,7 +270,7 @@ func priceTapinQuoteLegs(ctx context.Context, tapinRepo *repository.TapinReposit
 		}
 	}
 	quote.TotalShipping = total
-	quote.QuoteID = shippingQuoteIDFor(quote.Legs, total, quoteDestinationKey(dest))
+	quote.QuoteID = shippingQuoteIDFor(quote.Legs, quote.Allocations, total, quoteDestinationKey(dest))
 	return nil
 }
 

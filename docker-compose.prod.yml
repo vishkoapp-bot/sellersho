@@ -60,12 +60,16 @@ services:
       ALLOWED_ORIGINS: "http://46.249.98.190,https://46.249.98.190"
     ports:
       - "127.0.0.1:8080:8080"
-      # OBS-01 (D-01/G-01): loopback-only publish of the backend's existing
-      # 127.0.0.1:9090 metrics listener so the host-networked Prometheus can
-      # scrape it. 127.0.0.1 only — never a public port, never proxied
-      # through Caddy/nginx. The checkpoint doc said "do not publish that
-      # port"; a shared-namespace sidecar cannot work here because the
-      # three scrape endpoints live in three different network namespaces
+      # OBS-01 (D-01/G-01): loopback-only publish of the backend's
+      # metrics listener (now 0.0.0.0:9090 in-container — see
+      # docs/operations/observability.md "Security-boundary move"; the
+      # old 127.0.0.1 in-container bind was unreachable at the
+      # container's eth0 IP, so the publish could never reach it) so
+      # the host-networked Prometheus can scrape it. 127.0.0.1 only —
+      # never a public port, never proxied through Caddy/nginx. The
+      # checkpoint doc said "do not publish that port"; a shared-
+      # namespace sidecar cannot work here because the three scrape
+      # endpoints live in three different network namespaces
       # (backend :9090, edge :2019, frontend :8081), so the loopback
       # publish is the local-tunnel alternative the doc allows.
       - "127.0.0.1:9090:9090"
@@ -86,8 +90,11 @@ services:
     ports:
       - "80:80"
       # OBS-01 (D-01/D-08): loopback-only publish of nginx stub_status
-      # (127.0.0.1:8081 inside the frontend container) so the host-
-      # networked nginx-prometheus-exporter can read it. stub_status is
+      # (now `listen 8081` in-container — see
+      # docs/operations/observability.md "Security-boundary move"; the
+      # old 127.0.0.1:8081 in-container bind was unreachable at the
+      # container's eth0 IP) so the host-networked
+      # nginx-prometheus-exporter can read it. stub_status is
       # plain text, not Prometheus format — it is scraped by the exporter,
       # never directly by Prometheus.
       - "127.0.0.1:8081:8081"

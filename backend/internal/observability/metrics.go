@@ -347,14 +347,38 @@ func ValidateListenAddress(addr string) error {
 		return fmt.Errorf("invalid metrics address")
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("metrics listener must use literal loopback IP")
+	if ip == nil {
+		// A name (localhost, example.com, ...) is never an acceptable
+		// metrics bind: names resolve through DNS / /etc/hosts, so a
+		// "loopback" name is not a guarantee about the bound address.
+		return fmt.Errorf("metrics listener must use a literal IP, not a hostname")
 	}
-	return nil
+	if ip.IsLoopback() || ip.Equal(net.IPv4zero) {
+		return nil
+	}
+	return fmt.Errorf("metrics listener must bind loopback or all interfaces (0.0.0.0)")
 }
 
-// Start uses a separate loopback socket; the public mux never registers metrics
-// or pprof. A local agent may scrape or forward over an authenticated tunnel.
+// SECURITY-BOUNDARY MOVE (OBS-01 deploy-fix, 2026-11-18; see
+// docs/operations/observability.md): the old contract allowed ONLY a
+// literal loopback bind inside the container. That made the listener
+// unreachable at the container's eth0 IP, and Docker port-publishing
+// forwards exactly there — so a 127.0.0.1:9090:9090 publish could never
+// reach it, and the backend Prometheus target stayed down. The boundary
+// therefore moved from "in-container loopback" to "host loopback-only
+// publish" (docker-compose.metrics-ports.yml publishes 127.0.0.1:9090
+// only; the port is never public and never proxied). A 0.0.0.0-bound
+// in-container listener is additionally reachable from any container
+// on the platform docker network — acceptable for this read-only,
+// value-free counters endpoint. The IPv6 unspecified address ("::") is
+// deliberately NOT allowed: no IPv6 listener is configured anywhere in
+// this stack, so the re-scope stays minimal. A specific non-loopback IP
+// (e.g. a container IP) is still rejected: binds are loopback,
+// all-interfaces, or nothing.
+// Start serves /metrics on its own socket; the public mux never registers
+// metrics or pprof. A local agent may scrape or forward over an
+// authenticated tunnel; in production the scrape arrives via the
+// loopback-only host publish (see above).
 func (m *Registry) Start(addr string) (*http.Server, error) {
 	if err := ValidateListenAddress(addr); err != nil {
 		return nil, err

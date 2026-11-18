@@ -2495,7 +2495,15 @@ func run(signalCtx context.Context) (result error) {
 		return errors.New("HTTP listener bind failed; check PORT availability")
 	}
 	defer listener.Close()
-	metricsServer, metricsErr := observability.Default.Start("127.0.0.1:9090")
+	// OBS-01 deploy-fix (2026-11-18): the metrics listener binds all
+	// interfaces INSIDE the container (0.0.0.0:9090). The old
+	// 127.0.0.1 bind was unreachable at the container's eth0 IP, and
+	// Docker publishing forwards exactly there, so the loopback-only
+	// host publish (127.0.0.1:9090:9090) could never reach it. The
+	// safety boundary is now the host publish, not the in-container
+	// bind — see ValidateListenAddress in internal/observability and
+	// docs/operations/observability.md.
+	metricsServer, metricsErr := observability.Default.Start("0.0.0.0:9090")
 	if metricsErr != nil {
 		return errors.New("metrics listener bind failed; check local metrics port availability")
 	}

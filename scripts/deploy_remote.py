@@ -46,6 +46,12 @@ ssl = ssl or bool(previous_edge)
 # list is used by every deploy and by rollback, so including it would let
 # an unset password abort the next deploy of any kind. Only
 # compose_observability() (the collector step) adds that file.
+# OBS-01 deploy-fix (Option B): the metrics-ports override file. ONE
+# constant feeds every list that must name it — compose_files, saved_files,
+# the ship copy loop, rollback_files — so the three-list sync hazard
+# (audit F-11) cannot silently recur. scripts/test_deploy_metrics_ports.py
+# fails if any of those four uses stops referencing this constant.
+METRICS_PORTS_FILE = 'docker-compose.metrics-ports.yml'
 compose_files = [root / 'docker-compose.yml', root / 'docker-compose.prod.yml']
 old_backend, old_frontend = inspect('drup_backend'), inspect('drup_frontend')
 old_env = dict(item.split('=', 1) for item in old_backend['Config']['Env'])
@@ -95,18 +101,24 @@ if ssl:
         str(release / 'Caddyfile') + ':/etc/caddy/Caddyfile:ro', 'caddy:2-alpine',
         'caddy', 'validate', '--config', '/etc/caddy/Caddyfile')
     compose_files.append(root / 'docker-compose.ssl.yml')
+    # OBS-01 deploy-fix: the metrics-ports file MUST come after ssl.yml —
+    # its frontend `!override` supersedes ssl.yml's `!reset []`. SSL-only:
+    # the file declares edge ports and the edge service exists only with
+    # ssl.yml, so a non-SSL deploy must not include it.
+    compose_files.append(root / METRICS_PORTS_FILE)
 compose_files.append(runtime_file)
 
 
-def compose(*args):
+def compose(*args, capture=False):
     cmd = ['docker', 'compose', '--project-directory', str(root)]
     for file in compose_files:
         cmd += ['-f', str(file)]
-    return run(*cmd, *args)
+    return run(*cmd, *args, capture=capture)
 
 
 saved_files = ['backend/bin/server-linux', 'nginx.conf', 'docker-compose.ssl.yml', 'Caddyfile', '.deployed-commit',
-               'scripts/publish-backup-success.sh', 'backup-auto.sh', 'docker-compose.observability.yml']
+               'scripts/publish-backup-success.sh', 'backup-auto.sh', 'docker-compose.observability.yml',
+               METRICS_PORTS_FILE]
 existed = {}
 for relative in saved_files:
     src = root / relative
@@ -222,6 +234,91 @@ def prometheus_rules_loaded(base_url):
     return total
 
 
+def prometheus_query_first_value(base_url, query):
+    """Query Prometheus /api/v1/query and return the first sample's value
+    as a float, or None when the query returns no series at all. The
+    query is a plain metric name (no PromQL operators), so no URL
+    quoting is needed. Self-contained (urllib/json only), see
+    prometheus_targets_up — the dry-run harness execs it standalone
+    against a stub server.
+    """
+    with urllib.request.urlopen(base_url + '/api/v1/query?query=' + query, timeout=5) as response:
+        payload = json.load(response)
+    results = payload.get('data', {}).get('result', [])
+    if not results:
+        return None
+    return float(results[0]['value'][1])
+
+
+# OBS-01 deploy-fix (Option B, audit F-12): the three loopback-only
+# metrics publishes the merged compose config must contain before any
+# container moves. The previous deploy failed at the scrape check because
+# nothing had verified the merge — the prod.yml ship gap and the ssl.yml
+# `!reset` wipe were both invisible until then. These functions are
+# self-contained (json only) so the dry-run harness can exec them
+# standalone against a stubbed `docker compose config --format json`.
+# Only ports are inspected — environment is never read, let alone
+# printed (the merged config carries interpolated secrets), and every
+# error names services only, never a config value.
+METRICS_PORTS_EXPECTED = {
+    'backend': '127.0.0.1:9090:9090',
+    'edge': '127.0.0.1:2019:2019',
+    'frontend': '127.0.0.1:8081:8081',
+}
+METRICS_PORT_TARGETS = {9090, 2019, 8081}
+
+
+def _metrics_published_ports(port_entries):
+    """Normalise one service's `ports` list from `docker compose config
+    --format json` to a set of "host_ip:published:target" strings. Dict
+    entries carry host_ip/published/target keys; short strings pass
+    through unchanged."""
+    normalised = set()
+    for entry in port_entries or []:
+        if isinstance(entry, dict):
+            normalised.add(f"{entry.get('host_ip') or ''}:{entry.get('published')}:{entry.get('target')}")
+        else:
+            normalised.add(str(entry))
+    return normalised
+
+
+def assert_metrics_ports(config_json, require_edge=True):
+    """Fail unless the merged compose config publishes every expected
+    metrics port on host loopback only. Raises RuntimeError listing only
+    the missing service names, and refuses any metrics target published
+    on a non-loopback host IP (including an empty host_ip, which means
+    all interfaces). With require_edge=False the edge publish is not
+    required (non-SSL deploys have no edge service)."""
+    try:
+        config = json.loads(config_json)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError('merged compose config is not valid JSON') from error
+    services = config.get('services') or {}
+    missing = []
+    for service, expected in METRICS_PORTS_EXPECTED.items():
+        if service == 'edge' and not require_edge:
+            continue
+        ports = _metrics_published_ports((services.get(service) or {}).get('ports'))
+        if expected not in ports:
+            missing.append(service)
+            continue
+        for entry in ports:
+            parts = entry.split(':')
+            try:
+                target = int(parts[-1])
+            except ValueError:
+                continue
+            if target in METRICS_PORT_TARGETS:
+                host_ip = ':'.join(parts[:-2])
+                if host_ip != '127.0.0.1':
+                    raise RuntimeError(
+                        f'metrics port for {service} is published on a non-loopback host')
+    if missing:
+        raise RuntimeError(
+            'merged compose config is missing metrics publishes for: ' + ', '.join(missing))
+    return True
+
+
 def compose_observability(*args):
     """docker compose with the collector file added (C-02). Only the
     observability step uses this: the app deploy and rollback use
@@ -249,8 +346,11 @@ def deploy_observability():
     What is verified, in order: Prometheus /-/healthy, then at least one
     target UP per scrape job (sellersho-backend, caddy, nginx, node) via
     /api/v1/targets, then at least one alert rule loaded via /api/v1/rules,
-    then Grafana /api/health (database ok). /-/healthy alone proves
-    nothing about scraping — it is true with zero targets up.
+    then the actual scraped DATA — nginx_up == 1 and a sellersho_ series
+    returning data via /api/v1/query (target-up alone is hollow: the last
+    deploy's `nginx: 1` hid nginx_up == 0) — then Grafana /api/health
+    (database ok). /-/healthy alone proves nothing about scraping — it
+    is true with zero targets up.
 
     No POST /-/reload anymore (C-09): --web.enable-lifecycle was removed
     from the Prometheus command (it also exposed POST /-/quit), and the
@@ -280,10 +380,28 @@ def deploy_observability():
         raise RuntimeError('Prometheus did not become healthy')
     targets_up = prometheus_targets_up(OBSERVABILITY_PROMETHEUS_URL, OBSERVABILITY_JOBS)
     rules_loaded = prometheus_rules_loaded(OBSERVABILITY_PROMETHEUS_URL)
+    # OBS-01 deploy-fix round 2 (critic S-1): target-up alone is hollow
+    # — the last deploy's `nginx: 1` hid nginx_up == 0, because the
+    # nginx job is UP whenever the exporter serves its own /metrics,
+    # even while it scrapes nothing. Assert the actual DATA before the
+    # status file may claim success: nginx_up must be 1, and at least
+    # one sellersho_ series must return data. Both raise, failing the
+    # deploy and triggering rollback — the same fatal semantics as the
+    # target/rule checks above. (A sellersho_ gauge may legitimately
+    # read 0 when idle; what matters here is that the series EXISTS —
+    # None means the backend target serves no data at all.)
+    nginx_up = prometheus_query_first_value(OBSERVABILITY_PROMETHEUS_URL, 'nginx_up')
+    if nginx_up != 1:
+        raise RuntimeError(
+            f'nginx_up is {nginx_up}, expected 1: nginx stub_status data is not reaching Prometheus')
+    sellersho_value = prometheus_query_first_value(OBSERVABILITY_PROMETHEUS_URL, 'sellersho_http_active')
+    if sellersho_value is None:
+        raise RuntimeError('no sellersho_ series returned data: backend metrics are not reaching Prometheus')
     with urllib.request.urlopen(OBSERVABILITY_GRAFANA_URL + '/api/health', timeout=5) as response:
         if json.load(response).get('database') != 'ok':
             raise RuntimeError('Grafana health check failed')
     status = {'ok': True, 'targets_up': targets_up, 'rules_loaded': rules_loaded,
+              'nginx_up': nginx_up, 'sellersho_http_active': sellersho_value,
               'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
     (root / '.observability-status.json').write_text(json.dumps(status) + '\n')
     print('Observability stack up and scraping: Prometheus '
@@ -293,6 +411,22 @@ def deploy_observability():
 
 
 try:
+    # OBS-01 deploy-fix round 2 (critic B-1): ship the metrics-ports
+    # file from the release to root BEFORE any `compose config`
+    # invocation. compose_files already names root / METRICS_PORTS_FILE
+    # (appended under `if ssl:` above), but on the first redeploy
+    # carrying this fix the file does not exist on the server yet — the
+    # old ship step (after the migrations, below) ran downstream of the
+    # failing `compose('config', '--quiet')`, so the deploy could never
+    # succeed and would fail identically on every retry. The backup loop
+    # above already recorded the file's prior state in `existed` (it is
+    # in saved_files), so rollback restores the backed-up copy — or
+    # unlinks the file when it did not exist — exactly as for every
+    # other shipped file. SSL-only, like the compose_files entry: the
+    # file declares edge ports and the edge service exists only with
+    # ssl.yml.
+    if ssl:
+        shutil.copy2(release / METRICS_PORTS_FILE, root / METRICS_PORTS_FILE)
     # SEC-01 (supervisor F-03, gate G-15): fail fast on a reintroduced
     # secret literal BEFORE any migration or compose change. Only the
     # non-Docker checks run here; the 2 Docker-dependent checks are
@@ -305,6 +439,12 @@ try:
     # it as the last -f file.
     runtime_file.write_text(json.dumps(runtime))
     compose('config', '--quiet')
+    # OBS-01 deploy-fix (F-12): assert the merged config actually
+    # contains the three metrics publishes BEFORE any migration or
+    # container move. Reads ports only; env is never printed. The
+    # metrics file is ssl-only, so a non-SSL deploy skips this.
+    if ssl:
+        assert_metrics_ports(compose('config', '--format', 'json', capture=True), require_edge=True)
     run('docker', 'exec', 'drup_backend', 'mkdir', '-p', migration_stage + '/migrations')
     run('docker', 'cp', str(release / 'backend/bin/migrate-linux'), 'drup_backend:' + migration_stage + '/migrate')
     prepare_migrator(run, 'drup_backend', migration_stage + '/migrate')
@@ -324,6 +464,9 @@ try:
     # deploy_observability() can include it. It is also in saved_files
     # above, so rollback restores the previous version. Without this copy
     # the observability step would fail: the file lives only in the repo.
+    # NOTE: METRICS_PORTS_FILE is NOT in this loop — critic B-1 moved
+    # its ship to the top of this try block, before `compose config`,
+    # because the config assertion needs the file to exist on disk.
     for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml']:
         shutil.copy2(release / name, root / name)
     # OBS-01 (D-01/G-01): ship the collector config with the release so
@@ -410,7 +553,7 @@ try:
     compose('up', '-d', '--no-deps', '--force-recreate', 'frontend')
     run('docker', 'exec', 'drup_frontend', 'nginx', '-t')
     if ssl:
-        compose('up', '-d', '--no-deps', 'edge')
+        compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
     run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
         '--retry-delay', '2', '--output', '/dev/null', 'http://46.249.98.190/')
     health()
@@ -461,12 +604,20 @@ except Exception:
         rollback_files = [root / 'docker-compose.yml', root / 'docker-compose.prod.yml', runtime_file]
         if previous_edge and (root / 'docker-compose.ssl.yml').exists():
             rollback_files.insert(2, root / 'docker-compose.ssl.yml')
+        # OBS-01 deploy-fix: roll back the metrics-ports file too, in
+        # the same position it holds in compose_files (after ssl.yml),
+        # so a rollback leaves the stack in its pre-deploy shape. The
+        # file holds no secrets, so unlike the observability file it
+        # is safe to include here (no GRAFANA_ADMIN_PASSWORD
+        # interpolation).
+        if previous_edge and (root / METRICS_PORTS_FILE).exists():
+            rollback_files.insert(3, root / METRICS_PORTS_FILE)
         cmd = ['docker', 'compose', '--project-directory', str(root)]
         for file in rollback_files:
             cmd += ['-f', str(file)]
         run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'backend', 'frontend')
         if previous_edge:
-            run(*cmd, 'up', '-d', '--no-deps', 'edge')
+            run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'edge')
         health()
         print('Previous code restored; additive migration data retained. Database backup was not restored.', flush=True)
     except Exception as error:

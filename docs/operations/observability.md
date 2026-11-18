@@ -1,12 +1,16 @@
 # OBS-01 infrastructure checkpoint
 
-Metrics listen on literal loopback 127.0.0.1:9090 separately from public routes.
-Do not publish that port publicly or proxy it through Caddy/nginx. The collector
-reaches it (and Caddy :2019/metrics and nginx :8081/status) through
-loopback-only publishes on the host (127.0.0.1:9090, 127.0.0.1:2019,
-127.0.0.1:8081) — the local tunnel this checkpoint allows, because the three
-endpoints live in three different network namespaces and no single shared
-namespace can reach all of them. Collector wiring is declared in
+Metrics listen on 0.0.0.0:9090 INSIDE the backend container, separately
+from public routes. Do not publish that port publicly or proxy it through
+Caddy/nginx. The collector reaches it (and Caddy :2019/metrics and nginx
+:8081/status) through loopback-only publishes on the host (127.0.0.1:9090,
+127.0.0.1:2019, 127.0.0.1:8081) — the local tunnel this checkpoint allows,
+because the three endpoints live in three different network namespaces and
+no single shared namespace can reach all of them. The three publishes live
+in `docker-compose.metrics-ports.yml` (shipped by `scripts/deploy_remote.py`;
+see "Security-boundary move" below — the publishes are deliberately NOT in
+`docker-compose.prod.yml`, whose server copy is drifted and which the deploy
+never copies). Collector wiring is declared in
 `ops/observability/prometheus.yml` (15 s scrape) and
 `docker-compose.observability.yml`
 (Prometheus, Grafana, node_exporter, nginx-prometheus-exporter — all host
@@ -30,10 +34,13 @@ is force-recreated. Do not re-add lifecycle without a written reason.
 TSDB retention is explicitly bounded (3 days / 128 MB) because prod disk was
 at 99% on 2026-11-18; revisit only after the disk-pressure incident clears. SLO buckets include 300ms, 750ms, 1s and 2s.
 API, backend static and internal domain-authorization requests are distinct.
-Caddy native handler metrics are enabled without per-host labels and remain
-on its default private loopback admin endpoint (localhost:2019/metrics). No
-public metrics route is configured. Nginx exposes stub_status only on
-127.0.0.1:8081/status and writes redacted JSON counts/bytes/durations by bounded
+Caddy native handler metrics are enabled without per-host labels and
+served by its admin endpoint, which binds 0.0.0.0:2019 INSIDE the edge
+container (`admin 0.0.0.0:2019` in the Caddyfile global block) and is
+reached only through the loopback-only host publish 127.0.0.1:2019:2019.
+No public metrics route is configured. Nginx exposes stub_status on
+8081 INSIDE the frontend container (`listen 8081;` with `allow
+127.0.0.1; allow 172.18.0.0/16; deny all;`) and writes redacted JSON counts/bytes/durations by bounded
 api/upload/asset/page classes; backend request IDs correlate API calls.
 No path, query, client IP, cookies, headers or browser identity enters that log.
 A collector scrapes each service loopback endpoint (see above); the Caddy
@@ -97,6 +104,110 @@ absence still makes the Prometheus SellershoBackupStale rule fire — visible in
 the Prometheus UI / dashboard only, it reaches no operator on its own (see the
 delivery section below). Unknown backup state is not claimed healthy by
 application telemetry.
+
+## Security-boundary move (2026-11-18): why the listeners bind 0.0.0.0 in-container
+
+Read this before "simplifying" any of the three binds back to
+127.0.0.1 — that revert re-creates the OBS-01 deploy failure of
+2026-11-18, when Prometheus reported `sellersho-backend: 0, caddy: 0`
+targets up and the deploy rolled back.
+
+Why a publish cannot reach a loopback-bound listener: Docker
+port-publishing forwards a host connection to the container's eth0 IP
+(e.g. 172.18.0.2:9090). A socket bound to 127.0.0.1 INSIDE the container
+listens only on that container's loopback interface; it never sees
+traffic addressed to its eth0 IP. This was proven live on prod, not
+assumed: from another container, `172.18.0.2:9090`, `172.18.0.4:2019`
+and `172.18.0.3:8081` all returned Connection refused, while the same
+probes to 172.18.0.5:6379, 172.18.0.6:5432 and 172.18.0.2:8080
+(all-interfaces listeners) succeeded. A `127.0.0.1:9090:9090` publish in
+front of a loopback-bound listener is therefore a dead port — the
+publish and the listener must agree on the address, and the only
+address both sides can use is all-interfaces in-container + loopback
+on the host.
+
+So the safety boundary moved: it used to be "the listener binds
+loopback INSIDE the container"; it is now "the HOST publish binds
+loopback only" (`127.0.0.1:<port>:<port>` in
+`docker-compose.metrics-ports.yml`, never a public port, never proxied
+through Caddy/nginx). Consequences, stated plainly:
+
+- A 0.0.0.0-bound in-container listener is additionally reachable from
+  ANY container on the platform docker network (`drup_default`, all
+  platform-owned) — AND from the four host-networked collector
+  processes (Prometheus, Grafana, node-exporter, nginx-exporter in
+  `docker-compose.observability.yml`, which share the host network
+  namespace and can therefore reach `127.0.0.1:2019` directly, not via
+  the docker network at all). The exposure set is 5 bridged app
+  containers PLUS 4 host-networked collectors, not just `drup_default`.
+  For the metrics endpoint (read-only counters, no PII) and stub_status
+  (read-only counters) that is acceptable.
+- For the Caddy admin API the exposure change is real: it is a control
+  plane (it can reload config), and it becomes reachable from any
+  container on `drup_default` and from every host-networked collector.
+  Sharpest case is Grafana: it is a web app with a datasource proxy
+  (SSRF-capable by design for an admin adding a datasource) and its own
+  auth surface, so a Grafana compromise now yields Caddy control,
+  whereas before it yielded only the host-loopback Prometheus/Grafana
+  ports. (Grafana anonymous auth is NOT enabled and the provisioned
+  datasource is only `http://127.0.0.1:9091` Prometheus, so the path
+  needs a Grafana compromise or an admin action — not an unauthenticated
+  request.) This is accepted because the network holds only platform
+  containers, and the alternative (no Caddy metrics) unships OBS-01
+  D-08.
+- The "a compromised backend already holds worse credentials" argument
+  covers the BACKEND only (DB/Redis creds, Tapin tokens, JWT secret —
+  Caddy control adds little over a backend compromise). It does NOT
+  cover the lowest-privilege container: the frontend nginx holds no
+  secrets, yet an RCE there now yields full traffic
+  interception/redirection and serving malicious JS to all visitors —
+  a real privilege step, not a low-probability footnote. That residual
+  risk is accepted, not waved away: there is no external path to the
+  admin API (no Caddy/nginx route proxies it, no SSRF vector in the
+  backend, no docker.sock mount), no bind-preserving alternative exists
+  (the alternative topology needs the same bind change), and every
+  exposed party is a platform-owned process on a single host.
+- The validator re-scope that allows the 0.0.0.0 bind
+  (`ValidateListenAddress` in
+  `backend/internal/observability/metrics.go`) is deliberate and
+  commented there: it still rejects hostnames (including `localhost` —
+  a name is not a bind guarantee), specific non-loopback IPs, and the
+  IPv6 unspecified address (no IPv6 listener is configured anywhere).
+  Do not widen it without a written reason and a supervisor's explicit
+  concurrence.
+
+## Hardening follow-up — NOT implemented (filed 2026-11-18, critic S-2)
+
+The boundary move above is accepted for OBS-01, but the residual risk
+(frontend RCE → Caddy control; Grafana compromise → Caddy control)
+should be narrowed later, as a separate owner-approved task — NOT as
+part of this fix. Options to evaluate then: put the Caddy admin API on
+a unix socket with a scrape sidecar instead of a TCP bind, or segment
+the edge off the shared docker network so only the collector can reach
+it. Do not implement either quietly inside another change; the choice
+needs its own review, because it touches the same scrape path this
+section documents.
+
+## The `!reset` / `!override` interaction (frontend ports)
+
+`docker-compose.ssl.yml` declares `frontend: ports: !reset []`. That
+reset is load-bearing: the edge already binds host 80/443, so a
+frontend `80:80` publish would collide — which is why `docker port
+drup_frontend` returns nothing at all even though prod.yml declares
+`80:80`. The reset therefore also wipes any `8081` publish declared
+in prod.yml: shipping prod.yml alone would NOT have restored the
+frontend target. `docker-compose.metrics-ports.yml` declares the
+frontend ports as `ports: !override ["127.0.0.1:8081:8081"]`, and it
+MUST come AFTER ssl.yml in `deploy_remote.py`'s `compose_files` — the
+`!override` supersedes the earlier `!reset`, leaving exactly
+`[127.0.0.1:8081:8081]` in the merged config (no port 80). The deploy
+asserts this on the merged config (`assert_metrics_ports` in
+`deploy_remote.py`, parsing `docker compose config --format json`,
+ports only, env never printed) BEFORE any migration or container move,
+and the dry-run harness (`scripts/test_deploy_metrics_ports.py`)
+replays the same assertion against a merge-model fixture built from
+the real repo files, including a `!reset` file. If the file order or
+the tags change, both fail first — do not "clean up" the ordering.
 
 ## Prometheus rules are visualization, not operator alerts (C-01)
 

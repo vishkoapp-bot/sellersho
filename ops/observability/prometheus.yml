@@ -5,13 +5,19 @@
 #   * Prometheus, Grafana, node_exporter and nginx-exporter run with
 #     host networking (see docker-compose.observability.yml) and scrape the
 #     metrics ports published on 127.0.0.1 only:
-#       - backend  127.0.0.1:9090  (loopback listener inside drup_backend;
-#                                    published to host loopback, NOT public)
+#       - backend  127.0.0.1:9090  (0.0.0.0:9090 listener inside
+#                                    drup_backend since the 2026-11-18
+#                                    boundary move — the old 127.0.0.1
+#                                    in-container bind was unreachable at
+#                                    the container's eth0 IP; published
+#                                    to host loopback, NOT public)
 #       - Caddy    127.0.0.1:2019/metrics (admin endpoint inside the edge
 #                                    container; published to host loopback)
 #       - nginx    127.0.0.1:9113  (nginx-prometheus-exporter, which reads
-#                                    stub_status at 127.0.0.1:8081 inside
-#                                    the frontend namespace; stub_status
+#                                    stub_status at 127.0.0.1:8081 — the
+#                                    frontend stub_status server now
+#                                    listens 8081 on all interfaces
+#                                    in-container (boundary move); stub_status
 #                                    itself is plain text, not Prometheus
 #                                    format, so it cannot be scraped
 #                                    directly)

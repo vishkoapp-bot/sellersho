@@ -1,5 +1,23 @@
 {
 	metrics
+	# OBS-01 deploy-fix (2026-11-18): the admin endpoint binds all
+	# interfaces INSIDE the edge container (0.0.0.0:2019). Caddy's
+	# default (localhost:2019) was unreachable at the container's eth0
+	# IP, and Docker publishing forwards exactly there, so the
+	# loopback-only host publish (127.0.0.1:2019:2019) could never reach
+	# it. Boundary move, accepted: the admin API is a control plane, so
+	# it becomes reachable from any container on the platform docker
+	# network (platform containers only) AND from the four
+	# host-networked collectors (Prometheus, Grafana, node-exporter,
+	# nginx-exporter share the host network namespace, so they can reach
+	# 127.0.0.1:2019 directly). Sharpest case is Grafana's datasource
+	# proxy; the no-secret frontend container is NOT covered by the
+	# "compromised backend holds worse" argument — an RCE there now
+	# yields full traffic control. The host publish stays 127.0.0.1-only
+	# and the endpoint is never proxied. See
+	# docs/operations/observability.md (incl. the hardening follow-up,
+	# filed not implemented).
+	admin 0.0.0.0:2019
     servers {
         timeouts {
             read_header 5s

@@ -1,0 +1,44 @@
+# OBS-01 deploy-fix (Option B, 2026-11-18): loopback-only publishes of the
+# three metrics listeners, shipped WITHOUT touching the drifted server
+# docker-compose.prod.yml (which the deploy never copies — see audit
+# ~/workspace/obs01-work/obs01-deployfix-audit.md §1 V-01/V-04).
+#
+# WHY A SEPARATE FILE: the server prod.yml is fully literal/diverged
+# (zero ${...} refs, server-only keys, missing keys the repo file
+# requires). Copying the repo prod.yml wholesale would break the backend.
+# This file carries ONLY the three publishes, so it ships through the
+# proven copy mechanism (deploy_remote.py saved_files + the pre-config
+# ship at the top of the deploy try block — critic B-1: it must be in
+# root BEFORE any `compose config`, because compose_files already names
+# it) with no secret or env content at all.
+#
+# ORDER MATTERS: this file MUST come AFTER docker-compose.ssl.yml in
+# deploy_remote.py's compose_files. ssl.yml wipes the frontend ports
+# with `ports: !reset []` (load-bearing: the edge already binds host
+# 80/443, so a frontend 80:80 publish would collide). The frontend
+# entry here uses `!override`, which supersedes that reset and leaves
+# exactly ["127.0.0.1:8081:8081"] in the merged config — no port 80.
+# Verified by the merge assertion in deploy_remote.py (G-F5) and the
+# dry-run harness scripts/test_deploy_metrics_ports.py, and proven live
+# by `docker compose config` + `docker port` on the redeploy (G-F1/G-F8).
+#
+# BOUNDARY: every publish is 127.0.0.1-only. The in-container listeners
+# bind all interfaces (see the boundary-move note in
+# backend/internal/observability/metrics.go, Caddyfile and nginx.conf),
+# so the safety boundary is the HOST publish, not the in-container
+# loopback bind. Never publish one of these ports publicly and never
+# proxy /metrics or /status through Caddy/nginx.
+#
+# SSL-ONLY: this file declares edge ports, and the edge service exists
+# only when docker-compose.ssl.yml is included. deploy_remote.py
+# therefore appends this file inside the `if ssl:` branch, right after
+# ssl.yml. In a non-SSL deploy it is not in compose_files at all.
+services:
+  backend:
+    ports:
+      - "127.0.0.1:9090:9090"
+  edge:
+    ports:
+      - "127.0.0.1:2019:2019"
+  frontend:
+    ports: !override ["127.0.0.1:8081:8081"]

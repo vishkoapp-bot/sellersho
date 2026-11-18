@@ -54,14 +54,35 @@ func TestHTTPBoundedLabelsAndCorrelation(t *testing.T) {
 	}
 }
 func TestMetricsListenerRejectsNonLoopback(t *testing.T) {
-	for _, a := range []string{":9090", "0.0.0.0:9090", "localhost:9090", "example.com:9090"} {
+	// Pinned NEW contract (OBS-01 deploy-fix, 2026-11-18): the metrics
+	// listener may bind literal loopback OR all interfaces (0.0.0.0) —
+	// the safety boundary moved from the in-container bind to the host
+	// loopback-only publish, because a loopback-bound socket is
+	// unreachable at the container's eth0 IP and Docker publishing
+	// forwards exactly there. Still rejected: a missing host, any
+	// hostname (loopback names included — names are not a bind
+	// guarantee), any specific non-loopback IP, and the IPv6
+	// unspecified address (no IPv6 listener is configured anywhere).
+	for _, a := range []string{":9090", "localhost:9090", "example.com:9090", "192.168.1.10:9090", "172.18.0.2:9090", "[::]:9090"} {
 		if ValidateListenAddress(a) == nil {
 			t.Fatalf("allowed %s", a)
 		}
 	}
-	if e := ValidateListenAddress("127.0.0.1:9090"); e != nil {
-		t.Fatal(e)
+	for _, a := range []string{"127.0.0.1:9090", "0.0.0.0:9090", "[::1]:9090"} {
+		if e := ValidateListenAddress(a); e != nil {
+			t.Fatalf("rejected %s: %v", a, e)
+		}
 	}
+}
+
+func TestMetricsListenerAllowsAllInterfacesBind(t *testing.T) {
+	// The production bind (main.go) must actually listen on 0.0.0.0.
+	m := New()
+	srv, err := m.Start("0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("Start(0.0.0.0:0) failed: %v", err)
+	}
+	defer srv.Close()
 }
 func TestUnknownOperationCannotGrowMetrics(t *testing.T) {
 	m := New()

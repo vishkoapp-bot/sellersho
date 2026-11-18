@@ -21,9 +21,12 @@ func BodyLimit(r *http.Request) int64 {
 // Fully validate the bounded body before entering a handler. A decoder that
 // accepts only the first JSON value cannot commit before a later streamed limit
 // error. Admission slots bound the number of resident bodies; no detached reader.
-func readBody(w *deadlineWriter, r *http.Request) bool {
+func readBody(w *deadlineWriter, r *http.Request, reporter RejectReporter) bool {
 	limit := BodyLimit(r)
 	reject := func() {
+		if reporter != nil {
+			reporter.RecordReject("request_body_too_large")
+		}
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusRequestEntityTooLarge)

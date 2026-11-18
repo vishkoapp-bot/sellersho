@@ -173,10 +173,11 @@ func (r *Runner) Run(parent context.Context, id string) (Result, error) {
 		return Result{}, ErrBusy
 	}
 	result, runErr := invoke(ctx, job.Run)
-	operation := "reconciliation"
-	if job.Expiry {
-		operation = "expiry"
-	}
+	// D-05: the operation IS the job ID — one distinct operation per
+	// job in the duration histogram. There is no job named
+	// "reconciliation"; the old shared label made five different jobs
+	// indistinguishable. Unknown IDs collapse to "other" in Observe.
+	operation := job.ID
 	outcome := "success"
 	if runErr != nil {
 		outcome = "error"

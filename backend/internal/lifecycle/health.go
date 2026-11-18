@@ -11,6 +11,13 @@ import (
 
 type Probe func(context.Context) error
 
+// RejectReporter receives drain rejections (D-06). Same shape as
+// requestbudget.RejectReporter, defined locally so lifecycle stays free
+// of the observability import; production wires observability.Default.
+type RejectReporter interface {
+	RecordReject(reason string)
+}
+
 type State struct {
 	initialized     atomic.Bool
 	draining        atomic.Bool
@@ -18,13 +25,17 @@ type State struct {
 	postgres, redis Probe
 	environment     string
 	development     bool
+	reporter        RejectReporter
 }
 
 func New(postgres, redis Probe, environment string, development bool) *State {
 	return &State{slot: make(chan struct{}, 1), postgres: postgres, redis: redis, environment: environment, development: development}
 }
-func (s *State) Initialize() { s.initialized.Store(true) }
-func (s *State) Drain()      { s.draining.Store(true) }
+
+// SetRejectReporter wires the D-06 drain-reject counter. Nil disables it.
+func (s *State) SetRejectReporter(r RejectReporter) { s.reporter = r }
+func (s *State) Initialize()                        { s.initialized.Store(true) }
+func (s *State) Drain()                             { s.draining.Store(true) }
 func (s *State) Live(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -70,6 +81,9 @@ func probe(parent context.Context, p Probe) error {
 func (s *State) Admission(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.draining.Load() && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if s.reporter != nil {
+				s.reporter.RecordReject("service_draining")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Retry-After", "1")

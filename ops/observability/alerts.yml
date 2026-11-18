@@ -1,3 +1,22 @@
+# OBS-01 — Prometheus alert rules.
+#
+# DELIVERY HONESTY (C-01): these rules are VISUALIZATION ONLY. There is
+# no Alertmanager, no alerting: section in prometheus.yml, and no Grafana
+# contact point / notification policy provisioned anywhere in this
+# shipment, so a firing rule reaches NO operator on its own — an operator
+# would have to open the Prometheus UI (loopback-only, via SSH tunnel)
+# and notice it. Do NOT describe these rules as "alerting the operator".
+# The operator channel is the in-app admin-panel notification inbox,
+# driven by the in-app poller (backend/internal/observability:
+# PollDependencies -> DeliverAlerts), which covers six conditions (API
+# errors, dependency loss, expiry stalled, disk pressure, backup stale,
+# latency-SLO breach). The two SLO-breach rules below are likewise
+# display-only; the poller now delivers the SLO breach itself
+# (slo_breach, same thresholds), so the Prometheus copies are
+# visualization only. If a
+# real Prometheus delivery route is ever wanted, it needs an explicit
+# owner decision (it cannot be the admin inbox via prod PostgreSQL for
+# the DB-outage case) — never wire one quietly.
 groups:
   - name: sellersho
     rules:
@@ -16,13 +35,65 @@ groups:
         for: 2m
         labels: {severity: critical}
         annotations: {summary: "No recent successful expiry worker cycle"}
+      # D-07: the host-disk series below is real once node_exporter is
+      # wired (docker-compose.observability.yml). It measures the HOST root
+      # filesystem (node_exporter --path.rootfs=/host). The app's own
+      # sellersho_disk_free_ratio is NOT used by this rule: it samples
+      # the backend container's rootfs via Statfs("/") (see
+      # backend/internal/observability/disk_linux.go), which can diverge
+      # from the host volume; the app gauge is still shown on the
+      # dashboard (panel "App disk free ratio") for cross-checking.
+      # C-06: the absent() arm makes a dead node_exporter (or a failed
+      # scrape) FIRE instead of going silently invisible — the exact
+      # opposite of fail-safe would be staying quiet while the disk
+      # fills. Same pattern as SellershoDependencyLost / SellershoBackupStale.
       - alert: SellershoDiskPressure
-        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15 or absent(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"})
         for: 5m
         labels: {severity: critical}
         annotations: {summary: "Host disk free space below 15 percent"}
+      # D-02: the absent() arm fires until the backup publisher writes its
+      # first verified row. The mechanism now exists in-tree: the poller
+      # reads the verified timestamp from the backup_signals table
+      # (backend/internal/observability/dependencies.go pollBackupSignal)
+      # and scripts/publish-backup-success.sh writes that row only after
+      # verifying the backup artifacts. Until the first verified publish
+      # (G-06, disposable-stack proof), the gauge is absent and this rule
+      # fires — by design ("unknown backup state is an alert"), NOT a
+      # healthy state. Once publishing, a healthy state has a fresh gauge
+      # and this rule stays quiet; it fires only when the gauge goes stale
+      # (> 26h). If publishing stalls, the honest fallback is to drop the
+      # absent() arm — do not leave a permanently-firing rule in place, it
+      # trains operators to ignore alerts. Validated in
+      # ops/observability/alerts_test.yml.
       - alert: SellershoBackupStale
         expr: time() - sellersho_backup_last_success_timestamp_seconds > 93600 or absent(sellersho_backup_last_success_timestamp_seconds)
         for: 5m
         labels: {severity: critical}
         annotations: {summary: "No proven successful backup within 26 hours"}
+      # D-12: latency SLO breach, split by read/mutation class (OBS-01
+      # supervisor F-3). The agreed SLO (CAP-01 gates) is read p95 <=
+      # 300ms / p99 <= 1000ms and mutation p95 <= 750ms / p99 <=
+      # 2000ms. The HTTP metrics DO distinguish reads from mutations:
+      # opclass="read" for GET/HEAD/OPTIONS, opclass="mutation" for
+      # every other method (backend/internal/observability/metrics.go).
+      # Each rule below fires only on breach of its own class's
+      # bounds, so a slow mutation can no longer mask a breaching
+      # read (and vice versa). The dashboard shows the same per-class
+      # split on the p95/p99 panels plus the SLO-compliance panel.
+      - alert: SellershoLatencySLOBreachRead
+        expr: |
+          (histogram_quantile(0.95, sum by (le) (rate(sellersho_http_duration_seconds_bucket{class="api",opclass="read"}[5m]))) > 0.3
+          or
+          histogram_quantile(0.99, sum by (le) (rate(sellersho_http_duration_seconds_bucket{class="api",opclass="read"}[5m]))) > 1)
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Read API latency above the agreed SLO bound (read p95 300ms / p99 1000ms)"}
+      - alert: SellershoLatencySLOBreachMutation
+        expr: |
+          (histogram_quantile(0.95, sum by (le) (rate(sellersho_http_duration_seconds_bucket{class="api",opclass="mutation"}[5m]))) > 0.75
+          or
+          histogram_quantile(0.99, sum by (le) (rate(sellersho_http_duration_seconds_bucket{class="api",opclass="mutation"}[5m]))) > 2)
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Mutation API latency above the agreed SLO bound (mutation p95 750ms / p99 2000ms)"}

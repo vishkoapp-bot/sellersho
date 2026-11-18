@@ -211,6 +211,14 @@ func (c *Client) Call(ctx context.Context, token, path string, payload interface
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
+		// OBS-01 D-09: propagate the request correlation ID so a slow
+		// request can be followed into the provider call. Empty when
+		// the caller runs outside an HTTP request (background jobs
+		// carry their own fresh ID from the runner, so this is set
+		// there too); never invent one here.
+		if id := observability.RequestID(callCtx); id != "" {
+			req.Header.Set("X-Request-ID", id)
+		}
 		return req, nil
 	}, safe, 1<<20)
 	if err != nil {
@@ -250,6 +258,10 @@ func (c *Client) GetRaw(ctx context.Context, token, path string) (int, string, [
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+		// OBS-01 D-09: propagate the request correlation ID (see Call).
+		if id := observability.RequestID(callCtx); id != "" {
+			req.Header.Set("X-Request-ID", id)
+		}
 		return req, nil
 	}, true, 8<<20)
 	if err != nil && (reply.StatusCode == 0 || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {

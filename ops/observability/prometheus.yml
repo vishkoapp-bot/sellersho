@@ -1,0 +1,58 @@
+# OBS-01 (D-01/G-01) — Prometheus scrape config for the production host.
+#
+# Topology (all loopback-only; nothing here is published publicly or
+# proxied through Caddy/nginx):
+#   * Prometheus, Grafana, node_exporter and nginx-exporter run with
+#     host networking (see docker-compose.observability.yml) and scrape the
+#     metrics ports published on 127.0.0.1 only:
+#       - backend  127.0.0.1:9090  (loopback listener inside drup_backend;
+#                                    published to host loopback, NOT public)
+#       - Caddy    127.0.0.1:2019/metrics (admin endpoint inside the edge
+#                                    container; published to host loopback)
+#       - nginx    127.0.0.1:9113  (nginx-prometheus-exporter, which reads
+#                                    stub_status at 127.0.0.1:8081 inside
+#                                    the frontend namespace; stub_status
+#                                    itself is plain text, not Prometheus
+#                                    format, so it cannot be scraped
+#                                    directly)
+#       - node     127.0.0.1:9100  (node_exporter, host rootfs)
+#   This is the "local tunnel" the checkpoint doc allows: the collector
+#   reaches each service's loopback endpoint from the host loopback.
+#   Sharing one container's network namespace cannot work here because
+#   the three endpoints live in three different namespaces.
+#
+# Retention is explicitly bounded (D-01): prod disk was at 99% (310M
+# free) on 2026-11-18. The 3d / 128MB cap is set in the compose command
+# (not here — promtool check config does not validate runtime flags).
+# Revisit the cap only after the disk-pressure incident is cleared;
+# never raise it while the host is near-full.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: sellersho-prod
+
+# Relative to this config file: /etc/prometheus/alerts.yml in the
+# container (bind-mounted from /opt/drup/ops/observability/alerts.yml),
+# ops/observability/alerts.yml in the repo — so `promtool check config`
+# also passes from a checkout.
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: sellersho-backend
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+
+  - job_name: caddy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['127.0.0.1:2019']
+
+  - job_name: nginx
+    static_configs:
+      - targets: ['127.0.0.1:9113']
+
+  - job_name: node
+    static_configs:
+      - targets: ['127.0.0.1:9100']

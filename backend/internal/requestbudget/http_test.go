@@ -126,15 +126,30 @@ func TestStartedResponseIsAbortedOnDeadline(t *testing.T) {
 		t.Fatal("partial response ended as clean success")
 	}
 }
+
+// TestSlowRequestBodyHasSocketDeadline — budget note (OBS-01 C-10):
+// the 25 ms API budget from shortConfig() failed ~1 run in 4 with
+// http.ReadResponse: unexpected EOF. The 504 write races the 20 ms write
+// margin: if VM scheduling stalls the server goroutine between the
+// socket read deadline firing and the timeout write, the write deadline
+// expires and the connection closes without a response. The asserted
+// behavior is unchanged (a stalled body is cut off by the socket read
+// deadline and answered 504); the budgets are scaled up (500 ms API /
+// 500 ms write margin) so scheduling jitter of tens of ms is negligible
+// against them, and the client deadline and assertion bound scale with
+// them. "No action" on a known-flaky gate test is not acceptable.
 func TestSlowRequestBodyHasSocketDeadline(t *testing.T) {
-	s := httptest.NewServer(New(shortConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.ReadAll(r.Body); w.WriteHeader(500) })))
+	cfg := shortConfig()
+	cfg.API = 500 * time.Millisecond
+	cfg.WriteMargin = 500 * time.Millisecond
+	s := httptest.NewServer(New(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.ReadAll(r.Body); w.WriteHeader(500) })))
 	defer s.Close()
 	conn, err := net.Dial("tcp", strings.TrimPrefix(s.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(time.Second))
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	io.WriteString(conn, "POST /api/v1/orders HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\nx")
 	start := time.Now()
 	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -142,7 +157,7 @@ func TestSlowRequestBodyHasSocketDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 504 || time.Since(start) > 300*time.Millisecond {
+	if res.StatusCode != 504 || time.Since(start) > 3*time.Second {
 		t.Fatalf("body read escaped route budget %d", res.StatusCode)
 	}
 }

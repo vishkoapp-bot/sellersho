@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import './utils/webVitals'; // OBS-01 (D-08): browser-local web-vitals measurement, no network send.
 
 async function bootstrap() {
   const root = ReactDOM.createRoot(document.getElementById('root')!);

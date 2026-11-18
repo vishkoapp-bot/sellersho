@@ -154,6 +154,8 @@ func run(signalCtx context.Context) (result error) {
 	process.Closers = append(process.Closers, func(context.Context) error { return redisClient.Client.Close() })
 	log.Print("[INFO] Connected to Redis")
 	state := newHealthState(db, redisClient, cfg)
+	// OBS-01 D-06: drain 503s count as admission rejects.
+	state.SetRejectReporter(observability.Default)
 	process.State = state
 
 	var catalogRepo *repository.CatalogRepository
@@ -277,6 +279,8 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/seller/domains/", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomainAction(w, r, storeRepo) }))
 	adGuard := adguard.New(cfg.JWTSecret)
 	mux.HandleFunc("/api/v1/admin/operations", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleOperationsOverview(w, r, db.DB) }))
+	// G-03: correlation-ID lookup over the in-memory request ring.
+	mux.HandleFunc("/api/v1/admin/observability/requests", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleAdminRequestLookup(w, r, observability.Default) }))
 	mux.HandleFunc("/api/v1/admin/operations/qc/", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleResolveOverdueQC(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/ads/challenge", func(w http.ResponseWriter, r *http.Request) { handleAdChallenge(w, r, adGuard, storeRepo) })
 	mux.HandleFunc("/api/v1/admin/ippanel/settings", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelSettings(w, r, db.DB) }))
@@ -2516,7 +2520,7 @@ func run(signalCtx context.Context) (result error) {
 	log.Printf("Running at http://localhost%s", addr)
 	log.Printf("==================================================")
 
-	server := newHTTPServer(addr, observability.Default.HTTP(mux, state.Admission(enableCORS(requestbudget.New(requestbudget.DefaultConfig())(mux), cfg))))
+	server := newHTTPServer(addr, observability.Default.HTTP(mux, state.Admission(enableCORS(requestbudget.NewWithReporter(requestbudget.DefaultConfig(), observability.Default)(mux), cfg))))
 
 	process.Server = server
 	stopStartup()

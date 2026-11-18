@@ -198,6 +198,39 @@ func TestLoadConfig_Production_RetiredDevDefaultsRejected(t *testing.T) {
 	}
 }
 
+// OBS-01 NF-02: a retired value must fail with error text DISTINCT from
+// the empty-value error, so probe cases 02/09 are distinguishable from
+// the missing-value cases by probe output alone.
+func TestLoadConfig_Production_RetiredVsEmptyErrorTextDistinct(t *testing.T) {
+	for _, tc := range []struct {
+		key, retired string
+	}{
+		{"JWT_SECRET", retiredDevJWT},
+		{"TRACKING_WEBHOOK_SECRET", retiredDevWebhook},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			setValidProdEnv(t)
+			t.Setenv(tc.key, "")
+			_, emptyErr := LoadConfig()
+			if emptyErr == nil {
+				t.Fatalf("production accepted empty %s", tc.key)
+			}
+			setValidProdEnv(t)
+			t.Setenv(tc.key, tc.retired)
+			_, retiredErr := LoadConfig()
+			if retiredErr == nil {
+				t.Fatalf("production accepted retired %s", tc.key)
+			}
+			if emptyErr.Error() == retiredErr.Error() {
+				t.Fatalf("retired-value error is identical to empty-value error: %q", emptyErr.Error())
+			}
+			if !strings.Contains(strings.ToLower(retiredErr.Error()), "retired") {
+				t.Fatalf("retired-value error does not say retired: %q", retiredErr.Error())
+			}
+		})
+	}
+}
+
 func TestLoadConfig_AppEnvUnsetIsProduction(t *testing.T) {
 	// Unset APP_ENV + missing secrets must fail (no silent dev
 	// fallback). Unsetting uses os.Unsetenv with cleanup, mirroring

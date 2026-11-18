@@ -1,0 +1,12 @@
+# OBS-01 (D-01/G-01) — Grafana datasource provisioning.
+# No API calls or credentials needed: Grafana loads this at startup.
+# Prometheus listens on host loopback 127.0.0.1:9091; Grafana runs with
+# host networking, so the same loopback address reaches it.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9091
+    isDefault: true
+    editable: false

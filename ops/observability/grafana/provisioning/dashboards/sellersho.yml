@@ -1,0 +1,16 @@
+# OBS-01 (D-01/G-01) — Grafana dashboard provisioning.
+# Loads ops/observability/dashboard.json at Grafana startup, no API
+# calls or credentials needed. The dashboard file is mounted read-only
+# at /etc/grafana/dashboards/sellersho-capacity.json (see
+# docker-compose.observability.yml); update_interval 10s picks up edits after a
+# Grafana restart (or a deploy, which force-recreates Grafana).
+apiVersion: 1
+providers:
+  - name: sellersho
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

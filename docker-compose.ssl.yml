@@ -17,6 +17,11 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      # OBS-01 (D-01/D-08): loopback-only publish of the Caddy admin
+      # endpoint (127.0.0.1:2019 inside the edge container) so the
+      # host-networked Prometheus can scrape /metrics. 127.0.0.1 only —
+      # the admin endpoint is a control API, never a public port.
+      - "127.0.0.1:2019:2019"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

@@ -99,6 +99,12 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 		}
 		req.Header.Set("Authorization", c.Token)
 		req.Header.Set("Content-Type", "application/json")
+		// OBS-01 D-09: propagate the request correlation ID so a slow
+		// request can be followed into the provider call. Empty when
+		// the caller runs outside an HTTP request; never invent one.
+		if id := observability.RequestID(callCtx); id != "" {
+			req.Header.Set("X-Request-ID", id)
+		}
 		return req, nil
 	}, safe, 4<<10)
 	if err != nil {

@@ -1,0 +1,110 @@
+# OBS-01 — collector stack, split out of docker-compose.prod.yml (C-02).
+#
+# WHY THIS FILE EXISTS: docker-compose.prod.yml used to declare these four
+# services, including Grafana's
+#   GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:? ...}"
+# fail-fast. deploy_remote.py includes docker-compose.prod.yml in EVERY
+# deploy (and in rollback), so an unset Grafana password aborted the NEXT
+# DEPLOY OF ANY KIND — app hotfix, security fix, rollback — before anything
+# was touched. On 2026-11-18 the password was unset on prod
+# (grep -c GRAFANA_ADMIN_PASSWORD /opt/drup/.env == 0), so the OBS-01 push
+# itself would have failed at its first step.
+#
+# This file is included ONLY by deploy_observability() in
+# scripts/deploy_remote.py, never by the app deploy, never by rollback.
+# An unset GRAFANA_ADMIN_PASSWORD now fails ONLY the collector deploy
+# (which genuinely needs it), never an app deploy or a rollback. There is
+# deliberately NO default password here: a ${VAR:-default} with a known
+# default would be a published credential. Set GRAFANA_ADMIN_PASSWORD in
+# /opt/drup/.env (mode 0600, server-only) before the first collector
+# deploy.
+#
+# All four services run with host networking and bind loopback only, so
+# every metrics/UI port is reachable from the prod host itself (and via
+# SSH tunnel) and from nowhere else. Images are pinned; verify tags exist
+# before changing them (Hub tags checked 2026-11-18). These services are
+# NOT started by the app deploy's targeted `up backend/frontend/edge`;
+# deploy_remote.py starts them explicitly in its observability step.
+# Retention is explicitly bounded: prod disk was at 99% (310M free) on
+# 2026-11-18. 3 days / 128MB — revisit only after the disk-pressure
+# incident is cleared; never raise while near-full.
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: drup_prometheus
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+      - --storage.tsdb.retention.size=128MB
+      - --web.listen-address=127.0.0.1:9091
+      # NOTE (C-09): --web.enable-lifecycle was REMOVED. It exposed POST
+      # /-/quit (anyone reaching host loopback could shut Prometheus
+      # down), and its only consumer — the deploy's POST /-/reload — is
+      # redundant: deploy_observability() force-recreates this container,
+      # so rules load from disk at startup. Do not re-add lifecycle
+      # without a written reason and a loopback-only restriction.
+    volumes:
+      - ./ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.6.2
+    container_name: drup_grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_ADDR: "127.0.0.1"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # COLLECTOR-DEPLOY PRECONDITION: set GRAFANA_ADMIN_PASSWORD in
+      # /opt/drup/.env (mode 0600, server-only) before the first deploy
+      # that includes this stack; compose config fails fast with this
+      # message until it is set. Reach the UI via SSH tunnel to
+      # http://127.0.0.1:3000 — never publish this port. Because this
+      # file is only included by deploy_observability(), an unset
+      # password blocks ONLY the collector deploy, never an app deploy
+      # or a rollback (see the header of this file).
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in /opt/drup/.env}"
+    volumes:
+      - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/observability/dashboard.json:/etc/grafana/dashboards/sellersho-capacity.json:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    container_name: drup_node_exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --web.listen-address=127.0.0.1:9100
+    volumes:
+      - /:/host:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.5.3
+    container_name: drup_nginx_exporter
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -nginx.scrape-uri=http://127.0.0.1:8081/status
+      - -web.listen-address=127.0.0.1:9113
+      - -web.telemetry-path=/metrics
+    depends_on:
+      - frontend
+
+volumes:
+  prometheus_data:
+  grafana_data:

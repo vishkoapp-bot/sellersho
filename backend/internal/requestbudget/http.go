@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// RejectReporter receives admission-rejection counts and slot occupancy
+// (D-06). It is an interface so this package stays free of the
+// observability import; production wires observability.Default, which
+// implements both methods. A nil reporter disables reporting.
+type RejectReporter interface {
+	RecordReject(reason string)
+	SetAdmissionInflight(lane string, n int)
+}
+
 type Config struct {
 	API, Upload, Domain, Static, WriteMargin time.Duration
 	APIConcurrent, UploadConcurrent          int
@@ -32,6 +41,14 @@ func IsUpload(r *http.Request) bool {
 	return len(p) == 6 && p[5] == "images" || len(p) == 8 && p[5] == "variants" && p[6] != "" && p[7] == "images"
 }
 func New(cfg Config) func(http.Handler) http.Handler {
+	return NewWithReporter(cfg, nil)
+}
+
+// NewWithReporter is New plus a D-06 reject/occupancy reporter. The
+// reporter is called for every admission rejection (request_overloaded,
+// request_body_too_large) and on every slot acquire/release with the
+// current occupancy of the lane ("api" or "upload").
+func NewWithReporter(cfg Config, reporter RejectReporter) func(http.Handler) http.Handler {
 	if cfg.API <= 0 || cfg.Upload <= 0 || cfg.Domain <= 0 || cfg.Static <= 0 || cfg.WriteMargin <= 0 || cfg.APIConcurrent < 1 || cfg.UploadConcurrent < 1 {
 		panic("invalid request budget")
 	}
@@ -45,9 +62,11 @@ func New(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 			duration, margin, slots := cfg.API, cfg.WriteMargin, ordinary
+			lane := "api"
 			switch {
 			case IsUpload(r):
 				duration, margin, slots = cfg.Upload, 5*time.Second, uploads
+				lane = "upload"
 			case r.URL.Path == "/internal/domains/allow":
 				duration, margin = cfg.Domain, time.Second
 			case strings.HasPrefix(r.URL.Path, "/static/"):
@@ -64,10 +83,19 @@ func New(cfg Config) func(http.Handler) http.Handler {
 			if ctx.Err() != nil {
 				panic(http.ErrAbortHandler)
 			}
+			report := func(n int) {
+				if reporter != nil {
+					reporter.SetAdmissionInflight(lane, n)
+				}
+			}
 			select {
 			case slots <- struct{}{}:
-				defer func() { <-slots }()
+				report(len(slots))
+				defer func() { <-slots; report(len(slots)) }()
 			default:
+				if reporter != nil {
+					reporter.RecordReject("request_overloaded")
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Retry-After", "1")
@@ -82,7 +110,7 @@ func New(cfg Config) func(http.Handler) http.Handler {
 			if err := controller.SetWriteDeadline(deadline.Add(margin)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 				panic(http.ErrAbortHandler)
 			}
-			if !readBody(guard, r) {
+			if !readBody(guard, r, reporter) {
 				return
 			}
 			next.ServeHTTP(guard, r.WithContext(ctx))

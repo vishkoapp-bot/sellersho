@@ -1,0 +1,336 @@
+# OBS-01 (D-10/G-05) — promtool test rules fixture for
+# ops/observability/alerts.yml.
+#
+# Run: promtool test rules ops/observability/alerts_test.yml
+# (from the repo root; rule_files is relative to this file.)
+# Each rule has a firing case (synthetic bad series) and a quiet case
+# (synthetic healthy series). All series are synthetic — no live
+# Alertmanager, no real operator message.
+#
+# Time base: promtool evaluates series from Unix epoch 0 at the given
+# interval, so time() at eval_time 10m is 600s. The backup-stale cases
+# need a 26h age, so they evaluate at 30h with 7201 samples.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # --- SellershoAPIErrors: 5xx ratio > 0.1% over 5m ---
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="200"}'
+        values: 0+100x40
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="500"}'
+        values: 0+2x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoAPIErrors
+        exp_alerts:
+          - exp_labels: {alertname: SellershoAPIErrors, severity: critical}
+            exp_annotations: {summary: "Unexpected API error budget exceeded"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="200"}'
+        values: 0+100x40
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="500"}'
+        values: 0+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoAPIErrors
+        exp_alerts: []
+
+  # --- SellershoDependencyLost: postgres/redis down or missing ---
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_postgres_up'
+        values: 1+0x10 0+0x30
+      - series: 'sellersho_redis_up'
+        values: 1+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDependencyLost
+        exp_alerts:
+          - exp_labels: {alertname: SellershoDependencyLost, severity: critical}
+            exp_annotations: {summary: "Database or Redis unavailable or telemetry missing"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_postgres_up'
+        values: 1+0x40
+      - series: 'sellersho_redis_up'
+        values: 1+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDependencyLost
+        exp_alerts: []
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="200"}'
+        values: 0+100x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDependencyLost
+        exp_alerts:
+          - exp_labels: {alertname: SellershoDependencyLost, severity: critical}
+            exp_annotations: {summary: "Database or Redis unavailable or telemetry missing"}
+
+  # --- SellershoExpiryStalled: no successful expiry run for 180s ---
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_expiry_last_success_timestamp_seconds'
+        values: 0+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoExpiryStalled
+        exp_alerts:
+          - exp_labels: {alertname: SellershoExpiryStalled, severity: critical}
+            exp_annotations: {summary: "No recent successful expiry worker cycle"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_expiry_last_success_timestamp_seconds'
+        values: 500+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoExpiryStalled
+        exp_alerts: []
+
+  # --- SellershoDiskPressure: host root free < 15% ---
+  - interval: 15s
+    input_series:
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",fstype="ext4",device="/dev/vda1"}'
+        values: 10+0x40
+      - series: 'node_filesystem_size_bytes{mountpoint="/",fstype="ext4",device="/dev/vda1"}'
+        values: 100+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDiskPressure
+        exp_alerts:
+          - exp_labels: {alertname: SellershoDiskPressure, severity: critical, device: /dev/vda1, fstype: ext4, mountpoint: /}
+            exp_annotations: {summary: "Host disk free space below 15 percent"}
+  - interval: 15s
+    input_series:
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",fstype="ext4",device="/dev/vda1"}'
+        values: 90+0x40
+      - series: 'node_filesystem_size_bytes{mountpoint="/",fstype="ext4",device="/dev/vda1"}'
+        values: 100+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDiskPressure
+        exp_alerts: []
+  # C-06: series absent entirely (dead node_exporter / failed scrape)
+  # must FIRE via the absent() arm, not stay silent. Note the
+  # mountpoint="/" label: absent() carries the equality matchers of its
+  # argument into the result series.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="200"}'
+        values: 0+100x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoDiskPressure
+        exp_alerts:
+          - exp_labels: {alertname: SellershoDiskPressure, severity: critical, mountpoint: /}
+            exp_annotations: {summary: "Host disk free space below 15 percent"}
+
+  # --- SellershoBackupStale: no proven backup for 26h (93600s) ---
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_backup_last_success_timestamp_seconds'
+        values: 0+0x7200
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: SellershoBackupStale
+        exp_alerts:
+          - exp_labels: {alertname: SellershoBackupStale, severity: critical}
+            exp_annotations: {summary: "No proven successful backup within 26 hours"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_backup_last_success_timestamp_seconds'
+        values: 107900+0x7200
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: SellershoBackupStale
+        exp_alerts: []
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_count{class="api",status="200"}'
+        values: 0+100x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoBackupStale
+        exp_alerts:
+          - exp_labels: {alertname: SellershoBackupStale, severity: critical}
+            exp_annotations: {summary: "No proven successful backup within 26 hours"}
+
+  # --- SellershoLatencySLOBreachRead / SellershoLatencySLOBreachMutation:
+  # read p95 > 300ms or p99 > 1000ms; mutation p95 > 750ms or p99 > 2000ms.
+  # OBS-01 supervisor F-3: the rules are split by opclass, so each case
+  # below checks BOTH rules — a breach in one class must fire only that
+  # class's rule while the other stays quiet. Bucket shapes: the firing
+  # shape puts only 10% of requests under 500ms (p95 lands in +Inf);
+  # the healthy mutation shape puts 90% under 500ms (p95 interpolates
+  # to exactly 0.75, not > 0.75; p99 to 0.95); the healthy read shape
+  # puts 90% under 100ms (p95 0.2, p99 0.28).
+  # Case 1: read breaches (p95 +Inf), mutation healthy -> only Read fires.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.5"}'
+        values: 0+1x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="1"}'
+        values: 0+2x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="2"}'
+        values: 0+3x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="+Inf"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="0.5"}'
+        values: 0+9x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="1"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="2"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="+Inf"}'
+        values: 0+10x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachRead
+        exp_alerts:
+          - exp_labels: {alertname: SellershoLatencySLOBreachRead, severity: warning}
+            exp_annotations: {summary: "Read API latency above the agreed SLO bound (read p95 300ms / p99 1000ms)"}
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachMutation
+        exp_alerts: []
+  # Case 2: mutation breaches (p95 +Inf), read healthy -> only Mutation fires.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.1"}'
+        values: 0+9x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.3"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="1"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="2"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="+Inf"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="0.5"}'
+        values: 0+1x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="1"}'
+        values: 0+2x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="2"}'
+        values: 0+3x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="+Inf"}'
+        values: 0+10x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachRead
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachMutation
+        exp_alerts:
+          - exp_labels: {alertname: SellershoLatencySLOBreachMutation, severity: warning}
+            exp_annotations: {summary: "Mutation API latency above the agreed SLO bound (mutation p95 750ms / p99 2000ms)"}
+  # Case 3: read p99 breach only (p95 0.296 <= 0.3, p99 1.5 > 1) -> only Read fires.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.1"}'
+        values: 0+50x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.3"}'
+        values: 0+96x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="1"}'
+        values: 0+98x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="2"}'
+        values: 0+100x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="+Inf"}'
+        values: 0+100x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="0.5"}'
+        values: 0+9x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="1"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="2"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="+Inf"}'
+        values: 0+10x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachRead
+        exp_alerts:
+          - exp_labels: {alertname: SellershoLatencySLOBreachRead, severity: warning}
+            exp_annotations: {summary: "Read API latency above the agreed SLO bound (read p95 300ms / p99 1000ms)"}
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachMutation
+        exp_alerts: []
+  # Case 4: both classes healthy -> neither fires.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.1"}'
+        values: 0+9x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="0.3"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="1"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="2"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="read",le="+Inf"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="0.5"}'
+        values: 0+9x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="1"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="2"}'
+        values: 0+10x40
+      - series: 'sellersho_http_duration_seconds_bucket{class="api",opclass="mutation",le="+Inf"}'
+        values: 0+10x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachRead
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SellershoLatencySLOBreachMutation
+        exp_alerts: []
+
+  # --- Dashboard panels 10/22 (C-05): time()-gauge with gauge=0 must NOT
+  # render ~1.8B seconds (~57 years). The guarded query multiplies by
+  # (gauge > 0), so a never-run job yields NO series (no line), and a
+  # fresh gauge yields the true age. These are promql_expr_test cases on
+  # the EXACT panel expressions (copied verbatim from dashboard.json).
+  # Time base: eval_time 10m -> time() == 600.
+  # monthly-settlement gauge=0 (unconfigured settlement) -> no sample.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_monthly_settlement_last_success_timestamp_seconds'
+        values: 0+0x40
+    promql_expr_test:
+      - expr: '(time()-sellersho_worker_monthly_settlement_last_success_timestamp_seconds) and (sellersho_worker_monthly_settlement_last_success_timestamp_seconds > 0)'
+        eval_time: 10m
+        exp_samples: []
+  # monthly-settlement gauge fresh (500 at t=600) -> 100, not 600.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_monthly_settlement_last_success_timestamp_seconds'
+        values: 500+0x40
+    promql_expr_test:
+      - expr: '(time()-sellersho_worker_monthly_settlement_last_success_timestamp_seconds) and (sellersho_worker_monthly_settlement_last_success_timestamp_seconds > 0)'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 100
+  # expiry gauge=0 (no run on record) -> no sample.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_expiry_last_success_timestamp_seconds'
+        values: 0+0x40
+    promql_expr_test:
+      - expr: '(time()-sellersho_worker_expiry_last_success_timestamp_seconds) and (sellersho_worker_expiry_last_success_timestamp_seconds > 0)'
+        eval_time: 10m
+        exp_samples: []
+  # expiry gauge fresh (500 at t=600) -> 100.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_worker_expiry_last_success_timestamp_seconds'
+        values: 500+0x40
+    promql_expr_test:
+      - expr: '(time()-sellersho_worker_expiry_last_success_timestamp_seconds) and (sellersho_worker_expiry_last_success_timestamp_seconds > 0)'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 100

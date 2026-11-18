@@ -37,10 +37,30 @@ type Registry struct {
 	active  int64
 	db      *sql.DB
 	gauges  map[string]float64
+	// rejects counts admission rejections by bounded reason (D-06):
+	// "request_overloaded" (request-budget 503), "service_draining"
+	// (drain 503), "request_body_too_large" (oversize-body 413/414
+	// reject). They are distinct from the generic 5xx samples in the
+	// HTTP histogram, so saturation rejects are countable as rejects.
+	rejects map[string]int64
+	// inflight is the current admission-slot occupancy per lane
+	// ("api" = ordinary slots, "upload" = upload slots).
+	inflight map[string]int
+	// G-03 ring buffer (ring.go): last 1000 completed requests plus
+	// pending in-flight records, behind ringMu — a mutex SEPARATE
+	// from mu, so lookups never block /metrics scrapes and scrapes
+	// never block lookups. The two locks are never held together.
+	ringMu   sync.Mutex
+	ringBuf  [requestRingCapacity]*requestRecord
+	ringHead int
+	ringLen  int
+	// ringInflight holds pending records keyed by request ID; the
+	// name differs from the admission `inflight` lane map above.
+	ringInflight map[string]*requestRecord
 }
 
 func New() *Registry {
-	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}}
+	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}}
 }
 func (m *Registry) SetDB(db *sql.DB) { m.mu.Lock(); defer m.mu.Unlock(); m.db = db }
 func add(dst map[string]*sample, key string, d float64, req, res int64) {
@@ -69,7 +89,10 @@ func bounded(v string, allowed ...string) string {
 }
 func (m *Registry) Observe(component, operation, outcome string, d time.Duration) {
 	component = bounded(component, "redis", "provider", "sql", "worker", "backup")
-	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query")
+	// Worker operations are the six job IDs (D-05): one distinct
+	// operation per job. There is no job named "reconciliation" and
+	// no shared label; an unknown job ID collapses to "other".
+	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query")
 	outcome = bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded")
 	key := fmt.Sprintf(`component=%q,operation=%q,outcome=%q`, component, operation, outcome)
 	m.mu.Lock()
@@ -88,10 +111,39 @@ func NewContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, contextKey{}, hex.EncodeToString(b[:]))
 }
 
+// RecordReject counts one admission rejection under a bounded reason.
+// Reasons: "request_overloaded", "service_draining",
+// "request_body_too_large". Anything else is dropped, never a new series.
+func (m *Registry) RecordReject(reason string) {
+	reason = bounded(reason, "request_overloaded", "service_draining", "request_body_too_large")
+	if reason == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rejects[reason]++
+}
+
+// SetAdmissionInflight records current admission-slot occupancy for a lane
+// ("api" or "upload"). Unknown lanes are dropped, never a new series.
+func (m *Registry) SetAdmissionInflight(lane string, n int) {
+	lane = bounded(lane, "api", "upload")
+	if lane == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inflight[lane] = n
+}
+
 // LogOperation never emits arguments, URLs, errors or business identifiers.
+// It also attaches a span to the request's pending ring record, if the
+// context carries a request ID with one (RecordSpan drops the span
+// silently for background work with no HTTP request).
 func LogOperation(ctx context.Context, component, operation, outcome string, d time.Duration) {
 	Default.Observe(component, operation, outcome, d)
-	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "tapin_request", "ippanel_request", "verify", "refund", "expiry", "reconciliation", "settlement", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded"), d.Milliseconds())
+	Default.RecordSpan(ctx, component, operation, outcome, d)
+	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded"), d.Milliseconds())
 }
 
 type response struct {
@@ -156,7 +208,18 @@ func (m *Registry) HTTP(mux *http.ServeMux, next http.Handler) http.Handler {
 		} else if strings.HasPrefix(route, "/static/") {
 			class = "asset"
 		}
+		// D-12: read vs mutation classes, matching the agreed SLO
+		// (read p95 300 ms / p99 1,000 ms; mutation p95 750 ms /
+		// p99 2,000 ms). GET/HEAD/OPTIONS are reads; every other
+		// method is a mutation. The label is bounded to two values.
+		opclass := "mutation"
+		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" {
+			opclass = "read"
+		}
 		method := bounded(r.Method, "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
+		// G-03: open the pending ring record; the end-of-request defer
+		// below fills status/outcome/duration and moves it into the ring.
+		m.beginRequest(id, method, route, class, opclass, start)
 		rw := &response{ResponseWriter: w}
 		var rb *body
 		if r.Body != nil {
@@ -181,17 +244,21 @@ func (m *Registry) HTTP(mux *http.ServeMux, next http.Handler) http.Handler {
 			} else if r.Context().Err() == context.Canceled {
 				outcome = "canceled"
 			}
+			dur := time.Since(start)
+			// G-03: move the pending record into the ring (all
+			// completed requests, not only slow/error ones).
+			m.completeRequest(id, status, outcome, dur)
 			n := int64(0)
 			if rb != nil {
 				n = rb.n
 			}
-			key := fmt.Sprintf(`class=%q,method=%q,route=%q,status=%q,outcome=%q`, class, method, route, fmt.Sprint(status), outcome)
+			key := fmt.Sprintf(`class=%q,method=%q,route=%q,status=%q,outcome=%q,opclass=%q`, class, method, route, fmt.Sprint(status), outcome, opclass)
 			m.mu.Lock()
 			m.active--
-			add(m.http, key, time.Since(start).Seconds(), n, rw.n)
+			add(m.http, key, dur.Seconds(), n, rw.n)
 			m.mu.Unlock()
-			if status >= 500 || time.Since(start) >= 300*time.Millisecond {
-				log.Printf("http request_id=%s class=%s route=%s status=%d duration_ms=%d", id, class, route, status, time.Since(start).Milliseconds())
+			if status >= 500 || dur >= 300*time.Millisecond {
+				log.Printf("http request_id=%s class=%s route=%s status=%d duration_ms=%d", id, class, route, status, dur.Milliseconds())
 			}
 			if p != nil {
 				panic(p)
@@ -207,6 +274,19 @@ func emit(w io.Writer, name, key string, s *sample) {
 	}
 	fmt.Fprintf(w, "%s_bucket{%s,le=\"+Inf\"} %d\n", name, key, s.Count)
 }
+
+// ServeHTTP renders Prometheus text format 0.0.4 from the hand-rolled
+// registry (there is no Prometheus client library in go.mod).
+// NOTE (D-03/D-14, OBS-01): this emitter does NOT attach exemplars:
+// exemplar syntax exists only in the OpenMetrics text format, and this
+// endpoint advertises version 0.0.4. The per-request correlation record
+// is the in-memory ring (ring.go: last 1000 completed requests with
+// spans), served by GET /api/v1/admin/observability/requests — the
+// threshold-gated `http request_id=...` log line (status >= 500 or
+// duration >= 300 ms) remains as the stdout backup. Adding exemplars
+// means switching this endpoint to OpenMetrics content type and storing
+// one exemplar per histogram series; that is a follow-up, not done here,
+// because an unvalidated exposition change could break the scrape.
 func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	m.mu.Lock()
@@ -231,6 +311,24 @@ func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	for name, value := range m.gauges {
 		fmt.Fprintf(w, "sellersho_%s %g\n", name, value)
+	}
+	// D-06: admission rejects (counter by reason) and admission-slot
+	// occupancy (gauge by lane). Sorted for stable output.
+	rejectReasons := make([]string, 0, len(m.rejects))
+	for reason := range m.rejects {
+		rejectReasons = append(rejectReasons, reason)
+	}
+	sort.Strings(rejectReasons)
+	for _, reason := range rejectReasons {
+		fmt.Fprintf(w, "sellersho_http_rejects_total{reason=%q} %d\n", reason, m.rejects[reason])
+	}
+	inflightLanes := make([]string, 0, len(m.inflight))
+	for lane := range m.inflight {
+		inflightLanes = append(inflightLanes, lane)
+	}
+	sort.Strings(inflightLanes)
+	for _, lane := range inflightLanes {
+		fmt.Fprintf(w, "sellersho_admission_inflight{lane=%q} %d\n", lane, m.inflight[lane])
 	}
 	for name, value := range processMetrics() {
 		fmt.Fprintf(w, "sellersho_%s %g\n", name, value)

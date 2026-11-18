@@ -134,8 +134,15 @@ func LoadConfig() (*Config, error) {
 
 	if !isDev {
 		// Strict Fail-Closed Security Validation for Non-Dev / Production
-		if jwtSecret == "" || sha256Hex(jwtSecret) == retiredDevJWTSecretSHA256 {
+		// NF-02: the retired-value error is distinct from the
+		// empty-value error, so probe cases 02/09 (retired literal)
+		// are distinguishable from the missing-value cases by
+		// probe output alone.
+		if jwtSecret == "" {
 			return nil, errors.New("JWT_SECRET environment variable is required in production (fail-closed)")
+		}
+		if sha256Hex(jwtSecret) == retiredDevJWTSecretSHA256 {
+			return nil, errors.New("JWT_SECRET matches a retired development default and is rejected in production (fail-closed)")
 		}
 		if len(jwtSecret) < 32 {
 			return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters in production (got %d)", len(jwtSecret))
@@ -152,8 +159,14 @@ func LoadConfig() (*Config, error) {
 		if urlPasswordMatchesRetired(redisURL, retiredDevRedisPasswordSHA256) {
 			return nil, errors.New("default development redis password detected in production REDIS_URL (fail-closed)")
 		}
-		if webhookSecret == "" || sha256Hex(webhookSecret) == retiredDevWebhookSecretSHA256 || len(webhookSecret) < 32 {
-			return nil, errors.New("TRACKING_WEBHOOK_SECRET must be a non-development value of at least 32 characters in production (fail-closed)")
+		if webhookSecret == "" {
+			return nil, errors.New("TRACKING_WEBHOOK_SECRET environment variable is required in production (fail-closed)")
+		}
+		if sha256Hex(webhookSecret) == retiredDevWebhookSecretSHA256 {
+			return nil, errors.New("TRACKING_WEBHOOK_SECRET matches a retired development default and is rejected in production (fail-closed)")
+		}
+		if len(webhookSecret) < 32 {
+			return nil, fmt.Errorf("TRACKING_WEBHOOK_SECRET must be at least 32 characters in production (got %d)", len(webhookSecret))
 		}
 		if gatewayMode != "real" {
 			return nil, errors.New("PAYMENT_GATEWAY_MODE must be explicitly set to 'real' in production (fail-closed)")

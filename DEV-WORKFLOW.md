@@ -59,5 +59,9 @@ tree — the export commands above are the source of truth.)
 ### Seeder CLI:
 To re-seed or reset test fixtures in local/dev environment:
 ```bash
-docker run --rm --env-file backend/.env -v "D:\drup\backend:/app" -w /app --network backend_default golang:1.23-alpine go run cmd/seed/main.go -action=seed -env=local -db="postgres://drup_admin:<POSTGRES_PASSWORD>@drup_postgres:5432/drup_db?sslmode=disable"
+docker run --rm -v "D:\drup\backend:/app" -w /app --network backend_default golang:1.23-alpine go run cmd/seed/main.go -action=seed -env=local -db="postgres://drup_admin:<POSTGRES_PASSWORD>@drup_postgres:5432/drup_db?sslmode=disable"
 ```
+(The `--env-file backend/.env` flag was removed: no such file exists —
+`backend/.env.example` does not exist either. The container inherits the
+`POSTGRES_PASSWORD` / `DATABASE_URL` exports documented in "Dev-stack
+credentials" above, which are the source of truth.)

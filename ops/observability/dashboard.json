@@ -1,337 +1,715 @@
 {
-  "title": "Sellersho correctness and capacity",
-  "uid": "sellersho-capacity",
-  "schemaVersion": 39,
-  "version": 1,
-  "refresh": "15s",
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
-  "templating": {
-    "list": [
-      {
-        "name": "DS_PROMETHEUS",
-        "type": "datasource",
-        "query": "prometheus"
-      }
+ "title": "Sellersho correctness and capacity",
+ "description": "VISUALIZATION ONLY: the Prometheus alert rules behind this dashboard have no delivery path — no Alertmanager, no Grafana contact point. The operator channel is the in-app admin-panel notification inbox (in-app poller); see docs/operations/observability.md.",
+ "uid": "sellersho-capacity",
+ "schemaVersion": 39,
+ "version": 2,
+ "refresh": "15s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "DS_PROMETHEUS",
+    "type": "datasource",
+    "query": "prometheus"
+   },
+   {
+    "name": "request_id",
+    "type": "textbox",
+    "label": "Request ID (X-Request-ID)",
+    "query": "",
+    "current": {
+     "text": "",
+     "value": ""
+    },
+    "options": [
+     {
+      "text": "",
+      "value": "",
+      "selected": true
+     }
     ]
-  },
-  "panels": [
-    {
-      "id": 1,
-      "type": "timeseries",
-      "title": "API requests / second",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(sellersho_http_duration_seconds_count{class=\"api\"}[5m]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 2,
-      "type": "timeseries",
-      "title": "Domain allow checks / second",
-      "gridPos": {
-        "x": 12,
-        "y": 0,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(sellersho_http_duration_seconds_count{class=\"domain_allow\"}[5m]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 3,
-      "type": "timeseries",
-      "title": "API p95 by route",
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95,sum by(le,route)(rate(sellersho_http_duration_seconds_bucket{class=\"api\"}[5m])))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
-      "title": "API p99 by route",
-      "gridPos": {
-        "x": 12,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.99,sum by(le,route)(rate(sellersho_http_duration_seconds_bucket{class=\"api\"}[5m])))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Active HTTP requests",
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sellersho_http_active",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Dependency p95",
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95,sum by(le,component,operation)(rate(sellersho_operation_duration_seconds_bucket[5m])))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Pool waits / second",
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "rate(sellersho_db_wait_seconds_total[5m])",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "DB in use",
-      "gridPos": {
-        "x": 12,
-        "y": 24,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sellersho_db_in_use",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "Postgres lock waiters",
-      "gridPos": {
-        "x": 0,
-        "y": 32,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sellersho_pg_locked",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Expiry seconds since success",
-      "gridPos": {
-        "x": 12,
-        "y": 32,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "time()-sellersho_worker_expiry_last_success_timestamp_seconds",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Go heap",
-      "gridPos": {
-        "x": 0,
-        "y": 40,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sellersho_go_heap_bytes",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Goroutines",
-      "gridPos": {
-        "x": 12,
-        "y": 40,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "sellersho_go_goroutines",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Host CPU",
-      "gridPos": {
-        "x": 0,
-        "y": 48,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "1-avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 14,
-      "type": "timeseries",
-      "title": "Host available memory",
-      "gridPos": {
-        "x": 12,
-        "y": 48,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "node_memory_MemAvailable_bytes",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 15,
-      "type": "timeseries",
-      "title": "Host root disk free",
-      "gridPos": {
-        "x": 0,
-        "y": 56,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "expr": "node_filesystem_avail_bytes{mountpoint=\"/\"}",
-          "refId": "A"
-        }
-      ]
-    }
+   }
   ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "API requests / second",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_count{class=\"api\"}[5m]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "Domain allow checks / second",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_count{class=\"domain_allow\"}[5m]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "API p95 by route",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95,sum by(le,route,opclass)(rate(sellersho_http_duration_seconds_bucket{class=\"api\"}[5m])))",
+     "refId": "A"
+    }
+   ],
+   "description": "API p95 by route, split by opclass (read vs mutation). Agreed SLO: read p95 <= 300ms, mutation p95 <= 750ms. The yellow line is the 300ms read bound, the red line the 750ms mutation bound. A read line above yellow breaches the read SLO; a mutation line above red breaches the mutation SLO.",
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "green"
+       },
+       {
+        "value": 0.3,
+        "color": "yellow"
+       },
+       {
+        "value": 0.75,
+        "color": "red"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "API p99 by route",
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.99,sum by(le,route,opclass)(rate(sellersho_http_duration_seconds_bucket{class=\"api\"}[5m])))",
+     "refId": "A"
+    }
+   ],
+   "description": "API p99 by route, split by opclass (read vs mutation). Agreed SLO: read p99 <= 1000ms, mutation p99 <= 2000ms. The yellow line is the 1s read bound, the red line the 2s mutation bound. A read line above yellow breaches the read SLO; a mutation line above red breaches the mutation SLO.",
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "green"
+       },
+       {
+        "value": 1,
+        "color": "yellow"
+       },
+       {
+        "value": 2,
+        "color": "red"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "Active HTTP requests",
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_http_active",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "Dependency p95",
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95,sum by(le,component,operation)(rate(sellersho_operation_duration_seconds_bucket[5m])))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Pool waits / second",
+   "gridPos": {
+    "x": 0,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "rate(sellersho_db_wait_seconds_total[5m])",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "DB in use",
+   "gridPos": {
+    "x": 12,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_db_in_use",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Postgres lock waiters",
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_pg_locked",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Expiry seconds since success",
+ "description": "Seconds since the expiry worker's last successful run. The gauge is 0 when no run is on record, and the query is guarded (gauge > 0) so a never-run job shows no line instead of ~57 years (time() - 0). A climbing line is a stalled job.",
+   "gridPos": {
+    "x": 12,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "(time()-sellersho_worker_expiry_last_success_timestamp_seconds) and (sellersho_worker_expiry_last_success_timestamp_seconds > 0)",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Go heap",
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_go_heap_bytes",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Goroutines",
+   "gridPos": {
+    "x": 12,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_go_goroutines",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "type": "timeseries",
+   "title": "Host CPU",
+   "gridPos": {
+    "x": 0,
+    "y": 48,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "1-avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "timeseries",
+   "title": "Host available memory",
+   "gridPos": {
+    "x": 12,
+    "y": 48,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "node_memory_MemAvailable_bytes",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Host root disk free",
+   "gridPos": {
+    "x": 0,
+    "y": 56,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}",
+     "refId": "A"
+    }
+   ],
+   "description": "Host root filesystem free bytes, from node_exporter (--path.rootfs=/host, mountpoint=\"/\"). This is the HOST disk — the one that was at 99% on 2026-11-18 — and the series the SellershoDiskPressure alert rule uses. The app's own sellersho_disk_free_ratio (next panel) samples the backend container's rootfs instead."
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "Latency SLO compliance (share of API requests within bound)",
+   "description": "Share of API requests completing within each SLO bound, split by read/mutation class (opclass label). Read bounds 300ms (p95) / 1000ms (p99); mutation bounds 750ms (p95) / 2000ms (p99).",
+   "gridPos": {
+    "x": 0,
+    "y": 64,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_bucket{class=\"api\",opclass=\"read\",le=\"0.3\"}[5m])) / sum(rate(sellersho_http_duration_seconds_count{class=\"api\",opclass=\"read\"}[5m]))",
+     "refId": "A",
+     "legendFormat": "≤ 300ms (read p95 bound)"
+    },
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_bucket{class=\"api\",opclass=\"read\",le=\"1\"}[5m])) / sum(rate(sellersho_http_duration_seconds_count{class=\"api\",opclass=\"read\"}[5m]))",
+     "refId": "B",
+     "legendFormat": "≤ 1000ms (read p99 bound)"
+    },
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_bucket{class=\"api\",opclass=\"mutation\",le=\"0.75\"}[5m])) / sum(rate(sellersho_http_duration_seconds_count{class=\"api\",opclass=\"mutation\"}[5m]))",
+     "refId": "C",
+     "legendFormat": "≤ 750ms (mutation p95 bound)"
+    },
+    {
+     "expr": "sum(rate(sellersho_http_duration_seconds_bucket{class=\"api\",opclass=\"mutation\",le=\"2\"}[5m])) / sum(rate(sellersho_http_duration_seconds_count{class=\"api\",opclass=\"mutation\"}[5m]))",
+     "refId": "D",
+     "legendFormat": "≤ 2000ms (mutation p99 bound)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "red"
+       },
+       {
+        "value": 0.95,
+        "color": "yellow"
+       },
+       {
+        "value": 0.99,
+        "color": "green"
+       }
+      ]
+     },
+     "unit": "percentunit"
+    }
+   }
+  },
+  {
+   "id": 17,
+   "type": "timeseries",
+   "title": "App disk free ratio (container rootfs)",
+   "description": "sellersho_disk_free_ratio: the backend container's rootfs free ratio via Statfs(\"/\") (backend/internal/observability/disk_linux.go). On this host the container rootfs sits on the same /dev/vda1 as the host root, so it usually tracks the host series — but the alert rule deliberately uses the HOST node_exporter series, because the container view can diverge (overlay mounts). Red line: 15% (same threshold as the in-app disk alert).",
+   "gridPos": {
+    "x": 12,
+    "y": 64,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_disk_free_ratio",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "red"
+       },
+       {
+        "value": 0.15,
+        "color": "green"
+       }
+      ]
+     },
+     "unit": "percentunit"
+    }
+   }
+  },
+  {
+   "id": 18,
+   "type": "timeseries",
+   "title": "Edge (Caddy) requests / second by status",
+   "description": "Caddy handler request counts by HTTP status code (caddy_http_request_duration_seconds_count, verified live on the edge container 2026-11-18). TLS handshake errors have NO series in Caddy metrics (no caddy_tls_* series exists) and Caddy writes no access log, so TLS failures are unmeasured until EDGE-01; do not read this panel as TLS health.",
+   "gridPos": {
+    "x": 0,
+    "y": 72,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count[5m]))",
+     "refId": "A",
+     "legendFormat": "status {{code}}"
+    }
+   ]
+  },
+  {
+   "id": 19,
+   "type": "timeseries",
+   "title": "Edge (Caddy) p95 latency by status",
+   "description": "Edge p95 latency from the Caddy handler histogram, by status code. This covers asset latency only in aggregate: Caddy series carry no path/class label, so per-class asset latency is not separable here — per-class durations live in the nginx stdout telemetry log (class=asset), not in Prometheus. Upstream health: caddy_reverse_proxy_upstreams_healthy.",
+   "gridPos": {
+    "x": 12,
+    "y": 72,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum by (le, code) (rate(caddy_http_request_duration_seconds_bucket[5m])))",
+     "refId": "A",
+     "legendFormat": "p95 {{code}}"
+    }
+   ]
+  },
+  {
+   "id": 20,
+   "type": "timeseries",
+   "title": "Nginx connections / requests",
+   "description": "Frontend nginx via nginx-prometheus-exporter (scrapes stub_status at 127.0.0.1:8081). Frontend RUM/web-vitals counts are browser-local (window.__sellershoWebVitals) until a backend ingest endpoint exists — see src/utils/webVitals.ts.",
+   "gridPos": {
+    "x": 0,
+    "y": 80,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "nginx_connections_active",
+     "refId": "A",
+     "legendFormat": "active connections"
+    },
+    {
+     "expr": "rate(nginx_http_requests_total[5m])",
+     "refId": "B",
+     "legendFormat": "requests / second"
+    }
+   ]
+  },
+  {
+   "id": 21,
+   "type": "text",
+   "title": "Correlation ID lookup",
+   "description": "G-03 companion view: Grafana has no datasource that can call the authenticated admin lookup API, so this panel does NOT query — it links to the admin-panel lookup view and the documented curl instead.",
+   "gridPos": {
+    "x": 12,
+    "y": 80,
+    "w": 12,
+    "h": 8
+   },
+   "options": {
+    "content": "# Correlation ID lookup\n\nGrafana has no datasource that can call the authenticated admin API, so this panel does NOT query — it points at the lookup that does:\n\n* **Admin panel → پایش عملیات خودکار → جست‌وجوی درخواست با شناسه** — paste the `X-Request-ID` there; it returns the request's route, status, duration and its SQL/provider/job spans.\n\n* **curl (same endpoint, admin token):** `curl -H \"Authorization: Bearer $ADMIN_TOKEN\" \"http://127.0.0.1:8080/api/v1/admin/observability/requests?request_id=<id>\"` — full example in `docs/operations/correlation-lookup.md`.\n\nLimits, stated honestly: the ring holds only the last 1000 completed requests (roughly 6–9 hours at current idle traffic, minutes at higher traffic) and is wiped on backend restart; a 404 means the ID has aged out of the ring, not that the request never happened. The old stdout-grep path in `docs/operations/correlation-lookup.md` remains as a fallback for spans only. A durable 7-day log store (Loki) is the named follow-up.",
+    "mode": "markdown"
+   }
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Worker seconds since last success (per job)",
+   "description": "Time since each job's last successful run (D-04 per-job gauges). A climbing line is a stalled job; the in-app job_stale condition fires when ANY job exceeds its own threshold (expiry 18s, ad-cleanup 32s, qc-deadline 92s, supplier-sla 93s, delivery-lock-releaser 190s, monthly-settlement 184s). Panel 10 (expiry) is the legacy alias of unpaid-order-expiry. Jobs with no successful run on record (gauge 0 — e.g. monthly-settlement while settlement is unconfigured) show no line: the queries are guarded (gauge > 0) so they never render as ~57 years (time() - 0).",
+   "gridPos": {
+    "x": 0,
+    "y": 88,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "(time()-sellersho_worker_unpaid_order_expiry_last_success_timestamp_seconds) and (sellersho_worker_unpaid_order_expiry_last_success_timestamp_seconds > 0)",
+     "refId": "A",
+     "legendFormat": "unpaid-order-expiry"
+    },
+    {
+     "expr": "(time()-sellersho_worker_ad_cleanup_last_success_timestamp_seconds) and (sellersho_worker_ad_cleanup_last_success_timestamp_seconds > 0)",
+     "refId": "B",
+     "legendFormat": "ad-cleanup"
+    },
+    {
+     "expr": "(time()-sellersho_worker_qc_response_deadline_last_success_timestamp_seconds) and (sellersho_worker_qc_response_deadline_last_success_timestamp_seconds > 0)",
+     "refId": "C",
+     "legendFormat": "qc-response-deadline"
+    },
+    {
+     "expr": "(time()-sellersho_worker_supplier_sla_last_success_timestamp_seconds) and (sellersho_worker_supplier_sla_last_success_timestamp_seconds > 0)",
+     "refId": "D",
+     "legendFormat": "supplier-sla"
+    },
+    {
+     "expr": "(time()-sellersho_worker_delivery_lock_releaser_last_success_timestamp_seconds) and (sellersho_worker_delivery_lock_releaser_last_success_timestamp_seconds > 0)",
+     "refId": "E",
+     "legendFormat": "delivery-lock-releaser"
+    },
+    {
+     "expr": "(time()-sellersho_worker_monthly_settlement_last_success_timestamp_seconds) and (sellersho_worker_monthly_settlement_last_success_timestamp_seconds > 0)",
+     "refId": "F",
+     "legendFormat": "monthly-settlement"
+    }
+   ]
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Worker backlog (per job)",
+   "description": "Ready-work backlog count per job (D-04 gauges). monthly-settlement backlog is 0 while settlement is unconfigured (its designed inert default). Oldest-age gauges (worker_*_oldest_age_seconds) exist per job; query them ad hoc, e.g. sellersho_worker_delivery_lock_releaser_oldest_age_seconds.",
+   "gridPos": {
+    "x": 12,
+    "y": 88,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sellersho_worker_unpaid_order_expiry_backlog",
+     "refId": "A",
+     "legendFormat": "unpaid-order-expiry"
+    },
+    {
+     "expr": "sellersho_worker_ad_cleanup_backlog",
+     "refId": "B",
+     "legendFormat": "ad-cleanup"
+    },
+    {
+     "expr": "sellersho_worker_qc_response_deadline_backlog",
+     "refId": "C",
+     "legendFormat": "qc-response-deadline"
+    },
+    {
+     "expr": "sellersho_worker_supplier_sla_backlog",
+     "refId": "D",
+     "legendFormat": "supplier-sla"
+    },
+    {
+     "expr": "sellersho_worker_delivery_lock_releaser_backlog",
+     "refId": "E",
+     "legendFormat": "delivery-lock-releaser"
+    },
+    {
+     "expr": "sellersho_worker_monthly_settlement_backlog",
+     "refId": "F",
+     "legendFormat": "monthly-settlement"
+    }
+   ]
+  },
+  {
+   "id": 24,
+   "type": "timeseries",
+   "title": "Admission rejects / in-flight",
+   "description": "D-06 saturation view (backend-worker scope): rejects counted separately from other 5xx as sellersho_http_rejects_total{reason} — all three paths increment it (request_overloaded, request_body_too_large, service_draining) — and admission-slot occupancy as sellersho_admission_inflight{lane}. G-08 (drive past 64 concurrent slots, show the counter move) still needs the disposable-stack run.",
+   "gridPos": {
+    "x": 0,
+    "y": 96,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "targets": [
+    {
+     "expr": "sum by (reason) (rate(sellersho_http_rejects_total[5m]))",
+     "refId": "A",
+     "legendFormat": "rejects {{reason}}"
+    },
+    {
+     "expr": "sellersho_admission_inflight",
+     "refId": "B",
+     "legendFormat": "in-flight {{lane}}"
+    }
+   ]
+  }
+ ]
 }

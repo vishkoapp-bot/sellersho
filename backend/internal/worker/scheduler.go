@@ -226,7 +226,13 @@ func (w *BackgroundWorker) recordJobRun(ctx context.Context, started time.Time, 
 	if runErr != nil {
 		outcome = "error"
 	}
-	observability.LogOperation(ctx, "worker", "settlement", outcome, time.Since(started))
+	// D-05: this direct cycle bypasses the runner, so it records its
+	// own single observation — under its own job name
+	// ("delivery-lock-releaser"), counted exactly once. The previous
+	// "settlement" label was wrong twice over: it double-counted
+	// monthly-settlement (which the runner already records) and
+	// mislabelled a delivery-lock cycle as a settlement.
+	observability.LogOperation(ctx, "worker", "delivery-lock-releaser", outcome, time.Since(started))
 	if w.db == nil {
 		return
 	}

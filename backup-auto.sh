@@ -27,5 +27,21 @@ mv "$DEST/config.tar.gz.tmp" "$DEST/config.tar.gz"
 # 4) Rotation: remove dated backup dirs older than 7 days
 find "$BASE" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
 
+# 5) OBS-01 D-02: publish the verified backup-success signal. The
+# publisher re-verifies all three artifacts (non-empty + gzip -t) and
+# only then upserts backup_signals; the observability poller reads that
+# row into sellersho_backup_last_success_timestamp_seconds. Deploy note:
+# scripts/publish-backup-success.sh must sit at
+# /opt/drup/scripts/publish-backup-success.sh next to this file. A
+# publish failure warns loudly but does not fail the backup itself —
+# the files on disk are the source of truth, and the poller treats an
+# unpublished signal as unknown, never as success.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/scripts/publish-backup-success.sh" ]; then
+  "$SCRIPT_DIR/scripts/publish-backup-success.sh" "$DEST" || echo "WARNING: backup-success signal publish failed for $DEST" >&2
+else
+  echo "WARNING: publisher $SCRIPT_DIR/scripts/publish-backup-success.sh missing; backup-success signal NOT published" >&2
+fi
+
 ls -lh "$DEST"
 echo "BACKUP_AUTO_OK $DATE"

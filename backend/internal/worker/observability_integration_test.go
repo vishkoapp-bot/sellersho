@@ -32,7 +32,7 @@ func TestOperationsCycleEmitsCorrelatedSQLAndJob(t *testing.T) {
 	s := buf.String()
 	var id string
 	for _, line := range strings.Split(s, "\n") {
-		if strings.Contains(line, "component=worker operation=expiry") {
+		if strings.Contains(line, "component=worker operation=unpaid-order-expiry") {
 			for _, field := range strings.Fields(line) {
 				if strings.HasPrefix(field, "request_id=") {
 					id = strings.TrimPrefix(field, "request_id=")

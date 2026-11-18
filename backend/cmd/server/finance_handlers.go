@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,20 +54,72 @@ func handleGetStoreStatement(w http.ResponseWriter, r *http.Request, ctx context
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
+	// Statement months are Asia/Tehran calendar months (FIN-009 Q-02:
+	// TEHRAN, owner decision Nov 19 — supersedes the FIN-001 UTC
+	// month): the month parameter is parsed as Tehran by the
+	// repository, and the default (no month given) is the current
+	// Tehran month — never UTC and never server-local time (FIN-009
+	// D-04).
 	month := r.URL.Query().Get("month")
 	if month == "" {
-		month = time.Now().Format("2006-01")
+		month = defaultStatementMonth(time.Now())
 	}
-	stmt, err := finRepo.GetStoreStatement(ctx, storeID, month)
+	// Paging (FIN-009 D-03): ?limit= caps one page (default 50, max
+	// 200); ?cursor= is the NextCursor of the previous page.
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			http.Error(w, `{"error":"limit must be a non-negative integer"}`, http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	stmt, err := finRepo.GetStoreStatementPage(ctx, storeID, month, repository.StatementPageOptions{Limit: limit, Cursor: r.URL.Query().Get("cursor")})
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid month") {
 			http.Error(w, `{"error":"month must be YYYY-MM"}`, http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(err.Error(), "invalid statement cursor") {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(stmt)
+}
+
+// statementTehranLoc is the Asia/Tehran location for statement
+// months (FIN-009 Q-02: TEHRAN, owner decision Nov 19). Loaded once
+// at startup with time.LoadLocation — the same mechanism as the
+// storage-fee precedent (storage_fee_repo.go loadTehranLocation) —
+// but a load failure is a fail-fast startup panic, never a silent
+// fallback to UTC: a Tehran month computed in UTC would silently move
+// the 00:00–03:29 Tehran window on the 1st into the previous month.
+// The load cannot fail in practice: time/tzdata is embedded in the
+// binary (imported by internal/repository) and the system zoneinfo
+// database also carries Asia/Tehran (verified in the test
+// environment).
+var statementTehranLoc = mustLoadStatementTehranLocation()
+
+func mustLoadStatementTehranLocation() *time.Location {
+	loc, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		panic("statement month timezone Asia/Tehran unavailable: " + err.Error())
+	}
+	return loc
+}
+
+// defaultStatementMonth derives the default statement month from an
+// instant. Asia/Tehran, per the FIN-009 Q-02 owner decision (Nov 19):
+// time.ParseInLocation("2006-01", ..., Asia/Tehran) in the repository
+// defines the month window, so the default must be Tehran too —
+// deriving it from UTC silently omits events in the 00:00–03:29
+// Tehran window on the 1st (FIN-009 D-04).
+func defaultStatementMonth(now time.Time) string {
+	return now.In(statementTehranLoc).Format("2006-01")
 }
 
 func handleGetPendingSettlements(w http.ResponseWriter, r *http.Request, ctx context.Context, finRepo *repository.FinanceRepository) {

@@ -48,7 +48,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		t.Skipf("disposable database unavailable: %v", err)
 	}
 	stmts := []string{
-		`DROP TABLE IF EXISTS order_inventory_returns, order_inventory_captures, seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
+		`DROP TABLE IF EXISTS order_inventory_returns, order_inventory_captures, seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, referral_commission_reversals, seller_profit_reversals, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
 		`CREATE TABLE finance_command_requests(principal_type TEXT,principal_id TEXT,operation TEXT,client_key TEXT,fingerprint TEXT,result JSONB,PRIMARY KEY(principal_type,principal_id,operation,client_key))`,
@@ -90,6 +90,36 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY, referrer_store_id TEXT, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
+		// FIN-011 (migration 202611180005) and FIN-009 (migration
+		// 202611190001): the statement union and the canonical balance
+		// reference these tables unguarded, so the minimal fixture
+		// must create them in the same shape as the migrations (D-02).
+		`CREATE TABLE referral_commission_reversals (
+			id VARCHAR(80) PRIMARY KEY,
+			order_id TEXT NOT NULL,
+			referrer_store_id TEXT NOT NULL,
+			amount BIGINT NOT NULL CHECK (amount > 0),
+			source VARCHAR(20) NOT NULL CHECK (source IN ('customer_return','dispute','admin_refund')),
+			source_id TEXT NOT NULL,
+			ledger_entry_id VARCHAR(80),
+			idempotency_key VARCHAR(150) NOT NULL UNIQUE,
+			reason TEXT NOT NULL,
+			actor_user_id VARCHAR(80) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE seller_profit_reversals (
+			id VARCHAR(80) PRIMARY KEY,
+			order_id TEXT NOT NULL,
+			store_id TEXT NOT NULL,
+			amount BIGINT NOT NULL CHECK (amount > 0),
+			source VARCHAR(20) NOT NULL CHECK (source IN ('dispute','admin_refund')),
+			source_id TEXT NOT NULL,
+			ledger_entry_id VARCHAR(80),
+			idempotency_key VARCHAR(150) NOT NULL UNIQUE,
+			reason TEXT NOT NULL,
+			actor_user_id VARCHAR(80) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
 		`CREATE TABLE supplier_warehouses (id TEXT PRIMARY KEY, supplier_id TEXT, name TEXT, province_name TEXT, city_name TEXT, address TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id TEXT, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT)`,

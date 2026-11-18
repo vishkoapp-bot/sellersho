@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -319,6 +320,28 @@ type StoreStatement struct {
 	ClosingReserved  int64 `json:"closingReserved"`
 	CurrentAvailable int64 `json:"currentAvailable"`
 
+	// OpeningEntry is the explicit reconciled-opening marker (FIN-009
+	// D-05): the derived opening amount as its own entry, dated at the
+	// month start, so the opening is visible in the response instead
+	// of only implied by OpeningAvailable. It is NOT a month flow and
+	// is never included in Entries or in the month totals. Nil when
+	// the opening is 0. OpeningVerified reports whether any
+	// reconciliation evidence backs the opening: FIN-009 records no
+	// such evidence, so it is always false here — an unverified
+	// opening is flagged, never replaced with invented history.
+	// FIN-014 owns the cutover record that can set it true.
+	OpeningEntry    *StatementEntry `json:"openingEntry,omitempty"`
+	OpeningVerified bool            `json:"openingVerified"`
+
+	// Paging (FIN-009 D-03): TotalEntries is the month's entry count
+	// (all pages), NextCursor is the opaque token for the following
+	// page (empty on the last page), Limit is the page size that was
+	// applied. The unpaged GetStoreStatement returns the whole month:
+	// TotalEntries == len(Entries), NextCursor == "", Limit == 0.
+	TotalEntries int    `json:"totalEntries"`
+	NextCursor   string `json:"nextCursor,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+
 	StoreID     string           `json:"storeId"`
 	Month       string           `json:"month"`
 	Entries     []StatementEntry `json:"entries"`
@@ -524,29 +547,204 @@ func (r *FinanceRepository) RequestStorePayout(ctx context.Context, storeID, sha
 	return r.RequestOwnedStorePayout(ctx, owner, storeID, shaba, bankName, amount, clientKeys...)
 }
 
+// statementPostedSQL is the canonical posted-flow union behind
+// GetStoreStatement. Every arm carries (id, occurred, direction, amount,
+// reason); the month filter, the undated guard and the projections all
+// read this one definition, so the balance, the statement and the
+// treasury hold cannot drift apart. The sort key is (occurred DESC, id,
+// reason): a total order — the two legs of one released order share
+// (occurred, id) and are ordered deterministically by reason — and the
+// paging cursor carries exactly that key.
+func statementPostedSQL() string {
+	return `SELECT id::text,profit_released_at occurred,'credit' direction,dropshipper_profit amount,'released_profit' reason FROM orders WHERE store_id=$1 AND profit_released AND status IN ('delivered','delivered_confirmed')
+ UNION ALL SELECT id::text,released_at,'credit',amount,'referral_bonus' FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'
+ UNION ALL SELECT id::text,profit_released_at,'credit',referral_commission,'referral_commission' FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released AND status<>'cancelled'
+ UNION ALL SELECT r.id,r.created_at,'debit',r.amount,'referral_commission_reversal' FROM referral_commission_reversals r WHERE r.referrer_store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.referral_commission_released AND o.status<>'cancelled')
+ UNION ALL SELECT id::text,created_at,CASE WHEN operation='debit' THEN 'debit' ELSE 'credit' END,amount,'seller_return' FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'
+ UNION ALL SELECT r.id,r.created_at,'debit',r.amount,'seller_return' FROM seller_profit_reversals r WHERE r.store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.profit_released AND o.status IN ('delivered','delivered_confirmed'))
+ UNION ALL SELECT id::text,date,type,amount,'finance_adjustment' FROM ledger_entries WHERE target_account='store_payable:' || $1 AND target_type='seller' AND reason LIKE 'سند تعدیل%'
+ UNION ALL SELECT id::text,COALESCE(processed_at,created_at),'debit',amount,'payout' FROM payout_requests WHERE store_id=$1 AND status IN ('paid','processing','completed','transfer_confirmed')
+ UNION ALL SELECT id::text,created_at,'debit',amount,'service' FROM seller_service_purchases WHERE store_id=$1
+ UNION ALL SELECT id::text,processed_at,'debit',fee_amount,'early_fee' FROM seller_early_withdrawals WHERE store_id=$1 AND status='approved'`
+}
+
+// statementReasonLabels maps union reason keys to display strings.
+var statementReasonLabels = map[string]string{
+	"released_profit":              "سود آزادشده سفارش",
+	"referral_bonus":               "پاداش معرف آزادشده",
+	"referral_commission":          "کمیسیون معرفی آزادشده",
+	"referral_commission_reversal": "برگشت کمیسیون معرفی",
+	"seller_return":                "برگشت سود فروشنده",
+	"finance_adjustment":           "سند تعدیل حساب",
+	"payout":                       "تسویه و واریز به حساب شبا",
+	"service":                      "خرید سرویس",
+	"early_fee":                    "کارمزد برداشت زودهنگام",
+}
+
+// StatementPageOptions bounds one page of a store statement.
+type StatementPageOptions struct {
+	// Limit caps the entries in one page (default 50, clamped to 1..200).
+	Limit int
+	// Cursor is the opaque page token returned as NextCursor by the
+	// previous page; empty starts at the first page.
+	Cursor string
+}
+
+// statementPageLimit normalises the requested page size.
+func statementPageLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+// encodeStatementCursor builds the opaque cursor for the last entry of a
+// page from its sort key (occurred, id, reason). The key is raw (the
+// union's reason key, not the display label), so the predicate below
+// compares the same values the ORDER BY sorts by.
+func encodeStatementCursor(occurred time.Time, id, reason string) string {
+	raw := occurred.Format(time.RFC3339Nano) + "\n" + id + "\n" + reason
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeStatementCursor parses a page cursor back into its sort key.
+func decodeStatementCursor(cursor string) (time.Time, string, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", "", fmt.Errorf("invalid statement cursor: %w", err)
+	}
+	parts := strings.SplitN(string(raw), "\n", 3)
+	if len(parts) != 3 {
+		return time.Time{}, "", "", fmt.Errorf("invalid statement cursor")
+	}
+	occurred, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, "", "", fmt.Errorf("invalid statement cursor: %w", err)
+	}
+	return occurred, parts[1], parts[2], nil
+}
+
+// statementOpeningEntry builds the explicit opening marker for a
+// statement month (FIN-009 D-05). The amount stays derived (the
+// projection sum); the entry makes it explicit in the response. Nil
+// when the opening is 0. The entry is never a month flow and is never
+// included in Entries or the month totals.
+func statementOpeningEntry(month string, start time.Time, opening int64) *StatementEntry {
+	if opening == 0 {
+		return nil
+	}
+	typ := "credit"
+	amount := opening
+	if opening < 0 {
+		typ = "debit"
+		amount = -opening
+	}
+	return &StatementEntry{
+		ID: "opening:" + month, Date: start, Type: typ, Amount: amount,
+		Reason: "مانده ابتدای دوره", Reference: "opening",
+	}
+}
+
+// statementCutoffs computes (openingAvailable, openingReserved,
+// closingAvailable, closingReserved) for [start, end) in one
+// repeatable-read snapshot.
+func statementCutoffs(ctx context.Context, tx *sql.Tx, storeID string, start, end time.Time) (openingAvailable, openingReserved, closingAvailable, closingReserved int64, err error) {
+	posted := statementPostedSQL()
+	reserve := `COALESCE((SELECT SUM(amount) FROM payout_requests WHERE store_id=$1 AND created_at<$2 AND ((status IN ('pending','approved')) OR (COALESCE(processed_at,created_at)>=$2 AND status IN ('rejected','paid','processing','completed','transfer_confirmed')))),0)+COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND created_at<$2 AND (status='pending' OR (processed_at>=$2 AND status IN ('approved','rejected')))),0)`
+	projection := func(cutoff time.Time) (int64, int64, error) {
+		var net, reserved int64
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END) FROM (`+posted+`) e WHERE occurred<$2),0),`+reserve, storeID, cutoff).Scan(&net, &reserved)
+		if err != nil {
+			return 0, 0, err
+		}
+		available, err := signedBalanceSum([]int64{net}, []int64{reserved})
+		return available, reserved, err
+	}
+	openingAvailable, openingReserved, err = projection(start)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	closingAvailable, closingReserved, err = projection(end)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return openingAvailable, openingReserved, closingAvailable, closingReserved, nil
+}
+
+// statementFinish fills the cutoff-derived fields, the current canonical
+// balance and the explicit opening marker, then commits. The opening
+// stays unverified: FIN-009 records no reconciliation evidence for it
+// (FIN-014 owns the cutover record that can set OpeningVerified true).
+func statementFinish(ctx context.Context, tx *sql.Tx, result *StoreStatement, start, end time.Time) error {
+	var err error
+	result.OpeningAvailable, result.OpeningReserved, result.ClosingAvailable, result.ClosingReserved, err = statementCutoffs(ctx, tx, result.StoreID, start, end)
+	if err != nil {
+		return err
+	}
+	// Includes the current canonical signed amount explicitly, without confusing it
+	// with a historical cutoff when later events have already posted.
+	balance, err := scanStoreBalance(ctx, tx, result.StoreID)
+	if err != nil {
+		return err
+	}
+	result.CurrentAvailable = balance.AvailableAmount
+	result.OpeningEntry = statementOpeningEntry(result.Month, start, result.OpeningAvailable)
+	result.OpeningVerified = false
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// statementMonthWindow parses a YYYY-MM statement month into the
+// [start, end) window of Asia/Tehran midnights (FIN-009 Q-02: TEHRAN —
+// owner decision Nov 19, superseding the FIN-001 UTC month). start is
+// 00:00 Asia/Tehran on the 1st of the month; end is 00:00 Asia/Tehran
+// on the 1st of the next month (start.AddDate(0, 1, 0) in that
+// location). The occurred values are timestamptz, so comparing them
+// against these absolute instants is correct regardless of session
+// timezone. The opening/closing projection cutoffs in
+// statementCutoffs flow from the same start/end, so no cutoff is left
+// in UTC; the opening entry is likewise dated at the Tehran start.
+//
+// The location is loaded with time.LoadLocation — the same mechanism
+// as the storage-fee precedent (storage_fee_repo.go
+// loadTehranLocation) — but a load failure is returned as an error
+// here, never a silent fallback to UTC: a Tehran month computed in UTC
+// would silently move the 00:00–03:29 Tehran window on the 1st into
+// the previous month. The load cannot fail in practice: time/tzdata
+// is embedded in the binary (imported by storage_history_policy.go in
+// this package) and the system zoneinfo database also carries
+// Asia/Tehran (verified in the test environment).
+func statementMonthWindow(month string) (time.Time, time.Time, error) {
+	loc, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("statement month timezone Asia/Tehran unavailable: %w", err)
+	}
+	start, err := time.ParseInLocation("2006-01", month, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid month: %w", err)
+	}
+	return start, start.AddDate(0, 1, 0), nil
+}
+
 // GetStoreStatement separates posted flows from reservations. Historical cutoffs
 // project the immutable event dates and current state records; missing financial
 // event dates require reconciliation rather than an invented posting period.
 func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, month string) (*StoreStatement, error) {
-	start, err := time.Parse("2006-01", month)
+	start, end, err := statementMonthWindow(month)
 	if err != nil {
-		return nil, fmt.Errorf("invalid month: %w", err)
+		return nil, err
 	}
-	end := start.AddDate(0, 1, 0)
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	posted := `SELECT id::text,profit_released_at occurred,'credit' direction,dropshipper_profit amount,'released_profit' reason FROM orders WHERE store_id=$1 AND profit_released AND status IN ('delivered','delivered_confirmed')
- UNION ALL SELECT id::text,released_at,'credit',amount,'referral_bonus' FROM referral_bonuses WHERE referrer_store_id=$1 AND status='released'
- UNION ALL SELECT id::text,profit_released_at,'credit',referral_commission,'referral_commission' FROM orders WHERE referrer_seller_id=$1 AND referral_commission_released AND status<>'cancelled'
- UNION ALL SELECT r.id,r.created_at,'debit',r.amount,'referral_commission_reversal' FROM referral_commission_reversals r WHERE r.referrer_store_id=$1 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=r.order_id AND o.referral_commission_released AND o.status<>'cancelled')
- UNION ALL SELECT id::text,created_at,CASE WHEN operation='debit' THEN 'debit' ELSE 'credit' END,amount,'seller_return' FROM customer_return_financial_events WHERE store_id=$1 AND component='seller_profit'
- UNION ALL SELECT id::text,date,type,amount,'finance_adjustment' FROM ledger_entries WHERE target_account='store_payable:' || $1 AND target_type='seller' AND reason LIKE 'سند تعدیل%'
- UNION ALL SELECT id::text,COALESCE(processed_at,created_at),'debit',amount,'payout' FROM payout_requests WHERE store_id=$1 AND status IN ('paid','processing','completed','transfer_confirmed')
- UNION ALL SELECT id::text,created_at,'debit',amount,'service' FROM seller_service_purchases WHERE store_id=$1
- UNION ALL SELECT id::text,processed_at,'debit',fee_amount,'early_fee' FROM seller_early_withdrawals WHERE store_id=$1 AND status='approved'`
+	posted := statementPostedSQL()
 	var undated int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+posted+`) e WHERE amount<>0 AND occurred IS NULL`, storeID).Scan(&undated); err != nil {
 		return nil, err
@@ -555,7 +753,7 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 		return nil, ErrFinancePrincipalUnresolved
 	}
 	result := &StoreStatement{StoreID: storeID, Month: month, Entries: []StatementEntry{}}
-	rows, err := tx.QueryContext(ctx, `SELECT id,occurred,direction,amount,reason FROM (`+posted+`) e WHERE amount>0 AND occurred>=$2 AND occurred<$3 ORDER BY occurred DESC,id`, storeID, start, end)
+	rows, err := tx.QueryContext(ctx, `SELECT id,occurred,direction,amount,reason FROM (`+posted+`) e WHERE amount>0 AND occurred>=$2 AND occurred<$3 ORDER BY occurred DESC,id,reason`, storeID, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +764,7 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 			rows.Close()
 			return nil, err
 		}
-		e.Reason = map[string]string{"released_profit": "سود آزادشده سفارش", "referral_bonus": "پاداش معرف آزادشده", "referral_commission": "کمیسیون معرفی آزادشده", "referral_commission_reversal": "برگشت کمیسیون معرفی", "seller_return": "برگشت سود فروشنده", "finance_adjustment": "سند تعدیل حساب", "payout": "تسویه و واریز به حساب شبا", "service": "خرید سرویس", "early_fee": "کارمزد برداشت زودهنگام"}[e.Reason]
+		e.Reason = statementReasonLabels[e.Reason]
 		e.Reference = e.ID
 		result.Entries = append(result.Entries, e)
 		if e.Type == "credit" {
@@ -592,32 +790,97 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 	if err != nil {
 		return nil, err
 	}
-	reserve := `COALESCE((SELECT SUM(amount) FROM payout_requests WHERE store_id=$1 AND created_at<$2 AND ((status IN ('pending','approved')) OR (COALESCE(processed_at,created_at)>=$2 AND status IN ('rejected','paid','processing','completed','transfer_confirmed')))),0)+COALESCE((SELECT SUM(gross_amount) FROM seller_early_withdrawals WHERE store_id=$1 AND created_at<$2 AND (status='pending' OR (processed_at>=$2 AND status IN ('approved','rejected')))),0)`
-	projection := func(cutoff time.Time) (int64, int64, error) {
-		var net, reserved int64
-		err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END) FROM (`+posted+`) e WHERE occurred<$2),0),`+reserve, storeID, cutoff).Scan(&net, &reserved)
+	// Unpaged: the whole month is one page.
+	result.TotalEntries = len(result.Entries)
+	if err := statementFinish(ctx, tx, result, start, end); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetStoreStatementPage returns one page of a store statement (FIN-009
+// D-03). Entries are ordered by (occurred DESC, id, reason) — a total
+// order, so the same-order profit/commission legs always come out in
+// the same relative order — and the cursor carries exactly that key, so
+// paging round-trips every entry exactly once. TotalCredit, TotalDebit,
+// NetBalance and TotalEntries are MONTH totals (all pages), not page
+// totals; the opening/closing/current fields are the same projections
+// GetStoreStatement returns.
+func (r *FinanceRepository) GetStoreStatementPage(ctx context.Context, storeID, month string, opts StatementPageOptions) (*StoreStatement, error) {
+	start, end, err := statementMonthWindow(month)
+	if err != nil {
+		return nil, err
+	}
+	limit := statementPageLimit(opts.Limit)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	posted := statementPostedSQL()
+	var undated int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+posted+`) e WHERE amount<>0 AND occurred IS NULL`, storeID).Scan(&undated); err != nil {
+		return nil, err
+	}
+	if undated > 0 {
+		return nil, ErrFinancePrincipalUnresolved
+	}
+	result := &StoreStatement{StoreID: storeID, Month: month, Entries: []StatementEntry{}, Limit: limit}
+	// Month totals (all pages) in one aggregate pass.
+	var totalCredit, totalDebit int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE 0 END),0),COALESCE(SUM(CASE WHEN direction='debit' THEN amount ELSE 0 END),0) FROM (`+posted+`) e WHERE amount>0 AND occurred>=$2 AND occurred<$3`, storeID, start, end).Scan(&result.TotalEntries, &totalCredit, &totalDebit); err != nil {
+		return nil, err
+	}
+	result.TotalCredit = totalCredit
+	result.TotalDebit = totalDebit
+	if result.NetBalance, err = signedBalanceSum([]int64{totalCredit}, []int64{totalDebit}); err != nil {
+		return nil, err
+	}
+	// Page rows: strictly after the cursor in (occurred DESC, id, reason)
+	// order. limit+1 rows detect whether a next page exists.
+	args := []interface{}{storeID, start, end, limit + 1}
+	predicate := ""
+	if opts.Cursor != "" {
+		cursorOccurred, cursorID, cursorReason, err := decodeStatementCursor(opts.Cursor)
 		if err != nil {
-			return 0, 0, err
+			return nil, err
 		}
-		available, err := signedBalanceSum([]int64{net}, []int64{reserved})
-		return available, reserved, err
+		predicate = ` AND (occurred<$5 OR (occurred=$5 AND (id>$6 OR (id=$6 AND reason>$7))))`
+		args = append(args, cursorOccurred, cursorID, cursorReason)
 	}
-	result.OpeningAvailable, result.OpeningReserved, err = projection(start)
+	rows, err := tx.QueryContext(ctx, `SELECT id,occurred,direction,amount,reason FROM (`+posted+`) e WHERE amount>0 AND occurred>=$2 AND occurred<$3`+predicate+` ORDER BY occurred DESC,id,reason LIMIT $4`, args...)
 	if err != nil {
 		return nil, err
 	}
-	result.ClosingAvailable, result.ClosingReserved, err = projection(end)
-	if err != nil {
+	for rows.Next() {
+		var e StatementEntry
+		var rawReason string
+		if err := rows.Scan(&e.ID, &e.Date, &e.Type, &e.Amount, &rawReason); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if len(result.Entries) == limit {
+			// limit+1-th row: a next page exists; the cursor is the
+			// last entry of THIS page. Its raw reason key rides in
+			// Reference until the cursor is built below.
+			last := result.Entries[limit-1]
+			result.NextCursor = encodeStatementCursor(last.Date, last.ID, last.Reference)
+			rows.Close()
+			break
+		}
+		e.Reason = statementReasonLabels[rawReason]
+		e.Reference = rawReason
+		result.Entries = append(result.Entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
-	// Includes the current canonical signed amount explicitly, without confusing it
-	// with a historical cutoff when later events have already posted.
-	balance, err := scanStoreBalance(ctx, tx, storeID)
-	if err != nil {
-		return nil, err
+	rows.Close()
+	for i := range result.Entries {
+		result.Entries[i].Reference = result.Entries[i].ID
 	}
-	result.CurrentAvailable = balance.AvailableAmount
-	if err := tx.Commit(); err != nil {
+	if err := statementFinish(ctx, tx, result, start, end); err != nil {
 		return nil, err
 	}
 	return result, nil

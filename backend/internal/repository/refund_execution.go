@@ -137,6 +137,17 @@ func (r *OrderRepository) recordRefundOutcome(ctx context.Context, id, status, r
 		if err = recordReferralCommissionReversalForOrderRefundTx(ctx, tx, id, "system:refund-execution"); err != nil {
 			return "unknown", err
 		}
+		// FIN-009 (D-01): the same succeeded transition reverses the
+		// seller's released profit pro-rata (dispute / admin_refund).
+		// The reversal is a compensating event in
+		// seller_profit_reversals, never a mutation of the order row
+		// or the released flag; a party that already withdrew the
+		// money goes negative, the established pattern for return
+		// charges. Customer-return (wallet) refunds reverse in
+		// recordReturnReversalsTx instead; cancellations write nothing.
+		if err = recordSellerProfitReversalForOrderRefundTx(ctx, tx, id, "system:refund-execution"); err != nil {
+			return "unknown", err
+		}
 	}
 	return status, tx.Commit()
 }

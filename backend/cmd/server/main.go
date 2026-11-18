@@ -1121,6 +1121,11 @@ func run(signalCtx context.Context) (result error) {
 			handleGetStoreBalance(w, r, ctx, storeID, finRepo)
 			return
 		}
+		// Statement months are Asia/Tehran calendar months (FIN-009
+		// Q-02: TEHRAN, owner decision Nov 19 — supersedes the FIN-001
+		// UTC month); ?month=YYYY-MM defaults to the current Tehran
+		// month, ?limit= / ?cursor= page the entries (FIN-009
+		// D-03/D-04).
 		if strings.HasSuffix(sub, "/statement") {
 			storeID := strings.TrimSuffix(sub, "/statement")
 			handleGetStoreStatement(w, r, ctx, storeID, finRepo)

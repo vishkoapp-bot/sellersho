@@ -387,10 +387,15 @@ func computeTreasuryCashPosition(ctx context.Context, q repository.TreasuryQueri
 	// no add-back is needed for referral in
 	// SumAllStoresAvailableSplit — the hold is the only place an
 	// unreleased-order reversal is netted, exactly once.
+	// FIN-009 (D-01): a dispute/admin seller-profit reversal on an
+	// UNRELEASED order nets against the hold the same way (first
+	// GREATEST term below) — the canonical availability subtracts
+	// seller_profit_reversals only on RELEASED orders, so the hold is
+	// again the only place it is netted, exactly once.
 	var heldInOrders, heldOrderCount int64
 	{
 		err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(net),0), COALESCE(COUNT(*) FILTER (WHERE net > 0),0) FROM (
-			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0), 0) + GREATEST(COALESCE(o.referral_commission,0) - COALESCE((SELECT SUM(amount) FROM referral_commission_reversals WHERE order_id=o.id),0), 0) AS net
+			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0) - COALESCE((SELECT SUM(amount) FROM seller_profit_reversals WHERE order_id=o.id),0), 0) + GREATEST(COALESCE(o.referral_commission,0) - COALESCE((SELECT SUM(amount) FROM referral_commission_reversals WHERE order_id=o.id),0), 0) AS net
 			FROM orders o WHERE o.payment_status='paid' AND COALESCE(o.profit_released,FALSE)=FALSE AND o.status IN ('delivered','delivered_confirmed')
 		) s`).Scan(&heldInOrders, &heldOrderCount)
 		if err != nil {

@@ -44,7 +44,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-005 | DONE | 08c6d5b | [Dispute eligibility contract](../specs/2026-11-16-dispute-eligibility-design.md) |
 | FIN-007 | DONE | current FIN007 release; see git log | [Coupon reservation contract](../specs/2026-11-17-coupon-reservations-design.md) |
 | FIN-008 | DONE | f5203a4 | [Treasury cash evidence](../../../backend/migrations/202611180001_treasury_cash_evidence.up.sql) |
-| FIN-011 | TODO | — | — |
+| FIN-011 | DONE | d231813 | Completion section below (gates G-01…G-12) |
 | FIN-009 | TODO | — | — |
 | FIN-013 | TODO | — | — |
 | CHECKOUT-02 | DONE | 9122e4de | Completion section below (gates G-01…G-15) |
@@ -951,8 +951,12 @@ Final tested tree432e76625223b4ce65104d9505b5e38389da2908 passed root's serial t
 
 Evidence is in local ignored releases/fin007-final-gates.json, fin007-linux-race-proof.json, fin007-go-skip-audit.json, fin007-old-binary-run-9/manifest.json, source/compatibility proofs and the SDD task/review reports. The final release adds only completion/handoff documentation to the tested tree. Actual production deployment/postchecks are recorded after the commit in releases/fin007-production-receipt.json; this local DONE is not PSP/hardware or historical repair certification.
 
-The owner requested publishing this stage and handing all remaining work to another agent. See [agent handoff](../../operations/agent-handoff-2026-11-17.md). No FIN008 implementation or additional feature was started. Current task gates:33 DONE,3 Checkpoint OPEN,18 TODO;21 not closed. Sandbox Zarinpal access is not ready; intended-hardware1000-user/100-RPS certification remains OPEN by owner choice.
+The owner requested publishing this stage and handing all remaining work to another agent. See [agent handoff](../../operations/agent-handoff-2026-11-17.md). No FIN008 implementation or additional feature was started. Current task gates:34 DONE,3 Checkpoint OPEN,17 TODO;20 not closed. Sandbox Zarinpal access is not ready; intended-hardware1000-user/100-RPS certification remains OPEN by owner choice.
 
 ## CHECKOUT-02 — DONE (mismatch review + abandon-and-reclaim; pushed 9122e4de)
 
 Commit `9122e4de` (11 files, 186,936 bytes): sequence shipping quotes and recover from server mismatch — mismatch review + abandon-and-reclaim + allocation-aware quoteId (B1/B2/S1 fix round + B3/S2/S3/N1 round + B4 round). Critic GO (bb36b8b2) after three fix rounds, no blockers. Final counts: both CHECKOUT-02 test files 31/31, full node-safe suite 281/281, tsc 18 errors, 0 in changed files. Gates: G-01, G-02, G-04–G-11, G-14, G-15 PASS; G-03 (a)/(c) + direct-buy limb PASS at staged level; G-12 PASS both modes; G-13(b) PASS. No backend touched (frontend-only). Outstanding as live-browser drills only (honest, not runnable on this VM — no live browser here): G-03(b), G-13(a)/(c), S1 rendered-drawer wiring, B3 rendered direct-buy drill, B4 rendered direct-buy drill. Prod verification record: see the progress file heartbeat and the Notion row after deploy.
+
+## FIN-011 — DONE (referral reversal + release conservation; pushed d231813)
+
+Commit `d231813` (16 files, 444,538 bytes): referral reversal + release conservation — Q-01 retained-value pro-rata commission reversal (cumulative, capped, floored at 0, compensating events only), Q-02 bonus release moved to window close gated on retained value > 0, Q-03 ledger leg + platformEarned netting, treasury hold includes pending commission (8,510,000), migration 202611180005 (referral_commission_reversals + immutability trigger). Critic GO round 1 (6a9e4f0a), no fix list. Own evidence: FIN-011 14/14 repo + 6/6 cmd/server; FIN-005 single failure proven pre-existing on the pre-fix tree; treasury 27/27; migration up/down/re-up verified. First SSH push (no approval card). Re-enable: I-02 confirmed by owner Nov 19 ~00:53 (partial return unlocks the flat 100,000 bonus in full); Q-02b moot per owner Nov 19 ~00:54 (no returns after the 7-day window, so a released bonus can never be followed by a return; no clawback needed). Referral re-enabled + verified on prod after deploy. Prod verification record: see the progress file heartbeat and the Notion row after deploy.

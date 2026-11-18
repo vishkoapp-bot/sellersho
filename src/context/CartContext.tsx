@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Product, CartItem } from '../types';
 import { cartItemKey } from '../utils/cartKey';
 import { cartQuantityAllowed, mergeCartPurchase, resolvePurchase } from '../utils/productPurchase';
+import { computeCartPricing } from '../utils/cartPricing';
 
 
 export interface CartContextType {
@@ -9,6 +10,8 @@ export interface CartContextType {
   cartTotal: number;
   cartDiscount: number;
   cartPayable: number;
+  /** Selected addon fees (SUM feePerUnit x qty) — a row of its own, never netted into the discount. */
+  cartAddonsTotal: number;
   cartItemsCount: number;
   itemCount: number;
   isCartOpen: boolean;
@@ -146,18 +149,19 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const getCartItem = (key: string) => cart.find((item) => matchesKey(item, key));
 
-  const cartTotal = cart.reduce((sum, item) => sum + (item.product.originalPrice || item.product.price) * item.quantity, 0);
-  // FIX 14b: live's cart fee helper sums product.addons feePerUnit over
-  // the line's selected addon ids; the payable must include them, or
-  // the drawer total would understate what the backend charges.
-  const cartAddonTotal = (item: CartItem): number => {
-    const ids = item.selectedAddonIds;
-    if (!ids || ids.length === 0 || !item.product.addons) return 0;
-    const byId = new Map(item.product.addons.map((a) => [a.id, a.feePerUnit || 0]));
-    return ids.reduce((sum, id) => sum + (byId.get(id) ?? 0), 0);
-  };
-  const cartPayable = cart.reduce((sum, item) => sum + (item.product.price + cartAddonTotal(item)) * item.quantity, 0);
-  const cartDiscount = Math.max(0, cartTotal - cartPayable);
+  // CHECKOUT-03: one canonical breakdown (src/utils/cartPricing.ts), shared
+  // with the drawer (cart + direct), success screen and order detail.
+  //   cartTotal    = merchandise original (list price, NO addons)
+  //   cartPayable  = merchandise net + addons (== goodsPayable)
+  //   cartDiscount = merchandise-ONLY discount, max(0, original - net).
+  // The old formula subtracted a payable that INCLUDED addons from the
+  // original, so the discount was swallowed whenever addons were present
+  // (original 100 / sale 90 / addons 50 reported discount 0, not 10).
+  const cartPricing = computeCartPricing(cart);
+  const cartTotal = cartPricing.merchandiseOriginal;
+  const cartPayable = cartPricing.goodsPayable;
+  const cartDiscount = cartPricing.merchandiseDiscount;
+  const cartAddonsTotal = cartPricing.addonsTotal;
   const cartItemsCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   const calculateTotal = () => cartPayable;
@@ -167,6 +171,7 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     cartTotal,
     cartDiscount,
     cartPayable,
+    cartAddonsTotal,
     cartItemsCount,
     itemCount: cartItemsCount,
     isCartOpen,

@@ -131,6 +131,7 @@ export interface StoreContextType {
   cartTotal: number;
   cartDiscount: number;
   cartPayable: number;
+  cartAddonsTotal: number;
   cartItemsCount: number;
   searchQuery: string;
   setSearchQuery: (query: string) => void;

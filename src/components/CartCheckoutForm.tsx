@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useStore } from '../context/StoreContext';
-import { CreditCard, Wallet, AlertCircle, Truck, Package } from 'lucide-react';
+import { CreditCard, Wallet, AlertCircle, Truck } from 'lucide-react';
 import { isValidIranianMobile, isValidIranianPostalCode } from '../utils/validators';
 import { resolvePackagingAndShippingFee } from '../utils/pricingEngine';
 import { AddressBook } from './AddressBook';
@@ -13,7 +13,6 @@ interface CartCheckoutFormProps {
   setPaymentMethod: (m: 'cash') => void;
   shippingSlot?: ReactNode;
   walletSlot?: ReactNode;
-  addonsAmount?: number;
   hideSavedAddressSelector?: boolean;
   customerInfo: {
     fullName: string;
@@ -41,7 +40,6 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
   setCustomerInfo,
   shippingSlot,
   walletSlot,
-  addonsAmount,
   hideSavedAddressSelector,
 }) => {
   const { cart, cartPayable, platformSettings, formatPrice, toPersianDigits, customerUser } = useStore();
@@ -131,15 +129,6 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
             <span>هزینه بسته‌بندی و ارسال: محاسبه در مرحله بعد</span>
           </div>
           <p className="text-[10px] text-slate-500 mt-1 leading-5">مبلغ دقیق ارسال هنگام ثبت سفارش، بر اساس وزن مرسوله و مقصد محاسبه و به فاکتور اضافه می‌شود.</p>
-        </div>
-      )}
-      {!!addonsAmount && addonsAmount > 0 && (
-        <div className="p-3 bg-white border border-slate-200 rounded-2xl text-xs flex items-center justify-between">
-          <span className="flex items-center gap-1.5 font-bold text-slate-700">
-            <Package className="w-4 h-4" strokeWidth={1.5} />
-            محصولات مکمل
-          </span>
-          <span className="font-bold text-slate-800">{formatPrice(addonsAmount)} تومان</span>
         </div>
       )}
       {/* Payment Method Selector */}

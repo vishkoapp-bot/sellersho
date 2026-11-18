@@ -1,5 +1,6 @@
 import React from 'react';
 import { Order } from '../../types';
+import { computeOrderBreakdown } from '../../utils/cartPricing';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { maskName, maskPhone, maskAddress } from '../../utils/privacyMasker';
@@ -18,6 +19,11 @@ export const OrderDetailModal: React.FC<Props> = ({ order, isOpen, onClose, hide
   const { success } = useToast();
 
   if (!isOpen || !order) return null;
+
+  // CHECKOUT-03: the same five-row breakdown as cart / checkout / success,
+  // derived from the server snapshot only (never from catalog prices).
+  // An incoherent snapshot falls back to the single مبلغ فاکتور row.
+  const breakdown = computeOrderBreakdown(order);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
@@ -109,6 +115,18 @@ export const OrderDetailModal: React.FC<Props> = ({ order, isOpen, onClose, hide
           </div>
 
           <div className="p-2.5 bg-brand-soft/50 border border-brand-border rounded-xl space-y-1 text-[11px]">
+            {breakdown && (
+              <>
+                <div className="flex justify-between"><span>قیمت کالاها:</span><strong>{formatPrice(breakdown.merchandiseOriginal)} تومان</strong></div>
+                {breakdown.merchandiseDiscount > 0 && (
+                  <div className="flex justify-between text-rose-600 font-bold"><span>تخفیف ویژه:</span><span>−{formatPrice(breakdown.merchandiseDiscount)} تومان</span></div>
+                )}
+                {breakdown.addonsTotal > 0 && (
+                  <div className="flex justify-between"><span>محصولات مکمل:</span><strong>{formatPrice(breakdown.addonsTotal)} تومان</strong></div>
+                )}
+                <div className="flex justify-between"><span>هزینه ارسال:</span><strong>{(order.shippingCost || 0) > 0 ? `${formatPrice(order.shippingCost || 0)} تومان` : 'رایگان'}</strong></div>
+              </>
+            )}
             <div className="flex justify-between"><span>مبلغ فاکتور:</span><strong>{formatPrice(order.payableAmount)} تومان</strong></div>
             {order.dropshipperProfit > 0 && (
               <div className="flex justify-between text-emerald-700 font-bold">

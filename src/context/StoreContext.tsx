@@ -1544,6 +1544,7 @@ export const useStore = (): StoreContextType => {
     cartTotal: cart.cartTotal,
     cartDiscount: cart.cartDiscount,
     cartPayable: cart.cartPayable,
+    cartAddonsTotal: cart.cartAddonsTotal,
     cartItemsCount: cart.cartItemsCount,
     isCartOpen: cart.isCartOpen,
     setIsCartOpen: cart.setIsCartOpen,

@@ -2,6 +2,7 @@ import React from 'react';
 import { useStore } from '../context/StoreContext';
 import { useToast } from '../context/ToastContext';
 import { Order } from '../types';
+import { computeOrderBreakdown } from '../utils/cartPricing';
 import { CheckCircle2, Truck, Copy, ArrowRight, Printer, Receipt } from 'lucide-react';
 
 interface CartOrderSuccessProps {
@@ -11,6 +12,11 @@ interface CartOrderSuccessProps {
 
 export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClose }) => {
   const { setIsTrackingModalOpen, setActiveView, formatPrice } = useStore();
+  // CHECKOUT-03: the same five-row breakdown as cart / checkout, derived
+  // from the server snapshot only (never from catalog prices). When the
+  // snapshot is incoherent (legacy rows), breakdown is null and the
+  // previous single-total display is kept instead of inventing numbers.
+  const breakdown = computeOrderBreakdown(order);
   const { success, error } = useToast();
 
   const copyTracking = () => {
@@ -79,10 +85,31 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
             </button>
           </div>
         </div>
-        <div className="flex justify-between items-center text-xs">
-          <span className="text-slate-500">جمع اقلام:</span>
-          <span className="font-bold text-slate-800">{formatPrice(Math.max(0, order.payableAmount - (order.shippingCost || 0)))} تومان</span>
-        </div>
+        {breakdown ? (
+          <>
+            <div className="flex justify-between items-center text-xs">
+              <span className="text-slate-500">قیمت کالاها:</span>
+              <span className="font-bold text-slate-800">{formatPrice(breakdown.merchandiseOriginal)} تومان</span>
+            </div>
+            {breakdown.merchandiseDiscount > 0 && (
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-rose-600 font-bold">تخفیف ویژه:</span>
+                <span className="font-bold text-rose-600">−{formatPrice(breakdown.merchandiseDiscount)} تومان</span>
+              </div>
+            )}
+            {breakdown.addonsTotal > 0 && (
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">محصولات مکمل:</span>
+                <span className="font-bold text-slate-800">{formatPrice(breakdown.addonsTotal)} تومان</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex justify-between items-center text-xs">
+            <span className="text-slate-500">جمع اقلام:</span>
+            <span className="font-bold text-slate-800">{formatPrice(Math.max(0, order.payableAmount - (order.shippingCost || 0)))} تومان</span>
+          </div>
+        )}
         <div className="flex justify-between items-center text-xs">
           <span className="text-slate-500">هزینه ارسال:</span>
           <span className="font-bold text-slate-800">{(order.shippingCost || 0) > 0 ? `${formatPrice(order.shippingCost || 0)} تومان` : 'رایگان'}</span>

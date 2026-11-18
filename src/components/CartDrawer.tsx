@@ -16,6 +16,7 @@ import type { QuoteSignatureInput } from '../services/shippingApi';
 import { isValidIranianMobile, isValidIranianPostalCode } from '../utils/validators';
 import { X, ShoppingBag, ArrowLeft, ArrowRight } from 'lucide-react';
 import { getCartSupplierGroups } from '../utils/cartGrouping';
+import { computeCartPricing } from '../utils/cartPricing';
 import { isCheckoutFingerprintConflictError } from '../services/checkoutAttempt';
 import { stageAddressSelection } from '../services/addressApi';
 import { mapShaparakSimulatorError } from '../services/paymentApi';
@@ -127,6 +128,7 @@ export const CartDrawer: React.FC = () => {
     cartTotal, 
     cartDiscount, 
     cartPayable, 
+    cartAddonsTotal, 
     placeOrder,
     directBuy,
     directBuyAddress,
@@ -172,8 +174,6 @@ export const CartDrawer: React.FC = () => {
     quoteSession.retry();
   };
   const { error: toastError, success: toastSuccess } = useToast();
-  const cartAddonsTotal = cart.reduce((sum, item) => sum + (item.product.addons && item.selectedAddonIds ? item.selectedAddonIds.reduce((s, id) => s + (item.product.addons!.find((a) => a.id === id)?.feePerUnit || 0), 0) : 0) * item.quantity, 0);
-  const cartGrossDiscount = cartDiscount + cartAddonsTotal;
   // Worker A (buy-now): live drawer (wC) renders direct-buy lines
   // instead of the cart and forces the checkout step (X = _ ?
   // 'checkout' : V). Lines follow live eC(): the product carries
@@ -191,14 +191,18 @@ export const CartDrawer: React.FC = () => {
   const isDirectBuy = directBuy !== null && directLine !== null;
   const displayItems: CartItem[] = isDirectBuy && directLine ? [directLine] : cart;
   const effectiveStep = isDirectBuy ? 'checkout' : checkoutStep;
-  const directAddonTotal = directLine && directLine.selectedAddonIds && directLine.product.addons
-    ? directLine.selectedAddonIds.reduce((s, id) => s + (directLine.product.addons!.find((a) => a.id === id)?.feePerUnit || 0), 0) * directLine.quantity
-    : 0;
-  // Live tC(): subtotal = original-based total + addons, payable =
-  // price-based total + addons, discount = max(0, subtotal - payable).
-  const directSubtotal = directLine ? (directLine.product.originalPrice || directLine.product.price) * directLine.quantity + directAddonTotal : 0;
-  const directPayable = directLine ? directLine.product.price * directLine.quantity + directAddonTotal : 0;
-  const directDiscount = Math.max(0, directSubtotal - directPayable);
+  // CHECKOUT-03: the direct-buy line uses the SAME canonical breakdown as
+  // the cart (src/utils/cartPricing.ts). The old directSubtotal folded the
+  // addons into the "قیمت کالاها" row while the breakdown rendered a second
+  // addons row, so the rows double-counted the addons (150 + 50 = 200
+  // against a 150 payable); the old cartGrossDiscount did the opposite,
+  // inventing a discount equal to the addons. Both modes now render:
+  // original - discount + addons + shipping = total.
+  const directPricing = directLine ? computeCartPricing([directLine]) : null;
+  const directAddonTotal = directPricing ? directPricing.addonsTotal : 0;
+  const directOriginal = directPricing ? directPricing.merchandiseOriginal : 0;
+  const directPayable = directPricing ? directPricing.goodsPayable : 0;
+  const directDiscount = directPricing ? directPricing.merchandiseDiscount : 0;
   const displayGroups = getCartSupplierGroups(displayItems);
   const displayStoreName = isDirectBuy && directLine ? directLine.storeName : undefined;
   // CHECKOUT-02 (Q5): the payable keeps the retained quote's charge
@@ -360,7 +364,7 @@ export const CartDrawer: React.FC = () => {
       ))}
       <div className="flex justify-between text-slate-500 border-t border-slate-200 pt-1.5">
         <span>قیمت کالاها:</span>
-        <span>{formatPrice(isDirectBuy ? directSubtotal : cartTotal)} تومان</span>
+        <span>{formatPrice(isDirectBuy ? directOriginal : cartTotal)} تومان</span>
       </div>
       {(isDirectBuy ? directAddonTotal : cartAddonsTotal) > 0 && (
         <div className="flex justify-between text-slate-500">
@@ -368,10 +372,10 @@ export const CartDrawer: React.FC = () => {
           <span>{formatPrice(isDirectBuy ? directAddonTotal : cartAddonsTotal)} تومان</span>
         </div>
       )}
-      {(isDirectBuy ? directDiscount : cartGrossDiscount) > 0 && (
+      {(isDirectBuy ? directDiscount : cartDiscount) > 0 && (
         <div className="flex justify-between text-rose-600 font-bold">
           <span>تخفیف ویژه:</span>
-          <span><bdi>−{formatPrice(isDirectBuy ? directDiscount : cartGrossDiscount)}</bdi> تومان</span>
+          <span><bdi>−{formatPrice(isDirectBuy ? directDiscount : cartDiscount)}</bdi> تومان</span>
         </div>
       )}
       <div className="flex justify-between text-slate-500">
@@ -737,7 +741,6 @@ export const CartDrawer: React.FC = () => {
               customerInfo={customerInfo}
               setCustomerInfo={handleFormCustomerInfoChange}
               shippingSlot={shippingSlot}
-              addonsAmount={isDirectBuy ? directAddonTotal : cartAddonsTotal}
               hideSavedAddressSelector={isDirectBuy}
             />
             </div>

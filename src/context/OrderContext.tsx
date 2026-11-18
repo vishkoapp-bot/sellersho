@@ -4,6 +4,7 @@ import { BackendOrderDto, DisputeDeliveryResponse, orderApi } from '../services/
 import { stageAddressSelection, takeStagedAddressSelection } from '../services/addressApi';
 import { paymentApi } from '../services/paymentApi';
 import { isMockMode, tokenStore } from '../services/apiClient';
+import { computeCartPricing } from '../utils/cartPricing';
 import { useAuth } from './AuthContext';
 import { CheckoutAttempt, claimCheckoutAttempt, clearCheckoutAttempt, completeCheckoutAttempt, normalizeCheckoutPayload, readCheckoutAttempt } from '../services/checkoutAttempt';
 
@@ -465,8 +466,13 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const targetStoreName =
         cartItems[0]?.storeName || (referringStore ? `${referringStore.name} (معرف)` : orderStore?.name || 'مرکزی');
 
-      const cartTotal = cartItems.reduce((sum, item) => sum + (item.product.originalPrice || item.product.price) * item.quantity, 0);
-      const cartPayable = cartItems.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+      // CHECKOUT-03: the mock-local snapshot (dev-only, VITE_USE_MOCK) uses the
+      // same canonical breakdown as the server: merchandise original, merchandise-
+      // only discount, addons included in the payable. The old branch dropped
+      // the addons from payableAmount entirely.
+      const mockPricing = computeCartPricing(cartItems);
+      const cartTotal = mockPricing.merchandiseOriginal;
+      const cartPayable = mockPricing.goodsPayable;
 
       const newOrder: Order = {
         id: `ord-${Date.now()}`,
@@ -481,7 +487,7 @@ const OrderSessionProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         },
         items: [...cartItems],
         totalAmount: cartTotal,
-        discountAmount: Math.max(0, cartTotal - cartPayable),
+        discountAmount: mockPricing.merchandiseDiscount,
         payableAmount: cartPayable,
         paymentMethod,
         status: 'processing',

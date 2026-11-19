@@ -366,6 +366,18 @@ Historical inventory reconciliation | GET /api/v1/warehouse/inventory/
   focused frontend tests passed, along with Go vet and the frontend build.
   OPEN: the full report and nested evidence still lack result bounds.
 
+FIXED QUAL-01-10: historical inventory review POST writes review metadata
+  and its audit event atomically, not stock, balances, or movements. Concurrent
+  first writes converge on one product review and identical decisions return
+  the persisted snapshot and timestamps without another audit event. A changed
+  decision updates the same row and adds one audit event. The original lookup
+  could not lock an absent row, and raw JSON comparison missed multi-reference
+  replays after JSONB normalization. TestHistoricalReportDeterministicAndReviewReadOnly
+  and the report HTTP regression passed five times on disposable PostgreSQL and
+  Redis. Go vet passed. OPEN: a retry after a different decision is not a
+  durable replay, and review payload bounds and full-report read cost remain
+  unqualified.
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered
 business writer input and retry contracts. Local application checks do not

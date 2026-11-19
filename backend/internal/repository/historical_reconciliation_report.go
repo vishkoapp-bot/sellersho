@@ -262,33 +262,38 @@ func (r *SupplierRepository) ReviewHistoricalInventory(ctx context.Context, prod
 	evidenceJSON, _ := json.Marshal(evidence)
 	review := &HistoricalReview{ID: "HREV-" + uuid.NewString(), ProductID: productID, ReviewStatus: status, Classifications: snapshot.Classifications, ReportSnapshot: snapshot, EvidenceUsed: evidence, DecisionReason: reason, ReviewerUserID: reviewer}
 	err = func() error {
-		tx, err := r.db.BeginTx(ctx, nil)
+		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
-		var id, previousStatus, previousReason, previousReviewer string
-		var previousEvidence []byte
-		lookupErr := tx.QueryRowContext(ctx, `SELECT id,review_status,decision_reason,COALESCE(reviewer_user_id,''),evidence_used FROM historical_reconciliation_reviews WHERE product_id=$1 FOR UPDATE`, productID).Scan(&id, &previousStatus, &previousReason, &previousReviewer, &previousEvidence)
-		if lookupErr == sql.ErrNoRows {
-			id = review.ID
-			previousStatus = "needs_review"
-			if _, err = tx.ExecContext(ctx, `INSERT INTO historical_reconciliation_reviews(id,product_id,review_status,classification_snapshot,report_snapshot,evidence_used,decision_reason,reviewer_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW())`, id, productID, status, classifications, reportJSON, evidenceJSON, reason, reviewer); err != nil {
+		previousStatus := "needs_review"
+		err = tx.QueryRowContext(ctx, `INSERT INTO historical_reconciliation_reviews(id,product_id,review_status,classification_snapshot,report_snapshot,evidence_used,decision_reason,reviewer_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW()) ON CONFLICT (product_id) DO NOTHING RETURNING reviewed_at,updated_at`, review.ID, productID, status, classifications, reportJSON, evidenceJSON, reason, reviewer).Scan(&review.ReviewedAt, &review.UpdatedAt)
+		if err == sql.ErrNoRows {
+			// The unique product key arbitrates simultaneous first writes. Lock
+			// the existing row before deciding whether to replay or update it.
+			var sameDecision bool
+			var previousClassifications, previousReport []byte
+			if err = tx.QueryRowContext(ctx, `SELECT id,review_status,review_status=$2 AND decision_reason=$3 AND COALESCE(reviewer_user_id,'')=$4 AND evidence_used=$5::jsonb,classification_snapshot,report_snapshot,reviewed_at,updated_at FROM historical_reconciliation_reviews WHERE product_id=$1 FOR UPDATE`, productID, status, reason, reviewer, evidenceJSON).Scan(&review.ID, &previousStatus, &sameDecision, &previousClassifications, &previousReport, &review.ReviewedAt, &review.UpdatedAt); err != nil {
 				return err
 			}
-		} else if lookupErr != nil {
-			return lookupErr
-		} else {
-			review.ID = id
-			if previousStatus == status && previousReason == reason && previousReviewer == reviewer && string(previousEvidence) == string(evidenceJSON) {
-				review.ReviewStatus = previousStatus
+			if sameDecision {
+				if err = json.Unmarshal(previousClassifications, &review.Classifications); err != nil {
+					return err
+				}
+				review.ReportSnapshot = HistoricalInventoryReportRow{}
+				if err = json.Unmarshal(previousReport, &review.ReportSnapshot); err != nil {
+					return err
+				}
 				return tx.Commit()
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE historical_reconciliation_reviews SET review_status=$1,classification_snapshot=$2,report_snapshot=$3,evidence_used=$4,decision_reason=$5,reviewer_user_id=$6,reviewed_at=NOW(),updated_at=NOW() WHERE id=$7`, status, classifications, reportJSON, evidenceJSON, reason, reviewer, id); err != nil {
+			if err = tx.QueryRowContext(ctx, `UPDATE historical_reconciliation_reviews SET review_status=$1,classification_snapshot=$2,report_snapshot=$3,evidence_used=$4,decision_reason=$5,reviewer_user_id=$6,reviewed_at=NOW(),updated_at=NOW() WHERE id=$7 RETURNING reviewed_at,updated_at`, status, classifications, reportJSON, evidenceJSON, reason, reviewer, review.ID).Scan(&review.ReviewedAt, &review.UpdatedAt); err != nil {
 				return err
 			}
+		} else if err != nil {
+			return err
 		}
-		details, _ := json.Marshal(map[string]interface{}{"productId": productID, "reviewId": id, "previousStatus": previousStatus, "newStatus": status, "reason": reason, "evidence": evidence, "reportSnapshot": snapshot, "historicalMutation": false})
+		details, _ := json.Marshal(map[string]interface{}{"productId": productID, "reviewId": review.ID, "previousStatus": previousStatus, "newStatus": status, "reason": reason, "evidence": evidence, "reportSnapshot": snapshot, "historicalMutation": false})
 		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_logs(id,operator,action,category,details) VALUES($1,$2,'historical_reconciliation_review','warehouse',$3)`, "HREV-LOG-"+uuid.NewString(), reviewer, string(details)); err != nil {
 			return err
 		}
@@ -297,9 +302,6 @@ func (r *SupplierRepository) ReviewHistoricalInventory(ctx context.Context, prod
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
-	review.ReviewedAt = &now
-	review.UpdatedAt = now
 	return review, nil
 }
 

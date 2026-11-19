@@ -77,18 +77,70 @@ func TestHistoricalReportDeterministicAndReviewReadOnly(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM inventory_movements WHERE product_id=$1`, productID).Scan(&beforeMovements); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ReviewHistoricalInventory(ctx, productID, "in_review", "evidence review only", "integration-reviewer", []string{"hist-bin"}); err != nil {
-		t.Fatal(err)
+	reviewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	submit := func() (*HistoricalReview, error) {
+		return repo.ReviewHistoricalInventory(reviewCtx, productID, "in_review", "evidence review only", "integration-reviewer", []string{"hist-bin", "second-reference"})
 	}
-	if _, err := repo.ReviewHistoricalInventory(ctx, productID, "in_review", "evidence review only", "integration-reviewer", []string{"hist-bin"}); err != nil {
-		t.Fatal(err)
+	type result struct {
+		review *HistoricalReview
+		err    error
 	}
+	const callers = 6
+	start := make(chan struct{})
+	results := make(chan result, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			review, err := submit()
+			results <- result{review, err}
+		}()
+	}
+	close(start)
+	var recorded []byte
+	var savedReviewID string
+	checkReview := func(review *HistoricalReview, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if review.ID == "" || review.ReviewedAt == nil || review.UpdatedAt.IsZero() {
+			t.Fatalf("missing persisted review metadata: %+v", review)
+		}
+		data, err := json.Marshal(review)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recorded == nil {
+			recorded, savedReviewID = data, review.ID
+		} else if string(data) != string(recorded) {
+			t.Fatalf("retry did not return persisted review: got %s, want %s", data, recorded)
+		}
+	}
+	for i := 0; i < callers; i++ {
+		outcome := <-results
+		checkReview(outcome.review, outcome.err)
+	}
+	checkReview(submit())
 	var reviewAuditCount int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE action='historical_reconciliation_review' AND details LIKE '%' || $1 || '%'`, productID).Scan(&reviewAuditCount); err != nil {
 		t.Fatal(err)
 	}
 	if reviewAuditCount != 1 {
 		t.Fatalf("review retry created duplicate audit events: %d", reviewAuditCount)
+	}
+	changed, err := repo.ReviewHistoricalInventory(reviewCtx, productID, "awaiting_evidence", "a distinct decision", "integration-reviewer", []string{"second-reference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ID != savedReviewID || changed.ReviewStatus != "awaiting_evidence" {
+		t.Fatalf("changed decision must update the current review: %+v", changed)
+	}
+	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE action='historical_reconciliation_review' AND details LIKE '%' || $1 || '%'`, productID).Scan(&reviewAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if reviewAuditCount != 2 {
+		t.Fatalf("changed decision did not create exactly one audit event: %d", reviewAuditCount)
 	}
 	var afterStock, afterBalances, afterMovements int
 	if err := db.QueryRowContext(ctx, `SELECT stock FROM products WHERE id=$1`, productID).Scan(&afterStock); err != nil {

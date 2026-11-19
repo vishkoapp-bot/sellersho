@@ -127,12 +127,16 @@ GET /api/v1/stores/{slug}/campaigns/{id}/history | Same scope, read only.
   Rejects methods other than GET before querying; at most 200 history rows.
 POST /api/v1/ads/challenge | Public; parses campaign UUID and 2 KiB body,
   applies hashed IP rate admission and issues scoped proof or records rejection.
-  Trusted-proxy attribution and rate/reset cases need independent tests.
+  The existing local attribution regression passed three times on disposable
+  PostgreSQL. It checks direct-peer header rejection, trusted-peer handling,
+  and the minute-bucket limit. Exact rollover coverage remains open.
 POST /api/v1/ads/events | Public with signed proof and campaign/token checks;
   body capped at 4 KiB, token at 200 bytes. Duplicate clicks do not count as
   accepted. The campaign's active store and optional product are checked; the
   fraud keys and event commit together. This path does not debit or credit
-  money and has no budget formula. Proxy attribution remains unqualified.
+  money and has no budget formula. The local regression also checks proof age
+  and duplicate rejection. Neither test proves the deployed proxy overwrites
+  incoming attribution headers or that direct backend ingress is blocked.
 GET /api/v1/finance/treasury/commission | Finance role group, global read;
   aggregates gross platform profit on paid noncancelled orders, not net cash.
   QUAL-01-03: totals, release split, count and daily trend now derive from one
@@ -389,10 +393,23 @@ FIXED QUAL-01-11: reconciliation review POST retains conflict responses for
   the review, report, and retry regressions passed on disposable services, and
   Go vet passed.
 
-QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
-allowlists, edge host/store binding and advertising attribution, and uncovered
-business writer input and retry contracts. Local application checks do not
-establish edge behavior or acceptance for all routes.
+QUAL-01 remains OPEN. The 298 HTTP registrations and six job registrations
+are inventoried, but the source review is not runtime acceptance for all
+money and inventory reads or writes. Before closing:
+  - Resolve and verify the four warehouse staff workflow bindings above.
+    Leave those actions denied for warehouse staff in the meantime.
+  - Approve finance report recognition and historical ownership/timezone
+    rules, and verify remaining report/export projections against consumers.
+  - Use an approved non-production edge with representative proxy and host
+    configuration to verify storefront-to-store binding and advertising
+    attribution. Local handler tests are not evidence of deployed ingress.
+  - Specify the remaining business-writer limits and retry contracts, then
+    verify authorized and denied requests and exact effects. For review
+    evidence, include a bounded selection or pagination contract; for wallet
+    activation, confirm required retry-key support with external API clients.
+The plan-option catalog remains deferred. The warehouse city-only and plan
+expiry decisions themselves are resolved and must not be reopened for these
+checks.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

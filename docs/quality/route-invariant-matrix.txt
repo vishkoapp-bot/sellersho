@@ -337,6 +337,21 @@ Supplier sales report | GET /api/v1/supplier/sales-report is a read-only action
   and bound the date span. This report is not a statement of cash collected
   or net of refunds.
 
+QUAL-01-09 GET /api/v1/finance/reports/revenue and /revenue/monthly |
+  Finance role group; global read only with explicit response fields and no
+  order, customer or payment identifiers. Both sum noncancelled orders by
+  creation time, including unpaid orders. The period report uses a bounded
+  UTC month or quarter. Payout fields are separately queried by payout
+  creation time for completed/transfer-confirmed records. The monthly view
+  groups all history by SQL session month. These are not net cash reports.
+  TestQual01FinanceRevenueProjection passed with the finance role gate,
+  exact month and quarter projections, an empty period, invalid period and
+  POST rejection. The commission UTC and finance capability regressions passed
+  in the same guarded run. Go vet passed and container cleanup was verified.
+  OPEN: decide the accounting recognition event, date, timezone, treatment of
+  refunds and payouts, snapshot consistency, and monthly history bounds before
+  using these figures as recognized revenue. This change does not alter sums.
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered
 business writer input and retry contracts. Local application checks do not

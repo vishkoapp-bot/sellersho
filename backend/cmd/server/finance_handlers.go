@@ -312,6 +312,9 @@ func handleCreateManualDispute(w http.ResponseWriter, r *http.Request, ctx conte
 }
 
 func handleGetRevenueReport(w http.ResponseWriter, r *http.Request, ctx context.Context, finRepo *repository.FinanceRepository) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if finRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
@@ -331,7 +334,7 @@ func handleGetRevenueReport(w http.ResponseWriter, r *http.Request, ctx context.
 			http.Error(w, `{"error":"period must be YYYY-Qn or YYYY-MM"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(rep)

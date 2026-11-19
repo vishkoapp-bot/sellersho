@@ -306,6 +306,9 @@ func handleLockStoreMargin(w http.ResponseWriter, r *http.Request, ctx context.C
 }
 
 func handleGetSuspiciousTransactions(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if adminRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
@@ -313,7 +316,7 @@ func handleGetSuspiciousTransactions(w http.ResponseWriter, r *http.Request, ctx
 	}
 	txs, err := adminRepo.GetSuspiciousTransactions(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if txs == nil {

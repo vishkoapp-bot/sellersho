@@ -311,6 +311,19 @@ POST /api/v1/webhooks/tracking/update | Carrier integration, authenticated
 
   python scripts/test-suite-isolated.py --run "^(TestWebhookTrackingUpdate_AuthenticationGuard|TestFIN005AcceptedCarrierFailureSurvivesVerdictAndWorker|TestFIN005AcceptedShipmentFailureRollsBackWithOrderHold|TestQual01TrackingDeliveryDoesNotReleaseMoney)$" ./cmd/server
 
+QUAL-01-08 GET /api/v1/admin/reports/suspicious-transactions | Admin or
+  super-admin; global read only. Returns up to ten persisted orders by total
+  amount, with six explicit fields and no customer or payment credentials.
+  An empty database returns an empty array rather than a fabricated order.
+  Database failures return an internal error instead of incomplete data.
+  OPEN policy: define which real events qualify as suspicious and what the
+  score means. The existing ranking, labels and fixed score are heuristics,
+  not a validated fraud signal. No scoring semantics changed.
+  TestQual01AdminSuspiciousReportProjection passed in the guarded runner:
+  empty and populated PostgreSQL results, wire field allowlist, denial for
+  support and revoked admin, and POST rejected before the query. The test
+  uses a connection-local table to keep existing seed data intact.
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered
 business writer input and retry contracts. Local application checks do not

@@ -347,15 +347,5 @@ func (r *AdminRepository) GetSuspiciousTransactions(ctx context.Context) ([]Susp
 		}
 		list = append(list, t)
 	}
-	if len(list) == 0 {
-		list = append(list, SuspiciousTransaction{
-			ID:          "SUSP-001",
-			OrderNumber: "ORD-SUSP-2026-99",
-			Amount:      85000000,
-			FlagReason:  "تراکنش با سقف کارت اعتباری نامتعارف",
-			RiskScore:   92,
-			CreatedAt:   time.Now(),
-		})
-	}
-	return list, nil
+	return list, rows.Err()
 }

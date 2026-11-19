@@ -240,17 +240,7 @@ func handleSellerCampaignAction(w http.ResponseWriter, r *http.Request, repo *re
 		campaignError(w, repository.ErrCampaignInput)
 		return
 	}
-	if p.Name != "" || p.ProductIDs != nil {
-		if err := repo.UpdateSellerCampaign(r.Context(), claims.UserID, slug, id, p.Name, p.ProductIDs, nil, nil); err != nil {
-			campaignError(w, err)
-			return
-		}
-	}
-	if p.Status == "" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := repo.SetSellerCampaignStatus(r.Context(), claims.UserID, slug, id, p.Status); err != nil {
+	if err := repo.PatchSellerCampaign(r.Context(), claims.UserID, slug, id, p.Name, p.ProductIDs, p.Status); err != nil {
 		campaignError(w, err)
 		return
 	}

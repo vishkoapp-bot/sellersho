@@ -180,15 +180,19 @@ func (r *StoreRepository) SaveOwnedWidgetConfig(ctx context.Context, ownerID, sl
 }
 
 func (r *StoreRepository) SetSellerCampaignStatus(ctx context.Context, ownerID, slug, campaignID, status string) error {
-	if _, err := uuid.Parse(campaignID); err != nil {
+	if status == "" {
 		return ErrCampaignInput
 	}
-	if status != "draft" && status != "active" && status != "paused" && status != "archived" {
+	return r.patchSellerCampaign(ctx, ownerID, slug, campaignID, nil, status)
+}
+
+func validSellerCampaignStatus(status string) bool {
+	return status == "draft" || status == "active" || status == "paused" || status == "archived"
+}
+
+func setSellerCampaignStatus(ctx context.Context, tx *sql.Tx, storeID, campaignID, status string, metadataUpdated bool) error {
+	if !validSellerCampaignStatus(status) {
 		return ErrCampaignInput
-	}
-	store, err := r.OwnedStore(ctx, ownerID, slug)
-	if err != nil {
-		return err
 	}
 	// F2: a 'widget' campaign row is only a MIRROR of
 	// stores.seller_deals_widget_config (SaveOwnedWidgetConfig
@@ -199,7 +203,7 @@ func (r *StoreRepository) SetSellerCampaignStatus(ctx context.Context, ownerID, 
 	// stay discounted, so refuse: the deal is managed from the
 	// deals-widget section itself.
 	var campaignType string
-	if err := r.db.QueryRowContext(ctx, `SELECT campaign_type FROM seller_campaigns WHERE id=$1 AND store_id=$2`, campaignID, store.ID).Scan(&campaignType); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT campaign_type FROM seller_campaigns WHERE id=$1 AND store_id=$2 FOR UPDATE`, campaignID, storeID).Scan(&campaignType); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrCampaignForbidden
 		}
@@ -208,11 +212,21 @@ func (r *StoreRepository) SetSellerCampaignStatus(ctx context.Context, ownerID, 
 	if campaignType == "widget" {
 		return ErrCampaignWidgetManaged
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE seller_campaigns SET status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 AND status<>'archived'`, status, campaignID, store.ID)
+	if metadataUpdated {
+		// Keep the metadata actor on its history entry only, as when the
+		// status update ran in a separate transaction.
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.campaign_actor','',true)`); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE seller_campaigns SET status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 AND status<>'archived'`, status, campaignID, storeID)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if n == 0 {
 		return ErrCampaignForbidden
 	}

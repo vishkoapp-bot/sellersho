@@ -36,7 +36,8 @@ The scope is the customer account, not the seller store.
 
 GET /api/v1/customer/wallet | Own balance and locked balance; available =
   balance - locked, clamped to zero; missing row gives zero; SQL errors fail.
-  Read only. Cross-customer fixture regression outstanding.
+  Read only. The guarded wallet regression verifies each of two customers sees
+  only their own balance and hold, even with a different customerId in the query.
 GET,POST /api/v1/customer/wallet/quote | Own availability; integer Tomans;
   fee 0, net = amount. Read only; eligibility requires an enabled policy and
   amount in the inclusive range from the configured minimum to available
@@ -71,13 +72,14 @@ ADMIN WITHDRAWAL ACTIONS (source review)
 ---------------------------------------
 GET /api/v1/admin/customer-withdrawals | Admin or super-admin, global scope;
   generic listing includes banking records, bounded by t01Limit; no write.
-  Dedicated role-denial and output-field review outstanding.
+  Signed role regression covers active admin, non-admin and revoked admin;
+  output-field allowlist review remains open.
 POST /api/v1/admin/customer-withdrawals/{id}/review | Admin or super-admin,
   global scope; accepts approved or rejected for a pending request only. Locks
   the request in a transaction, records reviewer, releases the hold on rejection,
   and writes no paid journal. Repeat review returns 409. Approval is not payment.
-  Existing treasury conservation test exercises review; negative-role, rollback
-  and conflicting concurrent review evidence still needed. No paid transition
+  Guarded tests cover role entry, revocation and hold release on rejection.
+  Failed-write rollback and conflicting concurrent review evidence remain open. No paid transition
   for these requests was found in the registered review handler.
 
 SELLER SERVICES AND SUBSCRIPTION ACTIONS (source review)
@@ -108,19 +110,22 @@ POST /api/v1/stores/{slug}/campaigns | Same scope; creates a campaign from a
   64 KiB body, defaults to draft. Exact money, product-list and retry contracts
   require repository-level review before qualifying activation.
 PATCH /api/v1/stores/{slug}/campaigns/{id} | Seller/store/campaign scope;
-  metadata and status are separate repository calls. Add a regression for a
-  valid metadata edit followed by rejected status, and decide atomicity.
+  metadata, status and their history share a transaction. A rejected status
+  leaves the metadata and history unchanged. PATCH input bounds remain open.
 GET /api/v1/stores/{slug}/campaigns/{id}/analytics | Seller/store/campaign
-  scope, read only. Aggregation formula and time/result limits need review.
+  scope, read only. Counts accepted impressions/clicks over the campaign's
+  retained events. CTR is 100 * clicks / impressions, or zero if none.
+  Result is one record; no event time filter is applied.
 GET /api/v1/stores/{slug}/campaigns/{id}/history | Same scope, read only.
-  Rejects methods other than GET before querying. History bounds still need review.
+  Rejects methods other than GET before querying; at most 200 history rows.
 POST /api/v1/ads/challenge | Public; parses campaign UUID and 2 KiB body,
   applies hashed IP rate admission and issues scoped proof or records rejection.
   Trusted-proxy attribution and rate/reset cases need independent tests.
 POST /api/v1/ads/events | Public with signed proof and campaign/token checks;
   body capped at 4 KiB, token at 200 bytes. Duplicate clicks do not count as
-  accepted. Exact budget, retry and campaign/store conservation are not yet
-  qualified by this handler-level review.
+  accepted. The campaign's active store and optional product are checked; the
+  fraud keys and event commit together. This path does not debit or credit
+  money and has no budget formula. Proxy attribution remains unqualified.
 GET /api/v1/finance/treasury/commission | Finance role group, global read;
   aggregates gross platform profit on paid noncancelled orders, not net cash.
   QUAL-01-03: totals, release split, count and daily trend now derive from one
@@ -221,15 +226,22 @@ expiry affects only new requests or existing verified custom domains. Also defin
 the treatment of NULL expiry and deactivated plans. Existing quota semantics and
 purchase prices were not changed.
 
-QUAL-01-06 Campaign updates: define whether a request with valid metadata and an
-invalid status may save the metadata. Neither a partial write nor all-or-nothing
-behavior should be treated as the product contract without an explicit decision.
+FIXED QUAL-01-06 Campaign updates: HTTP PATCH is atomic (RFC 5789 section 2).
+The guarded regression covers metadata-only, status-only and combined requests,
+and proves rejection of an invalid status rolls back metadata and history.
+
+Follow-up validation (2026-11-19): three guarded server tests passed without
+skips (campaign atomicity, lifecycle and ownership, wallet and admin roles).
+Four guarded package tests passed (ad proof, event deduplication, domain
+ownership/disable and campaign amount validation). Separate report JSON
+allowlist test and Go vet passed. The allowlist covers the ad network report
+wire types only, not other report or export formats.
 
 Other open acceptance evidence: bounded withdrawal reads and admin withdrawal
 projections/review concurrency, report/export field allowlists, host/store and
-callback boundaries, advertising budget conservation and uncovered business
-writer input and retry contracts. Source review and focused runtime evidence do
-not establish acceptance for all routes.
+callback boundaries, advertising ingress attribution and uncovered business
+writer input and retry contracts. Source review and focused runtime evidence
+do not establish acceptance for all routes.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

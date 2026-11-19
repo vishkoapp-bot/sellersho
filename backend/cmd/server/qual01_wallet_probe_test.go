@@ -194,4 +194,89 @@ func TestQual01WalletWithdrawalRegression(t *testing.T) {
 		}
 	}
 	state(owner, 6000, 1)
+
+	// Both customers receive their own wallet, even with the other ID supplied.
+	for _, tc := range []struct {
+		token, foreign string
+		locked         int64
+	}{{ownerToken, other, 6000}, {otherToken, owner, 8000}} {
+		w := check(serve(http.MethodGet, "/api/v1/customer/wallet?customerId="+tc.foreign, tc.token, "", ""), http.StatusOK)
+		var got struct {
+			Balance, LockedBalance, Available *int64
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil ||
+			got.Balance == nil || *got.Balance != 10000 || got.LockedBalance == nil || *got.LockedBalance != tc.locked ||
+			got.Available == nil || *got.Available != 10000-tc.locked {
+			t.Fatalf("GET wallet did not return the authenticated customer's balance: %s", w.Body)
+		}
+	}
+
+	t.Run("admin withdrawal authorization", func(t *testing.T) {
+		adminJWT := auth.NewJWTService("qual01-admin-withdrawal-fixture-key")
+		reader := &middlewareCapabilityReader{capabilities: []string{"admin"}}
+		adminJWT.SetCapabilityReader(reader)
+		adminID := uuid.NewString()
+		exec(`INSERT INTO users(id,mobile,full_name) VALUES($1,$2,'Generated QUAL-01 admin')`, adminID, "09000040103")
+		t.Cleanup(func() { exec(`DELETE FROM users WHERE id=$1`, adminID) })
+		sign := func(id, role string) string {
+			t.Helper()
+			token, err := adminJWT.GenerateTokenWithCapabilities(id, "", "", role, []string{role}, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return token
+		}
+		adminToken := sign(adminID, "admin")
+		customerToken := sign(owner, "customer")
+		const list = "/api/v1/admin/customer-withdrawals"
+		review := list + "/" + first + "/review"
+		for _, tc := range []struct {
+			name, token string
+			active      []string
+			want        int
+		}{
+			{"non-admin", customerToken, []string{"customer"}, http.StatusForbidden},
+			{"revoked admin capability", adminToken, []string{}, http.StatusForbidden},
+			{"active admin capability", adminToken, []string{"admin"}, http.StatusOK},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				reader.capabilities = tc.active
+				for _, endpoint := range []struct {
+					method, path, body string
+					handler            http.HandlerFunc
+				}{
+					{http.MethodGet, list, "", func(w http.ResponseWriter, r *http.Request) {
+						handleT01AdminGenericList(w, r, db, "customer_withdrawal_requests", "withdrawals", "")
+					}},
+					{http.MethodPost, review, `{"status":"rejected","reason":"QUAL-01 fixture"}`, func(w http.ResponseWriter, r *http.Request) {
+						handleT01AdminCustomerWithdrawalReview(w, r, db, first)
+					}},
+				} {
+					r := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(endpoint.body))
+					r.Header.Set("Authorization", "Bearer "+tc.token)
+					w := httptest.NewRecorder()
+					entered := false
+					RequireRoles(adminJWT, "admin")(func(w http.ResponseWriter, r *http.Request) {
+						entered = true
+						// If the guard regresses, fail without reading or mutating the fixture.
+						if tc.want == http.StatusOK {
+							endpoint.handler(w, r)
+						}
+					})(w, r)
+					if w.Code != tc.want || entered != (tc.want == http.StatusOK) {
+						t.Fatalf("%s %s: status=%d, handler entered=%v, want status=%d", endpoint.method, endpoint.path, w.Code, entered, tc.want)
+					}
+				}
+			})
+			if tc.want == http.StatusForbidden {
+				state(owner, 6000, 1)
+			}
+		}
+		state(owner, 0, 0)
+		state(other, 8000, 2)
+		var status string
+		if err := db.QueryRow(`SELECT status FROM customer_withdrawal_requests WHERE id=$1`, first).Scan(&status); err != nil || status != "rejected" {
+			t.Fatalf("admin review status=%q, err=%v, want rejected", status, err)
+		}
+	})
 }

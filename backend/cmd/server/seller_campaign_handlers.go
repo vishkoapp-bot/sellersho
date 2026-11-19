@@ -3,15 +3,19 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/drup/platform/internal/adguard"
-	"github.com/drup/platform/internal/auth"
-	"github.com/drup/platform/internal/repository"
-	"github.com/google/uuid"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/drup/platform/internal/adguard"
+	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/repository"
+	"github.com/google/uuid"
 )
+
+const sellerCampaignMaxBodyBytes = 64 << 10
 
 func campaignError(w http.ResponseWriter, err error) {
 	if errors.Is(err, repository.ErrStoreForbidden) || errors.Is(err, repository.ErrStoreInput) {
@@ -174,7 +178,7 @@ func handleSellerCampaigns(w http.ResponseWriter, r *http.Request, repo *reposit
 		Configuration map[string]interface{} `json:"configuration"`
 		Status        string                 `json:"status"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&p) != nil {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, sellerCampaignMaxBodyBytes)).Decode(&p) != nil {
 		campaignError(w, repository.ErrCampaignInput)
 		return
 	}
@@ -236,7 +240,8 @@ func handleSellerCampaignAction(w http.ResponseWriter, r *http.Request, repo *re
 		Name       string   `json:"name"`
 		ProductIDs []string `json:"productIds"`
 	}
-	if json.NewDecoder(r.Body).Decode(&p) != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, sellerCampaignMaxBodyBytes))
+	if err != nil || json.Unmarshal(body, &p) != nil {
 		campaignError(w, repository.ErrCampaignInput)
 		return
 	}

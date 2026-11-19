@@ -118,7 +118,12 @@ POST /api/v1/stores/{slug}/campaigns | Same scope; creates a campaign from a
   require repository-level review before qualifying activation.
 PATCH /api/v1/stores/{slug}/campaigns/{id} | Seller/store/campaign scope;
   metadata, status and their history share a transaction. A rejected status
-  leaves the metadata and history unchanged. PATCH input bounds remain open.
+  leaves the metadata and history unchanged. FIXED QUAL-01-12: PATCH accepts
+  one JSON value within a 64 KiB body, matching the create size ceiling.
+  TestSellerCampaignPatchAtomic verifies rejection of oversized, incomplete,
+  and multiple-value bodies without changing state or history, and accepts
+  the exact byte limit. Campaign regressions passed three times with the
+  disposable runner; Go vet passed.
 GET /api/v1/stores/{slug}/campaigns/{id}/analytics | Seller/store/campaign
   scope, read only. Counts accepted impressions/clicks over the campaign's
   retained events. CTR is 100 * clicks / impressions, or zero if none.

@@ -63,6 +63,31 @@ func TestSellerCampaignPatchAtomic(t *testing.T) {
 		return s
 	}
 	initial := readState(t)
+	patch := func(body string) *httptest.ResponseRecorder {
+		path := "/api/v1/stores/" + store.Slug + "/campaigns/" + campaign.ID
+		r := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
+		r = r.WithContext(sellerCampaignRequest(http.MethodPatch, path, owner).Context())
+		w := httptest.NewRecorder()
+		handleSellerCampaignAction(w, r, repo, store.Slug, "edit")
+		return w
+	}
+	const maxBodyBytes = 64 * 1024
+	const validStatus = `{"status":"active"}`
+	for _, tc := range []struct{ name, body string }{
+		{"over limit", validStatus + strings.Repeat(" ", maxBodyBytes+1-len(validStatus))},
+		{"multiple JSON values", validStatus + ` {}`},
+		{"incomplete JSON", `{"status":"active"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := patch(tc.body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body)
+			}
+			if got := readState(t); got != initial {
+				t.Fatalf("rejected PATCH changed campaign or history: %+v", got)
+			}
+		})
+	}
 	for _, tc := range []struct {
 		label, name, status, wantName, wantStatus string
 		metadata                                  bool
@@ -84,11 +109,7 @@ func TestSellerCampaignPatchAtomic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := "/api/v1/stores/" + store.Slug + "/campaigns/" + campaign.ID
-			r := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(string(body)))
-			r = r.WithContext(sellerCampaignRequest(http.MethodPatch, path, owner).Context())
-			w := httptest.NewRecorder()
-			handleSellerCampaignAction(w, r, repo, store.Slug, "edit")
+			w := patch(string(body))
 			if w.Code != tc.wantCode {
 				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantCode, w.Body.String())
 			}
@@ -114,4 +135,14 @@ func TestSellerCampaignPatchAtomic(t *testing.T) {
 			}
 		})
 	}
+	t.Run("exact size limit", func(t *testing.T) {
+		before := readState(t)
+		w := patch(validStatus + strings.Repeat(" ", maxBodyBytes-len(validStatus)))
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204: %s", w.Code, w.Body)
+		}
+		if got := readState(t); got.status != "active" || got.history != before.history+1 {
+			t.Fatalf("valid boundary PATCH did not persist exactly one status change: %+v", got)
+		}
+	})
 }

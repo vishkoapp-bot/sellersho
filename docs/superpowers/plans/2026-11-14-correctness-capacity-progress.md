@@ -61,7 +61,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | PERF-04 | TODO | — | — |
 | EDGE-01 | TODO | — | — |
 | REL-02 | TODO | — | — |
-| QUAL-01 | TODO | — | — |
+| QUAL-01 | Checkpoint OPEN | See git history | [Route inventory, initial review and open findings](../../quality/route-invariant-matrix.txt) |
 | CAP-02 | TODO | — | — |
 | GO-01 | TODO | — | — |
 

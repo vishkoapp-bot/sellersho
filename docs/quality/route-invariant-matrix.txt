@@ -1,0 +1,415 @@
+QUAL-01 route invariant matrix | OPEN checkpoint
+================================================
+
+Generated registration inventory below is evidence of source wiring, not a
+claim of endpoint qualification. Each row identifies a listener and mux
+pattern, or a scheduled business job. Prefix patterns may dispatch multiple
+actions and methods. "none at registration" does not mean public, unauthenticated,
+or safe: the handler may enforce its own boundaries. All rows remain pending
+invariant review unless explicit reviewed evidence is recorded above the marker.
+
+For each action record: method and source, role / capability / tenant / object
+boundary, data read or mutated, money or quantity rules, transaction and retry
+contract, input limits, and regression evidence. For each job record the same
+business invariants with system identity and admission in place of HTTP auth.
+
+Inventory scope: application mux in backend/cmd/server/main.go, separate
+metrics mux in backend/internal/observability/metrics.go, and the business
+worker registry in backend/internal/worker/operations.go. The process also
+runs PollDependencies as telemetry, separately from the business worker.
+Search rollup is explicitly unscheduled (worker/scheduler.go).
+Per-store host routing and Caddy handling require separate edge review.
+The paused backend/internal/networkreward/ package is excluded per task spec.
+
+Check freshness: go run ./scripts/qual-route-inventory.go
+Refresh registration rows: go run ./scripts/qual-route-inventory.go -write
+The checker and generator read source only, with no HTTP requests or jobs run.
+
+FIRST REVIEW: CUSTOMER WALLET
+-----------------------------
+Source: backend/cmd/server/main.go and customer_handlers.go, customer wallet
+engine migration 202610200002. The mux requires customer capability; handlers
+read the principal ID from verified claims and scope queries to customer_id.
+The scope is the customer account, not the seller store.
+
+GET /api/v1/customer/wallet | Own balance and locked balance; available =
+  balance - locked, clamped to zero; missing row gives zero; SQL errors fail.
+  Read only. Cross-customer fixture regression outstanding.
+GET,POST /api/v1/customer/wallet/quote | Own availability; integer Tomans;
+  fee 0, net = amount. Read only. GET parse errors are treated as zero, and
+  a failed policy read is treated as enabled. Boundary tests outstanding.
+GET /api/v1/customer/wallet/withdrawals | Own requests and bank metadata;
+  read only; SQL rows and iteration errors checked; currently unpaginated.
+  Cross-customer fixture and bounded-read review outstanding.
+POST /api/v1/customer/wallet/withdrawals | Own request; positive int64 Tomans
+  and IR Sheba shape; atomically adds amount to the hold with a balance guard
+  and inserts a pending request, no journal until paid. Fresh UUID on each
+  successful submit; no stable retry identity. See open findings below.
+
+OPEN QUAL-01-01: Wallet withdrawal admission disagrees with configuration.
+  Source-level case: a synthetic customer has balance=10000, locked=0 and
+  wallet_withdraw_enabled=false. A valid quote for 5000 reports disabled;
+  the POST writer does not consult that flag. The migration also defines a
+  minimum that neither handler reads. Add a guarded, migrated DB regression:
+  verify denied submissions leave both the hold and requests unchanged, verify
+  allowed minimum boundary, and fail closed when policy is unavailable. Do
+  not qualify the path until the regression runs and enforcement is verified.
+OPEN QUAL-01-02: Wallet withdrawal retry identity is missing. Source-level
+  case: balance=10000, locked=0, identical synthetic 4000-Toman submit twice.
+  Current write path can create two pending requests and lock 8000; define
+  a stable client intent ID without deduplicating deliberate same-amount
+  requests. Add guarded concurrent/retry conservation and ownership tests.
+
+SHARED AUTHORIZATION EVIDENCE (not endpoint or tenant proof)
+-----------------------------------------------------------
+TestQual01FinanceCapabilityGate uses a real signed synthetic token and the
+actual RequireRoles middleware. It checks finance alias access, support
+denial, revocation before handler entry and expiration. It does not prove
+object ownership or qualify finance handlers, exports or reports.
+
+BUSINESS JOBS: EXISTING JOB-01 CONTRACT AND EVIDENCE
+---------------------------------------------------
+The system worker has no HTTP tenant principal. Short, owner-checked database
+leases and nonqueued process slots gate admission. Candidate predicates scope
+each write. See docs/operations/background-jobs.md for retry, deadline, crash
+recovery and local regression commands. Application endpoint authorization,
+including the administrator's delivery run-now action, is a separate review.
+
+unpaid-order-expiry | Up to 200 overdue unpaid orders; guarded per-order
+  cancellation; release existing Redis holds idempotently by order ID. No
+  inferred inventory or captured-money cancellation. Evidence: JOB-01 burst,
+  crash/restart and payment deadline regressions.
+ad-cleanup | Remove only expired ad data, max 2,000 rows per table. Bounded
+  SQL selection skips locked rows; deleted rows no longer match retries. No
+  ad balance or inventory formula. Evidence: JOB-01 bounded-job regressions.
+qc-response-deadline | Up to 100 overdue QC cases, bounded SQL selection
+  skips locked rows. Escalates case state rather than moving physical stock.
+  Evidence: JOB-01 bounded-job regressions and operations integration tests.
+supplier-sla | Up to 100 suppliers; recompute dispatch eligibility on the
+  90-day sample with strict >98% and approved/active and admin-grant guards.
+  Candidate transactions under advisory lock. No money write. Evidence:
+  JOB-01 bounded-job and supplier poison-candidate regressions.
+delivery-lock-releaser | Up to 100 orders per stage. Auto-confirm after 20
+  days; release only after configured return window and guarded recheck.
+  Per-candidate transactions keep profit/referral and ledger in sync; retries
+  re-read eligibility. Evidence: JOB-01 guarded balance and crash regressions.
+monthly-settlement | Max 25 accounts per batch. Scheduled and manual paths
+  share durable month/account progress and transaction guards. Use canonical
+  account availability and do not add cumulative figures again on retry.
+  Evidence: docs/architecture/monthly-settlement.md and JOB-01 restart tests.
+
+LOCAL VALIDATION (2026-11-19, WINDOWS)
+--------------------------------------
+Inventory freshness, Go vet, five finance middleware cases and frontend build
+passed. No lint script is configured. The default Go suite was not green:
+FIN007HTTPCheckoutAdmissionRace and FIN011ReenablementCommissionBase required
+an explicit disposable PostgreSQL URL, and the treasury opening-cash source
+scan was in the repository walk when the bounded rerun timed out. Docker's
+Linux engine was unavailable, so no migrated-schema qualification ran.
+Remaining gates: finish per-action method/tenant/ownership and business-writer
+reviews, run guarded DB regressions, and fix and verify the open findings.
+
+BEGIN SOURCE INVENTORY
+app | /api/health | none at registration
+app | /api/live | none at registration
+app | /api/ready | none at registration
+app | /api/v1/addresses | RequireRoles(jwtService, "customer")
+app | /api/v1/addresses/ | RequireRoles(jwtService, "customer")
+app | /api/v1/admin/ad-network/report | RequireRoles(jwtService, "admin", "support_specialist")
+app | /api/v1/admin/ad-summary | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/addons | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/ads/stats | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/approvals | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/approvals/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/audit-logs | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/banners | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/banners/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/banners/sync-sections | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/capabilities/grant | RequireCapabilities(jwtService, "super_admin")
+app | /api/v1/admin/capabilities/revoke | RequireCapabilities(jwtService, "super_admin")
+app | /api/v1/admin/catalog/review | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/catalog/review/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/categories | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/content/health | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/customer-withdrawals | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/customer-withdrawals/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/disputes | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/exclusivity-challenges | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/exclusivity-challenges/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/growth/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/homepage-sections | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/homepage-sections/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/homepage-sections/history | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/homepage-sections/reorder | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/ippanel/settings | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/ippanel/test | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/jobs | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/jobs/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/margin-locks | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/newsletter/subscribers | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/notifications | RequireRoles(jwtService, "admin", "finance", "support_specialist")
+app | /api/v1/admin/notifications/read | RequireRoles(jwtService, "admin", "finance", "support_specialist")
+app | /api/v1/admin/observability/requests | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/operations | RequireRoles(jwtService, "admin", "logistics_specialist")
+app | /api/v1/admin/operations/qc/ | RequireRoles(jwtService, "admin", "logistics_specialist")
+app | /api/v1/admin/overview | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/overview/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/payments | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/payments/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/payouts | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/payouts/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/platform-pct | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/price-increases | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/price-increases/{id}/review | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/product-field-reviews/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/approve/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/implicit-agreements | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/missing-measurements | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/price-exception/{productId} | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/products/proposals | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/referral-network | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/reports/suspicious-transactions | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/returns | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/reviews | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/reviews/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/campaign-budget | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/contracts | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/fee-overrides | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/margins | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/marketing | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/packaging-tariffs | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/platform | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/pricing | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/product-fee-override | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/settlement | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/shipping | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/storage-fees | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/supplier-contract | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/tapin-boxes | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/tapin-platform | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/tapin-tariff | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/trial-quota | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/settings/warehouse-tariffs | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/site-content | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/sms/credit | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/sms/logs | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/sms/report | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/staff | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/static-pages | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/static-pages/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/storage-fees/run | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/store-intel/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/store-intel/suppliers | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/stores/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/stores/pending | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/subscription-plans | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/supplier-promotions | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/suppliers/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/suppliers/list | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/suppliers/pending | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/suppliers/records | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/suppliers/shipping-methods | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/support/metrics/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/support/tickets | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/tickets | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/tickets/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/users | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/users/ | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/warehouses | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/warranties | RequireRoles(jwtService, "admin")
+app | /api/v1/ads/challenge | none at registration
+app | /api/v1/ads/click | none at registration
+app | /api/v1/ads/events | none at registration
+app | /api/v1/auth/logout | AuthMiddleware
+app | /api/v1/auth/me | AuthMiddleware
+app | /api/v1/auth/otp/send | none at registration
+app | /api/v1/auth/otp/verify | none at registration
+app | /api/v1/auth/password/login | none at registration
+app | /api/v1/auth/supplier/register | none at registration
+app | /api/v1/bank/verify-sheba | none at registration
+app | /api/v1/banners | none at registration
+app | /api/v1/brands | none at registration
+app | /api/v1/categories | none at registration
+app | /api/v1/categories/ | none at registration
+app | /api/v1/checkout-attempts/ | RequireRoles(jwtService, "customer", "seller", "admin")
+app | /api/v1/customer/addresses | RequireRoles(jwtService, "customer")
+app | /api/v1/customer/addresses/ | RequireRoles(jwtService, "customer")
+app | /api/v1/customer/reviews | RequireRoles(jwtService, "customer")
+app | /api/v1/customer/wallet | RequireRoles(jwtService, "customer")
+app | /api/v1/customer/wallet/quote | RequireRoles(jwtService, "customer")
+app | /api/v1/customer/wallet/withdrawals | RequireRoles(jwtService, "customer")
+app | /api/v1/disputes | none at registration
+app | /api/v1/disputes/ | RequireRoles(jwtService, disputeReadWriteRoles...)
+app | /api/v1/domain-store | none at registration
+app | /api/v1/finance/adjustments | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/disputes | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/disputes/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/disputes/create | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/early-withdrawals | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/early-withdrawals/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/ledger | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/reports/revenue | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/reports/revenue/monthly | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/approved | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/monthly | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/monthly/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/monthly/run | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/settlements/pending | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/stores/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/finance/treasury/ | RequireRoles(jwtService, financeRoles...)
+app | /api/v1/geo/cities | AuthMiddleware
+app | /api/v1/geo/provinces | AuthMiddleware
+app | /api/v1/homepage-sections | none at registration
+app | /api/v1/marketing-settings | none at registration
+app | /api/v1/newsletter/subscribe | none at registration
+app | /api/v1/newsletter/unsubscribe | none at registration
+app | /api/v1/niches | none at registration
+app | /api/v1/notifications | RequireRoles(jwtService, "customer")
+app | /api/v1/notifications/read | RequireRoles(jwtService, "customer")
+app | /api/v1/orders | RequireRoles(jwtService, "customer", "seller", "admin")
+app | /api/v1/orders/ | RequireRoles(jwtService, "customer", "seller", "admin", "supplier")
+app | /api/v1/orders/confirm-delivery/ | RequireRoles(jwtService, "customer")
+app | /api/v1/orders/track/ | none at registration
+app | /api/v1/payments/demo-gateway/callback | none at registration
+app | /api/v1/payments/demo-gateway/info | none at registration
+app | /api/v1/payments/demo-gateway/status | none at registration
+app | /api/v1/payments/shaparak/callback | none at registration
+app | /api/v1/payments/shaparak/token | RequireRoles(jwtService, "customer", "admin")
+app | /api/v1/platform/contracts | none at registration
+app | /api/v1/products | OptionalAuthMiddleware
+app | /api/v1/products/ | OptionalAuthMiddleware
+app | /api/v1/products/price-bounds | none at registration
+app | /api/v1/products/store-categories | none at registration
+app | /api/v1/public/return-window-days | none at registration
+app | /api/v1/returns | RequireRoles(jwtService, "customer", "admin")
+app | /api/v1/returns/ | RequireRoles(jwtService, "customer", "admin", "warehouse_staff", "logistics_specialist", "finance_specialist", "support_specialist")
+app | /api/v1/reviews | none at registration
+app | /api/v1/seller/analytics | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/domains | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/domains/ | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/notifications | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/notifications/read | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/pricing-settings | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/search-insight | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/store/template | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/store/template/publish | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/stores/ | RequireRoles(jwtService, "seller", "admin")
+app | /api/v1/seller/tickets | RequireRoles(jwtService, "seller")
+app | /api/v1/seller/variant-overrides | RequireRoles(jwtService, "seller")
+app | /api/v1/shipping/quote | RequireRoles(jwtService, "customer", "seller", "admin")
+app | /api/v1/site-content | none at registration
+app | /api/v1/static-pages | none at registration
+app | /api/v1/store-templates | none at registration
+app | /api/v1/stores | none at registration
+app | /api/v1/stores/ | none at registration
+app | /api/v1/stores/mine | RequireRoles(jwtService, "customer", "seller", "supplier", "admin")
+app | /api/v1/stores/register | RequireRoles(jwtService, "customer", "seller", "supplier", "admin")
+app | /api/v1/subscription-plans | none at registration
+app | /api/v1/supplier/addons | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/addons/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/analytics | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/campaigns | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/campaigns/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/campaigns/create | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/catalog/review | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/catalog/review/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/contract/accept | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/contract/reconfirm | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/customer-returns | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/customer-returns/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/discrepancies | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/discrepancies/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/exclusivity-challenges | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/inbounds | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/inbounds/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/inbounds/create | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/inventory | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/notifications | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/notifications/read | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/orders | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/orders/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/price-increases | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/price-increases/exception-ticket | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/pricing-settings | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/products | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/products/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/products/implicit-agreements | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/products/proposals | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/products/propose | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/profile | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/return-shipping-charges | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/returns | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/returns/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/sales-report | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/search-insight | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/settlement/balance | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/settlement/history | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/settlement/request | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/settlement/storage-fees | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipments | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipments/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipments/pending | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipping-methods | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipping-methods/request | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/shipping-sla | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/stock-share | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/tapin/boxes | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/tapin/settings | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/tapin/test | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/team | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/team/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warehouse-orders | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warehouses | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warehouses/ | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warehouses/central | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warranties | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/supplier/warranties/requests | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/upload/product-image | RequireSupplierAccess(jwtService, supplierRepo)
+app | /api/v1/views/events | none at registration
+app | /api/v1/warehouse/bins | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/bins/ | RequireRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/carriers | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/carriers/quote | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/customer-returns/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inbounds | RequireRoles(jwtService, append(warehouseRoles, "supplier")...)
+app | /api/v1/warehouse/inbounds/ | RequireRoles(jwtService, append(warehouseRoles, "supplier")...)
+app | /api/v1/warehouse/inbounds/pending | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inventory/reconciliation-report | RequireRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/inventory/reconciliation-reviews/ | RequireRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/manifests | RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
+app | /api/v1/warehouse/manifests/ | RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
+app | /api/v1/warehouse/me | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/notifications | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/notifications/read | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-pack | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-pick | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-ship | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/overview | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/picking-route | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/products/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/queue | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/tasks/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/discrepancy/create | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/queue | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/return-backs | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/returns | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/returns/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/shipments/ | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouses/returns | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/webhooks/tracking/update | none at registration
+app | /api/v1/wishlist | RequireRoles(jwtService, "customer")
+app | /internal/domains/allow | none at registration
+app | /static/ | none at registration
+metrics | /metrics | none at registration
+worker | ad-cleanup | period 10 * time.Second, timeout 2 * time.Second
+worker | delivery-lock-releaser | period 60 * time.Second, timeout 10 * time.Second
+worker | monthly-settlement | period 60 * time.Second, timeout 4 * time.Second
+worker | qc-response-deadline | period 30 * time.Second, timeout 2 * time.Second
+worker | supplier-sla | period 30 * time.Second, timeout 3 * time.Second
+worker | unpaid-order-expiry | period 5 * time.Second, timeout 3 * time.Second

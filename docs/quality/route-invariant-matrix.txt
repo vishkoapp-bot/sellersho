@@ -281,10 +281,27 @@ ownership/disable and campaign amount validation). Separate report JSON
 allowlist test and Go vet passed. The allowlist covers the ad network report
 wire types only, not other report or export formats.
 
-QUAL-01 remains OPEN. Other open acceptance evidence: report/export field allowlists, host/store and
-callback boundaries, advertising ingress attribution and uncovered business
-writer input and retry contracts. Source review and focused runtime evidence
-do not establish acceptance for all routes.
+Additional trust-boundary selection: nine guarded server tests passed with no
+skips, including application proxy attribution and ad proof/rate handling,
+domain permission, ad reports, upload admission and tracking callback missing
+or invalid authentication. The runner verified PostgreSQL and Redis cleanup.
+Frontend build passed with a bundle-size warning. No lint script is configured.
+
+  python scripts/test-suite-isolated.py --run "^(TestOperationsAdHTTPAndProxySpoof|TestOperationsAuthorizationAndDomainPermission|TestWebhookTrackingUpdate_AuthenticationGuard|TestUploadProductImage_.*|TestAdNetworkReport.*)$" ./cmd/server
+
+Application host lookup and plan admission: two guarded server tests passed
+without skips. The host fixture verifies that two stores resolve independently
+by canonical Host, not by forwarded or query selectors. An approval for the
+other store, a superseded approval and a disabled domain do not resolve. The
+plan test confirms existing domains still resolve after plan expiry.
+
+  python scripts/test-suite-isolated.py --run "^(TestQual01DomainStoreHostBinding|TestQual01PlanAdmissionPreservesStoresAndDomains)$" ./cmd/server
+
+QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
+allowlists, edge host/store binding, authenticated callback state transitions
+and replay, edge advertising attribution, and uncovered business writer input
+and retry contracts. Local application checks do not establish edge behavior
+or acceptance for all routes.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

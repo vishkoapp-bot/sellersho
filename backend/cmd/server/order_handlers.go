@@ -1960,6 +1960,9 @@ func handleStoreReturns(w http.ResponseWriter, r *http.Request, ctx context.Cont
 // from the returns engine. It is a different route from Team 01's
 // /api/v1/warehouse/return-backs stub, which is not touched here.
 func handleWarehousesReturns(w http.ResponseWriter, r *http.Request, ctx context.Context, orderRepo *repository.OrderRepository) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if orderRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)

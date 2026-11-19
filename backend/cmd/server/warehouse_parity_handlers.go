@@ -42,6 +42,9 @@ func handleT01WarehouseMe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 // source ready-to-pick route): picked orders wait for packing, packed
 // orders wait for carrier handover.
 func handleT01WarehouseOrdersReady(w http.ResponseWriter, r *http.Request, ctx context.Context, repo *repository.WarehouseRepository, kind string) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if repo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)

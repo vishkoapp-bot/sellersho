@@ -112,8 +112,8 @@ PATCH /api/v1/stores/{slug}/campaigns/{id} | Seller/store/campaign scope;
   valid metadata edit followed by rejected status, and decide atomicity.
 GET /api/v1/stores/{slug}/campaigns/{id}/analytics | Seller/store/campaign
   scope, read only. Aggregation formula and time/result limits need review.
-/api/v1/stores/{slug}/campaigns/{id}/history | Same scope, read only. Handler
-  does not enforce GET. Verify the accepted method policy and replay costs.
+GET /api/v1/stores/{slug}/campaigns/{id}/history | Same scope, read only.
+  Rejects methods other than GET before querying. History bounds still need review.
 POST /api/v1/ads/challenge | Public; parses campaign UUID and 2 KiB body,
   applies hashed IP rate admission and issues scoped proof or records rejection.
   Trusted-proxy attribution and rate/reset cases need independent tests.
@@ -123,7 +123,9 @@ POST /api/v1/ads/events | Public with signed proof and campaign/token checks;
   qualified by this handler-level review.
 GET /api/v1/finance/treasury/commission | Finance role group, global read;
   aggregates gross platform profit on paid noncancelled orders, not net cash.
-  Review totals/trend snapshot and day-boundary agreement before qualification.
+  QUAL-01-03: totals, release split, count and daily trend now derive from one
+  query and the same N UTC dates, including today. TestQual01CommissionUTCWindow
+  checks exact sums, an empty day and window, a non-UTC SQL session and error handling.
 
 SHARED AUTHORIZATION EVIDENCE (not endpoint or tenant proof)
 -----------------------------------------------------------
@@ -189,10 +191,45 @@ external withdrawal API clients send the required key. This checkout has no
 frontend caller of this endpoint. Do not remove stored retry evidence on
 rollback or treat this scoped verification as a production release gate.
 
-Remaining gates: resolve method, tenant and ownership questions identified in the
-source action review, finish business-writer qualification and run and address
-remaining guarded regressions. The wallet findings are fixed, not the entire
-QUAL-01 audit.
+Runtime follow-up (2026-11-19): the existing wallet, capability, treasury,
+campaign, supplier, catalog scope and upload selection passed 20 top-level
+tests in separate migrated PostgreSQL clones. The changed-code selection below
+passed nine top-level tests, including the repeated campaign lifecycle, with no
+skips. The runner verified PostgreSQL and Redis cleanup in both runs. Warehouse
+method assertions use an empty SQL stub and do not prove tenant isolation.
+Inventory freshness (297 HTTP registrations, six jobs), Go vet and frontend
+build passed. The frontend has no lint script.
+
+  python scripts/test-suite-isolated.py --run "^(TestQual01CommissionUTCWindow|TestQUAL01WarehouseGETOnly|TestSellerCampaign.*|TestSellerPanelPersistenceOwnershipAndWallet|TestAdNetworkReport.*|TestOperationsAuthorizationAndDomainPermission)$" ./cmd/server
+
+OPEN DECISIONS AND REMAINING EVIDENCE
+-----------------------------------
+QUAL-01-04 Warehouse site scope: decide whether staff act across all sites,
+within their assigned city, or only at assigned warehouse IDs. Define unassigned
+staff behavior, capability exceptions by action, supplier inbound access, and
+whether each user may be assigned one or multiple sites. Specify who provisions
+and revokes assignments and how ambiguous or noncentral objects are handled.
+The existing city/profile field defaults to Tehran and is not a membership
+relation. Test two sites in one city and a third in another city.
+Do not convert a caller-supplied warehouse selector into proof of access. The
+GET-only guards on packing, shipping and returns do not change staff scope.
+
+QUAL-01-05 Subscription and domains: choose whether new purchases use the service
+registry or the active catalog for eligibility and terms. For a store whose
+active_plan_id remains populated after plan_expires_at, choose quota and whether
+expiry affects only new requests or existing verified custom domains. Also define
+the treatment of NULL expiry and deactivated plans. Existing quota semantics and
+purchase prices were not changed.
+
+QUAL-01-06 Campaign updates: define whether a request with valid metadata and an
+invalid status may save the metadata. Neither a partial write nor all-or-nothing
+behavior should be treated as the product contract without an explicit decision.
+
+Other open acceptance evidence: bounded withdrawal reads and admin withdrawal
+projections/review concurrency, report/export field allowlists, host/store and
+callback boundaries, advertising budget conservation and uncovered business
+writer input and retry contracts. Source review and focused runtime evidence do
+not establish acceptance for all routes.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

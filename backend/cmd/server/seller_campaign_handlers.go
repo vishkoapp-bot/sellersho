@@ -212,6 +212,11 @@ func handleSellerCampaignAction(w http.ResponseWriter, r *http.Request, repo *re
 		return
 	}
 	if action == "history" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeMethodNotAllowed(w)
+			return
+		}
 		id = strings.TrimSuffix(id, "/history")
 		items, err := repo.SellerCampaignHistory(r.Context(), claims.UserID, slug, id)
 		if err != nil {

@@ -4,11 +4,50 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
-	"testing"
 )
+
+func sellerCampaignRequest(method, path, owner string) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	return r.WithContext(context.WithValue(r.Context(), userClaimsKey, &auth.UserClaims{UserID: owner}))
+}
+
+func TestSellerCampaignUnsupportedMethods(t *testing.T) {
+	const slug = "test-store"
+	base := "/api/v1/stores/" + slug + "/campaigns"
+	item := base + "/" + uuid.NewString()
+	for _, tc := range []struct{ name, method, path, action, allow string }{
+		{"history-post", http.MethodPost, item + "/history", "history", http.MethodGet},
+		{"history-head", http.MethodHead, item + "/history", "history", http.MethodGet},
+		{"analytics-post", http.MethodPost, item + "/analytics", "analytics", ""},
+		{"item-put", http.MethodPut, item, "edit", ""},
+		{"collection-put", http.MethodPut, base, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := sellerCampaignRequest(tc.method, tc.path, uuid.NewString())
+			w := httptest.NewRecorder()
+			// Rejected methods must not need a repository.
+			if tc.action == "" {
+				handleSellerCampaigns(w, r, nil, slug)
+			} else {
+				handleSellerCampaignAction(w, r, nil, slug, tc.action)
+			}
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", w.Code)
+			}
+			if tc.allow != "" && w.Header().Get("Allow") != tc.allow {
+				t.Fatalf("Allow = %q, want %q", w.Header().Get("Allow"), tc.allow)
+			}
+		})
+	}
+}
 
 func TestSellerCampaignLifecycleAndIsolation(t *testing.T) {
 	db := setupTestPostgresDB(t)
@@ -46,6 +85,33 @@ func TestSellerCampaignLifecycleAndIsolation(t *testing.T) {
 	c, err := repo.CreateSellerCampaign(ctx, owner, stores[0].Slug, "Banner campaign", "banner", []string{product}, map[string]interface{}{}, "draft")
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Run("owner can read history", func(t *testing.T) {
+		slug := stores[0].Slug
+		r := sellerCampaignRequest(http.MethodGet, "/api/v1/stores/"+slug+"/campaigns/"+c.ID+"/history", owner)
+		w := httptest.NewRecorder()
+		handleSellerCampaignAction(w, r, repo, slug, "history")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var items []repository.SellerCampaignHistory
+		if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Action != "created" || items[0].CreatedAt.IsZero() {
+			t.Fatalf("expected a timestamped creation entry, got %+v", items)
+		}
+	})
+	for _, action := range []string{"history", "analytics"} {
+		t.Run("non-owner cannot read "+action, func(t *testing.T) {
+			slug := stores[0].Slug
+			r := sellerCampaignRequest(http.MethodGet, "/api/v1/stores/"+slug+"/campaigns/"+c.ID+"/"+action, other)
+			w := httptest.NewRecorder()
+			handleSellerCampaignAction(w, r, repo, slug, action)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+		})
 	}
 	if _, err := repo.GetSellerCampaigns(ctx, other, stores[0].Slug); !errors.Is(err, repository.ErrStoreForbidden) {
 		t.Fatalf("cross-owner list: %v", err)

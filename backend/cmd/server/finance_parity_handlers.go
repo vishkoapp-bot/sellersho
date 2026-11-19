@@ -91,15 +91,58 @@ func t01TreasuryDays(r *http.Request) int {
 	return days
 }
 
-// t01DayLabels returns YYYY-MM-DD labels for the days window ending
-// today (UTC), oldest first, for zero-filling daily trends.
-func t01DayLabels(days int) []string {
-	now := time.Now().UTC()
-	out := make([]string, 0, days)
-	for i := days - 1; i >= 0; i-- {
-		out = append(out, now.AddDate(0, 0, -i).Format("2006-01-02"))
+func handleT01TreasuryCommission(w http.ResponseWriter, r *http.Request, db *sql.DB, now time.Time) {
+	days := t01TreasuryDays(r)
+	now = now.UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	start := today.AddDate(0, 0, 1-days)
+	end := today.AddDate(0, 0, 1)
+	// The totals and daily buckets share a statement snapshot. Keep the
+	// existing gross recorded-profit definition, not a bank-cash measure.
+	rows, err := db.QueryContext(r.Context(), `
+		SELECT TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+		       COALESCE(SUM(platform_profit), 0),
+		       COALESCE(SUM(platform_profit) FILTER (WHERE profit_released IS TRUE), 0),
+		       COALESCE(SUM(platform_profit) FILTER (WHERE profit_released IS NOT TRUE), 0),
+		       COUNT(*)
+		FROM orders
+		WHERE payment_status = 'paid' AND status != 'cancelled'
+		  AND created_at >= $1 AND created_at < $2
+		GROUP BY GROUPING SETS ((1), ())`, start, end)
+	if err != nil {
+		writeInternalError(w, err)
+		return
 	}
-	return out
+	defer rows.Close()
+	var total, released, unreleased, orderCount int64
+	byDay := make(map[string]int64, days)
+	for rows.Next() {
+		var day sql.NullString
+		var commission, paid, pending, count int64
+		if err := rows.Scan(&day, &commission, &paid, &pending, &count); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if day.Valid {
+			byDay[day.String] = commission
+		} else {
+			total, released, unreleased, orderCount = commission, paid, pending, count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	trend := make([]map[string]interface{}, 0, days)
+	for i := 0; i < days; i++ {
+		day := start.AddDate(0, 0, i).Format("2006-01-02")
+		trend = append(trend, map[string]interface{}{"date": day, "commission": byDay[day]})
+	}
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true, "days": days,
+		"total": total, "releasedTotal": released, "unreleasedTotal": unreleased,
+		"orderCount": orderCount, "trend": trend,
+	})
 }
 
 func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB, area string) {
@@ -118,62 +161,7 @@ func handleT01FinanceTreasury(w http.ResponseWriter, r *http.Request, db *sql.DB
 		handleTreasuryCashPosition(w, r, db)
 
 	case "commission":
-		days := t01TreasuryDays(r)
-		cutoff := time.Now().AddDate(0, 0, -days)
-		// Paid orders only (live label: "جمع سهم ثبت‌شده روی
-		// سفارش‌های پرداخت‌شده"); cancelled orders excluded.
-		// Released split (INFERRED): profit_released TRUE means
-		// released, FALSE means still awaiting release, matching
-		// the profit-locks classification used elsewhere.
-		var total, released, unreleased, orderCount int64
-		if err := db.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(platform_profit), 0),
-			        COALESCE(SUM(CASE WHEN COALESCE(profit_released, FALSE) THEN platform_profit ELSE 0 END), 0),
-			        COALESCE(SUM(CASE WHEN COALESCE(profit_released, FALSE) THEN 0 ELSE platform_profit END), 0),
-			        COUNT(*)
-			 FROM orders
-			 WHERE payment_status = 'paid' AND status != 'cancelled' AND created_at >= $1`,
-			cutoff).Scan(&total, &released, &unreleased, &orderCount); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		// Daily trend (INFERRED granularity: one bucket per
-		// calendar day; the bundle proves only trend[].commission).
-		byDay := map[string]int64{}
-		rows, err := db.QueryContext(ctx,
-			`SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS day, COALESCE(SUM(platform_profit), 0)
-			 FROM orders
-			 WHERE payment_status = 'paid' AND status != 'cancelled' AND created_at >= $1
-			 GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') ORDER BY day`, cutoff)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		for rows.Next() {
-			var day string
-			var v int64
-			if err := rows.Scan(&day, &v); err != nil {
-				rows.Close()
-				writeInternalError(w, err)
-				return
-			}
-			byDay[day] = v
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			writeInternalError(w, err)
-			return
-		}
-		rows.Close()
-		ctrend := []map[string]interface{}{}
-		for _, day := range t01DayLabels(days) {
-			ctrend = append(ctrend, map[string]interface{}{"date": day, "commission": byDay[day]})
-		}
-		t01WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true, "days": days,
-			"total": total, "releasedTotal": released, "unreleasedTotal": unreleased,
-			"orderCount": orderCount, "trend": ctrend,
-		})
+		handleT01TreasuryCommission(w, r, db, time.Now())
 	case "payouts-summary":
 		// FIN-008 D-15: a failed read fails the response instead of
 		// silently rendering 0.

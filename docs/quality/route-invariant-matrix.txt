@@ -376,7 +376,18 @@ FIXED QUAL-01-10: historical inventory review POST writes review metadata
   and the report HTTP regression passed five times on disposable PostgreSQL and
   Redis. Go vet passed. OPEN: a retry after a different decision is not a
   durable replay, and review payload bounds and full-report read cost remain
-  unqualified.
+  unqualified. The browser sends every evidence reference in the selected
+  product row, so a payload limit needs a matching evidence paging/selection
+  contract rather than silently truncating the audit record.
+
+FIXED QUAL-01-11: reconciliation review POST retains conflict responses for
+  invalid decisions and missing products, but unexpected database failures
+  return a generic 500. TestQual01HistoricalReconciliationReviewAdmission
+  verifies rejection of revoked capability, expired token, dual-role staff,
+  and wrong method; rejected requests leave no review or audit record. A valid
+  logistics request records its authenticated reviewer. Three repetitions of
+  the review, report, and retry regressions passed on disposable services, and
+  Go vet passed.
 
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered

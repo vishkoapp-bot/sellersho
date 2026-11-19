@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -236,10 +236,13 @@ type HistoricalReview struct {
 	UpdatedAt       time.Time                    `json:"updatedAt"`
 }
 
+// ErrInvalidHistoricalReview indicates an inadmissible review decision.
+var ErrInvalidHistoricalReview = errors.New("invalid historical review")
+
 func (r *SupplierRepository) ReviewHistoricalInventory(ctx context.Context, productID, status, reason, reviewer string, evidence []string) (*HistoricalReview, error) {
 	allowed := map[string]bool{"needs_review": true, "in_review": true, "awaiting_evidence": true, "approved_for_correction": true, "rejected": true, "resolved": true, "indeterminate": true}
 	if !allowed[status] || productID == "" || reviewer == "" {
-		return nil, fmt.Errorf("invalid historical review")
+		return nil, ErrInvalidHistoricalReview
 	}
 	report, err := r.GetHistoricalInventoryReport(ctx)
 	if err != nil {

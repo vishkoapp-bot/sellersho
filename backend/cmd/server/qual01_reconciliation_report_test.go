@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,5 +107,61 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 		if !found {
 			t.Fatal("report omitted persisted fixture")
 		}
+	}
+}
+
+func TestQual01HistoricalReconciliationReviewAdmission(t *testing.T) {
+	db := opsHTTPDB(t)
+	product := "qual-review-" + uuid.NewString()[:12]
+	if _, err := db.Exec(`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,fulfillment_method) VALUES ($1,'Review fixture',$1,'digital','sup-technolife',100000,50000,1000,TRUE,2,'warehouse')`, product); err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewSupplierRepository(db)
+	service := auth.NewJWTService(uuid.NewString())
+	reader := &middlewareCapabilityReader{}
+	service.SetCapabilityReader(reader)
+	handler := requireGlobalWarehouseRoles(service, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w)
+			return
+		}
+		handleReviewHistoricalInventory(w, r, r.Context(), repo, nil)
+	})
+	request := func(method, id, actor, body string, caps []string, ttl time.Duration, want int) string {
+		t.Helper()
+		reader.capabilities = caps
+		token, err := service.GenerateTokenWithCapabilities(actor, "", "", "logistics_specialist", []string{"logistics_specialist"}, ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(method, "/api/v1/warehouse/inventory/reconciliation-reviews/"+id, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler(w, r)
+		if w.Code != want {
+			t.Fatalf("%s with %v: got %d, want %d: %s", method, caps, w.Code, want, w.Body)
+		}
+		return w.Body.String()
+	}
+	const body = `{"status":"in_review","reason":"manual review","evidence":["fixture-a","fixture-b"]}`
+	admin := []string{"admin"}
+	request(http.MethodPost, product, "fixture-reviewer", body, []string{"warehouse_staff", "admin"}, time.Hour, http.StatusForbidden)
+	request(http.MethodPost, product, "fixture-reviewer", body, nil, time.Hour, http.StatusForbidden)
+	request(http.MethodPost, product, "fixture-reviewer", body, admin, -time.Hour, http.StatusUnauthorized)
+	request(http.MethodGet, product, "fixture-reviewer", body, admin, time.Hour, http.StatusMethodNotAllowed)
+	request(http.MethodPost, product, "fixture-reviewer", `{"status":"unknown"}`, admin, time.Hour, http.StatusConflict)
+	request(http.MethodPost, "missing-"+product, "fixture-reviewer", body, admin, time.Hour, http.StatusConflict)
+	result := request(http.MethodPost, product, strings.Repeat("x", 81), body, admin, time.Hour, http.StatusInternalServerError)
+	if strings.Contains(result, "pq:") || strings.Contains(result, "character varying") {
+		t.Fatalf("database detail returned to client: %s", result)
+	}
+	var reviews, audit int
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM historical_reconciliation_reviews WHERE product_id=$1), (SELECT COUNT(*) FROM audit_logs WHERE action='historical_reconciliation_review' AND details LIKE '%'||$1||'%')`, product).Scan(&reviews, &audit); err != nil || reviews != 0 || audit != 0 {
+		t.Fatalf("failed requests wrote review or audit: %d/%d (%v)", reviews, audit, err)
+	}
+	result = request(http.MethodPost, product, "fixture-reviewer", body, []string{"logistics_specialist"}, time.Hour, http.StatusOK)
+	var saved repository.HistoricalReview
+	if err := json.Unmarshal([]byte(result), &saved); err != nil || saved.ProductID != product || saved.ReviewerUserID != "fixture-reviewer" || saved.ReviewStatus != "in_review" {
+		t.Fatalf("unexpected authenticated review: %s (%v)", result, err)
 	}
 }

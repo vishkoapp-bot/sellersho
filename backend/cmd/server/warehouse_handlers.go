@@ -294,6 +294,10 @@ func handleReviewHistoricalInventory(w http.ResponseWriter, r *http.Request, ctx
 		http.Error(w, "authenticated reviewer required", http.StatusUnauthorized)
 		return
 	}
+	if returnRepo == nil {
+		writeInternalError(w, errors.New("historical review repository not initialized"))
+		return
+	}
 	var req struct {
 		Status   string   `json:"status"`
 		Reason   string   `json:"reason"`
@@ -306,8 +310,16 @@ func handleReviewHistoricalInventory(w http.ResponseWriter, r *http.Request, ctx
 	productID := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/inventory/reconciliation-reviews/")
 	productID = strings.Trim(productID, "/")
 	review, err := returnRepo.ReviewHistoricalInventory(ctx, productID, req.Status, req.Reason, claims.UserID, req.Evidence)
+	if errors.Is(err, repository.ErrInvalidHistoricalReview) {
+		http.Error(w, "invalid historical review", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "historical review product not found", http.StatusConflict)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(review)

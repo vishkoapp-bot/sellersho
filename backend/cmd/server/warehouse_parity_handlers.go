@@ -16,11 +16,8 @@ import (
 // confirmed, and marks the rest TODO. The source putaway/queue and
 // putaway/tasks routes are NOT removed.
 
-// handleT01WarehouseMe serves GET /api/v1/warehouse/me (probe 401,
-// frontend call). The confirmed contract is only the caller's identity
-// as a warehouse user; which warehouse (if any) is assigned to the
-// caller is unverified (TODO), so warehouseId is null rather than
-// guessed.
+// The assignment covers a city, not one site, so warehouseId remains null.
+// Only a confirmed current staff assignment is returned as warehouseCity.
 func handleT01WarehouseMe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
 		return
@@ -29,10 +26,19 @@ func handleT01WarehouseMe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if claims, ok := r.Context().Value(userClaimsKey).(*auth.UserClaims); ok && claims != nil {
 		role = claims.Role
 	}
+	var city sql.NullString
+	if staff := repository.WarehouseStaffID(r.Context()); staff != "" {
+		err := db.QueryRowContext(r.Context(), `SELECT NULLIF(BTRIM(warehouse_city), '') FROM users WHERE id=$1 AND is_active AND warehouse_city_confirmed`, staff).Scan(&city)
+		if err != nil && err != sql.ErrNoRows {
+			writeInternalError(w, err)
+			return
+		}
+	}
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"userId":      t01ClaimsUserID(r),
 		"role":        role,
 		"warehouseId": nil,
+		"warehouseCity": city.String,
 	})
 }
 
@@ -83,6 +89,15 @@ func handleT01WarehouseShipments(w http.ResponseWriter, r *http.Request, db *sql
 	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
 		return
 	}
+	if repository.WarehouseStaffID(r.Context()) != "" {
+		rows, err := repository.ListScopedWarehouseShippingLegs(r.Context(), db, t01Limit(r))
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"shipments": rows})
+		return
+	}
 	rows, _, err := t01ListRows(r.Context(), db, "order_shipping_legs", "ORDER BY id ASC", t01Limit(r))
 	if err != nil {
 		writeInternalError(w, err)
@@ -100,9 +115,17 @@ func handleT01WarehouseReturnBacks(w http.ResponseWriter, r *http.Request, db *s
 	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
 		return
 	}
-	rows, err := db.QueryContext(r.Context(),
-		`SELECT id, order_id, customer_id, status, reason, admin_note, created_at, updated_at
-		FROM customer_returns WHERE status IN ('approved', 'received') ORDER BY created_at DESC LIMIT $1`, t01Limit(r))
+	query := `SELECT id, order_id, customer_id, status, reason, admin_note, created_at, updated_at
+		FROM customer_returns cr WHERE status IN ('approved', 'received')`
+	args := []any{t01Limit(r)}
+	if staff := repository.WarehouseStaffID(r.Context()); staff != "" {
+		query += ` AND NULLIF(cr.destination_supplier_warehouse_id, '') IS NULL AND EXISTS (
+			SELECT 1 FROM warehouses w JOIN users u ON BTRIM(u.warehouse_city) COLLATE "C"=BTRIM(w.city_name) COLLATE "C"
+			WHERE w.id=cr.warehouse_id AND u.id=$2 AND u.is_active AND u.warehouse_city_confirmed
+			AND BTRIM(u.warehouse_city)<>'')`
+		args = append(args, staff)
+	}
+	rows, err := db.QueryContext(r.Context(), query+` ORDER BY created_at DESC LIMIT $1`, args...)
 	if err != nil {
 		writeInternalError(w, err)
 		return

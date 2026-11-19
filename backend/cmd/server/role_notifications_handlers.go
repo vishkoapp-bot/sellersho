@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 )
@@ -47,7 +48,7 @@ func handleRoleNotifications(w http.ResponseWriter, r *http.Request, db *sql.DB)
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	items, unreadCount, exists, err := listNotificationsForUser(r.Context(), db, userID)
+	items, unreadCount, exists, err := listNotificationsForUser(notificationContext(r), db, userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -79,7 +80,7 @@ func handleRoleNotificationsRead(w http.ResponseWriter, r *http.Request, db *sql
 	if req.ID != "" {
 		ids = append(ids, req.ID)
 	}
-	updated, err := markNotificationsReadForUser(r.Context(), db, userID, ids)
+	updated, err := markNotificationsReadForUser(notificationContext(r), db, userID, ids)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -117,12 +118,12 @@ func handleAdminNotificationsRead(w http.ResponseWriter, r *http.Request, db *sq
 // /api/v1/warehouse/notifications: outbox rows addressed to the
 // calling warehouse staff user.
 func handleWarehouseNotifications(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	handleRoleNotifications(w, r, db)
+	handleRoleNotifications(w, r.WithContext(context.WithValue(r.Context(), warehouseInboxKey{}, true)), db)
 }
 
 // handleWarehouseNotificationsRead serves POST
 // /api/v1/warehouse/notifications/read. Accepts {id}, {ids}, or an
 // empty body (= mark-all), scoped to the caller.
 func handleWarehouseNotificationsRead(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	handleRoleNotificationsRead(w, r, db)
+	handleRoleNotificationsRead(w, r.WithContext(context.WithValue(r.Context(), warehouseInboxKey{}, true)), db)
 }

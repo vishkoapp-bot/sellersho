@@ -92,6 +92,20 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 	if len(ids) > 50 || warehouse == "" || !start.Valid() {
 		return out, fmt.Errorf("حداکثر ۵۰ سفارش، نام انبار و مختصات معتبر لازم است")
 	}
+	staffID := WarehouseStaffID(ctx)
+	var siteID string
+	if staffID != "" {
+		err := r.db.QueryRowContext(ctx, `SELECT site.id FROM warehouses site JOIN users staff ON staff.id=$1
+			WHERE site.id <> '' AND site.name COLLATE "C"=$2 AND staff.is_active AND staff.warehouse_city_confirmed
+			AND (SELECT COUNT(*) FROM warehouses named WHERE named.name COLLATE "C"=$2)=1
+			AND NULLIF(BTRIM(staff.warehouse_city),'') COLLATE "C" = BTRIM(site.city_name) COLLATE "C"`, staffID, warehouse).Scan(&siteID)
+		if err == sql.ErrNoRows {
+			return out, fmt.Errorf("انبار در دسترس نیست")
+		}
+		if err != nil {
+			return out, err
+		}
+	}
 	orders, err := r.GetOrdersReadyToPick(ctx)
 	if err != nil {
 		return out, err
@@ -108,7 +122,9 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 		if len(wanted) > 0 && !wanted[o.ID] {
 			continue
 		}
-		seen[o.ID] = true
+		if staffID == "" {
+			seen[o.ID] = true
+		}
 		var items []struct {
 			OrderItemID string `json:"orderItemId"`
 			ProductID   string `json:"productId"`
@@ -122,9 +138,26 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 			return out, err
 		}
 		for _, it := range items {
+			if staffID != "" {
+				// The queue carries a city's total warehouse quantity. Only the
+				// persisted legs for this route's exact site may be planned here.
+				err = r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(origin.quantity),0)
+					FROM order_item_origins origin JOIN warehouses site ON site.id=origin.warehouse_id
+					JOIN users staff ON staff.id=$4
+					WHERE origin.order_id=$1 AND origin.order_item_id::text=$2 AND site.id=$3
+					AND origin.origin_type='warehouse' AND origin.quantity>0 AND staff.is_active AND staff.warehouse_city_confirmed
+					AND NULLIF(BTRIM(staff.warehouse_city),'') COLLATE "C" = BTRIM(site.city_name) COLLATE "C"`, o.ID, it.OrderItemID, siteID, staffID).Scan(&it.Quantity)
+				if err != nil {
+					return out, err
+				}
+				if it.Quantity == 0 {
+					continue
+				}
+				seen[o.ID] = true
+			}
 			// Allocate the actual quantity across canonical lots, never just the
 			// last bin label. Shared stock cannot be planned twice in one batch.
-			rows, e := r.db.QueryContext(ctx, `WITH captured AS (
+			query := `WITH captured AS (
 			 SELECT allocations FROM order_inventory_captures WHERE order_item_id=$4 AND product_id=$1
 			 AND jsonb_typeof(allocations)='array' AND jsonb_array_length(allocations)>0
 			), lots AS (
@@ -139,7 +172,39 @@ func (r *WarehouseRepository) OptimizePicking(ctx context.Context, ids []string,
 			 SELECT b.bin_code,b.position_x,b.position_y,b.position_z,COALESCE(l.quantity,
 			 CASE WHEN b.product_id=$1 AND NOT EXISTS(SELECT 1 FROM captured) AND NOT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1)
 			 AND ($3='' OR EXISTS(SELECT 1 FROM product_variants WHERE id=NULLIF($3,'')::uuid AND inventory_mode='legacy')) THEN b.quantity ELSE 0 END),EXISTS(SELECT 1 FROM captured)
-			 FROM warehouse_bins b LEFT JOIN lots l ON l.bin_code=b.bin_code WHERE b.warehouse_name=$2 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND (l.quantity>0 OR b.product_id=$1)`, it.ProductID, warehouse, it.VariantID, it.OrderItemID)
+			 FROM warehouse_bins b LEFT JOIN lots l ON l.bin_code=b.bin_code WHERE b.warehouse_name=$2 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL AND (l.quantity>0 OR b.product_id=$1)`
+			args := []any{it.ProductID, warehouse, it.VariantID, it.OrderItemID}
+			if staffID != "" {
+				query = `WITH site_scope AS (
+					SELECT site.id FROM warehouses site JOIN users staff ON staff.id=$5
+					WHERE site.id=$2 AND staff.is_active AND staff.warehouse_city_confirmed
+					AND NULLIF(BTRIM(staff.warehouse_city),'') COLLATE "C" = BTRIM(site.city_name) COLLATE "C"
+				), captured AS (
+					SELECT allocations FROM order_inventory_captures WHERE order_item_id=$4 AND product_id=$1
+					AND jsonb_typeof(allocations)='array' AND jsonb_array_length(allocations)>0
+				), lots AS (
+					SELECT substring(ib.location_key FROM 5) AS bin_code, SUM((a->>'quantity')::int)::int AS quantity
+					FROM captured c CROSS JOIN LATERAL jsonb_array_elements(c.allocations) a
+					JOIN inventory_balances ib ON ib.id=a->>'balanceId' AND ib.product_id=$1
+					JOIN site_scope s ON s.id=ib.warehouse_id
+					WHERE ib.location_type='bin' AND ib.supplier_warehouse_id IS NULL
+					AND ib.location_key LIKE 'bin:%' AND (ib.bin_code IS NULL OR ib.bin_code=substring(ib.location_key FROM 5))
+					GROUP BY 1
+					UNION ALL
+					SELECT substring(ib.location_key FROM 5), SUM(ib.quantity)::int
+					FROM inventory_balances ib JOIN site_scope s ON s.id=ib.warehouse_id
+					WHERE ib.product_id=$1 AND ib.variant_id IS NULL AND ib.status='sellable' AND ib.quantity>0
+					AND ib.location_type='bin' AND ib.supplier_warehouse_id IS NULL
+					AND ib.location_key LIKE 'bin:%' AND (ib.bin_code IS NULL OR ib.bin_code=substring(ib.location_key FROM 5))
+					AND NOT EXISTS(SELECT 1 FROM captured)
+					AND ($3='' OR EXISTS(SELECT 1 FROM product_variants WHERE id=NULLIF($3,'')::uuid AND inventory_mode='legacy')) GROUP BY 1
+				)
+				SELECT b.bin_code,b.position_x,b.position_y,b.position_z,l.quantity,EXISTS(SELECT 1 FROM captured)
+				FROM warehouse_bins b JOIN site_scope s ON s.id=b.warehouse_id JOIN lots l ON l.bin_code=b.bin_code
+				WHERE l.quantity>0 AND b.position_x IS NOT NULL AND b.position_y IS NOT NULL AND b.position_z IS NOT NULL`
+				args = []any{it.ProductID, siteID, it.VariantID, it.OrderItemID, staffID}
+			}
+			rows, e := r.db.QueryContext(ctx, query, args...)
 			if e != nil {
 				return out, e
 			}

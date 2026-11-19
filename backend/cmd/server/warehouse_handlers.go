@@ -49,7 +49,7 @@ func handleStartReceivingInbound(w http.ResponseWriter, r *http.Request, ctx con
 	}
 	staffID := getCallerUserID(ctx)
 	if err := repo.StartReceiving(ctx, id, staffID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInboundActionError(w, err, http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -73,7 +73,7 @@ func handleScanInboundItem(w http.ResponseWriter, r *http.Request, ctx context.C
 	staffID := getCallerUserID(ctx)
 	count, err := repo.ScanItem(ctx, id, req, staffID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInboundActionError(w, err, http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -96,7 +96,7 @@ func handleCompleteInbound(w http.ResponseWriter, r *http.Request, ctx context.C
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInboundActionError(w, err, http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -104,6 +104,13 @@ func handleCompleteInbound(w http.ResponseWriter, r *http.Request, ctx context.C
 		"inboundId": id,
 		"status":    "received",
 	})
+}
+
+func writeInboundActionError(w http.ResponseWriter, err error, status int) {
+	if errors.Is(err, repository.ErrInboundOutsideStaffScope) {
+		status = http.StatusNotFound
+	}
+	http.Error(w, err.Error(), status)
 }
 
 func handleGetQCQueue(w http.ResponseWriter, r *http.Request, ctx context.Context, repo *repository.WarehouseRepository) {
@@ -643,6 +650,14 @@ func handleGetOrdersReadyToPick(w http.ResponseWriter, r *http.Request, ctx cont
 	})
 }
 
+func writeWarehouseOrderMutationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, repository.ErrWarehouseOrderNotFound) {
+		http.Error(w, `{"error":"Order not found"}`, http.StatusNotFound)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
 func handleStartPickingOrder(w http.ResponseWriter, r *http.Request, ctx context.Context, orderID string, repo *repository.WarehouseRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	if repo == nil {
@@ -651,7 +666,7 @@ func handleStartPickingOrder(w http.ResponseWriter, r *http.Request, ctx context
 	}
 	staffID := getCallerUserID(ctx)
 	if err := repo.StartPickingOrder(ctx, orderID, staffID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeWarehouseOrderMutationError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -673,7 +688,7 @@ func handlePickOrderItem(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 	if err := repo.PickItem(ctx, orderID, req); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeWarehouseOrderMutationError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -691,7 +706,7 @@ func handleCompletePickingOrder(w http.ResponseWriter, r *http.Request, ctx cont
 		return
 	}
 	if err := repo.CompletePickingOrder(ctx, orderID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeWarehouseOrderMutationError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -718,7 +733,7 @@ func handlePackOrder(w http.ResponseWriter, r *http.Request, ctx context.Context
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	trackingNumber, label, err := repo.PackOrder(ctx, orderID, req.WeightGrams, req.BoxSize)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeWarehouseOrderMutationError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -750,7 +765,7 @@ func handleShipOrder(w http.ResponseWriter, r *http.Request, ctx context.Context
 		return
 	}
 	if err := repo.ShipOrderWithActor(ctx, orderID, req.Carrier, req.TrackingNumber, actor); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeWarehouseOrderMutationError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{

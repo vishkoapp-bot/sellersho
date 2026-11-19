@@ -12,11 +12,17 @@ package main
 // here skips, like the other DB-gated suites in this package.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/testdb"
 )
 
 // callRole runs a request through the same RequireRoles gate the
@@ -186,15 +192,42 @@ func TestAdminNotificationsReadPath(t *testing.T) {
 }
 
 func TestWarehouseNotificationsReadPath(t *testing.T) {
-	f := supplierNotificationsSetup(t)
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &supplierNotificationsFixture{db: db, jwtService: auth.NewJWTService("warehouse-notifications-test-secret")}
+	f.customerC = f.seedRoleUser(t, "09120000133", "customer")
 	staff := f.seedRoleUser(t, "09120000131", "warehouse_staff")
 	logistics := f.seedRoleUser(t, "09120000132", "logistics_specialist")
-	f.seedOutbox(t, staff, "inbound_arrived", "محموله جدید رسید", "pending")
+	if _, err := f.db.Exec(`
+		INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name)
+		VALUES ('qual01-local','QUAL01 Local',1,1,'Local','Tehran'), ('qual01-remote','QUAL01 Remote',2,2,'Remote','Shiraz');
+		INSERT INTO inbound_shipments(id,warehouse_id,supplier_name,items_count,cartons_count)
+		VALUES ('local-work','qual01-local','Fixture',1,1), ('remote-work','qual01-remote','Fixture',1,1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE users SET warehouse_city=' Tehran ', warehouse_city_confirmed=true WHERE id=$1`, staff); err != nil {
+		t.Fatal(err)
+	}
+	local := f.seedOutbox(t, staff, "inbound_created", "Local inbound", "pending")
+	remote := f.seedOutbox(t, staff, "inbound_dispatched", "Remote inbound", "pending")
+	unproven := f.seedOutbox(t, staff, "return_requested", "Unknown return", "pending")
+	f.seedOutbox(t, staff, "supplier_return_in_transit", "Unproven transit", "pending")
+	f.seedOutbox(t, staff, "inbound_arrived", "Unknown event", "pending")
+	if _, err := f.db.Exec(`UPDATE notification_outbox SET payload = CASE id
+		WHEN $1 THEN '{"inbound_id":"local-work"}'::jsonb
+		WHEN $2 THEN '{"inbound_id":"remote-work","warehouse_id":"local"}'::jsonb
+		ELSE '{"return_id":"not-a-uuid","warehouse_id":"local"}'::jsonb END
+		WHERE id IN ($1,$2,$3)`, local, remote, unproven); err != nil {
+		t.Fatal(err)
+	}
 	f.seedOutbox(t, logistics, "return_qc", "مرجوعی آماده QC است", "pending")
 
 	tokStaff := f.token(t, staff, "09120000131", "warehouse_staff")
 	tokLogistics := f.token(t, logistics, "09120000132", "logistics_specialist")
-	tokCustomer := f.token(t, f.customerC, "09120000103", "customer")
+	tokCustomer := f.token(t, f.customerC, "09120000133", "customer")
 
 	warehouseRoles := []string{"warehouse_staff", "logistics_specialist", "admin"}
 	whHandler := func(w http.ResponseWriter, r *http.Request) { handleWarehouseNotifications(w, r, f.db) }
@@ -212,8 +245,14 @@ func TestWarehouseNotificationsReadPath(t *testing.T) {
 	if !env.Success || len(env.Notifications) != 1 || env.UnreadCount != 1 {
 		t.Fatalf("warehouse envelope = %+v, want success + 1 row + unreadCount 1", env)
 	}
-	if env.Notifications[0].Kind != "inbound_arrived" {
-		t.Fatalf("warehouse row kind = %q, want inbound_arrived", env.Notifications[0].Kind)
+	if env.Notifications[0].Kind != "inbound_created" {
+		t.Fatalf("warehouse row kind = %q, want inbound_created", env.Notifications[0].Kind)
+	}
+	code, body = f.callRole(t, http.MethodPost, "/api/v1/warehouse/notifications/read", tokStaff,
+		`{"ids":["`+remote+`","`+unproven+`"]}`, warehouseRoles, whReadHandler)
+	var blocked struct{ Updated int }
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &blocked) != nil || blocked.Updated != 0 {
+		t.Fatalf("out-of-scope mark-by-ID = %d %s, want updated 0", code, body)
 	}
 
 	// logistics_specialist is admitted by the same gate and sees only
@@ -247,6 +286,20 @@ func TestWarehouseNotificationsReadPath(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(body), &readResp); err != nil || !readResp.Success || readResp.Updated != 1 {
 		t.Fatalf("warehouse mark-all response = %s, want success + updated 1", body)
+	}
+	if _, err := db.Exec(`UPDATE users SET is_active=false WHERE id=$1`, staff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE notification_outbox SET status='pending', read_at=NULL WHERE id=$1`, local); err != nil {
+		t.Fatal(err)
+	}
+	ctx := repository.WithWarehouseStaffID(context.WithValue(context.Background(), warehouseInboxKey{}, true), staff)
+	items, unread, exists, err := listNotificationsForUser(ctx, db, staff)
+	if err != nil || !exists || unread != 0 || len(items) != 0 {
+		t.Fatalf("inactive staff warehouse inbox: got %v, unread %d, exists %v, error %v", items, unread, exists, err)
+	}
+	if updated, err := markNotificationsReadForUser(ctx, db, staff, []string{local}); err != nil || updated != 0 {
+		t.Fatalf("inactive staff mark-by-ID: updated %d, error %v", updated, err)
 	}
 }
 

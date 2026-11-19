@@ -29,15 +29,16 @@ func listNotificationsForUser(ctx context.Context, db *sql.DB, userID string) ([
 	if !t01TableExists(ctx, db, "notification_outbox") {
 		return nil, 0, false, nil
 	}
+	filter := warehouseNotificationFilter(ctx, userID)
 	var unreadCount int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM notification_outbox
-		WHERE recipient_user_id = $1::uuid AND status <> 'read'`, userID).Scan(&unreadCount); err != nil {
+		WHERE recipient_user_id = $1::uuid AND status <> 'read'`+filter, userID).Scan(&unreadCount); err != nil {
 		return nil, 0, true, err
 	}
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, kind, title, body, payload, status, created_at, sent_at FROM notification_outbox
-		WHERE recipient_user_id = $1::uuid ORDER BY created_at DESC LIMIT 100`, userID)
+		WHERE recipient_user_id = $1::uuid`+filter+` ORDER BY created_at DESC LIMIT 100`, userID)
 	if err != nil {
 		return nil, 0, true, err
 	}
@@ -79,13 +80,14 @@ func markNotificationsReadForUser(ctx context.Context, db *sql.DB, userID string
 	if !t01TableExists(ctx, db, "notification_outbox") {
 		return 0, nil
 	}
+	filter := warehouseNotificationFilter(ctx, userID)
 	if len(ids) == 0 {
 		// Mark-all (live client POSTs with no body). Scoped to the
 		// caller only; pending rows are included because no
 		// pending->sent worker exists in this tree.
 		res, err := db.ExecContext(ctx,
 			`UPDATE notification_outbox SET status = 'read', read_at = NOW()
-			WHERE recipient_user_id = $1::uuid AND status IN ('pending', 'sent')`, userID)
+			WHERE recipient_user_id = $1::uuid AND status IN ('pending', 'sent')`+filter, userID)
 		if err != nil {
 			return 0, err
 		}
@@ -96,7 +98,7 @@ func markNotificationsReadForUser(ctx context.Context, db *sql.DB, userID string
 	for _, id := range ids {
 		res, err := db.ExecContext(ctx,
 			`UPDATE notification_outbox SET status = 'read', read_at = NOW()
-			WHERE id = $1 AND recipient_user_id = $2::uuid AND status IN ('pending', 'sent')`, id, userID)
+			WHERE id = $2 AND recipient_user_id = $1::uuid AND status IN ('pending', 'sent')`+filter, userID, id)
 		if err != nil {
 			return updated, err
 		}
@@ -120,7 +122,7 @@ func handleSupplierNotifications(w http.ResponseWriter, r *http.Request, db *sql
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	items, unreadCount, exists, err := listNotificationsForUser(r.Context(), db, userID)
+	items, unreadCount, exists, err := listNotificationsForUser(notificationContext(r), db, userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -157,7 +159,7 @@ func handleSupplierNotificationsRead(w http.ResponseWriter, r *http.Request, db 
 	if req.ID != "" {
 		ids = append(ids, req.ID)
 	}
-	updated, err := markNotificationsReadForUser(r.Context(), db, userID, ids)
+	updated, err := markNotificationsReadForUser(notificationContext(r), db, userID, ids)
 	if err != nil {
 		writeInternalError(w, err)
 		return

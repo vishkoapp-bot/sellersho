@@ -2325,7 +2325,13 @@ func (r *OrderRepository) CreateCustomerReturn(ctx context.Context, customerID, 
 }
 
 func (r *OrderRepository) GetCustomerReturn(ctx context.Context, id string) (*CustomerReturn, error) {
-	row := r.db.QueryRowContext(ctx, "SELECT "+customerReturnSelectColumns+" FROM customer_returns WHERE id = $1", id)
+	query := "SELECT " + customerReturnSelectColumns + " FROM customer_returns WHERE id = $1"
+	args := []any{id}
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		query += customerReturnCentralStaffCityPredicate("$2")
+		args = append(args, staffID)
+	}
+	row := r.db.QueryRowContext(ctx, query, args...)
 	return r.scanCustomerReturn(ctx, row)
 }
 
@@ -2405,13 +2411,32 @@ func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, d
 	if len(destinationID) > 0 {
 		dest = destinationID[0]
 	}
-	return r.listCustomerReturnsQuery(ctx, `
-		SELECT `+customerReturnSelectColumns+`
+	query := `
+		SELECT ` + customerReturnSelectColumns + `
 		FROM customer_returns
 		WHERE (status IN ('approved', 'received') OR (status='refunded' AND EXISTS(SELECT 1 FROM warehouse_customer_return_bin_sources s WHERE s.return_id=customer_returns.id AND s.source_proven AND s.available_quantity>0)))
-		  AND ($1 = '' OR warehouse_id = $1 OR destination_supplier_warehouse_id = $1)
-		ORDER BY created_at DESC
-	`, dest)
+	`
+	args := []any{dest}
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		// Warehouse staff can see only central destinations. A supplier
+		// destination never falls back to a central site.
+		query += `
+		  AND EXISTS (
+			SELECT 1 FROM users staff
+			JOIN warehouses central_site
+			  ON central_site.id = NULLIF(customer_returns.warehouse_id, '')
+			WHERE staff.id = $2
+			  AND staff.is_active IS TRUE AND staff.warehouse_city_confirmed IS TRUE
+			  AND NULLIF(customer_returns.destination_supplier_warehouse_id, '') IS NULL
+			  AND NULLIF(BTRIM(staff.warehouse_city), '') COLLATE "C" =
+			      BTRIM(central_site.city_name) COLLATE "C"
+			  AND ($1 = '' OR central_site.id = $1)
+		  )`
+		args = append(args, staffID)
+	} else {
+		query += ` AND ($1 = '' OR warehouse_id = $1 OR destination_supplier_warehouse_id = $1)`
+	}
+	return r.listCustomerReturnsQuery(ctx, query+` ORDER BY created_at DESC`, args...)
 }
 
 func (r *OrderRepository) guardedReturnExec(ctx context.Context, id, query string, args ...any) (sql.Result, error) {
@@ -2568,7 +2593,13 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	}
 	defer tx.Rollback()
 	var financeOrderID string
-	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM customer_returns WHERE id=$1`, id).Scan(&financeOrderID); err != nil {
+	returnFilter := ` FROM customer_returns WHERE id=$1`
+	args := []any{id}
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		returnFilter += customerReturnCentralStaffCityPredicate("$2")
+		args = append(args, staffID)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT order_id`+returnFilter, args...).Scan(&financeOrderID); err != nil {
 		return nil, err
 	}
 	if err := lockOrderFinanceTx(ctx, tx, financeOrderID); err != nil {
@@ -2589,9 +2620,8 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	if err := tx.QueryRowContext(ctx, `
 		SELECT status, order_id, COALESCE(prepaid, FALSE), COALESCE(cod_refused, FALSE), return_code,
 			return_shipping_amount, return_shipping_bearer, return_shipping_settled_at,
-			warehouse_id, destination_supplier_warehouse_id
-		FROM customer_returns WHERE id = $1 FOR UPDATE
-	`, id).Scan(&status, &orderID, &prepaid, &codRefused, &returnCode, &recordedShippingAmount, &recordedShippingBearer, &shippingSettledAt, &destWarehouseID, &destSupplierWarehouseID); err != nil {
+			warehouse_id, destination_supplier_warehouse_id`+returnFilter+` FOR UPDATE`,
+		args...).Scan(&status, &orderID, &prepaid, &codRefused, &returnCode, &recordedShippingAmount, &recordedShippingBearer, &shippingSettledAt, &destWarehouseID, &destSupplierWarehouseID); err != nil {
 		return nil, err
 	}
 	// FIX 14: a shipped return is receivable too (ship precedes

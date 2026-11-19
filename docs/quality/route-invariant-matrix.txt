@@ -95,11 +95,12 @@ GET /api/v1/subscription-plans | Public; active catalog rows only; read-only,
 GET /api/v1/admin/subscription-plans | Admin or super-admin; global catalog
   including inactive rows. Read-only, no writable companion route in this
   registration. Cross-role and result-bound regressions not located.
-REVIEW REQUIRED: reconcile seller-service purchase pricing/activity with the
-  plan catalog rather than assuming they are the same policy. Verify the quota
-  decision for a store with an expired plan and a retained active_plan_id
-  (backend/internal/repository/domain_repo.go). Keep these questions open until
-  contract decisions and fixture evidence exist.
+DEFERRED: Which options each plan includes and how existing purchase terms map
+  to the plan catalog are not decided here. QUAL-01-05 verifies that inactive,
+  missing or expired plans cannot grant extra VIP stores or new/reactivated
+  custom domains. An undated legacy assignment still requires an active catalog
+  plan. Existing stores and active domains remain available. No plan options,
+  pricing or purchase terms are changed.
 
 CAMPAIGN AND ADVERTISING ACTIONS (source review)
 ------------------------------------------------
@@ -207,24 +208,57 @@ build passed. The frontend has no lint script.
 
   python scripts/test-suite-isolated.py --run "^(TestQual01CommissionUTCWindow|TestQUAL01WarehouseGETOnly|TestSellerCampaign.*|TestSellerPanelPersistenceOwnershipAndWallet|TestAdNetworkReport.*|TestOperationsAuthorizationAndDomainPermission)$" ./cmd/server
 
-OPEN DECISIONS AND REMAINING EVIDENCE
------------------------------------
-QUAL-01-04 Warehouse site scope: decide whether staff act across all sites,
-within their assigned city, or only at assigned warehouse IDs. Define unassigned
-staff behavior, capability exceptions by action, supplier inbound access, and
-whether each user may be assigned one or multiple sites. Specify who provisions
-and revokes assignments and how ambiguous or noncentral objects are handled.
-The existing city/profile field defaults to Tehran and is not a membership
-relation. Test two sites in one city and a third in another city.
-Do not convert a caller-supplied warehouse selector into proof of access. The
-GET-only guards on packing, shipping and returns do not change staff scope.
+OWNER DECISIONS AND REMAINING EVIDENCE (2026-11-19)
+--------------------------------------------------
+QUAL-01-04 Warehouse staff are restricted to sites in their own city, for
+both reads and work actions. They have no access to other cities and no
+all-sites access. Multiple sites within the assigned city are in scope. Use
+server-owned actor and site geography, not caller-supplied selectors, as the
+authorization boundary. Verify with two sites in one city and a third in
+another city. The earlier GET-only guards are not city enforcement.
 
-QUAL-01-05 Subscription and domains: choose whether new purchases use the service
-registry or the active catalog for eligibility and terms. For a store whose
-active_plan_id remains populated after plan_expires_at, choose quota and whether
-expiry affects only new requests or existing verified custom domains. Also define
-the treatment of NULL expiry and deactivated plans. Existing quota semantics and
-purchase prices were not changed.
+  Assignment: PUT /api/v1/admin/staff/{userId}/warehouse-city requires an
+  active super-admin capability and an active warehouse-staff target. A bounded
+  JSON body {"city":"<exact catalog city>"} sets the assignment; an empty city
+  revokes it. The update and supervisor audit event commit together.
+  GET /api/v1/warehouse/me returns only the caller's confirmed city,
+  not a guessed site ID. Migration 202611190004 confirms no existing city by
+  default. Verify and provision assignments explicitly before enabling staff work.
+  Scoped warehouse routes keep the restriction for dual-capability callers.
+  Global operations, QC administration, warehouse catalog administration,
+  reconciliation and bin configuration reject a caller with warehouse_staff.
+
+  Warehouse site checks: GET bins, overview, inbound lists, QC queue, putaway
+  lists/suggestions, fulfillment queues, shipment and customer-return reads use
+  persisted site IDs or site-attributed work. POST receiving, QC and putaway,
+  picking, pack, ship, carton receipt and customer-return receive/putaway check
+  site scope in the write path. Caller filters only narrow authorized results.
+  Inbox GET and read mutations scope warehouse notifications to site-bearing
+  records. Reference-only carrier catalog remains shared. Suppliers no longer
+  have the shared WMS receiving grant; they retain the membership-scoped
+  /api/v1/supplier/inbounds path.
+
+  OPEN for staff workflow activation: legacy manifests have no authoritative
+  origin/site membership, supplier-return custody is not established, product
+  measurement identifies a product rather than site-bound work, and carrier
+  quotes do not have a trustworthy warehouse-origin binding. These operations
+  deny warehouse_staff instead of guessing. Missing/mixed-origin work is not
+  silently attributed to a default site. Enable affected staff workflows only
+  after adding authoritative site provenance and positive same-city regressions.
+
+QUAL-01-05 Disable only existing plan-granted features when the seller's plan
+becomes inactive or expires. Do not shut down any existing store or domain.
+Which options each plan includes is explicitly DEFERRED by the owner. Do not
+add or change the plan option catalog or purchase terms in this task.
+
+Owner decision checkpoint: 17 selected Go tests passed without skips in the
+canonical disposable PostgreSQL/Redis runner. It verified both containers were
+removed. Coverage includes city provisioning/revocation audit, JWT role gates,
+same-city reads and writes, cross-city/unknown/inactive/unconfirmed denial,
+and plan expiry with existing domain serving. Go vet and source inventory
+freshness passed (298 HTTP registrations and six jobs).
+
+  python scripts/test-suite-isolated.py --run "^(TestQUAL01.*|TestQual01.*|TestWarehouseOrderMutationsRequireCanonicalOriginCity|TestWarehouseNotificationsReadPath)$" ./cmd/server ./internal/repository
 
 FIXED QUAL-01-06 Campaign updates: HTTP PATCH is atomic (RFC 5789 section 2).
 The guarded regression covers metadata-only, status-only and combined requests,
@@ -237,7 +271,7 @@ ownership/disable and campaign amount validation). Separate report JSON
 allowlist test and Go vet passed. The allowlist covers the ad network report
 wire types only, not other report or export formats.
 
-Other open acceptance evidence: bounded withdrawal reads and admin withdrawal
+QUAL-01 remains OPEN. Other open acceptance evidence: bounded withdrawal reads and admin withdrawal
 projections/review concurrency, report/export field allowlists, host/store and
 callback boundaries, advertising ingress attribution and uncovered business
 writer input and retry contracts. Source review and focused runtime evidence
@@ -284,8 +318,8 @@ app | /api/v1/admin/newsletter/subscribers | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/notifications | RequireRoles(jwtService, "admin", "finance", "support_specialist")
 app | /api/v1/admin/notifications/read | RequireRoles(jwtService, "admin", "finance", "support_specialist")
 app | /api/v1/admin/observability/requests | RequireRoles(jwtService, "admin")
-app | /api/v1/admin/operations | RequireRoles(jwtService, "admin", "logistics_specialist")
-app | /api/v1/admin/operations/qc/ | RequireRoles(jwtService, "admin", "logistics_specialist")
+app | /api/v1/admin/operations | requireGlobalWarehouseRoles(jwtService, "admin", "logistics_specialist")
+app | /api/v1/admin/operations/qc/ | requireGlobalWarehouseRoles(jwtService, "admin", "logistics_specialist")
 app | /api/v1/admin/overview | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/overview/ | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/payments | RequireRoles(jwtService, "admin")
@@ -330,6 +364,7 @@ app | /api/v1/admin/sms/credit | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/sms/logs | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/sms/report | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/staff | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/staff/ | RequireCapabilities(jwtService, "super_admin")
 app | /api/v1/admin/static-pages | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/static-pages/ | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/storage-fees/run | RequireRoles(jwtService, "admin")
@@ -350,7 +385,7 @@ app | /api/v1/admin/tickets | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/tickets/ | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/users | RequireRoles(jwtService, "admin")
 app | /api/v1/admin/users/ | RequireRoles(jwtService, "admin")
-app | /api/v1/admin/warehouses | RequireRoles(jwtService, "admin")
+app | /api/v1/admin/warehouses | requireGlobalWarehouseRoles(jwtService, "admin")
 app | /api/v1/admin/warranties | RequireRoles(jwtService, "admin")
 app | /api/v1/ads/challenge | none at registration
 app | /api/v1/ads/click | none at registration
@@ -418,7 +453,7 @@ app | /api/v1/products/price-bounds | none at registration
 app | /api/v1/products/store-categories | none at registration
 app | /api/v1/public/return-window-days | none at registration
 app | /api/v1/returns | RequireRoles(jwtService, "customer", "admin")
-app | /api/v1/returns/ | RequireRoles(jwtService, "customer", "admin", "warehouse_staff", "logistics_specialist", "finance_specialist", "support_specialist")
+app | /api/v1/returns/ | requireWarehouseCityRoles(jwtService, "customer", "admin", "warehouse_staff", "logistics_specialist", "finance_specialist", "support_specialist")
 app | /api/v1/reviews | none at registration
 app | /api/v1/seller/analytics | RequireRoles(jwtService, "seller")
 app | /api/v1/seller/domains | RequireRoles(jwtService, "seller")
@@ -502,40 +537,40 @@ app | /api/v1/supplier/warranties | RequireSupplierAccess(jwtService, supplierRe
 app | /api/v1/supplier/warranties/requests | RequireSupplierAccess(jwtService, supplierRepo)
 app | /api/v1/upload/product-image | RequireSupplierAccess(jwtService, supplierRepo)
 app | /api/v1/views/events | none at registration
-app | /api/v1/warehouse/bins | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/bins/ | RequireRoles(jwtService, "logistics_specialist", "admin")
-app | /api/v1/warehouse/carriers | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/carriers/quote | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/customer-returns/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/inbounds | RequireRoles(jwtService, append(warehouseRoles, "supplier")...)
-app | /api/v1/warehouse/inbounds/ | RequireRoles(jwtService, append(warehouseRoles, "supplier")...)
-app | /api/v1/warehouse/inbounds/pending | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/inventory/reconciliation-report | RequireRoles(jwtService, "logistics_specialist", "admin")
-app | /api/v1/warehouse/inventory/reconciliation-reviews/ | RequireRoles(jwtService, "logistics_specialist", "admin")
-app | /api/v1/warehouse/manifests | RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
-app | /api/v1/warehouse/manifests/ | RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
-app | /api/v1/warehouse/me | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/notifications | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/notifications/read | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/orders/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/orders/ready-to-pack | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/orders/ready-to-pick | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/orders/ready-to-ship | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/overview | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/picking-route | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/products/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/putaway | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/putaway/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/putaway/queue | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/putaway/tasks/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/qc/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/qc/discrepancy/create | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/qc/queue | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/return-backs | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/returns | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/returns/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouse/shipments/ | RequireRoles(jwtService, warehouseRoles...)
-app | /api/v1/warehouses/returns | RequireRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/bins | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/bins/ | requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/carriers | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/carriers/quote | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/customer-returns/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inbounds | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inbounds/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inbounds/pending | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/inventory/reconciliation-report | requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/inventory/reconciliation-reviews/ | requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")
+app | /api/v1/warehouse/manifests | requireWarehouseCityRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
+app | /api/v1/warehouse/manifests/ | requireWarehouseCityRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")
+app | /api/v1/warehouse/me | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/notifications | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/notifications/read | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-pack | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-pick | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/orders/ready-to-ship | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/overview | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/picking-route | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/products/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/queue | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/putaway/tasks/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/discrepancy/create | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/qc/queue | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/return-backs | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/returns | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/returns/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouse/shipments/ | requireWarehouseCityRoles(jwtService, warehouseRoles...)
+app | /api/v1/warehouses/returns | requireWarehouseCityRoles(jwtService, warehouseRoles...)
 app | /api/v1/webhooks/tracking/update | none at registration
 app | /api/v1/wishlist | RequireRoles(jwtService, "customer")
 app | /internal/domains/allow | none at registration

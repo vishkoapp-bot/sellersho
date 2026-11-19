@@ -474,7 +474,7 @@ func handleT01Notifications(w http.ResponseWriter, r *http.Request, db *sql.DB) 
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	items, unreadCount, exists, err := listNotificationsForUser(r.Context(), db, userID)
+	items, unreadCount, exists, err := listNotificationsForUser(notificationContext(r), db, userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -514,7 +514,7 @@ func handleT01NotificationsRead(w http.ResponseWriter, r *http.Request, db *sql.
 	if req.ID != "" {
 		ids = append(ids, req.ID)
 	}
-	updated, err := markNotificationsReadForUser(r.Context(), db, userID, ids)
+	updated, err := markNotificationsReadForUser(notificationContext(r), db, userID, ids)
 	if err != nil {
 		writeInternalError(w, err)
 		return

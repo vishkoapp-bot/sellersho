@@ -3207,19 +3207,47 @@ type WarehouseShipmentDto struct {
 // hand-written code, for the warehouse receive tab. Codes match
 // case-insensitively because staff type or scan them by hand.
 func (r *SupplierRepository) GetWarehouseShipmentByCode(ctx context.Context, code string) (*WarehouseShipmentDto, error) {
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		// Both queries must see the same snapshot. Do not fetch the items
+		// on a separate connection after checking the carton destination.
+		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		out, err := readWarehouseShipment(ctx, tx, code, staffID)
+		if err != nil {
+			return nil, err
+		}
+		return out, tx.Commit()
+	}
+	return readWarehouseShipment(ctx, r.db, code, "")
+}
+
+func readWarehouseShipment(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, code, staffID string) (*WarehouseShipmentDto, error) {
 	var out WarehouseShipmentDto
 	var shipmentID, supplierID string
-	err := r.db.QueryRowContext(ctx, `
+	query := `
 		SELECT s.id, s.shipment_code, s.status, s.supplier_id
-		FROM shipments s WHERE UPPER(s.shipment_code) = UPPER($1)
-	`, code).Scan(&shipmentID, &out.ShipmentCode, &out.Status, &supplierID)
+		FROM shipments s`
+	args := []any{code}
+	where := ` WHERE UPPER(s.shipment_code) = UPPER($1)`
+	if staffID != "" {
+		query += scopedCartonSiteJoin
+		where += scopedCartonCityMatch + scopedCartonDestinationConsistent
+		args = append(args, staffID)
+	}
+	err := db.QueryRowContext(ctx, query+where, args...).Scan(&shipmentID, &out.ShipmentCode, &out.Status, &supplierID)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(name, '') FROM suppliers WHERE id = $1`, supplierID).Scan(&out.SupplierName); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(name, '') FROM suppliers WHERE id = $1`, supplierID).Scan(&out.SupplierName); err != nil {
 		out.SupplierName = ""
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT si.variant_id, pv.variant_name, p.title, pv.spnc, si.expected_qty, si.received_qty, si.qc_status
 		FROM shipment_items si
 		JOIN product_variants pv ON pv.id = si.variant_id
@@ -3267,13 +3295,29 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 	}
 	defer tx.Rollback()
 	var shipmentID, status string
-	err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1)`, code).Scan(&shipmentID, &status)
+	staffID := WarehouseStaffID(ctx)
+	if staffID == "" {
+		err = tx.QueryRowContext(ctx, `SELECT id, status FROM shipments WHERE UPPER(shipment_code) = UPPER($1)`, code).Scan(&shipmentID, &status)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT s.id, s.status FROM shipments s`+scopedCartonSiteJoin+`
+			WHERE UPPER(s.shipment_code) = UPPER($1)`+scopedCartonCityMatch+scopedCartonDestinationConsistent, code, staffID).Scan(&shipmentID, &status)
+	}
 	if err != nil {
 		return "", err
 	}
 	var provenance bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inbound_inventory_lines WHERE shipment_id=$1)`, shipmentID).Scan(&provenance); err != nil {
 		return "", err
+	}
+	if provenance {
+		if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
+			return "", err
+		}
+	}
+	if staffID != "" {
+		if err := lockScopedCartonReceipt(ctx, tx, shipmentID, staffID, code, &status); err != nil {
+			return "", err
+		}
 	}
 	if !provenance {
 		// Already-accounted history can be acknowledged without recreating a source.
@@ -3296,9 +3340,6 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 			}
 		}
 		return status, tx.Commit()
-	}
-	if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
-		return "", err
 	}
 	for _, item := range items {
 		var stored string

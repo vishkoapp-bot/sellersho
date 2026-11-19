@@ -278,10 +278,10 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/seller/domains", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomains(w, r, storeRepo) }))
 	mux.HandleFunc("/api/v1/seller/domains/", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleOwnedDomainAction(w, r, storeRepo) }))
 	adGuard := adguard.New(cfg.JWTSecret)
-	mux.HandleFunc("/api/v1/admin/operations", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleOperationsOverview(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/operations", requireGlobalWarehouseRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleOperationsOverview(w, r, db.DB) }))
 	// G-03: correlation-ID lookup over the in-memory request ring.
 	mux.HandleFunc("/api/v1/admin/observability/requests", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleAdminRequestLookup(w, r, observability.Default) }))
-	mux.HandleFunc("/api/v1/admin/operations/qc/", RequireRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleResolveOverdueQC(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/operations/qc/", requireGlobalWarehouseRoles(jwtService, "admin", "logistics_specialist")(func(w http.ResponseWriter, r *http.Request) { handleResolveOverdueQC(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/ads/challenge", func(w http.ResponseWriter, r *http.Request) { handleAdChallenge(w, r, adGuard, storeRepo) })
 	mux.HandleFunc("/api/v1/admin/ippanel/settings", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelSettings(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/ippanel/test", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleIPPanelTest(w, r, db.DB) }))
@@ -822,7 +822,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		writeMethodNotAllowed(w)
 	}))
-	mux.HandleFunc("/api/v1/returns/", RequireRoles(jwtService, "customer", "admin", "warehouse_staff", "logistics_specialist", "finance_specialist", "support_specialist")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/returns/", requireWarehouseCityRoles(jwtService, "customer", "admin", "warehouse_staff", "logistics_specialist", "finance_specialist", "support_specialist")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/returns/")
 		for _, action := range []string{"approve", "reject", "receive", "refund", "cancel", "ship"} {
 			if strings.HasSuffix(sub, "/"+action) && r.Method == http.MethodPost {
@@ -840,12 +840,12 @@ func run(signalCtx context.Context) (result error) {
 
 	// 7. Warehouse WMS & Fulfillment Endpoints
 	warehouseRoles := []string{"warehouse_staff", "logistics_specialist", "admin"}
-	mux.HandleFunc("/api/v1/warehouse/customer-returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleCustomerReturnBinEntry(w, r, warehouseRepo) }))
+	mux.HandleFunc("/api/v1/warehouse/customer-returns/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleCustomerReturnBinEntry(w, r, warehouseRepo) }))
 
-	mux.HandleFunc("/api/v1/warehouse/bins", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/bins", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetBins(w, r, r.Context(), wmsRepo)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/overview", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/overview", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w)
 			return
@@ -857,27 +857,27 @@ func run(signalCtx context.Context) (result error) {
 	// return-QC notices from W1). Same envelope + shared helpers
 	// as the supplier inbox; same warehouseRoles gate as the other
 	// warehouse routes.
-	mux.HandleFunc("/api/v1/warehouse/notifications", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/notifications", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleWarehouseNotifications(w, r, db.DB)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/notifications/read", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/notifications/read", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleWarehouseNotificationsRead(w, r, db.DB)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/inventory/reconciliation-report", RequireRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/inventory/reconciliation-report", requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w)
 			return
 		}
 		handleGetHistoricalInventoryReport(w, r, r.Context(), supplierRepo)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/inventory/reconciliation-reviews/", RequireRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/inventory/reconciliation-reviews/", requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w)
 			return
 		}
 		handleReviewHistoricalInventory(w, r, r.Context(), supplierRepo, adminRepo)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/bins/", RequireRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/bins/", requireGlobalWarehouseRoles(jwtService, "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/position") {
 			handleBinPosition(w, r, warehouseRepo)
 			return
@@ -890,11 +890,15 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/inbounds/pending", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/inbounds/pending", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		if !t01MethodOnly(w, r, http.MethodGet) {
+			return
+		}
 		handleGetPendingInbounds(w, r, r.Context(), warehouseRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/inbounds/", RequireRoles(jwtService, append(warehouseRoles, "supplier")...)(func(w http.ResponseWriter, r *http.Request) {
+	// Suppliers use the membership-scoped /api/v1/supplier/inbounds routes.
+	mux.HandleFunc("/api/v1/warehouse/inbounds/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/inbounds/")
 		if strings.HasSuffix(sub, "/start-receiving") && r.Method == http.MethodPost {
@@ -912,18 +916,22 @@ func run(signalCtx context.Context) (result error) {
 			handleCompleteInbound(w, r, ctx, id, warehouseRepo)
 			return
 		}
-		handleGetInbounds(w, r, ctx, wmsRepo)
+		if sub == "" {
+			handleGetInbounds(w, r, ctx, wmsRepo)
+			return
+		}
+		http.NotFound(w, r)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/inbounds", RequireRoles(jwtService, append(warehouseRoles, "supplier")...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/inbounds", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetInbounds(w, r, r.Context(), wmsRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/qc/queue", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/qc/queue", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetQCQueue(w, r, r.Context(), warehouseRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/qc/discrepancy/create", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/qc/discrepancy/create", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w)
 			return
@@ -931,7 +939,7 @@ func run(signalCtx context.Context) (result error) {
 		handleCreateQCDiscrepancy(w, r, r.Context(), warehouseRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/qc/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/qc/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/qc/")
 		if strings.HasSuffix(sub, "/pass") && r.Method == http.MethodPost {
@@ -952,11 +960,11 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/putaway/queue", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/putaway/queue", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetPutawayQueue(w, r, r.Context(), warehouseRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/putaway/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/putaway/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/putaway/")
 		if strings.HasSuffix(sub, "/assign") && r.Method == http.MethodPost {
@@ -971,7 +979,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		http.NotFound(w, r)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/putaway/tasks/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/putaway/tasks/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/putaway/tasks/")
 		if strings.HasSuffix(sub, "/suggestions") {
 			handleBinSuggestions(w, r, warehouseRepo, strings.TrimSuffix(sub, "/suggestions"))
@@ -988,7 +996,10 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/returns/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/returns/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/returns/")
 		if strings.HasSuffix(sub, "/correct-charge") && r.Method == http.MethodPost {
 			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/correct-charge"), "/parcels/")
@@ -1034,7 +1045,10 @@ func run(signalCtx context.Context) (result error) {
 		}
 		http.NotFound(w, r)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/returns", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/returns", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		if r.Method == http.MethodGet {
 			handleGetSupplierReturns(w, r, r.Context(), supplierRepo)
 			return
@@ -1042,7 +1056,10 @@ func run(signalCtx context.Context) (result error) {
 		writeMethodNotAllowed(w)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/products/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/products/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/measurements") && r.Method == http.MethodPost {
 			productID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/products/"), "/measurements")
 			handleRecordProductMeasurement(w, r, r.Context(), productID, supplierRepo)
@@ -1050,14 +1067,17 @@ func run(signalCtx context.Context) (result error) {
 		}
 		http.NotFound(w, r)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/carriers/quote", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/carriers/quote", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w)
 			return
 		}
 		handleCarrierTariffQuote(w, r, r.Context(), db.DB)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/carriers", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/carriers", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			handleGetCarrierOptions(w, r, r.Context(), supplierRepo)
 			return
@@ -1065,11 +1085,11 @@ func run(signalCtx context.Context) (result error) {
 		writeMethodNotAllowed(w)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-pick", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-pick", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetOrdersReadyToPick(w, r, r.Context(), warehouseRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/orders/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/orders/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/orders/")
 		if strings.HasSuffix(sub, "/start-picking") && r.Method == http.MethodPost {
@@ -1100,7 +1120,10 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/manifests/", RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/manifests/", requireWarehouseCityRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		ctx := r.Context()
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/manifests/")
 		if strings.HasSuffix(subPath, "/dispatch") && r.Method == http.MethodPost {
@@ -1111,7 +1134,10 @@ func run(signalCtx context.Context) (result error) {
 		handleGetManifests(w, r, ctx, wmsRepo)
 	}))
 
-	mux.HandleFunc("/api/v1/warehouse/manifests", RequireRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/manifests", requireWarehouseCityRoles(jwtService, "warehouse_staff", "logistics_specialist", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		if !requireUnscopedWarehouseWork(w, r) {
+			return
+		}
 		handleGetManifests(w, r, r.Context(), wmsRepo)
 	}))
 
@@ -1845,7 +1871,7 @@ func run(signalCtx context.Context) (result error) {
 		supplierHandlers.HandleGetDiscrepancies(w, r)
 	}))
 	mux.HandleFunc("/api/v1/supplier/shipping-sla", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) { handleSupplierSLA(w, r, db.DB, supplierRepo) }))
-	mux.HandleFunc("/api/v1/warehouse/picking-route", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handlePickingRoute(w, r, warehouseRepo) }))
+	mux.HandleFunc("/api/v1/warehouse/picking-route", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handlePickingRoute(w, r, warehouseRepo) }))
 
 	mux.HandleFunc("/api/v1/supplier/discrepancies/", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/supplier/discrepancies/")
@@ -2311,7 +2337,7 @@ func run(signalCtx context.Context) (result error) {
 		handleT01AdminStaticPageByKey(w, r, db.DB, sub)
 	}))
 	mux.HandleFunc("/api/v1/admin/categories", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminCategories(w, r, db.DB) }))
-	mux.HandleFunc("/api/v1/admin/warehouses", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminWarehouses(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/warehouses", requireGlobalWarehouseRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminWarehouses(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/warranties", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT01AdminGenericList(w, r, db.DB, "warranty_property_requests", "warranties", "")
 	}))
@@ -2371,6 +2397,9 @@ func run(signalCtx context.Context) (result error) {
 	// The exact live staff response shape is unverified (U54).
 	mux.HandleFunc("/api/v1/admin/staff", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT07AdminStaff(w, r, db.DB)
+	}))
+	mux.HandleFunc("/api/v1/admin/staff/", RequireCapabilities(jwtService, "super_admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleWarehouseStaffCity(w, r, db.DB)
 	}))
 	// Team 07 (D58): minimal super_admin-guarded admin capability
 	// grant/revoke. The exact live endpoint is unverified (U55); these
@@ -2459,16 +2488,16 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 	// Warehouse (D17): registrations only, wired to existing queries.
-	mux.HandleFunc("/api/v1/warehouse/me", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01WarehouseMe(w, r, db.DB) }))
-	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-pack", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/me", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01WarehouseMe(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-pack", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleT01WarehouseOrdersReady(w, r, r.Context(), warehouseRepo, "pack")
 	}))
-	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-ship", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/orders/ready-to-ship", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleT01WarehouseOrdersReady(w, r, r.Context(), warehouseRepo, "ship")
 	}))
 	// Slash pattern only: Go mux 301-redirects the bare path to it,
 	// matching the live probe for /warehouse/shipments.
-	mux.HandleFunc("/api/v1/warehouse/shipments/", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouse/shipments/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/shipments/")
 		if sub == "" {
 			handleT01WarehouseShipments(w, r, db.DB)
@@ -2484,11 +2513,11 @@ func run(signalCtx context.Context) (result error) {
 		}
 		http.NotFound(w, r)
 	}))
-	mux.HandleFunc("/api/v1/warehouse/return-backs", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01WarehouseReturnBacks(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/warehouse/return-backs", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01WarehouseReturnBacks(w, r, db.DB) }))
 	// Team 03 (D10): warehouses/returns from the customer returns engine.
 	// Distinct from /warehouse/return-backs above; that stub is untouched.
-	mux.HandleFunc("/api/v1/warehouses/returns", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleWarehousesReturns(w, r, r.Context(), orderRepo) }))
-	mux.HandleFunc("/api/v1/warehouse/putaway", RequireRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/warehouses/returns", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleWarehousesReturns(w, r, r.Context(), orderRepo) }))
+	mux.HandleFunc("/api/v1/warehouse/putaway", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleT01WarehousePutaway(w, r, r.Context(), warehouseRepo)
 	}))
 	// Static File Server & Upload Routes (Secured with role requirement supplier/admin & content inspection)

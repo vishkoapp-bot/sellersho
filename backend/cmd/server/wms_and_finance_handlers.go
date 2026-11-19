@@ -68,6 +68,9 @@ func handleUpdateBinCapacity(w http.ResponseWriter, r *http.Request, ctx context
 }
 
 func handleGetInbounds(w http.ResponseWriter, r *http.Request, ctx context.Context, wmsRepo *repository.WMSRepository) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if wmsRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)

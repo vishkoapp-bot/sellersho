@@ -80,12 +80,43 @@ func NewWMSRepository(db *sql.DB) *WMSRepository {
 
 func (r *WMSRepository) GetOverview(ctx context.Context) (*WarehouseOverview, error) {
 	var overview WarehouseOverview
-	err := r.db.QueryRowContext(ctx, `
+	query := `
 		SELECT COALESCE(MAX(warehouse_name),'انبار مرکزی تهران'),COALESCE(SUM(capacity_volume_cm3),0),COALESCE(SUM(occupied_volume_cm3),0),
 		COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations WHERE status='active'),0),
 		COALESCE((SELECT COUNT(*) FROM inbound_shipments WHERE status IN ('pending','in_transit','receiving')),0),
 		COALESCE((SELECT COUNT(*) FROM inventory_movements WHERE reference_type IN ('inbound_received','qc_pass','putaway_confirmed')),0)
-		FROM warehouse_bins`).Scan(&overview.WarehouseName, &overview.CapacityVolumeCm3, &overview.OccupiedVolumeCm3, &overview.ReservedVolumeCm3, &overview.InboundPending, &overview.VerifiedMovements)
+		FROM warehouse_bins`
+	var args []any
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		args = append(args, staffID)
+		// Historical movement labels alone do not establish which site performed the work.
+		query = `WITH sites AS (
+			SELECT site.id, site.name, BTRIM(site.city_name) AS city
+			FROM warehouses site JOIN users staff ON staff.id=$1
+			WHERE site.id <> '' AND staff.is_active AND staff.warehouse_city_confirmed
+			AND NULLIF(BTRIM(staff.warehouse_city),'') COLLATE "C" = BTRIM(site.city_name) COLLATE "C"
+		), bins AS (
+			SELECT b.* FROM warehouse_bins b JOIN sites s ON s.id=b.warehouse_id
+		)
+		SELECT COALESCE((SELECT CASE WHEN COUNT(*)=1 THEN MAX(name) ELSE MAX(city) END FROM sites),''),
+			COALESCE(SUM(capacity_volume_cm3),0),COALESCE(SUM(occupied_volume_cm3),0),
+			COALESCE((SELECT SUM(r.volume_cm3) FROM putaway_capacity_reservations r
+				JOIN bins b ON b.bin_code=r.bin_code WHERE r.status='active'),0),
+			(SELECT COUNT(*) FROM inbound_shipments i JOIN sites s ON s.id=i.warehouse_id
+				WHERE i.status IN ('pending','in_transit','receiving')),
+			(SELECT COUNT(*) FROM inventory_movements m WHERE
+				(m.reference_type='putaway_confirmed' AND EXISTS (
+					SELECT 1 FROM inbound_putaway_allocations a JOIN sites s ON s.id=a.warehouse_id
+					WHERE a.task_id=m.reference_id AND a.product_id=m.product_id
+					AND a.source_location_key=m.from_location_key))
+				OR (m.reference_type IN ('inbound_transfer','inbound_qc_disposition') AND EXISTS (
+					SELECT 1 FROM inbound_inventory_lines l JOIN sites s ON s.id=l.warehouse_id
+					WHERE m.from_location_key='inbound-line:'||l.id AND m.product_id=l.product_id
+					AND ((m.reference_type='inbound_transfer' AND m.reference_id=l.id AND m.to_status='quarantine')
+					 OR (m.reference_type='inbound_qc_disposition' AND m.to_status='qc_accepted')))))
+		FROM bins`
+	}
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&overview.WarehouseName, &overview.CapacityVolumeCm3, &overview.OccupiedVolumeCm3, &overview.ReservedVolumeCm3, &overview.InboundPending, &overview.VerifiedMovements)
 	if err != nil {
 		return nil, err
 	}
@@ -105,11 +136,20 @@ func (r *WMSRepository) GetBins(ctx context.Context) ([]WarehouseBin, error) {
 		       COALESCE(b.capacity_volume_cm3,0)-COALESCE(b.occupied_volume_cm3,0)-COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0),
 		       b.max_weight_grams, COALESCE(b.occupied_weight_grams,0), b.capacity_status,
 		       CASE WHEN b.capacity_status <> 'verified' THEN 'ظرفیت فیزیکی تأیید نشده' WHEN COALESCE(b.capacity_volume_cm3,0)-COALESCE(b.occupied_volume_cm3,0)-COALESCE((SELECT SUM(volume_cm3) FROM putaway_capacity_reservations r WHERE r.bin_code=b.bin_code AND r.status='active'),0) <= 0 THEN 'ظرفیت باقی‌مانده کافی نیست' ELSE '' END, b.position_x,b.position_y,b.position_z
-		FROM warehouse_bins b
-		LEFT JOIN products p ON b.product_id = p.id
-		ORDER BY b.bin_code ASC
-	`
-	rows, err := r.db.QueryContext(ctx, query)
+                FROM warehouse_bins b
+                LEFT JOIN products p ON b.product_id = p.id
+        `
+	var args []any
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		query += `
+			JOIN warehouses site ON site.id = b.warehouse_id AND site.id <> ''
+			JOIN users staff ON staff.id = $1
+			WHERE staff.is_active IS TRUE AND staff.warehouse_city_confirmed IS TRUE
+			  AND NULLIF(BTRIM(staff.warehouse_city), '') COLLATE "C" = BTRIM(site.city_name) COLLATE "C"
+		`
+		args = append(args, staffID)
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY b.bin_code ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +167,7 @@ func (r *WMSRepository) GetBins(ctx context.Context) ([]WarehouseBin, error) {
 		}
 		bins = append(bins, b)
 	}
-	return bins, nil
+	return bins, rows.Err()
 }
 
 func (r *WMSRepository) UpdateBinCapacity(ctx context.Context, binCode, actor string, capacityVolume, maxWeight int64, verify bool) error {
@@ -160,8 +200,13 @@ func (r *WMSRepository) UpdateBinCapacity(ctx context.Context, binCode, actor st
 }
 
 func (r *WMSRepository) GetInboundShipments(ctx context.Context) ([]InboundShipment, error) {
-	query := `SELECT id, supplier_id, supplier_name, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, created_at, received_at, COALESCE(items,'[]'::jsonb), COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments ORDER BY created_at DESC`
-	rows, err := r.db.QueryContext(ctx, query)
+	query := `SELECT id, supplier_id, supplier_name, warehouse_name, items_count, cartons_count, carrier, truck_plate, status, created_at, received_at, COALESCE(items,'[]'::jsonb), COALESCE(scanned_items,'[]'::jsonb) FROM inbound_shipments`
+	var args []any
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		query += ` WHERE ` + inboundStaffCityPredicate
+		args = append(args, staffID)
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -116,9 +116,13 @@ func (r *WarehouseRepository) GetPendingInbounds(ctx context.Context) ([]Warehou
 		       COALESCE(items, '[]'::jsonb), COALESCE(scanned_items, '[]'::jsonb)
 		FROM inbound_shipments
 		WHERE status IN ('pending', 'in_transit')
-		ORDER BY created_at DESC
 	`
-	rows, err := r.db.QueryContext(ctx, query)
+	var args []any
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		query += ` AND ` + inboundStaffCityPredicate
+		args = append(args, staffID)
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +156,9 @@ func (r *WarehouseRepository) StartReceiving(ctx context.Context, inboundID, sta
 	defer tx.Rollback()
 
 	now := time.Now()
+	if err := requireInboundStaffCityTx(ctx, tx, inboundID, true); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE inbound_shipments
 		SET status = 'receiving', started_receiving_at = $1
@@ -209,6 +216,9 @@ func (r *WarehouseRepository) ScanItem(ctx context.Context, inboundID string, it
 
 	var status string
 	var items []byte
+	if err := requireInboundStaffCityTx(ctx, tx, inboundID, true); err != nil {
+		return 0, err
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT status, COALESCE(items,'[]'::jsonb) FROM inbound_shipments WHERE id=$1 FOR UPDATE`, inboundID).Scan(&status, &items); err == sql.ErrNoRows {
 		return 0, fmt.Errorf("محموله ورودی یافت نشد: %s", inboundID)
 	} else if err != nil {
@@ -283,7 +293,14 @@ func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, st
 	}
 	defer tx.Rollback()
 
+	// Check before loading provenance and recheck after the canonical locks.
+	if err := requireInboundStaffCityTx(ctx, tx, inboundID, false); err != nil {
+		return err
+	}
 	if err := lockInboundShipmentTx(ctx, tx, inboundID); err != nil {
+		return err
+	}
+	if err := requireInboundStaffCityTx(ctx, tx, inboundID, true); err != nil {
 		return err
 	}
 	var current string
@@ -377,9 +394,16 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
             WHERE s.status IN ('received','partially_received') AND si.received_qty>0 AND NOT EXISTS(
                 SELECT 1 FROM inbound_inventory_lines l WHERE l.shipment_id=s.id::text AND l.variant_id=si.variant_id::text)
         )
-        SELECT * FROM queue ORDER BY created_at DESC,id COLLATE "C" LIMIT 20
+        SELECT * FROM queue q
     `
-	rows, err := r.db.QueryContext(ctx, query)
+	var args []interface{}
+	if staff := WarehouseStaffID(ctx); staff != "" {
+		args = append(args, staff)
+		query += ` WHERE EXISTS (SELECT 1 FROM inbound_inventory_lines l
+			JOIN warehouses site ON site.id=l.warehouse_id JOIN users staff ON staff.id=$1
+			WHERE l.id=q.line_id AND ` + warehouseQCReceiptSite + ` AND ` + warehouseStaffCityMatch + `)`
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY created_at DESC,id COLLATE "C" LIMIT 20`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -449,6 +473,9 @@ func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, prod
 	}
 	if selected == nil {
 		return ErrInboundProvenance
+	}
+	if err := lockWarehouseQCReceiptScopeTx(ctx, tx, shipmentID, productID, selected.ID, selected.Supplier); err != nil {
+		return err
 	}
 	if err := dispositionInboundLineTx(ctx, tx, *selected, actor, passed, failed, shortage, reason); err != nil {
 		return err
@@ -650,7 +677,30 @@ func (r *WarehouseRepository) CreateQCDiscrepancy(ctx context.Context, d map[str
 		INSERT INTO qc_discrepancies (id, inbound_id, supplier_id, product_id, expected_quantity, received_quantity, defect_count, reason, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', NOW())
 	`
-	_, err := r.db.ExecContext(ctx, query, id, inboundID, supplierID, productID, expectedQty, receivedQty, defectCount, reason)
+	args := []interface{}{id, inboundID, supplierID, productID, expectedQty, receivedQty, defectCount, reason}
+	if WarehouseStaffID(ctx) != "" {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return "", err
+		}
+		defer tx.Rollback()
+		if err = lockInboundShipmentTx(ctx, tx, inboundID); err != nil {
+			return "", err
+		}
+		if err = lockWarehouseQCReceiptScopeTx(ctx, tx, inboundID, productID, "", supplierID); err != nil {
+			return "", err
+		}
+		if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+			return "", err
+		}
+		if err = tx.Commit(); err != nil {
+			return "", err
+		}
+		return id, nil
+	}
+	_, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return "", err
 	}
@@ -670,9 +720,16 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 		LEFT JOIN product_variants pv ON pv.id::text=pt.variant_id::text
 		LEFT JOIN inventory_effective_measurements m ON m.product_id=pt.product_id AND m.variant_id=COALESCE(pt.variant_id::text,'')
 		WHERE pt.status IN ('pending', 'assigned')
-		ORDER BY pt.created_at DESC
 	`
-	rows, err := r.db.QueryContext(ctx, query)
+	staff := WarehouseStaffID(ctx)
+	var args []interface{}
+	if staff != "" {
+		args = append(args, staff)
+		query += ` AND EXISTS (SELECT 1 FROM inbound_putaway_allocations a
+			JOIN warehouses site ON site.id=a.warehouse_id JOIN users staff ON staff.id=$1
+			WHERE ` + warehousePutawayExactSite + ` AND ` + warehouseStaffCityMatch + ` AND ` + warehousePutawayCurrentBin + `)`
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY pt.created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -698,6 +755,9 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 	rows.Close()
 	// Accepted history without a task remains visible but cannot be guessed into
 	// a new physical placement. Counts here are recorded evidence, not availability.
+	if staff != "" {
+		return list, nil
+	}
 	history, err := r.db.QueryContext(ctx, `SELECT r.task_id,r.product_id,COALESCE(p.title,''),r.quantity FROM inbound_putaway_reconciliation r LEFT JOIN products p ON p.id=r.product_id WHERE r.exception='accepted_history_without_exact_task' ORDER BY r.task_id COLLATE "C" LIMIT 100`)
 	if err != nil {
 		return nil, err
@@ -731,6 +791,12 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	if err := lockPutawayParentsTx(ctx, tx, taskID); err != nil {
 		return err
 	}
+	if err := lockWarehousePutawayScopeTx(ctx, tx, taskID); err != nil {
+		return err
+	}
+	if err := lockWarehousePutawayAssignmentBinsTx(ctx, tx, taskID, binLocation); err != nil {
+		return err
+	}
 	var productID, variantID, status, sourceWarehouse string
 	var quantity int
 	if err := tx.QueryRowContext(ctx, `SELECT pt.product_id,pt.quantity,pt.status,COALESCE(pt.variant_id::text,''),COALESCE((SELECT w.name FROM inbound_putaway_allocations a JOIN warehouses w ON w.id=a.warehouse_id WHERE a.task_id=pt.id),(SELECT warehouse_name FROM inbound_shipments WHERE id=pt.inbound_id),p.warehouse_name,'') FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 FOR UPDATE OF pt,p`, taskID).Scan(&productID, &quantity, &status, &variantID, &sourceWarehouse); err != nil {
@@ -758,7 +824,7 @@ func (r *WarehouseRepository) AssignPutawayTask(ctx context.Context, taskID, bin
 	if capacityStatus != "verified" || capacity <= 0 {
 		return fmt.Errorf("bin capacity is not verified")
 	}
-	if sourceWarehouse == "" || sourceWarehouse != binWarehouse {
+	if WarehouseStaffID(ctx) == "" && (sourceWarehouse == "" || sourceWarehouse != binWarehouse) {
 		return fmt.Errorf("قفسه باید در انبار همان محموله باشد")
 	}
 	var exactWarehouse string
@@ -797,7 +863,15 @@ func (r *WarehouseRepository) AssignPutaway(ctx context.Context, productID, binL
 	if quantity <= 0 || strings.TrimSpace(actor) == "" || strings.TrimSpace(binLocation) == "" {
 		return "", ErrInboundProvenance
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT pt.id FROM putaway_tasks pt JOIN inbound_putaway_allocations a ON a.task_id=pt.id WHERE pt.product_id=$1 AND pt.variant_id IS NULL AND pt.quantity=$2 AND pt.status IN ('pending','assigned') ORDER BY pt.id COLLATE "C" LIMIT 2`, productID, quantity)
+	query := `SELECT pt.id FROM putaway_tasks pt JOIN inbound_putaway_allocations a ON a.task_id=pt.id WHERE pt.product_id=$1 AND pt.variant_id IS NULL AND pt.quantity=$2 AND pt.status IN ('pending','assigned')`
+	args := []interface{}{productID, quantity}
+	if staff := WarehouseStaffID(ctx); staff != "" {
+		args = append(args, staff, binLocation)
+		query += ` AND ` + warehousePutawayExactSite + ` AND ` + warehousePutawayCurrentBin + `
+			AND EXISTS (SELECT 1 FROM warehouse_bins b JOIN warehouses site ON site.id=b.warehouse_id JOIN users staff ON staff.id=$3
+			WHERE b.bin_code=$4 AND b.warehouse_id=a.warehouse_id AND ` + warehouseStaffCityMatch + `)`
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY pt.id COLLATE "C" LIMIT 2`, args...)
 	if err != nil {
 		return "", err
 	}
@@ -843,6 +917,9 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	if err != nil {
 		return err
 	}
+	if err = lockWarehousePutawayScopeTx(ctx, tx, taskID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	var binCode string
@@ -855,6 +932,14 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 		return err
 	}
 	if taskStatus == "completed" {
+		if WarehouseStaffID(ctx) != "" {
+			if err = tx.QueryRowContext(ctx, `SELECT bin_code FROM warehouse_placements WHERE task_id=$1 AND warehouse_id=$2`, taskID, allocation.warehouse).Scan(&binCode); err != nil {
+				return warehouseScopeResult(err)
+			}
+			if err = lockWarehousePutawayBinScopeTx(ctx, tx, taskID, binCode); err != nil {
+				return err
+			}
+		}
 		return tx.Commit()
 	}
 	if taskStatus != "assigned" {
@@ -865,6 +950,18 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 	}
 	if err = lockPutawayPhysicalTx(ctx, tx, taskID, binCode, allocation); err != nil {
 		return err
+	}
+	if WarehouseStaffID(ctx) != "" {
+		var matches bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM putaway_tasks pt JOIN putaway_capacity_reservations r ON r.task_id=pt.id WHERE pt.id=$1 AND pt.bin_location=$2 AND r.bin_code=$2 AND r.status='active')`, taskID, binCode).Scan(&matches); err != nil {
+			return err
+		}
+		if !matches {
+			return ErrInboundProvenance
+		}
+		if err = lockWarehousePutawayBinScopeTx(ctx, tx, taskID, binCode); err != nil {
+			return err
+		}
 	}
 	if err = tx.QueryRowContext(ctx, `SELECT pt.product_id,COALESCE(p.supplier_id,''),COALESCE(pt.inbound_id,''),pt.quantity,COALESCE(pt.variant_id::text,''),COALESCE(pt.inventory_source_location_key,'warehouse:'||pt.inbound_id) FROM putaway_tasks pt JOIN products p ON p.id=pt.product_id WHERE pt.id=$1 AND pt.status IN ('pending','assigned') FOR UPDATE`, taskID).Scan(&productID, &supplierID, &inboundID, &quantity, &variantID, &sourceLocation); err != nil {
 		return err
@@ -922,6 +1019,36 @@ func (r *WarehouseRepository) ConfirmPutaway(ctx context.Context, taskID, actor 
 // without this predicate the warehouse could pick/pack/ship orders nobody
 // paid for. Unpaid orders never enter the queue — the warehouse UI shows an
 // honest empty state for them, not a fabricated row.
+// warehouseOrderStaffCityPredicate takes trusted SQL expressions for the order ID
+// and staff parameter. Require complete persisted coverage on every line and at
+// least one warehouse leg. Supplier legs do not contribute warehouse work.
+func warehouseOrderStaffCityPredicate(orderID, staffParam string) string {
+	return fmt.Sprintf(` AND EXISTS (
+		SELECT 1 FROM users staff
+		WHERE staff.id = %s
+		  AND NULLIF(BTRIM(staff.warehouse_city), '') IS NOT NULL
+		  AND (
+			SELECT bool_or(legs.has_warehouse) AND bool_and(legs.complete)
+			FROM order_items scope_item
+			CROSS JOIN LATERAL (
+				SELECT bool_or(origin.origin_type = 'warehouse') AS has_warehouse,
+				       COALESCE(SUM(origin.quantity) = scope_item.quantity AND bool_and(
+				           (origin.order_id = scope_item.order_id AND origin.quantity > 0 AND
+				            CASE origin.origin_type
+				                WHEN 'warehouse' THEN BTRIM(site.city_name) COLLATE "C" = BTRIM(staff.warehouse_city) COLLATE "C"
+				                WHEN 'supplier' THEN NULLIF(BTRIM(origin.supplier_warehouse_id), '') IS NOT NULL
+				                ELSE FALSE
+				            END) IS TRUE
+				       ), FALSE) AS complete
+				FROM order_item_origins origin
+				LEFT JOIN warehouses site ON site.id = origin.warehouse_id AND site.id <> ''
+				WHERE origin.order_item_id::text = scope_item.id::text
+			) legs
+			WHERE scope_item.order_id = %s
+		  )
+	)`, staffParam, orderID)
+}
+
 func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses []string) ([]ReadyToPickOrder, error) {
 	// ROUTING GATE (Oct 18, 2026): a paid order can only enter the warehouse
 	// queues when the warehouse actually has work on it — order-level
@@ -984,7 +1111,7 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 				SELECT CASE WHEN bool_or(origin_type='warehouse') THEN 'warehouse' WHEN bool_or(origin_type='supplier') THEN 'supplier' END AS origin_type,
                 SUM(quantity) FILTER(WHERE origin_type='warehouse') AS warehouse_quantity,
                 bool_or(origin_type='legacy' OR (origin_type='warehouse' AND warehouse_id IS NULL) OR (origin_type='supplier' AND supplier_warehouse_id IS NULL)) AS unresolved
-                FROM order_item_origins WHERE order_item_id=oi.id
+				FROM order_item_origins WHERE order_item_id::text=oi.id::text
 			) oio ON true
 			CROSS JOIN LATERAL (
 				SELECT CASE
@@ -998,10 +1125,22 @@ func (r *WarehouseRepository) getOrdersByStatuses(ctx context.Context, statuses 
 		WHERE o.status = ANY($1)
 		  AND o.payment_status = 'paid'
 		  AND COALESCE(o.fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
-		ORDER BY o.created_at DESC
+	`
+	args := []any{pq.Array(statuses)}
+	if staffID := WarehouseStaffID(ctx); staffID != "" {
+		query += ` AND EXISTS (
+			SELECT 1 FROM users eligible_staff
+			WHERE eligible_staff.id = $2
+			  AND eligible_staff.is_active IS TRUE
+			  AND eligible_staff.warehouse_city_confirmed IS TRUE
+		)`
+		query += warehouseOrderStaffCityPredicate("o.id", "$2")
+		args = append(args, staffID)
+	}
+	query += ` ORDER BY o.created_at DESC
 		LIMIT 50
 	`
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(statuses))
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,6 +1186,10 @@ func (r *WarehouseRepository) StartPickingOrder(ctx context.Context, orderID, st
 		return err
 	}
 	defer tx.Rollback()
+	mutationID, err := lockScopedWarehouseOrderTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
 
 	// Resolve the canonical order UUID: callers may pass the order number,
 	// but pick_tasks.order_id is an FK to orders(id) — inserting the raw
@@ -1054,12 +1197,12 @@ func (r *WarehouseRepository) StartPickingOrder(ctx context.Context, orderID, st
 	var orderUUID string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE orders SET status = 'picking'
-		WHERE (id = $1 OR order_number = $1)
+		WHERE (id = $1 OR (NOT $2 AND order_number = $1))
 		  AND payment_status = 'paid'
 		  AND COALESCE(fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
 		  AND status IN ('pending', 'processing', 'picking')
 		RETURNING id
-	`, orderID).Scan(&orderUUID)
+	`, mutationID, WarehouseStaffID(ctx) != "").Scan(&orderUUID)
 	if err == sql.ErrNoRows {
 		// Fail-closed: the order is missing, not paid yet, OR it is a
 		// supplier-direct-only order with no warehouse work. Such orders
@@ -1094,12 +1237,28 @@ func (r *WarehouseRepository) PickItem(ctx context.Context, orderID string, item
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `
+	const update = `
 		UPDATE pick_tasks
 		SET picked_items = picked_items || $1::jsonb
 		WHERE order_id = $2
-	`, itemBytes, orderID)
-	return err
+	`
+	if WarehouseStaffID(ctx) == "" {
+		_, err := r.db.ExecContext(ctx, update, itemBytes, orderID)
+		return err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	canonicalID, err := lockScopedWarehouseOrderTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, update, itemBytes, canonicalID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CompletePickingOrder marks order picked. Hardened like StartPickingOrder:
@@ -1112,17 +1271,21 @@ func (r *WarehouseRepository) CompletePickingOrder(ctx context.Context, orderID 
 		return err
 	}
 	defer tx.Rollback()
+	mutationID, err := lockScopedWarehouseOrderTx(ctx, tx, orderID)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now()
 	var orderUUID string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE orders SET status = 'picked'
-		WHERE (id = $1 OR order_number = $1)
+		WHERE (id = $1 OR (NOT $2 AND order_number = $1))
 		  AND payment_status = 'paid'
 		  AND COALESCE(fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
 		  AND status = 'picking'
 		RETURNING id
-	`, orderID).Scan(&orderUUID)
+	`, mutationID, WarehouseStaffID(ctx) != "").Scan(&orderUUID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("سفارش یافت نشد، هنوز پرداخت نشده است، روش ارسال آن مستقیم است یا در مرحله برداشت (picking) نیست: %s", orderID)
 	}
@@ -1155,6 +1318,11 @@ func (r *WarehouseRepository) PackOrder(ctx context.Context, orderID string, wei
 		return "", "", err
 	}
 	defer tx.Rollback()
+	mutationID, err := lockScopedWarehouseOrderTx(ctx, tx, orderID)
+	if err != nil {
+		return "", "", err
+	}
+	scoped := WarehouseStaffID(ctx) != ""
 
 	boxSize = strings.TrimSpace(boxSize)
 	if len(boxSize) > 80 {
@@ -1163,24 +1331,24 @@ func (r *WarehouseRepository) PackOrder(ctx context.Context, orderID string, wei
 	query := `
 		UPDATE orders
 		SET status = 'packed', tracking_number = $1, tracking_code = $1, shipping_label = $2, packed_at = $3, box_size = NULLIF($4, '')
-		WHERE (id = $5 OR order_number = $5)
+		WHERE (id = $5 OR (NOT $6 AND order_number = $5))
 		  AND payment_status = 'paid'
 		  AND COALESCE(fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
 		  AND status = 'picked'
 		RETURNING id, order_number, customer_user_id::text, store_id
 	`
-	args := []interface{}{trackingNumber, shippingLabel, now, boxSize, orderID}
+	args := []interface{}{trackingNumber, shippingLabel, now, boxSize, mutationID, scoped}
 	if weightGrams > 0 {
 		query = `
 			UPDATE orders
 			SET status = 'packed', tracking_number = $1, tracking_code = $1, shipping_label = $2, packed_at = $3, weight_grams = $4, box_size = NULLIF($5, '')
-			WHERE (id = $6 OR order_number = $6)
+			WHERE (id = $6 OR (NOT $7 AND order_number = $6))
 			  AND payment_status = 'paid'
 			  AND COALESCE(fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
 			  AND status = 'picked'
 			RETURNING id, order_number, customer_user_id::text, store_id
 		`
-		args = []interface{}{trackingNumber, shippingLabel, now, weightGrams, boxSize, orderID}
+		args = []interface{}{trackingNumber, shippingLabel, now, weightGrams, boxSize, mutationID, scoped}
 	}
 	var updatedID, orderNumber, customerUserID string
 	var storeID sql.NullString
@@ -1225,9 +1393,15 @@ func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, c
 		return err
 	}
 	defer tx.Rollback()
-	var canonicalID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+	canonicalID, err := lockScopedWarehouseOrderTx(ctx, tx, orderID)
+	if err != nil {
 		return err
+	}
+	scoped := WarehouseStaffID(ctx) != ""
+	if !scoped {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM orders WHERE id=$1 OR order_number=$1`, orderID).Scan(&canonicalID); err != nil {
+			return err
+		}
 	}
 	if err := assertOrderDispatchAllowedTx(ctx, tx, canonicalID); err != nil {
 		return err
@@ -1237,13 +1411,17 @@ func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, c
 	}
 	var updatedID, orderNumber, customerUserID string
 	var storeID sql.NullString
+	mutationID := orderID
+	if scoped {
+		mutationID = canonicalID
+	}
 	err = tx.QueryRowContext(ctx, `
 		UPDATE orders
 		SET status = 'shipped', carrier = $1,
 		    tracking_number = COALESCE(NULLIF($2, ''), tracking_number),
 		    tracking_code = COALESCE(NULLIF($2, ''), tracking_code),
 		    shipped_at = $3
-		WHERE (id = $4 OR order_number = $4)
+		WHERE (id = $4 OR (NOT $5 AND order_number = $4))
 		  AND payment_status = 'paid'
 		  AND COALESCE(fulfillment_method, 'warehouse') IN ('warehouse', 'mixed')
 		  AND status = 'packed'
@@ -1252,7 +1430,7 @@ func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, c
 			WHERE order_id = orders.id AND status NOT IN ('shipped', 'in_transit', 'delivered')
 		  ))
 		RETURNING id, order_number, customer_user_id::text, store_id
-	`, carrier, trackingNumber, now, orderID).Scan(&updatedID, &orderNumber, &customerUserID, &storeID)
+	`, carrier, trackingNumber, now, mutationID, scoped).Scan(&updatedID, &orderNumber, &customerUserID, &storeID)
 	if err == sql.ErrNoRows {
 		// Fail-closed: unpaid, supplier-direct-only, missing, or
 		// out-of-sequence (not packed) orders can never ship.
@@ -1282,6 +1460,34 @@ func (r *WarehouseRepository) ShipOrderWithActor(ctx context.Context, orderID, c
 		return err
 	}
 	return tx.Commit()
+}
+
+// ErrWarehouseOrderNotFound does not distinguish inaccessible orders from missing ones.
+var ErrWarehouseOrderNotFound = fmt.Errorf("warehouse order not found")
+
+// lockScopedWarehouseOrderTx returns the only order ID the scoped caller may
+// mutate. Keep the lock through all order and dependent writes.
+func lockScopedWarehouseOrderTx(ctx context.Context, tx *sql.Tx, orderID string) (string, error) {
+	staffID := WarehouseStaffID(ctx)
+	if staffID == "" {
+		return orderID, nil
+	}
+	var canonicalID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT o.id FROM orders o
+		WHERE (o.id = $1 OR o.order_number = $1)
+		AND EXISTS (
+			SELECT 1 FROM users staff
+			WHERE staff.id = $2 AND staff.is_active AND staff.warehouse_city_confirmed
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM orders other
+			WHERE other.id <> o.id AND (other.id = $1 OR other.order_number = $1)
+		)`+warehouseOrderStaffCityPredicate("o.id", "$2")+` FOR UPDATE OF o`, orderID, staffID).Scan(&canonicalID)
+	if err == sql.ErrNoRows {
+		return "", ErrWarehouseOrderNotFound
+	}
+	return canonicalID, err
 }
 
 // trackingLabel renders the tracking suffix only when a tracking number

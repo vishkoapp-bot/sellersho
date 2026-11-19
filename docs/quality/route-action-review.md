@@ -2,7 +2,7 @@
 
 Source baseline: `77537979b6b3d6f1fdd8340466a098a97eecb1e1`. This is a source audit of the two Go HTTP listeners, not a claim that all authorization controls pass runtime tests. The [route invariant matrix](route-invariant-matrix.txt) remains the tracking document for the six business jobs, financial and inventory invariants, and the open QUAL-01 acceptance gates.
 
-Coverage check: all 297 HTTP registrations in the source-generated inventory have exactly one row across the eight shards. The table check found no missing, duplicate, extra, or malformed rows. Each registration may contain multiple method and suffix actions, including stubs and fallbacks. This check verifies registration coverage and table shape, not the runtime behavior claimed by any row.
+Baseline coverage: all 297 HTTP registrations at the stated source commit had one row across the eight shards. The current source inventory includes one additional staff city assignment registration, documented in shard 07. Changes to warehouse city authorization and plan expiry after the stated baseline are recorded in the matrix under QUAL-01-04 and QUAL-01-05. When a historical shard and those follow-ups differ, use the follow-ups for current behavior. Registration coverage does not verify runtime behavior.
 
 | Shard | Production registration source |
 | --- | --- |

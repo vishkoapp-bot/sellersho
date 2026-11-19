@@ -123,6 +123,14 @@ export interface StoreContextType {
   niches: Niche[];
   catalogLoading: boolean;
   catalogError: string | null;
+  // PERF-01: paged catalog (ProductContext passthrough).
+  catalogFilter: import('./ProductContext').CatalogFilter;
+  setCatalogFilter: (patch: Partial<import('./ProductContext').CatalogFilter>) => void;
+  resetCatalogFilter: () => void;
+  loadMoreCatalog: () => Promise<void>;
+  hasMoreCatalog: boolean;
+  catalogTotal: number;
+  catalogLoadingMore: boolean;
   cart: CartItem[];
   addToCart: (product: Product, quantity?: number, color?: string, variantId?: string, addonIds?: string[]) => void;
   removeFromCart: (key: string) => void;

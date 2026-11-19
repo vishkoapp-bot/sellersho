@@ -55,10 +55,14 @@ func TestMoneyCatalogQuarantineCurrentSchema(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list=%d %s", rec.Code, rec.Body.String())
 	}
-	var products []ProductResponse
-	if err = json.Unmarshal(rec.Body.Bytes(), &products); err != nil {
+	// PERF-01: paged envelope; the bare-array shape is retired.
+	var listEnvelope struct {
+		Items []ProductResponse `json:"items"`
+	}
+	if err = json.Unmarshal(rec.Body.Bytes(), &listEnvelope); err != nil {
 		t.Fatal(err)
 	}
+	products := listEnvelope.Items
 	for _, p := range products {
 		if p.ID == productID {
 			t.Fatal("quarantined product advertised in catalog")

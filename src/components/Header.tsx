@@ -79,20 +79,18 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   // GET /products/?search=<term>&limit=10). Empty term closes
   // immediately with no fetch; a failed fetch also closes with
   // no rows; a successful fetch opens even with 0 rows (the
-  // empty state below). Live's limit=10 is capped client-side
-  // here because the candidate catalogApi client does not pass
-  // `limit` (the candidate backend honours it, but that client
-  // param is outside this worker's files) -- see report gap G2.
+  // empty state below). PERF-01: the suggestion list is one
+  // server page (limit 10) — the full catalog is never fetched
+  // for ten suggestions.
   useEffect(() => {
     const term = searchQuery.trim();
     if (!term) { setSearchResults([]); setIsSearchDropOpen(false); return; }
     let dead = false;
     const timer = setTimeout(async () => {
       try {
-        const res = await catalogApi.getProducts({ search: term, ...(searchStoreSlug ? { storeSlug: searchStoreSlug } : {}) });
-        const arr = Array.isArray(res) ? res : [];
+        const res = await catalogApi.getProductsPage({ search: term, limit: 10, ...(searchStoreSlug ? { storeSlug: searchStoreSlug } : {}) });
         if (dead) return;
-        setSearchResults(arr.slice(0, 10));
+        setSearchResults(res.items);
         setIsSearchDropOpen(true);
       } catch {
         if (!dead) { setSearchResults([]); setIsSearchDropOpen(false); }

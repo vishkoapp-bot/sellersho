@@ -11,9 +11,14 @@ interface SellerStorefrontProductGridProps {
   // is central-priced while the order path charges store prices).
   // When omitted, the context catalogue is used, exactly as before.
   products?: Product[];
+  // PERF-01: the storefront pages on demand; the grid renders the
+  // loaded pages plus this show-more button while more remain.
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  loadingMore?: boolean;
 }
 
-export const SellerStorefrontProductGrid: React.FC<SellerStorefrontProductGridProps> = ({ products: productsProp }) => {
+export const SellerStorefrontProductGrid: React.FC<SellerStorefrontProductGridProps> = ({ products: productsProp, hasMore, onLoadMore, loadingMore }) => {
   const { products: contextProducts, currentStore, selectedCategory, searchQuery, toPersianDigits } = useStore();
   const products = productsProp ?? contextProducts;
   const [sortBy, setSortBy] = useState<'popular' | 'cheapest' | 'expensive' | 'discount'>('popular');
@@ -89,11 +94,22 @@ export const SellerStorefrontProductGrid: React.FC<SellerStorefrontProductGridPr
           <p className="text-xs font-bold text-slate-600">کالایی با این مشخصات یافت نشد.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2.5">
-          {filtered.map((product) => (
-            <ProductCard key={product.id} product={product} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-2.5">
+            {filtered.map((product) => (
+              <ProductCard key={product.id} product={product} />
+            ))}
+          </div>
+          {hasMore && onLoadMore && (
+            <button
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
+            >
+              {loadingMore ? 'در حال بارگذاری…' : 'نمایش بیشتر'}
+            </button>
+          )}
+        </>
       )}
     </section>
   );

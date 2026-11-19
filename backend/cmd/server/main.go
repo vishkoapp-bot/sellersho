@@ -476,6 +476,15 @@ func run(signalCtx context.Context) (result error) {
 		}
 		handleProductPriceBounds(w, r, r.Context(), catalogRepo, storeRepo, pricingRepo)
 	})
+	// PERF-01: distinct category slugs for one store's assortment (one
+	// bounded query); replaces deriving them from the full catalog.
+	mux.HandleFunc("/api/v1/products/store-categories", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		handleStoreCategorySlugs(w, r, r.Context(), catalogRepo, storeRepo)
+	})
 	mux.HandleFunc("/api/v1/brands", func(w http.ResponseWriter, r *http.Request) {
 		handleBrandsList(w, r, catalogRepo)
 	})

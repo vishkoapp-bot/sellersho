@@ -54,7 +54,10 @@ export const SellerCatalogTab: React.FC = () => {
     prevSlugRef.current = storeSlug;
     if (slugChanged) setScopedProducts(null);
     let cancelled = false;
-    catalogApi.getProducts({ storeSlug })
+    // PERF-01: the seller manages the WHOLE assortment here, so this
+    // admin surface walks all pages (bounded requests, cursor-driven)
+    // instead of one unbounded fetch. Public surfaces never do this.
+    catalogApi.fetchAllProductPages({ storeSlug })
       .then((data) => {
         if (!cancelled && Array.isArray(data) && data.length > 0) {
           setScopedProducts(data.map(mapBackendProduct));

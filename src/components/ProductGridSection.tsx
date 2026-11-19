@@ -7,7 +7,7 @@ import { ProductCarousel } from './ProductCarousel';
 import { SlidersHorizontal, ShoppingBag, RotateCcw, PackageX, Check } from 'lucide-react';
 
 export const ProductGridSection: React.FC = () => {
-  const { products, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, toPersianDigits } = useStore();
+  const { products, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, toPersianDigits, loadMoreCatalog, hasMoreCatalog, catalogLoadingMore } = useStore();
   const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
   const [onlyInStock, setOnlyInStock] = useState(false);
   const [onlyOriginal, setOnlyOriginal] = useState(false);
@@ -218,6 +218,18 @@ export const ProductGridSection: React.FC = () => {
               className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors"
             >
               مشاهده همه {toPersianDigits(filtered.length)} کالا
+            </button>
+          )}
+          {/* PERF-01: the floor renders the loaded pages; when more
+              pages remain, this loads the next one (the local
+              filter/sort above then applies to the larger set). */}
+          {!carouselMode && hasMoreCatalog && (
+            <button
+              onClick={() => { void loadMoreCatalog(); }}
+              disabled={catalogLoadingMore}
+              className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
+            >
+              {catalogLoadingMore ? 'در حال بارگذاری…' : 'نمایش بیشتر'}
             </button>
           )}
         </>

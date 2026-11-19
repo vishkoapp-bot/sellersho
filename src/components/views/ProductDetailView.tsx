@@ -134,9 +134,10 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     }
     setScopedRelated(null);
     let cancelled = false;
+    // PERF-01: related row is one first page (limit 12).
     catalogApi
-      .getProducts({ storeSlug: scopedStoreSlug, category: product.category })
-      .then((dtos) => { if (!cancelled) setScopedRelated(dtos.map(mapBackendProduct)); })
+      .getProductsPage({ storeSlug: scopedStoreSlug, category: product.category, limit: 12 })
+      .then((page) => { if (!cancelled) setScopedRelated(page.items.map(mapBackendProduct)); })
       .catch(() => { if (!cancelled) setScopedRelated([]); });
     return () => { cancelled = true; };
   }, [scopedStoreSlug, product.id, product.category]);

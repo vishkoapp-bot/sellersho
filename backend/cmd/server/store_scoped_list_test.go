@@ -117,11 +117,14 @@ func storeScopedList(t *testing.T, catalogRepo *repository.CatalogRepository, st
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET %s status = %d, body %s", path, rec.Code, rec.Body.String())
 	}
-	var list []map[string]json.RawMessage
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+	// PERF-01: paged envelope; the bare-array shape is retired.
+	var envelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("GET %s decode: %v", path, err)
 	}
-	return list
+	return envelope.Items
 }
 
 func listIDs(list []map[string]json.RawMessage) []string {
@@ -186,7 +189,9 @@ func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 
 	// Unscoped: previous behaviour untouched — globally active only
 	// (45 noise + p-old-3), central pricing, no supplier fields.
-	all := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/")
+	// PERF-01: the list is paged (default 24); limit=100 fetches the
+	// whole 46-item set in one page for this set assertion.
+	all := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?limit=100")
 	if len(all) != 46 {
 		t.Fatalf("unscoped len = %d, want 46", len(all))
 	}
@@ -208,7 +213,7 @@ func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 
 	// Central store view: identical to unscoped (no assortment scope,
 	// no supplier fields).
-	central := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=central")
+	central := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=central&limit=100")
 	if len(central) != 46 {
 		t.Fatalf("central list len = %d, want 46", len(central))
 	}
@@ -219,7 +224,7 @@ func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 	}
 
 	// Unknown slug: falls back to the unscoped catalog behaviour.
-	unknown := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=no-such-store")
+	unknown := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=no-such-store&limit=100")
 	if len(unknown) != 46 {
 		t.Fatalf("unknown-slug list len = %d, want 46", len(unknown))
 	}

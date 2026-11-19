@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { catalogApi } from '../../services/catalogApi';
+import { isMockMode } from '../../services/apiClient';
 import { useStore, activeStoreSlugOf } from '../../context/StoreContext';
 import { ProductCard } from '../ProductCard';
 import { PriceRangeSlider } from '../PriceRangeSlider';
@@ -20,6 +21,11 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     categories,
     catalogLoading,
     catalogError,
+    loadMoreCatalog,
+    hasMoreCatalog,
+    catalogTotal,
+    catalogLoadingMore,
+    setCatalogFilter,
     openCatalogCategory,
     catalogBrandRequest,
     clearCatalogBrand,
@@ -60,6 +66,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [onlyOriginal, setOnlyOriginal] = useState(false);
   const [priceMin, setPriceMin] = useState('');
   const [priceMax, setPriceMax] = useState('');
+  const liveMode = !isMockMode();
   // FIX 17: live's catalog tree expands per slug (bundle E(slug)),
   // and a fresh category page shows the current category's
   // subcategories EXPANDED (browser evidence). The old single
@@ -83,6 +90,25 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [facetAttrs, setFacetAttrs] = useState<import('../../services/catalogApi').FacetAttribute[]>([]);
   const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
   const [selectedAttrs, setSelectedAttrs] = useState<Record<number, number[]>>({});
+  // PERF-01: in live mode the filters/sort/price go to the SERVER
+  // (ProductContext page-1 + show-more); the list below renders the
+  // loaded pages as-is. Mock mode keeps the old client-side path
+  // (the whole mock list is local). setCatalogFilter is value-equal
+  // guarded, so pushing identical values never refetches.
+  useEffect(() => {
+    if (!liveMode) return;
+    setCatalogFilter({
+      sort: sortBy,
+      inStockOnly: onlyInStock,
+      onlyOriginal,
+      minPrice: priceMin === '' ? null : Number(priceMin),
+      maxPrice: priceMax === '' ? null : Number(priceMax),
+      brands: selectedBrands,
+      attributes: selectedAttrs,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveMode, sortBy, onlyInStock, onlyOriginal, priceMin, priceMax, selectedBrands, selectedAttrs]);
+
   useEffect(() => {
     // FIX 15: a custom price range must not stick across categories --
     // the slider defaults to the newly selected category's own bounds.
@@ -137,27 +163,33 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   }, [selectedCategory, products]);
 
   // FIX 14: live sidebar price controls default to the server
-  // price bounds (GET /products/price-bounds); client bounds fallback.
+  // price bounds (GET /products/price-bounds), scoped to the selected
+  // category (FIX 15: e.g. gold-silver: 5,280,000-63,800,000) while
+  // search (category 'all') keeps the full global range. PERF-01: no
+  // client fallback — the loaded pages are not the full range, so a
+  // client min/max from 24 items would be wrong; the slider hides
+  // until the server bounds arrive.
   const [serverBounds, setServerBounds] = useState<{ minPrice: number; maxPrice: number } | null>(null);
   useEffect(() => {
     let on = true;
-    catalogApi.getPriceBounds().then((b) => { if (on) setServerBounds(b); }).catch(() => {});
+    setServerBounds(null);
+    catalogApi.getPriceBounds(selectedCategory === 'all' ? {} : { category: selectedCategory }).then((b) => { if (on) setServerBounds(b); }).catch(() => {});
     return () => { on = false; };
-  }, []);
-  const clientMin = products.length ? Math.min(...products.map((p) => p.price)) : 0;
-  const clientMax = products.length ? Math.max(...products.map((p) => p.price)) : 0;
-  const globalMin = serverBounds?.minPrice ?? clientMin;
-  const globalMax = serverBounds?.maxPrice ?? clientMax;
-  // FIX 15: live narrows the category page's price slider to that
-  // category's own products (e.g. gold-silver: 5,280,000-63,800,000)
-  // while search (category 'all') keeps the full global range.
-  const categoryProducts = selectedCategory === 'all' ? [] : products.filter((p) => p.category === selectedCategory);
-  const dataMin = categoryProducts.length ? Math.min(...categoryProducts.map((p) => p.price)) : globalMin;
-  const dataMax = categoryProducts.length ? Math.max(...categoryProducts.map((p) => p.price)) : globalMax;
+  }, [selectedCategory]);
+  const dataMin = serverBounds?.minPrice ?? 0;
+  const dataMax = serverBounds?.maxPrice ?? 0;
   const effMin = priceMin === '' ? dataMin : Number(priceMin);
   const effMax = priceMax === '' ? dataMax : Number(priceMax);
 
-  let filtered = products.filter((p) => {
+  // PERF-01: mock mode keeps the old client-side filter/sort over the
+  // whole mock list. Live mode renders the server-filtered pages
+  // as-is — re-filtering or re-sorting loaded pages client-side would
+  // scramble page order (featured) and hide the server total.
+  // Facet counts above still derive from the loaded pages (documented
+  // limitation: a brand/attribute with no loaded product hides until
+  // its page loads).
+  let mockFiltered = products;
+  if (!liveMode) mockFiltered = products.filter((p) => {
     const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
     const matchesSearch = !searchQuery || 
       p.title.includes(searchQuery) || 
@@ -178,15 +210,19 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     return matchesCategory && matchesSearch && matchesStock && matchesOriginal && matchesPrice && matchesBrand && matchesAttrs;
   });
 
-  filtered = [...filtered].sort((a, b) => {
-    if (sortBy === 'cheapest') return a.price - b.price;
-    if (sortBy === 'expensive') return b.price - a.price;
-    if (sortBy === 'discount') return b.discountPercent - a.discountPercent;
-    // FIX 12: 'newest' keeps the API order, which is already
-    // newest-first (list ids are creation timestamps, desc).
-    if (sortBy === 'newest') return 0;
-    return (b.salesCount || 0) - (a.salesCount || 0);
-  });
+  if (!liveMode) {
+    mockFiltered = [...mockFiltered].sort((a, b) => {
+      if (sortBy === 'cheapest') return a.price - b.price;
+      if (sortBy === 'expensive') return b.price - a.price;
+      if (sortBy === 'discount') return b.discountPercent - a.discountPercent;
+      // FIX 12: 'newest' keeps the API order, which is already
+      // newest-first (list ids are creation timestamps, desc).
+      if (sortBy === 'newest') return 0;
+      return (b.salesCount || 0) - (a.salesCount || 0);
+    });
+  }
+  const filtered = liveMode ? products : mockFiltered;
+  const shownTotal = liveMode ? catalogTotal : filtered.length;
 
   const activeCategoryObj = categories.find(c => c.slug === selectedCategory);
   const activeBrand = catalogBrandRequest && selectedBrands.includes(catalogBrandRequest.brand)
@@ -246,7 +282,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1 text-xs lg:text-lg xl:text-xl text-slate-500">
             <span className="font-bold text-slate-900">{titleText}</span>
-            <span className="text-[10px] lg:text-xs text-slate-400">({toPersianDigits(filtered.length)})</span>
+            <span className="text-[10px] lg:text-xs text-slate-400">({toPersianDigits(shownTotal)})</span>
           </div>
           {(onlyInStock || onlyOriginal || priceMin !== '' || priceMax !== '' || selectedCategory !== 'all' || searchQuery || selectedBrands.length > 0 || Object.keys(selectedAttrs).length > 0) && (
             <button
@@ -431,11 +467,22 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">
-            {filtered.map((product) => (
-              <ProductCard key={product.id} product={product} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">
+              {filtered.map((product) => (
+                <ProductCard key={product.id} product={product} />
+              ))}
+            </div>
+            {liveMode && hasMoreCatalog && (
+              <button
+                onClick={() => { void loadMoreCatalog(); }}
+                disabled={catalogLoadingMore}
+                className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
+              >
+                {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(shownTotal)} کالا)`}
+              </button>
+            )}
+          </>
         )}
         </div>
       </div>

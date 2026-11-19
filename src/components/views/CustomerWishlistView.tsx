@@ -52,8 +52,11 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
     }
     setScopedProducts(null);
     let cancelled = false;
+    // PERF-01: walk pages until every saved id is found (or the
+    // catalog ends) — a first page alone could miss a wishlisted
+    // product beyond page 1. Personal surface, small wanted set.
     catalogApi
-      .getProducts({ storeSlug: entryStore.slug })
+      .fetchAllProductPages({ storeSlug: entryStore.slug }, { stopWhen: (items) => entryIds.every((id) => items.some((p) => p.id === id)) })
       .then((dtos) => {
         if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct));
       })

@@ -113,10 +113,12 @@ export const SellerAdsWidgetTab: React.FC = () => {
     if (!dealsStoreSlug) return;
     setScopedDealProducts(null);
     let cancelled = false;
-    catalogApi.getProducts({ storeSlug: dealsStoreSlug })
-      .then((data) => {
-        if (!cancelled && Array.isArray(data) && data.length > 0) {
-          setScopedDealProducts(data.map(mapBackendProduct));
+    // PERF-01: first page (limit 100) for the cap map; products
+    // beyond it keep the engine cap as fallback (see below).
+    catalogApi.getProductsPage({ storeSlug: dealsStoreSlug, limit: 100 })
+      .then((page) => {
+        if (!cancelled && Array.isArray(page.items) && page.items.length > 0) {
+          setScopedDealProducts(page.items.map(mapBackendProduct));
         }
       })
       .catch(() => { /* keep the engine cap as fallback */ });

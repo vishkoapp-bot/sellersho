@@ -168,6 +168,26 @@ export interface ProductFilterParams {
   sort?: string;
   storeSlug?: string;
   inStockOnly?: boolean;
+  isOriginal?: boolean;
+  // PERF-01: server-side facets (previously client-side over the full
+  // list). brands repeat (?brand=A&brand=B); attributes are
+  // attr_<id>=1,2,3. minPrice/maxPrice filter on the DISPLAYED main
+  // price (card price). limit is the page size (default 24, max 100).
+  brands?: string[];
+  attributes?: Record<number, number[]>;
+  minPrice?: number;
+  maxPrice?: number;
+  limit?: number;
+}
+
+// PERF-01: the paged list envelope. items is always an array (never
+// null); nextCursor is null on the last page; total is the full
+// filtered count, stable across pages.
+export interface ProductListPage {
+  items: ProductDto[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number;
 }
 
 export const catalogApi = {
@@ -181,7 +201,14 @@ export const catalogApi = {
     return apiRequest<NicheDto[]>(`/niches${query}`, { method: 'GET' });
   },
 
-  getProducts: async (params: ProductFilterParams = {}): Promise<ProductDto[]> => {
+  // PERF-01: the ONLY product-list read. One bounded page: selection,
+  // pricing and the total all happen server-side in SQL; the client
+  // never fetches the full catalog. The old unpaged getProducts is
+  // deleted — any caller still on it fails at compile time. Pass
+  // cursor (from a previous page) to continue paging the SAME filter;
+  // a changed filter must start again without a cursor. signal aborts
+  // an obsolete in-flight page (filter change, unmount).
+  getProductsPage: async (params: ProductFilterParams = {}, opts: { cursor?: string; signal?: AbortSignal } = {}): Promise<ProductListPage> => {
     const searchParams = new URLSearchParams();
     if (params.category && params.category !== 'all') searchParams.set('category', params.category);
     if (params.niche) searchParams.set('niche', params.niche);
@@ -189,26 +216,55 @@ export const catalogApi = {
     if (params.sort) searchParams.set('sort', params.sort);
     if (params.storeSlug) searchParams.set('storeSlug', params.storeSlug);
     if (params.inStockOnly) searchParams.set('in_stock', 'true');
+    if (params.isOriginal) searchParams.set('is_original', 'true');
+    for (const brand of params.brands ?? []) searchParams.append('brand', brand);
+    for (const [attrId, valueIds] of Object.entries(params.attributes ?? {})) {
+      if (valueIds.length > 0) searchParams.set(`attr_${attrId}`, valueIds.join(','));
+    }
+    if (params.minPrice != null) searchParams.set('min_price', String(params.minPrice));
+    if (params.maxPrice != null) searchParams.set('max_price', String(params.maxPrice));
+    if (params.limit != null) searchParams.set('limit', String(params.limit));
+    if (opts.cursor) searchParams.set('cursor', opts.cursor);
 
     const qs = searchParams.toString();
     // The Go mux owns the trailing-slash collection route; keep detail routes unchanged.
     const endpoint = `/products/${qs ? `?${qs}` : ''}`;
-    // FIX 4 (team 04 G5): the backend encodes an empty list as JSON
-    // null exactly like live; normalise it so callers always get [].
     // Store-scoped reads carry the session token: the backend only
     // serves cost fields (baseCostB/platformFeeF/supplier*) on a scoped
     // response to the store owner, the product's supplier, or an admin.
     // Unscoped (public/central) requests stay anonymous, exactly as before.
-    const data = await apiRequest<ProductDto[] | null>(endpoint, {
+    return apiRequest<ProductListPage>(endpoint, {
       method: 'GET',
       ...(params.storeSlug ? { auth: true } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
-    return data ?? [];
+  },
+
+  // PERF-01: page through a whole (small, admin/personal) list with
+  // bounded requests — seller catalog management, template preview,
+  // wishlist lookup. NOT for public surfaces: those page on demand
+  // (getProductsPage + show-more) and never walk the whole catalog.
+  // Stops early when stopWhen returns true, and never walks more than
+  // maxPages pages (default 50 x limit 100) — a runaway walk returns
+  // what it loaded instead of looping forever.
+  fetchAllProductPages: async (params: ProductFilterParams = {}, opts: { maxPages?: number; stopWhen?: (items: ProductDto[]) => boolean } = {}): Promise<ProductDto[]> => {
+    const maxPages = opts.maxPages ?? 50;
+    const limit = params.limit ?? 100;
+    const items: ProductDto[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const res = await catalogApi.getProductsPage({ ...params, limit }, { cursor });
+      items.push(...res.items);
+      if (opts.stopWhen?.(items)) break;
+      if (!res.hasMore || !res.nextCursor) break;
+      cursor = res.nextCursor;
+    }
+    return items;
   },
 
   getProductById: async (id: string, storeSlug?: string): Promise<ProductDto> => {
     const qs = storeSlug ? `?storeSlug=${encodeURIComponent(storeSlug)}` : '';
-    // Same scoped-cost gate as getProducts: authenticate only when a
+    // Same scoped-cost gate as getProductsPage: authenticate only when a
     // store scope is present; unscoped detail requests stay anonymous.
     return apiRequest<ProductDto>(`/products/${id}${qs}`, {
       method: 'GET',
@@ -246,8 +302,20 @@ export const catalogApi = {
   // FIX 14: live server price bounds (GET /products/price-bounds =
   // {"minPrice":198000,"maxPrice":63800000,"count":40}); the grid and
   // catalog sliders must use these, not client-computed bounds.
-  getPriceBounds: async (): Promise<{ minPrice: number; maxPrice: number; count: number }> => {
-    return apiRequest<{ minPrice: number; maxPrice: number; count: number }>('/products/price-bounds', { method: 'GET' });
+  getPriceBounds: async (params: { category?: string; storeSlug?: string } = {}): Promise<{ minPrice: number; maxPrice: number; count: number }> => {
+    const qs = new URLSearchParams();
+    if (params.category && params.category !== 'all') qs.set('category', params.category);
+    if (params.storeSlug) qs.set('storeSlug', params.storeSlug);
+    const q = qs.toString();
+    return apiRequest<{ minPrice: number; maxPrice: number; count: number }>(`/products/price-bounds${q ? `?${q}` : ''}`, { method: 'GET' });
+  },
+
+  // PERF-01: the DISTINCT category slugs one store actually sells, in
+  // one bounded query. Replaces deriving them from the full catalog.
+  getStoreCategorySlugs: async (storeSlug?: string): Promise<string[]> => {
+    const qs = storeSlug ? `?storeSlug=${encodeURIComponent(storeSlug)}` : '';
+    const res = await apiRequest<{ slugs: string[] }>(`/products/store-categories${qs}`, { method: 'GET' });
+    return res?.slugs ?? [];
   },
 
 };

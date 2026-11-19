@@ -191,10 +191,14 @@ func TestSupplierFieldsGateHTTP(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("list status = %d, body %s", rec.Code, rec.Body.String())
 		}
-		var list []map[string]json.RawMessage
-		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		// PERF-01: paged envelope; the bare-array shape is retired.
+		var envelope struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("list decode: %v", err)
 		}
+		list := envelope.Items
 		if len(list) != 1 {
 			t.Fatalf("list len = %d, want the store's single product", len(list))
 		}
@@ -318,10 +322,14 @@ func TestSupplierFieldsGateThroughMiddleware(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 		}
-		var list []map[string]json.RawMessage
-		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		// PERF-01: paged envelope; the bare-array shape is retired.
+		var envelope struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
+		list := envelope.Items
 		if len(list) != 1 {
 			t.Fatalf("list len = %d, want 1", len(list))
 		}

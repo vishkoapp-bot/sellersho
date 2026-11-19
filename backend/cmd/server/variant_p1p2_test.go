@@ -325,11 +325,14 @@ func TestP2SellerVisibilityAndDefaultEndpoints(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("list %s status = %d body %s", slug, w.Code, w.Body.String())
 		}
-		var items []map[string]json.RawMessage
-		if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+		// PERF-01: paged envelope; the bare-array shape is retired.
+		var envelope struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("list %s decode: %v", slug, err)
 		}
-		return items
+		return envelope.Items
 	}
 	shopA := list("shop-a")
 	if len(shopA) != 1 {

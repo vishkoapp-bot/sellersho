@@ -42,17 +42,45 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   // while the scoped fetch is in flight or after it fails they receive an
   // empty list instead (see templateProducts / fallbackProducts below).
   const [scopedProducts, setScopedProducts] = useState<ReturnType<typeof mapBackendProduct>[] | null>(null);
+  const [scopedCursor, setScopedCursor] = useState<string | null>(null);
+  const [hasMoreScoped, setHasMoreScoped] = useState(false);
+  const [scopedLoadingMore, setScopedLoadingMore] = useState(false);
+  // PERF-01: the storefront loads page 1 of its own assortment (store
+  // prices) and pages on demand from the floor grid below; template
+  // sections render from the loaded pages (same documented limitation
+  // as the central catalog's facets).
   useEffect(() => {
     if (currentStore?.ownerType !== 'dropshipper' || !currentStore.slug) {
       setScopedProducts(null);
+      setScopedCursor(null);
+      setHasMoreScoped(false);
       return;
     }
     let cancelled = false;
-    catalogApi.getProducts({ storeSlug: currentStore.slug })
-      .then((dtos) => { if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct)); })
+    catalogApi.getProductsPage({ storeSlug: currentStore.slug })
+      .then((page) => { if (!cancelled) { setScopedProducts(page.items.map(mapBackendProduct)); setScopedCursor(page.nextCursor); setHasMoreScoped(page.hasMore); } })
       .catch((err) => { if (!cancelled) { console.warn('Failed to fetch store-scoped products:', err); setScopedProducts(null); } });
     return () => { cancelled = true; };
   }, [currentStore?.ownerType, currentStore?.slug]);
+  const loadMoreScoped = async () => {
+    if (!currentStore?.slug || !hasMoreScoped || !scopedCursor || scopedLoadingMore) return;
+    setScopedLoadingMore(true);
+    try {
+      const page = await catalogApi.getProductsPage({ storeSlug: currentStore.slug }, { cursor: scopedCursor });
+      setScopedProducts((prev) => {
+        const base = prev ?? [];
+        const seen = new Set(base.map((p) => p.id));
+        const fresh = page.items.map(mapBackendProduct).filter((p) => !seen.has(p.id));
+        return [...base, ...fresh];
+      });
+      setScopedCursor(page.nextCursor);
+      setHasMoreScoped(page.hasMore);
+    } catch (err) {
+      console.warn('Failed to load more store products:', err);
+    } finally {
+      setScopedLoadingMore(false);
+    }
+  };
   const products = scopedProducts ?? centralProducts;
   const [templateId, setTemplateId] = useState<string | null>(null);
   // ISO-E: the store this templateId was resolved FOR. A plain
@@ -393,7 +421,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
             {builderWidgets.storeDealsWidget && publicWidget && <section className="mx-3.5 grid grid-cols-2 gap-2" aria-label="کالاهای منتخب ویجت">
               {storefrontProducts(currentStore, templateProducts).filter((product) => publicWidget.productIds.includes(product.id)).map((product) => <ProductCard key={product.id} product={product} />)}
             </section>}
-            <SellerStorefrontProductGrid products={fallbackProducts} />
+            <SellerStorefrontProductGrid products={fallbackProducts} hasMore={hasMoreScoped} onLoadMore={loadMoreScoped} loadingMore={scopedLoadingMore} />
           </>
         )}
 

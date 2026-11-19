@@ -1459,6 +1459,14 @@ export const useStore = (): StoreContextType => {
     niches: prod.niches,
     catalogLoading: prod.catalogLoading,
     catalogError: prod.catalogError,
+    // PERF-01: paged catalog passthrough (page 1 + show-more).
+    catalogFilter: prod.catalogFilter,
+    setCatalogFilter: prod.setCatalogFilter,
+    resetCatalogFilter: prod.resetCatalogFilter,
+    loadMoreCatalog: prod.loadMoreCatalog,
+    hasMoreCatalog: prod.hasMoreCatalog,
+    catalogTotal: prod.catalogTotal,
+    catalogLoadingMore: prod.catalogLoadingMore,
     searchQuery: prod.searchQuery,
     setSearchQuery: prod.setSearchQuery,
     selectedCategory: prod.selectedCategory,
@@ -1663,9 +1671,11 @@ const storeCategorySlugsCache = new Map<string, Promise<Set<string>>>();
 const fetchStoreCategorySlugs = (storeSlug: string): Promise<Set<string>> => {
   let pending = storeCategorySlugsCache.get(storeSlug);
   if (!pending) {
+    // PERF-01: one DISTINCT query (GET /products/store-categories),
+    // never the full store catalog.
     pending = catalogApi
-      .getProducts({ storeSlug })
-      .then((dtos) => new Set((Array.isArray(dtos) ? dtos : []).map((dto) => dto.category).filter((slug): slug is string => !!slug)))
+      .getStoreCategorySlugs(storeSlug)
+      .then((slugs) => new Set(slugs.filter((slug): slug is string => !!slug)))
       .catch(() => new Set<string>());
     storeCategorySlugsCache.set(storeSlug, pending);
   }

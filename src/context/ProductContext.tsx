@@ -154,7 +154,42 @@ export interface ProductContextType {
   fetchNiches: () => Promise<void>;
   searchProducts: (query: string) => Product[];
   filterByCategory: (categorySlug: string) => Product[];
+  // PERF-01: the server-side catalog filter + paging. products is the
+  // ACCUMULATED loaded pages for this filter (page 1 + loadMore), NOT
+  // the whole catalog; catalogTotal is the full filtered count.
+  // Mock mode is untouched: products is the whole mock list there,
+  // loadMore is a no-op and hasMoreCatalog is false.
+  catalogFilter: CatalogFilter;
+  setCatalogFilter: (patch: Partial<CatalogFilter>) => void;
+  resetCatalogFilter: () => void;
+  loadMoreCatalog: () => Promise<void>;
+  hasMoreCatalog: boolean;
+  catalogTotal: number;
+  catalogLoadingMore: boolean;
 }
+
+// PERF-01: the server-side catalog filter. category/search come from
+// selectedCategory/searchQuery (already in this context); these are
+// the remaining server facets, set by CatalogView from its UI state.
+export interface CatalogFilter {
+  sort: 'featured' | 'cheapest' | 'expensive' | 'discount' | 'newest';
+  inStockOnly: boolean;
+  onlyOriginal: boolean;
+  minPrice: number | null;
+  maxPrice: number | null;
+  brands: string[];
+  attributes: Record<number, number[]>;
+}
+
+export const DEFAULT_CATALOG_FILTER: CatalogFilter = {
+  sort: 'featured',
+  inStockOnly: false,
+  onlyOriginal: false,
+  minPrice: null,
+  maxPrice: null,
+  brands: [],
+  attributes: {},
+};
 
 const EMPTY_WISHLIST_IDS: string[] = [];
 
@@ -412,28 +447,141 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     }
   };
 
-  const fetchProducts = async () => {
+  // PERF-01: paged catalog. products is the accumulated loaded pages
+  // for the current server filter (category + search + catalogFilter);
+  // the cache key is that filter as JSON, so an identical filter never
+  // refetches and a changed filter always restarts from page 1. An
+  // in-flight page is aborted when the filter changes (AbortController)
+  // or a newer request wins (request id); stale responses never land.
+  const [catalogFilter, setCatalogFilterState] = useState<CatalogFilter>(DEFAULT_CATALOG_FILTER);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [hasMoreCatalog, setHasMoreCatalog] = useState(false);
+  const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
+  const catalogCursorRef = useRef<string | null>(null);
+  const catalogFilterKeyRef = useRef('');
+  const catalogAbortRef = useRef<AbortController | null>(null);
+  const catalogRequestIdRef = useRef(0);
+  const catalogLoadingMoreRef = useRef(false);
+
+  const catalogServerFilter = React.useMemo(() => ({
+    category: selectedCategory,
+    search: searchQuery,
+    sort: catalogFilter.sort,
+    inStockOnly: catalogFilter.inStockOnly,
+    onlyOriginal: catalogFilter.onlyOriginal,
+    minPrice: catalogFilter.minPrice,
+    maxPrice: catalogFilter.maxPrice,
+    brands: catalogFilter.brands,
+    attributes: catalogFilter.attributes,
+  }), [selectedCategory, searchQuery, catalogFilter]);
+  const catalogFilterKey = JSON.stringify(catalogServerFilter);
+
+  const setCatalogFilter = useCallback((patch: Partial<CatalogFilter>) => {
+    setCatalogFilterState((prev) => {
+      const next = { ...prev, ...patch };
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, []);
+
+  const resetCatalogFilter = useCallback(() => {
+    setCatalogFilterState(DEFAULT_CATALOG_FILTER);
+  }, []);
+
+  const fetchProducts = useCallback(async () => {
+    if (isMockMode()) {
+      setCatalogLoading(false);
+      return;
+    }
+    catalogAbortRef.current?.abort();
+    const controller = new AbortController();
+    catalogAbortRef.current = controller;
+    const requestId = ++catalogRequestIdRef.current;
+    const key = catalogFilterKey;
+    catalogFilterKeyRef.current = key;
     setCatalogLoading(true);
     setCatalogError(null);
     try {
-      const data = await catalogApi.getProducts();
-      if (Array.isArray(data) && data.length > 0) {
-        setBackendCatalogProducts(data.map(mapBackendProduct));
-      }
+      const page = await catalogApi.getProductsPage({
+        category: catalogServerFilter.category,
+        search: catalogServerFilter.search || undefined,
+        sort: catalogServerFilter.sort,
+        inStockOnly: catalogServerFilter.inStockOnly,
+        isOriginal: catalogServerFilter.onlyOriginal || undefined,
+        minPrice: catalogServerFilter.minPrice ?? undefined,
+        maxPrice: catalogServerFilter.maxPrice ?? undefined,
+        brands: catalogServerFilter.brands,
+        attributes: catalogServerFilter.attributes,
+      }, { signal: controller.signal });
+      if (catalogRequestIdRef.current !== requestId || controller.signal.aborted) return;
+      catalogCursorRef.current = page.nextCursor;
+      setHasMoreCatalog(page.hasMore);
+      setCatalogTotal(page.total);
+      setBackendCatalogProducts(page.items.map(mapBackendProduct));
     } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
+      if (catalogRequestIdRef.current !== requestId) return;
       setCatalogError(err.message || 'خطا در برقراری ارتباط با کاتالوگ');
     } finally {
-      setCatalogLoading(false);
+      if (catalogRequestIdRef.current === requestId) setCatalogLoading(false);
     }
-  };
+  }, [catalogFilterKey, catalogServerFilter]);
+
+  const loadMoreCatalog = useCallback(async () => {
+    if (isMockMode() || catalogLoadingMoreRef.current) return;
+    if (!hasMoreCatalog || !catalogCursorRef.current) return;
+    // The filter must not have changed since these pages were loaded;
+    // if it did, the page-1 fetch above owns the list now.
+    if (catalogFilterKeyRef.current !== catalogFilterKey) return;
+    catalogLoadingMoreRef.current = true;
+    setCatalogLoadingMore(true);
+    const requestId = catalogRequestIdRef.current;
+    const cursor = catalogCursorRef.current;
+    try {
+      const page = await catalogApi.getProductsPage({
+        category: catalogServerFilter.category,
+        search: catalogServerFilter.search || undefined,
+        sort: catalogServerFilter.sort,
+        inStockOnly: catalogServerFilter.inStockOnly,
+        isOriginal: catalogServerFilter.onlyOriginal || undefined,
+        minPrice: catalogServerFilter.minPrice ?? undefined,
+        maxPrice: catalogServerFilter.maxPrice ?? undefined,
+        brands: catalogServerFilter.brands,
+        attributes: catalogServerFilter.attributes,
+      }, { cursor });
+      if (catalogRequestIdRef.current !== requestId || catalogFilterKeyRef.current !== catalogFilterKey) return;
+      catalogCursorRef.current = page.nextCursor;
+      setHasMoreCatalog(page.hasMore);
+      setCatalogTotal(page.total);
+      setBackendCatalogProducts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        const fresh = page.items.map(mapBackendProduct).filter((p) => !seen.has(p.id));
+        return fresh.length === 0 ? prev : [...prev, ...fresh];
+      });
+    } catch (err: any) {
+      // A failed show-more leaves the loaded pages in place; the user
+      // retries with the same button. AbortError here means nothing
+      // was aborted (load-more has no signal); ignore it the same way.
+      if (err?.name !== 'AbortError') console.warn('Failed to load more catalog products:', err?.message);
+    } finally {
+      catalogLoadingMoreRef.current = false;
+      setCatalogLoadingMore(false);
+    }
+  }, [catalogFilterKey, catalogServerFilter, hasMoreCatalog]);
 
   useEffect(() => {
     if (!isMockMode()) {
       fetchCategories();
       fetchNiches();
-      fetchProducts();
     }
   }, []);
+
+  // Page 1 reloads whenever the server filter changes (category,
+  // search, sort, facets, price). The filter key is a JSON string,
+  // so an identical filter never triggers a second fetch.
+  useEffect(() => {
+    if (isMockMode()) return;
+    fetchProducts();
+  }, [fetchProducts]);
 
   const baseCatalogList = isMockMode() ? mockProducts : backendCatalogProducts;
 
@@ -504,6 +652,10 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     setProductOriginalityOverrides((prev) => ({ ...prev, [productId]: isOriginal }));
   };
 
+  // PERF-01: these search/filter the LOADED pages only (no outside
+  // consumers remain — server search lives in CatalogView and the
+  // header suggestions). A product beyond the loaded pages is not
+  // found here; the PDP resolves it from the server by id.
   const searchProducts = (query: string): Product[] => {
     const q = query.trim().toLowerCase();
     if (!q) return products;
@@ -545,6 +697,13 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     fetchNiches,
     searchProducts,
     filterByCategory,
+    catalogFilter,
+    setCatalogFilter,
+    resetCatalogFilter,
+    loadMoreCatalog,
+    hasMoreCatalog,
+    catalogTotal,
+    catalogLoadingMore,
   };
 
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/catalogpage"
 	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -526,7 +527,99 @@ func resolveListStore(ctx context.Context, storeRepo *repository.StoreRepository
 	return store
 }
 
-// handleProductsList prices every product with the live percent engine
+// ProductListPageResponse is the PERF-01 paged list envelope. The bare
+// array shape is retired with its consumers (catalogApi.getProductsPage,
+// ProductContext, CatalogView, storefront grids all read this envelope).
+// items is always an array (never null); nextCursor is null on the last
+// page; total is the full filtered count, stable across pages.
+type ProductListPageResponse struct {
+	Items      []ProductResponse `json:"items"`
+	NextCursor *string           `json:"nextCursor"`
+	HasMore    bool              `json:"hasMore"`
+	Total      int               `json:"total"`
+}
+
+// parseCatalogPageFilter reads the list query parameters into a
+// catalogpage.Filter. Sort "" normalises to "featured" here (not only
+// in the repository) so cursor binding sees one canonical sort across
+// pages: a client that omits sort on page 1 and on page 2 binds the
+// same filter. Brands repeat (?brand=A&brand=B); attributes are
+// attr_<id>=1,2,3. Unparsable values are a 400, not a silent default.
+func parseCatalogPageFilter(r *http.Request) (catalogpage.Filter, error) {
+	q := r.URL.Query()
+	filter := catalogpage.Filter{
+		Category: q.Get("category"),
+		Niche:    q.Get("niche"),
+		Brands:   q["brand"],
+		Search:   q.Get("search"),
+		Sort:     q.Get("sort"),
+	}
+	if filter.Sort == "" {
+		filter.Sort = "featured"
+	}
+	if v := q.Get("is_original"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return filter, err
+		}
+		filter.IsOriginal = &b
+	}
+	if v := q.Get("in_stock"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return filter, err
+		}
+		filter.InStockOnly = b
+	}
+	if v := q.Get("min_price"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return filter, catalogpage.ErrInvalid
+		}
+		filter.MinPrice = &n
+	}
+	if v := q.Get("max_price"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return filter, catalogpage.ErrInvalid
+		}
+		filter.MaxPrice = &n
+	}
+	for key, values := range q {
+		if !strings.HasPrefix(key, "attr_") {
+			continue
+		}
+		id, err := strconv.Atoi(strings.TrimPrefix(key, "attr_"))
+		if err != nil || id <= 0 {
+			return filter, catalogpage.ErrInvalid
+		}
+		var vals []int
+		for _, v := range values {
+			for _, part := range strings.Split(v, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				n, err := strconv.Atoi(part)
+				if err != nil {
+					return filter, catalogpage.ErrInvalid
+				}
+				vals = append(vals, n)
+			}
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		if filter.Attributes == nil {
+			filter.Attributes = map[int][]int{}
+		}
+		filter.Attributes[id] = vals
+	}
+	return filter, nil
+}
+
+// handleProductsList serves the paged public catalog (PERF-01). It
+// prices every product with the live percent engine
 // (pricing.ResolveReferencePricing). The legacy absolute-fee engine is
 // never called here. InstallmentPrice is deliberately absent: live has
 // no installmentPrice in the product response and installments were
@@ -542,54 +635,47 @@ func resolveListStore(ctx context.Context, storeRepo *repository.StoreRepository
 // leaked into a store view, and assortment membership replaces the
 // global is_active gate there — without this, a dropshipper whose
 // picks are globally inactive renders an empty store.
+//
+// Paging (PERF-01): selection happens in SQL in ONE snapshot
+// transaction — at most N+1 lightweight keys plus the filtered total —
+// and only the selected page is loaded and priced. Price sorts
+// (cheapest/expensive/discount) and price filters order/filter by the
+// DISPLAYED main price from catalog_public_prices, never by supplier
+// cost; the index is probed and refreshed (stale rows only) inside the
+// same snapshot before selection. Non-price sorts select without the
+// index and warm it for the page's IDs only, so a featured browse
+// never pays a full-catalog fingerprint scan. A price-changing edit
+// between pages bumps the scope revision and the next cursor fails
+// binding with 409 {"restart":true}; the client restarts from page 1.
+// Residual micro-race (documented, bounded): the page DTOs load after
+// the snapshot transaction commits, so a price-affecting edit landing
+// in that millisecond window can make one page's displayed prices
+// disagree with its selection order — displayed prices are always
+// fresh (re-priced live below), and the next page restarts.
 func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository, supplierRepos ...*repository.SupplierRepository) {
 	w.Header().Set("Content-Type", "application/json")
-
-	category := r.URL.Query().Get("category")
-	// FIX 4 (team 04 G4): live honours ?limit=; an absent, zero,
-	// negative or unparsable value means "no limit" (full active list).
-	limit := 0
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
-			limit = v
-		}
-	}
-	niche := r.URL.Query().Get("niche")
-	search := r.URL.Query().Get("search")
-	sort := r.URL.Query().Get("sort")
-	storeSlug := r.URL.Query().Get("storeSlug")
-	brand := r.URL.Query().Get("brand")
-
-	var isOriginal *bool
-	if origStr := r.URL.Query().Get("is_original"); origStr != "" {
-		val, _ := strconv.ParseBool(origStr)
-		isOriginal = &val
-	}
-
-	inStockOnly := false
-	if inStockStr := r.URL.Query().Get("in_stock"); inStockStr != "" {
-		inStockOnly, _ = strconv.ParseBool(inStockStr)
-	}
 
 	if catalogRepo == nil || storeRepo == nil {
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	var supplierRepo *repository.SupplierRepository
-	if len(supplierRepos) > 0 {
-		supplierRepo = supplierRepos[0]
+	size, err := catalogpage.ParseSize(r.URL.Query())
+	if err != nil {
+		http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
+		return
 	}
-
-	filter := repository.ProductFilter{
-		CategorySlug: category,
-		NicheSlug:    niche,
-		Brand:        brand,
-		IsOriginal:   isOriginal,
-		InStockOnly:  inStockOnly,
-		Search:       search,
-		SortBy:       sort,
+	storeSlug := r.URL.Query().Get("storeSlug")
+	store := resolveListStore(ctx, storeRepo, storeSlug)
+	if store == nil {
+		// No central store row: no scope exists to page or price under.
+		http.Error(w, `{"error":"catalog store scope unavailable"}`, http.StatusInternalServerError)
+		return
 	}
-
+	filter, err := parseCatalogPageFilter(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
+		return
+	}
 	// The explicitly requested store (no central fallback): an existing
 	// non-central dropshipper store scopes the listing to its own
 	// assortment. reqStore is reused for the FIX 14 supplier fields
@@ -598,40 +684,160 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	if storeSlug != "" {
 		reqStore, _ = storeRepo.GetStoreBySlug(ctx, storeSlug)
 	}
-	if reqStore != nil && reqStore.Slug != "central" && reqStore.OwnerType == "dropshipper" {
-		filter.StoreScoped = true
-		filter.StoreProductIDs = reqStore.ActiveProductIDs
+	scope := catalogpage.Scope{ID: store.ID, OwnerType: store.OwnerType}
+	if scope.OwnerType != "dropshipper" {
+		// Everything non-dropshipper prices as central (same rule the
+		// engine applies); the scope ID stays this store's own.
+		scope.OwnerType = "central"
+	}
+	filter.StorePosition = scope.OwnerType == "dropshipper" && filter.Sort == "featured"
+
+	var supplierRepo *repository.SupplierRepository
+	if len(supplierRepos) > 0 {
+		supplierRepo = supplierRepos[0]
 	}
 
-	products, err := catalogRepo.GetProducts(ctx, filter)
+	// One snapshot transaction selects the page. The price index is
+	// probed and refreshed (stale rows only) inside it, and the scope
+	// revision is re-read after any refresh, so cursors issued below
+	// bind the revision the selection actually ran under.
+	tx, err := catalogRepo.BeginCatalogTx(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	settings, _ := loadPricingSettings(ctx, pricingRepo)
-	store := resolveListStore(ctx, storeRepo, storeSlug)
+	defer tx.Rollback()
+	revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	scope.Revision = revision
+	var after *catalogpage.Key
+	if token := r.URL.Query().Get("cursor"); token != "" {
+		key, err := catalogpage.Decode(token, scope, filter)
+		if err == catalogpage.ErrRestart {
+			http.Error(w, `{"error":"catalog changed; restart paging","restart":true}`, http.StatusConflict)
+			return
+		}
+		if err != nil {
+			http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
+			return
+		}
+		after = &key
+	}
+	inputs, err := catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	asOf := time.Now()
+	priced := filter.Sort == "cheapest" || filter.Sort == "expensive" || filter.Sort == "discount" || filter.MinPrice != nil || filter.MaxPrice != nil
+	var page repository.CatalogPricedPage
+	if priced {
+		// Order/filter depends on every row's displayed price, so
+		// the whole filtered set is probed and stale rows refreshed
+		// before selection.
+		_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(stale) > 0 {
+			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
+		if err != nil {
+			if err == catalogpage.ErrInvalid {
+				http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Featured/newest/store-position selection needs no prices,
+		// so it runs first and the index is warmed for the page's
+		// IDs only (bounded by the page size).
+		page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
+		if err != nil {
+			if err == catalogpage.ErrInvalid {
+				http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		ids := make([]string, 0, len(page.Keys))
+		for _, k := range page.Keys {
+			ids = append(ids, k.ID)
+		}
+		stale, err := catalogRepo.ProbeCatalogPricesForIDsTx(ctx, tx, scope.ID, scope.OwnerType == "dropshipper", ids)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(stale) > 0 {
+			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// D43 logged search: best effort, never fails the listing. The
 	// public list is catalog-wide, so the shown result count is both
 	// the store result count and the catalog result count here; the
 	// store-assortment split for seller search-insight is a separate
-	// concern and is not conflated with a guessed number.
-	if search != "" {
+	// concern and is not conflated with a guessed number. The count
+	// logged is the TOTAL matched count, not the page size.
+	if filter.Search != "" {
 		effectiveSlug := storeSlug
-		if store != nil {
-			effectiveSlug = store.Slug
-		}
 		if effectiveSlug == "" {
 			effectiveSlug = "central"
 		}
-		_ = catalogRepo.LogSearchEvent(ctx, normalizeSearchTerm(search), effectiveSlug, len(products), len(products))
+		_ = catalogRepo.LogSearchEvent(ctx, normalizeSearchTerm(filter.Search), effectiveSlug, page.Total, page.Total)
 	}
 
-	ids := make([]string, 0, len(products))
-	for _, p := range products {
-		ids = append(ids, p.ID)
+	// Load ONLY the selected page (PERF-01) and restore its order:
+	// GetProductsByIDs returns rows in unspecified order.
+	ids := make([]string, 0, len(page.Keys))
+	for _, k := range page.Keys {
+		ids = append(ids, k.ID)
 	}
+	productsByID, err := catalogRepo.GetProductsByIDs(ctx, ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	byID := make(map[string]domain.Product, len(productsByID))
+	for _, p := range productsByID {
+		byID[p.ID] = p
+	}
+	products := make([]domain.Product, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := byID[id]; ok {
+			products = append(products, p)
+		}
+	}
+
+	settings, _ := loadPricingSettings(ctx, pricingRepo)
+
 	// P2(a): a non-central store view loads store-filtered variants
 	// (hidden variants never reach pricing or the response). Central
 	// is never filtered. P2(c): the store's default variants, batched.
@@ -654,9 +860,6 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	}
 	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
 
-	// FIX 4 (team 04 G5): a nil slice encodes as JSON null, matching
-	// live empty results. Callers must tolerate null (the candidate
-	// frontend normalises it to [] in catalogApi.getProducts).
 	// FIX 14: live supplier rule, proven by public API probes
 	// 2026-11-03: the list carries supplierId/supplierName/baseCostB
 	// ONLY when ?storeSlug= names an existing NON-central store
@@ -675,7 +878,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	}
 	supplierNameByID := map[string]string{}
 	widgetCfg := loadDealsWidgetConfig(store)
-	var resp []ProductResponse
+	resp := make([]ProductResponse, 0, len(products))
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 		if res.PricingError != "" {
@@ -709,11 +912,20 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 		resp = append(resp, item)
 	}
-	if limit > 0 && limit < len(resp) {
-		resp = resp[:limit]
-	}
 
-	json.NewEncoder(w).Encode(resp)
+	var nextCursor *string
+	if page.HasMore && len(page.Keys) > 0 {
+		token, err := catalogpage.Encode(scope, filter, page.Keys[len(page.Keys)-1])
+		if err != nil {
+			// The keys came from this selection under this scope and
+			// filter, so encoding cannot fail; treat it as fatal
+			// rather than issuing a page with a broken cursor.
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		nextCursor = &token
+	}
+	json.NewEncoder(w).Encode(ProductListPageResponse{Items: resp, NextCursor: nextCursor, HasMore: page.HasMore, Total: page.Total})
 }
 
 // assembleProductDetail builds the 20-key live detail shape (the
@@ -856,6 +1068,10 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 	trimmed := strings.Trim(strings.TrimSuffix(subPath, "/"), "/")
 	if trimmed == "price-bounds" {
 		handleProductPriceBounds(w, r, ctx, catalogRepo, storeRepo, pricingRepo)
+		return
+	}
+	if trimmed == "store-categories" {
+		handleStoreCategorySlugs(w, r, ctx, catalogRepo, storeRepo)
 		return
 	}
 	// FIX 14: live serves GET /api/v1/products/<id>/reviews with
@@ -1019,6 +1235,12 @@ func computePriceBounds(prices []int64) productPriceBoundsResponse {
 // naming an existing non-central dropshipper store scopes the priced
 // set to that store's own assortment and applies its deals-widget
 // campaign prices, so the bounds match the storefront card prices.
+//
+// PERF-01: the bounds are MIN/MAX/COUNT aggregates over the
+// catalog_public_prices index — the index is probed and refreshed
+// (stale rows only) inside one snapshot transaction first, so the
+// aggregates always reflect the authoritative engine prices. The
+// response shape is unchanged: {minPrice, maxPrice, count}.
 func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, pricingRepo *repository.PricingRepository) {
 	w.Header().Set("Content-Type", "application/json")
 	if catalogRepo == nil || storeRepo == nil {
@@ -1026,45 +1248,82 @@ func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx contex
 		return
 	}
 	storeSlug := r.URL.Query().Get("storeSlug")
-	filter := repository.ProductFilter{CategorySlug: r.URL.Query().Get("category")}
-	// Mirror handleProductsList's store resolution (the explicitly
-	// requested store, no central fallback): an existing non-central
-	// dropshipper store scopes the priced set to its own assortment,
-	// so the bounds describe the same products the storefront lists.
-	// Central/unknown slugs keep the global active-catalog path,
-	// byte-identical to before.
-	var reqStore *domain.Store
-	if storeSlug != "" {
-		reqStore, _ = storeRepo.GetStoreBySlug(ctx, storeSlug)
+	store := resolveListStore(ctx, storeRepo, storeSlug)
+	if store == nil {
+		http.Error(w, `{"error":"catalog store scope unavailable"}`, http.StatusInternalServerError)
+		return
 	}
-	if reqStore != nil && reqStore.Slug != "central" && reqStore.OwnerType == "dropshipper" {
-		filter.StoreScoped = true
-		filter.StoreProductIDs = reqStore.ActiveProductIDs
+	filter := catalogpage.Filter{Category: r.URL.Query().Get("category"), Sort: "featured"}
+	scope := catalogpage.Scope{ID: store.ID, OwnerType: store.OwnerType}
+	if scope.OwnerType != "dropshipper" {
+		scope.OwnerType = "central"
 	}
-	products, err := catalogRepo.GetProducts(ctx, filter)
+	tx, err := catalogRepo.BeginCatalogTx(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	settings, _ := loadPricingSettings(ctx, pricingRepo)
-	store := resolveListStore(ctx, storeRepo, storeSlug)
-	var storeVal domain.Store
-	var locks []pricing.MarginLock
-	if store != nil {
-		storeVal = *store
-		locks = loadStoreMarginLocks(ctx, pricingRepo, store.ID)
+	defer tx.Rollback()
+	revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	widgetCfg := loadDealsWidgetConfig(store)
-	prices := make([]int64, 0, len(products))
-	for _, p := range products {
-		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
-		if res.PricingError != "" {
-			continue
+	scope.Revision = revision
+	inputs, err := catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(stale) > 0 {
+		if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, time.Now()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
-		prices = append(prices, res.FinalPrice)
 	}
-	json.NewEncoder(w).Encode(computePriceBounds(prices))
+	bounds, err := catalogRepo.GetCatalogPriceBoundsTx(ctx, tx, scope, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(productPriceBoundsResponse{MinPrice: bounds.MinPrice, MaxPrice: bounds.MaxPrice, Count: bounds.Count})
+}
+
+// handleStoreCategorySlugs implements GET /api/v1/products/store-categories
+// (PERF-01): the DISTINCT category slugs present in one store's
+// assortment, in one bounded query. StoreContext used to derive them
+// from the full unpaged catalog; the endpoint replaces that load.
+// storeSlug absent or unknown falls back to the central catalog, the
+// same resolution as the list. Response shape: {"slugs":[...]}.
+func handleStoreCategorySlugs(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository) {
+	w.Header().Set("Content-Type", "application/json")
+	if catalogRepo == nil || storeRepo == nil {
+		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+	store := resolveListStore(ctx, storeRepo, r.URL.Query().Get("storeSlug"))
+	if store == nil {
+		http.Error(w, `{"error":"catalog store scope unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	slugs, err := catalogRepo.ListStoreCategorySlugs(ctx, store.ID, store.OwnerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if slugs == nil {
+		slugs = []string{}
+	}
+	json.NewEncoder(w).Encode(map[string][]string{"slugs": slugs})
 }
 
 func handleOwnedStoresList(w http.ResponseWriter, r *http.Request, ctx context.Context, storeRepo *repository.StoreRepository) {

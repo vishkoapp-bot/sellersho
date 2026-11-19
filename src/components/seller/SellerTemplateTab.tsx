@@ -241,8 +241,11 @@ export const SellerTemplateTab: React.FC = () => {
       return;
     }
     let cancelled = false;
+    // PERF-01: the template preview renders the whole assortment,
+    // so this admin surface walks all pages (bounded requests).
+    // Public surfaces never do this.
     catalogApi
-      .getProducts({ storeSlug: slug })
+      .fetchAllProductPages({ storeSlug: slug })
       .then((dtos) => { if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct)); })
       .catch((err) => { if (!cancelled) { console.warn('Failed to fetch store-scoped products:', err); setScopedProducts(null); } });
     return () => { cancelled = true; };

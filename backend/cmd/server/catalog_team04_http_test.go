@@ -90,10 +90,15 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body %s", rec.Code, rec.Body.String())
 	}
-	var list []map[string]json.RawMessage
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+	// PERF-01: the list endpoint returns the paged envelope
+	// {items, nextCursor, hasMore, total}; the bare-array shape is retired.
+	var listEnvelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listEnvelope); err != nil {
 		t.Fatalf("list decode: %v", err)
 	}
+	list := listEnvelope.Items
 	if len(list) != 1 {
 		t.Fatalf("list len = %d, want 1 active only", len(list))
 	}
@@ -134,8 +139,11 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("brand list status = %d", rec.Code)
 	}
-	var brandList []map[string]json.RawMessage
-	_ = json.Unmarshal(rec.Body.Bytes(), &brandList)
+	var brandEnvelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &brandEnvelope)
+	brandList := brandEnvelope.Items
 	if len(brandList) != 0 {
 		t.Fatalf("brand partial 'نشر' returned %d items, want 0 (exact match)", len(brandList))
 	}
@@ -145,8 +153,11 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("search list status = %d", rec.Code)
 	}
-	var searchList []map[string]json.RawMessage
-	_ = json.Unmarshal(rec.Body.Bytes(), &searchList)
+	var searchEnvelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &searchEnvelope)
+	searchList := searchEnvelope.Items
 	if len(searchList) != 1 {
 		t.Fatalf("search 'طلا' returned %d items, want 1", len(searchList))
 	}

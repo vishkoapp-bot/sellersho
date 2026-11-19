@@ -218,6 +218,53 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	return products, nil
 }
 
+// GetProductsByIDs loads full product rows for an explicit ID set (PERF-01:
+// the paged list selects keys first, then loads only the page). The
+// returned order is unspecified; callers restore the selected page order.
+// IDs with no row are silently absent (concurrent delete between
+// selection and load).
+func (r *CatalogRepository) GetProductsByIDs(ctx context.Context, ids []string) ([]domain.Product, error) {
+	if len(ids) == 0 {
+		return []domain.Product{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
+		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
+		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,
+		       COALESCE(p.fulfillment_method, 'warehouse'),
+		       COALESCE(p.supply_option, '1day'),
+		       p.is_active, COALESCE(p.brand, ''), p.spn_number, p.specs,
+		       p.length_mm, p.width_mm, p.height_mm, p.weight_grams,
+		       COALESCE(to_jsonb(p)->>'product_type','legacy'), COALESCE((to_jsonb(p)->>'schema_version')::int,0), to_jsonb(p)->'attribute_schema',
+		       COALESCE(ARRAY_AGG(pn.niche_id) FILTER (WHERE pn.niche_id IS NOT NULL), '{}') AS niche_ids,
+		       COALESCE(p.shipping_class, 'standard'), COALESCE(p.tax_class, 'standard')
+		FROM products p
+		LEFT JOIN product_niches pn ON p.id = pn.product_id
+		WHERE p.id = ANY($1)
+		GROUP BY p.id
+	`, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query products: %w", err)
+	}
+	defer rows.Close()
+
+	var products []domain.Product
+	for rows.Next() {
+		var p domain.Product
+		var nicheIDs pq.StringArray
+		var specsRaw []byte
+		if err := scanProductRow(rows, &p, &nicheIDs, &specsRaw); err != nil {
+			return nil, fmt.Errorf("failed to scan product: %w", err)
+		}
+		p.NicheIDs = []string(nicheIDs)
+		p.Specs = parseProductSpecs(specsRaw)
+		products = append(products, p)
+	}
+
+	return products, nil
+}
+
 // GetProductByID retrieves a single product by ID or Slug with associated niche IDs
 func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string) (*domain.Product, error) {
 	query := `

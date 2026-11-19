@@ -2,12 +2,45 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// QUAL-01 G4 bounded contracts for reconciliation review evidence and the
+// full reconciliation report.
+//
+// Review evidence (G4a): a review POST selects at most
+// MaxHistoricalReviewEvidence evidence references, each at most
+// MaxHistoricalEvidenceEntryLength bytes. Oversized selections are rejected
+// (ErrHistoricalEvidenceTooLarge, HTTP 400) — never silently truncated —
+// because the evidence list is part of the durable audit record.
+//
+// Full report (G4b): GET reconciliation-report is paginated with explicit
+// page/limit caps and deterministic ordering by product ID, and reports the
+// total row count. DefaultHistoricalReportLimit is the limit for callers
+// that pass no limit (including the existing frontend report fetch).
+// Limit values above MaxHistoricalReportLimit are clamped to the max; the
+// effective limit is echoed in the response.
+//
+// Nested evidence (G4a/G4b): each nested evidence list inside one report row
+// (locations, reservations, movements, measurements) is capped at
+// MaxHistoricalNestedEvidence entries in deterministic SQL order. The row
+// reports EvidenceTotal (pre-truncation count) and EvidenceTruncated so a
+// caller can tell the row's selectable evidence was bounded, and the
+// reviewable evidenceIds selection is capped at the same size.
+const (
+	MaxHistoricalReviewEvidence      = 50
+	MaxHistoricalEvidenceEntryLength = 256
+	DefaultHistoricalReportLimit     = 200
+	MaxHistoricalReportLimit         = 200
+	MaxHistoricalNestedEvidence      = 50
 )
 
 type HistoricalInventoryLocationDetail struct {
@@ -83,14 +116,16 @@ type HistoricalInventoryReportRow struct {
 	Movements                 []HistoricalInventoryMovementDetail    `json:"movements"`
 	MeasurementEvidence       []HistoricalMeasurementEvidence        `json:"measurementEvidence"`
 	EvidenceIDs               []string                               `json:"evidenceIds"`
+	EvidenceTotal             int                                    `json:"evidenceTotal"`
+	EvidenceTruncated         bool                                   `json:"evidenceTruncated"`
 	ReviewStatus              string                                 `json:"reviewStatus"`
 	ReviewID                  string                                 `json:"reviewId,omitempty"`
 }
 
-// GetHistoricalInventoryReport returns a deterministic read-only comparison.
-// It is deliberately not exposed as a mutation endpoint.
-func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) ([]HistoricalInventoryReportRow, error) {
-	rows, err := r.db.QueryContext(ctx, `
+// historicalInventoryReportSQL is the deterministic read-only comparison.
+// Callers append a product filter and/or LIMIT/OFFSET; ordering by product
+// ID is applied by queryHistoricalReport.
+const historicalInventoryReportSQL = `
 		SELECT p.id,p.title,COALESCE(p.supplier_id,''),p.stock,
 		       COALESCE(c.canonical_quantity,0),COALESCE(c.sellable_quantity,0),COALESCE(c.physical_quantity,0),COALESCE(c.canonical_rows,0),COALESCE(c.unreconciled_rows,0),
 		       COALESCE(m.movement_quantity,0),COALESCE(p.measurement_status,'unverified'),
@@ -129,10 +164,77 @@ func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) (
 		LEFT JOIN LATERAL (
 			SELECT id AS review_id,review_status FROM historical_reconciliation_reviews WHERE product_id=p.id
 		) rv ON TRUE
-		ORDER BY p.id`)
+`
+
+// GetHistoricalInventoryReport returns the first bounded page of the
+// deterministic read-only comparison. Use GetHistoricalInventoryReportPage
+// for explicit pagination.
+func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) ([]HistoricalInventoryReportRow, error) {
+	rows, _, err := r.GetHistoricalInventoryReportPage(ctx, 1, MaxHistoricalReportLimit)
+	return rows, err
+}
+
+// GetHistoricalInventoryReportPage returns one deterministic page of the
+// read-only report (ordered by product ID) plus the total product count.
+// page is 1-based; limit is clamped to MaxHistoricalReportLimit.
+func (r *SupplierRepository) GetHistoricalInventoryReportPage(ctx context.Context, page, limit int) ([]HistoricalInventoryReportRow, int, error) {
+	if page < 1 || limit < 1 {
+		return nil, 0, errors.New("invalid historical report page")
+	}
+	if limit > MaxHistoricalReportLimit {
+		limit = MaxHistoricalReportLimit
+	}
+	var total int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.queryHistoricalReport(ctx, "", limit, (page-1)*limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
+
+// GetHistoricalInventoryReportRow returns the bounded report row for one
+// product. The review path uses this instead of the full report so a product
+// past the first page is still reviewable.
+func (r *SupplierRepository) GetHistoricalInventoryReportRow(ctx context.Context, productID string) (HistoricalInventoryReportRow, error) {
+	rows, err := r.queryHistoricalReport(ctx, productID, 1, 0)
+	if err != nil {
+		return HistoricalInventoryReportRow{}, err
+	}
+	if len(rows) == 0 {
+		return HistoricalInventoryReportRow{}, sql.ErrNoRows
+	}
+	return rows[0], nil
+}
+
+// queryHistoricalReport runs the deterministic read-only comparison.
+// An empty productID selects all products; otherwise one product.
+func (r *SupplierRepository) queryHistoricalReport(ctx context.Context, productID string, limit, offset int) ([]HistoricalInventoryReportRow, error) {
+	query := historicalInventoryReportSQL
+	args := []any{}
+	if productID != "" {
+		query += ` WHERE p.id = $1`
+		args = append(args, productID)
+	}
+	query += ` ORDER BY p.id`
+	if limit > 0 {
+		if productID != "" {
+			query += ` LIMIT $2 OFFSET $3`
+		} else {
+			query += ` LIMIT $1 OFFSET $2`
+		}
+		args = append(args, limit, offset)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
+	return scanHistoricalReportRows(rows)
+}
+
+func scanHistoricalReportRows(rows *sql.Rows) ([]HistoricalInventoryReportRow, error) {
 	defer rows.Close()
 	result := []HistoricalInventoryReportRow{}
 	for rows.Next() {
@@ -148,12 +250,43 @@ func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) (
 		row.PhysicalInventory = row.PhysicalQuantity > 0
 		row.Difference = row.LegacyStock - row.CanonicalSellableQuantity
 		row.MeasurementClassification = measurementClassification(row)
-		row.EvidenceIDs = evidenceIDs(row)
+		boundHistoricalReportEvidence(&row)
 		row.Classification, row.EvidenceInsufficient, row.SuggestedAction, row.Classifications = classifyHistoricalRow(row)
 		row.Unresolved = unresolvedHistoricalRow(row)
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// boundHistoricalReportEvidence caps each nested evidence list at
+// MaxHistoricalNestedEvidence entries (deterministic SQL order) and records
+// the pre-truncation total so callers can tell the row was bounded.
+func boundHistoricalReportEvidence(row *HistoricalInventoryReportRow) {
+	total := len(row.LocationBreakdown) + len(row.ActiveReservations) + len(row.Movements) + len(row.MeasurementEvidence)
+	row.EvidenceTotal = total
+	truncated := false
+	if len(row.LocationBreakdown) > MaxHistoricalNestedEvidence {
+		row.LocationBreakdown = row.LocationBreakdown[:MaxHistoricalNestedEvidence]
+		truncated = true
+	}
+	if len(row.ActiveReservations) > MaxHistoricalNestedEvidence {
+		row.ActiveReservations = row.ActiveReservations[:MaxHistoricalNestedEvidence]
+		truncated = true
+	}
+	if len(row.Movements) > MaxHistoricalNestedEvidence {
+		row.Movements = row.Movements[:MaxHistoricalNestedEvidence]
+		truncated = true
+	}
+	if len(row.MeasurementEvidence) > MaxHistoricalNestedEvidence {
+		row.MeasurementEvidence = row.MeasurementEvidence[:MaxHistoricalNestedEvidence]
+		truncated = true
+	}
+	row.EvidenceIDs = evidenceIDs(*row)
+	if len(row.EvidenceIDs) > MaxHistoricalNestedEvidence {
+		row.EvidenceIDs = row.EvidenceIDs[:MaxHistoricalNestedEvidence]
+		truncated = true
+	}
+	row.EvidenceTruncated = truncated
 }
 
 func classifyHistoricalRow(row HistoricalInventoryReportRow) (string, bool, string, []string) {
@@ -239,30 +372,58 @@ type HistoricalReview struct {
 // ErrInvalidHistoricalReview indicates an inadmissible review decision.
 var ErrInvalidHistoricalReview = errors.New("invalid historical review")
 
+// ErrHistoricalEvidenceTooLarge indicates a review evidence selection that
+// exceeds MaxHistoricalReviewEvidence entries or holds an entry longer than
+// MaxHistoricalEvidenceEntryLength bytes. The handler maps it to HTTP 400.
+var ErrHistoricalEvidenceTooLarge = errors.New("historical review evidence exceeds the bounded selection")
+
+// historicalReviewDecisionKey identifies one decision durably: status,
+// reason, reviewer and the canonical JSON of the evidence selection. The
+// key is computed from Go-marshalled evidence, never by comparing raw JSONB
+// text, so JSONB normalization cannot turn one decision into two.
+func historicalReviewDecisionKey(status, reason, reviewer string, evidenceJSON []byte) string {
+	sum := sha256.Sum256([]byte(status + "\x00" + reason + "\x00" + reviewer + "\x00" + string(evidenceJSON)))
+	return hex.EncodeToString(sum[:])
+}
+
+// Durable replay semantics (QUAL-01 G4c), consistent with the wallet
+// withdrawal idempotency contract in this tree (same submission replays the
+// persisted outcome; a submission under the same scope never silently
+// overwrites it):
+//   - An exact resubmission of the CURRENT decision replays the persisted
+//     review row with no new audit event.
+//   - A resubmission of a SUPERSEDED decision replays that decision's own
+//     durable entry from historical_reconciliation_review_decisions, with
+//     its original timestamps, and leaves the current row and audit log
+//     untouched. A retry after a different decision therefore never flips
+//     the current outcome back.
+//   - A genuinely NEW decision is recorded as its own durable entry, then
+//     becomes the current row (same stable review ID) with one audit event.
+// Concurrent identical first writes converge on one current review, one
+// history entry and one audit event via the product unique key.
 func (r *SupplierRepository) ReviewHistoricalInventory(ctx context.Context, productID, status, reason, reviewer string, evidence []string) (*HistoricalReview, error) {
 	allowed := map[string]bool{"needs_review": true, "in_review": true, "awaiting_evidence": true, "approved_for_correction": true, "rejected": true, "resolved": true, "indeterminate": true}
 	if !allowed[status] || productID == "" || reviewer == "" {
 		return nil, ErrInvalidHistoricalReview
 	}
-	report, err := r.GetHistoricalInventoryReport(ctx)
-	if err != nil {
-		return nil, err
+	if len(evidence) > MaxHistoricalReviewEvidence {
+		return nil, ErrHistoricalEvidenceTooLarge
 	}
-	var snapshot HistoricalInventoryReportRow
-	found := false
-	for _, row := range report {
-		if row.ProductID == productID {
-			snapshot = row
-			found = true
-			break
+	for _, entry := range evidence {
+		if strings.TrimSpace(entry) == "" || len(entry) > MaxHistoricalEvidenceEntryLength {
+			return nil, ErrHistoricalEvidenceTooLarge
 		}
 	}
-	if !found {
-		return nil, sql.ErrNoRows
+	// Single-row lookup: the reviewable snapshot must not depend on which
+	// report page the product falls on.
+	snapshot, err := r.GetHistoricalInventoryReportRow(ctx, productID)
+	if err != nil {
+		return nil, err
 	}
 	classifications, _ := json.Marshal(snapshot.Classifications)
 	reportJSON, _ := json.Marshal(snapshot)
 	evidenceJSON, _ := json.Marshal(evidence)
+	decisionKey := historicalReviewDecisionKey(status, reason, reviewer, evidenceJSON)
 	review := &HistoricalReview{ID: "HREV-" + uuid.NewString(), ProductID: productID, ReviewStatus: status, Classifications: snapshot.Classifications, ReportSnapshot: snapshot, EvidenceUsed: evidence, DecisionReason: reason, ReviewerUserID: reviewer}
 	err = func() error {
 		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -271,30 +432,100 @@ func (r *SupplierRepository) ReviewHistoricalInventory(ctx context.Context, prod
 		}
 		defer tx.Rollback()
 		previousStatus := "needs_review"
-		err = tx.QueryRowContext(ctx, `INSERT INTO historical_reconciliation_reviews(id,product_id,review_status,classification_snapshot,report_snapshot,evidence_used,decision_reason,reviewer_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW()) ON CONFLICT (product_id) DO NOTHING RETURNING reviewed_at,updated_at`, review.ID, productID, status, classifications, reportJSON, evidenceJSON, reason, reviewer).Scan(&review.ReviewedAt, &review.UpdatedAt)
-		if err == sql.ErrNoRows {
-			// The unique product key arbitrates simultaneous first writes. Lock
-			// the existing row before deciding whether to replay or update it.
-			var sameDecision bool
-			var previousClassifications, previousReport []byte
-			if err = tx.QueryRowContext(ctx, `SELECT id,review_status,review_status=$2 AND decision_reason=$3 AND COALESCE(reviewer_user_id,'')=$4 AND evidence_used=$5::jsonb,classification_snapshot,report_snapshot,reviewed_at,updated_at FROM historical_reconciliation_reviews WHERE product_id=$1 FOR UPDATE`, productID, status, reason, reviewer, evidenceJSON).Scan(&review.ID, &previousStatus, &sameDecision, &previousClassifications, &previousReport, &review.ReviewedAt, &review.UpdatedAt); err != nil {
-				return err
-			}
-			if sameDecision {
-				if err = json.Unmarshal(previousClassifications, &review.Classifications); err != nil {
+		currentExists := false
+		var currentID, currentStatus, currentReason, currentReviewer string
+		var currentEvidence, currentClassifications, currentReport []byte
+		var currentReviewedAt *time.Time
+		var currentUpdatedAt time.Time
+		cerr := tx.QueryRowContext(ctx, `SELECT id,review_status,decision_reason,reviewer_user_id,evidence_used,classification_snapshot,report_snapshot,reviewed_at,updated_at FROM historical_reconciliation_reviews WHERE product_id=$1 FOR UPDATE`, productID).Scan(&currentID, &currentStatus, &currentReason, &currentReviewer, &currentEvidence, &currentClassifications, &currentReport, &currentReviewedAt, &currentUpdatedAt)
+		if cerr == nil {
+			currentExists = true
+			previousStatus = currentStatus
+			var currentEvidenceList []string
+			_ = json.Unmarshal(currentEvidence, &currentEvidenceList)
+			currentEvidenceJSON, _ := json.Marshal(currentEvidenceList)
+			if historicalReviewDecisionKey(currentStatus, currentReason, currentReviewer, currentEvidenceJSON) == decisionKey {
+				// Identical replay of the current decision: no write, no audit.
+				review.ID = currentID
+				if err := json.Unmarshal(currentClassifications, &review.Classifications); err != nil {
 					return err
 				}
 				review.ReportSnapshot = HistoricalInventoryReportRow{}
-				if err = json.Unmarshal(previousReport, &review.ReportSnapshot); err != nil {
+				if err := json.Unmarshal(currentReport, &review.ReportSnapshot); err != nil {
 					return err
 				}
+				review.ReviewedAt, review.UpdatedAt = currentReviewedAt, currentUpdatedAt
 				return tx.Commit()
 			}
-			if err = tx.QueryRowContext(ctx, `UPDATE historical_reconciliation_reviews SET review_status=$1,classification_snapshot=$2,report_snapshot=$3,evidence_used=$4,decision_reason=$5,reviewer_user_id=$6,reviewed_at=NOW(),updated_at=NOW() WHERE id=$7 RETURNING reviewed_at,updated_at`, status, classifications, reportJSON, evidenceJSON, reason, reviewer, review.ID).Scan(&review.ReviewedAt, &review.UpdatedAt); err != nil {
+		} else if cerr != sql.ErrNoRows {
+			return cerr
+		}
+		// Durable replay of a superseded decision: return its own recorded
+		// entry and change nothing.
+		var historyID string
+		var historyClassifications, historyReport, historyEvidence []byte
+		var historyReviewedAt *time.Time
+		var historyUpdatedAt time.Time
+		herr := tx.QueryRowContext(ctx, `SELECT id,classification_snapshot,report_snapshot,evidence_used,reviewed_at,updated_at FROM historical_reconciliation_review_decisions WHERE product_id=$1 AND decision_key=$2`, productID, decisionKey).Scan(&historyID, &historyClassifications, &historyReport, &historyEvidence, &historyReviewedAt, &historyUpdatedAt)
+		if herr == nil {
+			var historyEvidenceList []string
+			_ = json.Unmarshal(historyEvidence, &historyEvidenceList)
+			if err := json.Unmarshal(historyClassifications, &review.Classifications); err != nil {
 				return err
 			}
-		} else if err != nil {
+			review.ID = historyID
+			review.ReportSnapshot = HistoricalInventoryReportRow{}
+			if err := json.Unmarshal(historyReport, &review.ReportSnapshot); err != nil {
+				return err
+			}
+			review.EvidenceUsed = historyEvidenceList
+			review.ReviewedAt, review.UpdatedAt = historyReviewedAt, historyUpdatedAt
+			return tx.Commit()
+		} else if herr != sql.ErrNoRows {
+			return herr
+		}
+		// Genuinely new decision: record it as its own durable entry first.
+		historyID = "HREV-D-" + uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO historical_reconciliation_review_decisions(id,product_id,decision_key,review_status,classification_snapshot,report_snapshot,evidence_used,decision_reason,reviewer_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (product_id, decision_key) DO NOTHING`, historyID, productID, decisionKey, status, classifications, reportJSON, evidenceJSON, reason, reviewer); err != nil {
 			return err
+		}
+		if currentExists {
+			review.ID = currentID
+			if err := tx.QueryRowContext(ctx, `UPDATE historical_reconciliation_reviews SET review_status=$1,classification_snapshot=$2,report_snapshot=$3,evidence_used=$4,decision_reason=$5,reviewer_user_id=$6,reviewed_at=NOW(),updated_at=NOW() WHERE id=$7 RETURNING reviewed_at,updated_at`, status, classifications, reportJSON, evidenceJSON, reason, reviewer, review.ID).Scan(&review.ReviewedAt, &review.UpdatedAt); err != nil {
+				return err
+			}
+		} else {
+			// The unique product key arbitrates simultaneous first writes.
+			err := tx.QueryRowContext(ctx, `INSERT INTO historical_reconciliation_reviews(id,product_id,review_status,classification_snapshot,report_snapshot,evidence_used,decision_reason,reviewer_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW()) ON CONFLICT (product_id) DO NOTHING RETURNING reviewed_at,updated_at`, review.ID, productID, status, classifications, reportJSON, evidenceJSON, reason, reviewer).Scan(&review.ReviewedAt, &review.UpdatedAt)
+			if err == sql.ErrNoRows {
+				// A concurrent identical write won. Re-read under lock: if it
+				// recorded this same decision, replay it with no extra audit;
+				// if it recorded a different one, apply ours as an update.
+				var winnerEvidence []byte
+				var winnerClassifications, winnerReport []byte
+				if err := tx.QueryRowContext(ctx, `SELECT id,review_status,decision_reason,reviewer_user_id,evidence_used,classification_snapshot,report_snapshot,reviewed_at,updated_at FROM historical_reconciliation_reviews WHERE product_id=$1 FOR UPDATE`, productID).Scan(&review.ID, &currentStatus, &currentReason, &currentReviewer, &winnerEvidence, &winnerClassifications, &winnerReport, &review.ReviewedAt, &review.UpdatedAt); err != nil {
+					return err
+				}
+				var winnerEvidenceList []string
+				_ = json.Unmarshal(winnerEvidence, &winnerEvidenceList)
+				winnerEvidenceJSON, _ := json.Marshal(winnerEvidenceList)
+				if historicalReviewDecisionKey(currentStatus, currentReason, currentReviewer, winnerEvidenceJSON) == decisionKey {
+					if err := json.Unmarshal(winnerClassifications, &review.Classifications); err != nil {
+						return err
+					}
+					review.ReportSnapshot = HistoricalInventoryReportRow{}
+					if err := json.Unmarshal(winnerReport, &review.ReportSnapshot); err != nil {
+						return err
+					}
+					return tx.Commit()
+				}
+				previousStatus = currentStatus
+				if err := tx.QueryRowContext(ctx, `UPDATE historical_reconciliation_reviews SET review_status=$1,classification_snapshot=$2,report_snapshot=$3,evidence_used=$4,decision_reason=$5,reviewer_user_id=$6,reviewed_at=NOW(),updated_at=NOW() WHERE id=$7 RETURNING reviewed_at,updated_at`, status, classifications, reportJSON, evidenceJSON, reason, reviewer, review.ID).Scan(&review.ReviewedAt, &review.UpdatedAt); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
 		}
 		details, _ := json.Marshal(map[string]interface{}{"productId": productID, "reviewId": review.ID, "previousStatus": previousStatus, "newStatus": status, "reason": reason, "evidence": evidence, "reportSnapshot": snapshot, "historicalMutation": false})
 		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_logs(id,operator,action,category,details) VALUES($1,$2,'historical_reconciliation_review','warehouse',$3)`, "HREV-LOG-"+uuid.NewString(), reviewer, string(details)); err != nil {

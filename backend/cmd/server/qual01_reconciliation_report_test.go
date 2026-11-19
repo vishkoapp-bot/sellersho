@@ -65,7 +65,7 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 	for _, role := range []string{"logistics_specialist", "admin"} {
 		body := request(http.MethodGet, []string{role}, http.StatusOK)
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 2 || string(envelope["readOnly"]) != "true" {
+		if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 5 || string(envelope["readOnly"]) != "true" {
 			t.Fatalf("unexpected reconciliation envelope: %s (%v)", body, err)
 		}
 		var rows []map[string]any
@@ -83,7 +83,7 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 				keys = append(keys, k)
 			}
 			slices.Sort(keys)
-			want := []string{"activeReservations", "canonicalQuantity", "canonicalRows", "canonicalSellableQuantity", "classification", "classifications", "difference", "evidenceIds", "evidenceInsufficient", "hasInboundEvidence", "hasLedgerEvidence", "hasMeasurement", "hasPutawayEvidence", "hasQCEvidence", "legacyStock", "locationBreakdown", "measurementClassification", "measurementEvidence", "measurementStatus", "movementQuantity", "movements", "physicalInventory", "physicalQuantity", "productId", "productTitle", "reviewStatus", "suggestedAction", "supplierId", "unreconciledRows", "unresolved"}
+			want := []string{"activeReservations", "canonicalQuantity", "canonicalRows", "canonicalSellableQuantity", "classification", "classifications", "difference", "evidenceIds", "evidenceInsufficient", "evidenceTotal", "evidenceTruncated", "hasInboundEvidence", "hasLedgerEvidence", "hasMeasurement", "hasPutawayEvidence", "hasQCEvidence", "legacyStock", "locationBreakdown", "measurementClassification", "measurementEvidence", "measurementStatus", "movementQuantity", "movements", "physicalInventory", "physicalQuantity", "productId", "productTitle", "reviewStatus", "suggestedAction", "supplierId", "unreconciledRows", "unresolved"}
 			if !slices.Equal(keys, want) || row["canonicalSellableQuantity"] != float64(2) || row["difference"] != float64(0) {
 				t.Fatalf("unexpected reconciliation row: %v", row)
 			}

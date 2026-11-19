@@ -373,7 +373,17 @@ Historical inventory reconciliation | GET /api/v1/warehouse/inventory/
   retry keys from new responses and review snapshots. Existing stored audit
   snapshots and source records are unchanged. Three guarded Go tests and 16
   focused frontend tests passed, along with Go vet and the frontend build.
-  OPEN: the full report and nested evidence still lack result bounds.
+  FIXED QUAL-01-12 (G4a/G4b, 2026-11-20): the report is paginated — page is
+  1-based, limit defaults to 200 and is clamped to 200, ordering is by
+  product ID, and the response reports total/page/limit; invalid page/limit
+  values return 400. Each nested evidence list in a row is capped at 50
+  entries in deterministic order, the row reports the pre-truncation
+  evidenceTotal and evidenceTruncated, and the reviewable evidenceIds
+  selection is capped at 50. Review POST evidence is bounded the same way:
+  at most 50 entries of at most 256 bytes each; oversized selections return
+  400 and write nothing. TestQual01HistoricalReconciliationReportPagination,
+  TestQual01HistoricalReconciliationReviewEvidenceBounds and the updated
+  projection/admission regressions passed on disposable PostgreSQL/Redis.
 
 FIXED QUAL-01-10: historical inventory review POST writes review metadata
   and its audit event atomically, not stock, balances, or movements. Concurrent
@@ -383,11 +393,22 @@ FIXED QUAL-01-10: historical inventory review POST writes review metadata
   could not lock an absent row, and raw JSON comparison missed multi-reference
   replays after JSONB normalization. TestHistoricalReportDeterministicAndReviewReadOnly
   and the report HTTP regression passed five times on disposable PostgreSQL and
-  Redis. Go vet passed. OPEN: a retry after a different decision is not a
-  durable replay, and review payload bounds and full-report read cost remain
-  unqualified. The browser sends every evidence reference in the selected
-  product row, so a payload limit needs a matching evidence paging/selection
-  contract rather than silently truncating the audit record.
+  Redis. Go vet passed.
+  FIXED QUAL-01-12 (G4c, 2026-11-20): a retry after a different decision is a
+  durable replay. Every distinct decision is recorded as its own durable
+  entry in historical_reconciliation_review_decisions (migration
+  202611200001), keyed by a digest of status + reason + reviewer + canonical
+  evidence JSON, so JSONB normalization cannot split one decision in two. An
+  exact resubmission of the current decision replays the persisted review
+  with no new audit event; a resubmission of a superseded decision replays
+  that decision's own entry with its original timestamps and leaves the
+  current row and audit log untouched; a genuinely new decision is recorded
+  as its own entry, becomes the current row under the same stable review ID,
+  and adds one audit event. This follows the wallet withdrawal idempotency
+  contract in this tree (same submission replays; nothing is silently
+  overwritten). TestQual01HistoricalReviewRetryAfterDifferentDecision passed
+  on disposable PostgreSQL/Redis, and the concurrent-first-write regression
+  still passes unchanged.
 
 FIXED QUAL-01-11: reconciliation review POST retains conflict responses for
   invalid decisions and missing products, but unexpected database failures
@@ -409,9 +430,17 @@ money and inventory reads or writes. Before closing:
     configuration to verify storefront-to-store binding and advertising
     attribution. Local handler tests are not evidence of deployed ingress.
   - Specify the remaining business-writer limits and retry contracts, then
-    verify authorized and denied requests and exact effects. For review
-    evidence, include a bounded selection or pagination contract; for wallet
-    activation, confirm required retry-key support with external API clients.
+    verify authorized and denied requests and exact effects. The review
+    evidence bounded-selection/pagination contract and the durable
+    retry-after-different-decision replay are closed (FIXED QUAL-01-12
+    above). OPEN and BLOCKED: wallet activation retry-key confirmation with
+    external API clients — no frontend caller exists in this checkout and
+    external clients are unknown, so it cannot be confirmed here.
+  - N1 (2026-11-20): docs/quality/route-actions-02.md row for
+    /api/v1/warehouse/inbounds corrected — the staff list path applies the
+    confirmed-city predicate (wms_repo.go:202, inbound_staff_scope.go:17);
+    admin/logistics callers without the warehouse_staff capability are
+    intentionally global.
 The plan-option catalog remains deferred. The warehouse city-only and plan
 expiry decisions themselves are resolved and must not be reopened for these
 checks.

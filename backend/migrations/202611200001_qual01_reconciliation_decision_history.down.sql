@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS historical_reconciliation_review_decisions;

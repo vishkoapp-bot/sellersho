@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
@@ -279,12 +280,44 @@ func handleGetHistoricalInventoryReport(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	report, err := repo.GetHistoricalInventoryReport(ctx)
+	page, limit, err := parseHistoricalReportPagination(r)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid page or limit"}`, http.StatusBadRequest)
+		return
+	}
+	report, total, err := repo.GetHistoricalInventoryReportPage(ctx, page, limit)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"readOnly": true, "rows": report})
+	if report == nil {
+		report = []repository.HistoricalInventoryReportRow{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"readOnly": true, "rows": report, "total": total, "page": page, "limit": limit})
+}
+
+// parseHistoricalReportPagination enforces the G4b report bounds: page is
+// 1-based and limit is clamped to repository.MaxHistoricalReportLimit; the
+// effective limit is echoed in the response so clamping is explicit.
+func parseHistoricalReportPagination(r *http.Request) (page, limit int, err error) {
+	page, limit = 1, repository.DefaultHistoricalReportLimit
+	q := r.URL.Query()
+	if v := q.Get("page"); v != "" {
+		page, err = strconv.Atoi(v)
+		if err != nil || page < 1 {
+			return 0, 0, errors.New("invalid historical report page")
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		limit, err = strconv.Atoi(v)
+		if err != nil || limit < 1 {
+			return 0, 0, errors.New("invalid historical report limit")
+		}
+		if limit > repository.MaxHistoricalReportLimit {
+			limit = repository.MaxHistoricalReportLimit
+		}
+	}
+	return page, limit, nil
 }
 
 func handleReviewHistoricalInventory(w http.ResponseWriter, r *http.Request, ctx context.Context, returnRepo *repository.SupplierRepository, adminRepo *repository.AdminRepository) {
@@ -310,6 +343,10 @@ func handleReviewHistoricalInventory(w http.ResponseWriter, r *http.Request, ctx
 	productID := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/inventory/reconciliation-reviews/")
 	productID = strings.Trim(productID, "/")
 	review, err := returnRepo.ReviewHistoricalInventory(ctx, productID, req.Status, req.Reason, claims.UserID, req.Evidence)
+	if errors.Is(err, repository.ErrHistoricalEvidenceTooLarge) {
+		http.Error(w, "historical review evidence exceeds the bounded selection (at most 50 entries of at most 256 bytes each)", http.StatusBadRequest)
+		return
+	}
 	if errors.Is(err, repository.ErrInvalidHistoricalReview) {
 		http.Error(w, "invalid historical review", http.StatusConflict)
 		return

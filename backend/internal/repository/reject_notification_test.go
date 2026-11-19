@@ -32,7 +32,15 @@ CREATE TABLE users (
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	email VARCHAR(255),
+	username VARCHAR(255),
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	failed_login_attempts integer NOT NULL DEFAULT 0,
+	locked_until timestamp with time zone,
+	password_hash text,
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -57,7 +65,11 @@ CREATE TABLE suppliers (
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text);
 CREATE TABLE pending_approvals (
 	id VARCHAR(50) PRIMARY KEY,
 	entity_type VARCHAR(50) NOT NULL,
@@ -83,6 +95,14 @@ CREATE TABLE notification_outbox (
 	sent_at TIMESTAMPTZ,
 	read_at TIMESTAMPTZ
 );
+-- TEST-02 round 5: re-seed the migration-canonical suppliers (sup-ali from
+-- 000011_direct_dropship; sup-khanoumi / sup-technolife / sup-filimo from
+-- 000002_seed_data). This fixture DROP TABLEs suppliers, deleting those rows
+-- for every later test in the shared disposable DB; tests that lock those
+-- accounts then fail at the row guard ("no rows in result set"). ON
+-- CONFLICT DO NOTHING keeps it safe if a row already exists. The fixture's
+-- own suppliers use different ids.
+INSERT INTO suppliers (id, name) VALUES ('sup-ali',''),('sup-filimo',''),('sup-khanoumi',''),('sup-technolife','') ON CONFLICT (id) DO NOTHING;
 `
 
 func rejectNotifyTestDB(t *testing.T) *sql.DB {

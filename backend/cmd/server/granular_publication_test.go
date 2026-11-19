@@ -16,6 +16,14 @@ import (
 func TestGranularFullPublication(t *testing.T) {
 	db := supplierFlowDB(t)
 	owner := supplierFlowSeed(t, db)
+	// TEST-02 round 4: SaveFieldReview upserts ON CONFLICT
+	// (proposal_id, field_key) (migration 202610170010). Standing
+	// proposal_field_reviews rebuilds drop the UNIQUE, so the upsert
+	// fails with 42P10. Restore it.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS test02_pfr_proposal_field_key ON proposal_field_reviews(proposal_id, field_key)`); err != nil {
+		t.Fatal(err)
+	}
+
 	repo := repository.NewSupplierRepository(db)
 	ctx := context.Background()
 	variants := []interface{}{}

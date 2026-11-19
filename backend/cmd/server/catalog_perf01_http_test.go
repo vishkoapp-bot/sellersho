@@ -39,6 +39,14 @@ func perf01HTTPRepos(t *testing.T) (*repository.CatalogRepository, *repository.S
 	}
 	t.Cleanup(func() { db.Close() })
 
+	// TEST-02 round 4: the stores rebuilds in this package drop the
+	// migrated stores_slug_key unique index (their slug column has no
+	// UNIQUE), so the seed's ON CONFLICT (slug) below would fail with
+	// 42P10. Restore the migrated unique index first.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS stores_slug_key ON stores(slug)`); err != nil {
+		t.Fatalf("restore stores_slug_key: %v", err)
+	}
+
 	seed := []string{
 		`INSERT INTO suppliers (id, name, approval_status) VALUES ('sup-1', 'Supplier One', 'approved'), ('sup-2', 'Supplier Two', 'suspended') ON CONFLICT (id) DO NOTHING`,
 		// The migrated schema is pre-seeded (demo stores/products), so

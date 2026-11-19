@@ -18,7 +18,7 @@ func monthlyLegacyFixture(t *testing.T) *sql.DB {
 	t.Helper()
 	db := openFinanceBalanceDB(t)
 	db.SetMaxOpenConns(6)
-	if _, err := db.Exec(`ALTER TABLE stores ADD COLUMN name TEXT NOT NULL DEFAULT 'synthetic store'`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'synthetic store'`); err != nil {
 		t.Fatal(err)
 	}
 	legacy, err := os.ReadFile("../../migrations/202611020002_monthly_settlement.up.sql")

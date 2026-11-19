@@ -148,11 +148,31 @@ func TestFIN005CarrierOnlyHoldAndStaleSellerEvidence(t *testing.T) {
 func TestFIN005OldChildFirstClosureRejectsBeforeParentAndIndependentOrderProgresses(t *testing.T) {
 	db, f, warehouse, order := fin003VerifiedPaidOrder(t)
 	repo := NewOrderRepository(db)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// TEST-02 round 5: the context timeout was 8s, but it is created
+	// at the top of the test while the two fin003VerifiedPaidOrder
+	// setups consume most of it before the independent-order update
+	// runs — in a shared-DB full run the update then exceeds the
+	// remaining budget (r5b: "independent order blocked context
+	// deadline exceeded"). 30s keeps the same intent (the
+	// independent order must progress while the parent is held)
+	// with margin for full-run latency.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	opsExec(t, db, `UPDATE orders SET status='delivered_confirmed',confirmed_at=NOW()-INTERVAL '8 days',return_window_ends_at=NOW()-INTERVAL '1 hour',dropshipper_profit=7000 WHERE id=$1`, order)
 	ret := uuid.NewString()
 	fin005ReturnFixtureExec(t, db, order, `INSERT INTO customer_returns(id,order_id,customer_id,status,reason,warehouse_id) VALUES($1,$2,$3,'approved','fixture',$4)`, ret, order, f.user, warehouse)
+	independent, _, _, other := fin003VerifiedPaidOrder(t)
+	opsExec(t, independent, `UPDATE orders SET status='shipped' WHERE id=$1`, other)
+	// TEST-02 round 5: the independent order is created BEFORE the
+	// hold transaction opens. fin003VerifiedPaidOrder runs
+	// fin003RestorePrincipalGuards (DROP/CREATE TRIGGER on orders
+	// and payment_transactions), which needs an ACCESS EXCLUSIVE
+	// lock on those tables — it cannot run while the hold
+	// transaction below holds a row lock on orders (r5b/solo:
+	// the carrier update for the independent order then blocked
+	// until the context deadline). Creating the order first keeps
+	// the intent (the independent order progresses while the parent
+	// is held) without DDL under a held lock.
 	hold, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +185,6 @@ func TestFIN005OldChildFirstClosureRejectsBeforeParentAndIndependentOrderProgres
 	if _, err = db.ExecContext(ctx, `UPDATE customer_returns SET status='cancelled' WHERE id=$1`, ret); err == nil || !strings.Contains(err.Error(), "FIN005-writer-required") {
 		t.Fatalf("old child writer waited/bypassed %v", err)
 	}
-	independent, _, _, other := fin003VerifiedPaidOrder(t)
-	opsExec(t, independent, `UPDATE orders SET status='shipped' WHERE id=$1`, other)
 	if err = NewOrderRepository(independent).UpdateOrderStatusFromCarrier(ctx, other, "failed"); err != nil {
 		t.Fatalf("independent order blocked %v", err)
 	}

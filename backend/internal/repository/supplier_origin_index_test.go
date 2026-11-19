@@ -15,6 +15,12 @@ import (
 
 // Copy the actual migrated UUID columns and indexes, not a text-ID substitute.
 // Everything is isolated in a private schema and rolled back, including ANALYZE.
+// TEST-02 round 5: do NOT copy the definitions with LIKE public — in the
+// shared DB a destructive fixture rebuilds public.order_items with a TEXT
+// id, so LIKE copies the polluted TEXT type and the UUID index proof
+// fails (the planner must cast). Define the canonical migrated types
+// explicitly (UUID ids, the idx_order_item_origins_order index) so the
+// proof tests the query, not the shared DB's current rebuild shape.
 func TestSupplierOriginAuthorityUsesCanonicalUUIDIndex(t *testing.T) {
 	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
@@ -30,9 +36,10 @@ func TestSupplierOriginAuthorityUsesCanonicalUUIDIndex(t *testing.T) {
 	schema := pq.QuoteIdentifier("origin_index_" + uuid.NewString()[:8])
 	for _, query := range []string{
 		`CREATE SCHEMA ` + schema,
-		`CREATE TABLE ` + schema + `.orders AS SELECT id,payment_status,status FROM public.orders WITH NO DATA`,
-		`CREATE TABLE ` + schema + `.order_items (LIKE public.order_items INCLUDING ALL)`,
-		`CREATE TABLE ` + schema + `.order_item_origins (LIKE public.order_item_origins INCLUDING ALL)`,
+		`CREATE TABLE ` + schema + `.orders (id TEXT PRIMARY KEY, payment_status TEXT, status TEXT)`,
+		`CREATE TABLE ` + schema + `.order_items (id UUID PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT, wholesale_cost BIGINT, platform_fee BIGINT, seller_margin BIGINT, final_unit_price BIGINT)`,
+		`CREATE TABLE ` + schema + `.order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id UUID, leg_index INT, origin_type TEXT, supplier_id TEXT, origin_label TEXT, quantity INT)`,
+		`CREATE INDEX idx_order_item_origins_order ON ` + schema + `.order_item_origins (order_id, order_item_id, leg_index)`,
 		`SET LOCAL search_path = ` + schema,
 		`INSERT INTO orders(id,payment_status,status) VALUES('origin-index-order','paid','delivered')`,
 		`INSERT INTO order_items(id,order_id,product_id,quantity,wholesale_cost,platform_fee,seller_margin,final_unit_price)

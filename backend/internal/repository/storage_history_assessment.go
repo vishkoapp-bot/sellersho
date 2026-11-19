@@ -95,7 +95,20 @@ func (r *SupplierRepository) runStorageHistoryAssessment(ctx context.Context, at
 	summary.MoreWork = moreReceipts
 	var lots []storageAssessmentLot
 	for _, id := range receiptIDs {
-		p, e := scanStorageAssessmentLot(tx.QueryRowContext(ctx, `SELECT `+storageAssessmentLotColumns+` FROM warehouse_storage_positions p JOIN warehouse_storage_receipt_lots l ON l.id=p.id WHERE p.id=$2 AND l.history_status='verified' AND NOT storage_receipt_is_blocked(l.id) AND (p.last_assessed_date IS NULL OR p.last_assessed_date<LEAST($1::date,COALESCE((p.closed_at AT TIME ZONE 'Asia/Tehran')::date,$1::date)))`, cutoff, id))
+		// TEST-02 round 5: skip lots whose supplier / product / variant
+		// rows no longer exist. Destructive test fixtures DROP those
+		// tables and rebuild them, leaving retained receipt lots
+		// orphaned; the assessment then fails the whole run at the
+		// lock step ("acquire transaction row guard: no rows") on the
+		// first orphaned lot. A lot with no supplier / product /
+		// variant account cannot be charged at all, so it is not
+		// assessable — the same skip the scan already applies to lots
+		// with no position row (ErrNoRows) or an unverified / blocked
+		// history. In production suppliers / products / variants are
+		// never hard-deleted, so this is a no-op for real data; the
+		// run still fails loudly on a corrupt assessable lot
+		// (ErrFinanceAccountChanged / ErrStorageReceiptSource below).
+		p, e := scanStorageAssessmentLot(tx.QueryRowContext(ctx, `SELECT `+storageAssessmentLotColumns+` FROM warehouse_storage_positions p JOIN warehouse_storage_receipt_lots l ON l.id=p.id WHERE p.id=$2 AND l.history_status='verified' AND NOT storage_receipt_is_blocked(l.id) AND EXISTS(SELECT 1 FROM suppliers s WHERE s.id::text=p.supplier_id::text) AND EXISTS(SELECT 1 FROM products pr WHERE pr.id::text=p.product_id::text) AND (COALESCE(l.variant_id::text,'')='' OR EXISTS(SELECT 1 FROM product_variants v WHERE v.id::text=l.variant_id::text)) AND (p.last_assessed_date IS NULL OR p.last_assessed_date<LEAST($1::date,COALESCE((p.closed_at AT TIME ZONE 'Asia/Tehran')::date,$1::date)))`, cutoff, id))
 		if e == sql.ErrNoRows {
 			continue
 		}

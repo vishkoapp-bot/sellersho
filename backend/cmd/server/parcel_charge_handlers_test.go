@@ -51,11 +51,84 @@ func openParcelHTTPDB(t *testing.T) *sql.DB {
 		admin.Close()
 	})
 	for _, ddl := range []string{
-		`CREATE TABLE suppliers(id VARCHAR(50) PRIMARY KEY);INSERT INTO suppliers VALUES('supplier')`,
-		`CREATE TABLE supplier_return_requests(id VARCHAR(60) PRIMARY KEY,supplier_id TEXT,status TEXT);INSERT INTO supplier_return_requests VALUES('return','supplier','packed')`,
-		`CREATE TABLE supplier_return_parcels(id VARCHAR(80) PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT,confirmed_by TEXT,updated_at TIMESTAMPTZ,final_charge_source TEXT,final_charge_reference TEXT);INSERT INTO supplier_return_parcels VALUES('parcel','return',120000,'sender_pays','draft',NULL,now(),'manual','bill1')`,
-		`CREATE TABLE ledger_entries(id TEXT PRIMARY KEY,date TIMESTAMPTZ,target_account TEXT,target_type TEXT,type TEXT,amount BIGINT,reason TEXT,operator TEXT,related_order_or_dispute TEXT)`,
-		`CREATE TABLE supplier_return_financial_events(id VARCHAR(80) PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now())`,
+		`CREATE TABLE suppliers(id VARCHAR(50) PRIMARY KEY,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			approval_status VARCHAR(20) NOT NULL DEFAULT 'approved',
+			name VARCHAR(200) NOT NULL DEFAULT '',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			warehouse_city VARCHAR(255) NOT NULL DEFAULT 'تهران',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			approved_at timestamp with time zone,
+			approved_by character varying(50),
+			badge character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			default_markup_type character varying(10),
+			default_markup_value numeric(10,2),
+			delivery_score integer DEFAULT 100,
+			description text,
+			logo_url text,
+			owner_user_id uuid,
+			rating numeric(3,2) DEFAULT 5.00,
+			rejection_reason text,
+			signed_contract_version integer NOT NULL DEFAULT 1,
+			supports_direct_shipping boolean DEFAULT false,
+			suspended_at timestamp with time zone,
+			suspended_by text,
+			suspension_reason text,
+			tapin_shop_id text,
+			tapin_token text,
+			total_products integer DEFAULT 0,
+			warehouse_city_confirmed boolean NOT NULL DEFAULT false,
+			warehouse_city_source character varying(20));INSERT INTO suppliers VALUES('supplier')`,
+		`CREATE TABLE supplier_return_requests(id VARCHAR(60) PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'awaiting_return_test'::character varying ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			accepted_quantity integer NOT NULL DEFAULT 0,
+			cancelled_by character varying(80),
+			collection_method character varying(30),
+			completed_at timestamp with time zone,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			failed_quantity integer NOT NULL DEFAULT 0,
+			handover_at timestamp with time zone,
+			idempotency_key character varying(150),
+			inspected_at timestamp with time zone,
+			inspection_status character varying(20),
+			inventory_reference_id character varying(80),
+			postal_charge bigint NOT NULL DEFAULT 0,
+			product_id character varying(50),
+			reason text,
+			received_at timestamp with time zone,
+			rejection_reason text,
+			requested_quantity integer,
+			reviewed_at timestamp with time zone,
+			reviewed_by character varying(80),
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			variant_id uuid,
+			warehouse_bin_code character varying(30));INSERT INTO supplier_return_requests VALUES('return','supplier','packed')`,
+		`CREATE TABLE supplier_return_parcels(id VARCHAR(80) PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT DEFAULT 'draft'::character varying ,confirmed_by TEXT,updated_at TIMESTAMPTZ DEFAULT now() ,final_charge_source TEXT,final_charge_reference TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			carrier_code character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			created_by character varying(80),
+			destination character varying(200),
+			estimate_reference character varying(150),
+			estimate_source character varying(20),
+			estimated_charge bigint,
+			handed_over_at timestamp with time zone,
+			height_mm integer,
+			idempotency_key character varying(150),
+			length_mm integer,
+			notes text,
+			origin character varying(200),
+			parcel_number integer,
+			tracking_number character varying(150),
+			weight_grams integer,
+			width_mm integer);INSERT INTO supplier_return_parcels VALUES('parcel','return',120000,'sender_pays','draft',NULL,now(),'manual','bill1')`,
+		`CREATE TABLE ledger_entries(id TEXT PRIMARY KEY,date TIMESTAMPTZ DEFAULT now() ,target_account TEXT,target_type TEXT,type TEXT,amount BIGINT,reason TEXT,operator TEXT,related_order_or_dispute TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE supplier_return_financial_events(id VARCHAR(80) PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			charge_component text)`,
 	} {
 		if _, err = db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -63,6 +136,13 @@ func openParcelHTTPDB(t *testing.T) *sql.DB {
 	}
 	migration, err := os.ReadFile("../../migrations/202611160001_parcel_charge_identity.up.sql")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// TEST-02 round 4: the scratch-schema DDL above already carries
+	// charge_component (full demanded set), so the migration's bare
+	// ADD COLUMN would collide (42701). Drop it first; the migration
+	// re-adds it with its own definition.
+	if _, err = db.Exec(`ALTER TABLE supplier_return_financial_events DROP COLUMN IF EXISTS charge_component`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(string(migration)); err != nil {

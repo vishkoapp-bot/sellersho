@@ -25,7 +25,7 @@ test('stock form requires reason and exact SKU, retains a conflict draft, accept
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
   try {
     const page = await browser.newPage(); const errors: string[] = []; page.on('pageerror', error => errors.push(error instanceof Error ? error.stack || error.message : String(error))); await page.goto(`http://127.0.0.1:${address.port}/__inv07`);
     const clickText = async (text: string) => { const buttons = await page.$$('button'); for (const button of buttons) if ((await button.evaluate(el => el.textContent))?.includes(text)) { await button.click(); return; } throw new Error('button missing: ' + text); };

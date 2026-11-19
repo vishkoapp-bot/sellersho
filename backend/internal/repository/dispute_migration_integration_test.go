@@ -15,7 +15,9 @@ func TestFIN005MigrationDrainAndQueuedOldWriter(t *testing.T) {
 	customer, _, _, _, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "drain-order", "DRAIN", customer, "shipped", "paid")
 	// Install prerequisite reversal relation only, before the tested fence migration.
-	for _, q := range []string{`ALTER TABLE order_item_origins ADD COLUMN order_id TEXT,ADD COLUMN quantity INT`, `CREATE TABLE return_items(id UUID PRIMARY KEY,return_id UUID REFERENCES customer_returns(id),order_item_id TEXT,qty INT,qc_status TEXT,received_at TIMESTAMPTZ)`} {
+	for _, q := range []string{`ALTER TABLE order_item_origins ADD COLUMN IF NOT EXISTS order_id TEXT,ADD COLUMN IF NOT EXISTS quantity INT`, `CREATE TABLE return_items(id UUID  DEFAULT gen_random_uuid() PRIMARY KEY,return_id UUID REFERENCES customer_returns(id),order_item_id TEXT,qty INT,qc_status TEXT DEFAULT 'pending'::character varying ,received_at TIMESTAMPTZ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			variant_id uuid)`} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

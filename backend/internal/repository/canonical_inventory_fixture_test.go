@@ -23,8 +23,12 @@ func seedCanonicalWarehouseStock(t *testing.T, db *sql.DB, product, supplier str
 
 func seedCanonicalWarehouseOrderOrigins(t *testing.T, db *sql.DB, order, warehouse string) {
 	t.Helper()
+	// TEST-02 round 4: oi.id is VARCHAR but order_item_origins.order_item_id
+	// is UUID in the migrated schema — the INSERT..SELECT needs the cast
+	// (42804 without it). The cast is also harmless when a rebuild defines
+	// the column as TEXT (uuid assigns to text).
 	if _, err := db.Exec(`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity)
-		SELECT 'fixture-origin-'||oi.id,oi.order_id,oi.id,0,'warehouse',p.supplier_id,$2,'Test warehouse',oi.quantity
+		SELECT 'fixture-origin-'||oi.id,oi.order_id,oi.id::uuid,0,'warehouse',p.supplier_id,$2,'Test warehouse',oi.quantity
 		FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=$1`, order, warehouse); err != nil {
 		t.Fatal(err)
 	}

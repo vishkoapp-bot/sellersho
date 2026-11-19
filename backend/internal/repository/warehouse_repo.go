@@ -165,7 +165,13 @@ func (r *WarehouseRepository) StartReceiving(ctx context.Context, inboundID, sta
 		return fmt.Errorf("محموله ورودی یافت نشد یا دریافت آن قبلاً تکمیل شده است: %s", inboundID)
 	}
 
-	logID := fmt.Sprintf("LOG-INB-%d", time.Now().UnixMilli()%100000)
+	// TEST-02 round 5: the log id was time-based with tiny entropy
+	// ("LOG-INB-%d" from UnixMilli()%100000 — only 100k values, a
+	// ~100s cycle), so two StartReceiving calls in the same
+	// millisecond-offset collided on the primary key (r5e:
+	// TestINV09LegacyQCAwaitsExactPutaway/record, 23505). Use a UUID
+	// (prefix kept for readability; 44 chars fits VARCHAR(50)).
+	logID := "LOG-INB-" + uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO inbound_receiving_logs (id, inbound_id, staff_user_id, action, created_at)
 		VALUES ($1, $2, $3, 'started', $4)
@@ -237,7 +243,9 @@ func (r *WarehouseRepository) ScanItem(ctx context.Context, inboundID string, it
 		return 0, err
 	}
 
-	logID := fmt.Sprintf("SCAN-%d", time.Now().UnixMilli()%1000000)
+	// TEST-02 round 5: same low-entropy id as StartReceiving (see
+	// above) — "SCAN-%d" from UnixMilli()%1000000. UUID instead.
+	logID := "SCAN-" + uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO inbound_receiving_logs (id, inbound_id, staff_user_id, action, scanned_item, created_at)
 		VALUES ($1, $2, $3, 'item_scanned', $4, NOW())
@@ -310,7 +318,9 @@ func (r *WarehouseRepository) CompleteInbound(ctx context.Context, inboundID, st
 		return err
 	}
 
-	logID := fmt.Sprintf("LOG-INB-%d", time.Now().UnixMilli()%100000)
+	// TEST-02 round 5: same low-entropy id as StartReceiving (see
+	// above). UUID instead.
+	logID := "LOG-INB-" + uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO inbound_receiving_logs (id, inbound_id, staff_user_id, action, created_at)
 		VALUES ($1, $2, $3, 'completed', $4)
@@ -615,7 +625,10 @@ var ErrQCDiscrepancyMissingIdentity = errors.New("supplierId و productId برا
 
 // CreateQCDiscrepancy creates formal dispute record for supplier
 func (r *WarehouseRepository) CreateQCDiscrepancy(ctx context.Context, d map[string]interface{}) (string, error) {
-	id := fmt.Sprintf("DISP-QC-%d", time.Now().UnixMilli()%100000)
+	// TEST-02 round 5: same low-entropy id class as the receiving
+	// logs (UnixMilli()%100000) — a collision fails the INSERT.
+	// UUID instead (prefix kept).
+	id := "DISP-QC-" + uuid.NewString()
 	inboundID, _ := d["inboundId"].(string)
 	supplierID, _ := d["supplierId"].(string)
 	if supplierID == "" {
@@ -654,7 +667,7 @@ func (r *WarehouseRepository) GetPutawayQueue(ctx context.Context) ([]PutawayQue
 		       NOT EXISTS(SELECT 1 FROM inbound_putaway_allocations a WHERE a.task_id=pt.id) OR m.product_id IS NULL,COALESCE(m.revision,''),COALESCE(m.source,'')
 		FROM putaway_tasks pt
 		LEFT JOIN products p ON pt.product_id = p.id
-		LEFT JOIN product_variants pv ON pv.id=pt.variant_id
+		LEFT JOIN product_variants pv ON pv.id::text=pt.variant_id::text
 		LEFT JOIN inventory_effective_measurements m ON m.product_id=pt.product_id AND m.variant_id=COALESCE(pt.variant_id::text,'')
 		WHERE pt.status IN ('pending', 'assigned')
 		ORDER BY pt.created_at DESC
@@ -1058,7 +1071,11 @@ func (r *WarehouseRepository) StartPickingOrder(ctx context.Context, orderID, st
 		return err
 	}
 
-	taskID := fmt.Sprintf("PICK-%d", time.Now().UnixMilli()%100000)
+	// TEST-02 round 5: same low-entropy id class as the receiving
+	// logs (UnixMilli()%100000). UUID instead (prefix kept). The
+	// ON CONFLICT below already handled a collision gracefully, but
+	// a unique id removes the silent overwrite.
+	taskID := "PICK-" + uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO pick_tasks (id, order_id, picker_user_id, status, started_at)
 		VALUES ($1, $2, $3, 'picking', NOW())

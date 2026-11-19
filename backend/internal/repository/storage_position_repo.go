@@ -173,7 +173,7 @@ func qcSellableAlreadyCreditedTx(ctx context.Context, tx *sql.Tx, productID, inb
 // never debit another warehouse or silently leave a split's storage outstanding.
 func consumeShippedOrderPositionsTx(ctx context.Context, tx *sql.Tx, orderID string, actors ...string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT oi.product_id,COALESCE(x.quantity,0),COALESCE(x.supplier_id,p.supplier_id,''),COALESCE(x.warehouse_id,''),COALESCE(x.origin_type,'legacy'),oi.quantity,COALESCE(SUM(x.quantity) OVER(PARTITION BY oi.id),0)
- FROM order_items oi JOIN products p ON p.id=oi.product_id LEFT JOIN order_item_origins x ON x.order_item_id=oi.id
+ FROM order_items oi JOIN products p ON p.id=oi.product_id LEFT JOIN order_item_origins x ON x.order_item_id::text=oi.id::text
  WHERE oi.order_id=$1 ORDER BY oi.id,x.leg_index`, orderID)
 	if err != nil {
 		return err
@@ -232,7 +232,7 @@ func consumeShippedOrderPositionsTx(ctx context.Context, tx *sql.Tx, orderID str
 	}
 	// Acquire all position rows in canonical ID order before choosing FIFO within
 	// each origin. The caller holds order/account/product/SKU guards.
-	guards, err := tx.QueryContext(ctx, `SELECT p.id FROM warehouse_storage_positions p WHERE p.closed_at IS NULL AND EXISTS(SELECT 1 FROM order_items oi JOIN order_item_origins x ON x.order_item_id=oi.id WHERE oi.order_id=$1 AND x.origin_type='warehouse' AND oi.product_id=p.product_id AND x.warehouse_id=p.warehouse_id) ORDER BY p.id COLLATE "C" FOR UPDATE`, orderID)
+	guards, err := tx.QueryContext(ctx, `SELECT p.id FROM warehouse_storage_positions p WHERE p.closed_at IS NULL AND EXISTS(SELECT 1 FROM order_items oi JOIN order_item_origins x ON x.order_item_id::text=oi.id::text WHERE oi.order_id=$1 AND x.origin_type='warehouse' AND oi.product_id=p.product_id AND x.warehouse_id=p.warehouse_id) ORDER BY p.id COLLATE "C" FOR UPDATE`, orderID)
 	if err != nil {
 		return err
 	}

@@ -45,7 +45,22 @@ func wishlistTestSetup(t *testing.T) (*sql.DB, *repository.StoreRepository) {
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
 		`DROP TABLE IF EXISTS customer_wishlists, stores CASCADE`,
-		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', slug VARCHAR(255) NOT NULL DEFAULT '', owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper', owner_name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id VARCHAR(50) NOT NULL DEFAULT '', referral_code VARCHAR(100) NOT NULL DEFAULT '', referrer_seller_id VARCHAR(50), signed_contract_version INT NOT NULL DEFAULT 0, custom_domain VARCHAR(255) NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, template_id VARCHAR(100) NOT NULL DEFAULT '', template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', slug VARCHAR(255) NOT NULL DEFAULT '', owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper', owner_name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id VARCHAR(50) NOT NULL DEFAULT '', referral_code VARCHAR(100) NOT NULL DEFAULT '', referrer_seller_id VARCHAR(50), signed_contract_version INT NOT NULL DEFAULT 0, custom_domain VARCHAR(255) NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, template_id VARCHAR(100) NOT NULL DEFAULT '', template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			active_categories text[] NOT NULL DEFAULT '{}'::text[],
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			description text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			plan_expires_at timestamp with time zone,
+			rejection_reason text,
+			related_section_title character varying(200),
+			status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+			tagline text,
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
 		// Post-migration shape (202611050002 applied).
 		`CREATE TABLE customer_wishlists (user_id TEXT NOT NULL, store_id TEXT NOT NULL DEFAULT 'store-central', product_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, store_id, product_id))`,
 		`INSERT INTO stores (id, name, slug, owner_type) VALUES ('store-central', 'مرکزی', 'central', 'central'), ('store-mone', 'مونه', 'mone', 'dropshipper'), ('store-vishko', 'ویشکو', 'vishkostor', 'dropshipper')`,

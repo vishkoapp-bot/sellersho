@@ -41,6 +41,8 @@ func TestReturnBinHandlerRejectsMalformedBeforeDatabase(t *testing.T) {
 func TestReturnBinHTTPMissingIdentityAndSourceConflict(t *testing.T) {
 	db := supplierFlowDB(t)
 	f := supplierFlowSeed(t, db)
+	createReturnBinSourcesView(t, db)
+	createEffectiveMeasurementsView(t, db)
 	order := "return-http-" + uuid.NewString()[:12]
 	oi, ret, item := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	for _, statement := range []struct {

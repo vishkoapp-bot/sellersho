@@ -65,12 +65,17 @@ func (r *SupplierRepository) GetSupplierAccess(ctx context.Context, userID strin
 	var supplierID, role string
 	var permissionsJSON []byte
 	var active bool
+	// TEST-02 round 4: the user-id joins compare as text. The values
+	// are UUIDs, so the cast is a no-op in production; it keeps the
+	// access check working when the standing users/suppliers/member
+	// rebuilds store the id as VARCHAR while the other side is UUID
+	// (42883 operator does not exist: character varying = uuid).
 	// Fail-closed: a blocked member user (users.is_active = FALSE) keeps no
 	// access even when the supplier_members row is still marked active.
 	err := r.db.QueryRowContext(ctx, `
 		SELECT sm.supplier_id, sm.role_key, sm.permissions, sm.is_active AND u.is_active
 		FROM supplier_members sm
-		JOIN users u ON u.id = sm.user_id
+		JOIN users u ON u.id::text = sm.user_id::text
 		WHERE sm.user_id = $1`, userID).Scan(&supplierID, &role, &permissionsJSON, &active)
 	if err == nil {
 		if !active {
@@ -102,7 +107,7 @@ func (r *SupplierRepository) GetSupplierAccess(ctx context.Context, userID strin
 	// unconditionally, making the admin block toggle decorative).
 	err = r.db.QueryRowContext(ctx, `
 		SELECT s.id FROM suppliers s
-		JOIN users u ON u.id = s.owner_user_id
+		JOIN users u ON u.id::text = s.owner_user_id::text
 		WHERE s.owner_user_id = $1 AND u.is_active = TRUE
 		  AND s.approval_status <> 'suspended'`, userID).Scan(&supplierID)
 	if err == sql.ErrNoRows {
@@ -136,7 +141,7 @@ func (r *SupplierRepository) supplierOwnerIsActive(ctx context.Context, supplier
 	var active bool
 	err := r.db.QueryRowContext(ctx, `
 		SELECT u.is_active FROM suppliers s
-		JOIN users u ON u.id = s.owner_user_id
+		JOIN users u ON u.id::text = s.owner_user_id::text
 		WHERE s.id = $1`, supplierID).Scan(&active)
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -188,7 +193,14 @@ func (r *SupplierRepository) CreateMember(ctx context.Context, supplierID, invit
 	// 'active', source 'supplier_membership', source_id = supplier id);
 	// ON CONFLICT DO NOTHING keeps an existing grant (e.g. an owner who
 	// is also a member elsewhere) untouched, as the backfill does.
-	err = r.db.QueryRowContext(ctx, `WITH new_user AS (INSERT INTO users (mobile, full_name, role, is_active, username, password_hash) VALUES ($1, $2, 'supplier', TRUE, $3, $4) RETURNING id), new_member AS (INSERT INTO supplier_members (supplier_id, user_id, role_key, permissions, invited_by) SELECT $5, id, $6, $7, $8 FROM new_user RETURNING id, supplier_id, user_id, role_key, permissions, is_active), new_capability AS (INSERT INTO user_capabilities (user_id, capability, source_type, source_id) SELECT user_id, 'supplier', 'supplier_membership', supplier_id FROM new_member ON CONFLICT (user_id, capability) DO NOTHING RETURNING user_id) SELECT id, supplier_id, user_id, role_key, permissions, is_active FROM new_member`, mobile, fullName, username, string(hash), supplierID, roleKey, rawPermissions, invitedBy).Scan(&member.ID, &member.SupplierID, &member.UserID, &member.RoleKey, &rawPermissions, &member.IsActive)
+	// The ::uuid casts pin the CTE's contract (user_id is a UUID):
+	// in production users.id is already UUID so they are no-ops, but
+	// test fixtures that rebuild users/supplier_members with
+	// VARCHAR/TEXT ids would otherwise feed a character-varying
+	// expression into the UUID columns (42804). The values are real
+	// UUIDs (RegisterSupplier / gen_random_uuid), so the cast cannot
+	// change a row — it only fixes the expression's type.
+	err = r.db.QueryRowContext(ctx, `WITH new_user AS (INSERT INTO users (mobile, full_name, role, is_active, username, password_hash) VALUES ($1, $2, 'supplier', TRUE, $3, $4) RETURNING id), new_member AS (INSERT INTO supplier_members (supplier_id, user_id, role_key, permissions, invited_by) SELECT $5, id::uuid, $6, $7, $8 FROM new_user RETURNING id, supplier_id, user_id, role_key, permissions, is_active), new_capability AS (INSERT INTO user_capabilities (user_id, capability, source_type, source_id) SELECT user_id::uuid, 'supplier', 'supplier_membership', supplier_id FROM new_member ON CONFLICT (user_id, capability) DO NOTHING RETURNING user_id) SELECT id, supplier_id, user_id, role_key, permissions, is_active FROM new_member`, mobile, fullName, username, string(hash), supplierID, roleKey, rawPermissions, invitedBy).Scan(&member.ID, &member.SupplierID, &member.UserID, &member.RoleKey, &rawPermissions, &member.IsActive)
 	if err != nil {
 		return domain.SupplierMember{}, err
 	}

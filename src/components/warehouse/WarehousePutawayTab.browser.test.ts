@@ -19,7 +19,7 @@ test('putaway shows the exact SKU and verifies that SKU rather than its parent',
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
   try {
     const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${address.port}/__inv08`);
     await page.waitForSelector('section input');

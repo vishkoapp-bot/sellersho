@@ -220,6 +220,56 @@ func computeShippingQuote(lines []shippingQuoteLine, rates shippingRates, destin
 			Source:   "weight_formula", Estimated: false,
 		})
 	}
+	// TEST-02 round 4 (Suspension): the quote id must not depend on
+	// the cart's item order. handleCreateOrder normalizes the request
+	// (normalizeCheckoutRequest sorts req.Items by marshaled JSON for
+	// the checkout-attempt fingerprint) BEFORE its item loop, while the
+	// quote endpoint hashes the request's own order — so the same cart
+	// hashed two different ids and every multi-item order whose items
+	// were not already sorted failed with shipping_quote_changed.
+	// Canonicalize legs (by origin) and allocations (by product /
+	// variant / leg) here, in the single shared constructor, remapping
+	// LegIndex so allocations keep pointing at their legs and
+	// re-numbering BoxLabel by canonical position (it is part of the
+	// hashed leg). The Q6/D-12 property is preserved: different carts
+	// still hash differently; only item order is factored out. The
+	// Tapin repricing step re-derives the id from these same slices
+	// without reordering them, so it stays consistent.
+	oldToNew := make(map[int]int, len(out.Legs))
+	sortedLegs := make([]shippingQuoteLeg, len(out.Legs))
+	copy(sortedLegs, out.Legs)
+	sort.SliceStable(sortedLegs, func(i, j int) bool {
+		if sortedLegs[i].OriginID != sortedLegs[j].OriginID {
+			return sortedLegs[i].OriginID < sortedLegs[j].OriginID
+		}
+		if sortedLegs[i].OriginLabel != sortedLegs[j].OriginLabel {
+			return sortedLegs[i].OriginLabel < sortedLegs[j].OriginLabel
+		}
+		return sortedLegs[i].Index < sortedLegs[j].Index
+	})
+	for newIdx, leg := range sortedLegs {
+		oldToNew[leg.LegIndex] = newIdx
+		sortedLegs[newIdx].LegIndex = newIdx
+		sortedLegs[newIdx].Index = newIdx
+		sortedLegs[newIdx].BoxLabel = fmt.Sprintf("بسته %d", newIdx+1)
+	}
+	out.Legs = sortedLegs
+	for i := range out.Allocations {
+		out.Allocations[i].LegIndex = oldToNew[out.Allocations[i].LegIndex]
+	}
+	sort.SliceStable(out.Allocations, func(i, j int) bool {
+		a, b := out.Allocations[i], out.Allocations[j]
+		if a.ProductID != b.ProductID {
+			return a.ProductID < b.ProductID
+		}
+		if a.VariantID != b.VariantID {
+			return a.VariantID < b.VariantID
+		}
+		if a.LegIndex != b.LegIndex {
+			return a.LegIndex < b.LegIndex
+		}
+		return a.Quantity < b.Quantity
+	})
 	out.TotalShipping = total
 	out.QuoteID = shippingQuoteIDFor(out.Legs, out.Allocations, total, destination)
 	return out

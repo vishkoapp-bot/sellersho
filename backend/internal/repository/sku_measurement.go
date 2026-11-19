@@ -40,7 +40,7 @@ func invalidatePendingPhysicalReservationsTx(ctx context.Context, tx *sql.Tx, pr
 	if !exists {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT pt.id,COALESCE(r.id,''),COALESCE(r.bin_code,'') FROM putaway_tasks pt LEFT JOIN putaway_capacity_reservations r ON r.task_id=pt.id AND r.status='active' WHERE pt.product_id=$1 AND pt.status IN ('pending','assigned') AND (($2::text<>'' AND pt.variant_id::text=$2) OR ($2::text='' AND NOT EXISTS(SELECT 1 FROM product_variants v WHERE v.id=pt.variant_id AND (v.length_mm IS NOT NULL OR v.width_mm IS NOT NULL OR v.height_mm IS NOT NULL OR v.weight_grams IS NOT NULL))))`, product, variant)
+	rows, err := tx.QueryContext(ctx, `SELECT pt.id,COALESCE(r.id,''),COALESCE(r.bin_code,'') FROM putaway_tasks pt LEFT JOIN putaway_capacity_reservations r ON r.task_id=pt.id AND r.status='active' WHERE pt.product_id=$1 AND pt.status IN ('pending','assigned') AND (($2::text<>'' AND pt.variant_id::text=$2) OR ($2::text='' AND NOT EXISTS(SELECT 1 FROM product_variants v WHERE v.id::text=pt.variant_id::text AND (v.length_mm IS NOT NULL OR v.width_mm IS NOT NULL OR v.height_mm IS NOT NULL OR v.weight_grams IS NOT NULL))))`, product, variant)
 	if err != nil {
 		return err
 	}

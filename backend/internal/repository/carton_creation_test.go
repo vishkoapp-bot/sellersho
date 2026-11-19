@@ -18,7 +18,19 @@ func cartonFixture(t *testing.T) (*sql.DB, *SupplierRepository, string, string) 
 
 		`DROP INDEX carton_creation_key_unique`,
 		`ALTER TABLE shipments DROP COLUMN creation_key, DROP COLUMN request_fingerprint`,
-		`CREATE TABLE inventory_reservations(id TEXT PRIMARY KEY)`,
+		`CREATE TABLE inventory_reservations(id TEXT PRIMARY KEY,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			idempotency_key character varying(150),
+			location_key character varying(150),
+			product_id character varying(50),
+			quantity integer,
+			reference_id character varying(80),
+			reference_type character varying(40),
+			released_at timestamp with time zone,
+			status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+			supplier_id character varying(50),
+			variant_id uuid)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)

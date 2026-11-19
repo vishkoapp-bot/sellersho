@@ -11,6 +11,13 @@ import (
 
 func TestINV06ReadOnlyAuditPagesWholeWarehouse(t *testing.T) {
 	db := operationsDB(t)
+	// TEST-02 round 5: the warehouse_occupancy_audit view is
+	// CASCADE-dropped by any earlier fixture that DROP TABLEs one of
+	// its base tables (order_inventory_captures, inventory_balances,
+	// warehouse_placements, ...). Re-create it (and its dependencies)
+	// before running the audit scripts, or this test fails with 42P01
+	// in the full run.
+	createWarehouseOccupancyAuditViews(t, db)
 	warehouse := "audit-" + uuid.NewString()
 	prefix := "A6-" + uuid.NewString()[:8] + "-"
 	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'p','c')`, warehouse)

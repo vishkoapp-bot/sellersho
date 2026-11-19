@@ -18,6 +18,23 @@ import (
 
 func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 	db := setupTestPostgresDB(t)
+	// TEST-02 round 4: store_variant_visibility/defaults have
+	// REFERENCES products(id) ON DELETE CASCADE, so any products-DROP
+	// fixture (gap13, discount, supplier_gaps, ...) drops them, and
+	// SaveStoreProducts DELETEs from both tables — a missing table
+	// 500s the empty-catalog PUT. Recreate them verbatim from
+	// migrations 202611130003/202611130005 (IF NOT EXISTS: harmless
+	// when no fixture dropped them).
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS store_variant_visibility (store_id VARCHAR(50) NOT NULL REFERENCES stores(id) ON DELETE CASCADE, product_id VARCHAR(50) NOT NULL REFERENCES products(id) ON DELETE CASCADE, variant_id UUID NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE, is_visible BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (store_id, product_id, variant_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_store_variant_visibility_store_product ON store_variant_visibility (store_id, product_id)`,
+		`CREATE TABLE IF NOT EXISTS store_variant_defaults (store_id VARCHAR(50) NOT NULL REFERENCES stores(id) ON DELETE CASCADE, product_id VARCHAR(50) NOT NULL REFERENCES products(id) ON DELETE CASCADE, variant_id UUID NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (store_id, product_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_store_variant_defaults_variant ON store_variant_defaults (variant_id)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx := context.Background()
 	repo := repository.NewStoreRepository(db)
 	fin := repository.NewFinanceRepository(db)

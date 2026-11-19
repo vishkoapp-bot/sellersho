@@ -178,7 +178,7 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	}
 
 	query := fmt.Sprintf(`
-		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
 		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,
@@ -228,7 +228,7 @@ func (r *CatalogRepository) GetProductsByIDs(ctx context.Context, ids []string) 
 		return []domain.Product{}, nil
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
 		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,
@@ -268,7 +268,7 @@ func (r *CatalogRepository) GetProductsByIDs(ctx context.Context, ids []string) 
 // GetProductByID retrieves a single product by ID or Slug with associated niche IDs
 func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string) (*domain.Product, error) {
 	query := `
-		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
 		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,
@@ -760,7 +760,7 @@ func (r *CatalogRepository) GetStoreVariantDefaults(ctx context.Context, storeID
 // product returns 200 in live (D42, live-confirmed-200).
 func (r *CatalogRepository) GetProductBySpn(ctx context.Context, spn int64) (*domain.Product, error) {
 	query := `
-		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
 		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,

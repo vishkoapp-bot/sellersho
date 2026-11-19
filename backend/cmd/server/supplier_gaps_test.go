@@ -41,7 +41,9 @@ CREATE TABLE users (
 	locked_until TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID NOT NULL,
@@ -58,18 +60,79 @@ CREATE TABLE suppliers (
 	approved_by VARCHAR(50),
 	approved_at TIMESTAMPTZ,
 	rejection_reason TEXT,
-	signed_contract_version INT,
+	signed_contract_version INT DEFAULT 1 ,
 	tapin_shop_id VARCHAR(50),
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
 	default_markup_type VARCHAR(20),
 	default_markup_value DECIMAL(10,2),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text,
+	tapin_token text);
 CREATE TABLE platform_settings (
-	id INT PRIMARY KEY,
+	id INT  DEFAULT 1 PRIMARY KEY,
 	supplier_contract_version INT
-);
+ DEFAULT 2 ,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	early_withdrawal_fee_pct NUMERIC,
+	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+	settlement_day INTEGER,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribution_model character varying(20) NOT NULL DEFAULT 'last_touch'::character varying,
+	base_fee_f bigint NOT NULL DEFAULT 100000,
+	central_campaign_budget bigint NOT NULL DEFAULT 0,
+	central_profit_pct double precision NOT NULL DEFAULT 10,
+	central_store_markup_percent numeric(5,2) NOT NULL DEFAULT 10,
+	cookie_days integer NOT NULL DEFAULT 30,
+	default_item_weight_grams integer NOT NULL DEFAULT 500,
+	default_margin numeric(5,2) NOT NULL DEFAULT 20.00,
+	default_markup_type character varying(10) NOT NULL DEFAULT 'percent'::character varying,
+	default_markup_value numeric(10,2) NOT NULL DEFAULT 30,
+	delivery_followup_trigger_days integer NOT NULL DEFAULT 10,
+	delivery_hold_period_days integer NOT NULL DEFAULT 20,
+	increase_cap_pct double precision NOT NULL DEFAULT 10,
+	increase_locked boolean NOT NULL DEFAULT true,
+	ippanel_api_key text NOT NULL DEFAULT ''::text,
+	ippanel_base_url text NOT NULL DEFAULT 'https://edge.ippanel.com/v1'::text,
+	ippanel_enabled boolean NOT NULL DEFAULT false,
+	ippanel_pattern_code text NOT NULL DEFAULT ''::text,
+	ippanel_sender text NOT NULL DEFAULT '+983000505'::text,
+	max_dropshipper_margin_percent numeric(5,2) NOT NULL DEFAULT 100,
+	max_profit_margin numeric(5,2) NOT NULL DEFAULT 35.00,
+	min_profit_margin numeric(5,2) NOT NULL DEFAULT 5.00,
+	packaging_tariffs jsonb,
+	product_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	referral_commission_percent numeric(5,2) NOT NULL DEFAULT 2.00,
+	referral_is_enabled boolean NOT NULL DEFAULT true,
+	referral_subject_to_delivery_lock boolean NOT NULL DEFAULT true,
+	return_window_days integer NOT NULL DEFAULT 7,
+	seller_contract_text text NOT NULL DEFAULT ''::text,
+	seller_contract_version integer NOT NULL DEFAULT 2,
+	shipping_base_rate bigint NOT NULL DEFAULT 0,
+	shipping_per_kg bigint NOT NULL DEFAULT 0,
+	storage_fee_enabled boolean NOT NULL DEFAULT false,
+	storage_fee_free_days integer NOT NULL DEFAULT 30,
+	storage_fee_per_kg_day bigint NOT NULL DEFAULT 2000,
+	storage_fee_per_m3_day bigint NOT NULL DEFAULT 8000,
+	stuck_order_expiry_enabled boolean NOT NULL DEFAULT false,
+	supplier_contract_text text NOT NULL DEFAULT ''::text,
+	supplier_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	supplier_return_postal_charge bigint,
+	tapin_default_box_id text NOT NULL DEFAULT '4'::text,
+	tapin_platform_shop_id text,
+	tapin_platform_token text,
+	tapin_tariff_url text,
+	trial_catalog_quota integer NOT NULL DEFAULT 25,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	volumetric_divisor integer NOT NULL DEFAULT 5000,
+	wallet_min_withdrawal bigint NOT NULL DEFAULT 0,
+	wallet_spend_enabled boolean NOT NULL DEFAULT true,
+	wallet_withdraw_enabled boolean NOT NULL DEFAULT true,
+	warehouse_tariffs jsonb NOT NULL DEFAULT '{}'::jsonb);
 INSERT INTO platform_settings (id, supplier_contract_version) VALUES (1, 7);
 CREATE TABLE pending_approvals (
 	id VARCHAR(50) PRIMARY KEY,
@@ -109,17 +172,56 @@ CREATE TABLE products (
 	weight_grams INT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_version INTEGER NOT NULL DEFAULT 0,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribute_schema jsonb,
+	base_price_override bigint,
+	implicit_agreement boolean NOT NULL DEFAULT false,
+	implicit_agreement_until timestamp with time zone,
+	is_active boolean NOT NULL DEFAULT true,
+	is_featured boolean DEFAULT false,
+	is_special_deal boolean DEFAULT false,
+	markup_type character varying(10),
+	markup_value numeric(10,2),
+	measurement_revision_id text,
+	measurement_source character varying(20),
+	origin_supplier_warehouse_id text,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	product_type text NOT NULL DEFAULT 'legacy'::text,
+	rating numeric(3,2) NOT NULL DEFAULT 0,
+	reviews_count integer NOT NULL DEFAULT 0,
+	schema_version integer NOT NULL DEFAULT 0,
+	shipping_class text NOT NULL DEFAULT 'standard'::text,
+	spn character varying(20),
+	spn_number bigint,
+	supply_option character varying(20) NOT NULL DEFAULT '1day'::character varying,
+	tax_class text NOT NULL DEFAULT 'standard'::text,
+	warranty_property_id character varying(60));
 CREATE TABLE product_images (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	product_id VARCHAR(50) NOT NULL,
 	image_url TEXT NOT NULL,
 	sort_order INT DEFAULT 0
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE niches (
 	id VARCHAR(50) PRIMARY KEY,
 	category_slug VARCHAR(100) DEFAULT ''
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	title VARCHAR(255) NOT NULL DEFAULT '',
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	badge character varying(50),
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	description text,
+	slug character varying(100));
 CREATE TABLE product_niches (
 	product_id VARCHAR(50) NOT NULL,
 	niche_id VARCHAR(50) NOT NULL,
@@ -136,7 +238,28 @@ CREATE TABLE product_variants (
 	supplier_base_cost BIGINT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	combination_key text,
+	height_mm integer,
+	inventory_mode text NOT NULL DEFAULT 'legacy'::text,
+	is_active boolean NOT NULL DEFAULT true,
+	length_mm integer,
+	max_cart_qty integer,
+	measurement_revision_id text,
+	measurement_source text,
+	measurement_status text NOT NULL DEFAULT 'unverified'::text,
+	measurement_version integer NOT NULL DEFAULT 0,
+	min_cart_qty integer NOT NULL DEFAULT 1,
+	sale_from timestamp with time zone,
+	sale_price bigint,
+	sale_to timestamp with time zone,
+	selection jsonb NOT NULL DEFAULT '{}'::jsonb,
+	shipping_class text,
+	spnc_number integer,
+	tax_class text,
+	weight_grams integer,
+	width_mm integer);
 CREATE TABLE inventory_balances (
 	id VARCHAR(80) PRIMARY KEY,
 	product_id VARCHAR(50) NOT NULL,
@@ -150,8 +273,25 @@ CREATE TABLE inventory_balances (
 	reconciled BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	UNIQUE (product_id, owner_type, location_type, location_key, status)
-);
+		-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	warehouse_id TEXT,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	bin_code character varying(30),
+	supplier_warehouse_id text,
+	variant_id uuid);
+CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_unallocated_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_sku_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL;
+-- TEST-02 round 4: DROP TABLE inventory_balances above also drops its
+-- triggers. Recreate them (the trigger FUNCTIONS survive the drop):
+-- trg_inventory_balances_sync_stock keeps product_variants.stock and
+-- products.stock in sync with sellable balances (migrations
+-- 202610170001 + 202611110003); inventory_assign_origin stamps the
+-- origin warehouse on insert (migration 202611140002). Without the
+-- sync trigger, INV07-style SKU stock assertions read stale 0s.
+DROP TRIGGER IF EXISTS trg_inventory_balances_sync_stock ON inventory_balances;
+CREATE TRIGGER trg_inventory_balances_sync_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION sync_product_stock_projection();
+DROP TRIGGER IF EXISTS inventory_assign_origin ON inventory_balances;
+CREATE TRIGGER inventory_assign_origin BEFORE INSERT ON inventory_balances FOR EACH ROW EXECUTE FUNCTION inventory_assign_origin();
 CREATE TABLE warranty_properties (
 	id VARCHAR(60) PRIMARY KEY,
 	name VARCHAR(200) NOT NULL UNIQUE,
@@ -202,10 +342,10 @@ func supplierGapsSetup(t *testing.T) *supplierGapsFixture {
 	if _, err := db.ExecContext(ctx, supplierGapsDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `ALTER TABLE products ADD COLUMN schema_version INT DEFAULT 0, ADD COLUMN origin_supplier_warehouse_id TEXT, ADD COLUMN shipping_class TEXT DEFAULT 'standard', ADD COLUMN tax_class TEXT DEFAULT 'standard';
-		ALTER TABLE product_variants ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
-		ALTER TABLE inventory_balances ADD COLUMN variant_id UUID;
-		ALTER TABLE suppliers ADD COLUMN tapin_token TEXT;`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE products ADD COLUMN IF NOT EXISTS schema_version INT DEFAULT 0, ADD COLUMN IF NOT EXISTS origin_supplier_warehouse_id TEXT, ADD COLUMN IF NOT EXISTS shipping_class TEXT DEFAULT 'standard', ADD COLUMN IF NOT EXISTS tax_class TEXT DEFAULT 'standard';
+		ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+		ALTER TABLE inventory_balances ADD COLUMN IF NOT EXISTS variant_id UUID;
+		ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS tapin_token TEXT;`); err != nil {
 		t.Fatal(err)
 	}
 	return &supplierGapsFixture{

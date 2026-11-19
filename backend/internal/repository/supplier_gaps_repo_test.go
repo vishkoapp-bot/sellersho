@@ -32,7 +32,9 @@ CREATE TABLE users (
 	locked_until TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID NOT NULL,
@@ -49,22 +51,115 @@ CREATE TABLE suppliers (
 	approved_by VARCHAR(50),
 	approved_at TIMESTAMPTZ,
 	rejection_reason TEXT,
-	signed_contract_version INT,
+	signed_contract_version INT DEFAULT 1 ,
 	tapin_shop_id VARCHAR(50),
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
 	default_markup_type VARCHAR(20),
 	default_markup_value DECIMAL(10,2),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text,
+	tapin_token text);
 CREATE TABLE stores (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	name VARCHAR(255) NOT NULL DEFAULT '',
+	slug VARCHAR(255) NOT NULL DEFAULT '',
+	owner_name VARCHAR(255) NOT NULL DEFAULT '',
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	active_categories text[] NOT NULL DEFAULT '{}'::text[],
+	active_plan_id character varying(20) NOT NULL DEFAULT 'trial'::character varying,
+	addon_section_title character varying(200),
+	contract_signature_code text,
+	custom_domain character varying(150),
+	custom_store_margin_override numeric(5,2),
+	description text,
+	is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+	logo text NOT NULL DEFAULT ''::text,
+	owner_phone text NOT NULL DEFAULT ''::text,
+	owner_type character varying(20) NOT NULL DEFAULT 'dropshipper'::character varying,
+	panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	plan_expires_at timestamp with time zone,
+	profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+	referral_code character varying(30),
+	referrer_seller_id character varying(50),
+	rejection_reason text,
+	related_section_title character varying(200),
+	seller_deals_widget_config jsonb,
+	signed_contract_version integer NOT NULL DEFAULT 1,
+	status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+	tagline text,
+	template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	template_id character varying(50),
+	total_sales bigint NOT NULL DEFAULT 0,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE platform_settings (
-	id INT PRIMARY KEY,
+	id INT  DEFAULT 1 PRIMARY KEY,
 	supplier_contract_version INT
-);
+ DEFAULT 2 ,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	early_withdrawal_fee_pct NUMERIC,
+	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+	settlement_day INTEGER,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribution_model character varying(20) NOT NULL DEFAULT 'last_touch'::character varying,
+	base_fee_f bigint NOT NULL DEFAULT 100000,
+	central_campaign_budget bigint NOT NULL DEFAULT 0,
+	central_profit_pct double precision NOT NULL DEFAULT 10,
+	central_store_markup_percent numeric(5,2) NOT NULL DEFAULT 10,
+	cookie_days integer NOT NULL DEFAULT 30,
+	default_item_weight_grams integer NOT NULL DEFAULT 500,
+	default_margin numeric(5,2) NOT NULL DEFAULT 20.00,
+	default_markup_type character varying(10) NOT NULL DEFAULT 'percent'::character varying,
+	default_markup_value numeric(10,2) NOT NULL DEFAULT 30,
+	delivery_followup_trigger_days integer NOT NULL DEFAULT 10,
+	delivery_hold_period_days integer NOT NULL DEFAULT 20,
+	increase_cap_pct double precision NOT NULL DEFAULT 10,
+	increase_locked boolean NOT NULL DEFAULT true,
+	ippanel_api_key text NOT NULL DEFAULT ''::text,
+	ippanel_base_url text NOT NULL DEFAULT 'https://edge.ippanel.com/v1'::text,
+	ippanel_enabled boolean NOT NULL DEFAULT false,
+	ippanel_pattern_code text NOT NULL DEFAULT ''::text,
+	ippanel_sender text NOT NULL DEFAULT '+983000505'::text,
+	max_dropshipper_margin_percent numeric(5,2) NOT NULL DEFAULT 100,
+	max_profit_margin numeric(5,2) NOT NULL DEFAULT 35.00,
+	min_profit_margin numeric(5,2) NOT NULL DEFAULT 5.00,
+	packaging_tariffs jsonb,
+	product_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	referral_commission_percent numeric(5,2) NOT NULL DEFAULT 2.00,
+	referral_is_enabled boolean NOT NULL DEFAULT true,
+	referral_subject_to_delivery_lock boolean NOT NULL DEFAULT true,
+	return_window_days integer NOT NULL DEFAULT 7,
+	seller_contract_text text NOT NULL DEFAULT ''::text,
+	seller_contract_version integer NOT NULL DEFAULT 2,
+	shipping_base_rate bigint NOT NULL DEFAULT 0,
+	shipping_per_kg bigint NOT NULL DEFAULT 0,
+	storage_fee_enabled boolean NOT NULL DEFAULT false,
+	storage_fee_free_days integer NOT NULL DEFAULT 30,
+	storage_fee_per_kg_day bigint NOT NULL DEFAULT 2000,
+	storage_fee_per_m3_day bigint NOT NULL DEFAULT 8000,
+	stuck_order_expiry_enabled boolean NOT NULL DEFAULT false,
+	supplier_contract_text text NOT NULL DEFAULT ''::text,
+	supplier_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	supplier_return_postal_charge bigint,
+	tapin_default_box_id text NOT NULL DEFAULT '4'::text,
+	tapin_platform_shop_id text,
+	tapin_platform_token text,
+	tapin_tariff_url text,
+	trial_catalog_quota integer NOT NULL DEFAULT 25,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	volumetric_divisor integer NOT NULL DEFAULT 5000,
+	wallet_min_withdrawal bigint NOT NULL DEFAULT 0,
+	wallet_spend_enabled boolean NOT NULL DEFAULT true,
+	wallet_withdraw_enabled boolean NOT NULL DEFAULT true,
+	warehouse_tariffs jsonb NOT NULL DEFAULT '{}'::jsonb);
 INSERT INTO platform_settings (id, supplier_contract_version) VALUES (1, 7);
 CREATE TABLE supplier_members (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -90,7 +185,17 @@ CREATE TABLE user_capabilities (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (user_id, capability)
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	revoked_at timestamp with time zone);
+-- TEST-02 round 5: re-seed the migration-canonical suppliers (sup-ali from
+-- 000011_direct_dropship; sup-khanoumi / sup-technolife / sup-filimo from
+-- 000002_seed_data). This fixture DROP TABLEs suppliers, deleting those rows
+-- for every later test in the shared disposable DB; tests that lock those
+-- accounts then fail at the row guard ("no rows in result set"). ON
+-- CONFLICT DO NOTHING keeps it safe if a row already exists. The fixture's
+-- own suppliers use different ids.
+INSERT INTO suppliers (id, owner_user_id, name) VALUES ('sup-ali',gen_random_uuid(),''),('sup-filimo',gen_random_uuid(),''),('sup-khanoumi',gen_random_uuid(),''),('sup-technolife',gen_random_uuid(),'') ON CONFLICT (id) DO NOTHING;
 `
 
 func supplierGapsRepoSetup(t *testing.T) (*sql.DB, context.Context) {

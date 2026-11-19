@@ -233,22 +233,45 @@ func TestFIN007MigrationRunnerReplay(t *testing.T) {
 // This fixture installs the complete canonical prior schema in an owned schema,
 // then invokes the canonical runner for FIN007. No production constraint is
 // removed and no issue is manufactured through a runtime writer.
-func fin007PriorSchema(t *testing.T) (*sql.DB, string) {
+// fin007ScopedDB opens a handle to a scratch schema with the given
+// search_path. The test body uses the strict schema-only handle so a missing
+// scratch relation can never silently fall back to a public table;
+// migration runs use the schema,public handle (see fin007MigrationDB).
+func fin007ScopedDB(t *testing.T, schema, searchPath string) *sql.DB {
 	t.Helper()
-	base := operationsDB(t)
-	schema := "fin007_legacy_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	opsExec(t, base, `CREATE SCHEMA `+schema)
 	u, err := url.Parse(os.Getenv("OPERATIONS_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	q.Set("search_path", schema)
+	q.Set("search_path", searchPath)
 	u.RawQuery = q.Encode()
 	db, err := testdb.Open(t, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}
+	return db
+}
+
+// fin007MigrationDB opens a migration-only handle to the same scratch schema
+// with public appended to the search_path. TEST-02: the shared disposable DB
+// owns pg_trgm in public, and CREATE EXTENSION IF NOT EXISTS is a
+// database-wide no-op, so the trigram opclass is invisible under a
+// schema-only search_path and migration 202611190002 fails with "operator
+// class gin_trgm_ops does not exist". Tables still land in the scratch
+// schema (first in the path); the test body keeps its strict schema-only
+// connection.
+func fin007MigrationDB(t *testing.T, schema string) *sql.DB {
+	t.Helper()
+	return fin007ScopedDB(t, schema, schema+",public")
+}
+
+func fin007PriorSchema(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	base := operationsDB(t)
+	schema := "fin007_legacy_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	opsExec(t, base, `CREATE SCHEMA `+schema)
+	db := fin007ScopedDB(t, schema, schema)
 	t.Cleanup(func() {
 		db.Close()
 		if _, e := base.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); e != nil {
@@ -257,14 +280,21 @@ func fin007PriorSchema(t *testing.T) (*sql.DB, string) {
 	})
 	// The shared disposable DB already owns uuid-ossp in public. Expose only
 	// that extension function, never public relation fallback, to this schema.
-	opsExec(t, db, `CREATE FUNCTION uuid_generate_v4() RETURNS UUID LANGUAGE SQL VOLATILE AS 'SELECT public.uuid_generate_v4()'`)
+	opsExec(t, db, `CREATE FUNCTION gen_random_uuid() RETURNS UUID LANGUAGE SQL VOLATILE AS 'SELECT public.gen_random_uuid()'`)
 	prior := t.TempDir()
 	entries, err := os.ReadDir("../../migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// TEST-02 (round 2): the "prior" set must be strictly OLDER than the
+	// coupon migration. The old "all except 202611170001" filter copied
+	// newer migrations too (treasury, PERF-01, ...), and the runner then
+	// refused the second full-dir run with "out-of-order migration
+	// 202611170001 precedes applied history" — it will not apply an older
+	// migration after newer history. Migration names sort by version, so a
+	// plain string comparison selects the true prior set.
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".up.sql") && !strings.HasPrefix(entry.Name(), "202611170001_") {
+		if strings.HasSuffix(entry.Name(), ".up.sql") && entry.Name() < "202611170001_" {
 			b, e := os.ReadFile(filepath.Join("../../migrations", entry.Name()))
 			if e != nil {
 				t.Fatal(e)
@@ -276,7 +306,9 @@ func fin007PriorSchema(t *testing.T) (*sql.DB, string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if _, err = migrations.Run(ctx, db, migrations.Options{Dir: prior, LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
+	migDB := fin007MigrationDB(t, schema)
+	defer migDB.Close()
+	if _, err = migrations.Run(ctx, migDB, migrations.Options{Dir: prior, LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	return db, schema
@@ -294,7 +326,7 @@ func (f fin007HistoricalRefundProvider) LookupRefund(ctx context.Context, q paym
 }
 
 func TestFIN007MigrationUnresolvedMoney(t *testing.T) {
-	db, _ := fin007PriorSchema(t)
+	db, schema := fin007PriorSchema(t)
 	f := opsFixtureNew(t, db)
 	warehouse := seedCanonicalWarehouseStock(t, db, f.product, f.supplier, 100)
 	ctx := context.Background()
@@ -330,7 +362,7 @@ func TestFIN007MigrationUnresolvedMoney(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, err := migrations.Run(bounded, db, migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
+	if _, err := migrations.Run(bounded, fin007MigrationDB(t, schema), migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range cases {
@@ -432,7 +464,7 @@ func TestFIN007MigrationUnresolvedMoney(t *testing.T) {
 }
 
 func TestFIN007HistoricalAggregateProgress(t *testing.T) {
-	db, _ := fin007PriorSchema(t)
+	db, schema := fin007PriorSchema(t)
 	f := opsFixtureNew(t, db)
 	ctx := context.Background()
 	for i, code := range []string{"AMBIG", " ambig "} {
@@ -453,7 +485,7 @@ func TestFIN007HistoricalAggregateProgress(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, err := migrations.Run(bounded, db, migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
+	if _, err := migrations.Run(bounded, fin007MigrationDB(t, schema), migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	r := NewOrderRepository(db)
@@ -627,7 +659,7 @@ func TestFIN007AdmissionDatabaseClock(t *testing.T) {
 }
 
 func TestFIN007HistoricalReleaseProof(t *testing.T) {
-	db, _ := fin007PriorSchema(t)
+	db, schema := fin007PriorSchema(t)
 	f := opsFixtureNew(t, db)
 	ctx := context.Background()
 	r := NewOrderRepository(db)
@@ -662,7 +694,7 @@ func TestFIN007HistoricalReleaseProof(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, err := migrations.Run(bounded, db, migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
+	if _, err := migrations.Run(bounded, fin007MigrationDB(t, schema), migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"inquiry_hold", "receipt_hold"} {

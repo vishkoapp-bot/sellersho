@@ -1,5 +1,18 @@
 const { execSync } = require('child_process');
 
+// TEST-02 guard: this is the LEGACY unguarded E2E suite. Its helpers hardcode
+// BASE_URL=http://localhost:8080, so it runs against whatever server happens to
+// listen there - it has no disposable-database guard and must never be pointed at
+// localhost application databases or production. It is RETIRED in favor of
+// `npm test` (frontend) and the isolated Go runner (scripts/test-isolated.py /
+// ~/workspace/.dev/test-isolated-native.sh). It runs only when the operator
+// explicitly opts in with SELLERSHO_ALLOW_UNGUARDED_E2E=1.
+if (process.env.SELLERSHO_ALLOW_UNGUARDED_E2E !== '1') {
+  console.error('REFUSED: run_all_tests.cjs is the retired unguarded E2E suite (BASE_URL http://localhost:8080, no disposable-database guard).');
+  console.error('Use `npm test` and the isolated Go runner instead. To run this legacy suite anyway, set SELLERSHO_ALLOW_UNGUARDED_E2E=1.');
+  process.exit(2);
+}
+
 console.log('================================================================');
 console.log(' DRUP DROPSHIP PLATFORM - AUTOMATED VERIFICATION SUITE');
 console.log('================================================================\n');

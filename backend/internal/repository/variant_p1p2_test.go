@@ -108,10 +108,71 @@ func p1p2TestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	ddl := []string{
 		`DROP TABLE IF EXISTS store_variant_defaults, store_variant_visibility, store_products, product_variant_images, product_variants, product_niches, products, stores CASCADE`,
-		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, slug VARCHAR(50) NOT NULL, owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper')`,
-		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100), preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50), supply_option VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, slug VARCHAR(50) NOT NULL, owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			name VARCHAR(255) NOT NULL DEFAULT '',
+			owner_name VARCHAR(255) NOT NULL DEFAULT '',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			active_categories text[] NOT NULL DEFAULT '{}'::text[],
+			active_plan_id character varying(20) NOT NULL DEFAULT 'trial'::character varying,
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			custom_domain character varying(150),
+			custom_store_margin_override numeric(5,2),
+			description text,
+			is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+			logo text NOT NULL DEFAULT ''::text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			owner_user_id uuid,
+			panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			plan_expires_at timestamp with time zone,
+			profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+			referral_code character varying(30),
+			referrer_seller_id character varying(50),
+			rejection_reason text,
+			related_section_title character varying(200),
+			seller_deals_widget_config jsonb,
+			signed_contract_version integer NOT NULL DEFAULT 1,
+			status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+			tagline text,
+			template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			template_id character varying(50),
+			total_sales bigint NOT NULL DEFAULT 0,
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255) NOT NULL, slug VARCHAR(255) UNIQUE NOT NULL, category_slug VARCHAR(100), supplier_id VARCHAR(50), original_price BIGINT NOT NULL, supplier_base_cost BIGINT NOT NULL, platform_margin BIGINT NOT NULL DEFAULT 0, is_original BOOLEAN NOT NULL DEFAULT TRUE, stock INT NOT NULL DEFAULT 0, image_url TEXT, specs JSONB DEFAULT '{}'::jsonb, description TEXT, warehouse_name VARCHAR(100) DEFAULT 'انبار مرکزی تهران'::character varying , preparation_days INT DEFAULT 1, supplier_warranty VARCHAR(100), is_featured BOOLEAN DEFAULT FALSE, is_special_deal BOOLEAN DEFAULT FALSE, fulfillment_method VARCHAR(50) DEFAULT 'warehouse'::character varying , supply_option VARCHAR(50) DEFAULT '1day'::character varying , is_active BOOLEAN NOT NULL DEFAULT TRUE, brand TEXT NOT NULL DEFAULT '', spn_number BIGINT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			measurement_version INTEGER NOT NULL DEFAULT 0,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			attribute_schema jsonb,
+			barcode character varying(64),
+			base_price_override bigint,
+			implicit_agreement boolean NOT NULL DEFAULT false,
+			implicit_agreement_until timestamp with time zone,
+			markup_type character varying(10),
+			markup_value numeric(10,2),
+			measurement_revision_id text,
+			measurement_source character varying(20),
+			origin_supplier_warehouse_id text,
+			packaging_height_mm integer,
+			packaging_length_mm integer,
+			packaging_width_mm integer,
+			product_type text NOT NULL DEFAULT 'legacy'::text,
+			rating numeric(3,2) NOT NULL DEFAULT 0,
+			reviews_count integer NOT NULL DEFAULT 0,
+			schema_version integer NOT NULL DEFAULT 0,
+			spn character varying(20),
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			warranty_property_id character varying(60))`,
 		`CREATE TABLE product_niches (product_id VARCHAR(50) NOT NULL, niche_id VARCHAR(50) NOT NULL, PRIMARY KEY (product_id, niche_id))`,
-		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'پیش‌فرض', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, selection JSONB NOT NULL DEFAULT '{}', combination_key TEXT, inventory_mode TEXT NOT NULL DEFAULT 'legacy', is_active BOOLEAN NOT NULL DEFAULT TRUE, min_cart_qty INT NOT NULL DEFAULT 1, max_cart_qty INT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE product_variants (id UUID  DEFAULT gen_random_uuid() PRIMARY KEY, product_id VARCHAR(50) NOT NULL, spnc VARCHAR(12) NOT NULL UNIQUE, spnc_number INT, variant_name TEXT NOT NULL DEFAULT 'پیش‌فرض', attributes JSONB NOT NULL DEFAULT '{}', is_default BOOLEAN NOT NULL DEFAULT FALSE, stock INT NOT NULL DEFAULT 0, supplier_base_cost BIGINT, selection JSONB NOT NULL DEFAULT '{}', combination_key TEXT, inventory_mode TEXT NOT NULL DEFAULT 'legacy', is_active BOOLEAN NOT NULL DEFAULT TRUE, min_cart_qty INT NOT NULL DEFAULT 1, max_cart_qty INT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			measurement_revision_id text,
+			measurement_source text,
+			measurement_status text NOT NULL DEFAULT 'unverified'::text,
+			measurement_version integer NOT NULL DEFAULT 0)`,
 		`CREATE TABLE product_variant_images (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), variant_id UUID NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE store_products (store_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, position INT NOT NULL DEFAULT 0, PRIMARY KEY (store_id, product_id))`,
 		`CREATE TABLE store_variant_visibility (store_id VARCHAR(50) NOT NULL, product_id VARCHAR(50) NOT NULL, variant_id UUID NOT NULL, is_visible BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (store_id, product_id, variant_id))`,
@@ -137,6 +198,8 @@ func p1p2TestDB(t *testing.T) *sql.DB {
 			t.Fatalf("seed failed: %v", err)
 		}
 	}
+	// TEST-02 round 4: the CASCADE drop above also dropped the inventory_effective_measurements view; re-create it.
+	createEffectiveMeasurementsView(t, db)
 	return db
 }
 

@@ -41,7 +41,7 @@ DROP TABLE IF EXISTS order_item_origins, supplier_shipments, ledger_entries, ord
 	product_niches, categories, products, audit_logs, supplier_members,
 	suppliers, users CASCADE;
 CREATE TABLE users (
-	id TEXT PRIMARY KEY,
+	id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY,
 	mobile VARCHAR(15) NOT NULL DEFAULT '',
 	full_name VARCHAR(100) NOT NULL DEFAULT '',
 	role VARCHAR(20) NOT NULL DEFAULT 'customer',
@@ -50,7 +50,13 @@ CREATE TABLE users (
 	password_hash VARCHAR(255) DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	email VARCHAR(255),
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	failed_login_attempts integer NOT NULL DEFAULT 0,
+	locked_until timestamp with time zone,
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id TEXT,
@@ -67,7 +73,7 @@ CREATE TABLE suppliers (
 	approved_by VARCHAR(50),
 	approved_at TIMESTAMPTZ,
 	rejection_reason TEXT,
-	signed_contract_version INT,
+	signed_contract_version INT DEFAULT 1 ,
 	tapin_shop_id VARCHAR(50),
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
@@ -77,16 +83,21 @@ CREATE TABLE suppliers (
 	suspended_by TEXT,
 	suspension_reason TEXT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	tapin_token text);
 CREATE TABLE supplier_members (
-	id TEXT PRIMARY KEY,
+	id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY,
 	supplier_id VARCHAR(50) NOT NULL,
 	user_id TEXT NOT NULL,
 	role_key VARCHAR(50) NOT NULL DEFAULT 'manager',
 	permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	invited_by uuid,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE audit_logs (
 	id TEXT PRIMARY KEY,
 	timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -94,7 +105,9 @@ CREATE TABLE audit_logs (
 	action TEXT NOT NULL DEFAULT '',
 	category TEXT NOT NULL DEFAULT '',
 	details TEXT NOT NULL DEFAULT ''
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE products (
 	id VARCHAR(50) PRIMARY KEY,
 	title VARCHAR(255) NOT NULL DEFAULT '',
@@ -116,18 +129,69 @@ CREATE TABLE products (
 	fulfillment_method VARCHAR(30) DEFAULT 'warehouse',
 	supply_option VARCHAR(30) DEFAULT '1day',
 	is_active BOOLEAN DEFAULT TRUE,
-	brand VARCHAR(100),
+	brand VARCHAR(100) DEFAULT ''::text ,
 	spn_number BIGINT,
-	specs JSONB,
+	specs JSONB DEFAULT '{}'::jsonb ,
 	length_mm INT, width_mm INT, height_mm INT, weight_grams INT,
 	shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_version INTEGER NOT NULL DEFAULT 0,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribute_schema jsonb,
+	barcode character varying(64),
+	base_price_override bigint,
+	implicit_agreement boolean NOT NULL DEFAULT false,
+	implicit_agreement_until timestamp with time zone,
+	markup_type character varying(10),
+	markup_value numeric(10,2),
+	measurement_revision_id text,
+	measurement_source character varying(20),
+	origin_supplier_warehouse_id text,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	product_type text NOT NULL DEFAULT 'legacy'::text,
+	rating numeric(3,2) NOT NULL DEFAULT 0,
+	reviews_count integer NOT NULL DEFAULT 0,
+	schema_version integer NOT NULL DEFAULT 0,
+	spn character varying(20),
+	warranty_property_id character varying(60));
 CREATE TABLE product_niches (product_id VARCHAR(50), niche_id VARCHAR(50));
-CREATE TABLE categories (id VARCHAR(50) PRIMARY KEY, slug VARCHAR(100) NOT NULL DEFAULT '');
-CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', slug VARCHAR(255) NOT NULL DEFAULT '', owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper', owner_name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id VARCHAR(50) NOT NULL DEFAULT '', referral_code VARCHAR(100) NOT NULL DEFAULT '', referrer_seller_id VARCHAR(50), signed_contract_version INT NOT NULL DEFAULT 0, custom_domain VARCHAR(255) NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, template_id VARCHAR(100) NOT NULL DEFAULT '', template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '');
-CREATE TABLE store_products (store_id VARCHAR(50), product_id VARCHAR(50));
+CREATE TABLE categories (id VARCHAR(50) PRIMARY KEY, slug VARCHAR(100) NOT NULL DEFAULT '',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			depth smallint NOT NULL DEFAULT 0,
+			gradient character varying(100),
+			icon_name character varying(50),
+			image_url text,
+			is_active boolean NOT NULL DEFAULT true,
+			parent_id character varying(50),
+			sort_order integer NOT NULL DEFAULT 0,
+			title character varying(100));
+CREATE TABLE stores (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255) NOT NULL DEFAULT '', slug VARCHAR(255) NOT NULL DEFAULT '', owner_type VARCHAR(50) NOT NULL DEFAULT 'dropshipper', owner_name VARCHAR(255) NOT NULL DEFAULT '', owner_user_id VARCHAR(50), profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id VARCHAR(50) NOT NULL DEFAULT '', referral_code VARCHAR(100) NOT NULL DEFAULT '', referrer_seller_id VARCHAR(50), signed_contract_version INT NOT NULL DEFAULT 0, custom_domain VARCHAR(255) NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, template_id VARCHAR(100) NOT NULL DEFAULT '', template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			active_categories text[] NOT NULL DEFAULT '{}'::text[],
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			description text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			plan_expires_at timestamp with time zone,
+			rejection_reason text,
+			related_section_title character varying(200),
+			status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+			tagline text,
+			updated_at timestamp with time zone NOT NULL DEFAULT now());
+CREATE TABLE store_products (store_id VARCHAR(50), product_id VARCHAR(50),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			position integer NOT NULL DEFAULT 0);
 CREATE TABLE supplier_shipping_methods (
 	owner_user_id TEXT NOT NULL,
 	method VARCHAR(20) NOT NULL,
@@ -135,7 +199,9 @@ CREATE TABLE supplier_shipping_methods (
 	requested_at TIMESTAMPTZ,
 	decided_at TIMESTAMPTZ,
 	decided_by TEXT
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE payout_requests (
 	id TEXT PRIMARY KEY,
 	store_id TEXT,
@@ -149,11 +215,18 @@ CREATE TABLE payout_requests (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	processed_at TIMESTAMPTZ,
 	transfer_reference TEXT
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	available_balance bigint NOT NULL DEFAULT 0,
+	payout_method character varying(30) NOT NULL DEFAULT 'manual_bank_transfer'::character varying,
+	rejection_reason text,
+	transfer_confirmed_at timestamp with time zone,
+	transfer_confirmed_by character varying(100),
+	transfer_date timestamp with time zone);
 CREATE TABLE orders (
-	id TEXT PRIMARY KEY,
+	id VARCHAR(50) PRIMARY KEY,
 	customer_user_id TEXT,
-	order_number TEXT DEFAULT '',
+	order_number VARCHAR(30) DEFAULT '',
 	store_id TEXT DEFAULT '',
 	store_name TEXT DEFAULT '',
 	total_amount BIGINT DEFAULT 0,
@@ -168,7 +241,7 @@ CREATE TABLE orders (
 	customer_address TEXT DEFAULT '',
 	customer_postal_code TEXT DEFAULT '',
 	status TEXT DEFAULT 'processing',
-	tracking_code TEXT DEFAULT '',
+	tracking_code VARCHAR(50) DEFAULT '',
 	shipping_cost BIGINT DEFAULT 0,
 	dropshipper_profit BIGINT DEFAULT 0,
 	platform_profit BIGINT DEFAULT 0,
@@ -190,9 +263,15 @@ CREATE TABLE orders (
 	idempotency_key TEXT, return_window_ends_at TIMESTAMPTZ,
 	seller_discount_amount BIGINT DEFAULT 0, discount_code TEXT DEFAULT '', coupon_discount_amount BIGINT,
 	shipping_quote_id TEXT
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	confirmed_at timestamp with time zone,
+	disputed_at timestamp with time zone,
+	payment_expires_at timestamp with time zone DEFAULT (now() + '00:15:00'::interval),
+	profit_released_at timestamp with time zone,
+	shipped_at timestamp with time zone);
 CREATE TABLE order_items (
-	id UUID PRIMARY KEY,
+	id UUID  DEFAULT gen_random_uuid() PRIMARY KEY,
 	order_id TEXT NOT NULL,
 	product_id VARCHAR(50) NOT NULL,
 	quantity INT NOT NULL DEFAULT 1,
@@ -202,7 +281,10 @@ CREATE TABLE order_items (
 	final_unit_price BIGINT DEFAULT 0,
 	discount_amount BIGINT DEFAULT 0,
 	variant_id TEXT, variant_name TEXT, variant_spnc TEXT
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	pricing_policy_version text NOT NULL DEFAULT 'legacy-unversioned'::text,
+	product_title_snapshot text);
 CREATE TABLE order_item_origins (
 	id TEXT PRIMARY KEY,
 	order_id TEXT NOT NULL,
@@ -214,7 +296,9 @@ CREATE TABLE order_item_origins (
 	supplier_warehouse_id TEXT,
 	origin_label TEXT DEFAULT '',
 	quantity INT DEFAULT 0
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE ledger_entries (
 	id TEXT PRIMARY KEY,
 	type VARCHAR(20) NOT NULL DEFAULT 'debit',
@@ -223,7 +307,11 @@ CREATE TABLE ledger_entries (
 	target_type TEXT NOT NULL DEFAULT '',
 	reason TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	date timestamp with time zone NOT NULL DEFAULT now(),
+	operator character varying(100),
+	related_order_or_dispute character varying(50));
 CREATE TABLE supplier_shipments (
 	id TEXT PRIMARY KEY,
 	order_id TEXT NOT NULL,
@@ -234,7 +322,23 @@ CREATE TABLE supplier_shipments (
 	status TEXT DEFAULT 'pending',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	tracking_number VARCHAR(255),
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	carrier character varying(100),
+	delivered_at timestamp with time zone,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	send_price bigint,
+	shipped_at timestamp with time zone,
+	supplier_notes text,
+	tapin_box_id text,
+	tapin_last_status text,
+	tapin_register_attempted_at timestamp with time zone,
+	tapin_registered_at timestamp with time zone,
+	tapin_service text);
 INSERT INTO users (id, mobile, full_name, role, is_active) VALUES
 	('user-owner-1', '09120000001', 'مالک الف', 'supplier', TRUE),
 	('user-owner-2', '09120000002', 'مالک ب', 'supplier', TRUE),

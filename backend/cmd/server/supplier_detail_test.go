@@ -28,11 +28,37 @@ const supplierDetailExtraDDL = `
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS tapin_token TEXT;
 CREATE TABLE IF NOT EXISTS product_variants (
-	id TEXT PRIMARY KEY,
+	id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY,
 	product_id TEXT NOT NULL,
 	spnc TEXT DEFAULT '',
 	variant_name TEXT DEFAULT ''
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+	combination_key text,
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	height_mm integer,
+	inventory_mode text NOT NULL DEFAULT 'legacy'::text,
+	is_active boolean NOT NULL DEFAULT true,
+	is_default boolean NOT NULL DEFAULT false,
+	length_mm integer,
+	max_cart_qty integer,
+	measurement_revision_id text,
+	measurement_source text,
+	measurement_status text NOT NULL DEFAULT 'unverified'::text,
+	measurement_version integer NOT NULL DEFAULT 0,
+	min_cart_qty integer NOT NULL DEFAULT 1,
+	sale_from timestamp with time zone,
+	sale_price bigint,
+	sale_to timestamp with time zone,
+	selection jsonb NOT NULL DEFAULT '{}'::jsonb,
+	shipping_class text,
+	spnc_number integer,
+	stock integer NOT NULL DEFAULT 0,
+	supplier_base_cost bigint,
+	tax_class text,
+	weight_grams integer,
+	width_mm integer);
 CREATE TABLE IF NOT EXISTS pending_approvals (
 	id TEXT PRIMARY KEY,
 	entity_type TEXT NOT NULL,
@@ -40,7 +66,7 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 	title TEXT NOT NULL DEFAULT '',
 	requested_data JSONB NOT NULL DEFAULT '{}'::jsonb,
 	requested_by TEXT NOT NULL,
-	status TEXT NOT NULL,
+	status TEXT  DEFAULT 'pending'::character varying NOT NULL,
 	rejection_reason TEXT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	reviewed_at TIMESTAMPTZ
@@ -56,11 +82,71 @@ CREATE TABLE IF NOT EXISTS supplier_warehouses (
 	phone TEXT DEFAULT '',
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	tapin_city_id integer,
+	tapin_province_id integer,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS platform_settings (
-	id INT PRIMARY KEY,
+	id INT  DEFAULT 1 PRIMARY KEY,
 	supplier_contract_version INT NOT NULL DEFAULT 2
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	early_withdrawal_fee_pct NUMERIC,
+	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+	settlement_day INTEGER,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribution_model character varying(20) NOT NULL DEFAULT 'last_touch'::character varying,
+	base_fee_f bigint NOT NULL DEFAULT 100000,
+	central_campaign_budget bigint NOT NULL DEFAULT 0,
+	central_profit_pct double precision NOT NULL DEFAULT 10,
+	central_store_markup_percent numeric(5,2) NOT NULL DEFAULT 10,
+	cookie_days integer NOT NULL DEFAULT 30,
+	default_item_weight_grams integer NOT NULL DEFAULT 500,
+	default_margin numeric(5,2) NOT NULL DEFAULT 20.00,
+	default_markup_type character varying(10) NOT NULL DEFAULT 'percent'::character varying,
+	default_markup_value numeric(10,2) NOT NULL DEFAULT 30,
+	delivery_followup_trigger_days integer NOT NULL DEFAULT 10,
+	delivery_hold_period_days integer NOT NULL DEFAULT 20,
+	increase_cap_pct double precision NOT NULL DEFAULT 10,
+	increase_locked boolean NOT NULL DEFAULT true,
+	ippanel_api_key text NOT NULL DEFAULT ''::text,
+	ippanel_base_url text NOT NULL DEFAULT 'https://edge.ippanel.com/v1'::text,
+	ippanel_enabled boolean NOT NULL DEFAULT false,
+	ippanel_pattern_code text NOT NULL DEFAULT ''::text,
+	ippanel_sender text NOT NULL DEFAULT '+983000505'::text,
+	max_dropshipper_margin_percent numeric(5,2) NOT NULL DEFAULT 100,
+	max_profit_margin numeric(5,2) NOT NULL DEFAULT 35.00,
+	min_profit_margin numeric(5,2) NOT NULL DEFAULT 5.00,
+	packaging_tariffs jsonb,
+	product_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	referral_commission_percent numeric(5,2) NOT NULL DEFAULT 2.00,
+	referral_is_enabled boolean NOT NULL DEFAULT true,
+	referral_subject_to_delivery_lock boolean NOT NULL DEFAULT true,
+	return_window_days integer NOT NULL DEFAULT 7,
+	seller_contract_text text NOT NULL DEFAULT ''::text,
+	seller_contract_version integer NOT NULL DEFAULT 2,
+	shipping_base_rate bigint NOT NULL DEFAULT 0,
+	shipping_per_kg bigint NOT NULL DEFAULT 0,
+	storage_fee_enabled boolean NOT NULL DEFAULT false,
+	storage_fee_free_days integer NOT NULL DEFAULT 30,
+	storage_fee_per_kg_day bigint NOT NULL DEFAULT 2000,
+	storage_fee_per_m3_day bigint NOT NULL DEFAULT 8000,
+	stuck_order_expiry_enabled boolean NOT NULL DEFAULT false,
+	supplier_contract_text text NOT NULL DEFAULT ''::text,
+	supplier_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+	supplier_return_postal_charge bigint,
+	tapin_default_box_id text NOT NULL DEFAULT '4'::text,
+	tapin_platform_shop_id text,
+	tapin_platform_token text,
+	tapin_tariff_url text,
+	trial_catalog_quota integer NOT NULL DEFAULT 25,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	volumetric_divisor integer NOT NULL DEFAULT 5000,
+	wallet_min_withdrawal bigint NOT NULL DEFAULT 0,
+	wallet_spend_enabled boolean NOT NULL DEFAULT true,
+	wallet_withdraw_enabled boolean NOT NULL DEFAULT true,
+	warehouse_tariffs jsonb NOT NULL DEFAULT '{}'::jsonb);
 INSERT INTO platform_settings (id, supplier_contract_version) VALUES (1, 3)
 	ON CONFLICT (id) DO UPDATE SET supplier_contract_version = 3;
 -- product_variants / pending_approvals / supplier_warehouses /

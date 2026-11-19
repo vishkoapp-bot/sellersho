@@ -47,6 +47,13 @@ func opsFixtureNew(t *testing.T, db *sql.DB) opsFixture {
 	opsExec(t, db, `INSERT INTO suppliers(id,name,owner_user_id,approval_status) VALUES($1,'ops supplier',$2,'approved')`, f.supplier, f.user)
 	opsExec(t, db, `INSERT INTO stores(id,name,slug,owner_name,owner_user_id,active_plan_id,status) VALUES($1,'ops store',$2,'ops',$3,'standard','active')`, f.store, f.slug, f.user)
 	opsExec(t, db, `INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status,warehouse_name) VALUES($1,'ops product',$1,$2,2000,1000,0,100,100,100,100,100,'verified','ops warehouse')`, f.product, f.supplier)
+	// TEST-02 round 4: the destructive fixtures drop products CASCADE,
+	// which drops both views the repo queries through (measurements +
+	// return-bin sources). operationsDB tests use the shared DB and no
+	// fixture restores them, so restore both here — CREATE OR REPLACE
+	// keeps it idempotent when nothing was dropped.
+	createEffectiveMeasurementsView(t, db)
+	createReturnBinSourcesView(t, db)
 	if err := NewSupplierRepository(db).RecordProductMeasurement(context.Background(), f.product, f.user, 100, 100, 100, 100, "measured operations fixture"); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +208,16 @@ func TestOperationsSLAThresholdAndManualOverride(t *testing.T) {
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
 	ctx := context.Background()
+	// TEST-02 round 5: this test calls refreshSupplierSLACandidate
+	// directly instead of the global RefreshSupplierSLA. The global
+	// refresh takes at most 100 candidates per pass (ordered by
+	// assessed_at NULLS FIRST), gives each only 300ms, and records a
+	// 5-minute retry exclusion for any candidate that times out — so
+	// in a shared DB with hundreds of suppliers it can miss this
+	// supplier entirely (r5b: the shipping-methods row was never
+	// created). The threshold/override logic under test lives in
+	// the candidate function; the global sweep is exercised by the
+	// background-job runner tests.
 	id, _ := opsOrder(t, db, f, true)
 	add := func(name, status string) {
 		shipped := "NULL"
@@ -209,7 +226,7 @@ func TestOperationsSLAThresholdAndManualOverride(t *testing.T) {
 		}
 		opsExec(t, db, `INSERT INTO supplier_shipments(id,order_id,supplier_id,shipping_address,customer_phone,customer_name,status,created_at,shipped_at) VALUES($1,$2,$3,'{}','09123456789','ops',$4,NOW()-INTERVAL '3 days',`+shipped+`)`, name, id, f.supplier, status)
 	}
-	if _, e := RefreshSupplierSLA(ctx, db); e != nil {
+	if _, e := refreshSupplierSLACandidate(ctx, db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	var eligible bool
@@ -221,7 +238,7 @@ func TestOperationsSLAThresholdAndManualOverride(t *testing.T) {
 		add(fmt.Sprintf("sla-%s-%d", f.supplier, i), "shipped")
 	}
 	add("sla-fail-"+f.supplier, "failed")
-	if _, e := RefreshSupplierSLA(ctx, db); e != nil {
+	if _, e := refreshSupplierSLACandidate(ctx, db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	db.QueryRow(`SELECT eligible FROM supplier_sla_metrics WHERE supplier_id=$1`, f.supplier).Scan(&eligible)
@@ -229,7 +246,7 @@ func TestOperationsSLAThresholdAndManualOverride(t *testing.T) {
 		t.Fatal("98 is not ABOVE 98")
 	}
 	add("sla-extra-"+f.supplier, "shipped")
-	if _, e := RefreshSupplierSLA(ctx, db); e != nil {
+	if _, e := refreshSupplierSLACandidate(ctx, db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	var status, actor string
@@ -238,7 +255,7 @@ func TestOperationsSLAThresholdAndManualOverride(t *testing.T) {
 		t.Fatal(status, actor)
 	}
 	opsExec(t, db, `UPDATE supplier_shipping_methods SET status='disabled',decided_by='manual-admin' WHERE owner_user_id=$1 AND method='direct'`, f.user)
-	if _, e := RefreshSupplierSLA(ctx, db); e != nil {
+	if _, e := refreshSupplierSLACandidate(ctx, db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	db.QueryRow(`SELECT status FROM supplier_shipping_methods WHERE owner_user_id=$1 AND method='direct'`, f.user).Scan(&status)
@@ -352,9 +369,15 @@ func TestOperationsPickingRouteCanonicalQuantities(t *testing.T) {
 func TestOperationsAutomaticSLARevocation(t *testing.T) {
 	db := operationsDB(t)
 	f := opsFixtureNew(t, db)
+	// TEST-02 round 5: direct per-candidate refresh, not the global
+	// RefreshSupplierSLA — see TestOperationsSLAThresholdAndManual-
+	// Override: the global sweep's 100-candidate limit, 300ms
+	// per-candidate timeout, and 5-minute retry exclusion can skip
+	// this supplier in a shared DB (r5b: the second refresh never
+	// re-assessed it, so the auto-revoke never fired).
 	order, _ := opsOrder(t, db, f, true)
 	opsExec(t, db, `INSERT INTO supplier_shipments(id,order_id,supplier_id,shipping_address,customer_phone,customer_name,status,created_at,shipped_at) VALUES($1,$2,$3,'{}','09123456789','ops','shipped',NOW()-INTERVAL '3 days',NOW()-INTERVAL '2 days')`, "ss-"+uuid.NewString(), order, f.supplier)
-	if _, e := RefreshSupplierSLA(context.Background(), db); e != nil {
+	if _, e := refreshSupplierSLACandidate(context.Background(), db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	var status string
@@ -363,7 +386,7 @@ func TestOperationsAutomaticSLARevocation(t *testing.T) {
 		t.Fatal(status)
 	}
 	opsExec(t, db, `UPDATE supplier_shipments SET status='failed' WHERE supplier_id=$1`, f.supplier)
-	if _, e := RefreshSupplierSLA(context.Background(), db); e != nil {
+	if _, e := refreshSupplierSLACandidate(context.Background(), db, f.supplier); e != nil {
 		t.Fatal(e)
 	}
 	db.QueryRow(`SELECT status FROM supplier_shipping_methods WHERE owner_user_id=$1 AND method='direct'`, f.user).Scan(&status)

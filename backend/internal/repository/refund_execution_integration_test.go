@@ -11,6 +11,7 @@ import (
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/payment"
+	"github.com/google/uuid"
 )
 
 type fin003Processor interface {
@@ -96,7 +97,7 @@ func TestFIN003UnavailableOriginalProviderKeepsPending(t *testing.T) {
 func TestFIN003LostRefundResponseReconcilesWithoutSecondTransfer(t *testing.T) {
 	db, order, id, p := fin003ReadyRefund(t)
 	ctx := context.Background()
-	fake := &fin003LocalRefundProvider{lost: true, status: "succeeded"}
+	fake := &fin003LocalRefundProvider{lost: true, status: "succeeded", reference: "fin003-lost-" + uuid.NewString()[:12]}
 	// Provider I/O must not hold an order/account transaction open.
 	fake.onSend = func() {
 		tx, err := db.Begin()
@@ -171,26 +172,50 @@ func TestFIN003PopulatedMigrationRollbackRefusesEvidenceLoss(t *testing.T) {
 }
 
 func TestFIN003BoundedReconciliationCannotStarveBehindUnknownRefund(t *testing.T) {
-	db, _, _, processor := fin003ReadyRefund(t)
+	db, _, first, processor := fin003ReadyRefund(t)
 	// The runner isolates top-level tests, so both claims share this database.
 	_, _, second, _ := fin003ReadyRefund(t)
 	r := NewOrderRepository(db)
 	fake := &fin003LocalRefundProvider{status: "unknown"}
-	for i := 0; i < 2; i++ {
-		if _, err := r.ReconcileOrderRefunds(context.Background(), fake, 1); err != nil {
+	// TEST-02 round 5: ReconcileOrderRefunds picks the OLDEST eligible
+	// claim globally (ORDER BY created_at, batch 1), so in the shared
+	// DB the first calls process earlier tests' pending claims, not
+	// this test's two — the original two-call form left this test's
+	// first claim at 0 attempts. Loop (bounded) until both of this
+	// test's claims have been attempted once. Each attempted claim is
+	// deferred 5 min by poll_state, so within the test window no claim
+	// is attempted twice; per-obligation counts (the same WHERE
+	// obligation_id=$1 pattern
+	// TestFIN003UnavailableOriginalProviderKeepsPending uses) prove
+	// both claims were reached exactly once, which is the "no
+	// starvation" intent. A call that errors on an earlier test's
+	// claim is logged, not fatal — the loop still advances to the
+	// next oldest claim on the next call.
+	attempts := func(id string) int {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM order_refund_attempts WHERE obligation_id=$1`, id).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
+		return n
 	}
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM order_refund_attempts`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("first unknown claim starved later outbox work: attempts=%d %v", n, err)
+	reached := false
+	for i := 0; i < 30; i++ {
+		if _, err := r.ReconcileOrderRefunds(context.Background(), fake, 1); err != nil {
+			t.Logf("reconcile call %d error (continuing): %v", i, err)
+		}
+		if attempts(first) == 1 && attempts(second) == 1 {
+			reached = true
+			break
+		}
+	}
+	if !reached {
+		t.Fatalf("first unknown claim starved later outbox work: first attempts=%d second attempts=%d", attempts(first), attempts(second))
 	}
 	_ = processor
-	_ = second
 }
 func TestFIN003ConcurrentRefundWorkersSendAtMostOnce(t *testing.T) {
 	db, _, id, p := fin003ReadyRefund(t)
-	fake := &fin003LocalRefundProvider{status: "succeeded"}
+	fake := &fin003LocalRefundProvider{status: "succeeded", reference: "fin003-concurrent-" + uuid.NewString()[:12]}
 	start := make(chan struct{})
 	done := make(chan error, 2)
 	for i := 0; i < 2; i++ {

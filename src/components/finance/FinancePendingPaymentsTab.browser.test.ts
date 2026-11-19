@@ -16,7 +16,7 @@ test('admin refund form retains operation after lost response and reports a requ
   }else{res.setHeader('Content-Type','text/html');res.end('<div id="notice"></div><div id="root"></div><script>'+bundle.outputFiles[0].text+'</script>');}
  });
  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const address=server.address();assert.ok(address&&typeof address==='object');
- const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})});
+ const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})}).catch(async e=>{await new Promise<void>(resolve=>server.close(()=>resolve()));throw e;});
  try{
   const page=await browser.newPage();await page.goto(`http://127.0.0.1:${address.port}/admin-refund-fixture`);
   const fill=async()=>{await page.waitForSelector('form');await page.$$eval('form input',inputs=>{['paid-order','2000000','partial refund'].forEach((value,index)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(inputs[index],value);inputs[index].dispatchEvent(new Event('input',{bubbles:true}));});});};

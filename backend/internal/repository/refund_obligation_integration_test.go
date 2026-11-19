@@ -14,8 +14,39 @@ import (
 	"github.com/google/uuid"
 )
 
+// fin003RestorePrincipalGuards re-creates the two FIN003 migration
+// triggers (202611150004) that destructive fixtures destroy by
+// dropping payment_transactions / orders. See fin003PendingOrder.
+func fin003RestorePrincipalGuards(t *testing.T) {
+	t.Helper()
+	db := operationsDB(t)
+	for _, q := range []string{
+		`DROP TRIGGER IF EXISTS payment_refund_source_identity ON payment_transactions`,
+		`CREATE TRIGGER payment_refund_source_identity BEFORE UPDATE ON payment_transactions FOR EACH ROW EXECUTE FUNCTION guard_payment_refund_source_identity()`,
+		`DROP TRIGGER IF EXISTS order_refund_customer_identity ON orders`,
+		`CREATE TRIGGER order_refund_customer_identity BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION guard_order_refund_customer_identity()`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Logf("fin003 principal guard restore: %s: %v (relying tests will fail honestly if the guard is truly gone)", q, err)
+		}
+	}
+}
+
 func fin003PendingOrder(t *testing.T) (*sql.DB, opsFixture, string, string, string) {
 	t.Helper()
+	// TEST-02 round 5: restore the FIN003 principal guards. Destructive
+	// fixtures (notifications_writers, order_team03, return_money_gap6,
+	// return_shipping_settlement, order_return_destination) DROP
+	// payment_transactions / orders and rebuild them WITHOUT the
+	// migration triggers, so later FIN003 tests that assert tampering
+	// is rejected (SQL-bypass, VerificationSnapshot) fail in the full
+	// run while passing in isolation. The trigger FUNCTIONS survive
+	// (DROP TABLE does not drop functions) and the rebuilt tables keep
+	// the columns the functions read (compensation_capture, rrn), so
+	// re-creating the two triggers restores the guard. Non-fatal if
+	// the functions are gone — the relying tests then fail honestly
+	// on their own assertions.
+	fin003RestorePrincipalGuards(t)
 	db, f, warehouse, _, _ := inv06Placed(t, false, 1)
 	order, token := opsOrder(t, db, f, false)
 	opsExec(t, db, `UPDATE order_items SET wholesale_cost=1000000,seller_margin=9000000,final_unit_price=10000000 WHERE order_id=$1`, order)
@@ -408,8 +439,22 @@ func TestFIN003ExpiryPreservesPreviouslyConfirmedReceipt(t *testing.T) {
 	}
 	opsExec(t, db, `UPDATE orders SET payment_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, order)
 	expired, err := NewOrderRepository(db).ExpireUnpaidOrders(ctx)
-	if err != nil || len(expired) != 1 {
-		t.Fatalf("expiry %d %v", len(expired), err)
+	// TEST-02 round 5: ExpireUnpaidOrders expires EVERY unpaid order
+	// past its deadline in the shared DB, so earlier tests' unpaid
+	// orders are in the list too (got 2 in the full run). Scope the
+	// assertion to this test's own order being expired, not to the
+	// global list length.
+	if err != nil {
+		t.Fatalf("expiry %v", err)
+	}
+	found := false
+	for _, e := range expired {
+		if e.ID == order {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expiry: own order %s not in expired list of %d", order, len(expired))
 	}
 	fin003AssertCancelledMoney(t, db, f, order)
 }

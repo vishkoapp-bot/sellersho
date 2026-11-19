@@ -38,6 +38,14 @@ func TestMoneyCatalogQuarantineCurrentSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// TEST-02 round 4: the catalog list needs the central store for its
+	// scope (resolveListStore returns nil without it -> 500), but an
+	// earlier fixture DROP TABLEs stores without restoring the
+	// migrated pre-seed row. Restore it — same values as migration
+	// 000002_seed_data.up.sql.
+	if _, err = db.Exec(`INSERT INTO stores (id, name, slug, owner_type, owner_name, profit_margin_percent, active_plan_id, signed_contract_version, total_sales) VALUES ('store-central', 'فروشگاه رسمی مرکزی سلرشو', 'central', 'central', 'مدیریت مرکزی سلرشو', 0.00, 'vip', 2, 184500000) ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	var productID string
 	if err = db.QueryRow(`SELECT id FROM products WHERE is_active ORDER BY id LIMIT 1`).Scan(&productID); err != nil {
 		t.Fatal(err)

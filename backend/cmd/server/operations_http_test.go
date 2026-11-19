@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,11 +92,27 @@ func TestOperationsAdHTTPAndProxySpoof(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("webdriver not rejected", w.Body.String())
 	}
-	for i := 0; i < 60; i++ {
-		_, _ = repo.AllowAdChallenge(ctx, "rate-test-"+campaign)
+	// TEST-02 round 4: the limit bucket is the wall-clock minute
+	// (date_trunc('minute', NOW())), so a 60-call sequence straddling
+	// :00 splits across two buckets and the 61st call lands in a fresh
+	// bucket (count 1, allowed). That is a test artifact, not an
+	// unenforced limit: retry the sequence with a fresh key (at most 3
+	// attempts) and require the 61st call to be refused in one of
+	// them. A genuinely unenforced limit fails every attempt.
+	limited := false
+	for attempt := 0; attempt < 3 && !limited; attempt++ {
+		key := "rate-test-" + campaign + "-" + strconv.Itoa(attempt)
+		for i := 0; i < 60; i++ {
+			_, _ = repo.AllowAdChallenge(ctx, key)
+		}
+		if ok, e := repo.AllowAdChallenge(ctx, key); e != nil {
+			t.Fatal("rate limit check failed", e)
+		} else if !ok {
+			limited = true
+		}
 	}
-	if ok, e := repo.AllowAdChallenge(ctx, "rate-test-"+campaign); e != nil || ok {
-		t.Fatal("rate limit not enforced", e)
+	if !limited {
+		t.Fatal("rate limit not enforced")
 	}
 	t.Setenv("TRUSTED_PROXY_CIDRS", "172.18.0.0/16")
 	r := httptest.NewRequest("GET", "/", nil)

@@ -14,8 +14,8 @@ func TestInboundReviewASNCumulativeReceipt(t *testing.T) {
 	db := skuScopedDB(t, schema)
 	ctx := context.Background()
 	for _, q := range []string{
-		`ALTER TABLE inbound_shipments ADD COLUMN supplier_id TEXT,ADD COLUMN items JSONB,ADD COLUMN scanned_items JSONB DEFAULT '[]',ADD COLUMN started_receiving_at TIMESTAMPTZ,ADD COLUMN completed_at TIMESTAMPTZ`,
-		`CREATE TABLE inbound_receiving_logs(id TEXT PRIMARY KEY,inbound_id TEXT,staff_user_id TEXT,action TEXT,scanned_item JSONB,created_at TIMESTAMPTZ)`,
+		`ALTER TABLE inbound_shipments ADD COLUMN IF NOT EXISTS supplier_id TEXT,ADD COLUMN IF NOT EXISTS items JSONB,ADD COLUMN IF NOT EXISTS scanned_items JSONB DEFAULT '[]',ADD COLUMN IF NOT EXISTS started_receiving_at TIMESTAMPTZ,ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`,
+		`CREATE TABLE inbound_receiving_logs(id TEXT PRIMARY KEY,inbound_id TEXT,staff_user_id TEXT,action TEXT,scanned_item JSONB,created_at TIMESTAMPTZ DEFAULT now() )`,
 		`INSERT INTO products(id,supplier_id,stock,schema_version) VALUES('legacy','s',0,0)`,
 		`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled,supplier_warehouse_id) VALUES('asn-source','legacy','s','supplier','supplier','supplier-warehouse:sw1','sellable',5,TRUE,'sw1')`,
 		`INSERT INTO inbound_shipments(id,status,warehouse_id,supplier_id,items) VALUES('INB-cumulative','in_transit','w1','s','[{"product_id":"legacy","quantity":5}]')`,

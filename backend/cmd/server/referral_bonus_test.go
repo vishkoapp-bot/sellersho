@@ -41,6 +41,14 @@ func setupTestPostgresDB(t *testing.T) *sql.DB {
 func TestReferralBonusLifecycle(t *testing.T) {
 	db := setupTestPostgresDB(t)
 	defer db.Close()
+	// TEST-02 round 4: CreateStoreWithBonus does INSERT INTO
+	// referral_bonuses ... ON CONFLICT (referred_store_id), but the
+	// referral_bonuses rebuilds in this package carry no UNIQUE on
+	// referred_store_id, so the insert fails with 42P10. Restore the
+	// migrated unique index first.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS referral_bonuses_referred_store_id_key ON referral_bonuses(referred_store_id)`); err != nil {
+		t.Fatalf("restore referral_bonuses unique index: %v", err)
+	}
 
 	ctx := context.Background()
 	storeRepo := repository.NewStoreRepository(db)
@@ -272,6 +280,14 @@ func TestReferralBonusLifecycle(t *testing.T) {
 func TestReferredStoresWithStatus(t *testing.T) {
 	db := setupTestPostgresDB(t)
 	defer db.Close()
+	// TEST-02 round 4: CreateStoreWithBonus does INSERT INTO
+	// referral_bonuses ... ON CONFLICT (referred_store_id), but the
+	// referral_bonuses rebuilds in this package carry no UNIQUE on
+	// referred_store_id, so the insert fails with 42P10. Restore the
+	// migrated unique index first.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS referral_bonuses_referred_store_id_key ON referral_bonuses(referred_store_id)`); err != nil {
+		t.Fatalf("restore referral_bonuses unique index: %v", err)
+	}
 
 	ctx := context.Background()
 	storeRepo := repository.NewStoreRepository(db)
@@ -373,6 +389,14 @@ func TestReferredStoresWithStatus(t *testing.T) {
 func TestRequestPayout_RejectsLockedBonusOnly(t *testing.T) {
 	db := setupTestPostgresDB(t)
 	defer db.Close()
+	// TEST-02 round 4: CreateStoreWithBonus does INSERT INTO
+	// referral_bonuses ... ON CONFLICT (referred_store_id), but the
+	// referral_bonuses rebuilds in this package carry no UNIQUE on
+	// referred_store_id, so the insert fails with 42P10. Restore the
+	// migrated unique index first.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS referral_bonuses_referred_store_id_key ON referral_bonuses(referred_store_id)`); err != nil {
+		t.Fatalf("restore referral_bonuses unique index: %v", err)
+	}
 
 	ctx := context.Background()
 	storeRepo := repository.NewStoreRepository(db)

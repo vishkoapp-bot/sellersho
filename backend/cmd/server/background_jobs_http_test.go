@@ -19,7 +19,25 @@ func jobPaymentFixture(t *testing.T, db *sql.DB) (string, string) {
 	t.Helper()
 	id := "job-pay-" + uuid.NewString()[:12]
 	var product string
+	// TEST-02 round 4: the picked product's supplier row may not exist.
+	// TestAdminRequestLookupEndToEnd (alphabetically earlier) DROPs and
+	// reseeds suppliers, so the migrated products' supplier_ids can all
+	// point at deleted rows; CreatePaymentTransaction's finance guard
+	// then fails locking the missing supplier ("acquire transaction row
+	// guard: sql: no rows in result set") and the token endpoint 500s.
+	// Re-seed the picked product's supplier (same pattern as the
+	// settlement supplier seed in finance_lifecycle_test.go).
 	if err := db.QueryRow(`SELECT id FROM products WHERE stock>2 LIMIT 1`).Scan(&product); err != nil {
+		t.Fatal(err)
+	}
+	var supplierID string
+	if err := db.QueryRow(`SELECT supplier_id FROM products WHERE id=$1`, product).Scan(&supplierID); err != nil {
+		t.Fatal(err)
+	}
+	// Two parameters (not one $1 reused): a single untyped $1 used both
+	// in the SELECT list and the WHERE clause makes Postgres deduce
+	// TEXT for one use and VARCHAR(50) for the other (42P08).
+	if _, err := db.Exec(`INSERT INTO suppliers(id, name, approval_status) SELECT $1, 'Payment Fixture Supplier', 'approved' WHERE NOT EXISTS (SELECT 1 FROM suppliers WHERE id=$2)`, supplierID, supplierID); err != nil {
 		t.Fatal(err)
 	}
 	_, err := db.Exec(`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code) VALUES($1,$1,'store-central','job',2000,2000,'job','09123456789','x','x','x','1234512345',$1)`, id)

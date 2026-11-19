@@ -302,11 +302,17 @@ func lockOrderFinanceTx(ctx context.Context, tx *sql.Tx, orderID string, wallet 
 }
 
 func discoverOrderFinanceAccountsTx(ctx context.Context, tx *sql.Tx, orderID string, wallet bool) ([]FinancialAccount, error) {
+	// TEST-02 round 4: compare the ids as text. order_items.id is UUID
+	// in the migrated schema but TEXT/VARCHAR(50) in several test
+	// rebuilds, while order_item_origins.order_item_id is UUID; the
+	// bare join fails with 42883 whenever the standing order_items
+	// rebuild is TEXT. In production both sides are UUIDs, so the text
+	// comparison is exact.
 	rows, err := tx.QueryContext(ctx, `SELECT 'seller',store_id FROM orders WHERE id=$1 AND COALESCE(store_id,'')<>''
  UNION SELECT 'seller',referrer_seller_id FROM orders WHERE id=$1 AND COALESCE(referrer_seller_id,'')<>''
  UNION SELECT 'seller',b.referrer_store_id FROM referral_bonuses b JOIN orders o ON o.store_id=b.referred_store_id WHERE o.id=$1 AND COALESCE(b.referrer_store_id,'')<>''
  UNION SELECT 'supplier',p.supplier_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=$1 AND COALESCE(p.supplier_id,'')<>''
- UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id=o.order_item_id WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
+ UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id::text=o.order_item_id::text WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
 	if err != nil {
 		return nil, err
 	}

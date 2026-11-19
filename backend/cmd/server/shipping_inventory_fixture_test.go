@@ -31,8 +31,17 @@ func seedShippingInventoryFixtureLot(t *testing.T, db *sql.DB, product, supplier
 	if supplierWarehouse != "" {
 		kind, key = "supplier", "supplier-warehouse:"+supplierWarehouse
 	}
+	// TEST-02 round 4: the seed is NOT idempotent — gap13Setup runs once
+	// per test against the shared disposable DB, and inventory_balances is
+	// NOT in its DROP list, so the second caller re-inserts the same lot
+	// and hits the partial unique index
+	// inventory_balances_unallocated_unique
+	// (product_id, owner_type, location_type, location_key, status)
+	// WHERE variant_id IS NULL (migration 202611110003). Resetting the
+	// lot to the seeded quantity restores the fresh-world-per-test
+	// semantics the fixture promises.
 	if _, err := db.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,warehouse_id,supplier_warehouse_id)
-		VALUES($1,$2,$3,'supplier',$4,$5,'sellable',$6,NULLIF($7,''),NULLIF($8,''))`, uuid.NewString(), product, supplier, kind, key, quantity, warehouse, supplierWarehouse); err != nil {
+		VALUES($1,$2,$3,'supplier',$4,$5,'sellable',$6,NULLIF($7,''),NULLIF($8,'')) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=EXCLUDED.quantity`, uuid.NewString(), product, supplier, kind, key, quantity, warehouse, supplierWarehouse); err != nil {
 		t.Fatal(err)
 	}
 }

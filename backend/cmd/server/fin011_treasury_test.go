@@ -54,6 +54,13 @@ func TestFIN011TreasuryHoldIncludesPendingCommission(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("fin011h")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	// TEST-02 round 4: the hold is a GLOBAL aggregate and earlier tests'
+	// orders (e.g. the coupon race test's orders on cap-store-2) leave
+	// unreleased profit behind — the FIN-005 immutability triggers mean
+	// their receipts cannot be cleaned up. Assert the fixture's own
+	// contribution as a delta against a pre-seeding reading (same
+	// reasoning as treasuryDeltaPtr).
+	pre := fin011TreasuryPosition(t, db)
 	referred, referrer := fin011TreasuryStores(t, db, f)
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{
 		StoreID: referred, Item: false,
@@ -62,14 +69,14 @@ func TestFIN011TreasuryHoldIncludesPendingCommission(t *testing.T) {
 		ReferrerStoreID: referrer, ReferralCommission: 10000,
 	})
 	pos := fin011TreasuryPosition(t, db)
-	if pos.UnreleasedProfitHold != 8510000 {
-		t.Fatalf("unreleasedProfitHold=%d want 8510000 (8,500,000 profit + 10,000 pending commission)", pos.UnreleasedProfitHold)
+	if pos.UnreleasedProfitHold-pre.UnreleasedProfitHold != 8510000 {
+		t.Fatalf("unreleasedProfitHold delta=%d want 8510000 (8,500,000 profit + 10,000 pending commission; pre=%d post=%d)", pos.UnreleasedProfitHold-pre.UnreleasedProfitHold, pre.UnreleasedProfitHold, pos.UnreleasedProfitHold)
 	}
-	if pos.HeldInOrders != 8510000 {
-		t.Fatalf("heldInOrders=%d want 8510000", pos.HeldInOrders)
+	if pos.HeldInOrders-pre.HeldInOrders != 8510000 {
+		t.Fatalf("heldInOrders delta=%d want 8510000 (pre=%d post=%d)", pos.HeldInOrders-pre.HeldInOrders, pre.HeldInOrders, pos.HeldInOrders)
 	}
-	if pos.HeldOrderCount != 1 {
-		t.Fatalf("heldOrderCount=%d want 1", pos.HeldOrderCount)
+	if pos.HeldOrderCount-pre.HeldOrderCount != 1 {
+		t.Fatalf("heldOrderCount delta=%d want 1 (pre=%d post=%d)", pos.HeldOrderCount-pre.HeldOrderCount, pre.HeldOrderCount, pos.HeldOrderCount)
 	}
 }
 
@@ -81,6 +88,10 @@ func TestFIN011TreasuryPlatformEarnedNetsReleasedCommission(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("fin011e")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	// Same delta reasoning as the hold test above: PlatformEarned is a
+	// global aggregate; assert each order's contribution against the
+	// pre-seeding reading.
+	pre := fin011TreasuryPosition(t, db)
 	referred, referrer := fin011TreasuryStores(t, db, f)
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{
 		StoreID: referred, Item: false,
@@ -89,8 +100,8 @@ func TestFIN011TreasuryPlatformEarnedNetsReleasedCommission(t *testing.T) {
 		Status: "delivered", ProfitReleased: true,
 		ReferrerStoreID: referrer, ReferralCommission: 10000, CommissionReleased: true,
 	})
-	if pos := fin011TreasuryPosition(t, db); pos.PlatformEarned != 490000 {
-		t.Fatalf("platformEarned=%d want 490000 (500,000 realised profit − 10,000 released commission)", pos.PlatformEarned)
+	if pos := fin011TreasuryPosition(t, db); pos.PlatformEarned-pre.PlatformEarned != 490000 {
+		t.Fatalf("platformEarned delta=%d want 490000 (500,000 realised profit − 10,000 released commission; pre=%d post=%d)", pos.PlatformEarned-pre.PlatformEarned, pre.PlatformEarned, pos.PlatformEarned)
 	}
 	// A second order whose commission is NOT released: its 500,000
 	// platform profit counts in full; only the first order's released
@@ -102,7 +113,7 @@ func TestFIN011TreasuryPlatformEarnedNetsReleasedCommission(t *testing.T) {
 		Status: "delivered", ProfitReleased: true,
 		ReferrerStoreID: referrer, ReferralCommission: 10000, CommissionReleased: false,
 	})
-	if pos := fin011TreasuryPosition(t, db); pos.PlatformEarned != 990000 {
-		t.Fatalf("platformEarned=%d want 990000 (1,000,000 realised profit − 10,000 released commission only)", pos.PlatformEarned)
+	if pos := fin011TreasuryPosition(t, db); pos.PlatformEarned-pre.PlatformEarned != 990000 {
+		t.Fatalf("platformEarned delta=%d want 990000 (1,000,000 realised profit − 10,000 released commission only; pre=%d post=%d)", pos.PlatformEarned-pre.PlatformEarned, pre.PlatformEarned, pos.PlatformEarned)
 	}
 }

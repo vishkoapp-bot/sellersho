@@ -141,9 +141,19 @@ func team05TestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
 	ddl := []string{
-		`CREATE TABLE IF NOT EXISTS stores (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, owner_type TEXT NOT NULL, owner_name TEXT NOT NULL DEFAULT '', owner_user_id TEXT, profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id TEXT NOT NULL DEFAULT '', referral_code TEXT, referrer_seller_id TEXT, signed_contract_version INT NOT NULL DEFAULT 0, custom_domain TEXT NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, panel_config JSONB, tagline TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', active_categories TEXT[] NOT NULL DEFAULT '{}', template_id TEXT, template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE IF NOT EXISTS store_product_overrides (store_id TEXT NOT NULL, product_id TEXT NOT NULL, override_value DOUBLE PRECISION NOT NULL, mode TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS store_niche_overrides (store_id TEXT NOT NULL, niche_id TEXT NOT NULL, override_value DOUBLE PRECISION NOT NULL, mode TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS stores (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, owner_type TEXT  DEFAULT 'dropshipper'::character varying NOT NULL, owner_name TEXT NOT NULL DEFAULT '', owner_user_id TEXT, profit_margin_percent DOUBLE PRECISION NOT NULL DEFAULT 0, custom_store_margin_override DOUBLE PRECISION, is_margin_locked_by_admin BOOLEAN NOT NULL DEFAULT FALSE, active_plan_id TEXT NOT NULL DEFAULT '', referral_code TEXT, referrer_seller_id TEXT, signed_contract_version INT NOT NULL DEFAULT 0, custom_domain TEXT NOT NULL DEFAULT '', total_sales BIGINT NOT NULL DEFAULT 0, seller_deals_widget_config JSONB, panel_config JSONB DEFAULT '{}'::jsonb , tagline TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', active_categories TEXT[] NOT NULL DEFAULT '{}', template_id TEXT, template_config JSONB NOT NULL DEFAULT '{}'::jsonb, logo TEXT NOT NULL DEFAULT '',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			plan_expires_at timestamp with time zone,
+			rejection_reason text,
+			related_section_title character varying(200),
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE IF NOT EXISTS store_product_overrides (store_id TEXT NOT NULL, product_id TEXT NOT NULL, override_value DOUBLE PRECISION NOT NULL, mode TEXT  DEFAULT 'fixed'::character varying NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS store_niche_overrides (store_id TEXT NOT NULL, niche_id TEXT NOT NULL, override_value DOUBLE PRECISION NOT NULL, mode TEXT  DEFAULT 'percent'::character varying NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS store_products (store_id TEXT NOT NULL, product_id TEXT NOT NULL, position INT NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS seller_discount_campaigns (id TEXT PRIMARY KEY, store_id TEXT NOT NULL, name TEXT NOT NULL, scope TEXT NOT NULL, target_id TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL, value DOUBLE PRECISION NOT NULL, starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE IF NOT EXISTS newsletter_subscribers (id VARCHAR(50) PRIMARY KEY, store_id VARCHAR(50) NOT NULL, mobile VARCHAR(15) NOT NULL, email VARCHAR(254), status VARCHAR(12) NOT NULL DEFAULT 'active', source VARCHAR(20) NOT NULL DEFAULT 'footer', unsubscribe_token VARCHAR(64) NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), unsubscribed_at TIMESTAMPTZ)`,

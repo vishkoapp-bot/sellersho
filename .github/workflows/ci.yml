@@ -1,0 +1,213 @@
+# TEST-02 release gate.
+#
+# What runs here:
+#   frontend        — npm run build + npm test (all 53 frontend suites, incl. the
+#                     puppeteer browser suites; ubuntu-latest is non-root, so Chromium launches).
+#   go-unit         — go vet + the default Go suite. DB tests SKIP without opt-in
+#                     credentials (TEST-01 guards); this job proves the pure-unit baseline.
+#   go-integration  — per-package disposable migrated integration jobs via
+#                     scripts/test-isolated.py (TEST-01). One fresh Docker PostgreSQL 16 +
+#                     Redis 7 per package; the runner scrubs inherited credentials and
+#                     refuses non-disposable targets, so this workflow cannot reach
+#                     production addresses. No prod secret is present in this file.
+#   go-race         — go test -race on pure-unit concurrency packages + focused -race
+#                     on the repository concurrency invariants, via the isolated runner.
+#   ci-self-test    — NEGATIVE CONTROL: proves the gate fails when it must. A scratch
+#                     copy with the FIN-012 discount floor removed must fail the pricing
+#                     suite, and a scratch copy with a broken migration must fail provisioning.
+#                     The checked-out tree is never mutated.
+#   deps            — govulncheck (Go, fails on any affecting-code vulnerability) +
+#                     npm audit --audit-level=high.
+#
+# Lockfile note: pnpm install runs WITHOUT --frozen-lockfile on purpose. The committed
+# pnpm-lock.yaml is stale relative to package.json (it predates the puppeteer
+# devDependency; see TEST-02 audit §7 / fix report F-UP-1). A frozen install would fail
+# on that pre-existing drift, not on this change. Regenerate the lockfile on a machine
+# where pnpm can write it, then switch this step to --frozen-lockfile.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: frontend build + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: corepack prepare pnpm@10 --activate
+      - run: pnpm install --ignore-scripts
+      - run: npm run build
+      - run: npm test
+
+  go-unit:
+    name: go vet + default unit suite (no DB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - working-directory: backend
+        run: go vet $(go list ./... | grep -v networkreward)
+      - working-directory: backend
+        # No *_DATABASE_URL is set: DB-backed tests skip by TEST-01 design.
+        # A failure here is a real unit failure, never a missing-DB failure.
+        run: go test $(go list ./... | grep -v networkreward) -count=1
+
+  go-integration:
+    name: go integration (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - ./cmd/capacity-fixture
+          - ./cmd/migrate
+          - ./cmd/redis-recover
+          - ./cmd/seed
+          - ./cmd/server
+          - ./internal/accesspolicy
+          - ./internal/adguard
+          - ./internal/auth
+          - ./internal/bank
+          - ./internal/catalogpage
+          - ./internal/catalogpricing
+          - ./internal/config
+          - ./internal/customdomain
+          - ./internal/database/seeder
+          - ./internal/dependencybudget
+          - ./internal/domain
+          - ./internal/ippanel
+          - ./internal/jobrunner
+          - ./internal/lifecycle
+          - ./internal/migrations
+          - ./internal/observability
+          - ./internal/payment
+          - ./internal/phone
+          - ./internal/pricing
+          - ./internal/privacy
+          - ./internal/repository
+          - ./internal/requestbudget
+          - ./internal/routing
+          - ./internal/shippingquote
+          - ./internal/tapin
+          - ./internal/testdb
+          - ./internal/testredis
+          - ./internal/warehouseopt
+          - ./internal/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/test-isolated.py -- go test ${{ matrix.package }} -count=1 -timeout 9m -v
+
+  go-race:
+    name: go race on concurrency invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - working-directory: backend
+        run: go test -race ./internal/pricing/ ./internal/catalogpage/ ./internal/catalogpricing/ -count=1
+      - run: >-
+          python scripts/test-isolated.py -- go test -race ./internal/repository
+          -run 'TestFIN007LastUse100|TestFinanceBalanceConcurrentDebits|TestFinanceBalanceConcurrentRefundAndIndependentDebits|TestSKUInventoryConcurrentLastUnitOnlyOneCapture|TestParcelChargeConcurrent|TestINV06ConcurrentDeparturesPreserveRoundingAndPermitRefill'
+          -count=1 -timeout 9m -v
+
+  ci-self-test:
+    name: negative control (gate must fail on a broken invariant/migration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: broken invariant must fail the suite
+        run: |
+          set -e
+          rm -rf "$RUNNER_TEMP/mutation-invariant"
+          cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/mutation-invariant"
+          cd "$RUNNER_TEMP/mutation-invariant/backend"
+          # Remove the FIN-012 floor from the campaign path only: a 30% campaign
+          # must then price below base cost, and TestCampaignNeverRaisesPrice must fail.
+          python3 - <<'PYEOF'
+          p = 'internal/pricing/discount.go'
+          s = open(p, encoding='utf-8').read()
+          old = "final, err := DiscountedPrice(res.FinalPrice, res.BaseCost, c.Mode, c.Value)"
+          assert s.count(old) == 2
+          open(p, 'w', encoding='utf-8').write(s.replace(old, "final, err := DiscountedPrice(res.FinalPrice, 0, c.Mode, c.Value)", 1))
+          PYEOF
+          if go test ./internal/pricing/ -run 'TestCampaignNeverRaisesPrice' -count=1; then
+            echo "NEGATIVE CONTROL FAILED: suite stayed green with the discount floor removed"
+            exit 1
+          fi
+          echo "negative control 1 OK: broken invariant fails the suite"
+      - name: broken migration must fail provisioning
+        run: |
+          set -e
+          rm -rf "$RUNNER_TEMP/mutation-migration"
+          cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/mutation-migration"
+          printf 'THIS IS NOT SQL;\n' > "$RUNNER_TEMP/mutation-migration/backend/migrations/999999999999_test02_negative.up.sql"
+          cd "$RUNNER_TEMP/mutation-migration"
+          if python scripts/test-isolated.py -- go test ./internal/pricing/ -count=1; then
+            echo "NEGATIVE CONTROL FAILED: broken migration did not fail provisioning"
+            exit 1
+          fi
+          echo "negative control 2 OK: broken migration fails provisioning"
+      - name: workflow cannot reach production addresses
+        run: |
+          # No production host, domain, or credential-bearing URL may appear here.
+          if grep -rE '46\.249\.98\.190|sellershow\.ir|40kaman\.com|postgres://[^t]|DATABASE_URL=.+@' .github/workflows/ci.yml; then
+            echo "production address found in the CI workflow"
+            exit 1
+          fi
+          echo "no production address in the CI workflow"
+
+  deps:
+    name: dependency vulnerability triage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: corepack prepare pnpm@10 --activate
+      - run: pnpm install --ignore-scripts
+      - working-directory: backend
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - run: npm audit --audit-level=high

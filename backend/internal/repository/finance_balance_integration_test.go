@@ -17,11 +17,25 @@ func openFinanceBalanceDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := openGapMoneyDB(t)
 	for _, q := range []string{
-		`ALTER TABLE stores ADD COLUMN owner_user_id TEXT, ADD COLUMN active_plan_id TEXT, ADD COLUMN plan_expires_at TIMESTAMPTZ, ADD COLUMN updated_at TIMESTAMPTZ`,
-		`ALTER TABLE seller_service_purchases ALTER COLUMN id SET DEFAULT md5(random()::text), ADD COLUMN service_type TEXT`,
-		`ALTER TABLE platform_settings ADD COLUMN early_withdrawal_fee_pct NUMERIC; UPDATE platform_settings SET early_withdrawal_fee_pct=10`,
-		`ALTER TABLE seller_early_withdrawals ADD COLUMN fee_pct NUMERIC, ADD COLUMN net_amount BIGINT, ADD COLUMN shaba TEXT, ADD COLUMN bank_name TEXT, ADD COLUMN rejection_reason TEXT, ADD COLUMN payout_request_id TEXT, ADD COLUMN created_at TIMESTAMPTZ, ADD COLUMN processed_at TIMESTAMPTZ`,
-		`DROP TABLE IF EXISTS users CASCADE; CREATE TABLE users (id UUID PRIMARY KEY, mobile TEXT,full_name TEXT,role TEXT,is_active BOOLEAN DEFAULT false)`,
+		`ALTER TABLE stores ADD COLUMN IF NOT EXISTS owner_user_id TEXT, ADD COLUMN IF NOT EXISTS active_plan_id TEXT, ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
+		`ALTER TABLE seller_service_purchases ALTER COLUMN id SET DEFAULT md5(random()::text), ADD COLUMN IF NOT EXISTS service_type TEXT`,
+		// TEST-02: IF NOT EXISTS — the column may already exist: the shared
+		// openGapMoneyDB fixture rebuilds platform_settings with the migrated
+		// shape (which includes this column), so a bare ADD COLUMN fails
+		// with "already exists" on every test using this fixture.
+		`ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS early_withdrawal_fee_pct NUMERIC; UPDATE platform_settings SET early_withdrawal_fee_pct=10`,
+		`ALTER TABLE seller_early_withdrawals ADD COLUMN IF NOT EXISTS fee_pct NUMERIC, ADD COLUMN IF NOT EXISTS net_amount BIGINT, ADD COLUMN IF NOT EXISTS shaba TEXT, ADD COLUMN IF NOT EXISTS bank_name TEXT, ADD COLUMN IF NOT EXISTS rejection_reason TEXT, ADD COLUMN IF NOT EXISTS payout_request_id TEXT, ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`,
+		`DROP TABLE IF EXISTS users CASCADE; CREATE TABLE users (id UUID  DEFAULT gen_random_uuid() PRIMARY KEY, mobile TEXT,full_name TEXT,role TEXT DEFAULT 'customer'::character varying ,is_active BOOLEAN DEFAULT false,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			email VARCHAR(255),
+			username VARCHAR(255),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			failed_login_attempts integer NOT NULL DEFAULT 0,
+			locked_until timestamp with time zone,
+			password_hash text,
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -32,7 +46,12 @@ func openFinanceBalanceDB(t *testing.T) *sql.DB {
 
 func waitFinanceAccountGuard(t *testing.T, db *sql.DB, table string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// TEST-02 round 5: the wait was 3s. In a shared DB with hundreds
+	// of lots the assessment must work through all earlier lots
+	// (from the cursor) before it reaches this test's supplier row
+	// and blocks on the guard — 3s is not enough (r5f flake). 15s
+	// gives it margin; the caller's ctx must exceed it (see below).
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		var waiting bool
 		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE $1)`, "%SELECT id FROM "+table+" WHERE id=$1 FOR UPDATE%").Scan(&waiting); err != nil {
@@ -373,7 +392,12 @@ func TestFinanceBalanceConcurrentDebits(t *testing.T) {
 func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 	db, f, warehouse := fin006Fixture(t)
 	fin006KnownReceipt(t, db, f, warehouse, 1, tehranDay(time.Now()).AddDate(0, 0, -35))
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// TEST-02 round 5: the ctx was 8s, but the assessment goroutine
+	// must reach this supplier's lot before the wait (15s) can see
+	// it block — 8s expires first in a large shared DB. 30s gives
+	// both room; the intent (the writer waits on the account row
+	// guard) is unchanged.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -526,9 +550,52 @@ func TestFinanceBalanceParcelBusinessEventOnce(t *testing.T) {
 	db := openFinanceBalanceDB(t)
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS supplier_return_financial_events,supplier_return_parcels,supplier_return_requests CASCADE`,
-		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'packed')`,
-		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT,confirmed_by TEXT,updated_at TIMESTAMPTZ,final_charge_source TEXT,final_charge_reference TEXT)`,
-		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now())`,
+		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'packed',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			accepted_quantity integer NOT NULL DEFAULT 0,
+			cancelled_by character varying(80),
+			collection_method character varying(30),
+			completed_at timestamp with time zone,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			failed_quantity integer NOT NULL DEFAULT 0,
+			handover_at timestamp with time zone,
+			idempotency_key character varying(150),
+			inspected_at timestamp with time zone,
+			inspection_status character varying(20),
+			inventory_reference_id character varying(80),
+			postal_charge bigint NOT NULL DEFAULT 0,
+			product_id character varying(50),
+			reason text,
+			received_at timestamp with time zone,
+			rejection_reason text,
+			requested_quantity integer,
+			reviewed_at timestamp with time zone,
+			reviewed_by character varying(80),
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			variant_id uuid,
+			warehouse_bin_code character varying(30))`,
+		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT DEFAULT 'draft'::character varying ,confirmed_by TEXT,updated_at TIMESTAMPTZ DEFAULT now() ,final_charge_source TEXT,final_charge_reference TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			carrier_code character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			created_by character varying(80),
+			destination character varying(200),
+			estimate_reference character varying(150),
+			estimate_source character varying(20),
+			estimated_charge bigint,
+			handed_over_at timestamp with time zone,
+			height_mm integer,
+			idempotency_key character varying(150),
+			length_mm integer,
+			notes text,
+			origin character varying(200),
+			parcel_number integer,
+			tracking_number character varying(150),
+			weight_grams integer,
+			width_mm integer)`,
+		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			charge_component text)`,
 		`INSERT INTO suppliers(id) VALUES('parcel-supplier')`,
 		`INSERT INTO supplier_return_requests(id,supplier_id) VALUES('parcel-return','parcel-supplier')`,
 		`INSERT INTO supplier_return_parcels(id,return_request_id,final_charge,payment_method,status) VALUES('parcel-one','parcel-return',125000,'sender_pays','draft')`,
@@ -723,7 +790,7 @@ func TestFinanceReviewBlankSupplierCannotReceive(t *testing.T) {
 func TestFinanceReviewStatementRefundAndAdjustment(t *testing.T) {
 	db := openFinanceBalanceDB(t)
 	ret, _ := seedFinanceBalance(t, db, "statement-review", 10000000)
-	for _, q := range []string{`ALTER TABLE seller_service_purchases ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()`, `UPDATE orders SET profit_released_at=NOW() WHERE store_id='statement-review'`} {
+	for _, q := range []string{`ALTER TABLE seller_service_purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`, `UPDATE orders SET profit_released_at=NOW() WHERE store_id='statement-review'`} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -837,7 +904,7 @@ func TestFinanceReviewStatementPeriodReservationsAreNotPostedTwice(t *testing.T)
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	previous := start.AddDate(0, -1, 0)
 	created := previous.Add(time.Hour)
-	if _, err := db.Exec(`ALTER TABLE seller_service_purchases ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE seller_service_purchases ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE orders SET created_at=$1,profit_released_at=$1 WHERE store_id='statement-period'`, created); err != nil {

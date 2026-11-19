@@ -159,17 +159,80 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("set search_path: %v", err)
 	}
 	ddl := []string{
-		`CREATE TABLE pending_approvals (id TEXT PRIMARY KEY, title TEXT, requested_data JSONB, requested_by TEXT, entity_type TEXT, status TEXT DEFAULT 'pending', reviewed_at TIMESTAMPTZ, rejection_reason TEXT)`,
-		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, slug TEXT, category_slug TEXT, supplier_id TEXT, original_price BIGINT, supplier_base_cost BIGINT, platform_margin NUMERIC, is_original BOOLEAN DEFAULT false, stock INT DEFAULT 0, image_url TEXT, description TEXT, warehouse_name TEXT, preparation_days INT, supplier_warranty TEXT, specs JSONB, fulfillment_method TEXT, barcode TEXT, brand TEXT, length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', measurement_status TEXT NOT NULL DEFAULT 'unverified', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`,
-		`CREATE TABLE product_images (product_id TEXT, image_url TEXT, sort_order INT)`,
+		`CREATE TABLE pending_approvals (id TEXT PRIMARY KEY, title TEXT, requested_data JSONB, requested_by TEXT, entity_type TEXT, status TEXT DEFAULT 'pending', reviewed_at TIMESTAMPTZ, rejection_reason TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			target_id character varying(50))`,
+		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, slug TEXT, category_slug TEXT, supplier_id TEXT, original_price BIGINT, supplier_base_cost BIGINT, platform_margin NUMERIC, is_original BOOLEAN DEFAULT false, stock INT DEFAULT 0, image_url TEXT, description TEXT, warehouse_name TEXT DEFAULT 'انبار مرکزی تهران'::character varying , preparation_days INT DEFAULT 1 , supplier_warranty TEXT, specs JSONB DEFAULT '{}'::jsonb , fulfillment_method TEXT DEFAULT 'warehouse'::character varying , barcode TEXT, brand TEXT DEFAULT ''::text , length_mm INT, width_mm INT, height_mm INT, weight_grams INT, shipping_class TEXT NOT NULL DEFAULT 'standard', tax_class TEXT NOT NULL DEFAULT 'standard', measurement_status TEXT NOT NULL DEFAULT 'unverified', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			measurement_version INTEGER NOT NULL DEFAULT 0,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			attribute_schema jsonb,
+			base_price_override bigint,
+			implicit_agreement boolean NOT NULL DEFAULT false,
+			implicit_agreement_until timestamp with time zone,
+			is_active boolean NOT NULL DEFAULT true,
+			is_featured boolean DEFAULT false,
+			is_special_deal boolean DEFAULT false,
+			markup_type character varying(10),
+			markup_value numeric(10,2),
+			measurement_revision_id text,
+			measurement_source character varying(20),
+			origin_supplier_warehouse_id text,
+			packaging_height_mm integer,
+			packaging_length_mm integer,
+			packaging_width_mm integer,
+			product_type text NOT NULL DEFAULT 'legacy'::text,
+			rating numeric(3,2) NOT NULL DEFAULT 0,
+			reviews_count integer NOT NULL DEFAULT 0,
+			schema_version integer NOT NULL DEFAULT 0,
+			spn character varying(20),
+			spn_number bigint,
+			supply_option character varying(20) NOT NULL DEFAULT '1day'::character varying,
+			warranty_property_id character varying(60))`,
+		`CREATE TABLE product_images (product_id TEXT, image_url TEXT, sort_order INT DEFAULT 0 ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			id uuid NOT NULL DEFAULT gen_random_uuid())`,
 		`CREATE TABLE product_variant_images (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, variant_id TEXT NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`,
-		`CREATE TABLE niches (id TEXT PRIMARY KEY, category_slug TEXT)`,
+		`CREATE TABLE niches (id TEXT PRIMARY KEY, category_slug TEXT,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			title VARCHAR(255) NOT NULL DEFAULT '',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			badge character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			description text,
+			slug character varying(100))`,
 		`CREATE TABLE product_niches (product_id TEXT, niche_id TEXT, PRIMARY KEY (product_id, niche_id))`,
-		`CREATE TABLE inventory_balances (id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, owner_type TEXT, location_type TEXT, location_key TEXT, status TEXT, quantity INT, reconciled BOOLEAN DEFAULT false, updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE (product_id, owner_type, location_type, location_key, status))`,
-		`CREATE TABLE product_variants (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, product_id TEXT, spnc TEXT, spnc_number INT, variant_name TEXT, attributes JSONB, is_default BOOLEAN DEFAULT false, stock INT DEFAULT 0, min_cart_qty INT, max_cart_qty INT, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`,
-		`CREATE TABLE dk_attribute_values (dk_attr_id BIGINT, dk_value_id BIGINT, value_fa TEXT, PRIMARY KEY (dk_attr_id, dk_value_id))`,
+		`CREATE TABLE inventory_balances (id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, owner_type TEXT, location_type TEXT, location_key TEXT, status TEXT, quantity INT DEFAULT 0 , reconciled BOOLEAN DEFAULT false, updated_at TIMESTAMPTZ DEFAULT NOW(), 
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			warehouse_id TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			bin_code character varying(30),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			supplier_warehouse_id text,
+			variant_id uuid,
+			warehouse_name character varying(100))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_unallocated_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_sku_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
+		`CREATE TABLE product_variants (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, product_id TEXT, spnc TEXT, spnc_number INT, variant_name TEXT DEFAULT 'پیش‌فرض'::text , attributes JSONB DEFAULT '{}'::jsonb , is_default BOOLEAN DEFAULT false, stock INT DEFAULT 0, min_cart_qty INT DEFAULT 1 , max_cart_qty INT, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ DEFAULT NOW(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			combination_key text,
+			inventory_mode text NOT NULL DEFAULT 'legacy'::text,
+			is_active boolean NOT NULL DEFAULT true,
+			measurement_revision_id text,
+			measurement_source text,
+			measurement_status text NOT NULL DEFAULT 'unverified'::text,
+			measurement_version integer NOT NULL DEFAULT 0,
+			selection jsonb NOT NULL DEFAULT '{}'::jsonb)`,
+		`CREATE TABLE dk_attribute_values (dk_attr_id BIGINT, dk_value_id BIGINT, value_fa TEXT, PRIMARY KEY (dk_attr_id, dk_value_id),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			title_en text,
+			title_fa text)`,
 		`CREATE TABLE product_attribute_values (product_id TEXT, dk_attribute_id BIGINT, dk_value_id BIGINT, PRIMARY KEY (product_id, dk_value_id))`,
-		`CREATE TABLE audit_logs (id TEXT PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(), operator TEXT, action TEXT, category TEXT, details JSONB)`,
+		`CREATE TABLE audit_logs (id TEXT PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(), operator TEXT, action TEXT, category TEXT, details JSONB,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now())`,
 	}
 	for _, stmt := range ddl {
 		if _, err := db.Exec(stmt); err != nil {
@@ -180,8 +243,8 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE proposal_field_reviews (LIKE public.proposal_field_reviews INCLUDING ALL)`,
 		`CREATE TABLE proposal_review_history (LIKE public.proposal_review_history INCLUDING ALL)`,
 		`CREATE TABLE supplier_warehouses (LIKE public.supplier_warehouses INCLUDING ALL)`,
-		`ALTER TABLE products ADD COLUMN origin_supplier_warehouse_id TEXT, ADD COLUMN schema_version INT DEFAULT 0`,
-		`ALTER TABLE inventory_balances ADD COLUMN variant_id TEXT`,
+		`ALTER TABLE products ADD COLUMN IF NOT EXISTS origin_supplier_warehouse_id TEXT, ADD COLUMN IF NOT EXISTS schema_version INT DEFAULT 0`,
+		`ALTER TABLE inventory_balances ADD COLUMN IF NOT EXISTS variant_id TEXT`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatal(err)

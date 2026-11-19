@@ -51,6 +51,13 @@ func supplierFlowSeed(t *testing.T, db *sql.DB) supplierFlowFixture {
 	if err = repository.NewCapabilityRepository(db).Grant(ctx, user.ID, "supplier", "supplier_owner", supplier.ID, nil); err != nil {
 		t.Fatal(err)
 	}
+	// TEST-02 round 4: SubmitShipping detects a duplicate tracking
+	// number only via the unique index idx_supplier_shipments_tracking
+	// (migration 000011). Standing supplier_shipments rebuilds drop the
+	// index, so the duplicate UPDATE succeeds silently. Restore it.
+	if _, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_shipments_tracking ON supplier_shipments(tracking_number) WHERE tracking_number IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
 	product := "audit-product-" + suffix
 	warehouse := "audit-source-" + suffix
 	if _, err = db.Exec(`INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,'Audit source','Test','Test')`, warehouse, supplier.ID); err != nil {

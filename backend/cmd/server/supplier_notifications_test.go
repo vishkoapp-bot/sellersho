@@ -40,14 +40,45 @@ CREATE TABLE users (
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	email VARCHAR(255),
+	username VARCHAR(255),
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	failed_login_attempts integer NOT NULL DEFAULT 0,
+	locked_until timestamp with time zone,
+	password_hash text,
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	name VARCHAR(200) NOT NULL,
 	approval_status VARCHAR(20) DEFAULT 'approved',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	warehouse_city VARCHAR(255) NOT NULL DEFAULT 'تهران',
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	approved_at timestamp with time zone,
+	approved_by character varying(50),
+	badge character varying(50),
+	default_markup_type character varying(10),
+	default_markup_value numeric(10,2),
+	delivery_score integer DEFAULT 100,
+	description text,
+	logo_url text,
+	rating numeric(3,2) DEFAULT 5.00,
+	rejection_reason text,
+	signed_contract_version integer NOT NULL DEFAULT 1,
+	supports_direct_shipping boolean DEFAULT false,
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text,
+	tapin_shop_id text,
+	tapin_token text,
+	total_products integer DEFAULT 0,
+	warehouse_city_confirmed boolean NOT NULL DEFAULT false,
+	warehouse_city_source character varying(20));
 CREATE TABLE supplier_members (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	supplier_id VARCHAR(50) NOT NULL,
@@ -56,7 +87,10 @@ CREATE TABLE supplier_members (
 	permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	invited_by uuid,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE notification_outbox (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	recipient_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

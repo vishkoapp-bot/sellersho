@@ -21,7 +21,7 @@ test('paid cancellation shows pending and unknown refunds on response and reload
     else { res.setHeader('Content-Type', 'text/html'); res.end('<div id="notice"></div><div id="root"></div><script>' + bundle.outputFiles[0].text + '</script>'); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const address = server.address(); assert.ok(address && typeof address === 'object');
-  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+  const browser = await puppeteer.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
   try {
     const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${address.port}/refund-fixture`); await page.waitForFunction(() => document.body.innerText.includes('PAID-10M'));
     const cancel = async () => { await page.evaluate(() => [...document.querySelectorAll('button')].find(b => b.textContent?.includes('لغو سفارش') || b.textContent?.includes('آیا از لغو'))!.click()); };

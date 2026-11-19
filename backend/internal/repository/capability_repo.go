@@ -20,10 +20,16 @@ func NewCapabilityRepository(db *sql.DB) *CapabilityRepository {
 }
 
 func (r *CapabilityRepository) ListActive(ctx context.Context, userID string) ([]string, error) {
+	// TEST-02 round 4: the join compares ids as text. In production
+	// both sides are UUID so this is a no-op, but test fixtures
+	// rebuild users with VARCHAR/TEXT ids while user_capabilities
+	// keeps UUID — a plain `u.id = uc.user_id` then fails with
+	// 42883 (operator does not exist: character varying = uuid) and
+	// the auth middleware answers 503.
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uc.capability, u.mobile
 		FROM user_capabilities uc
-		JOIN users u ON u.id = uc.user_id
+		JOIN users u ON u.id::text = uc.user_id::text
 		WHERE uc.user_id = $1 AND uc.status = 'active'
 		ORDER BY uc.capability
 	`, userID)
@@ -55,7 +61,7 @@ func (r *CapabilityRepository) HasActive(ctx context.Context, userID, capability
 		SELECT EXISTS (
 			SELECT 1
 			FROM user_capabilities uc
-			JOIN users u ON u.id = uc.user_id
+			JOIN users u ON u.id::text = uc.user_id::text
 			WHERE uc.user_id = $1 AND uc.capability = $2 AND uc.status = 'active'
 			  AND (uc.capability <> $3 OR u.mobile IN ('09933070870', '09127504005'))
 		)
@@ -131,23 +137,32 @@ func (r *CapabilityRepository) Revoke(ctx context.Context, userID, capability st
 	return err
 }
 
+// TEST-02 round 4: the id selects cast to uuid. The values are
+// UUIDs, so the cast is a no-op in production; it keeps the startup
+// bootstrap working when the standing users/stores/suppliers/member
+// rebuilds store the id as TEXT/VARCHAR while user_capabilities.
+// user_id is UUID (42804 column is of type uuid but expression is
+// of type character varying). Rows whose id is not a UUID at all
+// (fixture placeholders such as gap13's 'owner-direct') are skipped:
+// they have no users row to grant a capability to, and the cast
+// would fail the whole bootstrap (22P02) on them.
 // BackfillOwnershipCapabilities repairs capability rows for ownership created
 // after the migration and is safe to call on startup or after onboarding.
 func (r *CapabilityRepository) BackfillOwnershipCapabilities(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `
 		INSERT INTO user_capabilities (user_id, capability, source_type, source_id)
-		SELECT id,
+		SELECT id::uuid,
 		       CASE WHEN role = 'finance' THEN 'finance_specialist' ELSE 'finance' END,
 		       'legacy_role_alias', id::text
-		FROM users WHERE role IN ('finance', 'finance_specialist')
+		FROM users WHERE role IN ('finance', 'finance_specialist') AND id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 		ON CONFLICT (user_id, capability) DO NOTHING
 	`); err != nil {
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO user_capabilities (user_id, capability, source_type, source_id)
-		SELECT owner_user_id, 'seller', 'store_ownership', id
-		FROM stores WHERE owner_user_id IS NOT NULL
+		SELECT owner_user_id::uuid, 'seller', 'store_ownership', id
+		FROM stores WHERE owner_user_id IS NOT NULL AND owner_user_id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 		ON CONFLICT (user_id, capability) DO NOTHING
 	`)
 	if err != nil {
@@ -155,8 +170,8 @@ func (r *CapabilityRepository) BackfillOwnershipCapabilities(ctx context.Context
 	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO user_capabilities (user_id, capability, source_type, source_id)
-		SELECT owner_user_id, 'supplier', 'supplier_ownership', id
-		FROM suppliers WHERE owner_user_id IS NOT NULL
+		SELECT owner_user_id::uuid, 'supplier', 'supplier_ownership', id
+		FROM suppliers WHERE owner_user_id IS NOT NULL AND owner_user_id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 		ON CONFLICT (user_id, capability) DO NOTHING
 	`)
 	if err != nil {
@@ -164,8 +179,8 @@ func (r *CapabilityRepository) BackfillOwnershipCapabilities(ctx context.Context
 	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO user_capabilities (user_id, capability, source_type, source_id)
-		SELECT sm.user_id, 'supplier', 'supplier_membership', sm.supplier_id
-		FROM supplier_members sm WHERE sm.is_active = TRUE
+		SELECT sm.user_id::uuid, 'supplier', 'supplier_membership', sm.supplier_id
+		FROM supplier_members sm WHERE sm.is_active = TRUE AND sm.user_id::text ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 		ON CONFLICT (user_id, capability) DO NOTHING
 	`)
 	return err

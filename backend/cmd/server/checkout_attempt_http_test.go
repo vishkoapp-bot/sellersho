@@ -26,7 +26,13 @@ func TestCheckoutAttemptChangedPayloadRejectsReplay(t *testing.T) {
 func checkoutHTTPFixture(t *testing.T) *gap13Repos {
 	t.Helper()
 	rp := gap13Setup(t)
-	for _, q := range []string{`DROP TABLE IF EXISTS checkout_attempts`, `DROP FUNCTION IF EXISTS guard_checkout_attempt()`, `DROP FUNCTION IF EXISTS guard_checkout_item_title()`, `INSERT INTO users(id,mobile,full_name) VALUES('11111111-1111-1111-1111-111111111111','09120000000','checkout test') ON CONFLICT(id) DO NOTHING`} {
+	// TEST-02 round 4: the migration below re-adds product_title_snapshot
+	// with a bare ADD COLUMN. gap13Setup's order_items rebuild now
+	// carries the full migrated shape (including that column), so drop
+	// it first — the same defensive pattern as the DROP TABLE / DROP
+	// FUNCTION lines beside it, which exist so this migration stays
+	// re-runnable against a rebuilt table.
+	for _, q := range []string{`DROP TABLE IF EXISTS checkout_attempts`, `DROP FUNCTION IF EXISTS guard_checkout_attempt()`, `DROP FUNCTION IF EXISTS guard_checkout_item_title()`, `ALTER TABLE order_items DROP COLUMN IF EXISTS product_title_snapshot`, `INSERT INTO users(id,mobile,full_name) VALUES('11111111-1111-1111-1111-111111111111','09120000000','checkout test') ON CONFLICT(id) DO NOTHING`} {
 		if _, err := rp.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -221,6 +227,14 @@ func TestCheckoutAttemptRecoveryDoesNotAcknowledgeFailedItemRead(t *testing.T) {
 	if _, err := rp.db.Exec(`ALTER TABLE order_items RENAME COLUMN final_unit_price TO unavailable_final_unit_price`); err != nil {
 		t.Fatal(err)
 	}
+	// TEST-02 round 4: this rename simulates a failed item read, but the
+	// shared disposable DB outlives the test — every later test that
+	// inserts order_items (capacity seed, FIN011, return-bin) needs
+	// final_unit_price back. Restore it on cleanup, even if the
+	// assertion below fails.
+	t.Cleanup(func() {
+		_, _ = rp.db.Exec(`ALTER TABLE order_items RENAME COLUMN unavailable_final_unit_price TO final_unit_price`)
+	})
 	w := checkoutRecover(rp, gap13UserID, "read-failure-checkout", "GET")
 	if w.Code < 500 {
 		t.Fatalf("incomplete order was acknowledged: %d %s", w.Code, w.Body.String())

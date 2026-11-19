@@ -228,6 +228,13 @@ func TestSupplierProposalNotPublishedBeforeApproval(t *testing.T) {
 	defer db.Close()
 	repo := repository.NewSupplierRepository(db)
 	ctx := context.Background()
+	// TEST-02 round 4: SaveFieldReview upserts ON CONFLICT
+	// (proposal_id, field_key) (migration 202610170010). Standing
+	// proposal_field_reviews rebuilds drop the UNIQUE, so the upsert
+	// fails with 42P10. Restore it.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS test02_pfr_proposal_field_key ON proposal_field_reviews(proposal_id, field_key)`); err != nil {
+		t.Fatal(err)
+	}
 	suffix := uuid.NewString()[:8]
 	owner, supplier, err := repo.RegisterSupplier(ctx, "Proposal Test", "Owner", "proposal-"+suffix, "TestProposalPassword!", fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9), "", "Tehran")
 	if err != nil {

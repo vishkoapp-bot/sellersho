@@ -498,8 +498,13 @@ func inv04CanonicalFixture(t *testing.T) (*sql.DB, string, string) {
 	opsExec(t, root, `CREATE SCHEMA `+schema)
 	t.Cleanup(func() { root.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
 	db := skuScopedDB(t, schema)
-	opsExec(t, db, `CREATE FUNCTION uuid_generate_v4() RETURNS UUID LANGUAGE SQL AS 'SELECT public.uuid_generate_v4()'`)
-	if _, err := migrations.Run(context.Background(), db, migrations.Options{Dir: "../../migrations", MigrationTimeout: 20 * time.Second}); err != nil {
+	opsExec(t, db, `CREATE FUNCTION gen_random_uuid() RETURNS UUID LANGUAGE SQL AS 'SELECT public.gen_random_uuid()'`)
+	// TEST-02: the migration run uses a schema,public handle so the pg_trgm
+	// opclass (owned by public) resolves for migration 202611190002; the
+	// test body keeps the strict schema-only handle above.
+	migDB := skuScopedDBSearchPath(t, schema, schema+",public")
+	defer migDB.Close()
+	if _, err := migrations.Run(context.Background(), migDB, migrations.Options{Dir: "../../migrations", MigrationTimeout: 20 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	actor := "00000000-0000-4000-8000-000000000999"

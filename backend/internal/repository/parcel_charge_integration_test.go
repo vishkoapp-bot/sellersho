@@ -18,9 +18,52 @@ func parcelLegacyFixture(t *testing.T) *sql.DB {
 	db := openFinanceBalanceDB(t)
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS supplier_return_financial_events,supplier_return_parcels,supplier_return_requests CASCADE`,
-		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'packed')`,
-		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT,confirmed_by TEXT,updated_at TIMESTAMPTZ,final_charge_source TEXT DEFAULT 'manual',final_charge_reference TEXT DEFAULT 'bill-1')`,
-		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now())`,
+		`CREATE TABLE supplier_return_requests(id TEXT PRIMARY KEY,supplier_id TEXT,status TEXT DEFAULT 'packed',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			accepted_quantity integer NOT NULL DEFAULT 0,
+			cancelled_by character varying(80),
+			collection_method character varying(30),
+			completed_at timestamp with time zone,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			failed_quantity integer NOT NULL DEFAULT 0,
+			handover_at timestamp with time zone,
+			idempotency_key character varying(150),
+			inspected_at timestamp with time zone,
+			inspection_status character varying(20),
+			inventory_reference_id character varying(80),
+			postal_charge bigint NOT NULL DEFAULT 0,
+			product_id character varying(50),
+			reason text,
+			received_at timestamp with time zone,
+			rejection_reason text,
+			requested_quantity integer,
+			reviewed_at timestamp with time zone,
+			reviewed_by character varying(80),
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			variant_id uuid,
+			warehouse_bin_code character varying(30))`,
+		`CREATE TABLE supplier_return_parcels(id TEXT PRIMARY KEY,return_request_id TEXT,final_charge BIGINT,payment_method TEXT,status TEXT DEFAULT 'draft'::character varying ,confirmed_by TEXT,updated_at TIMESTAMPTZ DEFAULT now() ,final_charge_source TEXT DEFAULT 'manual',final_charge_reference TEXT DEFAULT 'bill-1',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			carrier_code character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			created_by character varying(80),
+			destination character varying(200),
+			estimate_reference character varying(150),
+			estimate_source character varying(20),
+			estimated_charge bigint,
+			handed_over_at timestamp with time zone,
+			height_mm integer,
+			idempotency_key character varying(150),
+			length_mm integer,
+			notes text,
+			origin character varying(200),
+			parcel_number integer,
+			tracking_number character varying(150),
+			weight_grams integer,
+			width_mm integer)`,
+		`CREATE TABLE supplier_return_financial_events(id TEXT PRIMARY KEY,return_request_id TEXT,parcel_id TEXT,supplier_id TEXT,operation TEXT,amount BIGINT,payment_method TEXT,ledger_entry_id TEXT,idempotency_key TEXT UNIQUE,reason TEXT,actor_user_id TEXT,event_identity TEXT UNIQUE,created_at TIMESTAMPTZ DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			charge_component text)`,
 		`INSERT INTO suppliers(id) VALUES('parcel-supplier')`,
 		`INSERT INTO supplier_return_requests(id,supplier_id) VALUES('parcel-return','parcel-supplier')`,
 		`INSERT INTO supplier_return_parcels(id,return_request_id,final_charge,payment_method,status) VALUES('parcel-one','parcel-return',120000,'sender_pays','draft')`,
@@ -68,6 +111,14 @@ func TestParcelChargeReceiverAcceptedTerms(t *testing.T) {
 
 func applyParcelMigration(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// TEST-02 round 4: the standing supplier_return_financial_events
+	// already carries charge_component (full demanded-set patch), so the
+	// migration's bare ADD COLUMN fails with 42701. Drop it first (same
+	// class as the checkout-attempt / sku-inventory / refund-fixture
+	// pre-drops); the migration re-adds it with the same definition.
+	if _, err := db.Exec(`ALTER TABLE supplier_return_financial_events DROP COLUMN IF EXISTS charge_component`); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile("../../migrations/202611160001_parcel_charge_identity.up.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -401,6 +452,10 @@ func TestParcelChargeMigration(t *testing.T) {
 			}
 			tx, err := db.Begin()
 			if err != nil {
+				t.Fatal(err)
+			}
+			// TEST-02 round 4: the standing table already carries charge_component (full demanded-set patch); drop it first so the migration's bare ADD COLUMN does not fail with 42701 (same class as applyParcelMigration).
+			if _, err = tx.Exec(`ALTER TABLE supplier_return_financial_events DROP COLUMN IF EXISTS charge_component`); err != nil {
 				t.Fatal(err)
 			}
 			_, err = tx.Exec(string(up))

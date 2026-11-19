@@ -20,7 +20,9 @@ import (
 
 const notifyWritersDDL = `
 DROP TABLE IF EXISTS refunds,order_item_origins, referral_bonuses, notification_outbox, ledger_entries, support_tickets, payment_transactions, disputes, payout_requests, pending_approvals, supplier_shipments, supplier_shipment_audit_logs, order_items, product_variants, customer_returns, orders, products, stores, suppliers, users CASCADE;
-CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT,status TEXT,released_at TIMESTAMPTZ);
+CREATE TABLE referral_bonuses(id TEXT PRIMARY KEY,referrer_store_id TEXT,referred_store_id TEXT,amount BIGINT DEFAULT 100000 ,status TEXT DEFAULT 'locked'::character varying ,released_at TIMESTAMPTZ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE users (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	mobile VARCHAR(15) UNIQUE NOT NULL,
@@ -32,7 +34,11 @@ CREATE TABLE users (
 	email VARCHAR(200),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	failed_login_attempts integer NOT NULL DEFAULT 0,
+	locked_until timestamp with time zone,
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -57,7 +63,11 @@ CREATE TABLE suppliers (
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text);
 CREATE TABLE stores (
 	id VARCHAR(50) PRIMARY KEY,
 	name VARCHAR(200) NOT NULL DEFAULT '',
@@ -66,13 +76,90 @@ CREATE TABLE stores (
 	owner_name VARCHAR(200) DEFAULT '',
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	active_categories text[] NOT NULL DEFAULT '{}'::text[],
+	active_plan_id character varying(20) NOT NULL DEFAULT 'trial'::character varying,
+	addon_section_title character varying(200),
+	contract_signature_code text,
+	custom_domain character varying(150),
+	custom_store_margin_override numeric(5,2),
+	description text,
+	is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+	logo text NOT NULL DEFAULT ''::text,
+	owner_phone text NOT NULL DEFAULT ''::text,
+	panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	plan_expires_at timestamp with time zone,
+	profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+	referral_code character varying(30),
+	referrer_seller_id character varying(50),
+	rejection_reason text,
+	related_section_title character varying(200),
+	seller_deals_widget_config jsonb,
+	signed_contract_version integer NOT NULL DEFAULT 1,
+	status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+	tagline text,
+	template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	template_id character varying(50),
+	total_sales bigint NOT NULL DEFAULT 0,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE products (
 	id VARCHAR(50) PRIMARY KEY,
 	supplier_id VARCHAR(50) REFERENCES suppliers(id),
 	title VARCHAR(200) NOT NULL DEFAULT '',
 	stock INT NOT NULL DEFAULT 0
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_version INTEGER NOT NULL DEFAULT 0,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribute_schema jsonb,
+	barcode character varying(64),
+	base_price_override bigint,
+	brand text NOT NULL DEFAULT ''::text,
+	category_slug character varying(100),
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	description text,
+	fulfillment_method character varying(20) DEFAULT 'warehouse'::character varying,
+	height_mm integer,
+	image_url text,
+	implicit_agreement boolean NOT NULL DEFAULT false,
+	implicit_agreement_until timestamp with time zone,
+	is_active boolean NOT NULL DEFAULT true,
+	is_featured boolean DEFAULT false,
+	is_original boolean NOT NULL DEFAULT true,
+	is_special_deal boolean DEFAULT false,
+	length_mm integer,
+	markup_type character varying(10),
+	markup_value numeric(10,2),
+	measurement_revision_id text,
+	measurement_source character varying(20),
+	origin_supplier_warehouse_id text,
+	original_price bigint,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	platform_margin bigint,
+	preparation_days integer DEFAULT 1,
+	product_type text NOT NULL DEFAULT 'legacy'::text,
+	rating numeric(3,2) NOT NULL DEFAULT 0,
+	reviews_count integer NOT NULL DEFAULT 0,
+	schema_version integer NOT NULL DEFAULT 0,
+	shipping_class text NOT NULL DEFAULT 'standard'::text,
+	slug character varying(255),
+	specs jsonb DEFAULT '{}'::jsonb,
+	spn character varying(20),
+	spn_number bigint,
+	supplier_base_cost bigint,
+	supplier_warranty character varying(100),
+	supply_option character varying(20) NOT NULL DEFAULT '1day'::character varying,
+	tax_class text NOT NULL DEFAULT 'standard'::text,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	warehouse_name character varying(100) DEFAULT 'انبار مرکزی تهران'::character varying,
+	warranty_property_id character varying(60),
+	weight_grams integer,
+	width_mm integer);
 CREATE TABLE orders (
 	id VARCHAR(50) PRIMARY KEY,
 	customer_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -92,7 +179,7 @@ CREATE TABLE orders (
 	payment_status VARCHAR(30) NOT NULL DEFAULT 'pending',
 	payable_amount BIGINT NOT NULL DEFAULT 0,
 	inventory_captured BOOLEAN NOT NULL DEFAULT FALSE,
-	payment_expires_at TIMESTAMPTZ,
+	payment_expires_at TIMESTAMPTZ DEFAULT (now() + '00:15:00'::interval) ,
 	fulfillment_method VARCHAR(30) DEFAULT 'warehouse',
 	tracking_code VARCHAR(100) DEFAULT '',
 	tracking_number VARCHAR(100) DEFAULT '',
@@ -130,13 +217,39 @@ CREATE TABLE orders (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE TABLE product_variants (
-	id VARCHAR(50) PRIMARY KEY,
+	id VARCHAR(50)  DEFAULT gen_random_uuid() PRIMARY KEY,
 	product_id VARCHAR(50) REFERENCES products(id),
 	variant_name VARCHAR(200) DEFAULT '',
 	stock INT NOT NULL DEFAULT 0
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+	combination_key text,
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	height_mm integer,
+	inventory_mode text NOT NULL DEFAULT 'legacy'::text,
+	is_active boolean NOT NULL DEFAULT true,
+	is_default boolean NOT NULL DEFAULT false,
+	length_mm integer,
+	max_cart_qty integer,
+	measurement_revision_id text,
+	measurement_source text,
+	measurement_status text NOT NULL DEFAULT 'unverified'::text,
+	measurement_version integer NOT NULL DEFAULT 0,
+	min_cart_qty integer NOT NULL DEFAULT 1,
+	sale_from timestamp with time zone,
+	sale_price bigint,
+	sale_to timestamp with time zone,
+	selection jsonb NOT NULL DEFAULT '{}'::jsonb,
+	shipping_class text,
+	spnc character varying(12),
+	spnc_number integer,
+	supplier_base_cost bigint,
+	tax_class text,
+	weight_grams integer,
+	width_mm integer);
 CREATE TABLE customer_returns (
-	id UUID PRIMARY KEY,
+	id UUID  DEFAULT gen_random_uuid() PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
 	customer_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'requested',
@@ -145,7 +258,7 @@ CREATE TABLE customer_returns (
 	warehouse_id TEXT,
 	destination_supplier_warehouse_id TEXT,
 	prepaid BOOLEAN NOT NULL DEFAULT FALSE,
-	tracking_number TEXT,
+	tracking_number TEXT DEFAULT ''::text ,
 	shipped_at TIMESTAMPTZ,
 	return_code TEXT,
 	cod_refused BOOLEAN NOT NULL DEFAULT FALSE,
@@ -154,9 +267,14 @@ CREATE TABLE customer_returns (
 	return_shipping_settled_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	return_shipping_quote_at timestamp with time zone,
+	return_shipping_quote_groups jsonb,
+	return_shipping_quote_source text,
+	return_shipping_quote_toman bigint);
 CREATE TABLE order_items (
-	id VARCHAR(50) PRIMARY KEY,
+	id VARCHAR(50)  DEFAULT gen_random_uuid() PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
 	product_id VARCHAR(50) REFERENCES products(id),
 	quantity INT NOT NULL DEFAULT 1,
@@ -168,7 +286,10 @@ CREATE TABLE order_items (
 	variant_id VARCHAR(50),
 	variant_name VARCHAR(200) DEFAULT '',
 	variant_spnc VARCHAR(100) DEFAULT ''
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	pricing_policy_version text NOT NULL DEFAULT 'legacy-unversioned'::text,
+	product_title_snapshot text);
 CREATE TABLE supplier_shipments (
 	id VARCHAR(50) PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
@@ -180,11 +301,35 @@ CREATE TABLE supplier_shipments (
 	delivered_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	customer_name character varying(255),
+	customer_phone character varying(20),
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	send_price bigint,
+	shipping_address jsonb,
+	supplier_notes text,
+	tapin_box_id text,
+	tapin_last_status text,
+	tapin_register_attempted_at timestamp with time zone,
+	tapin_registered_at timestamp with time zone,
+	tapin_service text);
 CREATE TABLE order_item_origins (
 	order_item_id VARCHAR(50),
 	supplier_id VARCHAR(50)
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	id text,
+	leg_index integer,
+	order_id character varying(255),
+	origin_label text,
+	origin_type text,
+	quantity integer,
+	supplier_warehouse_id text,
+	warehouse_id text);
 CREATE TABLE supplier_shipment_audit_logs (
 	id VARCHAR(50) PRIMARY KEY,
 	shipment_id VARCHAR(50) NOT NULL,
@@ -208,7 +353,9 @@ CREATE TABLE disputes (
 	resolution_action VARCHAR(100) DEFAULT '',
 	resolution_date TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	financial_decision text);
 CREATE TABLE payout_requests (
 	id VARCHAR(50) PRIMARY KEY,
 	store_id VARCHAR(50),
@@ -226,7 +373,10 @@ CREATE TABLE payout_requests (
 	transfer_reference VARCHAR(100),
 	transfer_confirmed_by VARCHAR(100),
 	transfer_confirmed_at TIMESTAMPTZ
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	payout_method character varying(30) NOT NULL DEFAULT 'manual_bank_transfer'::character varying,
+	transfer_date timestamp with time zone);
 CREATE TABLE pending_approvals (
 	id VARCHAR(50) PRIMARY KEY,
 	entity_type VARCHAR(50) NOT NULL,
@@ -249,7 +399,9 @@ CREATE TABLE payment_transactions (
 	amount BIGINT NOT NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'pending',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	compensation_capture boolean NOT NULL DEFAULT false);
 CREATE TABLE support_tickets (
 	id VARCHAR(50) PRIMARY KEY,
 	requester_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -259,7 +411,10 @@ CREATE TABLE support_tickets (
 	priority VARCHAR(20) NOT NULL DEFAULT 'normal',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	related_order_number character varying(30),
+	section text NOT NULL DEFAULT ''::text);
 CREATE TABLE ledger_entries (
 	id VARCHAR(80) PRIMARY KEY,
 	date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -302,6 +457,8 @@ func notifyWritersTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("seed DDL: %v", err)
 	}
 	installRefundFixtureSchema(t, db)
+	// TEST-02 round 4: the CASCADE drop above also dropped the inventory_effective_measurements view; re-create it.
+	createEffectiveMeasurementsView(t, db)
 	t.Cleanup(func() { db.Close() })
 	return db
 }

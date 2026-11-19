@@ -29,6 +29,10 @@ func inv06Placed(t *testing.T, tracked bool, quantity int, physical ...int) (*sq
 		warehouse = "w-" + uuid.NewString()
 		inbound = inv09ReceiveLegacy(t, db, f, warehouse, quantity)
 	}
+	// TEST-02 round 4: the return-bin-sources view is CASCADE-dropped
+	// by earlier products/order_items DROP fixtures; the putaway
+	// trigger reads it, so restore it before any putaway work.
+	createReturnBinSourcesView(t, db)
 	wh := NewWarehouseRepository(db)
 	dimensions := []int{100, 100, 100, 100}
 	if len(physical) == 4 {
@@ -222,7 +226,11 @@ func TestINV06ConcurrentDeparturesPreserveRoundingAndPermitRefill(t *testing.T) 
 	}
 	inv06AssertOccupancy(t, db, bin, 0, 0, 0)
 	var quantity, volume, weight, count int
-	if err := db.QueryRow(`SELECT COUNT(*),SUM(quantity),SUM(volume_cm3),SUM(weight_grams) FROM warehouse_occupancy_releases`).Scan(&count, &quantity, &volume, &weight); err != nil || count != 2 || quantity != 2 || volume != 1 || weight != 2 {
+	// TEST-02 round 4: warehouse_occupancy_releases accumulates every
+	// test's shipments in the shared DB — scope the rounding assertion
+	// to this test's own two orders (event_id is the order id) instead
+	// of the global totals.
+	if err := db.QueryRow(`SELECT COUNT(*),SUM(quantity),SUM(volume_cm3),SUM(weight_grams) FROM warehouse_occupancy_releases WHERE event_type='warehouse_shipment' AND (event_id=$1 OR event_id=$2)`, orders[0], orders[1]).Scan(&count, &quantity, &volume, &weight); err != nil || count != 2 || quantity != 2 || volume != 1 || weight != 2 {
 		t.Fatalf("rounded release count=%d qty/volume/weight=%d/%d/%d err=%v", count, quantity, volume, weight, err)
 	}
 	// A retry verifies the original payload; altered quantities cannot consume

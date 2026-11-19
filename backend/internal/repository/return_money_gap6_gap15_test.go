@@ -40,7 +40,19 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		t.Fatalf("open disposable database: %v", err)
 	}
 	ctx := context.Background()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users(id UUID PRIMARY KEY,mobile TEXT,full_name TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users(id UUID  DEFAULT gen_random_uuid() PRIMARY KEY,mobile TEXT,full_name TEXT,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			email VARCHAR(255),
+			username VARCHAR(255),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			failed_login_attempts integer NOT NULL DEFAULT 0,
+			is_active boolean NOT NULL DEFAULT true,
+			locked_until timestamp with time zone,
+			password_hash text,
+			role character varying(30) NOT NULL DEFAULT 'customer'::character varying,
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.PingContext(ctx); err != nil {
@@ -51,37 +63,224 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		`DROP TABLE IF EXISTS order_inventory_returns, order_inventory_captures, seller_early_withdrawals, customer_return_financial_events, customer_return_shipping_charges, supplier_return_financial_events, inventory_movements, inventory_balances, return_items, customer_returns, customer_wallets, payment_transactions, disputes, ledger_entries, referral_bonuses, referral_commission_reversals, seller_profit_reversals, order_item_origins, order_items, orders, product_variants, products, supplier_warehouses, warehouses, payout_requests, seller_service_purchases, suppliers, stores, platform_settings CASCADE`,
 		`DROP SEQUENCE IF EXISTS customer_return_code_seq`,
 		`CREATE SEQUENCE customer_return_code_seq`,
-		`CREATE TABLE finance_command_requests(principal_type TEXT,principal_id TEXT,operation TEXT,client_key TEXT,fingerprint TEXT,result JSONB,PRIMARY KEY(principal_type,principal_id,operation,client_key))`,
-		`CREATE TABLE platform_settings (id INT PRIMARY KEY, return_window_days INT, shipping_base_rate BIGINT, shipping_per_kg BIGINT, volumetric_divisor BIGINT, default_item_weight_grams BIGINT)`,
+		`CREATE TABLE finance_command_requests(principal_type TEXT,principal_id TEXT,operation TEXT,client_key TEXT,fingerprint TEXT,result JSONB,PRIMARY KEY(principal_type,principal_id,operation,client_key),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE platform_settings (id INT  DEFAULT 1 PRIMARY KEY, return_window_days INT DEFAULT 7 , shipping_base_rate BIGINT DEFAULT 0 , shipping_per_kg BIGINT DEFAULT 0 , volumetric_divisor BIGINT DEFAULT 5000 , default_item_weight_grams BIGINT DEFAULT 500 ,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			early_withdrawal_fee_pct NUMERIC,
+			platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+			settlement_day INTEGER,
+			supplier_contract_version INTEGER NOT NULL DEFAULT 2,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			attribution_model character varying(20) NOT NULL DEFAULT 'last_touch'::character varying,
+			base_fee_f bigint NOT NULL DEFAULT 100000,
+			central_campaign_budget bigint NOT NULL DEFAULT 0,
+			central_profit_pct double precision NOT NULL DEFAULT 10,
+			central_store_markup_percent numeric(5,2) NOT NULL DEFAULT 10,
+			cookie_days integer NOT NULL DEFAULT 30,
+			default_margin numeric(5,2) NOT NULL DEFAULT 20.00,
+			default_markup_type character varying(10) NOT NULL DEFAULT 'percent'::character varying,
+			default_markup_value numeric(10,2) NOT NULL DEFAULT 30,
+			delivery_followup_trigger_days integer NOT NULL DEFAULT 10,
+			delivery_hold_period_days integer NOT NULL DEFAULT 20,
+			increase_cap_pct double precision NOT NULL DEFAULT 10,
+			increase_locked boolean NOT NULL DEFAULT true,
+			ippanel_api_key text NOT NULL DEFAULT ''::text,
+			ippanel_base_url text NOT NULL DEFAULT 'https://edge.ippanel.com/v1'::text,
+			ippanel_enabled boolean NOT NULL DEFAULT false,
+			ippanel_pattern_code text NOT NULL DEFAULT ''::text,
+			ippanel_sender text NOT NULL DEFAULT '+983000505'::text,
+			max_dropshipper_margin_percent numeric(5,2) NOT NULL DEFAULT 100,
+			max_profit_margin numeric(5,2) NOT NULL DEFAULT 35.00,
+			min_profit_margin numeric(5,2) NOT NULL DEFAULT 5.00,
+			packaging_tariffs jsonb,
+			product_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+			referral_commission_percent numeric(5,2) NOT NULL DEFAULT 2.00,
+			referral_is_enabled boolean NOT NULL DEFAULT true,
+			referral_subject_to_delivery_lock boolean NOT NULL DEFAULT true,
+			seller_contract_text text NOT NULL DEFAULT ''::text,
+			seller_contract_version integer NOT NULL DEFAULT 2,
+			storage_fee_enabled boolean NOT NULL DEFAULT false,
+			storage_fee_free_days integer NOT NULL DEFAULT 30,
+			storage_fee_per_kg_day bigint NOT NULL DEFAULT 2000,
+			storage_fee_per_m3_day bigint NOT NULL DEFAULT 8000,
+			stuck_order_expiry_enabled boolean NOT NULL DEFAULT false,
+			supplier_contract_text text NOT NULL DEFAULT ''::text,
+			supplier_fee_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+			supplier_return_postal_charge bigint,
+			tapin_default_box_id text NOT NULL DEFAULT '4'::text,
+			tapin_platform_shop_id text,
+			tapin_platform_token text,
+			tapin_tariff_url text,
+			trial_catalog_quota integer NOT NULL DEFAULT 25,
+			updated_at timestamp with time zone NOT NULL DEFAULT now(),
+			wallet_min_withdrawal bigint NOT NULL DEFAULT 0,
+			wallet_spend_enabled boolean NOT NULL DEFAULT true,
+			wallet_withdraw_enabled boolean NOT NULL DEFAULT true,
+			warehouse_tariffs jsonb NOT NULL DEFAULT '{}'::jsonb)`,
 		`INSERT INTO platform_settings (id, return_window_days, shipping_base_rate, shipping_per_kg, volumetric_divisor, default_item_weight_grams) VALUES (1, 7, 100000, 20000, NULL, NULL)`,
-		`CREATE TABLE products (id TEXT PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT, origin_supplier_warehouse_id TEXT, warehouse_name TEXT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-		`CREATE TABLE product_variants (id UUID PRIMARY KEY, product_id TEXT, stock INT NOT NULL DEFAULT 0)`,
-		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, approval_status TEXT NOT NULL DEFAULT 'approved')`,
-		`CREATE TABLE stores (id TEXT PRIMARY KEY, owner_type TEXT, referrer_seller_id TEXT)`,
+		`CREATE TABLE products (id VARCHAR(50) PRIMARY KEY, title TEXT, stock INT NOT NULL DEFAULT 0, supplier_id TEXT, fulfillment_method TEXT DEFAULT 'warehouse'::character varying , origin_supplier_warehouse_id TEXT, warehouse_name TEXT DEFAULT 'انبار مرکزی تهران'::character varying , weight_grams INT, length_mm INT, width_mm INT, height_mm INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			measurement_version INTEGER NOT NULL DEFAULT 0,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			attribute_schema jsonb,
+			barcode character varying(64),
+			base_price_override bigint,
+			brand text NOT NULL DEFAULT ''::text,
+			category_slug character varying(100),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			description text,
+			image_url text,
+			implicit_agreement boolean NOT NULL DEFAULT false,
+			implicit_agreement_until timestamp with time zone,
+			is_active boolean NOT NULL DEFAULT true,
+			is_featured boolean DEFAULT false,
+			is_original boolean NOT NULL DEFAULT true,
+			is_special_deal boolean DEFAULT false,
+			markup_type character varying(10),
+			markup_value numeric(10,2),
+			measurement_revision_id text,
+			measurement_source character varying(20),
+			original_price bigint,
+			packaging_height_mm integer,
+			packaging_length_mm integer,
+			packaging_width_mm integer,
+			platform_margin bigint,
+			preparation_days integer DEFAULT 1,
+			product_type text NOT NULL DEFAULT 'legacy'::text,
+			rating numeric(3,2) NOT NULL DEFAULT 0,
+			reviews_count integer NOT NULL DEFAULT 0,
+			schema_version integer NOT NULL DEFAULT 0,
+			shipping_class text NOT NULL DEFAULT 'standard'::text,
+			slug character varying(255),
+			specs jsonb DEFAULT '{}'::jsonb,
+			spn character varying(20),
+			spn_number bigint,
+			supplier_base_cost bigint,
+			supplier_warranty character varying(100),
+			supply_option character varying(20) NOT NULL DEFAULT '1day'::character varying,
+			tax_class text NOT NULL DEFAULT 'standard'::text,
+			warranty_property_id character varying(60))`,
+		`CREATE TABLE product_variants (id UUID  DEFAULT gen_random_uuid() PRIMARY KEY, product_id TEXT, stock INT NOT NULL DEFAULT 0,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+			combination_key text,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			height_mm integer,
+			inventory_mode text NOT NULL DEFAULT 'legacy'::text,
+			is_active boolean NOT NULL DEFAULT true,
+			is_default boolean NOT NULL DEFAULT false,
+			length_mm integer,
+			max_cart_qty integer,
+			measurement_revision_id text,
+			measurement_source text,
+			measurement_status text NOT NULL DEFAULT 'unverified'::text,
+			measurement_version integer NOT NULL DEFAULT 0,
+			min_cart_qty integer NOT NULL DEFAULT 1,
+			sale_from timestamp with time zone,
+			sale_price bigint,
+			sale_to timestamp with time zone,
+			selection jsonb NOT NULL DEFAULT '{}'::jsonb,
+			shipping_class text,
+			spnc character varying(12),
+			spnc_number integer,
+			supplier_base_cost bigint,
+			tax_class text,
+			variant_name text NOT NULL DEFAULT 'پیش‌فرض'::text,
+			weight_grams integer,
+			width_mm integer)`,
+		// TEST-02: name + owner_user_id are part of the migrated shape;
+		// without them this DROP+rebuild breaks every later test in the
+		// shared disposable DB that inserts a supplier.
+		`CREATE TABLE suppliers (id VARCHAR(50) PRIMARY KEY, name VARCHAR(200) NOT NULL DEFAULT '', owner_user_id UUID, approval_status TEXT NOT NULL DEFAULT 'approved',
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			warehouse_city VARCHAR(255) NOT NULL DEFAULT 'تهران',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			approved_at timestamp with time zone,
+			approved_by character varying(50),
+			badge character varying(50),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			default_markup_type character varying(10),
+			default_markup_value numeric(10,2),
+			delivery_score integer DEFAULT 100,
+			description text,
+			logo_url text,
+			rating numeric(3,2) DEFAULT 5.00,
+			rejection_reason text,
+			signed_contract_version integer NOT NULL DEFAULT 1,
+			supports_direct_shipping boolean DEFAULT false,
+			suspended_at timestamp with time zone,
+			suspended_by text,
+			suspension_reason text,
+			tapin_shop_id text,
+			tapin_token text,
+			total_products integer DEFAULT 0,
+			warehouse_city_confirmed boolean NOT NULL DEFAULT false,
+			warehouse_city_source character varying(20))`,
+		`CREATE TABLE stores (id TEXT PRIMARY KEY, owner_type TEXT DEFAULT 'dropshipper'::character varying , referrer_seller_id TEXT,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			name VARCHAR(255) NOT NULL DEFAULT '',
+			slug VARCHAR(255) NOT NULL DEFAULT '',
+			owner_name VARCHAR(255) NOT NULL DEFAULT '',
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			active_categories text[] NOT NULL DEFAULT '{}'::text[],
+			active_plan_id character varying(20) NOT NULL DEFAULT 'trial'::character varying,
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			custom_domain character varying(150),
+			custom_store_margin_override numeric(5,2),
+			description text,
+			is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+			logo text NOT NULL DEFAULT ''::text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			owner_user_id uuid,
+			panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			plan_expires_at timestamp with time zone,
+			profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+			referral_code character varying(30),
+			rejection_reason text,
+			related_section_title character varying(200),
+			seller_deals_widget_config jsonb,
+			signed_contract_version integer NOT NULL DEFAULT 1,
+			status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+			tagline text,
+			template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			template_id character varying(50),
+			total_sales bigint NOT NULL DEFAULT 0,
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
 		`CREATE TABLE orders (
-			id TEXT PRIMARY KEY, customer_user_id UUID, order_number TEXT, store_id TEXT, store_name TEXT,
+			id VARCHAR(50) PRIMARY KEY, customer_user_id UUID, order_number VARCHAR(30), store_id TEXT, store_name TEXT,
 			total_amount BIGINT NOT NULL DEFAULT 0, discount_amount BIGINT NOT NULL DEFAULT 0, seller_discount_amount BIGINT NOT NULL DEFAULT 0, discount_code TEXT, coupon_discount_amount BIGINT,
-			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT, payment_status TEXT,
+			payable_amount BIGINT NOT NULL DEFAULT 0, payment_method TEXT DEFAULT 'cash'::character varying , payment_status TEXT DEFAULT 'pending'::character varying ,
 			customer_full_name TEXT, customer_phone TEXT, customer_province TEXT, customer_city TEXT,
-			customer_address TEXT, customer_postal_code TEXT, status TEXT, tracking_code TEXT,
+			customer_address TEXT, customer_postal_code TEXT, status TEXT DEFAULT 'processing'::character varying , tracking_code VARCHAR(50),
 			shipping_cost BIGINT NOT NULL DEFAULT 0, dropshipper_profit BIGINT NOT NULL DEFAULT 0,
 			platform_profit BIGINT NOT NULL DEFAULT 0, referral_commission BIGINT NOT NULL DEFAULT 0,
 			referral_commission_released BOOLEAN NOT NULL DEFAULT FALSE, referrer_seller_id TEXT,
 			profit_released BOOLEAN NOT NULL DEFAULT FALSE, profit_released_at TIMESTAMPTZ,
 			shipped_at TIMESTAMPTZ, confirmed_at TIMESTAMPTZ, disputed_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			fulfillment_method TEXT, wallet_amount BIGINT NOT NULL DEFAULT 0, gateway_amount BIGINT NOT NULL DEFAULT 0,
+			fulfillment_method TEXT DEFAULT 'warehouse'::character varying , wallet_amount BIGINT NOT NULL DEFAULT 0, gateway_amount BIGINT NOT NULL DEFAULT 0,
 			platform_addon_amount BIGINT NOT NULL DEFAULT 0, supplier_addon_amount BIGINT NOT NULL DEFAULT 0,
 			inventory_captured BOOLEAN NOT NULL DEFAULT FALSE, packaging_length_mm INT, packaging_width_mm INT,
 			packaging_height_mm INT, dispute_reason TEXT, carrier TEXT, tracking_number TEXT,
 			shipping_label TEXT, packed_at TIMESTAMPTZ, box_size TEXT, weight_grams INT,
 			idempotency_key TEXT, return_window_ends_at TIMESTAMPTZ, shipping_quote_id TEXT
-		)`,
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			payment_expires_at timestamp with time zone DEFAULT (now() + '00:15:00'::interval))`,
 		`CREATE TABLE order_items (
-			id TEXT PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT,
+			id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT DEFAULT 1 ,
 			wholesale_cost BIGINT, platform_fee BIGINT, seller_margin BIGINT, final_unit_price BIGINT, discount_amount BIGINT NOT NULL DEFAULT 0,
 			variant_id UUID, variant_name TEXT, variant_spnc TEXT
-		)`,
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			pricing_policy_version text NOT NULL DEFAULT 'legacy-unversioned'::text,
+			product_title_snapshot text)`,
 		`CREATE TABLE ledger_entries (
 			id VARCHAR(80) PRIMARY KEY, date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			target_account VARCHAR(150) NOT NULL, target_type VARCHAR(20) NOT NULL,
@@ -89,7 +288,9 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			operator VARCHAR(100) NOT NULL, related_order_or_dispute VARCHAR(50),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY, referrer_store_id TEXT, referred_store_id TEXT, status TEXT, released_at TIMESTAMPTZ, amount BIGINT)`,
+		`CREATE TABLE referral_bonuses (id TEXT PRIMARY KEY, referrer_store_id TEXT, referred_store_id TEXT, status TEXT DEFAULT 'locked'::character varying , released_at TIMESTAMPTZ, amount BIGINT DEFAULT 100000 ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now())`,
 		// FIN-011 (migration 202611180005) and FIN-009 (migration
 		// 202611190001): the statement union and the canonical balance
 		// reference these tables unguarded, so the minimal fixture
@@ -120,22 +321,44 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			actor_user_id VARCHAR(80) NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE)`,
-		`CREATE TABLE supplier_warehouses (id TEXT PRIMARY KEY, supplier_id TEXT, name TEXT, province_name TEXT, city_name TEXT, address TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id TEXT, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT)`,
+		`CREATE TABLE warehouses (id TEXT PRIMARY KEY, name TEXT, province_name TEXT, city_name TEXT, priority INT NOT NULL DEFAULT 100, is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			tapin_province_id INTEGER NOT NULL DEFAULT 0,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			capacity_m3_total numeric(10,3),
+			capacity_units_total integer,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			is_receiving_open boolean NOT NULL DEFAULT true,
+			tapin_city_id integer,
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE supplier_warehouses (id TEXT PRIMARY KEY, supplier_id TEXT, name TEXT, province_name TEXT, city_name TEXT, address TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			phone character varying(20),
+			postal_code character varying(10),
+			tapin_city_id integer,
+			tapin_province_id integer,
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id TEXT, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now())`,
 		`CREATE TABLE customer_returns (
-			id UUID PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer_id UUID NOT NULL,
+			id UUID  DEFAULT gen_random_uuid() PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer_id UUID NOT NULL,
 			status VARCHAR(20) NOT NULL DEFAULT 'requested', reason TEXT NOT NULL DEFAULT '',
 			admin_note TEXT NOT NULL DEFAULT '', warehouse_id TEXT, prepaid BOOLEAN NOT NULL DEFAULT FALSE,
-			tracking_number TEXT, shipped_at TIMESTAMPTZ, return_code TEXT,
+			tracking_number TEXT DEFAULT ''::text , shipped_at TIMESTAMPTZ, return_code TEXT,
 			cod_refused BOOLEAN NOT NULL DEFAULT FALSE,
 			return_shipping_amount BIGINT, return_shipping_bearer VARCHAR(20),
 			return_shipping_settled_at TIMESTAMPTZ,
 			destination_supplier_warehouse_id TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			return_shipping_quote_at timestamp with time zone,
+			return_shipping_quote_groups jsonb,
+			return_shipping_quote_source text,
+			return_shipping_quote_toman bigint)`,
 		`CREATE TABLE return_items (
-			id UUID PRIMARY KEY, return_id UUID NOT NULL, order_item_id VARCHAR(50) NOT NULL,
+			id UUID  DEFAULT gen_random_uuid() PRIMARY KEY, return_id UUID NOT NULL, order_item_id VARCHAR(50) NOT NULL,
 			variant_id UUID, qty INT NOT NULL, qc_status VARCHAR(20) NOT NULL DEFAULT 'pending', received_at TIMESTAMPTZ
 		)`,
 		`CREATE TABLE customer_return_shipping_charges (
@@ -145,40 +368,81 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			idempotency_key VARCHAR(150) NOT NULL UNIQUE, reason TEXT NOT NULL,
 			actor_user_id VARCHAR(80) NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE TABLE customer_wallets (customer_id UUID PRIMARY KEY, balance BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE customer_wallets (customer_id UUID PRIMARY KEY, balance BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			locked_balance bigint NOT NULL DEFAULT 0)`,
 		`CREATE TABLE disputes (
 			id TEXT PRIMARY KEY, order_id TEXT, order_number TEXT, type TEXT, customer_name TEXT,
 			product_title TEXT, claim_amount BIGINT, reason TEXT, store_id TEXT, supplier_name TEXT,
-			status TEXT, responsible_party TEXT, resolution_action TEXT, resolution_date TIMESTAMPTZ,
+			status TEXT DEFAULT 'pending'::character varying , responsible_party TEXT, resolution_action TEXT, resolution_date TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			financial_decision text)`,
 		`CREATE TABLE payment_transactions (
 			id TEXT PRIMARY KEY, order_id TEXT, order_number TEXT, gateway_token TEXT,
-			rrn TEXT, card_mask TEXT, amount BIGINT, status TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+			rrn TEXT, card_mask TEXT, amount BIGINT, status TEXT DEFAULT 'pending'::character varying , created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			compensation_capture boolean NOT NULL DEFAULT false)`,
 		`CREATE TABLE payout_requests (
 			id TEXT PRIMARY KEY, store_id TEXT, supplier_id TEXT, recipient_type TEXT, recipient_name TEXT,
-			shaba TEXT, bank_name TEXT, amount BIGINT, status TEXT,
-			available_balance BIGINT, rejection_reason TEXT,
+			shaba TEXT, bank_name TEXT, amount BIGINT, status TEXT DEFAULT 'pending'::character varying ,
+			available_balance BIGINT DEFAULT 0 , rejection_reason TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), processed_at TIMESTAMPTZ,
 			transfer_reference TEXT, transfer_confirmed_by TEXT, transfer_confirmed_at TIMESTAMPTZ
-		)`,
-		`CREATE TABLE seller_service_purchases (id TEXT PRIMARY KEY, store_id TEXT, amount BIGINT)`,
-		`CREATE TABLE seller_early_withdrawals (id TEXT PRIMARY KEY, store_id TEXT, fee_amount BIGINT, gross_amount BIGINT, status TEXT)`,
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			payout_method character varying(30) NOT NULL DEFAULT 'manual_bank_transfer'::character varying,
+			transfer_date timestamp with time zone)`,
+		`CREATE TABLE seller_service_purchases (id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY, store_id TEXT, amount BIGINT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			service_type character varying(30))`,
+		`CREATE TABLE seller_early_withdrawals (id TEXT PRIMARY KEY, store_id TEXT, fee_amount BIGINT, gross_amount BIGINT, status TEXT DEFAULT 'pending'::text ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			bank_name text,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			fee_pct numeric(5,2),
+			net_amount bigint,
+			payout_request_id character varying(50),
+			processed_at timestamp with time zone,
+			rejection_reason text,
+			shaba text)`,
 		`INSERT INTO stores (id, owner_type) VALUES ('central', 'central')`,
-		`CREATE TABLE supplier_return_financial_events (id TEXT PRIMARY KEY, supplier_id TEXT, operation TEXT, amount BIGINT)`,
+		`CREATE TABLE supplier_return_financial_events (id TEXT PRIMARY KEY, supplier_id TEXT, operation TEXT, amount BIGINT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			actor_user_id character varying(80),
+			charge_component text,
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			event_identity text,
+			idempotency_key character varying(150),
+			ledger_entry_id character varying(80),
+			parcel_id character varying(80),
+			payment_method character varying(20),
+			reason text,
+			return_request_id character varying(60))`,
 		`CREATE TABLE inventory_movements (
 			id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, quantity INT,
 			from_status TEXT, to_status TEXT, from_location_key TEXT, to_location_key TEXT,
 			reference_type TEXT, reference_id TEXT, idempotency_key TEXT UNIQUE,
-			actor_user_id TEXT, metadata JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+			actor_user_id TEXT, metadata JSONB DEFAULT '{}'::jsonb , created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			variant_id uuid)`,
 		`CREATE TABLE inventory_balances (
 			id TEXT PRIMARY KEY, product_id TEXT, supplier_id TEXT, owner_type TEXT,
 			location_type TEXT, location_key TEXT, status TEXT, variant_id UUID, quantity INT NOT NULL DEFAULT 0,
 			reconciled BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			UNIQUE (product_id, owner_type, location_type, location_key, status)
-		)`,
+						-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+			warehouse_id TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			bin_code character varying(30),
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			supplier_warehouse_id text,
+			warehouse_name character varying(100))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_unallocated_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_sku_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
 		// The events table exactly as migration 202611050006 creates it.
 		`CREATE TABLE customer_return_financial_events (
 			id VARCHAR(80) PRIMARY KEY,
@@ -205,6 +469,8 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 		}
 	}
 	installRefundFixtureSchema(t, db)
+	// TEST-02 round 4: the CASCADE drop above also dropped the inventory_effective_measurements view; re-create it.
+	createEffectiveMeasurementsView(t, db)
 	return db
 }
 

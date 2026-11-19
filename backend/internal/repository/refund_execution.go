@@ -161,7 +161,17 @@ func (r *OrderRepository) ReconcileOrderRefunds(ctx context.Context, provider pa
 	if limit < 1 || limit > 100 {
 		return 0, ErrStoreInput
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT o.id FROM order_refund_obligations o WHERE o.destination='original_payment' AND NOT EXISTS(SELECT 1 FROM order_refund_poll_state s WHERE s.obligation_id=o.id AND s.next_reconcile_at>clock_timestamp()) AND EXISTS(SELECT 1 FROM order_payment_receipts r WHERE r.payment_id=o.source_payment_id AND r.funding_kind='gateway') AND NOT EXISTS(SELECT 1 FROM order_refund_events e WHERE e.obligation_id=o.id AND e.status='succeeded') ORDER BY o.created_at,o.id COLLATE "C" LIMIT $1`, limit)
+	// TEST-02 round 5: skip obligations whose finance lock rows are
+	// gone. Destructive test fixtures DROP orders / products /
+	// suppliers / stores / users but leave refund obligations behind;
+	// ProcessOrderRefund then fails the row guard on the first such
+	// claim and the reconciler (oldest first, batch 1) never advances
+	// past it, starving every later claim — the exact starvation this
+	// test guards against. In production these rows are never
+	// hard-deleted, so the guards are no-ops there; an obligation
+	// whose lock rows are missing is unprocessable and must not wedge
+	// the queue.
+	rows, err := r.db.QueryContext(ctx, `SELECT o.id FROM order_refund_obligations o WHERE o.destination='original_payment' AND NOT EXISTS(SELECT 1 FROM order_refund_poll_state s WHERE s.obligation_id=o.id AND s.next_reconcile_at>clock_timestamp()) AND EXISTS(SELECT 1 FROM order_payment_receipts r WHERE r.payment_id=o.source_payment_id AND r.funding_kind='gateway') AND NOT EXISTS(SELECT 1 FROM order_refund_events e WHERE e.obligation_id=o.id AND e.status='succeeded') AND EXISTS(SELECT 1 FROM orders WHERE id=o.order_id) AND NOT EXISTS(SELECT 1 FROM order_items oi WHERE oi.order_id=o.order_id AND NOT EXISTS(SELECT 1 FROM products p WHERE p.id::text=oi.product_id::text)) AND NOT EXISTS(SELECT 1 FROM order_items oi WHERE oi.order_id=o.order_id AND COALESCE(oi.variant_id::text,'')<>'' AND NOT EXISTS(SELECT 1 FROM product_variants v WHERE v.id::text=oi.variant_id::text)) AND NOT EXISTS(SELECT 1 FROM orders ord WHERE ord.id=o.order_id AND COALESCE(ord.store_id,'')<>'' AND NOT EXISTS(SELECT 1 FROM stores st WHERE st.id::text=ord.store_id::text)) AND NOT EXISTS(SELECT 1 FROM orders ord WHERE ord.id=o.order_id AND COALESCE(ord.customer_user_id::text,'')<>'' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id::text=ord.customer_user_id::text)) AND NOT EXISTS(SELECT 1 FROM order_items oi JOIN products p ON p.id::text=oi.product_id::text WHERE oi.order_id=o.order_id AND COALESCE(p.supplier_id,'')<>'' AND NOT EXISTS(SELECT 1 FROM suppliers s WHERE s.id::text=p.supplier_id::text)) AND NOT EXISTS(SELECT 1 FROM order_item_origins oio JOIN order_items oi ON oi.id::text=oio.order_item_id::text WHERE oi.order_id=o.order_id AND COALESCE(oio.supplier_id,'')<>'' AND NOT EXISTS(SELECT 1 FROM suppliers s WHERE s.id::text=oio.supplier_id::text)) ORDER BY o.created_at,o.id COLLATE "C" LIMIT $1`, limit)
 	if err != nil {
 		return 0, err
 	}

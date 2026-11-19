@@ -14,6 +14,14 @@ func TestSettlementApprovalIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewFinanceRepository(db)
 	requestID := "audit-settlement-" + uuid.NewString()[:24]
+	// TEST-02 round 4: ReviewSettlement locks the payout's account
+	// rows first (lockPayoutAccountsTx) — the supplier row must exist
+	// or the guard fails with "no rows in result set". The
+	// WHERE NOT EXISTS form works whether or not the standing
+	// suppliers rebuild carries a primary key.
+	if _, err := db.ExecContext(ctx, `INSERT INTO suppliers (id, name, approval_status) SELECT 'sup-ali', 'Audit Supplier', 'approved' WHERE NOT EXISTS (SELECT 1 FROM suppliers WHERE id = 'sup-ali')`); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO payout_requests (id, supplier_id, recipient_type, recipient_name, shaba, bank_name, amount, status)
 		VALUES ($1, 'sup-ali', 'supplier', 'Audit Supplier', 'IR060170000000000000000000', 'بانک ملی', 1000000, 'pending')

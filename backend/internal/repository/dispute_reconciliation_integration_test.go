@@ -87,7 +87,10 @@ func TestFIN005TwoLegacyClaimsCloseWithoutDuplicateRelease(t *testing.T) {
 	db := notifyWritersTestDB(t)
 	customer, _, _, _, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "two-order", "TWO", customer, "delivery_disputed", "paid")
-	opsExec(t, db, `CREATE TABLE audit_logs(id TEXT PRIMARY KEY,operator TEXT,action TEXT,category TEXT,details TEXT)`)
+	opsExec(t, db, `CREATE TABLE audit_logs(id TEXT PRIMARY KEY,operator TEXT,action TEXT,category TEXT,details TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			timestamp timestamp with time zone NOT NULL DEFAULT now())`)
 	opsExec(t, db, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '8 days',return_window_ends_at=NOW()-INTERVAL '1 hour',disputed_at=NOW()-INTERVAL '2 days',dropshipper_profit=7000 WHERE id='two-order'`)
 	opsExec(t, db, `INSERT INTO disputes(id,order_id,order_number,type,claim_amount,status,reason) VALUES('claim-one','two-order','TWO','delivery_undelivered',1000,'pending','legacy'),('claim-two','two-order','TWO','delivery_undelivered',1000,'pending','legacy')`)
 	var confirmed, ends, hold time.Time
@@ -152,7 +155,10 @@ func fin005UnexpiredReviewedFixture(t *testing.T) (*sql.DB, *FinanceRepository, 
 	db := notifyWritersTestDB(t)
 	customer, _, _, _, _, _, _, _ := seedNotifyOrderWorld(t, db)
 	seedNotifyOrder(t, db, "replay-order", "REPLAY", customer, "delivery_disputed", "paid")
-	opsExec(t, db, `CREATE TABLE audit_logs(id TEXT PRIMARY KEY,operator TEXT,action TEXT,category TEXT,details TEXT)`)
+	opsExec(t, db, `CREATE TABLE audit_logs(id TEXT PRIMARY KEY,operator TEXT,action TEXT,category TEXT,details TEXT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			timestamp timestamp with time zone NOT NULL DEFAULT now())`)
 	opsExec(t, db, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '8 days',disputed_at=NOW()-INTERVAL '1 day',dropshipper_profit=7000 WHERE id='replay-order'`)
 	opsExec(t, db, `INSERT INTO disputes(id,order_id,order_number,type,claim_amount,status,resolution_action,responsible_party,resolution_date) VALUES('replay-claim','replay-order','REPLAY','delivery_undelivered',100,'resolved','release_to_seller','seller',NOW())`)
 	installFIN005PrivateFixture(t, db)

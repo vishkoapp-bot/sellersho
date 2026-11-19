@@ -50,7 +50,9 @@ CREATE TABLE users (
 	locked_until TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID NOT NULL,
@@ -67,20 +69,31 @@ CREATE TABLE suppliers (
 	approved_by VARCHAR(50),
 	approved_at TIMESTAMPTZ,
 	rejection_reason TEXT,
-	signed_contract_version INT,
+	signed_contract_version INT DEFAULT 1 ,
 	tapin_shop_id VARCHAR(50),
 	warehouse_city_confirmed BOOLEAN DEFAULT FALSE,
 	warehouse_city_source VARCHAR(30),
 	default_markup_type VARCHAR(20),
 	default_markup_value DECIMAL(10,2),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text,
+	tapin_token text);
 CREATE TABLE supplier_members (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	supplier_id VARCHAR(50) NOT NULL,
 	user_id UUID NOT NULL,
 	is_active BOOLEAN NOT NULL DEFAULT TRUE
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	invited_by uuid,
+	permissions jsonb NOT NULL DEFAULT '[]'::jsonb,
+	role_key character varying(40),
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE user_capabilities (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

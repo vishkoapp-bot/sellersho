@@ -567,7 +567,7 @@ func (r *CatalogRepository) listStoreCampaignsTx(ctx context.Context, tx *sql.Tx
 // scanner as GetProducts) for the refresh batch, in the caller's tx.
 func (r *CatalogRepository) catalogProductsByIDsTx(ctx context.Context, tx *sql.Tx, ids []string) ([]domain.Product, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT p.id, p.title, p.slug, p.category_slug, p.supplier_id, p.original_price,
+		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
 		       p.preparation_days, COALESCE(p.supplier_warranty, ''), p.is_featured, p.is_special_deal,

@@ -69,7 +69,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     container_name: drup_frontend
     restart: unless-stopped
     ports:

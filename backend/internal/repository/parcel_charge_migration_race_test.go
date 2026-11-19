@@ -50,6 +50,10 @@ func TestParcelChargeMigrationLiveUpgradeRace(t *testing.T) {
 	for _, scenario := range []string{"old-invalid-state-debit", "old-discovery-before-account", "parent-cancellation", "parcel-handover"} {
 		t.Run(scenario, func(t *testing.T) {
 			db := parcelLegacyFixture(t)
+			// TEST-02 round 4: the standing table already carries charge_component (full demanded-set patch); drop it first, otherwise the partial-migration check below reads the fixture's column as migration residue (component=true false positive).
+			if _, err := db.Exec(`ALTER TABLE supplier_return_financial_events DROP COLUMN IF EXISTS charge_component`); err != nil {
+				t.Fatal(err)
+			}
 			if strings.HasPrefix(scenario, "old-") {
 				if _, err := db.Exec(`UPDATE supplier_return_parcels SET status='cancelled'`); err != nil {
 					t.Fatal(err)
@@ -211,6 +215,10 @@ func TestParcelChargeMigrationRetainsEvidenceLocksThroughBackfill(t *testing.T) 
 			defer migration.Rollback()
 			var migrationPID int
 			if err = migration.QueryRow(`SELECT pg_backend_pid()`).Scan(&migrationPID); err != nil {
+				t.Fatal(err)
+			}
+			// TEST-02 round 4: pre-drop charge_component (see applyParcelMigration) so the migration's bare ADD COLUMN does not fail with 42701.
+			if _, err = migration.ExecContext(ctx, `ALTER TABLE supplier_return_financial_events DROP COLUMN IF EXISTS charge_component`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = migration.ExecContext(ctx, string(up[:split])); err != nil {

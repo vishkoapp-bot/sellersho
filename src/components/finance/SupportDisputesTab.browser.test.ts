@@ -20,7 +20,7 @@ test('FIN005 live empty/error states, authoritative outcomes, double-click and l
  else if(req.url?.startsWith('/assets/')){try{res.end(await readFile('dist'+req.url));}catch{res.statusCode=404;res.end();}}
  else{res.setHeader('Content-Type','text/html');res.end('<style>'+css+'</style><div id="notice"></div><div id="root"></div><script>'+bundle.outputFiles[0].text+'</script>');}});
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const address=server.address();assert.ok(address&&typeof address==='object');
- const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})});
+ const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})}).catch(async e=>{await new Promise<void>(r=>server.close(()=>r()));throw e;});
  try{const page=await browser.newPage();await page.goto(`http://127.0.0.1:${address.port}`);await page.waitForNetworkIdle();let text=await page.$eval('#root',e=>e.textContent||'');assert.ok(!text.includes('MOCK-CLAIM'));assert.ok(!text.includes('MOCK-ADJUSTMENT'));assert.match(text,/0 پرونده/);
  fail=true;await page.reload();await page.waitForNetworkIdle();text=await page.$eval('#root',e=>e.textContent||'');assert.match(text,/تلاش مجدد/);assert.ok(!text.includes('MOCK-CLAIM'));
  fail=false;

@@ -20,7 +20,7 @@ test('return bin form keeps exact item and command on conflict and lost response
   }else{res.setHeader('Content-Type','text/html');res.end('<html><body><div id="root"></div><script>'+bundle.outputFiles[0].text+'</script></body></html>');}
  });
  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const addr=server.address();assert.ok(addr&&typeof addr==='object');
- const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})});
+ const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})}).catch(async e=>{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));throw e;});
  try{
   const page=await browser.newPage();await page.goto(`http://127.0.0.1:${addr.port}/__return-bin`);await page.click('button');await page.waitForSelector('form[data-item="item-red"]');
   const form='form[data-item="item-red"]';

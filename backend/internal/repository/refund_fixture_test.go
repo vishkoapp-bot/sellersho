@@ -15,7 +15,19 @@ func installRefundFixtureSchema(t *testing.T, db *sql.DB) {
 	for _, q := range []string{
 		`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS amount BIGINT,ADD COLUMN IF NOT EXISTS order_number TEXT,ADD COLUMN IF NOT EXISTS gateway_token TEXT,ADD COLUMN IF NOT EXISTS status TEXT,ADD COLUMN IF NOT EXISTS rrn TEXT,ADD COLUMN IF NOT EXISTS card_mask TEXT,ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_one_active_per_order ON payment_transactions(order_id) WHERE status IN ('pending','paid')`,
-		`CREATE TABLE IF NOT EXISTS disputes(id TEXT PRIMARY KEY,order_id TEXT,status TEXT,resolution_action TEXT,claim_amount BIGINT)`,
+		`CREATE TABLE IF NOT EXISTS disputes(id TEXT PRIMARY KEY,order_id TEXT,status TEXT DEFAULT 'pending'::character varying ,resolution_action TEXT,claim_amount BIGINT,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			created_at timestamp with time zone NOT NULL DEFAULT now(),
+			customer_name character varying(100),
+			financial_decision text,
+			order_number character varying(30),
+			product_title character varying(255),
+			reason text,
+			resolution_date timestamp with time zone,
+			responsible_party character varying(100),
+			store_id character varying(50),
+			supplier_name character varying(100),
+			type character varying(30))`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -26,6 +38,16 @@ func installRefundFixtureSchema(t *testing.T, db *sql.DB) {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(string(oldRefund)); err != nil {
+		t.Fatal(err)
+	}
+	// TEST-02 round 4: the UP migration adds compensation_capture with
+	// a bare ADD COLUMN (and drops payment_transactions_one_active_per_order
+	// with a bare DROP INDEX, so the index must be PRESENT, not dropped).
+	// The standing payment_transactions rebuild already carries the
+	// column (full demanded-set patch), so drop it first or the Exec
+	// fails with 42701 "already exists" — the same class as the
+	// checkout-attempt and sku-inventory pre-drops.
+	if _, err := db.Exec(`ALTER TABLE payment_transactions DROP COLUMN IF EXISTS compensation_capture`); err != nil {
 		t.Fatal(err)
 	}
 	up, err := os.ReadFile("../../migrations/202611150004_order_refund_principal.up.sql")
@@ -75,7 +97,11 @@ func seedVerifiedRefundFixturePayment(t *testing.T, db *sql.DB, orderID string) 
 	err := db.QueryRow(`SELECT id FROM payment_transactions WHERE order_id=$1 ORDER BY created_at,id LIMIT 1`, orderID).Scan(&paymentID)
 	if err == sql.ErrNoRows {
 		paymentID = "fixture-pay-" + uuid.NewString()[:12]
-		if _, err = db.Exec(`INSERT INTO payment_transactions(id,order_id,order_number,gateway_token,amount,status) SELECT $1,id,order_number,$1,$3,'paid' FROM orders WHERE id=$2`, paymentID, orderID, amount); err != nil {
+		// TEST-02 round 4: $1 was reused for both id and gateway_token;
+		// the two columns have different types (TEXT vs VARCHAR), so
+		// Postgres cannot deduce one type for the parameter (42P08).
+		// Use a separate parameter for the token.
+		if _, err = db.Exec(`INSERT INTO payment_transactions(id,order_id,order_number,gateway_token,amount,status) SELECT $1,id,order_number,$4,$3,'paid' FROM orders WHERE id=$2`, paymentID, orderID, amount, paymentID); err != nil {
 			t.Fatal(err)
 		}
 	} else if err != nil {

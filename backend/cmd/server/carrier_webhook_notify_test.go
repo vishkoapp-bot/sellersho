@@ -32,24 +32,140 @@ CREATE TABLE users (
 	role VARCHAR(20) NOT NULL DEFAULT 'customer',
 	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	email VARCHAR(255),
+	username VARCHAR(255),
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	failed_login_attempts integer NOT NULL DEFAULT 0,
+	locked_until timestamp with time zone,
+	password_hash text,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	name VARCHAR(200) NOT NULL
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	approval_status VARCHAR(20) NOT NULL DEFAULT 'approved',
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	warehouse_city VARCHAR(255) NOT NULL DEFAULT 'تهران',
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	approved_at timestamp with time zone,
+	approved_by character varying(50),
+	badge character varying(50),
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	default_markup_type character varying(10),
+	default_markup_value numeric(10,2),
+	delivery_score integer DEFAULT 100,
+	description text,
+	logo_url text,
+	rating numeric(3,2) DEFAULT 5.00,
+	rejection_reason text,
+	signed_contract_version integer NOT NULL DEFAULT 1,
+	supports_direct_shipping boolean DEFAULT false,
+	suspended_at timestamp with time zone,
+	suspended_by text,
+	suspension_reason text,
+	tapin_shop_id text,
+	tapin_token text,
+	total_products integer DEFAULT 0,
+	warehouse_city_confirmed boolean NOT NULL DEFAULT false,
+	warehouse_city_source character varying(20));
 CREATE TABLE stores (
 	id VARCHAR(50) PRIMARY KEY,
 	name VARCHAR(200) NOT NULL DEFAULT '',
 	slug VARCHAR(200) NOT NULL DEFAULT '',
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	owner_name VARCHAR(255) NOT NULL DEFAULT '',
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	active_categories text[] NOT NULL DEFAULT '{}'::text[],
+	active_plan_id character varying(20) NOT NULL DEFAULT 'trial'::character varying,
+	addon_section_title character varying(200),
+	contract_signature_code text,
+	custom_domain character varying(150),
+	custom_store_margin_override numeric(5,2),
+	description text,
+	is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+	logo text NOT NULL DEFAULT ''::text,
+	owner_phone text NOT NULL DEFAULT ''::text,
+	owner_type character varying(20) NOT NULL DEFAULT 'dropshipper'::character varying,
+	panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	plan_expires_at timestamp with time zone,
+	profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+	referral_code character varying(30),
+	referrer_seller_id character varying(50),
+	rejection_reason text,
+	related_section_title character varying(200),
+	seller_deals_widget_config jsonb,
+	signed_contract_version integer NOT NULL DEFAULT 1,
+	status character varying(20) NOT NULL DEFAULT 'active'::character varying,
+	tagline text,
+	template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+	template_id character varying(50),
+	total_sales bigint NOT NULL DEFAULT 0,
+	updated_at timestamp with time zone NOT NULL DEFAULT now());
 CREATE TABLE products (
 	id VARCHAR(50) PRIMARY KEY,
 	supplier_id VARCHAR(50) REFERENCES suppliers(id),
 	title VARCHAR(200) NOT NULL DEFAULT '',
 	stock INT NOT NULL DEFAULT 0
-);
+,
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_status VARCHAR(255) NOT NULL DEFAULT 'unverified',
+	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
+	measurement_version INTEGER NOT NULL DEFAULT 0,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	attribute_schema jsonb,
+	barcode character varying(64),
+	base_price_override bigint,
+	brand text NOT NULL DEFAULT ''::text,
+	category_slug character varying(100),
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	description text,
+	fulfillment_method character varying(20) DEFAULT 'warehouse'::character varying,
+	height_mm integer,
+	image_url text,
+	implicit_agreement boolean NOT NULL DEFAULT false,
+	implicit_agreement_until timestamp with time zone,
+	is_active boolean NOT NULL DEFAULT true,
+	is_featured boolean DEFAULT false,
+	is_original boolean NOT NULL DEFAULT true,
+	is_special_deal boolean DEFAULT false,
+	length_mm integer,
+	markup_type character varying(10),
+	markup_value numeric(10,2),
+	measurement_revision_id text,
+	measurement_source character varying(20),
+	origin_supplier_warehouse_id text,
+	original_price bigint,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	platform_margin bigint,
+	preparation_days integer DEFAULT 1,
+	product_type text NOT NULL DEFAULT 'legacy'::text,
+	rating numeric(3,2) NOT NULL DEFAULT 0,
+	reviews_count integer NOT NULL DEFAULT 0,
+	schema_version integer NOT NULL DEFAULT 0,
+	shipping_class text NOT NULL DEFAULT 'standard'::text,
+	slug character varying(255),
+	specs jsonb DEFAULT '{}'::jsonb,
+	spn character varying(20),
+	spn_number bigint,
+	supplier_base_cost bigint,
+	supplier_warranty character varying(100),
+	supply_option character varying(20) NOT NULL DEFAULT '1day'::character varying,
+	tax_class text NOT NULL DEFAULT 'standard'::text,
+	updated_at timestamp with time zone NOT NULL DEFAULT now(),
+	warehouse_name character varying(100) DEFAULT 'انبار مرکزی تهران'::character varying,
+	warranty_property_id character varying(60),
+	weight_grams integer,
+	width_mm integer);
 CREATE TABLE orders (
 	id VARCHAR(50) PRIMARY KEY,
 	customer_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -65,14 +181,65 @@ CREATE TABLE orders (
 	disputed_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	box_size character varying(80),
+	carrier character varying(100),
+	confirmed_at timestamp with time zone,
+	coupon_discount_amount bigint,
+	customer_address text,
+	customer_city character varying(50),
+	customer_full_name character varying(100),
+	customer_phone character varying(20),
+	customer_postal_code character varying(20),
+	customer_province character varying(50),
+	discount_amount bigint NOT NULL DEFAULT 0,
+	dispute_reason text,
+	dropshipper_profit bigint NOT NULL DEFAULT 0,
+	gateway_amount bigint NOT NULL DEFAULT 0,
+	idempotency_key text,
+	inventory_captured boolean NOT NULL DEFAULT false,
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	packed_at timestamp with time zone,
+	payment_expires_at timestamp with time zone DEFAULT (now() + '00:15:00'::interval),
+	payment_method character varying(20) NOT NULL DEFAULT 'cash'::character varying,
+	platform_addon_amount bigint NOT NULL DEFAULT 0,
+	platform_profit bigint NOT NULL DEFAULT 0,
+	profit_released boolean DEFAULT false,
+	profit_released_at timestamp with time zone,
+	referral_commission bigint DEFAULT 0,
+	referral_commission_released boolean DEFAULT false,
+	return_window_ends_at timestamp with time zone,
+	seller_discount_amount bigint NOT NULL DEFAULT 0,
+	shipping_cost bigint NOT NULL DEFAULT 0,
+	shipping_label text,
+	shipping_quote_id text,
+	store_name character varying(100),
+	supplier_addon_amount bigint NOT NULL DEFAULT 0,
+	total_amount bigint,
+	tracking_code character varying(50),
+	tracking_number character varying(100),
+	wallet_amount bigint NOT NULL DEFAULT 0,
+	weight_grams integer);
 CREATE TABLE order_items (
-	id VARCHAR(50) PRIMARY KEY,
+	id VARCHAR(50)  DEFAULT gen_random_uuid() PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
 	product_id VARCHAR(50) REFERENCES products(id),
 	quantity INT NOT NULL DEFAULT 1,
 	variant_id VARCHAR(50)
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	discount_amount bigint NOT NULL DEFAULT 0,
+	final_unit_price bigint,
+	platform_fee bigint,
+	pricing_policy_version text NOT NULL DEFAULT 'legacy-unversioned'::text,
+	product_title_snapshot text,
+	seller_margin bigint,
+	variant_name text,
+	variant_spnc character varying(12),
+	wholesale_cost bigint);
 CREATE TABLE supplier_shipments (
 	id VARCHAR(50) PRIMARY KEY,
 	order_id VARCHAR(50) REFERENCES orders(id) ON DELETE CASCADE,
@@ -84,11 +251,35 @@ CREATE TABLE supplier_shipments (
 	delivered_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	customer_name character varying(255),
+	customer_phone character varying(20),
+	packaging_height_mm integer,
+	packaging_length_mm integer,
+	packaging_width_mm integer,
+	send_price bigint,
+	shipping_address jsonb,
+	supplier_notes text,
+	tapin_box_id text,
+	tapin_last_status text,
+	tapin_register_attempted_at timestamp with time zone,
+	tapin_registered_at timestamp with time zone,
+	tapin_service text);
 CREATE TABLE order_item_origins (
 	order_item_id VARCHAR(50),
 	supplier_id VARCHAR(50)
-);
+,
+	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+	created_at timestamp with time zone NOT NULL DEFAULT now(),
+	id text,
+	leg_index integer,
+	order_id character varying(255),
+	origin_label text,
+	origin_type text,
+	quantity integer,
+	supplier_warehouse_id text,
+	warehouse_id text);
 CREATE TABLE supplier_shipment_audit_logs (
 	id VARCHAR(50) PRIMARY KEY,
 	shipment_id VARCHAR(50) NOT NULL,
@@ -126,6 +317,15 @@ func carrierWebhookNotifyDB(t *testing.T) *sql.DB {
 	}
 	if _, err := db.Exec(carrierWebhookNotifyDDL); err != nil {
 		t.Fatalf("seed DDL: %v", err)
+	}
+	// TEST-02 round 4: the DDL above DROP TABLEs stores, which destroys
+	// the migrated pre-seed central store ('store-central', slug
+	// 'central') that the catalog list handler needs for its store
+	// scope (resolveListStore returns nil without it -> 500 "catalog
+	// store scope unavailable"). Restore it — same values as migration
+	// 000002_seed_data.up.sql.
+	if _, err := db.Exec(`INSERT INTO stores (id, name, slug, owner_type, owner_name, profit_margin_percent, active_plan_id, signed_contract_version, total_sales) VALUES ('store-central', 'فروشگاه رسمی مرکزی سلرشو', 'central', 'central', 'مدیریت مرکزی سلرشو', 0.00, 'vip', 2, 184500000) ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("restore central store: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db

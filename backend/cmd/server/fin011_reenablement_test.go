@@ -54,6 +54,17 @@ func TestFIN011ReenablementCommissionBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedSQL := strings.NewReplacer("generate_series(1,1000)", "generate_series(1,3)", "generate_series(1,10000)", "generate_series(1,1)", "generate_series(1,50000)", "generate_series(1,5)", "generate_series(1,100000)", "generate_series(1,0)").Replace(string(seed))
+	// TEST-02 round 4: the capacity seed is deterministic and
+	// idempotent (every INSERT ends ON CONFLICT DO NOTHING in
+	// cmd/capacity-fixture/seed.sql), so re-running it is safe even
+	// though TestFIN007HTTPCheckoutAdmissionRace (coupon_checkout) ran
+	// the same seed earlier in the package — and re-running is REQUIRED
+	// here, because intervening fixtures (e.g. discount_quote_gate)
+	// DROP products and wipe the seeded cap-product-1 while the cap-*
+	// users survive, so a "seed if absent" check on users alone would
+	// skip the re-seed and leave the quote without its product. The
+	// UPDATEs below re-assert this test's own inputs regardless of who
+	// seeded the world.
 	if _, err = db.Exec(seedSQL); err != nil {
 		t.Fatal(err)
 	}

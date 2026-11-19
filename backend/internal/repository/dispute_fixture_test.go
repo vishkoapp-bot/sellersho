@@ -63,7 +63,9 @@ func installFIN005PrivateFixture(t *testing.T, db *sql.DB) {
 		`ALTER TABLE disputes ADD COLUMN IF NOT EXISTS order_number TEXT,ADD COLUMN IF NOT EXISTS store_id TEXT,ADD COLUMN IF NOT EXISTS type TEXT,ADD COLUMN IF NOT EXISTS responsible_party TEXT,ADD COLUMN IF NOT EXISTS resolution_date TIMESTAMPTZ`,
 		`ALTER TABLE orders ADD COLUMN IF NOT EXISTS disputed_at TIMESTAMPTZ,ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ,ADD COLUMN IF NOT EXISTS return_window_ends_at TIMESTAMPTZ,ADD COLUMN IF NOT EXISTS profit_released_at TIMESTAMPTZ,ADD COLUMN IF NOT EXISTS referral_commission_released BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE order_item_origins ADD COLUMN IF NOT EXISTS order_id TEXT,ADD COLUMN IF NOT EXISTS quantity INT`,
-		`CREATE TABLE IF NOT EXISTS return_items(id UUID PRIMARY KEY,return_id UUID REFERENCES customer_returns(id),order_item_id TEXT,qty INT,qc_status TEXT,received_at TIMESTAMPTZ)`,
+		`CREATE TABLE IF NOT EXISTS return_items(id UUID  DEFAULT gen_random_uuid() PRIMARY KEY,return_id UUID REFERENCES customer_returns(id),order_item_id TEXT,qty INT,qc_status TEXT DEFAULT 'pending'::character varying ,received_at TIMESTAMPTZ,
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			variant_id uuid)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)

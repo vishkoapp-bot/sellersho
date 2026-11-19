@@ -69,6 +69,46 @@ func treasuryTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// TEST-02: TestFinanceTreasuryDoesNotOmitUnreadSellerLiabilities
+	// deliberately drops stores (fault injection: the handler must fail
+	// loudly, not treat missing data as zero) and runs before this file
+	// alphabetically, so stores may be absent when this fixture runs.
+	// Recreate it shape-compatibly if it is gone; a no-op when the
+	// migrated table is present.
+	// TEST-02 round 4: the recreate MUST use the migrated VARCHAR types,
+	// not TEXT. treasurySeedStore reuses $1 for id, slug and referral_code;
+	// Postgres deduces a parameter's type from its uses, and TEXT (oid 25)
+	// vs VARCHAR (oid 1043) is an "inconsistent types deduced" error
+	// (proven by probe: all-VARCHAR accepts the INSERT, mixed TEXT/VARCHAR
+	// fails with 42P08 at the slug $1). The migrated stores columns are
+	// id VARCHAR(50), name/slug VARCHAR(100), owner_type VARCHAR(20),
+	// owner_name VARCHAR(100), active_plan_id VARCHAR(20),
+	// referral_code VARCHAR(30), status VARCHAR(20) — mirrored here.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS stores(id VARCHAR(50) PRIMARY KEY, name VARCHAR(100) NOT NULL DEFAULT '', slug VARCHAR(100) NOT NULL DEFAULT '', owner_type VARCHAR(20) DEFAULT 'dropshipper'::character varying , owner_name VARCHAR(100), owner_user_id UUID, active_plan_id VARCHAR(20) DEFAULT 'trial'::character varying , referral_code VARCHAR(30), status VARCHAR(20) DEFAULT 'active'::character varying , total_sales BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
+			active_categories text[] NOT NULL DEFAULT '{}'::text[],
+			addon_section_title character varying(200),
+			contract_signature_code text,
+			custom_domain character varying(150),
+			custom_store_margin_override numeric(5,2),
+			description text,
+			is_margin_locked_by_admin boolean NOT NULL DEFAULT false,
+			logo text NOT NULL DEFAULT ''::text,
+			owner_phone text NOT NULL DEFAULT ''::text,
+			panel_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			plan_expires_at timestamp with time zone,
+			profit_margin_percent numeric(5,2) NOT NULL DEFAULT 12.00,
+			referrer_seller_id character varying(50),
+			rejection_reason text,
+			related_section_title character varying(200),
+			seller_deals_widget_config jsonb,
+			signed_contract_version integer NOT NULL DEFAULT 1,
+			tagline text,
+			template_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+			template_id character varying(50),
+			updated_at timestamp with time zone NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
 	// Migration 000008 seeds demo rows that would pollute the global
 	// aggregates: two pending payout_requests and one paid order with
 	// no receipt. Remove them; every other seed row has zero balances.
@@ -520,6 +560,119 @@ func treasuryAssertOraclePending(t *testing.T, c *treasuryCash) {
 	treasuryAssertIdentity(t, c)
 }
 
+// treasuryDeltaPtr asserts that a nullable cash field moved by exactly
+// `want` between two reads of the global cash position.
+//
+// TEST-02 round 4: the cash position is a GLOBAL aggregate, and the
+// Nov 15 FIN-005 immutability triggers (order_payment_receipts /
+// order_payment_verifications / order_refund_obligations can never be
+// DELETEd) plus their FKs mean treasuryCleanup cannot remove a prior
+// test's gateway-funded order — its receipt keeps contributing cash
+// forever. Absolute assertions therefore fail on the SECOND oracle test
+// in a shared DB (proven: G-02/G-03/G-04 read 30M/40M/50M in isolation,
+// +10M per prior test). The fixture's own contribution is exact, so the
+// tests assert DELTAS against a pre-fixture reading instead. When the
+// pre-fixture value is unknown (nil — no cash evidence at all), any
+// cash-affecting leftover would have made it known, so the post value
+// must equal the oracle value exactly; otherwise the delta must match.
+func treasuryDeltaPtr(t *testing.T, pre, post *int64, want int64, what string) {
+	t.Helper()
+	if pre == nil {
+		if post == nil || *post != want {
+			t.Fatalf("%s: pre unknown, post=%v want exactly %d (no cash-affecting leftover may exist)", what, post, want)
+		}
+		return
+	}
+	if post == nil || *post-*pre != want {
+		var delta interface{}
+		if post != nil {
+			delta = *post - *pre
+		}
+		postVal := int64(0)
+		if post != nil {
+			postVal = *post
+		}
+		t.Fatalf("%s delta=%v want %d (pre=%d post=%d)", what, delta, want, *pre, postVal)
+	}
+}
+
+// treasuryEffectiveSafe returns the unclamped safe-to-spend: the DTO
+// clamps a negative (liquidCash - liability) to 0 and reports the raw
+// negative as OverObligatedAmount. Delta arithmetic must use the raw
+// value, or a pre-reading taken while the shared DB is over-obligated
+// hides the negative and the fixture's +10,000,000 appears as +9,200,000
+// (round-4 G-01: pre safe 0 with OverObligatedAmount -800,000).
+func treasuryEffectiveSafe(c *treasuryCash) (int64, bool) {
+	if c.SafeToSpend == nil {
+		return 0, false
+	}
+	if c.OverObligated {
+		return c.OverObligatedAmount, true
+	}
+	return *c.SafeToSpend, true
+}
+
+func treasuryAssertSafeDelta(t *testing.T, pre, post *treasuryCash, want int64) {
+	t.Helper()
+	preSafe, preOK := treasuryEffectiveSafe(pre)
+	postSafe, postOK := treasuryEffectiveSafe(post)
+	if !preOK {
+		if !postOK || postSafe != want {
+			t.Fatalf("safeToSpend: pre unknown, post effective=%d want exactly %d", postSafe, want)
+		}
+		return
+	}
+	if !postOK || postSafe-preSafe != want {
+		t.Fatalf("safeToSpend delta=%d want %d (pre effective=%d post effective=%d)", postSafe-preSafe, want, preSafe, postSafe)
+	}
+}
+
+// treasuryAssertOraclePendingDelta is treasuryAssertOraclePending as a
+// delta against a pre-fixture reading (see treasuryDeltaPtr): the oracle
+// fixture contributes exactly liquidCash +20,000,000, owedToStores
+// +8,000,000, holds +2,000,000 (pending), allTimeOut +0, liability
+// +10,000,000, safeToSpend +10,000,000 — regardless of what earlier
+// tests left in the shared DB. The accounting identity is checked on
+// the absolute post position (it must hold for any consistent state).
+func treasuryAssertOraclePendingDelta(t *testing.T, pre, post *treasuryCash) {
+	t.Helper()
+	treasuryDeltaPtr(t, pre.LiquidCash, post.LiquidCash, 20000000, "liquidCash")
+	if post.OwedToStores-pre.OwedToStores != 8000000 {
+		t.Fatalf("owedToStores delta=%d want 8000000 (pre=%d post=%d)", post.OwedToStores-pre.OwedToStores, pre.OwedToStores, post.OwedToStores)
+	}
+	if post.Holds-pre.Holds != 2000000 || (post.HoldsByStatus["pending"]+post.HoldsByStatus["approved"])-(pre.HoldsByStatus["pending"]+pre.HoldsByStatus["approved"]) != 2000000 {
+		t.Fatalf("holds delta=%d holdsByStatus=%v want 2000000", post.Holds-pre.Holds, post.HoldsByStatus)
+	}
+	if post.AllTimeOut-pre.AllTimeOut != 0 {
+		t.Fatalf("allTimeOut delta=%d want 0 (pre=%d post=%d)", post.AllTimeOut-pre.AllTimeOut, pre.AllTimeOut, post.AllTimeOut)
+	}
+	if post.Liability-pre.Liability != 10000000 {
+		t.Fatalf("liability delta=%d want 10000000 (pre=%d post=%d)", post.Liability-pre.Liability, pre.Liability, post.Liability)
+	}
+	treasuryAssertSafeDelta(t, pre, post, 10000000)
+	treasuryAssertIdentity(t, post)
+}
+
+// treasuryDeltaInt asserts a plain-int64 treasury field moved by exactly
+// want against a pre-fixture reading (same shared-DB rationale as
+// treasuryDeltaPtr: earlier tests' unreleasable rows stay in the
+// disposable DB, so absolute totals are meaningless in-package).
+func treasuryDeltaInt(t *testing.T, pre, post, want int64, what string) {
+	t.Helper()
+	if post-pre != want {
+		t.Fatalf("%s delta=%d want %d (pre=%d post=%d)", what, post-pre, want, pre, post)
+	}
+}
+
+// treasuryDeltaStatus asserts one HoldsByStatus bucket moved by exactly
+// want against a pre-fixture reading.
+func treasuryDeltaStatus(t *testing.T, pre, post map[string]int64, key string, want int64, what string) {
+	t.Helper()
+	if post[key]-pre[key] != want {
+		t.Fatalf("%s delta=%d want %d (pre=%v post=%v)", what, post[key]-pre[key], want, pre, post)
+	}
+}
+
 // treasuryInsertRefundObligation replicates the exact INSERT the
 // reserveOrderRefundTx writer performs (same table, same trigger
 // guards) — the writer itself is unexported in package repository.
@@ -584,21 +737,22 @@ func TestTreasuryPendingToApprovedSafeToSpendUnchanged(t *testing.T) {
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
 	ctx := context.Background()
 	fin := repository.NewFinanceRepository(db)
+	pre := treasuryReadOK(t, db)
 	_, _, payoutID := treasuryOracleFixture(t, db, f)
 
 	before := treasuryReadOK(t, db)
-	treasuryAssertOraclePending(t, before)
-	if before.HoldsByStatus["pending"] != 2000000 {
-		t.Fatalf("pending hold=%d want 2000000 (holdsByStatus=%v)", before.HoldsByStatus["pending"], before.HoldsByStatus)
+	treasuryAssertOraclePendingDelta(t, pre, before)
+	if before.HoldsByStatus["pending"]-pre.HoldsByStatus["pending"] != 2000000 {
+		t.Fatalf("pending hold delta=%d want 2000000 (holdsByStatus pre=%v post=%v)", before.HoldsByStatus["pending"]-pre.HoldsByStatus["pending"], pre.HoldsByStatus, before.HoldsByStatus)
 	}
 
 	if err := fin.ReviewSettlement(ctx, payoutID, "approved", "fin008-test", "finance-test"); err != nil {
 		t.Fatalf("approve payout: %v", err)
 	}
 	after := treasuryReadOK(t, db)
-	treasuryAssertOraclePending(t, after)
-	if after.HoldsByStatus["approved"] != 2000000 {
-		t.Fatalf("approved hold=%d want 2000000 (holdsByStatus=%v)", after.HoldsByStatus["approved"], after.HoldsByStatus)
+	treasuryAssertOraclePendingDelta(t, pre, after)
+	if after.HoldsByStatus["approved"]-pre.HoldsByStatus["approved"] != 2000000 {
+		t.Fatalf("approved hold delta=%d want 2000000 (holdsByStatus pre=%v post=%v)", after.HoldsByStatus["approved"]-pre.HoldsByStatus["approved"], pre.HoldsByStatus, after.HoldsByStatus)
 	}
 	if *after.SafeToSpend != *before.SafeToSpend || after.Liability != before.Liability || *after.LiquidCash != *before.LiquidCash {
 		t.Fatalf("approve changed the oracle: before cash=%d liability=%d safe=%d, after cash=%d liability=%d safe=%d",
@@ -613,10 +767,11 @@ func TestTreasuryTransferCompletionReducesCashAndLiabilityEqually(t *testing.T) 
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
 	ctx := context.Background()
 	fin := repository.NewFinanceRepository(db)
+	pre := treasuryReadOK(t, db)
 	_, _, payoutID := treasuryOracleFixture(t, db, f)
 
 	before := treasuryReadOK(t, db)
-	treasuryAssertOraclePending(t, before)
+	treasuryAssertOraclePendingDelta(t, pre, before)
 
 	if err := fin.ReviewSettlement(ctx, payoutID, "approved", "fin008-test", "finance-test"); err != nil {
 		t.Fatalf("approve payout: %v", err)
@@ -625,28 +780,25 @@ func TestTreasuryTransferCompletionReducesCashAndLiabilityEqually(t *testing.T) 
 		t.Fatalf("confirm transfer: %v", err)
 	}
 	after := treasuryReadOK(t, db)
-	// Confirmed: available 8,000,000, hold 0, out 2,000,000,
+	// Confirmed, as deltas against the pre-fixture reading (see
+	// treasuryDeltaPtr): available 8,000,000, hold 0, out 2,000,000,
 	// liability 8,000,000, cash 18,000,000, safeToSpend 10,000,000.
-	if treasuryCashVal(t, after.LiquidCash, "liquidCash") != 18000000 {
-		t.Fatalf("liquidCash=%d want 18000000", *after.LiquidCash)
+	treasuryDeltaPtr(t, pre.LiquidCash, after.LiquidCash, 18000000, "liquidCash")
+	if after.OwedToStores-pre.OwedToStores != 8000000 {
+		t.Fatalf("owedToStores delta=%d want 8000000 (pre=%d post=%d)", after.OwedToStores-pre.OwedToStores, pre.OwedToStores, after.OwedToStores)
 	}
-	if after.OwedToStores != 8000000 {
-		t.Fatalf("owedToStores=%d want 8000000", after.OwedToStores)
+	if after.Holds-pre.Holds != 0 {
+		t.Fatalf("holds delta=%d want 0 (pre=%d post=%d)", after.Holds-pre.Holds, pre.Holds, after.Holds)
 	}
-	if after.Holds != 0 {
-		t.Fatalf("holds=%d want 0", after.Holds)
+	if after.AllTimeOut-pre.AllTimeOut != 2000000 {
+		t.Fatalf("allTimeOut delta=%d want 2000000 (pre=%d post=%d)", after.AllTimeOut-pre.AllTimeOut, pre.AllTimeOut, after.AllTimeOut)
 	}
-	if after.AllTimeOut != 2000000 {
-		t.Fatalf("allTimeOut=%d want 2000000", after.AllTimeOut)
+	if after.Liability-pre.Liability != 8000000 {
+		t.Fatalf("liability delta=%d want 8000000 (pre=%d post=%d)", after.Liability-pre.Liability, pre.Liability, after.Liability)
 	}
-	if after.Liability != 8000000 {
-		t.Fatalf("liability=%d want 8000000", after.Liability)
-	}
-	if treasuryCashVal(t, after.SafeToSpend, "safeToSpend") != 10000000 {
-		t.Fatalf("safeToSpend=%d want 10000000", *after.SafeToSpend)
-	}
-	if after.Period.Out != 2000000 {
-		t.Fatalf("period.out=%d want 2000000", after.Period.Out)
+	treasuryAssertSafeDelta(t, pre, after, 10000000)
+	if after.Period.Out-pre.Period.Out != 2000000 {
+		t.Fatalf("period.out delta=%d want 2000000 (pre=%d post=%d)", after.Period.Out-pre.Period.Out, pre.Period.Out, after.Period.Out)
 	}
 	// Cash and liability both fell by exactly 2,000,000; safeToSpend
 	// is unchanged at 10,000,000.
@@ -664,32 +816,30 @@ func TestTreasuryPayoutRejectionPreservesConservation(t *testing.T) {
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
 	ctx := context.Background()
 	fin := repository.NewFinanceRepository(db)
+	pre := treasuryReadOK(t, db)
 	_, _, payoutID := treasuryOracleFixture(t, db, f)
 
 	if err := fin.ReviewSettlement(ctx, payoutID, "rejected", "fin008-test", "finance-test"); err != nil {
 		t.Fatalf("reject payout: %v", err)
 	}
 	c := treasuryReadOK(t, db)
-	// Rejected: the payout leaves the liability; the full
+	// Rejected, as deltas against the pre-fixture reading (see
+	// treasuryDeltaPtr): the payout leaves the liability; the full
 	// 10,000,000 stays available, cash stays 20,000,000.
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 20000000 {
-		t.Fatalf("liquidCash=%d want 20000000", *c.LiquidCash)
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 20000000, "liquidCash")
+	if c.OwedToStores-pre.OwedToStores != 10000000 {
+		t.Fatalf("owedToStores delta=%d want 10000000 (pre=%d post=%d)", c.OwedToStores-pre.OwedToStores, pre.OwedToStores, c.OwedToStores)
 	}
-	if c.OwedToStores != 10000000 {
-		t.Fatalf("owedToStores=%d want 10000000", c.OwedToStores)
+	if c.Holds-pre.Holds != 0 {
+		t.Fatalf("holds delta=%d want 0 (pre=%d post=%d)", c.Holds-pre.Holds, pre.Holds, c.Holds)
 	}
-	if c.Holds != 0 {
-		t.Fatalf("holds=%d want 0", c.Holds)
+	if c.AllTimeOut-pre.AllTimeOut != 0 {
+		t.Fatalf("allTimeOut delta=%d want 0 (pre=%d post=%d)", c.AllTimeOut-pre.AllTimeOut, pre.AllTimeOut, c.AllTimeOut)
 	}
-	if c.AllTimeOut != 0 {
-		t.Fatalf("allTimeOut=%d want 0", c.AllTimeOut)
+	if c.Liability-pre.Liability != 10000000 {
+		t.Fatalf("liability delta=%d want 10000000 (pre=%d post=%d)", c.Liability-pre.Liability, pre.Liability, c.Liability)
 	}
-	if c.Liability != 10000000 {
-		t.Fatalf("liability=%d want 10000000", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 10000000 {
-		t.Fatalf("safeToSpend=%d want 10000000", *c.SafeToSpend)
-	}
+	treasuryAssertSafeDelta(t, pre, c, 10000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -699,13 +849,14 @@ func TestTreasuryApprovedPayoutRejectionPreservesConservation(t *testing.T) {
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
 	ctx := context.Background()
 	fin := repository.NewFinanceRepository(db)
+	pre := treasuryReadOK(t, db)
 	_, _, payoutID := treasuryOracleFixture(t, db, f)
 
 	if err := fin.ReviewSettlement(ctx, payoutID, "approved", "fin008-test", "finance-test"); err != nil {
 		t.Fatalf("approve payout: %v", err)
 	}
 	before := treasuryReadOK(t, db)
-	treasuryAssertOraclePending(t, before)
+	treasuryAssertOraclePendingDelta(t, pre, before)
 
 	// ReviewSettlement only reviews pending rows, so an approved ->
 	// rejected transition is not possible through the guarded writer.
@@ -719,7 +870,7 @@ func TestTreasuryApprovedPayoutRejectionPreservesConservation(t *testing.T) {
 	}
 	t.Logf("approved-reject refused by writer as expected: %v", err)
 	after := treasuryReadOK(t, db)
-	treasuryAssertOraclePending(t, after)
+	treasuryAssertOraclePendingDelta(t, pre, after)
 	if *after.SafeToSpend != *before.SafeToSpend || after.Liability != before.Liability || *after.LiquidCash != *before.LiquidCash {
 		t.Fatalf("refused approved-reject changed the oracle: before cash=%d liability=%d safe=%d, after cash=%d liability=%d safe=%d",
 			*before.LiquidCash, before.Liability, *before.SafeToSpend, *after.LiquidCash, after.Liability, *after.SafeToSpend)
@@ -731,23 +882,16 @@ func TestTreasuryWalletWithdrawalReservationIsNotDoubleCounted(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g04")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	treasurySeedOpeningCash(t, db, f, 20000000)
 	customerID := treasurySeedWallet(t, db, f, 5000000)
 
 	read := func() *treasuryCash {
 		c := treasuryReadOK(t, db)
-		if c.WalletLiability != 5000000 {
-			t.Fatalf("walletLiability=%d want 5000000", c.WalletLiability)
-		}
-		if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 20000000 {
-			t.Fatalf("liquidCash=%d want 20000000", *c.LiquidCash)
-		}
-		if c.Liability != 5000000 {
-			t.Fatalf("liability=%d want 5000000", c.Liability)
-		}
-		if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 15000000 {
-			t.Fatalf("safeToSpend=%d want 15000000", *c.SafeToSpend)
-		}
+		treasuryDeltaInt(t, pre.WalletLiability, c.WalletLiability, 5000000, "walletLiability")
+		treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 20000000, "liquidCash")
+		treasuryDeltaInt(t, pre.Liability, c.Liability, 5000000, "liability")
+		treasuryAssertSafeDelta(t, pre, c, 15000000)
 		treasuryAssertIdentity(t, c)
 		return c
 	}
@@ -784,6 +928,7 @@ func TestTreasuryWalletWithdrawalRejectionUnlocks(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g04b")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	treasurySeedOpeningCash(t, db, f, 20000000)
 	customerID := treasurySeedWallet(t, db, f, 5000000)
 
@@ -816,12 +961,9 @@ func TestTreasuryWalletWithdrawalRejectionUnlocks(t *testing.T) {
 		t.Fatalf("wallet after rejection: balance=%d locked=%d want 5000000/0", bal, locked)
 	}
 	c := treasuryReadOK(t, db)
-	if c.WalletLiability != 5000000 || c.Liability != 5000000 {
-		t.Fatalf("walletLiability=%d liability=%d want 5000000/5000000", c.WalletLiability, c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 15000000 {
-		t.Fatalf("safeToSpend=%d want 15000000", *c.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.WalletLiability, c.WalletLiability, 5000000, "walletLiability")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 5000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 15000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -830,6 +972,7 @@ func TestTreasuryWalletRefundReplacesObligation(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g05")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	// Opening cash 17,000,000 + the order's verified gateway receipt
 	// 3,000,000 = liquidCash 20,000,000 (the gate oracle).
 	treasurySeedOpeningCash(t, db, f, 17000000)
@@ -866,27 +1009,13 @@ func TestTreasuryWalletRefundReplacesObligation(t *testing.T) {
 
 	check := func(wantRefund, wantWallet int64) {
 		c := treasuryReadOK(t, db)
-		if c.RefundLiability != wantRefund {
-			t.Fatalf("refundLiability=%d want %d", c.RefundLiability, wantRefund)
-		}
-		if c.RefundLiabilityWallet != wantRefund {
-			t.Fatalf("refundLiabilityWallet=%d want %d", c.RefundLiabilityWallet, wantRefund)
-		}
-		if c.RefundLiabilityGateway != 0 {
-			t.Fatalf("refundLiabilityGateway=%d want 0", c.RefundLiabilityGateway)
-		}
-		if c.WalletLiability != wantWallet {
-			t.Fatalf("walletLiability=%d want %d", c.WalletLiability, wantWallet)
-		}
-		if c.Liability != 3000000 {
-			t.Fatalf("liability=%d want 3000000 (obligation and wallet credit are the same money)", c.Liability)
-		}
-		if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 17000000 {
-			t.Fatalf("safeToSpend=%d want 17000000", *c.SafeToSpend)
-		}
-		if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 20000000 {
-			t.Fatalf("liquidCash=%d want 20000000", *c.LiquidCash)
-		}
+		treasuryDeltaInt(t, pre.RefundLiability, c.RefundLiability, wantRefund, "refundLiability")
+		treasuryDeltaInt(t, pre.RefundLiabilityWallet, c.RefundLiabilityWallet, wantRefund, "refundLiabilityWallet")
+		treasuryDeltaInt(t, pre.RefundLiabilityGateway, c.RefundLiabilityGateway, 0, "refundLiabilityGateway")
+		treasuryDeltaInt(t, pre.WalletLiability, c.WalletLiability, wantWallet, "walletLiability")
+		treasuryDeltaInt(t, pre.Liability, c.Liability, 3000000, "liability")
+		treasuryAssertSafeDelta(t, pre, c, 17000000)
+		treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 20000000, "liquidCash")
 		treasuryAssertIdentity(t, c)
 	}
 	check(3000000, 0) // obligation outstanding, wallet still empty
@@ -923,6 +1052,7 @@ func TestTreasuryPendingGatewayRefundIsLiability(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g06")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	// No opening cash: the order's verified gateway receipt
 	// 20,000,000 is the whole liquidCash (the gate oracle).
 	order := treasurySeedOrder(t, db, f, treasuryOrderSpec{
@@ -931,18 +1061,11 @@ func TestTreasuryPendingGatewayRefundIsLiability(t *testing.T) {
 	obgID := treasuryInsertRefundObligation(t, db, f, order, "admin_refund", "admin:"+order.ID+":fin008-g06", "original_payment", "original_payment_v1", 20000000, 4000000)
 
 	pending := treasuryReadOK(t, db)
-	if pending.RefundLiability != 4000000 || pending.RefundLiabilityGateway != 4000000 {
-		t.Fatalf("pending refundLiability=%d gateway=%d want 4000000/4000000", pending.RefundLiability, pending.RefundLiabilityGateway)
-	}
-	if pending.Liability != 4000000 {
-		t.Fatalf("pending liability=%d want 4000000", pending.Liability)
-	}
-	if treasuryCashVal(t, pending.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("pending safeToSpend=%d want 16000000", *pending.SafeToSpend)
-	}
-	if treasuryCashVal(t, pending.LiquidCash, "liquidCash") != 20000000 {
-		t.Fatalf("pending liquidCash=%d want 20000000", *pending.LiquidCash)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, pending.RefundLiability, 4000000, "refundLiability")
+	treasuryDeltaInt(t, pre.RefundLiabilityGateway, pending.RefundLiabilityGateway, 4000000, "refundLiabilityGateway")
+	treasuryDeltaInt(t, pre.Liability, pending.Liability, 4000000, "liability")
+	treasuryAssertSafeDelta(t, pre, pending, 16000000)
+	treasuryDeltaPtr(t, pre.LiquidCash, pending.LiquidCash, 20000000, "liquidCash")
 	treasuryAssertIdentity(t, pending)
 
 	// Mark the refund succeeded: replicate ProcessOrderRefund
@@ -965,21 +1088,11 @@ func TestTreasuryPendingGatewayRefundIsLiability(t *testing.T) {
 	}
 
 	after := treasuryReadOK(t, db)
-	if after.RefundLiability != 0 {
-		t.Fatalf("succeeded refundLiability=%d want 0", after.RefundLiability)
-	}
-	if after.Liability != 0 {
-		t.Fatalf("succeeded liability=%d want 0", after.Liability)
-	}
-	if treasuryCashVal(t, after.LiquidCash, "liquidCash") != 16000000 {
-		t.Fatalf("succeeded liquidCash=%d want 16000000 (cash out)", *after.LiquidCash)
-	}
-	if treasuryCashVal(t, after.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("succeeded safeToSpend=%d want 16000000", *after.SafeToSpend)
-	}
-	if after.AllTimeOut != 4000000 {
-		t.Fatalf("allTimeOut=%d want 4000000", after.AllTimeOut)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, after.RefundLiability, 0, "refundLiability")
+	treasuryDeltaInt(t, pre.Liability, after.Liability, 0, "liability")
+	treasuryDeltaPtr(t, pre.LiquidCash, after.LiquidCash, 16000000, "liquidCash")
+	treasuryAssertSafeDelta(t, pre, after, 16000000)
+	treasuryDeltaInt(t, pre.AllTimeOut, after.AllTimeOut, 4000000, "allTimeOut")
 	treasuryAssertIdentity(t, after)
 }
 
@@ -987,6 +1100,7 @@ func TestTreasuryUnknownGatewayRefundStaysReserved(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g06b")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	treasurySeedOpeningCash(t, db, f, 20000000)
 	// Paid order with NO receipt: the obligation's funding is
 	// unverified, so the trigger must leave it 'unknown'.
@@ -1000,18 +1114,11 @@ func TestTreasuryUnknownGatewayRefundStaysReserved(t *testing.T) {
 		t.Fatalf("obligation status=%q state_reason=%q want unknown/funding_unverified", status, stateReason)
 	}
 	c := treasuryReadOK(t, db)
-	if c.RefundLiability != 4000000 || c.RefundLiabilityGateway != 4000000 {
-		t.Fatalf("refundLiability=%d gateway=%d want 4000000/4000000", c.RefundLiability, c.RefundLiabilityGateway)
-	}
-	if c.Liability != 4000000 {
-		t.Fatalf("liability=%d want 4000000", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("safeToSpend=%d want 16000000", *c.SafeToSpend)
-	}
-	if c.UnresolvedProviderCash != 4000000 {
-		t.Fatalf("unresolvedProviderCash=%d want 4000000", c.UnresolvedProviderCash)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, c.RefundLiability, 4000000, "refundLiability")
+	treasuryDeltaInt(t, pre.RefundLiabilityGateway, c.RefundLiabilityGateway, 4000000, "refundLiabilityGateway")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 4000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 16000000)
+	treasuryDeltaInt(t, pre.UnresolvedProviderCash, c.UnresolvedProviderCash, 4000000, "unresolvedProviderCash")
 	if c.CashStatus != "partial" {
 		t.Fatalf("cashStatus=%q want partial", c.CashStatus)
 	}
@@ -1023,6 +1130,7 @@ func TestTreasuryFailedGatewayRefundStaysLiability(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("f01")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	// Same oracle as G-06: verified gateway receipt 20,000,000, one
 	// gateway refund obligation of 4,000,000.
 	order := treasurySeedOrder(t, db, f, treasuryOrderSpec{
@@ -1031,9 +1139,8 @@ func TestTreasuryFailedGatewayRefundStaysLiability(t *testing.T) {
 	obgID := treasuryInsertRefundObligation(t, db, f, order, "admin_refund", "admin:"+order.ID+":fin008-f01", "original_payment", "original_payment_v1", 20000000, 4000000)
 
 	pending := treasuryReadOK(t, db)
-	if pending.RefundLiability != 4000000 || treasuryCashVal(t, pending.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("pending refundLiability=%d safeToSpend=%d want 4000000/16000000", pending.RefundLiability, *pending.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, pending.RefundLiability, 4000000, "refundLiability")
+	treasuryAssertSafeDelta(t, pre, pending, 16000000)
 	treasuryAssertIdentity(t, pending)
 
 	// The provider REJECTS the refund: a 'failed' event. A failed
@@ -1052,18 +1159,11 @@ func TestTreasuryFailedGatewayRefundStaysLiability(t *testing.T) {
 	}
 
 	failed := treasuryReadOK(t, db)
-	if failed.RefundLiability != 4000000 || failed.RefundLiabilityGateway != 4000000 {
-		t.Fatalf("failed refundLiability=%d gateway=%d want 4000000/4000000 (a provider failure must not release the liability)", failed.RefundLiability, failed.RefundLiabilityGateway)
-	}
-	if failed.Liability != 4000000 {
-		t.Fatalf("failed liability=%d want 4000000", failed.Liability)
-	}
-	if treasuryCashVal(t, failed.LiquidCash, "liquidCash") != 20000000 {
-		t.Fatalf("failed liquidCash=%d want 20000000 (no money moved)", *failed.LiquidCash)
-	}
-	if treasuryCashVal(t, failed.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("failed safeToSpend=%d want 16000000 (unchanged by the provider failure)", *failed.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, failed.RefundLiability, 4000000, "refundLiability")
+	treasuryDeltaInt(t, pre.RefundLiabilityGateway, failed.RefundLiabilityGateway, 4000000, "refundLiabilityGateway")
+	treasuryDeltaInt(t, pre.Liability, failed.Liability, 4000000, "liability")
+	treasuryDeltaPtr(t, pre.LiquidCash, failed.LiquidCash, 20000000, "liquidCash")
+	treasuryAssertSafeDelta(t, pre, failed, 16000000)
 	treasuryAssertIdentity(t, failed)
 
 	// The retry then succeeds: cash and liability fall together by
@@ -1074,15 +1174,10 @@ func TestTreasuryFailedGatewayRefundStaysLiability(t *testing.T) {
 		t.Fatalf("refund succeeded event: %v", err)
 	}
 	after := treasuryReadOK(t, db)
-	if after.RefundLiability != 0 || after.Liability != 0 {
-		t.Fatalf("succeeded refundLiability=%d liability=%d want 0/0", after.RefundLiability, after.Liability)
-	}
-	if treasuryCashVal(t, after.LiquidCash, "liquidCash") != 16000000 {
-		t.Fatalf("succeeded liquidCash=%d want 16000000", *after.LiquidCash)
-	}
-	if treasuryCashVal(t, after.SafeToSpend, "safeToSpend") != 16000000 {
-		t.Fatalf("succeeded safeToSpend=%d want 16000000", *after.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.RefundLiability, after.RefundLiability, 0, "refundLiability")
+	treasuryDeltaInt(t, pre.Liability, after.Liability, 0, "liability")
+	treasuryDeltaPtr(t, pre.LiquidCash, after.LiquidCash, 16000000, "liquidCash")
+	treasuryAssertSafeDelta(t, pre, after, 16000000)
 	treasuryAssertIdentity(t, after)
 }
 
@@ -1091,6 +1186,7 @@ func TestTreasuryNegativeStoreBalanceIsNotNetted(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g07")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1120,27 +1216,13 @@ func TestTreasuryNegativeStoreBalanceIsNotNetted(t *testing.T) {
 	treasuryAdjust(t, db, "supplier", supplierD, "debit", 2000000)
 
 	c := treasuryReadOK(t, db)
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 30000000 {
-		t.Fatalf("liquidCash=%d want 30000000", *c.LiquidCash)
-	}
-	if c.OwedToStores != 10000000 {
-		t.Fatalf("owedToStores=%d want 10000000 (store B -3000000 must not reduce it)", c.OwedToStores)
-	}
-	if c.OwedToSuppliers != 6000000 {
-		t.Fatalf("owedToSuppliers=%d want 6000000 (supplier D -2000000 must not reduce it)", c.OwedToSuppliers)
-	}
-	if c.RecoveryReceivableStores != 3000000 {
-		t.Fatalf("recoveryReceivableStores=%d want 3000000", c.RecoveryReceivableStores)
-	}
-	if c.RecoveryReceivableSup != 2000000 {
-		t.Fatalf("recoveryReceivableSuppliers=%d want 2000000", c.RecoveryReceivableSup)
-	}
-	if c.Liability != 16000000 {
-		t.Fatalf("liability=%d want 16000000", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 14000000 {
-		t.Fatalf("safeToSpend=%d want 14000000", *c.SafeToSpend)
-	}
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 30000000, "liquidCash")
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, 10000000, "owedToStores")
+	treasuryDeltaInt(t, pre.OwedToSuppliers, c.OwedToSuppliers, 6000000, "owedToSuppliers")
+	treasuryDeltaInt(t, pre.RecoveryReceivableStores, c.RecoveryReceivableStores, 3000000, "recoveryReceivableStores")
+	treasuryDeltaInt(t, pre.RecoveryReceivableSup, c.RecoveryReceivableSup, 2000000, "recoveryReceivableSuppliers")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 16000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 14000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1151,6 +1233,7 @@ func TestTreasuryNegativeSupplierBalanceIsNotNetted(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g07b")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1175,18 +1258,11 @@ func TestTreasuryNegativeSupplierBalanceIsNotNetted(t *testing.T) {
 	treasuryAdjust(t, db, "supplier", supplierD, "debit", 2000000)
 
 	c := treasuryReadOK(t, db)
-	if c.OwedToSuppliers != 6000000 {
-		t.Fatalf("owedToSuppliers=%d want 6000000", c.OwedToSuppliers)
-	}
-	if c.RecoveryReceivableSup != 2000000 {
-		t.Fatalf("recoveryReceivableSuppliers=%d want 2000000", c.RecoveryReceivableSup)
-	}
-	if c.OwedToStores != 10000000 {
-		t.Fatalf("owedToStores=%d want 10000000", c.OwedToStores)
-	}
-	if c.Liability != 16000000 || treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 14000000 {
-		t.Fatalf("liability=%d safeToSpend=%d want 16000000/14000000", c.Liability, *c.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.OwedToSuppliers, c.OwedToSuppliers, 6000000, "owedToSuppliers")
+	treasuryDeltaInt(t, pre.RecoveryReceivableSup, c.RecoveryReceivableSup, 2000000, "recoveryReceivableSuppliers")
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, 10000000, "owedToStores")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 16000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 14000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1195,6 +1271,7 @@ func TestTreasuryMixedLiabilitiesCoherentTotals(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g08")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1230,9 +1307,7 @@ func TestTreasuryMixedLiabilitiesCoherentTotals(t *testing.T) {
 	treasurySeedOpeningCash(t, db, f, 10000000)
 
 	c := treasuryReadOK(t, db)
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 30000000 {
-		t.Fatalf("liquidCash=%d want 30000000", *c.LiquidCash)
-	}
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 30000000, "liquidCash")
 	// NOTE on the gate's "available 10,000,000": the gate computes
 	// earned 12,000,000 (released 10,000,000 + unreleased 2,000,000)
 	// minus the 2,000,000 hold. The canonical FIN-001 available is
@@ -1242,36 +1317,17 @@ func TestTreasuryMixedLiabilitiesCoherentTotals(t *testing.T) {
 	// the gate pins — 12,000,000 — is exactly
 	// 8,000,000 (available) + 2,000,000 (payout hold) + 2,000,000
 	// (unreleased profit), and every total below matches the gate.
-	if c.OwedToStores != 8000000 {
-		t.Fatalf("owedToStores=%d want 8000000 (released 10000000 - payout hold 2000000)", c.OwedToStores)
-	}
-	if c.Holds != 2000000 {
-		t.Fatalf("holds=%d want 2000000", c.Holds)
-	}
-	if c.UnreleasedProfitHold != 2000000 {
-		t.Fatalf("unreleasedProfitHold=%d want 2000000", c.UnreleasedProfitHold)
-	}
-	if c.OwedToStores+c.Holds+c.UnreleasedProfitHold != 12000000 {
-		t.Fatalf("seller contribution=%d want 12000000", c.OwedToStores+c.Holds+c.UnreleasedProfitHold)
-	}
-	if c.OwedToSuppliers != 6000000 {
-		t.Fatalf("owedToSuppliers=%d want 6000000", c.OwedToSuppliers)
-	}
-	if c.WalletLiability != 5000000 {
-		t.Fatalf("walletLiability=%d want 5000000", c.WalletLiability)
-	}
-	if c.RefundLiability != 2000000 {
-		t.Fatalf("refundLiability=%d want 2000000", c.RefundLiability)
-	}
-	if c.Liability != 25000000 {
-		t.Fatalf("liability=%d want 25000000", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 5000000 {
-		t.Fatalf("safeToSpend=%d want 5000000", *c.SafeToSpend)
-	}
-	if c.HeldOrderCount != 1 || c.HeldInOrders != 2000000 {
-		t.Fatalf("heldOrderCount=%d heldInOrders=%d want 1/2000000", c.HeldOrderCount, c.HeldInOrders)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, 8000000, "owedToStores")
+	treasuryDeltaInt(t, pre.Holds, c.Holds, 2000000, "holds")
+	treasuryDeltaInt(t, pre.UnreleasedProfitHold, c.UnreleasedProfitHold, 2000000, "unreleasedProfitHold")
+	treasuryDeltaInt(t, pre.OwedToStores+pre.Holds+pre.UnreleasedProfitHold, c.OwedToStores+c.Holds+c.UnreleasedProfitHold, 12000000, "seller contribution")
+	treasuryDeltaInt(t, pre.OwedToSuppliers, c.OwedToSuppliers, 6000000, "owedToSuppliers")
+	treasuryDeltaInt(t, pre.WalletLiability, c.WalletLiability, 5000000, "walletLiability")
+	treasuryDeltaInt(t, pre.RefundLiability, c.RefundLiability, 2000000, "refundLiability")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 25000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 5000000)
+	treasuryDeltaInt(t, pre.HeldOrderCount, c.HeldOrderCount, 1, "heldOrderCount")
+	treasuryDeltaInt(t, pre.HeldInOrders, c.HeldInOrders, 2000000, "heldInOrders")
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1280,6 +1336,7 @@ func TestTreasuryHeldOrdersCountUnreleasedProfitOnly(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g09")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1300,30 +1357,14 @@ func TestTreasuryHeldOrdersCountUnreleasedProfitOnly(t *testing.T) {
 	})
 
 	c := treasuryReadOK(t, db)
-	if c.OwedToSuppliers != 6000000 {
-		t.Fatalf("owedToSuppliers=%d want 6000000", c.OwedToSuppliers)
-	}
-	if c.OwedToStores != 0 {
-		t.Fatalf("owedToStores=%d want 0 (profit is unreleased)", c.OwedToStores)
-	}
-	if c.UnreleasedProfitHold != 2000000 {
-		t.Fatalf("unreleasedProfitHold=%d want 2000000", c.UnreleasedProfitHold)
-	}
-	if c.HeldInOrders != 2000000 {
-		t.Fatalf("heldInOrders=%d want 2000000 (profit only, NOT the whole payable)", c.HeldInOrders)
-	}
-	if c.HeldOrderCount != 1 {
-		t.Fatalf("heldOrderCount=%d want 1", c.HeldOrderCount)
-	}
-	if c.Liability != 8000000 {
-		t.Fatalf("liability=%d want 8000000 (wholesale 6000000 + profit 2000000, once each)", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 2000000 {
-		t.Fatalf("safeToSpend=%d want 2000000", *c.SafeToSpend)
-	}
-	if c.PlatformEarned != 2000000 {
-		t.Fatalf("platformEarned=%d want 2000000", c.PlatformEarned)
-	}
+	treasuryDeltaInt(t, pre.OwedToSuppliers, c.OwedToSuppliers, 6000000, "owedToSuppliers")
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, 0, "owedToStores")
+	treasuryDeltaInt(t, pre.UnreleasedProfitHold, c.UnreleasedProfitHold, 2000000, "unreleasedProfitHold")
+	treasuryDeltaInt(t, pre.HeldInOrders, c.HeldInOrders, 2000000, "heldInOrders")
+	treasuryDeltaInt(t, pre.HeldOrderCount, c.HeldOrderCount, 1, "heldOrderCount")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 8000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 2000000)
+	treasuryDeltaInt(t, pre.PlatformEarned, c.PlatformEarned, 2000000, "platformEarned")
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1332,6 +1373,7 @@ func TestTreasuryRefundedReturnProfitExcludedFromHeldOrders(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("f02")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1362,35 +1404,19 @@ func TestTreasuryRefundedReturnProfitExcludedFromHeldOrders(t *testing.T) {
 	treasuryInsertReturnReversal(t, db, f, partial, storeID, 2, 1, 1000000)
 
 	c := treasuryReadOK(t, db)
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 20000000 {
-		t.Fatalf("liquidCash=%d want 20000000", *c.LiquidCash)
-	}
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 20000000, "liquidCash")
 	// The fully-returned order contributes 0 to the hold; the
 	// partly-returned one contributes only its unreversed 1,000,000.
-	if c.HeldInOrders != 1000000 {
-		t.Fatalf("heldInOrders=%d want 1000000 (fully-returned profit excluded, partial profit netted once)", c.HeldInOrders)
-	}
-	if c.UnreleasedProfitHold != 1000000 {
-		t.Fatalf("unreleasedProfitHold=%d want 1000000", c.UnreleasedProfitHold)
-	}
-	if c.HeldOrderCount != 1 {
-		t.Fatalf("heldOrderCount=%d want 1 (only the partly-returned order still holds profit)", c.HeldOrderCount)
-	}
+	treasuryDeltaInt(t, pre.HeldInOrders, c.HeldInOrders, 1000000, "heldInOrders")
+	treasuryDeltaInt(t, pre.UnreleasedProfitHold, c.UnreleasedProfitHold, 1000000, "unreleasedProfitHold")
+	treasuryDeltaInt(t, pre.HeldOrderCount, c.HeldOrderCount, 1, "heldOrderCount")
 	// The reversals must not manufacture a recovery receivable out
 	// of profit the seller never received, and the store owes nothing
 	// else: no recovery, no store liability.
-	if c.OwedToStores != 0 {
-		t.Fatalf("owedToStores=%d want 0", c.OwedToStores)
-	}
-	if c.RecoveryReceivableStores != 0 {
-		t.Fatalf("recoveryReceivableStores=%d want 0 (reversed unreleased profit is not a debt)", c.RecoveryReceivableStores)
-	}
-	if c.Liability != 1000000 {
-		t.Fatalf("liability=%d want 1000000", c.Liability)
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 19000000 {
-		t.Fatalf("safeToSpend=%d want 19000000", *c.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, 0, "owedToStores")
+	treasuryDeltaInt(t, pre.RecoveryReceivableStores, c.RecoveryReceivableStores, 0, "recoveryReceivableStores")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 1000000, "liability")
+	treasuryAssertSafeDelta(t, pre, c, 19000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1399,6 +1425,7 @@ func TestTreasuryEarlyWithdrawalPendingApprovedRejected(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g10")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ctx := context.Background()
 	fin := repository.NewFinanceRepository(db)
 
@@ -1431,18 +1458,11 @@ func TestTreasuryEarlyWithdrawalPendingApprovedRejected(t *testing.T) {
 		t.Fatalf("request early withdrawal: %v", err)
 	}
 	pending := treasuryReadOK(t, db)
-	if pending.OwedToStores != 9000000 {
-		t.Fatalf("pending owedToStores=%d want 9000000", pending.OwedToStores)
-	}
-	if pending.Holds != 1000000 || pending.HoldsByStatus["earlyWithdrawal"] != 1000000 {
-		t.Fatalf("pending holds=%d holdsByStatus=%v want 1000000 earlyWithdrawal", pending.Holds, pending.HoldsByStatus)
-	}
-	if pending.Liability != 10000000 {
-		t.Fatalf("pending liability=%d want 10000000", pending.Liability)
-	}
-	if treasuryCashVal(t, pending.SafeToSpend, "safeToSpend") != 10000000 {
-		t.Fatalf("pending safeToSpend=%d want 10000000", *pending.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, pending.OwedToStores, 9000000, "owedToStores")
+	treasuryDeltaInt(t, pre.Holds, pending.Holds, 1000000, "holds")
+	treasuryDeltaStatus(t, pre.HoldsByStatus, pending.HoldsByStatus, "earlyWithdrawal", 1000000, "earlyWithdrawal hold")
+	treasuryDeltaInt(t, pre.Liability, pending.Liability, 10000000, "liability")
+	treasuryAssertSafeDelta(t, pre, pending, 10000000)
 	treasuryAssertIdentity(t, pending)
 
 	// Approved: fee 100,000 + net payout 900,000 (status approved);
@@ -1455,18 +1475,11 @@ func TestTreasuryEarlyWithdrawalPendingApprovedRejected(t *testing.T) {
 		t.Fatalf("early withdrawal review: status %d: %s", revRec.Code, revRec.Body.String())
 	}
 	approved := treasuryReadOK(t, db)
-	if approved.OwedToStores != 9000000 {
-		t.Fatalf("approved owedToStores=%d want 9000000", approved.OwedToStores)
-	}
-	if approved.Holds != 900000 || approved.HoldsByStatus["approved"] != 900000 {
-		t.Fatalf("approved holds=%d holdsByStatus=%v want 900000 approved", approved.Holds, approved.HoldsByStatus)
-	}
-	if approved.Liability != 9900000 {
-		t.Fatalf("approved liability=%d want 9900000", approved.Liability)
-	}
-	if treasuryCashVal(t, approved.SafeToSpend, "safeToSpend") != 10100000 {
-		t.Fatalf("approved safeToSpend=%d want 10100000", *approved.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, approved.OwedToStores, 9000000, "owedToStores")
+	treasuryDeltaInt(t, pre.Holds, approved.Holds, 900000, "holds")
+	treasuryDeltaStatus(t, pre.HoldsByStatus, approved.HoldsByStatus, "approved", 900000, "approved hold")
+	treasuryDeltaInt(t, pre.Liability, approved.Liability, 9900000, "liability")
+	treasuryAssertSafeDelta(t, pre, approved, 10100000)
 	treasuryAssertIdentity(t, approved)
 
 	// A second request of 1,000,000, then rejected: the totals must
@@ -1483,13 +1496,10 @@ func TestTreasuryEarlyWithdrawalPendingApprovedRejected(t *testing.T) {
 		t.Fatalf("second early withdrawal review: status %d: %s", revRec2.Code, revRec2.Body.String())
 	}
 	after := treasuryReadOK(t, db)
-	if after.OwedToStores != 9000000 || after.Holds != 900000 || after.Liability != 9900000 {
-		t.Fatalf("after rejection: owedToStores=%d holds=%d liability=%d want 9000000/900000/9900000",
-			after.OwedToStores, after.Holds, after.Liability)
-	}
-	if treasuryCashVal(t, after.SafeToSpend, "safeToSpend") != 10100000 {
-		t.Fatalf("after rejection safeToSpend=%d want 10100000", *after.SafeToSpend)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, after.OwedToStores, 9000000, "owedToStores")
+	treasuryDeltaInt(t, pre.Holds, after.Holds, 900000, "holds")
+	treasuryDeltaInt(t, pre.Liability, after.Liability, 9900000, "liability")
+	treasuryAssertSafeDelta(t, pre, after, 10100000)
 	treasuryAssertIdentity(t, after)
 }
 
@@ -1597,14 +1607,17 @@ func TestTreasuryConcurrentApprovalYieldsCoherentSnapshot(t *testing.T) {
 	fin := repository.NewFinanceRepository(db)
 	storeID, _, payoutID := treasuryOracleFixture(t, db, f)
 
-	// Pre-change snapshot: cash 20,000,000, liability 10,000,000,
-	// safeToSpend 10,000,000. The approve itself changes no number
-	// (G-01). Post-change snapshot (after the new verified order
-	// lands): cash 25,000,000, liability 15,000,000, safeToSpend
-	// 10,000,000. Every concurrent read must equal one of the two.
+	// Pre-change snapshot: the oracle fixture's position on top of
+	// whatever the shared DB already holds (read, not assumed —
+	// earlier tests' unreleasable rows stay in the disposable DB).
+	// The approve itself changes no number (G-01). Post-change
+	// snapshot (after the new verified order lands): liquid and
+	// liability each +5,000,000, safeToSpend unchanged. Every
+	// concurrent read must equal one of the two.
 	type snapshot struct{ cash, liability, safe int64 }
-	pre := snapshot{20000000, 10000000, 10000000}
-	post := snapshot{25000000, 15000000, 10000000}
+	base := treasuryReadOK(t, db)
+	pre := snapshot{treasuryCashVal(t, base.LiquidCash, "liquidCash"), base.Liability, treasuryCashVal(t, base.SafeToSpend, "safeToSpend")}
+	post := snapshot{pre.cash + 5000000, pre.liability + 5000000, pre.safe}
 
 	type readResult struct {
 		code int
@@ -1679,6 +1692,7 @@ func TestTreasuryReportExposesUnresolvedProviderCash(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g13")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	// (a) verified gateway receipt 5,000,000.
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{Payable: 5000000, Funding: "gateway", GatewayAmount: 5000000})
 	// (b) paid order with no receipt at all: 5,000,000 unverified.
@@ -1687,33 +1701,19 @@ func TestTreasuryReportExposesUnresolvedProviderCash(t *testing.T) {
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{Payable: 5000000, Funding: "simulated", GatewayAmount: 5000000})
 
 	c := treasuryReadOK(t, db)
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 5000000 {
-		t.Fatalf("liquidCash=%d want 5000000 (only the verified gateway receipt)", *c.LiquidCash)
-	}
-	if c.UnverifiedPaidOrders != 5000000 {
-		t.Fatalf("unverifiedPaidOrders=%d want 5000000", c.UnverifiedPaidOrders)
-	}
-	if c.LegacySimulator != 5000000 {
-		t.Fatalf("legacySimulator=%d want 5000000", c.LegacySimulator)
-	}
-	if c.UnresolvedProviderCash != 10000000 {
-		t.Fatalf("unresolvedProviderCash=%d want 10000000", c.UnresolvedProviderCash)
-	}
-	if c.AllTimeIn != 15000000 {
-		t.Fatalf("allTimeIn=%d want 15000000 (paid-order payable sum is NOT bank cash)", c.AllTimeIn)
-	}
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 5000000, "liquidCash")
+	treasuryDeltaInt(t, pre.UnverifiedPaidOrders, c.UnverifiedPaidOrders, 5000000, "unverifiedPaidOrders")
+	treasuryDeltaInt(t, pre.LegacySimulator, c.LegacySimulator, 5000000, "legacySimulator")
+	treasuryDeltaInt(t, pre.UnresolvedProviderCash, c.UnresolvedProviderCash, 10000000, "unresolvedProviderCash")
+	treasuryDeltaInt(t, pre.AllTimeIn, c.AllTimeIn, 15000000, "allTimeIn")
 	if c.CashStatus != "partial" {
 		t.Fatalf("cashStatus=%q want partial", c.CashStatus)
 	}
 	if !c.ReconciliationRequired {
 		t.Fatal("reconciliationRequired=false want true")
 	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 5000000 {
-		t.Fatalf("safeToSpend=%d want 5000000 (cash minus no liability)", *c.SafeToSpend)
-	}
-	if c.Liability != 0 {
-		t.Fatalf("liability=%d want 0", c.Liability)
-	}
+	treasuryAssertSafeDelta(t, pre, c, 5000000)
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 0, "liability")
 	treasuryAssertIdentity(t, c)
 }
 
@@ -1722,6 +1722,18 @@ func TestTreasuryNegativeLiquidCashIsUnknownNotNegative(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("f03")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	// The shared disposable DB holds earlier tests' verified cash, so
+	// the confirmed outflow must exceed the WHOLE pre-existing liquid
+	// position (not just the fixture's 5,000,000) for the computed
+	// cash to go negative. Size the payout from a pre-reading; the
+	// store's released profit is sized to match, so the payout gate
+	// still sees exactly enough available.
+	pre := treasuryReadOK(t, db)
+	preLiquid := int64(0)
+	if pre.LiquidCash != nil {
+		preLiquid = *pre.LiquidCash
+	}
+	payoutAmount := preLiquid + 10000000
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1737,16 +1749,16 @@ func TestTreasuryNegativeLiquidCashIsUnknownNotNegative(t *testing.T) {
 		Payable: 5000000, Profit: 0, ProfitReleased: true,
 		Funding: "gateway", GatewayAmount: 5000000,
 	})
-	// A store earning 10,000,000 on an UNVERIFIED paid order: the
+	// A store earning payoutAmount on an UNVERIFIED paid order: the
 	// payout gate reads canonical available (which derives from paid
-	// orders regardless of receipts), so a 10,000,000 payout can be
+	// orders regardless of receipts), so a payoutAmount payout can be
 	// confirmed against cash the bank never verified.
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{
-		StoreID: storeID, Payable: 10000000, Profit: 10000000,
+		StoreID: storeID, Payable: payoutAmount, Profit: payoutAmount,
 		ProfitReleased: true,
 	})
 	fin := repository.NewFinanceRepository(db)
-	payout, err := fin.RequestOwnedStorePayout(ctx, owner, storeID, treasuryIBAN(), "bank", 10000000)
+	payout, err := fin.RequestOwnedStorePayout(ctx, owner, storeID, treasuryIBAN(), "bank", payoutAmount)
 	if err != nil {
 		t.Fatalf("f03 payout request: %v", err)
 	}
@@ -1757,8 +1769,9 @@ func TestTreasuryNegativeLiquidCashIsUnknownNotNegative(t *testing.T) {
 		t.Fatalf("f03 confirm transfer: %v", err)
 	}
 
-	// Computed liquidCash would be 5,000,000 verified in minus
-	// 10,000,000 confirmed out = -5,000,000. A negative verified
+	// Computed liquidCash would be (pre-existing liquid + 5,000,000
+	// verified in) minus payoutAmount confirmed out = -5,000,000 by
+	// construction. A negative verified
 	// cash figure is impossible on a complete evidence set — its
 	// negativity proves the outflows were funded by unverified cash
 	// — so the report must render it UNKNOWN (null), never as a
@@ -1784,15 +1797,9 @@ func TestTreasuryNegativeLiquidCashIsUnknownNotNegative(t *testing.T) {
 	if !c.ReconciliationRequired {
 		t.Fatal("reconciliationRequired=false want true")
 	}
-	if c.UnresolvedProviderCash != 10000000 {
-		t.Fatalf("unresolvedProviderCash=%d want 10000000", c.UnresolvedProviderCash)
-	}
-	if c.AllTimeOut != 10000000 {
-		t.Fatalf("allTimeOut=%d want 10000000", c.AllTimeOut)
-	}
-	if c.Liability != 0 {
-		t.Fatalf("liability=%d want 0 (the payout is confirmed money-out, not a hold)", c.Liability)
-	}
+	treasuryDeltaInt(t, pre.UnresolvedProviderCash, c.UnresolvedProviderCash, payoutAmount, "unresolvedProviderCash")
+	treasuryDeltaInt(t, pre.AllTimeOut, c.AllTimeOut, payoutAmount, "allTimeOut")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 0, "liability")
 }
 
 // ---------------------------------------------------------------- G-14
@@ -1837,6 +1844,7 @@ func TestTreasuryNoGuessedOpeningBalance(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g15")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 
 	// An opening balance without evidence is rejected by the table
 	// CHECK — there is no way to write one, guessed or otherwise.
@@ -1853,18 +1861,14 @@ func TestTreasuryNoGuessedOpeningBalance(t *testing.T) {
 	// Evidenced opening cash is real cash.
 	treasurySeedOpeningCash(t, db, f, 7000000)
 	c := treasuryReadOK(t, db)
-	if treasuryCashVal(t, c.LiquidCash, "liquidCash") != 7000000 {
-		t.Fatalf("liquidCash=%d want 7000000", *c.LiquidCash)
+	treasuryDeltaPtr(t, pre.LiquidCash, c.LiquidCash, 7000000, "liquidCash")
+	if c.CashStatus != pre.CashStatus {
+		t.Fatalf("cashStatus=%q want pre %q (evidenced opening cash adds only verified cash; the global status is set by the whole evidence set)", c.CashStatus, pre.CashStatus)
 	}
-	if c.CashStatus != "verified" {
-		t.Fatalf("cashStatus=%q want verified", c.CashStatus)
+	if c.ReconciliationRequired != pre.ReconciliationRequired {
+		t.Fatalf("reconciliationRequired=%v want pre %v (evidenced opening cash cannot change it)", c.ReconciliationRequired, pre.ReconciliationRequired)
 	}
-	if c.ReconciliationRequired {
-		t.Fatal("reconciliationRequired=true want false (no unresolved cash, no other rows)")
-	}
-	if treasuryCashVal(t, c.SafeToSpend, "safeToSpend") != 7000000 {
-		t.Fatalf("safeToSpend=%d want 7000000", *c.SafeToSpend)
-	}
+	treasuryAssertSafeDelta(t, pre, c, 7000000)
 	treasuryAssertIdentity(t, c)
 }
 
@@ -2020,6 +2024,13 @@ func TestTreasuryStoreAggregationIsSetBased(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g17")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	// TEST-02 round 4: ledger_entries is append-only, so earlier
+	// tests' store credits stay in the shared DB — assert the DELTA
+	// this test's 50 stores contribute, not the absolute total.
+	prePos, err := computeTreasuryCashPosition(context.Background(), db, 30)
+	if err != nil {
+		t.Fatalf("pre computeTreasuryCashPosition: %v", err)
+	}
 	treasurySeedG17Stores(t, db, f)
 
 	ctx := context.Background()
@@ -2042,11 +2053,11 @@ func TestTreasuryStoreAggregationIsSetBased(t *testing.T) {
 	if storeQueries != 1 {
 		t.Fatalf("store-balance queries=%d want exactly 1 (set-based aggregation, no per-store loop)", storeQueries)
 	}
-	if pos.OwedToStores != 40000000 {
-		t.Fatalf("owedToStores=%d want 40000000", pos.OwedToStores)
+	if pos.OwedToStores-prePos.OwedToStores != 40000000 {
+		t.Fatalf("owedToStores delta=%d want 40000000 (pre=%d post=%d)", pos.OwedToStores-prePos.OwedToStores, prePos.OwedToStores, pos.OwedToStores)
 	}
-	if pos.RecoveryReceivableStores != 3000000 {
-		t.Fatalf("recoveryReceivableStores=%d want 3000000", pos.RecoveryReceivableStores)
+	if pos.RecoveryReceivableStores-prePos.RecoveryReceivableStores != 3000000 {
+		t.Fatalf("recoveryReceivableStores delta=%d want 3000000 (pre=%d post=%d)", pos.RecoveryReceivableStores-prePos.RecoveryReceivableStores, prePos.RecoveryReceivableStores, pos.RecoveryReceivableStores)
 	}
 }
 
@@ -2054,6 +2065,7 @@ func TestTreasuryStoreAggregationMatchesCanonicalBalances(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g17b")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
+	pre := treasuryReadOK(t, db)
 	ids := treasurySeedG17Stores(t, db, f)
 
 	// The independent per-store computation: the canonical balance
@@ -2077,14 +2089,8 @@ func TestTreasuryStoreAggregationMatchesCanonicalBalances(t *testing.T) {
 		t.Fatalf("canonical per-store sums: positive=%d recovery=%d want 40000000/3000000", wantPositive, wantRecovery)
 	}
 	c := treasuryReadOK(t, db)
-	if c.OwedToStores != wantPositive {
-		t.Fatalf("owedToStores=%d want canonical %d", c.OwedToStores, wantPositive)
-	}
-	if c.RecoveryReceivableStores != wantRecovery {
-		t.Fatalf("recoveryReceivableStores=%d want canonical %d", c.RecoveryReceivableStores, wantRecovery)
-	}
-	if c.Liability != 40000000 {
-		t.Fatalf("liability=%d want 40000000", c.Liability)
-	}
+	treasuryDeltaInt(t, pre.OwedToStores, c.OwedToStores, wantPositive, "owedToStores")
+	treasuryDeltaInt(t, pre.RecoveryReceivableStores, c.RecoveryReceivableStores, wantRecovery, "recoveryReceivableStores")
+	treasuryDeltaInt(t, pre.Liability, c.Liability, 40000000, "liability")
 	treasuryAssertIdentity(t, c)
 }

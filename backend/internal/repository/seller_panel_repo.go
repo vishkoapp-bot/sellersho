@@ -54,7 +54,13 @@ func (r *StoreRepository) OwnedStore(ctx context.Context, ownerID, slug string) 
 
 func (r *StoreRepository) loadPanelConfig(ctx context.Context, store *domain.Store) error {
 	var raw []byte
-	if err := r.db.QueryRowContext(ctx, `SELECT panel_config, COALESCE(tagline,''), COALESCE(description,''), COALESCE(status,'active'), active_categories FROM stores WHERE id=$1`, store.ID).Scan(&raw, &store.Tagline, &store.Description, &store.Status, pq.Array(&store.ActiveCategories)); err != nil {
+	// TEST-02 round 4: panel_config may be NULL on a store row (any
+	// minimal rebuild defines it nullable, and CreateStore omits it) —
+	// json.Unmarshal(nil) fails with "unexpected end of JSON input" and
+	// turns every GetStoreBySlug into a 500 (the widget 403-vs-500).
+	// NULL here means the same as a missing column (already treated as
+	// an empty config by the 42703 branch below): an empty config.
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(panel_config, '{}'::jsonb), COALESCE(tagline,''), COALESCE(description,''), COALESCE(status,'active'), active_categories FROM stores WHERE id=$1`, store.ID).Scan(&raw, &store.Tagline, &store.Description, &store.Status, pq.Array(&store.ActiveCategories)); err != nil {
 		if pgErr, ok := err.(*pq.Error); ok && (pgErr.Code == "42703" || pgErr.Code == "42P01") {
 			store.SelectedNicheIDs = []string{}
 			store.ActiveProductIDs = []string{}
@@ -138,7 +144,7 @@ func (r *StoreRepository) SaveStoreProducts(ctx context.Context, ownerID, slug s
 	if count != len(ids) {
 		return ErrStoreInput
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM store_products WHERE store_id=$1::varchar AND EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$2::uuid)`, store.ID, ownerID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_products WHERE store_id=$1::varchar AND EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id::text=$2)`, store.ID, ownerID); err != nil {
 		return err
 	}
 	// M3 (2026-11-13): per-store variant settings must not survive
@@ -160,7 +166,7 @@ func (r *StoreRepository) SaveStoreProducts(ctx context.Context, ownerID, slug s
 		return err
 	}
 	for i, id := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO store_products(store_id,product_id,position) SELECT $1::varchar,$2::varchar,$3 WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$4::uuid)`, store.ID, id, i, ownerID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO store_products(store_id,product_id,position) SELECT $1::varchar,$2::varchar,$3 WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id::text=$4)`, store.ID, id, i, ownerID); err != nil {
 			return err
 		}
 	}
@@ -372,7 +378,7 @@ func (r *StoreRepository) SaveOwnedPricing(ctx context.Context, ownerID, slug, k
 				return ErrStoreInput
 			}
 		}
-		_, err = r.db.ExecContext(ctx, `INSERT INTO store_product_overrides(store_id,product_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$5::uuid) ON CONFLICT(store_id,product_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO store_product_overrides(store_id,product_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id::text=$5) ON CONFLICT(store_id,product_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
 	case "niche":
 		var exists bool
 		if err = r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM niches WHERE id=$1)`, target).Scan(&exists); err != nil {
@@ -381,7 +387,7 @@ func (r *StoreRepository) SaveOwnedPricing(ctx context.Context, ownerID, slug, k
 		if !exists {
 			return ErrStoreInput
 		}
-		_, err = r.db.ExecContext(ctx, `INSERT INTO store_niche_overrides(store_id,niche_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id=$5::uuid) ON CONFLICT(store_id,niche_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO store_niche_overrides(store_id,niche_id,override_value,mode) SELECT $1::varchar,$2::varchar,$3,$4::varchar WHERE EXISTS(SELECT 1 FROM stores WHERE id=$1::varchar AND owner_user_id::text=$5) ON CONFLICT(store_id,niche_id) DO UPDATE SET override_value=EXCLUDED.override_value,mode=EXCLUDED.mode`, store.ID, target, value, mode, ownerID)
 	default:
 		return ErrStoreInput
 	}

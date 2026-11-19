@@ -112,6 +112,20 @@ func TestFIN006CustomerReturnOwnsFreshReceiptBeforeShelving(t *testing.T) {
 }
 
 func TestFIN006InvalidPolicyDoesNotBlockPhysicalQCCustody(t *testing.T) {
+	// F-01 (TEST-02 round 5 supervisor): this test mutates the GLOBAL
+	// platform_settings storage tariff to invalid values. Without a
+	// restore, every later lot creation in the shared DB writes
+	// unit_day_toman=NULL + unresolved_policy and poisons later tests
+	// (INV10). Capture the pre-test row and restore it in t.Cleanup;
+	// this does not assume seed values.
+	db := operationsDB(t)
+	var before StorageFeeSettings
+	if err := db.QueryRow(`SELECT storage_fee_enabled,storage_fee_free_days,storage_fee_per_kg_day,storage_fee_per_m3_day FROM platform_settings WHERE id=1`).Scan(&before.Enabled, &before.FreeDays, &before.PerKgDay, &before.PerM3Day); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		opsExec(t, db, `UPDATE platform_settings SET storage_fee_enabled=$1,storage_fee_free_days=$2,storage_fee_per_kg_day=$3,storage_fee_per_m3_day=$4 WHERE id=1`, before.Enabled, before.FreeDays, before.PerKgDay, before.PerM3Day)
+	})
 	for _, config := range []string{`storage_fee_per_kg_day=9007199254740991`, `storage_fee_free_days=9999999`, `storage_fee_per_kg_day=-1`} {
 		t.Run(config, func(t *testing.T) {
 			db := operationsDB(t)

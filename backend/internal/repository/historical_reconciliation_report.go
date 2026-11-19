@@ -21,12 +21,11 @@ type HistoricalInventoryLocationDetail struct {
 }
 
 type HistoricalInventoryReservationDetail struct {
-	ID             string `json:"id"`
-	LocationKey    string `json:"locationKey"`
-	Quantity       int    `json:"quantity"`
-	ReferenceID    string `json:"referenceId"`
-	Status         string `json:"status"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	ID          string `json:"id"`
+	LocationKey string `json:"locationKey"`
+	Quantity    int    `json:"quantity"`
+	ReferenceID string `json:"referenceId"`
+	Status      string `json:"status"`
 }
 
 type HistoricalInventoryMovementDetail struct {
@@ -38,7 +37,6 @@ type HistoricalInventoryMovementDetail struct {
 	ToLocationKey   string    `json:"toLocationKey,omitempty"`
 	ReferenceType   string    `json:"referenceType"`
 	ReferenceID     string    `json:"referenceId"`
-	IdempotencyKey  string    `json:"idempotencyKey"`
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
@@ -112,7 +110,7 @@ func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) (
 			FROM inventory_balances ib WHERE ib.product_id=p.id
 		) c ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',ir.id,'locationKey',ir.location_key,'quantity',ir.quantity,'referenceId',ir.reference_id,'status',ir.status,'idempotencyKey',ir.idempotency_key) ORDER BY ir.created_at),'[]'::jsonb) AS active_reservations
+			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',ir.id,'locationKey',ir.location_key,'quantity',ir.quantity,'referenceId',ir.reference_id,'status',ir.status) ORDER BY ir.created_at),'[]'::jsonb) AS active_reservations
 			FROM inventory_reservations ir WHERE ir.product_id=p.id AND ir.status='active'
 		) res ON TRUE
 		LEFT JOIN LATERAL (
@@ -121,7 +119,7 @@ func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) (
 			       BOOL_OR(im.reference_type IN ('qc_pass','qc_failed')) AS has_qc,
 			       BOOL_OR(im.reference_type='putaway_confirmed') AS has_putaway,
 			       EXISTS (SELECT 1 FROM ledger_entries le WHERE le.related_order_or_dispute IN (SELECT DISTINCT im2.reference_id FROM inventory_movements im2 WHERE im2.product_id=p.id)) AS has_ledger,
-			       COALESCE(jsonb_agg(jsonb_build_object('id',im.id,'quantity',im.quantity,'fromStatus',im.from_status,'toStatus',im.to_status,'fromLocationKey',im.from_location_key,'toLocationKey',im.to_location_key,'referenceType',im.reference_type,'referenceId',im.reference_id,'idempotencyKey',im.idempotency_key,'createdAt',im.created_at) ORDER BY im.created_at),'[]'::jsonb) AS movement_details
+			       COALESCE(jsonb_agg(jsonb_build_object('id',im.id,'quantity',im.quantity,'fromStatus',im.from_status,'toStatus',im.to_status,'fromLocationKey',im.from_location_key,'toLocationKey',im.to_location_key,'referenceType',im.reference_type,'referenceId',im.reference_id,'createdAt',im.created_at) ORDER BY im.created_at),'[]'::jsonb) AS movement_details
 			FROM inventory_movements im WHERE im.product_id=p.id
 		) m ON TRUE
 		LEFT JOIN LATERAL (

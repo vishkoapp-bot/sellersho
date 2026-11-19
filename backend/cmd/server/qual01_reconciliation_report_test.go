@@ -22,6 +22,13 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,'sup-technolife','supplier','bin','qual01-location','sellable',2,TRUE)`, "qual-"+uuid.NewString(), product); err != nil {
 		t.Fatal(err)
 	}
+	reservationID, movementID := "qual-res-"+uuid.NewString(), "qual-mov-"+uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO inventory_reservations (id,product_id,supplier_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES ($1,$2,'sup-technolife','qual01-location',1,'test','reservation-reference','active',$3)`, reservationID, product, "retry-"+reservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,to_status,to_location_key,reference_type,reference_id,idempotency_key) VALUES ($1,$2,'sup-technolife',1,'sellable','qual01-location','test','movement-reference',$3)`, movementID, product, "retry-"+movementID); err != nil {
+		t.Fatal(err)
+	}
 	repo := repository.NewSupplierRepository(db)
 	service := auth.NewJWTService(uuid.NewString())
 	reader := &middlewareCapabilityReader{}
@@ -78,6 +85,22 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 			want := []string{"activeReservations", "canonicalQuantity", "canonicalRows", "canonicalSellableQuantity", "classification", "classifications", "difference", "evidenceIds", "evidenceInsufficient", "hasInboundEvidence", "hasLedgerEvidence", "hasMeasurement", "hasPutawayEvidence", "hasQCEvidence", "legacyStock", "locationBreakdown", "measurementClassification", "measurementEvidence", "measurementStatus", "movementQuantity", "movements", "physicalInventory", "physicalQuantity", "productId", "productTitle", "reviewStatus", "suggestedAction", "supplierId", "unreconciledRows", "unresolved"}
 			if !slices.Equal(keys, want) || row["canonicalSellableQuantity"] != float64(2) || row["difference"] != float64(0) {
 				t.Fatalf("unexpected reconciliation row: %v", row)
+			}
+			for _, check := range []struct{ field, id, ref string }{
+				{"activeReservations", reservationID, "reservation-reference"},
+				{"movements", movementID, "movement-reference"},
+			} {
+				entries, ok := row[check.field].([]any)
+				if !ok || len(entries) != 1 {
+					t.Fatalf("missing %s evidence: %v", check.field, row[check.field])
+				}
+				entry, ok := entries[0].(map[string]any)
+				if !ok || entry["id"] != check.id || entry["referenceId"] != check.ref {
+					t.Fatalf("wrong %s evidence: %v", check.field, entries[0])
+				}
+				if _, present := entry["idempotencyKey"]; present {
+					t.Fatalf("%s exposed an internal retry identifier", check.field)
+				}
 			}
 		}
 		if !found {

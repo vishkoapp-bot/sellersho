@@ -50,10 +50,10 @@ const row = (overrides: Partial<HistoricalInventoryReportRow> = {}): HistoricalI
     { locationKey: 'wh-1', locationType: 'warehouse', warehouseName: 'انبار مرکزی', status: 'quarantine', quantity: 1, reconciled: false },
   ],
   activeReservations: [
-    { id: 'res-1', locationKey: 'wh-1', quantity: 1, referenceId: 'ord-9', status: 'active', idempotencyKey: 'k-1' },
+    { id: 'res-1', locationKey: 'wh-1', quantity: 1, referenceId: 'ord-9', status: 'active' },
   ],
   movements: [
-    { id: 'mov-1', quantity: 2, fromStatus: 'quarantine', toStatus: 'sellable', referenceType: 'qc_pass', referenceId: 'qc-1', idempotencyKey: 'k-2', createdAt: '2026-11-01T10:00:00Z' },
+    { id: 'mov-1', quantity: 2, fromStatus: 'quarantine', toStatus: 'sellable', referenceType: 'qc_pass', referenceId: 'qc-1', createdAt: '2026-11-01T10:00:00Z' },
   ],
   measurementEvidence: [
     { id: 'me-1', newLengthMm: 700, newWidthMm: 500, newHeightMm: 20, newWeightGrams: 300, reason: 'ثبت اولیه', actorUserId: 'u-1', createdAt: '2026-11-01T09:00:00Z' },

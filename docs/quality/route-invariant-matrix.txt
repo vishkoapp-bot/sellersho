@@ -359,9 +359,12 @@ Historical inventory reconciliation | GET /api/v1/warehouse/inventory/
   location, reservation, movement and measurement evidence. No inventory write
   occurs. Three guarded tests verified route authorization and method, exact
   fixture projection, deterministic arithmetic and the legacy read-only SQL
-  report. Unexpected SQL errors return a generic response. OPEN: the full
-  report lacks result bounds, and the nested evidence projection retains audit
-  fields (including retry identifiers) whose necessity is not established.
+  report. Unexpected SQL errors return a generic response. Reservation and
+  movement evidence retains record IDs and references but excludes internal
+  retry keys from new responses and review snapshots. Existing stored audit
+  snapshots and source records are unchanged. Three guarded Go tests and 16
+  focused frontend tests passed, along with Go vet and the frontend build.
+  OPEN: the full report and nested evidence still lack result bounds.
 
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered

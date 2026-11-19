@@ -5,8 +5,10 @@ Generated registration inventory below is evidence of source wiring, not a
 claim of endpoint qualification. Each row identifies a listener and mux
 pattern, or a scheduled business job. Prefix patterns may dispatch multiple
 actions and methods. "none at registration" does not mean public, unauthenticated,
-or safe: the handler may enforce its own boundaries. All rows remain pending
-invariant review unless explicit reviewed evidence is recorded above the marker.
+or safe: the handler may enforce its own boundaries. For the source method,
+tenant and object-ownership audit by registration and action, see
+docs/quality/route-action-review.md. Runtime qualification and business
+invariants remain pending unless explicit evidence is recorded here.
 
 For each action record: method and source, role / capability / tenant / object
 boundary, data read or mutated, money or quantity rules, transaction and retry
@@ -187,9 +189,10 @@ external withdrawal API clients send the required key. This checkout has no
 frontend caller of this endpoint. Do not remove stored retry evidence on
 rollback or treat this scoped verification as a production release gate.
 
-Remaining gates: finish per-action method/tenant/ownership and business-writer
-reviews, and run and address remaining guarded regressions. The wallet findings
-are fixed, not the entire QUAL-01 audit.
+Remaining gates: resolve method, tenant and ownership questions identified in the
+source action review, finish business-writer qualification and run and address
+remaining guarded regressions. The wallet findings are fixed, not the entire
+QUAL-01 audit.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

@@ -215,7 +215,11 @@ func TestSupplierHandlerRejectsInvalidPayload(t *testing.T) {
 	for _, item := range cases {
 		t.Run(item.path, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			item.handler(w, httptest.NewRequest(http.MethodPost, item.path, strings.NewReader(item.body)))
+			method := http.MethodPost
+			if strings.HasPrefix(item.path, "/api/v1/supplier/sales-report?") {
+				method = http.MethodGet
+			}
+			item.handler(w, httptest.NewRequest(method, item.path, strings.NewReader(item.body)))
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("got %d: %s", w.Code, w.Body.String())
 			}

@@ -964,6 +964,9 @@ func (h *SupplierHandlers) HandleGetCampaignStats(w http.ResponseWriter, r *http
 
 // 16. GET /api/v1/supplier/sales-report
 func (h *SupplierHandlers) HandleGetSalesReport(w http.ResponseWriter, r *http.Request) {
+	if !t01MethodOnly(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	supplierID := getSupplierIDFromContext(r, h.supplierRepo)
 	startDate := r.URL.Query().Get("start_date")

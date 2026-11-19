@@ -324,6 +324,19 @@ QUAL-01-08 GET /api/v1/admin/reports/suspicious-transactions | Admin or
   support and revoked admin, and POST rejected before the query. The test
   uses a connection-local table to keep existing seed data intact.
 
+Supplier sales report | GET /api/v1/supplier/sales-report is a read-only action
+  gated by active supplier membership with finance permission or admin.
+  Supplier scope comes from membership, not the supplierId query selector.
+  The four aggregate fields are gross wholesale cost times quantity, units,
+  distinct orders and integer average per order, for paid noncancelled orders.
+  Date filters validate the order and include the end date using the SQL
+  session's calendar. No write or retry side effects. The guarded
+  TestQual01SupplierSalesReportScope passed with two real fixture memberships,
+  a mixed-supplier order, date bounds, exact projection, POST rejection and
+  inactive denial. OPEN: reconcile historical supplier ownership and timezone,
+  and bound the date span. This report is not a statement of cash collected
+  or net of refunds.
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered
 business writer input and retry contracts. Local application checks do not

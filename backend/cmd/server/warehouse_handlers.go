@@ -281,7 +281,7 @@ func handleGetHistoricalInventoryReport(w http.ResponseWriter, r *http.Request, 
 	}
 	report, err := repo.GetHistoricalInventoryReport(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"readOnly": true, "rows": report})

@@ -352,6 +352,17 @@ QUAL-01-09 GET /api/v1/finance/reports/revenue and /revenue/monthly |
   refunds and payouts, snapshot consistency, and monthly history bounds before
   using these figures as recognized revenue. This change does not alter sums.
 
+Historical inventory reconciliation | GET /api/v1/warehouse/inventory/
+  reconciliation-report is a global logistics/admin read. Warehouse staff,
+  including dual-capability staff, cannot use the global report. Its explicit
+  projection compares legacy stock to canonical sellable quantity and includes
+  location, reservation, movement and measurement evidence. No inventory write
+  occurs. Three guarded tests verified route authorization and method, exact
+  fixture projection, deterministic arithmetic and the legacy read-only SQL
+  report. Unexpected SQL errors return a generic response. OPEN: the full
+  report lacks result bounds, and the nested evidence projection retains audit
+  fields (including retry identifiers) whose necessity is not established.
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
 allowlists, edge host/store binding and advertising attribution, and uncovered
 business writer input and retry contracts. Local application checks do not

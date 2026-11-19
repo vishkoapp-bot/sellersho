@@ -45,7 +45,13 @@ func (r *StoreRepository) RequestDomain(ctx context.Context, userID, slug, raw s
 	defer tx.Rollback()
 	var id string
 	var limit int
-	if e = tx.QueryRowContext(ctx, `SELECT s.id,COALESCE((SELECT allowed_custom_domains FROM subscription_plans p WHERE p.id=s.active_plan_id),0) FROM stores s WHERE s.slug=$1 AND s.owner_user_id=$2 AND s.owner_type='dropshipper' FOR UPDATE`, slug, userID).Scan(&id, &limit); e != nil {
+	// Only new or re-enabled domains consume a plan grant. A NULL expiry is
+	// the legacy undated assignment, not a grant for a missing plan.
+	if e = tx.QueryRowContext(ctx, `SELECT s.id, COALESCE((
+		SELECT p.allowed_custom_domains FROM subscription_plans p
+		WHERE p.id=s.active_plan_id AND p.is_active
+		AND (s.plan_expires_at IS NULL OR s.plan_expires_at > NOW())
+	),0) FROM stores s WHERE s.slug=$1 AND s.owner_user_id=$2 AND s.owner_type='dropshipper' FOR UPDATE`, slug, userID).Scan(&id, &limit); e != nil {
 		return nil, ErrStoreForbidden
 	}
 	var count int

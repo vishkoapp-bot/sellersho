@@ -1452,25 +1452,6 @@ func handleRegisterStore(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 
-	ownedStores, err := storeRepo.GetStoresByOwner(ctx, claims.UserID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	maxStores := 1
-	activePlanID := "trial"
-	for _, store := range ownedStores {
-		if store.ActivePlanID == "vip" {
-			maxStores = 10
-			activePlanID = "vip"
-			break
-		}
-	}
-	if len(ownedStores) >= maxStores {
-		http.Error(w, fmt.Sprintf(`{"error":"Store limit reached for your plan (%d stores)"}`, maxStores), http.StatusConflict)
-		return
-	}
-
 	// Cryptographically secure referral code generation (>=8 chars, random uppercase alphanum)
 	randSuffix := strings.ToUpper(uuid.New().String()[:8])
 	uniqueReferralCode := fmt.Sprintf("DRUP-%s", randSuffix)
@@ -1483,7 +1464,6 @@ func handleRegisterStore(w http.ResponseWriter, r *http.Request, ctx context.Con
 		OwnerName:             claims.FullName,
 		OwnerUserID:           &claims.UserID,
 		ProfitMarginPercent:   req.ProfitMarginPercent,
-		ActivePlanID:          activePlanID,
 		ReferralCode:          uniqueReferralCode,
 		SignedContractVersion: 2,
 	}
@@ -1504,7 +1484,11 @@ func handleRegisterStore(w http.ResponseWriter, r *http.Request, ctx context.Con
 		}
 	}
 
-	if err := storeRepo.CreateStoreWithBonus(ctx, newStore, referrerStoreID); err != nil {
+	if err := storeRepo.RegisterStore(ctx, &newStore, referrerStoreID); err != nil {
+		if errors.Is(err, repository.ErrStorePlanLimit) {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusConflict)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

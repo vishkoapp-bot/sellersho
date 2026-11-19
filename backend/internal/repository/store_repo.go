@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/drup/platform/internal/pricing"
 	"strings"
@@ -325,13 +326,34 @@ func (r *StoreRepository) GetStoreByReferralCode(ctx context.Context, code strin
 	return &s, nil
 }
 
-// CreateStoreWithBonus inserts a new store and creates a locked referral bonus in a single transaction if referred
+// ErrStorePlanLimit indicates that the owner cannot add another store.
+var ErrStorePlanLimit = errors.New("Store limit reached for your plan")
+
+// RegisterStore enforces the existing registration quota and inserts
+// the new store and any locked referral bonus in a single transaction.
+func (r *StoreRepository) RegisterStore(ctx context.Context, s *domain.Store, referrerStoreID string) error {
+	return r.createStoreWithBonus(ctx, s, referrerStoreID, true)
+}
+
 func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Store, referrerStoreID string) error {
+	return r.createStoreWithBonus(ctx, &s, referrerStoreID, false)
+}
+
+func (r *StoreRepository) createStoreWithBonus(ctx context.Context, s *domain.Store, referrerStoreID string, register bool) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	planID := s.ActivePlanID
+	var expiry sql.NullTime
+	if register {
+		planID, expiry, err = registrationPlan(ctx, tx, s.OwnerUserID)
+		if err != nil {
+			return err
+		}
+	}
 
 	if referrerStoreID != "" {
 		var set TransactionLockSet
@@ -339,6 +361,51 @@ func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Sto
 			return err
 		}
 	}
+	if err := insertStoreWithBonus(ctx, tx, s, referrerStoreID, planID, expiry); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ActivePlanID = planID
+	return nil
+}
+
+func registrationPlan(ctx context.Context, tx *sql.Tx, ownerID *string) (string, sql.NullTime, error) {
+	var expiry sql.NullTime
+	if ownerID == nil {
+		return "", expiry, ErrStoreForbidden
+	}
+	// Serialize admissions for the same seller so they cannot consume the same slot.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('store-registration:' || ($1::uuid)::text, 0))`, *ownerID); err != nil {
+		return "", expiry, err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM stores WHERE owner_user_id=$1`, *ownerID).Scan(&count); err != nil {
+		return "", expiry, err
+	}
+	planID, maxStores := "trial", 1
+	if count > 0 {
+		// Keep the existing VIP-only expansion. Inherit its deadline so a
+		// newly created store cannot extend a dated VIP grant indefinitely.
+		err := tx.QueryRowContext(ctx, `SELECT s.plan_expires_at
+			FROM stores s JOIN subscription_plans p ON p.id=s.active_plan_id AND p.is_active
+			WHERE s.owner_user_id=$1 AND s.active_plan_id='vip'
+			AND (s.plan_expires_at IS NULL OR s.plan_expires_at > NOW())
+			ORDER BY s.plan_expires_at DESC NULLS LAST, s.id LIMIT 1`, *ownerID).Scan(&expiry)
+		if err == nil {
+			planID, maxStores = "vip", 10
+		} else if err != sql.ErrNoRows {
+			return "", expiry, err
+		}
+	}
+	if count >= maxStores {
+		return "", expiry, fmt.Errorf("%w (%d stores)", ErrStorePlanLimit, maxStores)
+	}
+	return planID, expiry, nil
+}
+
+func insertStoreWithBonus(ctx context.Context, tx *sql.Tx, s *domain.Store, referrerStoreID, planID string, expiry sql.NullTime) error {
 	queryStore := `
 		INSERT INTO stores (
 			id, name, slug, owner_type, owner_name, owner_user_id, profit_margin_percent,
@@ -347,9 +414,14 @@ func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Sto
 	`
 	if _, err := tx.ExecContext(ctx, queryStore,
 		s.ID, s.Name, s.Slug, s.OwnerType, s.OwnerName, s.OwnerUserID, s.ProfitMarginPercent,
-		s.ActivePlanID, s.ReferralCode, s.ReferrerSellerID, s.SignedContractVersion,
+		planID, s.ReferralCode, s.ReferrerSellerID, s.SignedContractVersion,
 	); err != nil {
 		return err
+	}
+	if expiry.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE stores SET plan_expires_at=$2 WHERE id=$1`, s.ID, expiry); err != nil {
+			return err
+		}
 	}
 
 	if referrerStoreID != "" {
@@ -364,7 +436,7 @@ func (r *StoreRepository) CreateStoreWithBonus(ctx context.Context, s domain.Sto
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // ReferralBonusNotification represents an in-app notice when a subordinate bonus unlocks

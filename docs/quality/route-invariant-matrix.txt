@@ -40,25 +40,85 @@ GET,POST /api/v1/customer/wallet/quote | Own availability; integer Tomans;
   a failed policy read is treated as enabled. Boundary tests outstanding.
 GET /api/v1/customer/wallet/withdrawals | Own requests and bank metadata;
   read only; SQL rows and iteration errors checked; currently unpaginated.
-  Cross-customer fixture and bounded-read review outstanding.
+  Two synthetic customers in the wallet probe saw only their own requests
+  even with a customerId query parameter. Bounded-read review outstanding.
 POST /api/v1/customer/wallet/withdrawals | Own request; positive int64 Tomans
   and IR Sheba shape; atomically adds amount to the hold with a balance guard
   and inserts a pending request, no journal until paid. Fresh UUID on each
   successful submit; no stable retry identity. See open findings below.
 
 OPEN QUAL-01-01: Wallet withdrawal admission disagrees with configuration.
-  Source-level case: a synthetic customer has balance=10000, locked=0 and
-  wallet_withdraw_enabled=false. A valid quote for 5000 reports disabled;
-  the POST writer does not consult that flag. The migration also defines a
-  minimum that neither handler reads. Add a guarded, migrated DB regression:
+  Reproduced on disposable PostgreSQL: with balance=10000, locked=0 and
+  wallet_withdraw_enabled=false, a 5000 quote reported disabled but POST
+  returned 201 and committed one pending request with 5000 locked. When
+  enabled with a 6000 minimum, a 4000 quote was sufficient and POST returned
+  201. Replace the opt-in evidence probe with a guarded regression on repair:
   verify denied submissions leave both the hold and requests unchanged, verify
   allowed minimum boundary, and fail closed when policy is unavailable. Do
   not qualify the path until the regression runs and enforcement is verified.
-OPEN QUAL-01-02: Wallet withdrawal retry identity is missing. Source-level
-  case: balance=10000, locked=0, identical synthetic 4000-Toman submit twice.
-  Current write path can create two pending requests and lock 8000; define
+OPEN QUAL-01-02: Wallet withdrawal retry identity is missing. Reproduced on
+  disposable PostgreSQL: identical 4000-Toman submissions returned distinct
+  IDs and committed two pending requests with 8000 locked; define
   a stable client intent ID without deduplicating deliberate same-amount
   requests. Add guarded concurrent/retry conservation and ownership tests.
+
+ADMIN WITHDRAWAL ACTIONS (source review)
+---------------------------------------
+GET /api/v1/admin/customer-withdrawals | Admin or super-admin, global scope;
+  generic listing includes banking records, bounded by t01Limit; no write.
+  Dedicated role-denial and output-field review outstanding.
+POST /api/v1/admin/customer-withdrawals/{id}/review | Admin or super-admin,
+  global scope; accepts approved or rejected for a pending request only. Locks
+  the request in a transaction, records reviewer, releases the hold on rejection,
+  and writes no paid journal. Repeat review returns 409. Approval is not payment.
+  Existing treasury conservation test exercises review; negative-role, rollback
+  and conflicting concurrent review evidence still needed. No paid transition
+  for these requests was found in the registered review handler.
+
+SELLER SERVICES AND SUBSCRIPTION ACTIONS (source review)
+---------------------------------------------------------
+POST /api/v1/stores/{slug}/services | Seller and owned dropshipper store;
+  ownership rechecked in the purchase transaction. A canonical service key
+  selects a server-side price and duration. Debit, entitlement and replay
+  identity are written together. Existing seller-service tests cover ownership,
+  replay and balance. Catalog/entitlement consistency is not established.
+GET /api/v1/subscription-plans | Public; active catalog rows only; read-only,
+  no pricing computation or retry effects. No direct catalog-to-purchase
+  regression located.
+GET /api/v1/admin/subscription-plans | Admin or super-admin; global catalog
+  including inactive rows. Read-only, no writable companion route in this
+  registration. Cross-role and result-bound regressions not located.
+REVIEW REQUIRED: reconcile seller-service purchase pricing/activity with the
+  plan catalog rather than assuming they are the same policy. Verify the quota
+  decision for a store with an expired plan and a retained active_plan_id
+  (backend/internal/repository/domain_repo.go). Keep these questions open until
+  contract decisions and fixture evidence exist.
+
+CAMPAIGN AND ADVERTISING ACTIONS (source review)
+------------------------------------------------
+GET /api/v1/stores/{slug}/public-campaigns | Public storefront projection by
+  slug, read only. Host/store alignment, visibility and bounds need fixtures.
+GET /api/v1/stores/{slug}/campaigns | Seller and store owner scope, read only.
+POST /api/v1/stores/{slug}/campaigns | Same scope; creates a campaign from a
+  64 KiB body, defaults to draft. Exact money, product-list and retry contracts
+  require repository-level review before qualifying activation.
+PATCH /api/v1/stores/{slug}/campaigns/{id} | Seller/store/campaign scope;
+  metadata and status are separate repository calls. Add a regression for a
+  valid metadata edit followed by rejected status, and decide atomicity.
+GET /api/v1/stores/{slug}/campaigns/{id}/analytics | Seller/store/campaign
+  scope, read only. Aggregation formula and time/result limits need review.
+/api/v1/stores/{slug}/campaigns/{id}/history | Same scope, read only. Handler
+  does not enforce GET. Verify the accepted method policy and replay costs.
+POST /api/v1/ads/challenge | Public; parses campaign UUID and 2 KiB body,
+  applies hashed IP rate admission and issues scoped proof or records rejection.
+  Trusted-proxy attribution and rate/reset cases need independent tests.
+POST /api/v1/ads/events | Public with signed proof and campaign/token checks;
+  body capped at 4 KiB, token at 200 bytes. Duplicate clicks do not count as
+  accepted. Exact budget, retry and campaign/store conservation are not yet
+  qualified by this handler-level review.
+GET /api/v1/finance/treasury/commission | Finance role group, global read;
+  aggregates gross platform profit on paid noncancelled orders, not net cash.
+  Review totals/trend snapshot and day-boundary agreement before qualification.
 
 SHARED AUTHORIZATION EVIDENCE (not endpoint or tenant proof)
 -----------------------------------------------------------
@@ -104,8 +164,17 @@ Inventory freshness, Go vet, five finance middleware cases and frontend build
 passed. No lint script is configured. The default Go suite was not green:
 FIN007HTTPCheckoutAdmissionRace and FIN011ReenablementCommissionBase required
 an explicit disposable PostgreSQL URL, and the treasury opening-cash source
-scan was in the repository walk when the bounded rerun timed out. Docker's
-Linux engine was unavailable, so no migrated-schema qualification ran.
+scan was in the repository walk when the bounded rerun timed out.
+
+Follow-up verified Docker Desktop's Linux engine (29.7.2), then ran the
+guarded runner against fresh PostgreSQL 16 and Redis. The canonical migrations
+applied, both QUAL-01 wallet findings reproduced, the wallet list ownership
+assertions and five finance middleware cases passed without skips, and the
+runner verified both disposable containers were removed. This is finding
+verification, not repair or a claim of release readiness. Reproduce from cmd:
+
+  set "QUAL01_WALLET_PROBE=1" && python scripts/test-isolated.py -- go test ./cmd/server -run "^TestQual01(WalletFindingsProbe|FinanceCapabilityGate)$" -count=1 -v -timeout=60s
+
 Remaining gates: finish per-action method/tenant/ownership and business-writer
 reviews, run guarded DB regressions, and fix and verify the open findings.
 

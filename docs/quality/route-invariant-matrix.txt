@@ -297,11 +297,24 @@ plan test confirms existing domains still resolve after plan expiry.
 
   python scripts/test-suite-isolated.py --run "^(TestQual01DomainStoreHostBinding|TestQual01PlanAdmissionPreservesStoresAndDomains)$" ./cmd/server
 
+POST /api/v1/webhooks/tracking/update | Carrier integration, authenticated
+  with a server-configured shared secret. No customer session or seller scope.
+  Acts on a persisted tracking match. Updates transit status, not payment or
+  profit; a failed delivery can set a dispute hold. Four guarded tests passed
+  without skips: missing/invalid authentication, failure replay and hold
+  durability, rollback when the order hold fails, and delivered replay for
+  supplier and warehouse fixtures. Neither delivery attempt confirmed the
+  order, opened its return window, changed profit or payment, or wrote ledger
+  entries. These are in-process checks, not live carrier proof. Supplier
+  retries can still refresh metadata or repeat audit writes. Body limits,
+  event identity and authenticated carrier-to-shipment binding remain open.
+
+  python scripts/test-suite-isolated.py --run "^(TestWebhookTrackingUpdate_AuthenticationGuard|TestFIN005AcceptedCarrierFailureSurvivesVerdictAndWorker|TestFIN005AcceptedShipmentFailureRollsBackWithOrderHold|TestQual01TrackingDeliveryDoesNotReleaseMoney)$" ./cmd/server
+
 QUAL-01 remains OPEN. Other open acceptance evidence: report/export field
-allowlists, edge host/store binding, authenticated callback state transitions
-and replay, edge advertising attribution, and uncovered business writer input
-and retry contracts. Local application checks do not establish edge behavior
-or acceptance for all routes.
+allowlists, edge host/store binding and advertising attribution, and uncovered
+business writer input and retry contracts. Local application checks do not
+establish edge behavior or acceptance for all routes.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

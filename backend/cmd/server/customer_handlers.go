@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
@@ -946,6 +949,8 @@ func handleT01GeoCities(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 var t01ShebaRe = regexp.MustCompile(`^IR[0-9]{24}$`)
 
+const customerWithdrawalPolicySQL = `SELECT wallet_withdraw_enabled, wallet_min_withdrawal FROM platform_settings WHERE id = 1`
+
 func t01CustomerWalletBalance(ctx context.Context, db *sql.DB, userID string) (balance, locked int64, err error) {
 	err = db.QueryRowContext(ctx,
 		`SELECT balance, locked_balance FROM customer_wallets WHERE customer_id = $1::uuid`, userID).Scan(&balance, &locked)
@@ -981,10 +986,8 @@ func handleT01CustomerWallet(w http.ResponseWriter, r *http.Request, db *sql.DB)
 }
 
 // handleT01CustomerWalletQuote answers GET/POST /customer/wallet/quote.
-// TODO: the exact live quote contract is unverified; the quote reports
-// the requested amount against the available balance with no fee,
-// because no customer-withdrawal fee exists in the wallet migrations
-// (fees belong to the seller early-withdrawal path).
+// This is a read-only estimate with no fee. Submission rechecks both the
+// policy and available funds under database locks.
 func handleT01CustomerWalletQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if t01DBNil(w, db) {
 		return
@@ -1005,9 +1008,12 @@ func handleT01CustomerWalletQuote(w http.ResponseWriter, r *http.Request, db *sq
 		amount = req.Amount
 	} else if r.Method == http.MethodGet {
 		if v := strings.TrimSpace(r.URL.Query().Get("amount")); v != "" {
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-				amount = parsed
+			parsed, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				http.Error(w, `{"error":"amount must be an integer"}`, http.StatusBadRequest)
+				return
 			}
+			amount = parsed
 		}
 	} else {
 		writeMethodNotAllowed(w)
@@ -1022,21 +1028,20 @@ func handleT01CustomerWalletQuote(w http.ResponseWriter, r *http.Request, db *sq
 	if available < 0 {
 		available = 0
 	}
-	withdrawEnabled := true
-	if t01ColumnExists(r.Context(), db, "platform_settings", "wallet_withdraw_enabled") {
-		var enabled bool
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT wallet_withdraw_enabled FROM platform_settings WHERE id = 1`).Scan(&enabled); err == nil {
-			withdrawEnabled = enabled
-		}
+	var withdrawEnabled bool
+	var minimum int64
+	if err := db.QueryRowContext(r.Context(), customerWithdrawalPolicySQL).Scan(&withdrawEnabled, &minimum); err != nil {
+		writeInternalError(w, err)
+		return
 	}
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"amount":          amount,
 		"available":       available,
-		"sufficient":      withdrawEnabled && amount > 0 && amount <= available,
+		"sufficient":      withdrawEnabled && amount > 0 && amount >= minimum && amount <= available,
 		"fee":             0,
 		"net":             amount,
 		"withdrawEnabled": withdrawEnabled,
+		"minimumAmount":   minimum,
 	})
 }
 
@@ -1084,6 +1089,12 @@ func handleT01CustomerWithdrawals(w http.ResponseWriter, r *http.Request, db *sq
 		}
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"withdrawals": out})
 	case http.MethodPost:
+		keys := r.Header.Values("Idempotency-Key")
+		if len(keys) != 1 || len(strings.TrimSpace(keys[0])) == 0 || len(strings.TrimSpace(keys[0])) > 128 {
+			http.Error(w, `{"error":"A single Idempotency-Key of 1 to 128 bytes is required"}`, http.StatusBadRequest)
+			return
+		}
+		keyHash := sha256.Sum256([]byte(strings.TrimSpace(keys[0])))
 		var req struct {
 			Amount            int64  `json:"amount"`
 			Sheba             string `json:"sheba"`
@@ -1094,54 +1105,88 @@ func handleT01CustomerWithdrawals(w http.ResponseWriter, r *http.Request, db *sq
 			return
 		}
 		sheba := strings.ToUpper(strings.TrimSpace(req.Sheba))
-		if req.Amount <= 0 || !t01ShebaRe.MatchString(sheba) || strings.TrimSpace(req.BankName) == "" ||
-			strings.TrimSpace(req.AccountHolderName) == "" {
+		bank := strings.TrimSpace(req.BankName)
+		holder := strings.TrimSpace(req.AccountHolderName)
+		if req.Amount <= 0 || !t01ShebaRe.MatchString(sheba) || bank == "" || holder == "" ||
+			utf8.RuneCountInString(bank) > 50 || utf8.RuneCountInString(holder) > 100 ||
+			strings.ContainsRune(bank, 0) || strings.ContainsRune(holder, 0) {
 			http.Error(w, `{"error":"amount, a valid IR sheba, bankName and accountHolderName are required"}`, http.StatusBadRequest)
 			return
 		}
-		balance, locked, err := t01CustomerWalletBalance(ctx, db, userID)
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		available := balance - locked
-		if req.Amount > available {
+		defer tx.Rollback()
+		// Lock the customer's wallet before looking up the intent so concurrent
+		// POSTs see the winner's committed row before deciding whether to debit.
+		var available int64
+		walletErr := tx.QueryRowContext(ctx, `SELECT balance - locked_balance FROM customer_wallets WHERE customer_id=$1::uuid FOR UPDATE`, userID).Scan(&available)
+		if walletErr != nil && walletErr != sql.ErrNoRows {
+			writeInternalError(w, walletErr)
+			return
+		}
+		var previousID, previousStatus, previousSheba, previousBank, previousHolder string
+		var previousAmount int64
+		err = tx.QueryRowContext(ctx, `SELECT id, status, amount, sheba, bank_name, account_holder_name
+			FROM customer_withdrawal_requests WHERE customer_id=$1::uuid AND request_key_sha256=$2`, userID, keyHash[:]).
+			Scan(&previousID, &previousStatus, &previousAmount, &previousSheba, &previousBank, &previousHolder)
+		if err == nil {
+			if previousAmount != req.Amount || previousSheba != sheba || previousBank != bank || previousHolder != holder {
+				http.Error(w, `{"error":"Idempotency-Key already used with different withdrawal details"}`, http.StatusConflict)
+				return
+			}
+			t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": previousID, "status": previousStatus})
+			return
+		}
+		if err != sql.ErrNoRows {
+			writeInternalError(w, err)
+			return
+		}
+		var enabled bool
+		var minimum int64
+		if err := tx.QueryRowContext(ctx, customerWithdrawalPolicySQL+` FOR SHARE`).Scan(&enabled, &minimum); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !enabled {
+			http.Error(w, `{"error":"Wallet withdrawals are disabled"}`, http.StatusForbidden)
+			return
+		}
+		if req.Amount < minimum {
+			http.Error(w, `{"error":"Amount is below the minimum withdrawal"}`, http.StatusBadRequest)
+			return
+		}
+		if walletErr == sql.ErrNoRows || req.Amount > available {
 			http.Error(w, `{"error":"Amount exceeds available balance"}`, http.StatusBadRequest)
 			return
 		}
 		// The caller's display name/mobile come from the users row; the
 		// withdrawal row requires both, so they are read, never invented.
 		var custName, custMobile string
-		if err := db.QueryRowContext(ctx,
+		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(full_name, ''), COALESCE(mobile, '') FROM users WHERE id = $1::uuid`, userID).Scan(&custName, &custMobile); err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		defer tx.Rollback()
-		res, err := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			`UPDATE customer_wallets SET locked_balance = locked_balance + $1
-			WHERE customer_id = $2::uuid AND balance - locked_balance >= $1`, req.Amount, userID)
+			WHERE customer_id = $2::uuid`, req.Amount, userID)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		// No wallet row yet means zero available; the amount check above
-		// already rejected that case, but fail closed if nothing locked.
-		if n, _ := res.RowsAffected(); n == 0 {
-			http.Error(w, `{"error":"Amount exceeds available balance"}`, http.StatusBadRequest)
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			writeInternalError(w, errors.New("customer withdrawal must lock exactly one wallet"))
 			return
 		}
 		id := "cwd-" + uuid.NewString()
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO customer_withdrawal_requests (id, customer_id, customer_name, customer_mobile,
-				account_holder_name, sheba, bank_name, amount, status)
-			VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, 'pending')`,
-			id, userID, custName, custMobile, req.AccountHolderName, sheba, req.BankName, req.Amount); err != nil {
+				account_holder_name, sheba, bank_name, amount, status, request_key_sha256)
+			VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, 'pending', $9)`,
+			id, userID, custName, custMobile, holder, sheba, bank, req.Amount, keyHash[:]); err != nil {
 			writeInternalError(w, err)
 			return
 		}

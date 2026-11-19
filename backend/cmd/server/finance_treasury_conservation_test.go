@@ -903,6 +903,7 @@ func TestTreasuryWalletWithdrawalReservationIsNotDoubleCounted(t *testing.T) {
 	// balance.
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/wallet/withdrawals",
 		strings.NewReader(fmt.Sprintf(`{"amount":2000000,"sheba":%q,"bankName":"bank","accountHolderName":"fin008 fixture"}`, treasuryIBAN())))
+	req.Header.Set("Idempotency-Key", "treasury-withdrawal-reservation")
 	req = req.WithContext(context.WithValue(context.Background(), userClaimsKey, &auth.UserClaims{UserID: customerID}))
 	rec := httptest.NewRecorder()
 	handleT01CustomerWithdrawals(rec, req, db)
@@ -934,6 +935,7 @@ func TestTreasuryWalletWithdrawalRejectionUnlocks(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/wallet/withdrawals",
 		strings.NewReader(fmt.Sprintf(`{"amount":2000000,"sheba":%q,"bankName":"bank","accountHolderName":"fin008 fixture"}`, treasuryIBAN())))
+	req.Header.Set("Idempotency-Key", "treasury-withdrawal-rejection")
 	req = req.WithContext(context.WithValue(context.Background(), userClaimsKey, &auth.UserClaims{UserID: customerID}))
 	rec := httptest.NewRecorder()
 	handleT01CustomerWithdrawals(rec, req, db)

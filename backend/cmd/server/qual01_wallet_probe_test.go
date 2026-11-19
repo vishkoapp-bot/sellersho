@@ -15,12 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// This is a manually opted-in finding reproducer, not an acceptance test for
-// the desired policy. Replace it with a regression when the finding is fixed.
-func TestQual01WalletFindingsProbe(t *testing.T) {
-	if os.Getenv("QUAL01_WALLET_PROBE") != "1" {
-		t.Skip("explicit wallet finding reproduction required")
-	}
+// Regression for both previously reproduced findings on the canonical schema.
+func TestQual01WalletWithdrawalRegression(t *testing.T) {
 	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -48,14 +44,20 @@ func TestQual01WalletFindingsProbe(t *testing.T) {
 		}
 		return id, token
 	}
-	call := func(method, path, token, body string, status int) *httptest.ResponseRecorder {
-		t.Helper()
+	serve := func(method, path, token, body, key string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
+		if key != "" {
+			r.Header.Set("Idempotency-Key", key)
+		}
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
+		return w
+	}
+	check := func(w *httptest.ResponseRecorder, status int) *httptest.ResponseRecorder {
+		t.Helper()
 		if w.Code != status {
-			t.Fatalf("%s %s returned %d, want %d: %s", method, path, w.Code, status, w.Body)
+			t.Fatalf("status %d, want %d: %s", w.Code, status, w.Body)
 		}
 		return w
 	}
@@ -72,10 +74,14 @@ func TestQual01WalletFindingsProbe(t *testing.T) {
 	}
 	const path = "/api/v1/customer/wallet/withdrawals"
 	const quotePath = "/api/v1/customer/wallet/quote"
-	post := func(token string, amount int) string {
+	body := func(amount int64) string {
+		return fmt.Sprintf(`{"amount":%d,"sheba":"IR000000000000000000000000","bankName":"Fixture","accountHolderName":"Fixture"}`, amount)
+	}
+	post := func(token, key string, amount int64) *httptest.ResponseRecorder {
+		return serve(http.MethodPost, path, token, body(amount), key)
+	}
+	responseID := func(w *httptest.ResponseRecorder) string {
 		t.Helper()
-		body := fmt.Sprintf(`{"amount":%d,"sheba":"IR000000000000000000000000","bankName":"Fixture","accountHolderName":"Fixture"}`, amount)
-		w := call(http.MethodPost, path, token, body, http.StatusCreated)
 		var out struct{ ID string }
 		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.ID == "" {
 			t.Fatalf("missing request ID: %s", w.Body)
@@ -94,36 +100,98 @@ func TestQual01WalletFindingsProbe(t *testing.T) {
 	other, otherToken := user("09000040102")
 	state(owner, 0, 0)
 	state(other, 0, 0)
+	quote := func(method, path, body string, enabled, sufficient bool, minimum int64) {
+		t.Helper()
+		w := check(serve(method, path, ownerToken, body, ""), http.StatusOK)
+		var got struct {
+			WithdrawEnabled bool  `json:"withdrawEnabled"`
+			Sufficient      bool  `json:"sufficient"`
+			Minimum         int64 `json:"minimumAmount"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || got.WithdrawEnabled != enabled || got.Sufficient != sufficient || got.Minimum != minimum {
+			t.Fatalf("unexpected quote: %s", w.Body)
+		}
+	}
 	exec(`UPDATE platform_settings SET wallet_withdraw_enabled=false,wallet_min_withdrawal=6000 WHERE id=1`)
-	response := call(http.MethodGet, quotePath+"?amount=5000", ownerToken, "", http.StatusOK)
-	var quote struct {
-		WithdrawEnabled bool `json:"withdrawEnabled"`
-		Sufficient      bool `json:"sufficient"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &quote); err != nil || quote.WithdrawEnabled || quote.Sufficient {
-		t.Fatalf("expected disabled quote: %s", response.Body)
-	}
-	first := post(ownerToken, 5000)
-	state(owner, 5000, 1)
-	t.Log("QUAL-01-01 reproduced: disabled quote, but submission committed a pending request and locked 5000")
+	quote(http.MethodGet, quotePath+"?amount=6000", "", false, false, 6000)
+	check(post(ownerToken, "disabled-intent", 6000), http.StatusForbidden)
+	state(owner, 0, 0)
 
-	exec(`UPDATE platform_settings SET wallet_withdraw_enabled=true,wallet_min_withdrawal=6000 WHERE id=1`)
-	response = call(http.MethodPost, quotePath, otherToken, `{"amount":4000}`, http.StatusOK)
-	if err := json.Unmarshal(response.Body.Bytes(), &quote); err != nil || !quote.WithdrawEnabled || !quote.Sufficient {
-		t.Fatalf("expected source finding: below-minimum quote treated as sufficient: %s", response.Body)
+	exec(`UPDATE platform_settings SET wallet_withdraw_enabled=true WHERE id=1`)
+	quote(http.MethodPost, quotePath, `{"amount":5999}`, true, false, 6000)
+	quote(http.MethodGet, quotePath+"?amount=6000", "", true, true, 6000)
+	check(post(ownerToken, "below-limit", 5999), http.StatusBadRequest)
+	check(post(ownerToken, "", 6000), http.StatusBadRequest)
+	check(post(ownerToken, strings.Repeat("x", 129), 6000), http.StatusBadRequest)
+	check(post(ownerToken, "negative", -1), http.StatusBadRequest)
+	check(post(ownerToken, "larger-than-balance", 9223372036854775807), http.StatusBadRequest)
+	check(serve(http.MethodPost, path, ownerToken, strings.Replace(body(6000), "6000", "6000.5", 1), "fractional"), http.StatusBadRequest)
+	state(owner, 0, 0)
+
+	// Break policy reads on the disposable schema only, then restore it even
+	// on failure. Neither quote nor a new submission may fall back to enabled.
+	func() {
+		exec(`ALTER TABLE platform_settings RENAME COLUMN wallet_min_withdrawal TO qual01_hidden_minimum`)
+		defer exec(`ALTER TABLE platform_settings RENAME COLUMN qual01_hidden_minimum TO wallet_min_withdrawal`)
+		check(serve(http.MethodGet, quotePath+"?amount=6000", ownerToken, "", ""), http.StatusInternalServerError)
+		check(post(ownerToken, "missing-policy", 6000), http.StatusInternalServerError)
+		state(owner, 0, 0)
+	}()
+
+	// Race retries of one intent against each other. Exactly one creates a
+	// withdrawal and all callers recover the same ID even after funds are held.
+	const sharedKey = "equal-intent"
+	const tries = 8
+	results := make(chan *httptest.ResponseRecorder, tries)
+	start := make(chan struct{})
+	for i := 0; i < tries; i++ {
+		go func() { <-start; results <- post(ownerToken, sharedKey, 6000) }()
 	}
-	a, b := post(otherToken, 4000), post(otherToken, 4000)
-	if a == b {
-		t.Fatal("no duplicate withdrawal ID was observed")
+	close(start)
+	var first string
+	created := 0
+	for i := 0; i < tries; i++ {
+		w := <-results
+		switch w.Code {
+		case http.StatusCreated:
+			created++
+		case http.StatusOK:
+		default:
+			t.Errorf("concurrent request status %d: %s", w.Code, w.Body)
+			continue
+		}
+		id := responseID(w)
+		if first == "" {
+			first = id
+		} else if first != id {
+			t.Errorf("replay returned a different withdrawal ID")
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created %d requests, want one", created)
+	}
+	state(owner, 6000, 1)
+	check(post(ownerToken, sharedKey, 6001), http.StatusConflict)
+	check(serve(http.MethodPost, path, ownerToken, strings.Replace(body(6000), "accountHolderName\":\"Fixture", "accountHolderName\":\"Changed", 1), sharedKey), http.StatusConflict)
+	state(owner, 6000, 1)
+
+	exec(`UPDATE platform_settings SET wallet_withdraw_enabled=false WHERE id=1`)
+	if responseID(check(post(ownerToken, sharedKey, 6000), http.StatusOK)) != first {
+		t.Fatal("committed intent was lost after policy changed")
+	}
+	exec(`UPDATE platform_settings SET wallet_withdraw_enabled=true,wallet_min_withdrawal=4000 WHERE id=1`)
+	a := responseID(check(post(otherToken, sharedKey, 4000), http.StatusCreated))
+	b := responseID(check(post(otherToken, "second-intent", 4000), http.StatusCreated))
+	if a == first || a == b {
+		t.Fatal("a separate customer or deliberate new intent reused an existing withdrawal ID")
 	}
 	state(other, 8000, 2)
-	t.Log("QUAL-01-01 minimum finding reproduced; QUAL-01-02 reproduced: identical submissions committed distinct pending requests and locked 8000")
 
 	for _, tc := range []struct{ token, own, foreign string }{{ownerToken, first, a}, {otherToken, a, first}} {
-		w := call(http.MethodGet, path+"?customerId="+owner, tc.token, "", http.StatusOK)
+		w := check(serve(http.MethodGet, path+"?customerId="+owner, tc.token, "", ""), http.StatusOK)
 		if !strings.Contains(w.Body.String(), tc.own) || strings.Contains(w.Body.String(), tc.foreign) {
 			t.Fatal("withdrawal list did not enforce principal ownership")
 		}
 	}
-	state(owner, 5000, 1)
+	state(owner, 6000, 1)
 }

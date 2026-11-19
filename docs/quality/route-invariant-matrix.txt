@@ -36,31 +36,34 @@ GET /api/v1/customer/wallet | Own balance and locked balance; available =
   balance - locked, clamped to zero; missing row gives zero; SQL errors fail.
   Read only. Cross-customer fixture regression outstanding.
 GET,POST /api/v1/customer/wallet/quote | Own availability; integer Tomans;
-  fee 0, net = amount. Read only. GET parse errors are treated as zero, and
-  a failed policy read is treated as enabled. Boundary tests outstanding.
+  fee 0, net = amount. Read only; eligibility requires an enabled policy and
+  amount in the inclusive range from the configured minimum to available
+  balance, with amount > 0. Malformed GET amounts return 400 and failed policy
+  reads return 500. Reports the configured minimum in minimumAmount.
 GET /api/v1/customer/wallet/withdrawals | Own requests and bank metadata;
   read only; SQL rows and iteration errors checked; currently unpaginated.
   Two synthetic customers in the wallet probe saw only their own requests
   even with a customerId query parameter. Bounded-read review outstanding.
-POST /api/v1/customer/wallet/withdrawals | Own request; positive int64 Tomans
-  and IR Sheba shape; atomically adds amount to the hold with a balance guard
-  and inserts a pending request, no journal until paid. Fresh UUID on each
-  successful submit; no stable retry identity. See open findings below.
+POST /api/v1/customer/wallet/withdrawals | Own request; positive int64 Tomans,
+  IR Sheba shape and bounded bank/holder fields. Requires one Idempotency-Key
+  (1–128 bytes, trimmed). Atomically adds the hold and inserts a pending
+  request with a customer-scoped key digest. No journal until paid. First
+  submission returns 201, exact replay returns 200 with the original ID and
+  current status, and changed details under that key return 409. Clients
+  must keep the same key on retry and use a new key only for a new intent.
 
-OPEN QUAL-01-01: Wallet withdrawal admission disagrees with configuration.
-  Reproduced on disposable PostgreSQL: with balance=10000, locked=0 and
-  wallet_withdraw_enabled=false, a 5000 quote reported disabled but POST
-  returned 201 and committed one pending request with 5000 locked. When
-  enabled with a 6000 minimum, a 4000 quote was sufficient and POST returned
-  201. Replace the opt-in evidence probe with a guarded regression on repair:
-  verify denied submissions leave both the hold and requests unchanged, verify
-  allowed minimum boundary, and fail closed when policy is unavailable. Do
-  not qualify the path until the regression runs and enforcement is verified.
-OPEN QUAL-01-02: Wallet withdrawal retry identity is missing. Reproduced on
-  disposable PostgreSQL: identical 4000-Toman submissions returned distinct
-  IDs and committed two pending requests with 8000 locked; define
-  a stable client intent ID without deduplicating deliberate same-amount
-  requests. Add guarded concurrent/retry conservation and ownership tests.
+FIXED QUAL-01-01: Before the fix, a disabled wallet or below-minimum amount
+  could still produce a hold. The writer now reads and locks the settings row
+  in the transaction and rejects disabled, below-minimum and unreadable policy
+  without a hold or request. The regression checks both quote methods and the
+  inclusive minimum, failed reads and invalid amounts.
+FIXED QUAL-01-02: Before the fix, identical retries could commit two holds.
+  Migration 202611190003 keeps historical identities NULL and enforces unique
+  new identities per customer. The wallet row serializes concurrent submissions.
+  The regression confirms eight concurrent retries yield one ID and one hold,
+  changed payloads conflict, and deliberate new keys and other customers do not
+  collide. It also checks that a committed request remains replayable after
+  configuration changes and that customer list reads still enforce ownership.
 
 ADMIN WITHDRAWAL ACTIONS (source review)
 ---------------------------------------
@@ -170,13 +173,23 @@ Follow-up verified Docker Desktop's Linux engine (29.7.2), then ran the
 guarded runner against fresh PostgreSQL 16 and Redis. The canonical migrations
 applied, both QUAL-01 wallet findings reproduced, the wallet list ownership
 assertions and five finance middleware cases passed without skips, and the
-runner verified both disposable containers were removed. This is finding
-verification, not repair or a claim of release readiness. Reproduce from cmd:
+runner verified both disposable containers were removed. The original finding
+reproducer is preserved at commit 9355516.
 
-  set "QUAL01_WALLET_PROBE=1" && python scripts/test-isolated.py -- go test ./cmd/server -run "^TestQual01(WalletFindingsProbe|FinanceCapabilityGate)$" -count=1 -v -timeout=60s
+Wallet fixes: the converted reproducer, treasury reservation/rejection tests,
+and finance role-gate tests passed three times with no skips on the canonical
+migrated schema. The runner verified disposable PostgreSQL and Redis cleanup:
+
+  python scripts/test-isolated.py -- go test ./cmd/server -run "^(TestQual01WalletWithdrawalRegression|TestQual01FinanceCapabilityGate|TestTreasuryWalletWithdrawal.*)$" -count=3 -v -timeout=100s
+
+Rollout prerequisite: apply migration 202611190003 with the backend and ensure
+external withdrawal API clients send the required key. This checkout has no
+frontend caller of this endpoint. Do not remove stored retry evidence on
+rollback or treat this scoped verification as a production release gate.
 
 Remaining gates: finish per-action method/tenant/ownership and business-writer
-reviews, run guarded DB regressions, and fix and verify the open findings.
+reviews, and run and address remaining guarded regressions. The wallet findings
+are fixed, not the entire QUAL-01 audit.
 
 BEGIN SOURCE INVENTORY
 app | /api/health | none at registration

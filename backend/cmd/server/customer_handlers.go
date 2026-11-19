@@ -1060,7 +1060,8 @@ func handleT01CustomerWithdrawals(w http.ResponseWriter, r *http.Request, db *sq
 		rows, err := db.QueryContext(ctx,
 			`SELECT id, customer_name, customer_mobile, account_holder_name, sheba, bank_name,
 				amount, status, rejection_reason, created_at
-			FROM customer_withdrawal_requests WHERE customer_id = $1::uuid ORDER BY created_at DESC`, userID)
+			FROM customer_withdrawal_requests WHERE customer_id = $1::uuid
+			ORDER BY created_at DESC, id DESC LIMIT $2`, userID, t01Limit(r))
 		if err != nil {
 			writeInternalError(w, err)
 			return

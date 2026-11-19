@@ -2378,7 +2378,7 @@ func run(signalCtx context.Context) (result error) {
 	// (live: AdminDashboardView-MERGED.js refundPayment).
 	mux.HandleFunc("/api/v1/admin/payments/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { wr69AdminPayments(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/customer-withdrawals", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
-		handleT01AdminGenericList(w, r, db.DB, "customer_withdrawal_requests", "withdrawals", "")
+		handleT01AdminCustomerWithdrawals(w, r, db.DB)
 	}))
 	mux.HandleFunc("/api/v1/admin/customer-withdrawals/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/customer-withdrawals/")

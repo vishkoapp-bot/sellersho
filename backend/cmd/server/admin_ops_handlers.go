@@ -805,6 +805,59 @@ func handleT01AdminPayouts(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"payouts": out})
 }
 
+func handleT01AdminCustomerWithdrawals(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
+		return
+	}
+	// Preserve the existing review/transfer wire fields, but never expose
+	// retry identities or future storage-only columns.
+	rows, err := db.QueryContext(r.Context(), `
+		SELECT id, customer_id, customer_name, customer_mobile, account_holder_name,
+		       sheba, bank_name, amount, status, rejection_reason, reviewed_by, reviewed_at,
+		       transfer_reference, transfer_date, transfer_confirmed_by, transfer_confirmed_at,
+		       created_at, updated_at
+		FROM customer_withdrawal_requests ORDER BY created_at DESC, id DESC LIMIT $1`, t01Limit(r))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	defer rows.Close()
+	fields, err := rows.Columns()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	out := []map[string]any{}
+	for rows.Next() {
+		values := make([]any, len(fields))
+		dest := make([]any, len(fields))
+		for i := range dest {
+			dest[i] = &values[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		item := make(map[string]any, len(fields))
+		for i, field := range fields {
+			switch value := values[i].(type) {
+			case []byte:
+				item[field] = string(value)
+			case time.Time:
+				item[field] = value.Format(time.RFC3339)
+			default:
+				item[field] = value
+			}
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, map[string]any{"withdrawals": out})
+}
+
 // handleT01AdminCustomerWithdrawalReview serves POST
 // /api/v1/admin/customer-withdrawals/<id>/review with
 // {status: "approved"|"rejected", reason?}. Per migration
@@ -860,9 +913,15 @@ func handleT01AdminCustomerWithdrawalReview(w http.ResponseWriter, r *http.Reque
 			writeInternalError(w, err)
 			return
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE customer_wallets SET locked_balance = GREATEST(0, locked_balance - $1) WHERE customer_id = $2::uuid`,
-			amount, customerID); err != nil {
+		var released int64
+		err := tx.QueryRowContext(ctx,
+			`UPDATE customer_wallets SET locked_balance = locked_balance - $1
+			 WHERE customer_id = $2::uuid AND locked_balance >= $1 RETURNING locked_balance`, amount, customerID).Scan(&released)
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Withdrawal hold is missing or insufficient"}`, http.StatusConflict)
+			return
+		}
+		if err != nil {
 			writeInternalError(w, err)
 			return
 		}

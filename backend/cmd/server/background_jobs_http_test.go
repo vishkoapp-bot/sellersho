@@ -51,11 +51,16 @@ func TestPaymentInitiationHoldEndsAtRecordedDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ttl <= 0 || ttl > 2300*time.Millisecond {
-		t.Fatalf("late initiation extended authoritative window: TTL=%s", ttl)
+	// PERF-04: the quantity key outlives the hold deadline by a 60 s grace
+	// (so expiry cleanup can decrement the maintained aggregate exactly);
+	// the hold itself still ends at the deadline — asserted behaviorally
+	// below via HasInventoryHold. The TTL must therefore exceed the
+	// deadline but stay within deadline + grace.
+	if ttl <= 2200*time.Millisecond || ttl > 63*time.Second {
+		t.Fatalf("hold quantity key TTL out of range: TTL=%s", ttl)
 	}
 	time.Sleep(time.Until(deadline) + 30*time.Millisecond)
-	held, err := redis.HasInventoryHold(ctx, id, product, 1)
+	held, err := redis.HasInventoryHold(ctx, id, product, "", 1)
 	if err != nil || held {
 		t.Fatalf("hold survived payment deadline: held=%v err=%v", held, err)
 	}

@@ -102,10 +102,14 @@ func TestOPS02KnownSMSRejectionClearsOnlyOwnReservation(t *testing.T) {
 	defer upstream.Close()
 	svc := NewOTPService(client, "production")
 	svc.ConfigureSMS(ippanel.New(upstream.URL, "synthetic", "synthetic"), "synthetic", nil)
-	if _, err := svc.GenerateAndStoreOTP(ctx, "09120000000"); err == nil {
+	// PERF-04: distinct mobile from TestOPS02KnownSMSRejectionCannotDeleteNewGeneration,
+	// which deliberately leaves otp:/otp:cooldown: for 09120000000 behind on the
+	// shared disposable Redis; reusing that mobile made this test fail on the
+	// leftover cooldown (proven on pristine otp.go, pre-existing).
+	if _, err := svc.GenerateAndStoreOTP(ctx, "09120000001"); err == nil {
 		t.Fatal("rejection accepted")
 	}
-	if n, err := client.Client.Exists(ctx, "otp:09120000000", "otp:cooldown:09120000000").Result(); err != nil || n != 0 {
+	if n, err := client.Client.Exists(ctx, "otp:09120000001", "otp:cooldown:09120000001").Result(); err != nil || n != 0 {
 		t.Fatalf("definite rejection retained own reservation %d %v", n, err)
 	}
 }

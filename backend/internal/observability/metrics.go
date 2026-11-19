@@ -92,7 +92,7 @@ func (m *Registry) Observe(component, operation, outcome string, d time.Duration
 	// Worker operations are the six job IDs (D-05): one distinct
 	// operation per job. There is no job named "reconciliation" and
 	// no shared label; an unknown job ID collapses to "other".
-	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query")
+	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query", "hold", "release", "has_hold", "otp_reserve", "otp_verify")
 	outcome = bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded")
 	key := fmt.Sprintf(`component=%q,operation=%q,outcome=%q`, component, operation, outcome)
 	m.mu.Lock()

@@ -11,6 +11,7 @@ import (
 	"github.com/drup/platform/internal/database/seeder"
 	"github.com/drup/platform/internal/dependencybudget"
 	"github.com/drup/platform/internal/ippanel"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
@@ -29,6 +30,20 @@ type OTPService struct {
 
 func NewOTPService(redisClient *repository.RedisClient, env string) *OTPService {
 	return &OTPService{redisClient: redisClient, env: env}
+}
+
+// observeOTP records one OTP script as its own series (PERF-04 D-05: the
+// hook can only see the "eval" command name, so OTP scripts were
+// indistinguishable from hold scripts in metrics).
+func observeOTP(ctx context.Context, op string, start time.Time, err error) {
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+		if ctx.Err() == context.DeadlineExceeded {
+			outcome = "timeout"
+		}
+	}
+	observability.Default.Observe("redis", op, outcome, time.Since(start))
 }
 
 func (s *OTPService) ConfigureSMS(client *ippanel.Client, patternCode string, logger func(context.Context, string, string, string, string, string)) {
@@ -66,7 +81,9 @@ redis.call('SET',KEYS[2],ARGV[1],'EX',30)
 redis.call('SET',KEYS[1],ARGV[2],'EX',120)
 redis.call('DEL',KEYS[3])
 return 1`
+	reserveStart := time.Now()
 	allowed, err := s.redisClient.Client.Eval(ctx, reserve, keys, generation, code).Int()
+	observeOTP(ctx, "otp_reserve", reserveStart, err)
 	if err != nil {
 		return "", fmt.Errorf("%w: reservation could not be confirmed", ErrOTPStoreUnavailable)
 	}
@@ -127,6 +144,8 @@ redis.call('EXPIRE', KEYS[2], 120)
 if attempts >= 5 then redis.call('DEL', KEYS[1], KEYS[3]) end
 return 0
 `
+	verifyStart := time.Now()
 	result, err := s.redisClient.Client.Eval(ctx, script, []string{key, attemptsKey, fmt.Sprintf("otp:cooldown:%s", mobile)}, inputCode).Int()
+	observeOTP(ctx, "otp_verify", verifyStart, err)
 	return err == nil && result == 1
 }

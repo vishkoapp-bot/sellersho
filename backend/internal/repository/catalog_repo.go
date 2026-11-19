@@ -300,6 +300,15 @@ func (r *CatalogRepository) GetProductByID(ctx context.Context, idOrSlug string)
 	return &p, nil
 }
 
+// VariantInventory returns one variant's stock, inventory mode and active
+// flag for hold admission (PERF-04). A missing variant row returns
+// sql.ErrNoRows so the caller can fail the hold as insufficient stock:
+// payment-time capture would fail on the same row.
+func (r *CatalogRepository) VariantInventory(ctx context.Context, productID, variantID string) (stock int, mode string, active bool, err error) {
+	err = r.db.QueryRowContext(ctx, `SELECT stock, COALESCE(inventory_mode,'legacy'), COALESCE(is_active, TRUE) FROM product_variants WHERE id=$1 AND product_id=$2`, variantID, productID).Scan(&stock, &mode, &active)
+	return stock, mode, active, err
+}
+
 // GetCategoryProductCounts returns, for every category id, the count
 // of ACTIVE products directly assigned to that category (products
 // whose category_slug equals the category's own slug). FIX 12: live

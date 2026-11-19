@@ -69,7 +69,7 @@ func TestJobsBurstSustainedTwoWorkersSlowIsolationAndHTTP(t *testing.T) {
 	seedJobOrders(t, db, f, 1, 260)
 	cache := &repository.RedisClient{Client: testredis.Open(t, os.Getenv("SELLERSHO_TEST_REDIS_URL"), os.Getenv("SELLERSHO_TEST_REDIS_TOKEN"))}
 	for i := 1; i <= 260; i++ {
-		if err := cache.HoldInventoryUntil(context.Background(), f.prefix+fmt.Sprint(i), f.product, 1, 10000, time.Now().Add(time.Second)); err != nil {
+		if err := cache.HoldInventoryUntil(context.Background(), f.prefix+fmt.Sprint(i), f.product, "", 1, 10000, time.Now().Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +165,7 @@ func TestJobsBurstSustainedTwoWorkersSlowIsolationAndHTTP(t *testing.T) {
 		t.Logf("pending diagnostic human_review=%d earliest=%v automatic_retry=%d earliest=%v", human, earliestHuman, automatic, earliestAuto)
 		t.Fatalf("pending=%d canceled=%d/%d stock=%d ledger=%d slow=%d", pending, cancelled, created, stock, ledger, slowRuns.Load())
 	}
-	held, err := cache.HasInventoryHold(context.Background(), f.prefix+"1", f.product, 1)
+	held, err := cache.HasInventoryHold(context.Background(), f.prefix+"1", f.product, "", 1)
 	if err != nil || held {
 		t.Fatal("hold not released", held, err)
 	}

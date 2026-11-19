@@ -38,7 +38,10 @@ services:
     # or set REDIS_PASSWORD to the password it was created with.
     environment:
       REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD for the dev stack}"
-    command: ["sh", "-ec", 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    # PERF-04: explicit persistence/eviction/memory policy (same as the
+    # root compose files) — AOF on, fsync every second, never evict
+    # holds/OTP (noeviction), 512 MB ceiling.
+    command: ["sh", "-ec", 'exec docker-entrypoint.sh redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"']
     ports:
       - "6379:6379"
     volumes:

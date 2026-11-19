@@ -14,7 +14,7 @@ var ErrQCResponseExpired = errors.New("مهلت ۴۸ساعته پاسخ به م�
 
 type ExpiredOrder struct {
 	ID             string
-	Products       []string
+	Products       []InventoryHoldRef
 	CustomerUserID string
 	OrderNumber    string
 }
@@ -144,17 +144,17 @@ func (r *OrderRepository) expireUnpaidOrder(ctx context.Context, id string) (*Ex
 	if err = assertOrderCancellationAllowedTx(ctx, tx, id); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT product_id FROM order_items WHERE order_id=$1`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT product_id, COALESCE(variant_id::text,'') FROM order_items WHERE order_id=$1`, id)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var p string
-		if err = rows.Scan(&p); err != nil {
+		var p, v string
+		if err = rows.Scan(&p, &v); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		o.Products = append(o.Products, p)
+		o.Products = append(o.Products, InventoryHoldRef{ProductID: p, VariantID: v})
 	}
 	err = rows.Err()
 	rows.Close()

@@ -60,20 +60,55 @@ fails the deploy loudly rather than skipping the gate).
   making the classification unconditional (e.g. deriving the URL
   from the live host config inside the script) or making a missing
   `--db-url` a hard failure.
+  — MIG-02 DONE (2026-11-20, `deploy_remote.py`): the classification
+  is unconditional in the prod path. `deploy_remote.py` reads the
+  live `schema_migrations` directly on the host (no operator-supplied
+  URL), verifies the staged manifest before migrations, enforces
+  post-conditions for the migrations it applies, and fails the
+  deploy on any mismatch. `deploy-backend.sh` stays rehearsal-only
+  (D-1) and keeps its `--db-url` warning.
 - **`lastCompatibleRevision`**: the last app revision whose binary
   is compatible with this release's schema. REL-01 records the
   field as `null`. MIG-02 fills it (per release) and the validator
   must then enforce it at rollback time.
+  — MIG-02 DONE (2026-11-20): `scripts/release/make_manifest.py`
+  computes it per release from `backend/migrations/classification.json`
+  + git (currently `ff57367`, D-2); `scripts/release/validate_release.py`
+  fails a release whose floor is null or not an ancestor of the
+  release commit; `scripts/deploy_remote.py` records it in the
+  deploy backup dir (`rollback-point.json`) and in
+  `/opt/drup/.rollback-points.json` (`scripts/rollback_points.py`),
+  and refuses a blind restore of an older binary at rollback time.
 - **Migration classification**: expand / backfill / contract stages
   for each migration, so a rollback can tell whether the previous
   binary is schema-compatible.
+  — MIG-02 DONE (2026-11-20): `backend/migrations/classification.json`
+  (source of truth, all 210 files) + generated
+  `backend/migrations/MIGRATION_CLASSIFICATION.md`; enforced by
+  `scripts/release/validate_release.py` (fails on any unclassified
+  file) and `scripts/release/check_classification.py` (standalone).
+  Authoring rules: `backend/migrations/README.md`.
 - **Failed-migration forward repair**: what happens to a partially
   applied migration file on rollback (today: it stays, and the
   restored binary may retry it). The procedure, the "last
   compatible revision" record, and the stranded-file handling
   belong to MIG-02.
+  — MIG-02 DONE (2026-11-20): `scripts/deploy_remote.py` (schema-aware
+  rollback: pre-check, Mode A filing of applied-but-unfiled files
+  sha-verified, Mode B forward repair refusing the old binary) +
+  `docs/operations/rollback-runbook.md` (decision tree, procedures,
+  evidence). The write-path readiness probe
+  (`scripts/release/write_path_probe.py`) gates deploy and rollback.
 - **Backfill resumability, lock/statement timeouts, data
   validation** for the staged migrations.
+  — MIG-02 DONE (2026-11-20, process form): three-release staging
+  rule (expand → backfill → contract) instead of a chunked runner
+  change (D-4); lock 30 s / statement 10 min split with
+  per-migration manifest overrides (D-5,
+  `backend/internal/migrations/runner.go`,
+  `backend/cmd/migrate/main.go`, `-manifest`); post-conditions in
+  the manifest, enforced by the deploy for the migrations it
+  applies (`backend/migrations/README.md`).
 
 ## Invariants MIG-02 must preserve
 

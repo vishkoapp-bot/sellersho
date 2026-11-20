@@ -83,7 +83,15 @@
 #   BAK_FAILURE_PUBLISHER (default <this script>/publish-backup-failure.sh)
 #   BAK_NIGHTLY_RETENTION_DAYS (default 7)
 #   BAK_DEPLOY_RETENTION_COUNT (default 5)
-#   BAK_CADDY_VOLUMES (default "caddy_data caddy_config")
+#   BAK_CADDY_VOLUMES (default "drup_caddy_data drup_caddy_config")
+#     — MIG-02 step 7: the default matches the live host, where the
+#     compose project name (drup_, from the /opt/drup install dir)
+#     prefixes the volumes; the old default (caddy_data caddy_config)
+#     matched no volume on the host, so Caddy data was silently
+#     recorded missing on every run without the override. The 04:41
+#     nightly cron's explicit override is KEPT as belt-and-braces.
+#     Coupling: if the install dir / project name ever changes, this
+#     default must move with it.
 #
 # Never prints secrets. Never sends OTP. No prod contact is made by
 # this script itself — it runs ON the host it backs up.
@@ -103,7 +111,7 @@ BAK_PUBLISHER="${BAK_PUBLISHER:-$SCRIPT_DIR/../publish-backup-success.sh}"
 BAK_FAILURE_PUBLISHER="${BAK_FAILURE_PUBLISHER:-$SCRIPT_DIR/publish-backup-failure.sh}"
 BAK_NIGHTLY_RETENTION_DAYS="${BAK_NIGHTLY_RETENTION_DAYS:-7}"
 BAK_DEPLOY_RETENTION_COUNT="${BAK_DEPLOY_RETENTION_COUNT:-5}"
-BAK_CADDY_VOLUMES="${BAK_CADDY_VOLUMES:-caddy_data caddy_config}"
+BAK_CADDY_VOLUMES="${BAK_CADDY_VOLUMES:-drup_caddy_data drup_caddy_config}"
 
 # Config files captured into config.tar.gz (relative to BAK_ROOT).
 # Missing files are warned about and recorded in manifest.json —

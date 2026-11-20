@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # REL-01 (G4) — scripted backend swap from a staged release.
 #
+# *** REHEARSAL-ONLY (MIG-02, D-1, Nov 20 2026) ***
+# The production deploy path is deploy.ps1 + scripts/deploy_remote.py
+# (the manifest is wired into it: staged-manifest verification,
+# post-conditions, schema-aware rollback, write-path probe). This
+# script is NOT the prod path: it has no manifest verification, no
+# post-condition enforcement, no rollback pre-check, no Mode A/B
+# repair and no probe gate. Use it ONLY for staging rehearsal with
+# --local-root <fake-root> --rehearse (no prod contact, no SSH, no
+# Docker for the migration steps). Do NOT point it at /opt/drup:
+# --rehearse is refused outright when the target root is /opt/drup,
+# and remote mode always forces --production (see N2 below) — but
+# even a forced-production run would ship without the MIG-02 gates.
+#
 # Canonical home (C6): scripts/deploy/deploy-backend.sh in the repo
 # (single source of truth — the unversioned ~/workspace copy was lost
 # in a VM replacement, G4). ~/workspace/deploy-backend.sh is a

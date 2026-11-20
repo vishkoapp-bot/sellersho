@@ -16,8 +16,12 @@ Fields (D3):
     dist_sha256_tree: {relative path: sha256, ...}} (+ tarball sha256
     when --tarball is given).
   migrations: {files: [{name, sha256}], count,
-    lastCompatibleRevision: null} — the file set in this release;
-    lastCompatibleRevision is MIG-02-owned (see MIGRATION_INTERFACE.md).
+    lastCompatibleRevision, timeouts, post_conditions} — the file set
+    in this release; lastCompatibleRevision is the MIG-02 rollback
+    floor, recomputed per release from the classification + git
+    (D-2: currently ff57367); timeouts carries per-migration
+    lock/statement budgets (D-5); post_conditions carries the
+    backfill checks the deploy enforces.
   config: {vite: {allowed: [], values: {}},
     payment: {mode, bridge, psp_configured, psp_verified}}
     — vite values MUST be empty (D4: no VITE_* variable is allowed in
@@ -90,6 +94,59 @@ def compose_images(stage: Path) -> dict:
     return images
 
 
+def compute_last_compatible(classification: dict, repo: Path) -> str:
+    """MIG-02 step 2 — the rollback floor, recomputed per release.
+
+    Takes the classification entries with moves_floor=true (the
+    'breaking' verdicts) and resolves each file's introducing commit
+    (the commit that ADDED the file) via git, then returns the newest
+    of those commits by commit timestamp. The newest breaking
+    migration's commit is the last app revision whose binary is
+    compatible with this schema: any binary at or after it understands
+    the schema; anything before it may not.
+
+    The two pre-floor breakers (202610170009 trigger drop,
+    202610250005 rename) resolve to the Nov 4 snapshot commit 2df713b,
+    which is older than ff57367, so the current answer is ff57367
+    (D-2). The DESTRUCTIVE file does not move the floor (0 rows, 0
+    code references — see the classification). Returns "" on any
+    failure so the caller fails closed instead of stamping a guess.
+    """
+    breaking = [e["name"] for e in classification.get("entries", [])
+                if e.get("moves_floor")]
+    if not breaking:
+        print("classification marks no migration as floor-moving; refusing to stamp a floor", file=sys.stderr)
+        return ""
+    best_commit = ""
+    best_time = -1
+    for name in breaking:
+        rel = f"backend/migrations/{name}"
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "log", "--diff-filter=A",
+                                "--format=%H", "--", rel],
+                               capture_output=True, text=True, timeout=30)
+        except Exception as exc:
+            print(f"git log failed for {rel}: {exc}", file=sys.stderr)
+            return ""
+        commits = [c for c in (r.stdout or "").splitlines() if c.strip()]
+        if not commits:
+            print(f"no introducing commit found for {rel} (is {repo} the git repo?)", file=sys.stderr)
+            return ""
+        introducing = commits[0]
+        try:
+            t = subprocess.run(["git", "-C", str(repo), "show", "-s",
+                                "--format=%ct", introducing],
+                               capture_output=True, text=True, timeout=30)
+            when = int((t.stdout or "0").strip())
+        except Exception as exc:
+            print(f"git show failed for {introducing}: {exc}", file=sys.stderr)
+            return ""
+        print(f"floor candidate: {name} introduced by {introducing[:12]} ({when})")
+        if when > best_time:
+            best_time, best_commit = when, introducing
+    return best_commit
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stage", required=True)
@@ -107,6 +164,11 @@ def main() -> int:
     ap.add_argument("--node-version", default="")
     ap.add_argument("--npm-version", default="")
     ap.add_argument("--pnpm-version", default="")
+    ap.add_argument("--repo", default="",
+                    help="Git repo to resolve introducing commits from "
+                         "(default: the repo containing this script; "
+                         "on the deploy host pass the install dir, e.g. "
+                         "/opt/drup, because the staged release has no .git).")
     args = ap.parse_args()
 
     stage = Path(args.stage)
@@ -151,6 +213,38 @@ def main() -> int:
         for path in sorted(migrations_dir.glob("*.up.sql")):
             mig_files.append({"name": path.name, "sha256": sha256_file(path)})
 
+    # MIG-02 step 2 — lastCompatibleRevision, recomputed per release
+    # (never hardcoded): the newest commit introducing a migration the
+    # classification marks moves_floor (a 'breaking' verdict whose
+    # introducing commit is not the Nov 4 snapshot). The classification
+    # is required input — a manifest without it cannot stamp a floor.
+    # Per-migration timeout budgets and post-conditions are copied from
+    # the classification into the manifest (steps 5.1/5.3); the deploy
+    # passes the timeouts to `migrate` and enforces the post-conditions
+    # for the migrations it applies.
+    classification_path = migrations_dir / "classification.json"
+    if not classification_path.is_file():
+        print(f"missing migration classification: {classification_path} (MIG-02 step 1)", file=sys.stderr)
+        return 2
+    classification = json.loads(classification_path.read_text())
+    repo = Path(args.repo) if args.repo else REPO
+    last_compatible = compute_last_compatible(classification, repo)
+    if not last_compatible:
+        print("cannot compute lastCompatibleRevision (see above); refusing to write a manifest without a rollback floor", file=sys.stderr)
+        return 2
+    timeouts = {}
+    post_conditions = {}
+    for entry in classification.get("entries", []):
+        if entry.get("timeout_lock_seconds") or entry.get("timeout_statement_seconds"):
+            item = {}
+            if entry.get("timeout_lock_seconds"):
+                item["lock_timeout"] = f"{entry['timeout_lock_seconds']}s"
+            if entry.get("timeout_statement_seconds"):
+                item["statement_timeout"] = f"{entry['timeout_statement_seconds']}s"
+            timeouts[entry["name"]] = item
+        if entry.get("post_conditions"):
+            post_conditions[entry["name"]] = entry["post_conditions"]
+
     sys.path.insert(0, str(HERE))
     from contract_routes import extract_patterns, routes_hash  # noqa: E402
 
@@ -191,10 +285,18 @@ def main() -> int:
         "migrations": {
             "files": mig_files,
             "count": len(mig_files),
-            # MIG-02-owned: the last app revision compatible with this
-            # schema. REL-01 records the field and leaves it null; see
-            # scripts/release/MIGRATION_INTERFACE.md (G12).
-            "lastCompatibleRevision": None,
+            # MIG-02 step 2: the last app revision compatible with this
+            # schema — the newest commit introducing a floor-moving
+            # (breaking) migration, recomputed per release by
+            # compute_last_compatible() from the classification + git.
+            # D-2 confirms the current value is ff57367 (2026-11-11).
+            "lastCompatibleRevision": last_compatible,
+            # MIG-02 D-5: per-migration lock/statement budgets (only
+            # files that declare a non-default budget appear here).
+            "timeouts": timeouts,
+            # MIG-02 step 5.3: post-conditions, enforced by the deploy
+            # only for the migrations it applies.
+            "post_conditions": post_conditions,
         },
         "config": {
             "vite": {"allowed": [], "values": {}},

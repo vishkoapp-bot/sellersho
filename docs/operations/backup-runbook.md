@@ -4,6 +4,13 @@ One entry point, one layout, one verification story. This runbook is
 the manual companion to `scripts/backup/backup-entrypoint.sh`; the
 periodic job is `scripts/backup/restore-verify.sh`.
 
+**Rollback is a different runbook:** deploy failures are handled by
+`docs/operations/rollback-runbook.md` (MIG-02 — schema-aware
+rollback: compatible-binary restore, Mode A/B forward repair, and
+the OWNER-PENDING DR write-freeze procedure). A deploy rollback
+never restores the database; a database restore is DR-only and its
+procedure lives in §5 below.
+
 ## 1. What exists
 
 | Piece | Path (on the host) | Purpose |
@@ -21,18 +28,25 @@ periodic job is `scripts/backup/restore-verify.sh`.
 ## 2. The nightly backup
 
 Cron (04:41 Tehran — the schedule does NOT change; the deploy
-coordinator repoints the existing job to the entry point):
+coordinator repoints the existing job to the entry point). The
+`BAK_CADDY_VOLUMES` override is kept as belt-and-braces now that
+the entry-point default matches it (MIG-02 step 7):
 
 ```
-41 4 * * * /opt/drup/scripts/backup/backup-entrypoint.sh run nightly >> /opt/drup/backups/backup-entrypoint.log 2>&1
+41 4 * * * BAK_CADDY_VOLUMES="drup_caddy_data drup_caddy_config" /opt/drup/scripts/backup/backup-entrypoint.sh run nightly >> /opt/drup/backups/backup-entrypoint.log 2>&1
 ```
 
 What one run does, in order: `pg_dump -Fc` + plain `pg_dump | gzip`
 (both must succeed — `pipefail`; a failure aborts with a nonzero
 exit and NO success marker), uploads tar, config tar (`.env`, all
 compose files, `nginx.conf`, `Caddyfile`, `.deployed-commit`,
-`.deployed-release.json`), Caddy ACME volume tars (`caddy_data`,
-`caddy_config`; a missing volume is warned about and recorded in
+`.deployed-release.json`), Caddy ACME volume tars
+(`drup_caddy_data`, `drup_caddy_config` — MIG-02 step 7 made the
+entry-point default match the live host, where the compose project
+name `drup_` prefixes the volumes; the old default matched no
+volume, so Caddy data was silently recorded missing. If the install
+dir / project name ever changes, the default must move with it; a
+missing volume is warned about and recorded in
 `manifest.json`, not fatal), `MANIFEST.sha256` + `manifest.json`
 (kind, UTC timestamp, commit, pg version, migration count,
 artifact sizes/hashes, missing items), encryption of every artifact

@@ -39,9 +39,116 @@ const advisoryLockID int64 = 0x53454c4c45524d
 type Options struct {
 	Dir              string
 	LockTimeout      time.Duration
-	MigrationTimeout time.Duration
+	MigrationTimeout time.Duration // Deprecated: use StatementTimeout. When set and StatementTimeout is zero, it is used as the statement timeout.
+	// StatementTimeout bounds how long one migration's statements may run.
+	// Default 10 minutes (MIG-02 D-5). Previously this was the same knob
+	// as the lock timeout (2 minutes for both); they are now separate.
+	StatementTimeout time.Duration
+	// MigrationLockTimeout bounds how long one migration's transaction
+	// waits for DDL/data locks (lock_timeout inside the transaction).
+	// Default 30 seconds (MIG-02 D-5).
+	MigrationLockTimeout time.Duration
+	// TimeoutOverrides carries per-migration budgets from the release
+	// manifest (MIG-02 step 5.1 / D-5): keyed by migration filename.
+	// An entry for a file that is not in the directory fails the run
+	// (fail-closed). A zero field in an entry falls back to the default.
+	TimeoutOverrides map[string]MigrationTimeouts
 	AdoptLegacy      bool
 	Logf             func(string, ...any)
+}
+
+// MigrationTimeouts is one migration's lock/statement budget pair.
+type MigrationTimeouts struct {
+	LockTimeout      time.Duration
+	StatementTimeout time.Duration
+}
+
+// resolveTimeouts applies the D-5 defaults: singleton lock wait 30s,
+// per-migration statement 10min, per-migration lock wait 30s. The
+// deprecated MigrationTimeout field still acts as a statement timeout
+// when StatementTimeout is unset, so existing callers keep working.
+func resolveTimeouts(options Options) (lock, statement, txnLock time.Duration) {
+	lock = options.LockTimeout
+	if lock <= 0 {
+		lock = 30 * time.Second
+	}
+	statement = options.StatementTimeout
+	if statement <= 0 {
+		statement = options.MigrationTimeout
+	}
+	if statement <= 0 {
+		statement = 10 * time.Minute
+	}
+	txnLock = options.MigrationLockTimeout
+	if txnLock <= 0 {
+		txnLock = 30 * time.Second
+	}
+	return lock, statement, txnLock
+}
+
+// LoadTimeoutOverrides parses the "timeouts" object of a release
+// manifest (release.json: migrations.timeouts) into per-migration
+// budgets. The JSON is strict: unknown fields and unparseable or
+// non-positive durations are rejected, so a typo in the manifest can
+// never silently widen or narrow a migration's budget. A nil/empty
+// input means "no overrides".
+func LoadTimeoutOverrides(data []byte) (map[string]MigrationTimeouts, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	// Decode in layers so strictness applies only to the timeout
+	// entries themselves: the manifest carries many other fields
+	// (files, count, lastCompatibleRevision, ...) that must not be
+	// rejected here.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, fmt.Errorf("release manifest timeouts: %w", err)
+	}
+	rawMig, ok := top["migrations"]
+	if !ok {
+		return nil, nil
+	}
+	var mig map[string]json.RawMessage
+	if err := json.Unmarshal(rawMig, &mig); err != nil {
+		return nil, fmt.Errorf("release manifest timeouts: %w", err)
+	}
+	rawTimeouts, ok := mig["timeouts"]
+	if !ok {
+		return nil, nil
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(rawTimeouts, &entries); err != nil {
+		return nil, fmt.Errorf("release manifest timeouts: %w", err)
+	}
+	out := make(map[string]MigrationTimeouts, len(entries))
+	for name, rawEntry := range entries {
+		var entry struct {
+			LockTimeout      string `json:"lock_timeout"`
+			StatementTimeout string `json:"statement_timeout"`
+		}
+		dec := json.NewDecoder(strings.NewReader(string(rawEntry)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&entry); err != nil {
+			return nil, fmt.Errorf("release manifest timeouts: migration %s: %w", name, err)
+		}
+		var to MigrationTimeouts
+		if entry.LockTimeout != "" {
+			d, err := time.ParseDuration(entry.LockTimeout)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("release manifest timeouts: migration %s has invalid lock_timeout %q", name, entry.LockTimeout)
+			}
+			to.LockTimeout = d
+		}
+		if entry.StatementTimeout != "" {
+			d, err := time.ParseDuration(entry.StatementTimeout)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("release manifest timeouts: migration %s has invalid statement_timeout %q", name, entry.StatementTimeout)
+			}
+			to.StatementTimeout = d
+		}
+		out[name] = to
+	}
+	return out, nil
 }
 
 type Result struct {
@@ -104,18 +211,13 @@ func Run(ctx context.Context, db *sql.DB, options Options) (report Report, err e
 	if db == nil {
 		return report, errors.New("migration database is required")
 	}
-	if options.LockTimeout <= 0 {
-		options.LockTimeout = 30 * time.Second
-	}
-	if options.MigrationTimeout <= 0 {
-		options.MigrationTimeout = 2 * time.Minute
-	}
+	lockTimeout, statementTimeout, txnLockTimeout := resolveTimeouts(options)
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return report, fmt.Errorf("migration connection: %w", err)
 	}
 	defer conn.Close()
-	lockCtx, cancel := context.WithTimeout(ctx, options.LockTimeout)
+	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
 	defer cancel()
 	for {
 		var locked bool
@@ -144,9 +246,22 @@ func Run(ctx context.Context, db *sql.DB, options Options) (report Report, err e
 			}
 		}
 	}()
-	applied, err := prepareHistory(ctx, conn, files, options)
+	applied, err := prepareHistory(ctx, conn, files, options, statementTimeout, txnLockTimeout)
 	if err != nil {
 		return report, err
+	}
+	// A manifest override for a file that is not in the directory is a
+	// fail-closed error: it means the manifest and the migration set
+	// disagree, and silently ignoring it could run a migration on the
+	// wrong budget.
+	known := make(map[string]bool, len(files))
+	for _, file := range files {
+		known[file.name] = true
+	}
+	for name := range options.TimeoutOverrides {
+		if !known[name] {
+			return report, fmt.Errorf("migration timeout override for unknown migration %s", name)
+		}
 	}
 	for _, file := range files {
 		if applied[file.name] {
@@ -156,7 +271,16 @@ func Run(ctx context.Context, db *sql.DB, options Options) (report Report, err e
 		if options.Logf != nil {
 			options.Logf("migration %s starting", file.name)
 		}
-		if err := apply(ctx, conn, file, options.MigrationTimeout); err != nil {
+		fileLock, fileStatement := txnLockTimeout, statementTimeout
+		if override, ok := options.TimeoutOverrides[file.name]; ok {
+			if override.LockTimeout > 0 {
+				fileLock = override.LockTimeout
+			}
+			if override.StatementTimeout > 0 {
+				fileStatement = override.StatementTimeout
+			}
+		}
+		if err := apply(ctx, conn, file, fileLock, fileStatement); err != nil {
 			if options.Logf != nil {
 				options.Logf("migration %s failed after %s", file.name, time.Since(started))
 			}
@@ -259,15 +383,15 @@ func validateSQL(body string) error {
 	return nil
 }
 
-func prepareHistory(ctx context.Context, conn *sql.Conn, files []migration, options Options) (map[string]bool, error) {
-	historyCtx, cancel := context.WithTimeout(ctx, options.MigrationTimeout)
+func prepareHistory(ctx context.Context, conn *sql.Conn, files []migration, options Options, statementTimeout, txnLockTimeout time.Duration) (map[string]bool, error) {
+	historyCtx, cancel := context.WithTimeout(ctx, statementTimeout)
 	defer cancel()
 	tx, err := conn.BeginTx(historyCtx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := setTimeouts(historyCtx, tx, options.MigrationTimeout); err != nil {
+	if err := setTimeouts(historyCtx, tx, txnLockTimeout, statementTimeout); err != nil {
 		return nil, err
 	}
 	var untracked bool
@@ -382,24 +506,31 @@ func prepareHistory(ctx context.Context, conn *sql.Conn, files []migration, opti
 	return applied, nil
 }
 
-func setTimeouts(ctx context.Context, tx *sql.Tx, timeout time.Duration) error {
-	millis := timeout.Milliseconds()
-	if millis < 1 {
-		millis = 1
+// setTimeouts splits the old single per-migration knob (MIG-02 D-5):
+// statement_timeout and idle_in_transaction_session_timeout follow the
+// statement budget, lock_timeout follows the separate lock budget.
+func setTimeouts(ctx context.Context, tx *sql.Tx, txnLock, statement time.Duration) error {
+	lockMillis := txnLock.Milliseconds()
+	if lockMillis < 1 {
+		lockMillis = 1
 	}
-	_, err := tx.ExecContext(ctx, `SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $1, true), set_config('idle_in_transaction_session_timeout', $1, true), set_config('standard_conforming_strings', 'on', true)`, fmt.Sprintf("%dms", millis))
+	stmtMillis := statement.Milliseconds()
+	if stmtMillis < 1 {
+		stmtMillis = 1
+	}
+	_, err := tx.ExecContext(ctx, `SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('idle_in_transaction_session_timeout', $1, true), set_config('standard_conforming_strings', 'on', true)`, fmt.Sprintf("%dms", stmtMillis), fmt.Sprintf("%dms", lockMillis))
 	return err
 }
 
-func apply(ctx context.Context, conn *sql.Conn, file migration, timeout time.Duration) error {
-	migrationCtx, cancel := context.WithTimeout(ctx, timeout)
+func apply(ctx context.Context, conn *sql.Conn, file migration, txnLock, statement time.Duration) error {
+	migrationCtx, cancel := context.WithTimeout(ctx, statement)
 	defer cancel()
 	tx, err := conn.BeginTx(migrationCtx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := setTimeouts(migrationCtx, tx, timeout); err != nil {
+	if err := setTimeouts(migrationCtx, tx, txnLock, statement); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(migrationCtx, file.body); err != nil {

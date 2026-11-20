@@ -29,10 +29,16 @@ and emits no success message on failure. Session death releases the advisory loc
 PostgreSQL rolls back an open transaction. Server-side statement, DDL lock and idle
 transaction timeouts bound abandoned work even when a client is killed.
 
-Defaults: overall CLI/startup deadline 10 minutes, singleton lock wait 30 seconds,
-each migration/history transaction 2 minutes. The CLI exposes `-timeout`,
-`-lock-timeout` and `-migration-timeout`. Each file logs start, elapsed duration and
-success/failure without logging its SQL or connection URL.
+Defaults (MIG-02 D-5): overall CLI/startup deadline 10 minutes
+(deploy-level budget, not per-file), singleton lock wait 30 seconds,
+per-migration lock timeout 30 seconds, per-migration statement
+timeout 10 minutes. The CLI exposes `-timeout`, `-lock-timeout`,
+`-migration-lock-timeout`, `-statement-timeout` and `-manifest`
+(release.json: per-migration lock/statement overrides from
+`migrations.timeouts`); `-migration-timeout` is a deprecated alias for
+`-statement-timeout`, kept so existing deploy scripts keep parsing.
+Each file logs start, elapsed duration and success/failure without
+logging its SQL or connection URL.
 
 ## Legacy history adoption
 

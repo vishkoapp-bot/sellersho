@@ -1,6 +1,17 @@
 """Deploy to the verified bind-mounted stack; preserve secrets and back up data.
 
 Failure rolls back code/config, never the database over newly received orders.
+
+MIG-02: the staged release manifest (release.json -> migrations) is the
+single source of truth — it is verified before migrations run, its
+timeouts are passed to `migrate`, its post-conditions are enforced for
+the migrations this deploy applies, and the rollback is schema-aware:
+a compatible old binary is restored (Mode A files applied-but-unfiled
+migrations first), otherwise the old binary is refused and a forward
+repair lands the new release instead (Mode B). Every deploy and
+rollback is recorded in the deploy backup dir (rollback-point.json)
+and in /opt/drup/.rollback-points.json. See
+docs/operations/rollback-runbook.md.
 """
 import fcntl
 import hashlib
@@ -18,6 +29,7 @@ import urllib.request
 
 from migration_history import classify_history
 from deploy_migration_stage import prepare_migrator
+from rollback_points import append_record
 
 root = Path(sys.argv[1]).resolve()
 commit, ssl, move_xray = sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'
@@ -38,6 +50,368 @@ def run(*args, capture=False, **kwargs):
 
 def inspect(name):
     return json.loads(run('docker', 'inspect', name, capture=True))[0]
+
+
+# MIG-02 (steps 2/3/4/5) — schema-aware deploy/rollback helpers.
+# Self-contained (json/hashlib/subprocess only, plus the rollback_points
+# ledger) so the staging rehearsal can exec them standalone against a
+# disposable database; deploy_remote.py wires them into the deploy and
+# rollback flows below.
+PSQL = ['docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db']
+
+
+def normalized_sha256(path):
+    """sha256 of a migration file the way the runner hashes it:
+    runner.go load() replaces CRLF with LF before hashing, so the
+    checksum recorded in schema_migrations is the NORMALIZED hash.
+    The manifest and classification record RAW bytes instead — the two
+    agree except for the (currently 8) files containing CRLF. Every
+    comparison against a RECORDED checksum must use this function;
+    comparisons against the manifest use raw sha256."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+
+
+def verify_manifest_migrations(manifest, migrations_dir):
+    """Step 3a — the staged manifest must match the staged files
+    exactly: every *.up.sql sha256 matches, no extra/missing files,
+    count matches. Raises RuntimeError naming the mismatch; returns
+    the file count. Called before any DB touch or backup."""
+    files = manifest.get('migrations', {}).get('files', [])
+    expected = {entry['name']: entry['sha256'] for entry in files}
+    staged = {}
+    for path in Path(migrations_dir).glob('*.up.sql'):
+        staged[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    missing = sorted(set(expected) - set(staged))
+    extra = sorted(set(staged) - set(expected))
+    changed = sorted(name for name in set(expected) & set(staged)
+                     if expected[name] != staged[name])
+    if missing or extra or changed:
+        detail = []
+        if missing:
+            detail.append(f"missing from staged set: {missing}")
+        if extra:
+            detail.append(f"not in manifest: {extra}")
+        if changed:
+            detail.append(f"sha256 mismatch: {changed}")
+        raise RuntimeError('Staged migrations do not match the release manifest (' + '; '.join(detail) + ')')
+    count = manifest.get('migrations', {}).get('count')
+    if count is not None and count != len(expected):
+        raise RuntimeError(f"Manifest migration count {count} != file count {len(expected)}")
+    return len(expected)
+
+
+def query_applied(psql_argv=PSQL):
+    """Return {version: checksum} from schema_migrations (fresh read).
+
+    A checksum of '' means a legacy row that was never adopted; callers
+    must treat that as 'no checksum recorded', not as a mismatch."""
+    result = subprocess.run(psql_argv + ['-Atc',
+                            "SELECT version || '|' || COALESCE(checksum,'') FROM schema_migrations"],
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"cannot read schema_migrations: {result.stderr.strip()[:200]}")
+    applied = {}
+    for line in result.stdout.splitlines():
+        if '|' not in line:
+            continue
+        version, checksum = line.split('|', 1)
+        applied[version] = checksum
+    return applied
+
+
+def psql_scalar(psql_argv, sql):
+    """Run one read-only scalar query; return its stripped output."""
+    result = subprocess.run(psql_argv + ['-Atc', sql],
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"post-condition query failed: {sql} ({result.stderr.strip()[:200]})")
+    return result.stdout.strip()
+
+
+def check_manifest_recorded(manifest, applied, migrations_dir):
+    """Step 2 — replaces the old hardcoded 202611090001 assertion:
+    every manifest file must be present in schema_migrations with a
+    matching checksum. The comparison uses the runner's normalized
+    hash (see normalized_sha256): the recorded checksum is normalized,
+    the manifest's is raw. Raises RuntimeError on the first gap."""
+    for entry in manifest.get('migrations', {}).get('files', []):
+        name = entry['name']
+        got = applied.get(name)
+        if got is None:
+            raise RuntimeError(f"Manifest migration was not recorded in schema_migrations: {name}")
+        staged = Path(migrations_dir) / name
+        if not staged.is_file():
+            raise RuntimeError(f"Manifest migration missing from the staged release: {name}")
+        if got and got != normalized_sha256(staged):
+            raise RuntimeError(f"Checksum drift for recorded migration {name}")
+    return len(manifest.get('migrations', {}).get('files', []))
+
+
+def run_post_conditions(manifest, applied_names, psql_argv=PSQL):
+    """Step 5.3 — enforce the manifest's post-conditions, but ONLY for
+    the migrations this deploy applied. Each condition is a scalar
+    SELECT compared with its comparator ('eq' or 'ge'). Raises
+    RuntimeError on the first failure; returns the count checked."""
+    conditions = manifest.get('migrations', {}).get('post_conditions', {})
+    checked = 0
+    for name in sorted(applied_names):
+        for cond in conditions.get(name, []):
+            sql, expected = cond['sql'], cond['expected']
+            comparator = cond.get('comparator', 'eq')
+            if comparator not in ('eq', 'ge'):
+                raise RuntimeError(f"Unknown post-condition comparator {comparator!r} for {name}")
+            raw = psql_scalar(psql_argv, sql)
+            try:
+                value = int(raw)
+            except ValueError:
+                raise RuntimeError(f"Post-condition for {name} returned non-integer {raw!r}: {sql}") from None
+            ok = value == expected if comparator == 'eq' else value >= expected
+            if not ok:
+                raise RuntimeError(
+                    f"Post-condition FAILED for {name}: {sql} returned {value}, "
+                    f"expected {comparator} {expected}")
+            checked += 1
+    return checked
+
+
+def copy_manifest_migrations(manifest, release_dir, persistent_dir, applied):
+    """Step 3c — the persistent-dir copy is manifest-driven: copy
+    exactly the manifest files (verifying sha256 after each copy) and
+    record the copied set. A *.up.sql in the persistent dir that is
+    NOT in the manifest is removed when it is not applied (it can only
+    break the next boot's out-of-order check); when it IS applied the
+    deploy fails closed — the manifest is incomplete for live history.
+    *.down.sql files (never executed by any tooling) left by the old
+    copy loop are removed as inert leftovers. Returns
+    (copied, removed)."""
+    wanted = {entry['name']: entry['sha256']
+              for entry in manifest.get('migrations', {}).get('files', [])}
+    persistent = Path(persistent_dir)
+    persistent.mkdir(parents=True, exist_ok=True)
+    copied, removed = [], []
+    for name, want in sorted(wanted.items()):
+        source = Path(release_dir) / 'backend/migrations' / name
+        dest = persistent / name
+        if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == want:
+            continue
+        if not source.is_file():
+            raise RuntimeError(f"Manifest migration missing from the staged release: {name}")
+        shutil.copy2(source, dest)
+        if hashlib.sha256(dest.read_bytes()).hexdigest() != want:
+            raise RuntimeError(f"sha256 mismatch after copying {name} to the persistent dir")
+        copied.append(name)
+    for path in sorted(persistent.glob('*.up.sql')):
+        if path.name in wanted:
+            continue
+        if path.name in applied:
+            raise RuntimeError(
+                f"Applied migration {path.name} is in the persistent dir but not in the release manifest; "
+                'refusing to deploy a manifest that does not cover live history')
+        path.unlink()
+        removed.append(path.name)
+    for path in sorted(persistent.glob('*.down.sql')):
+        path.unlink()
+        removed.append(path.name)
+    return copied, removed
+
+
+def git_is_ancestor(repo, ancestor, commit):
+    """True when `ancestor` is an ancestor of (or equal to) `commit`.
+    Any git failure fails closed (False)."""
+    try:
+        result = subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor',
+                                 ancestor, commit], capture_output=True, timeout=30)
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def rollback_precheck(applied, old_set, aliases, persistent_dir, release_dir,
+                      old_release_dir, manifest_checksums, lcr, old_commit, repo,
+                      schema_changed=True):
+    """Step 4 — schema-aware rollback pre-check.
+
+    `applied` is {version: checksum} from schema_migrations (fresh);
+    `old_set` is the file names in the old release's migration dir;
+    `aliases` maps legacy version names to canonical files;
+    `persistent_dir` is /opt/drup/backend/migrations (what the old
+    binary actually reads at boot); `release_dir` is the failed
+    release (Mode A filing source); `old_release_dir` is the old
+    release (second filing source). `schema_changed` is False when the
+    failed deploy applied no migrations — then the live schema is the
+    one the old binary was already running, so the floor check does
+    not apply.
+
+    Returns a verdict dict:
+      verdict "compatible" — every applied version resolves into the
+        persistent dir (or the old set) and the old binary is at/after
+        the floor: restore the old binary as before.
+      verdict "mode-a" — some applied versions are missing from the
+        persistent dir but can be filed from a release dir,
+        sha-verified: restore after filing (files in `stranded`).
+      verdict "incompatible" — the old binary predates the floor, or
+        an applied version resolves to no file anywhere: refuse the
+        blind restore, go to forward repair.
+      verdict "unavailable" — no old release to restore (no previous
+        commit, or its release dir is gone): forward repair.
+    """
+    if not old_commit:
+        return {'verdict': 'unavailable', 'reason': 'no previous deployed commit recorded; nothing to restore',
+                'stranded': [], 'old_ge_floor': False}
+    if not Path(old_release_dir).is_dir():
+        return {'verdict': 'unavailable',
+                'reason': f'old release dir is gone: {old_release_dir} (commit {old_commit[:12]}); cannot enumerate the old binary migration set',
+                'stranded': [], 'old_ge_floor': False}
+    old_ge_floor = (not schema_changed) or (bool(lcr) and git_is_ancestor(repo, lcr, old_commit))
+    if not old_ge_floor:
+        return {'verdict': 'incompatible',
+                'reason': f'old binary {old_commit[:12]} predates lastCompatibleRevision {lcr[:12]}; '
+                          'its write paths may not understand the current schema (e.g. the 202611110003 legacy upsert)',
+                'stranded': [], 'old_ge_floor': False}
+    persistent_files = {p.name for p in Path(persistent_dir).glob('*.up.sql')} if Path(persistent_dir).is_dir() else set()
+    stranded, unresolvable = [], []
+    seen = set()
+    for version, checksum in sorted(applied.items()):
+        # Resolve the canonical file: the version itself when it is a
+        # file name, else its legacy alias target.
+        canonical = version
+        if canonical not in old_set and canonical not in persistent_files:
+            canonical = aliases.get(version, version)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        # Expected checksum: the recorded one when present; else the
+        # manifest's (for a file this release carries); else name-only.
+        expected = checksum or manifest_checksums.get(canonical) or ''
+        in_persistent = canonical in persistent_files
+        if in_persistent and expected:
+            actual = normalized_sha256(Path(persistent_dir) / canonical)
+            if actual == expected:
+                continue
+        elif in_persistent:
+            continue
+        # Not filed (or drifted): can Mode A file it from a release dir?
+        filed = False
+        for source_dir in (release_dir, old_release_dir):
+            candidate = Path(source_dir) / 'backend/migrations' / canonical
+            if candidate.is_file() and (not expected or normalized_sha256(candidate) == expected):
+                stranded.append({'name': canonical, 'sha256': expected or normalized_sha256(candidate)})
+                filed = True
+                break
+        if not filed:
+            unresolvable.append(version)
+    if unresolvable:
+        return {'verdict': 'incompatible',
+                'reason': f"applied migrations resolve to no file in the persistent dir or either release dir: {sorted(unresolvable)}",
+                'stranded': stranded, 'old_ge_floor': True}
+    if stranded:
+        return {'verdict': 'mode-a',
+                'reason': f"{len(stranded)} applied migration(s) are unfiled in the persistent dir; Mode A will file them sha-verified before recreating the old binary",
+                'stranded': stranded, 'old_ge_floor': True}
+    return {'verdict': 'compatible',
+            'reason': 'every applied version is present in the old binary migration set and the old binary is at/after lastCompatibleRevision',
+            'stranded': [], 'old_ge_floor': True}
+
+
+def file_stranded_migrations(stranded, release_dir, old_release_dir, persistent_dir):
+    """Step 4 Mode A — copy each stranded file from the first release
+    dir holding it with a matching sha256, verifying after copy.
+    Raises RuntimeError when no source copy matches."""
+    persistent = Path(persistent_dir)
+    persistent.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for entry in stranded:
+        name, want = entry['name'], entry['sha256']
+        source = None
+        for base in (release_dir, old_release_dir):
+            candidate = Path(base) / 'backend/migrations' / name
+            if candidate.is_file() and normalized_sha256(candidate) == want:
+                source = candidate
+                break
+        if source is None:
+            raise RuntimeError(f"Mode A cannot file stranded migration {name}: no source copy matches the recorded checksum")
+        dest = persistent / name
+        shutil.copy2(source, dest)
+        if normalized_sha256(dest) != want:
+            raise RuntimeError(f"Mode A sha256 mismatch after filing {name}")
+        copied.append(name)
+    return copied
+
+
+def run_write_probe(release_dir, expect):
+    """Step 4 (D-3) — deploy-time write-path readiness probe
+    (scripts/release/write_path_probe.py): the three write paths a
+    rollback can silently break (inventory upsert, review insert,
+    withdrawal-intent insert) inside one always-rolled-back
+    transaction, so it provably creates no real orders. Raises
+    RuntimeError on failure; the probe's own output is passed through
+    so the deploy log carries the verdict."""
+    probe = Path(release_dir) / 'scripts/release/write_path_probe.py'
+    result = subprocess.run(['python3', str(probe), '--docker-container', 'drup_postgres',
+                             '--expect', expect],
+                            capture_output=True, text=True, timeout=300)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        raise RuntimeError(f'Write-path readiness probe failed (expect={expect}); see probe output above')
+    return True
+
+
+def write_rollback_point(backup_dir, record):
+    """Write the per-deploy rollback record into the backup dir."""
+    path = Path(backup_dir) / 'rollback-point.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + '\n')
+    return path
+
+
+def decrypt_saved_files(backup_dir, saved_files, existed, key_file):
+    """Decrypt the backup entry point's --include saved files for a rollback.
+
+    BAK-01 gap found by the MIG-02 rehearsal (R-1/R-2, Nov 20 2026):
+    the entry point encrypts EVERY artifact (including the --include
+    saved files) and deletes the plaintext, so the published backup dir
+    holds only <relative>.enc. The pre-MIG-02 rollback read
+    backup/<relative> as plaintext and died with FileNotFoundError on
+    the first file — no rollback ever restored anything. Decrypt each
+    saved file that existed at deploy time into a temp dir (plain copy
+    when the backup already holds it unencrypted) and return the dir.
+    Raises RuntimeError when a needed file is missing or undecryptable:
+    a restore must fail loudly, never silently skip a file.
+    """
+    out = Path(tempfile.mkdtemp(prefix='sellersho-rollback-decrypt-'))
+    for relative in saved_files:
+        if not existed.get(relative):
+            continue
+        plain = Path(backup_dir) / relative
+        enc = Path(backup_dir) / (relative + '.enc')
+        target = out / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if plain.is_file():
+            shutil.copy2(plain, target)
+        elif enc.is_file():
+            result = subprocess.run(['openssl', 'enc', '-d', '-aes-256-cbc',
+                                     '-pbkdf2', '-md', 'sha256', '-salt',
+                                     '-pass', f'file:{key_file}',
+                                     '-in', str(enc), '-out', str(target)],
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f'rollback decrypt failed for {relative}: {result.stderr.strip()[-300:]}')
+        else:
+            raise RuntimeError(f'rollback saved file missing from backup (neither {relative} nor {relative}.enc present); refusing a partial restore')
+    return out
+
+
+def load_aliases(release_dir):
+    """Legacy version -> canonical file map from a release dir (empty
+    when the release predates the aliases file)."""
+    path = Path(release_dir) / 'backend/internal/migrations/legacy-aliases.json'
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
 
 
 previous_edge = run('docker', 'ps', '--filter', 'label=com.docker.compose.project=drup',
@@ -64,6 +438,40 @@ for container, destination in [(old_backend, '/app/server'), (old_frontend, '/us
         raise SystemExit('Unexpected production mount; refusing replacement')
 if json.loads((release / 'release.json').read_text())['commit'] != commit:
     raise SystemExit('Release manifest mismatch')
+# MIG-02 step 2/3 — the staged manifest is the single source of truth
+# for this release (REL-01's release.json -> migrations; deploy.ps1
+# builds it with make_manifest.py instead of hand-writing a minimal
+# JSON). Load it once here; every later step reads from this object,
+# never from a second list.
+manifest = json.loads((release / 'release.json').read_text())
+manifest_migs = manifest.get('migrations', {})
+# Runner-normalized checksums for the staged files (NOT the manifest's
+# raw sha256 — see normalized_sha256): these are the values comparable
+# to the checksums recorded in schema_migrations, and the values the
+# rollback pre-check uses when a recorded checksum is absent.
+manifest_checksums = {path.name: normalized_sha256(path)
+                      for path in (release / 'backend/migrations').glob('*.up.sql')}
+last_compatible = manifest_migs.get('lastCompatibleRevision') or ''
+if not last_compatible:
+    raise SystemExit('Release manifest has no migrations.lastCompatibleRevision; '
+                     'refusing to deploy an unstamped release (MIG-02 step 2)')
+# MIG-02 step 3a — verify the manifest BEFORE any DB touch or backup:
+# every staged *.up.sql sha256 must match the manifest, no extra or
+# missing files, count must match. A tampered staged file fails here,
+# with the database untouched.
+verify_manifest_migrations(manifest, release / 'backend/migrations')
+# MIG-02 step 2 — the per-deploy rollback record. Written into the
+# deploy backup dir as rollback-point.json as the deploy progresses
+# (migrationsApplied once the migration step runs; terminal status on
+# success or rollback) and appended to /opt/drup/.rollback-points.json
+# on every terminal state.
+rollback_point = {
+    'commit': commit,
+    'lastCompatibleRevision': last_compatible,
+    'deployedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    'migrationsApplied': [],
+    'status': 'in-progress',
+}
 applied = set(run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db', '-Atc',
                   'SELECT version FROM schema_migrations', capture=True).splitlines())
 canonical = {p.name for p in (release / 'backend/migrations').glob('*.up.sql')}
@@ -167,6 +575,18 @@ print('Backup:', backup, flush=True)
 xray_path = xray_previous = None
 dist_saved = changed = False
 migration_stage = '/tmp/sellersho-migrate-' + commit[:12]
+# MIG-02 step 4 — the backup-script ship list is defined here (not
+# inside the try block) so the Mode B forward-repair path in the
+# except block below can re-ship the new release's scripts.
+backup_scripts = [
+    (release / 'scripts/publish-backup-success.sh', root / 'scripts/publish-backup-success.sh'),
+    (release / 'scripts/backup/backup-entrypoint.sh', root / 'scripts/backup/backup-entrypoint.sh'),
+    (release / 'scripts/backup/publish-backup-failure.sh', root / 'scripts/backup/publish-backup-failure.sh'),
+    (release / 'scripts/backup/check-backup-health.sh', root / 'scripts/backup/check-backup-health.sh'),
+    (release / 'scripts/backup/restore-verify.sh', root / 'scripts/backup/restore-verify.sh'),
+    (release / 'backup-auto.sh', root / 'backup-auto.sh'),
+    (release / 'backup-daily.sh', root / 'backup-daily.sh'),
+]
 
 
 def health():
@@ -476,20 +896,52 @@ try:
     # metrics file is ssl-only, so a non-SSL deploy skips this.
     if ssl:
         assert_metrics_ports(compose('config', '--format', 'json', capture=True), require_edge=True)
+    # MIG-02 step 3b — pre-deploy applied-set snapshot (version +
+    # checksum, exactly what the rollback/forward-repair path needs to
+    # know which rows this deploy added). Written before `migrate`
+    # runs, into the deploy backup dir.
+    applied_before = query_applied()
+    backup.mkdir(parents=True, exist_ok=True)
+    (backup / 'applied-before.json').write_text(
+        json.dumps({'versions': sorted(applied_before),
+                    'checksums': applied_before}, indent=2, sort_keys=True) + '\n')
     run('docker', 'exec', 'drup_backend', 'mkdir', '-p', migration_stage + '/migrations')
     run('docker', 'cp', str(release / 'backend/bin/migrate-linux'), 'drup_backend:' + migration_stage + '/migrate')
     prepare_migrator(run, 'drup_backend', migration_stage + '/migrate')
     run('docker', 'cp', str(release / 'backend/migrations') + '/.', 'drup_backend:' + migration_stage + '/migrations')
+    # MIG-02 step 5 (D-5) — the staged manifest travels into the
+    # container so `migrate` reads its per-migration lock/statement
+    # timeout overrides from migrations.timeouts instead of relying on
+    # CLI defaults (lock 30s / statement 10min).
+    run('docker', 'cp', str(release / 'release.json'), 'drup_backend:' + migration_stage + '/release.json')
     run('docker', 'exec', 'drup_backend', migration_stage + '/migrate',
-        '-dir', migration_stage + '/migrations', '-adopt-legacy')
+        '-dir', migration_stage + '/migrations', '-manifest', migration_stage + '/release.json', '-adopt-legacy')
     run('docker', 'exec', 'drup_backend', migration_stage + '/migrate',
-        '-dir', migration_stage + '/migrations')
+        '-dir', migration_stage + '/migrations', '-manifest', migration_stage + '/release.json')
     run('docker', 'exec', 'drup_backend', 'rm', '-rf', migration_stage)
     missing_checksums = run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db',
                             '-Atc', "SELECT count(*) FROM schema_migrations WHERE checksum IS NULL OR checksum=''",
                             capture=True).strip()
     if missing_checksums != '0':
         raise RuntimeError('Migration checksum adoption incomplete')
+    # MIG-02 step 3b — post-run applied-set diff: exactly the rows
+    # this deploy added. Recorded in the backup dir and in
+    # rollback-point.json; the rollback path reads it, never guesses.
+    applied_after = query_applied()
+    newly_applied = sorted(set(applied_after) - set(applied_before))
+    (backup / 'applied-after.json').write_text(
+        json.dumps({'versions': sorted(applied_after),
+                    'checksums': applied_after}, indent=2, sort_keys=True) + '\n')
+    (backup / 'migrations-applied.json').write_text(
+        json.dumps({'applied_by_this_deploy': newly_applied}, indent=2) + '\n')
+    rollback_point['migrationsApplied'] = newly_applied
+    write_rollback_point(backup, rollback_point)
+    print(f"Migrations applied by this deploy: {len(newly_applied)}", flush=True)
+    # MIG-02 step 5.3 — post-conditions, only for the migrations this
+    # deploy applied. Any failure aborts the deploy (rollback/forward
+    # repair below) instead of shipping a half-validated schema.
+    checked = run_post_conditions(manifest, newly_applied)
+    print(f"Post-conditions passed: {checked} checked for {len(newly_applied)} applied migration(s)", flush=True)
     changed = True
     # OBS-01 (C-02): ship the collector compose file with the release so
     # deploy_observability() can include it. It is also in saved_files
@@ -517,15 +969,6 @@ try:
     # above via saved_files, and the rollback below restores them.
     (root / 'scripts').mkdir(parents=True, exist_ok=True)
     (root / 'scripts/backup').mkdir(parents=True, exist_ok=True)
-    backup_scripts = [
-        (release / 'scripts/publish-backup-success.sh', root / 'scripts/publish-backup-success.sh'),
-        (release / 'scripts/backup/backup-entrypoint.sh', root / 'scripts/backup/backup-entrypoint.sh'),
-        (release / 'scripts/backup/publish-backup-failure.sh', root / 'scripts/backup/publish-backup-failure.sh'),
-        (release / 'scripts/backup/check-backup-health.sh', root / 'scripts/backup/check-backup-health.sh'),
-        (release / 'scripts/backup/restore-verify.sh', root / 'scripts/backup/restore-verify.sh'),
-        (release / 'backup-auto.sh', root / 'backup-auto.sh'),
-        (release / 'backup-daily.sh', root / 'backup-daily.sh'),
-    ]
     for source, destination in backup_scripts:
         if not source.is_file():
             raise RuntimeError(f'Backup script missing from release: {source}')
@@ -553,10 +996,18 @@ try:
     shutil.copy2(release / 'backend/bin/server-linux', new_binary)
     new_binary.chmod(0o755)
     os.replace(new_binary, root / 'backend/bin/server-linux')
-    for migration in (release / 'backend/migrations').iterdir():
-        target = root / 'backend/migrations' / migration.name
-        if migration.is_file() and not target.exists():
-            shutil.copy2(migration, target)
+    # MIG-02 step 3c — the persistent-dir copy is manifest-driven:
+    # copy exactly the manifest files (sha256-verified after copy),
+    # remove unapplied extras, fail closed on an applied file the
+    # manifest does not cover. The copied/removed sets are recorded
+    # in rollback-point.json.
+    persistent_copied, persistent_removed = copy_manifest_migrations(
+        manifest, release, root / 'backend/migrations', applied_after)
+    rollback_point['persistentFilesCopied'] = persistent_copied
+    rollback_point['persistentFilesRemoved'] = persistent_removed
+    write_rollback_point(backup, rollback_point)
+    print(f"Persistent migration dir: {len(persistent_copied)} copied, "
+          f"{len(persistent_removed)} removed", flush=True)
     if ssl and move_xray:
         xray_path = next((p for p in [Path('/usr/local/etc/xray/config.json'), Path('/etc/xray/config.json')] if p.exists()), None)
         if xray_path is None:
@@ -595,15 +1046,66 @@ try:
     run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
         '--retry-delay', '2', '--output', '/dev/null', 'http://46.249.98.190/')
     health()
-    recorded = run('docker', 'exec', 'drup_postgres', 'psql', '-U', 'drup_admin', '-d', 'drup_db', '-Atc',
-                   "SELECT COUNT(*) FROM schema_migrations WHERE version='202611090001_operations_automation.up.sql'", capture=True).strip()
-    if recorded != '1':
-        raise RuntimeError('Operations migration was not recorded')
+    # MIG-02 step 2 — replaces the old hardcoded 202611090001
+    # assertion: every manifest file must be recorded in
+    # schema_migrations with a matching checksum.
+    check_manifest_recorded(manifest, query_applied(), release / 'backend/migrations')
+    # MIG-02 step 4 (D-3) — write-path readiness probe (deploy gate).
+    # /api/health above is liveness-only; the probe exercises the
+    # write paths a schema change can silently break, inside one
+    # always-rolled-back transaction (no real orders are created).
+    run_write_probe(release, 'current')
     deploy_observability()
     (root / '.deployed-commit').write_text(commit + '\n')
+    # MIG-02 step 2 — terminal record: deployed. The ledger entry is
+    # the audit trail the next rollback reads.
+    rollback_point['status'] = 'deployed'
+    write_rollback_point(backup, rollback_point)
+    append_record(root, rollback_point)
     print('DEPLOYED', commit, 'BACKUP', backup, flush=True)
-except Exception:
-    print('Deployment failed; restoring previous code and runtime configuration.', flush=True)
+except Exception as deploy_error:
+    # MIG-02 step 4 — schema-aware rollback. Decide BEFORE touching
+    # anything: the pre-check compares the old binary's migration set
+    # against the live schema_migrations + persistent dir and checks
+    # the old binary against lastCompatibleRevision. A blind restore
+    # is refused when the old binary cannot run this schema.
+    print('Deployment failed; deciding rollback strategy (MIG-02 step 4).', flush=True)
+    rollback_point['reason'] = f'{type(deploy_error).__name__}: {deploy_error}'
+    schema_changed = bool(rollback_point.get('migrationsApplied'))
+    old_commit = ''
+    applied_now = {}
+    applied_known = False
+    old_release = Path('')
+    verdict = None
+    try:
+        # The old commit is read from the LIVE root, not from the backup:
+        # root/.deployed-commit still holds the previous commit until a
+        # deploy succeeds and overwrites it, while the backup's copy is
+        # encrypted (<relative>.enc) by the entry point (see
+        # decrypt_saved_files). Reading the backup's plaintext copy
+        # always missed and forced every rollback to Mode B.
+        deployed_commit_path = root / '.deployed-commit'
+        if deployed_commit_path.is_file():
+            old_commit = deployed_commit_path.read_text().strip()
+        if old_commit:
+            old_release = root / 'releases' / old_commit
+        applied_now = query_applied()
+        applied_known = True
+        old_set = {p.name for p in (old_release / 'backend/migrations').glob('*.up.sql')} if old_release.is_dir() else set()
+        aliases = load_aliases(old_release) or load_aliases(release)
+        verdict = rollback_precheck(applied_now, old_set, aliases, root / 'backend/migrations',
+                                    release, old_release, manifest_checksums,
+                                    last_compatible, old_commit, root,
+                                    schema_changed=schema_changed)
+    except Exception as error:
+        # Cannot even assess compatibility (e.g. the DB is unreadable):
+        # fail closed to forward repair — never a blind restore.
+        verdict = {'verdict': 'incompatible',
+                   'reason': f'rollback pre-check could not run ({type(error).__name__}: {error}); refusing a blind restore',
+                   'stranded': [], 'old_ge_floor': False}
+    print(f"Rollback pre-check: {verdict['verdict']} — {verdict['reason']}", flush=True)
+    rollback_point['compatibility'] = verdict
+    write_rollback_point(backup, rollback_point)
     try:
         subprocess.run(['docker', 'exec', 'drup_backend', 'rm', '-rf', migration_stage],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -612,52 +1114,151 @@ except Exception:
             for edge in run('docker', 'ps', '--filter', 'label=com.docker.compose.project=drup',
                             '--filter', 'label=com.docker.compose.service=edge', '--format', '{{.ID}}', capture=True).splitlines():
                 run('docker', 'stop', edge)
-        for relative in saved_files:
-            target = root / relative
-            if existed[relative]:
-                restored = target.with_name(target.name + '.rollback')
-                shutil.copy2(backup / relative, restored)
-                os.replace(restored, target)
-            elif target.exists():
-                target.unlink()
-        # OBS-01: restore the previous collector config tree, if any.
-        obs_backup = backup / 'ops-observability'
-        if obs_backup.exists():
-            shutil.rmtree(root / 'ops/observability', ignore_errors=True)
-            shutil.copytree(obs_backup, root / 'ops/observability')
-        if dist_saved:
-            if (root / 'dist').exists():
-                os.rename(root / 'dist', backup / 'failed-dist')
-            os.rename(backup / 'dist', root / 'dist')
-        if xray_previous is not None:
-            xray_path.write_bytes(xray_previous)
-            run('systemctl', 'restart', 'xray')
-        if old_runtime is not None:
-            runtime_file.write_bytes(old_runtime)
+        if verdict['verdict'] in ('incompatible', 'unavailable'):
+            # Mode B — forward repair (MIG-02 step 4): do NOT restore
+            # the old binary. Keep the new release: ensure it is fully
+            # shipped, recreate backend/frontend from it, and verify
+            # health + the write-path probe. Accepted data is never
+            # erased (no DB restore). If this fails, the inner except
+            # below prints ROLLBACK NEEDS ATTENTION.
+            print('Mode B forward repair: keeping the new release; the old binary is not restored.', flush=True)
+            rollback_point['repair'] = 'mode-b'
+            if applied_known:
+                mode_b_copied, mode_b_removed = copy_manifest_migrations(
+                    manifest, release, root / 'backend/migrations', applied_now)
+                rollback_point['persistentFilesCopied'] = mode_b_copied
+                rollback_point['persistentFilesRemoved'] = mode_b_removed
+            new_binary = root / 'backend/bin/server-linux.next'
+            shutil.copy2(release / 'backend/bin/server-linux', new_binary)
+            new_binary.chmod(0o755)
+            os.replace(new_binary, root / 'backend/bin/server-linux')
+            if not dist_saved:
+                if (root / 'dist').exists():
+                    os.rename(root / 'dist', backup / 'failed-dist')
+                shutil.copytree(release / 'dist', root / 'dist')
+            shutil.copy2(release / 'nginx.conf', root / 'nginx.conf')
+            for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml']:
+                shutil.copy2(release / name, root / name)
+            for source, destination in backup_scripts:
+                if not source.is_file():
+                    raise RuntimeError(f'Backup script missing from release: {source}')
+                shutil.copy2(source, destination)
+                destination.chmod(0o755)
+            compose('up', '-d', '--no-deps', '--force-recreate', 'backend', 'frontend')
+            if previous_edge:
+                compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
+            health()
+            run_write_probe(release, 'current')
+            rollback_point['status'] = 'forward-repaired'
+            rollback_point['restoredCommit'] = None
+            rollback_point['observabilityReverified'] = False
+            write_rollback_point(backup, rollback_point)
+            append_record(root, rollback_point)
+            (root / '.deployed-commit').write_text(commit + '\n')
+            print('FORWARD REPAIR SUCCEEDED: the new release is live and healthy '
+                  '(health + write-path probe pass); the original failure was: '
+                  f'{type(deploy_error).__name__}: {deploy_error}. '
+                  'Observability was NOT re-verified by this repair — check it separately. '
+                  'This script still exits non-zero so the failure is reviewed.', flush=True)
         else:
-            runtime_file.write_text(json.dumps({'services': {'backend': {'environment': {k: v for k, v in old_env.items() if k != 'PATH'}}}}))
-        # OBS-01 (C-02): the observability file is deliberately NOT in
-        # rollback_files either, so a rollback never interpolates
-        # GRAFANA_ADMIN_PASSWORD and cannot fail on an unset password.
-        rollback_files = [root / 'docker-compose.yml', root / 'docker-compose.prod.yml', runtime_file]
-        if previous_edge and (root / 'docker-compose.ssl.yml').exists():
-            rollback_files.insert(2, root / 'docker-compose.ssl.yml')
-        # OBS-01 deploy-fix: roll back the metrics-ports file too, in
-        # the same position it holds in compose_files (after ssl.yml),
-        # so a rollback leaves the stack in its pre-deploy shape. The
-        # file holds no secrets, so unlike the observability file it
-        # is safe to include here (no GRAFANA_ADMIN_PASSWORD
-        # interpolation).
-        if previous_edge and (root / METRICS_PORTS_FILE).exists():
-            rollback_files.insert(3, root / METRICS_PORTS_FILE)
-        cmd = ['docker', 'compose', '--project-directory', str(root)]
-        for file in rollback_files:
-            cmd += ['-f', str(file)]
-        run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'backend', 'frontend')
-        if previous_edge:
-            run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'edge')
-        health()
-        print('Previous code restored; additive migration data retained. Database backup was not restored.', flush=True)
+            # Compatible restore, with Mode A filing first when the
+            # pre-check found applied-but-unfiled migrations: file them
+            # sha-verified so runAutoMigrations can validate and the
+            # old binary boots (the proven §2.2 boot failure).
+            if verdict['verdict'] == 'mode-a':
+                copied = file_stranded_migrations(verdict['stranded'], release, old_release,
+                                                  root / 'backend/migrations')
+                rollback_point['repair'] = 'mode-a'
+                rollback_point['filesCopied'] = copied
+                print(f"Mode A repair: filed {len(copied)} stranded migration(s) into the persistent dir: {copied}", flush=True)
+            else:
+                rollback_point['repair'] = 'none'
+            # The saved files in the backup are encrypted (.enc) — see
+            # decrypt_saved_files. Decrypt them before restoring.
+            key_file = os.environ.get('BAK_KEY_FILE') or str(root / '.backup-encryption-key')
+            decrypted = decrypt_saved_files(backup, saved_files, existed, key_file)
+            for relative in saved_files:
+                target = root / relative
+                if existed[relative]:
+                    restored = target.with_name(target.name + '.rollback')
+                    shutil.copy2(decrypted / relative, restored)
+                    # Preserve the replaced file's mode: the decrypted
+                    # copy is 0600 (openssl output under umask 077) and
+                    # the server binary / scripts must stay executable.
+                    # Without this the restored binary is not runnable
+                    # and the rollback dies at `compose up` (rehearsal
+                    # R-1/R-2, Nov 20 2026).
+                    if target.exists():
+                        os.chmod(restored, target.stat().st_mode & 0o7777)
+                    elif relative == 'backend/bin/server-linux' or relative.endswith('.sh'):
+                        os.chmod(restored, 0o755)
+                    os.replace(restored, target)
+                elif target.exists():
+                    target.unlink()
+            # OBS-01: restore the previous collector config tree, if any.
+            obs_backup = backup / 'ops-observability'
+            if obs_backup.exists():
+                shutil.rmtree(root / 'ops/observability', ignore_errors=True)
+                shutil.copytree(obs_backup, root / 'ops/observability')
+            if dist_saved:
+                if (root / 'dist').exists():
+                    os.rename(root / 'dist', backup / 'failed-dist')
+                os.rename(backup / 'dist', root / 'dist')
+            if xray_previous is not None:
+                xray_path.write_bytes(xray_previous)
+                run('systemctl', 'restart', 'xray')
+            if old_runtime is not None:
+                runtime_file.write_bytes(old_runtime)
+            else:
+                runtime_file.write_text(json.dumps({'services': {'backend': {'environment': {k: v for k, v in old_env.items() if k != 'PATH'}}}}))
+            # OBS-01 (C-02): the observability file is deliberately NOT in
+            # rollback_files either, so a rollback never interpolates
+            # GRAFANA_ADMIN_PASSWORD and cannot fail on an unset password.
+            rollback_files = [root / 'docker-compose.yml', root / 'docker-compose.prod.yml', runtime_file]
+            if previous_edge and (root / 'docker-compose.ssl.yml').exists():
+                rollback_files.insert(2, root / 'docker-compose.ssl.yml')
+            # OBS-01 deploy-fix: roll back the metrics-ports file too, in
+            # the same position it holds in compose_files (after ssl.yml),
+            # so a rollback leaves the stack in its pre-deploy shape. The
+            # file holds no secrets, so unlike the observability file it
+            # is safe to include here (no GRAFANA_ADMIN_PASSWORD
+            # interpolation).
+            if previous_edge and (root / METRICS_PORTS_FILE).exists():
+                rollback_files.insert(3, root / METRICS_PORTS_FILE)
+            cmd = ['docker', 'compose', '--project-directory', str(root)]
+            for file in rollback_files:
+                cmd += ['-f', str(file)]
+            run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'backend', 'frontend')
+            if previous_edge:
+                run(*cmd, 'up', '-d', '--no-deps', '--force-recreate', 'edge')
+            health()
+            # MIG-02 step 4 (D-3) — the probe runs against the
+            # rolled-back binary too: /api/health passing does not
+            # prove the write paths work. A probe failure here means
+            # the restored state is broken and needs a human.
+            try:
+                run_write_probe(release, 'current')
+            except Exception as probe_error:
+                rollback_point['status'] = 'rolled-back-probe-failed'
+                rollback_point['restoredCommit'] = old_commit
+                write_rollback_point(backup, rollback_point)
+                append_record(root, rollback_point)
+                print(f'ROLLBACK PROBE FAILED: the restored binary passes /api/health but the write-path probe fails: {probe_error}', flush=True)
+                raise RuntimeError(f'rollback probe failed: {probe_error}') from probe_error
+            rollback_point['status'] = 'rolled-back'
+            rollback_point['restoredCommit'] = old_commit
+            write_rollback_point(backup, rollback_point)
+            append_record(root, rollback_point)
+            print('Previous code restored; additive migration data retained. Database backup was not restored.', flush=True)
     except Exception as error:
         print('ROLLBACK NEEDS ATTENTION:', type(error).__name__, flush=True)
+        # The rollback/repair itself failed: leave a ledger entry so
+        # the point is visible as failed, not silently absent.
+        rollback_point['status'] = 'rollback-failed'
+        rollback_point['rollbackError'] = f'{type(error).__name__}: {error}'
+        try:
+            write_rollback_point(backup, rollback_point)
+            append_record(root, rollback_point)
+        except Exception:
+            pass
     raise

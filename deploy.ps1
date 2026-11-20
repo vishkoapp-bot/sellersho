@@ -66,7 +66,14 @@ test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
 docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
 docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
-python3 -c 'import json,datetime,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(commit="$commit",branch="$branch",builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat())))' "`$release/release.json"
+# MIG-02 step 2 (D-1) -- the release manifest is built by
+# make_manifest.py, not hand-written: it carries the migration file
+# set + hashes, lastCompatibleRevision (recomputed from the
+# classification + git, currently ff57367), per-migration timeout
+# budgets and post-conditions. --repo is the install dir (a git
+# checkout; the staged release has no .git). Payment mode is real
+# with no PSP pair (documented live state; FIN-010 still blocked).
+python3 "`$release/scripts/release/make_manifest.py" --stage "`$release" --commit "`$commit" --branch "$branch" --payment-mode real --repo '$Target'
 python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
 "@
     Write-Host "Deployed commit $commit (built on server)"
@@ -98,8 +105,13 @@ try {
     Pop-Location
     $env:GOOS = $previousGoOS; $env:GOARCH = $previousGoArch; $env:CGO_ENABLED = $previousCGO
 }
-$manifest = @{commit=$commit; branch=$branch; builtAt=[DateTime]::UtcNow.ToString('o')}
-[IO.File]::WriteAllText((Join-Path $stage 'release.json'), ($manifest | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+# MIG-02 step 2 (D-1) -- the release manifest is built by
+# make_manifest.py, not hand-written (see the BuildOnServer path
+# above for what it carries). It runs after both builds so the
+# binaries and dist/index.html exist in the stage, and before the
+# tarball is packed so dist/contract.json is included in it.
+& $pythonExe scripts/release/make_manifest.py --stage $stage --commit $commit --branch $branch --payment-mode real --repo $root
+if ($LASTEXITCODE -ne 0) { throw 'Release manifest build failed.' }
 $artifact = Join-Path $root "releases\release-$commit.tar.gz"
 & tar -czf $artifact -C $stage .
 if ($LASTEXITCODE -ne 0) { throw 'Release packaging failed.' }

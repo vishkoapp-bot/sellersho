@@ -34,6 +34,13 @@ Checks:
       fails closed at payment time).
   Migrations: the manifest's migration file list + hashes match the
       staged backend/migrations/*.up.sql set exactly.
+  MIG-02 step 1: backend/migrations/classification.json covers every
+      staged *.up.sql (sha256-verified) and the generated
+      MIGRATION_CLASSIFICATION.md matches it; any unclassified file
+      fails the release.
+  MIG-02 step 2: manifest migrations.lastCompatibleRevision must be
+      non-null and an ancestor of the release commit (checked via git
+      when available; MIG02_REPO overrides the repo path).
   --db-url (optional): against a live (disposable or prod-read)
       database, enumerate pending migrations with the same
       classify_history rules deploy_remote.py uses, and fail on
@@ -82,6 +89,71 @@ class Failures:
 
     def ok(self, msg: str):
         print(f"ok: {msg}", flush=True)
+
+
+def check_classification(mig_dir: Path, f: "Failures") -> None:
+    """MIG-02 step 1 — the classification is the source of truth for what
+    each migration does to the old binary. Fail the release when:
+      * backend/migrations/classification.json is missing/unparseable,
+      * any staged *.up.sql is unclassified (or vice versa),
+      * a classified sha256 differs from the staged file,
+      * an entry lacks a class/verdict, or the counts disagree.
+    The generated MIGRATION_CLASSIFICATION.md must also match the JSON
+    when both are present in the stage (drift check).
+    """
+    cpath = mig_dir / "classification.json"
+    if not cpath.is_file():
+        f.fail(f"missing migration classification: {cpath} (MIG-02 step 1)")
+        return
+    try:
+        doc = json.loads(cpath.read_text())
+    except Exception as exc:
+        f.fail(f"migration classification is not valid JSON: {exc}")
+        return
+    staged = {p.name for p in mig_dir.glob("*.up.sql")}
+    entries = doc.get("entries", [])
+    classified = {e.get("name") for e in entries}
+    missing = sorted(staged - classified)
+    extra = sorted(classified - staged)
+    if missing:
+        f.fail(f"unclassified migrations (add them to classification.json): {missing}")
+    if extra:
+        f.fail(f"classification lists files not in the staged set: {extra}")
+    bad_hash = []
+    bad_entry = []
+    for e in entries:
+        name = e.get("name", "")
+        if not e.get("class") or not e.get("verdict"):
+            bad_entry.append(name)
+            continue
+        staged_file = mig_dir / name
+        if staged_file.is_file() and e.get("sha256") and sha256_file(staged_file) != e["sha256"]:
+            bad_hash.append(name)
+    if bad_entry:
+        f.fail(f"classification entries missing class/verdict: {bad_entry}")
+    if bad_hash:
+        f.fail(f"classification sha256 mismatch vs staged files: {bad_hash}")
+    counts = doc.get("counts", {})
+    if counts.get("total") is not None and counts["total"] != len(staged):
+        f.fail(f"classification total {counts['total']} != staged migration count {len(staged)}")
+    if not (missing or extra or bad_hash or bad_entry):
+        f.ok(f"migration classification covers all {len(staged)} files "
+             f"(compatible={doc.get('verdicts', {}).get('compatible')}, "
+             f"tightening={doc.get('verdicts', {}).get('tightening')}, "
+             f"breaking={doc.get('verdicts', {}).get('breaking')})")
+    md_path = mig_dir / "MIGRATION_CLASSIFICATION.md"
+    if md_path.is_file():
+        try:
+            sys.path.insert(0, str(HERE))
+            from generate_classification_md import render
+            if md_path.read_text() != render(doc):
+                f.fail("MIGRATION_CLASSIFICATION.md drifted from classification.json; regenerate it")
+            else:
+                f.ok("MIGRATION_CLASSIFICATION.md matches classification.json")
+        except ImportError:
+            f.warn("generate_classification_md.py unavailable; .md drift check skipped")
+    else:
+        f.fail("missing generated MIGRATION_CLASSIFICATION.md (run generate_classification_md.py)")
 
 
 def check_db_pending(stage: Path, db_url: str, f: Failures, required: bool):
@@ -304,6 +376,32 @@ def main() -> int:
         f.fail("manifest migration set != staged backend/migrations/*.up.sql set")
     else:
         f.ok(f"migration set matches manifest ({len(staged_migs)} files)")
+
+    # MIG-02 step 1 — classification coverage (source of truth for what
+    # each migration does to the old binary).
+    if mig_dir.is_dir():
+        check_classification(mig_dir, f)
+    else:
+        f.fail("missing staged migrations directory")
+
+    # MIG-02 step 2 — lastCompatibleRevision must be stamped and must be
+    # an ancestor of the release commit (fail-closed: a null floor means
+    # no rollback target was proven compatible).
+    lcr = manifest.get("migrations", {}).get("lastCompatibleRevision")
+    if not lcr:
+        f.fail("manifest migrations.lastCompatibleRevision is null — MIG-02 step 2 has not stamped the rollback floor")
+    else:
+        f.ok(f"lastCompatibleRevision stamped: {lcr[:12]}")
+        repo = Path(os.environ.get("MIG02_REPO", str(REPO)))
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", lcr, expected_commit],
+                               capture_output=True, timeout=30)
+            if r.returncode == 0:
+                f.ok(f"lastCompatibleRevision {lcr[:12]} is an ancestor of {expected_commit[:12]}")
+            else:
+                f.fail(f"lastCompatibleRevision {lcr[:12]} is NOT an ancestor of the release commit {expected_commit[:12]}")
+        except Exception as exc:
+            f.warn(f"could not verify lastCompatibleRevision ancestry (git unavailable: {exc})")
 
     if args.db_url:
         check_db_pending(stage, args.db_url, f, args.db_required)

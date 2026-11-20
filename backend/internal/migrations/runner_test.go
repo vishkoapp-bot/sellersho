@@ -418,3 +418,160 @@ func TestProcessTerminationRollsBackAndUnlocks(t *testing.T) {
 		t.Fatal("crash left partial or duplicate migration")
 	}
 }
+
+// MIG-02 D-5: the single 2-minute per-migration knob is split into a
+// 30s lock wait and a 10min statement budget, with per-migration
+// overrides from the release manifest.
+func TestTimeoutDefaultsResolve(t *testing.T) {
+	lock, statement, txnLock := resolveTimeouts(Options{})
+	if lock != 30*time.Second || statement != 10*time.Minute || txnLock != 30*time.Second {
+		t.Fatalf("defaults = lock %s / statement %s / txn-lock %s, want 30s / 10m / 30s", lock, statement, txnLock)
+	}
+	// Deprecated MigrationTimeout still acts as the statement timeout
+	// when StatementTimeout is unset (existing callers keep working).
+	_, statement, _ = resolveTimeouts(Options{MigrationTimeout: 5 * time.Second})
+	if statement != 5*time.Second {
+		t.Fatalf("deprecated MigrationTimeout fallback = %s, want 5s", statement)
+	}
+	// An explicit StatementTimeout wins over the deprecated field.
+	_, statement, _ = resolveTimeouts(Options{MigrationTimeout: 5 * time.Second, StatementTimeout: 7 * time.Minute})
+	if statement != 7*time.Minute {
+		t.Fatalf("explicit StatementTimeout = %s, want 7m", statement)
+	}
+}
+
+func TestLoadTimeoutOverrides(t *testing.T) {
+	manifest := `{"commit": "abc", "branch": "main", "migrations": {"files": [], "count": 0, "lastCompatibleRevision": "ff57367",
+		"timeouts": {"001_slow.up.sql": {"lock_timeout": "45s", "statement_timeout": "5m"}}}}`
+	overrides, err := LoadTimeoutOverrides([]byte(manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, ok := overrides["001_slow.up.sql"]
+	if !ok || to.LockTimeout != 45*time.Second || to.StatementTimeout != 5*time.Minute {
+		t.Fatalf("overrides = %+v, want lock 45s / statement 5m", overrides)
+	}
+	// Unknown fields inside an override entry fail closed.
+	badField := `{"migrations": {"timeouts": {"001_slow.up.sql": {"lock_timeout": "45s", "bogus": "1s"}}}}`
+	if _, err := LoadTimeoutOverrides([]byte(badField)); err == nil {
+		t.Fatal("unknown timeout field accepted")
+	}
+	// Unparseable / non-positive durations fail closed.
+	for _, bad := range []string{
+		`{"migrations": {"timeouts": {"001_slow.up.sql": {"statement_timeout": "ten minutes"}}}}`,
+		`{"migrations": {"timeouts": {"001_slow.up.sql": {"statement_timeout": "0s"}}}}`,
+		`{"migrations": {"timeouts": {"001_slow.up.sql": {"lock_timeout": "-5s"}}}}`,
+		`{"migrations": {"timeouts": "not-an-object"}}`,
+	} {
+		if _, err := LoadTimeoutOverrides([]byte(bad)); err == nil {
+			t.Fatalf("invalid manifest accepted: %s", bad)
+		}
+	}
+	// No timeouts key at all means no overrides (not an error).
+	none, err := LoadTimeoutOverrides([]byte(`{"commit": "abc", "migrations": {"files": []}}`))
+	if err != nil || len(none) != 0 {
+		t.Fatalf("manifest without timeouts = %+v, err %v", none, err)
+	}
+}
+
+func TestPerMigrationTimeoutOverride(t *testing.T) {
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	migrationFile(t, dir, "001_slow.up.sql", `CREATE TABLE override_probe (id INT); SELECT pg_sleep(3)`)
+	// A 100ms statement override fails the 3s statement.
+	if _, err := Run(context.Background(), db, Options{Dir: dir, TimeoutOverrides: map[string]MigrationTimeouts{
+		"001_slow.up.sql": {StatementTimeout: 100 * time.Millisecond},
+	}}); err == nil {
+		t.Fatal("per-migration statement override ignored")
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 0 {
+		t.Fatal("overridden-out migration recorded")
+	}
+	// A 10s statement override lets the same statement through.
+	if _, err := Run(context.Background(), db, Options{Dir: dir, TimeoutOverrides: map[string]MigrationTimeouts{
+		"001_slow.up.sql": {StatementTimeout: 10 * time.Second},
+	}}); err != nil {
+		t.Fatalf("per-migration statement override did not apply: %v", err)
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 1 {
+		t.Fatal("overridden-in migration not recorded")
+	}
+}
+
+func TestUnknownTimeoutOverrideRejected(t *testing.T) {
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	migrationFile(t, dir, "001_ok.up.sql", `CREATE TABLE unknown_override_probe (id INT)`)
+	if _, err := Run(context.Background(), db, Options{Dir: dir, TimeoutOverrides: map[string]MigrationTimeouts{
+		"999_missing.up.sql": {StatementTimeout: time.Minute},
+	}}); err == nil {
+		t.Fatal("timeout override for a file outside the directory was accepted")
+	}
+	if count(t, db, `SELECT count(*) FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'unknown_override_probe'`) != 0 {
+		t.Fatal("run with an unknown override applied a migration before failing")
+	}
+}
+
+func TestMigrationLockTimeoutSplit(t *testing.T) {
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	migrationFile(t, dir, "001_base.up.sql", `CREATE TABLE lock_probe (id INT)`)
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	migrationFile(t, dir, "002_alter.up.sql", `ALTER TABLE lock_probe ADD COLUMN label TEXT`)
+	// Hold an exclusive lock on the table from a second session.
+	holder, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.ExecContext(context.Background(), `BEGIN`); err != nil {
+		t.Fatal(err)
+	}
+	defer holder.ExecContext(context.Background(), `ROLLBACK`)
+	if _, err := holder.ExecContext(context.Background(), `LOCK TABLE lock_probe IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	// Lock wait 300ms, statement budget 30s: the migration must fail
+	// on the LOCK budget (fast), not on the statement budget.
+	started := time.Now()
+	_, err = Run(context.Background(), db, Options{Dir: dir, MigrationLockTimeout: 300 * time.Millisecond, StatementTimeout: 30 * time.Second})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("migration proceeded despite the held lock")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("lock-timeout failure took %s — the statement budget, not the lock budget, bounded it", elapsed)
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 1 {
+		t.Fatal("lock-timed-out migration recorded")
+	}
+	// Release the holder and the same migration succeeds on defaults.
+	if _, err := holder.ExecContext(context.Background(), `ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatalf("migration failed after the lock was released: %v", err)
+	}
+}
+
+func TestStatementTimeoutExceedsOldBudget(t *testing.T) {
+	// The old single knob was 2 minutes. A statement that needs more
+	// than 2 minutes but less than the new 10-minute statement budget
+	// must now complete. (Takes ~125s; this is the D-5 acceptance
+	// proof, not a routine fast test.)
+	db, _ := fixtureDB(t)
+	dir := t.TempDir()
+	migrationFile(t, dir, "001_long.up.sql", `CREATE TABLE long_budget_probe (id INT); SELECT pg_sleep(125)`)
+	started := time.Now()
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatalf("125s statement failed under the new 10m budget: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 2*time.Minute || elapsed > 10*time.Minute {
+		t.Fatalf("125s statement took %s, expected between 2m and 10m", elapsed)
+	}
+	if count(t, db, `SELECT count(*) FROM schema_migrations`) != 1 {
+		t.Fatal("long-budget migration not recorded")
+	}
+}

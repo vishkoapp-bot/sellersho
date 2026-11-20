@@ -200,8 +200,8 @@ done
 if [ -f "$T1_DIR/db.dump" ] || [ -f "$T1_DIR/db.sql.gz" ]; then bad "T1 no plaintext artifacts remain"; else ok "T1 no plaintext artifacts remain (encrypted only)"; fi
 MANIFEST_MIG="$(python3 -c "import json;print(json.load(open('$T1_DIR/manifest.json'))['schema_migrations_applied'])")"
 [ "$MANIFEST_MIG" = "210" ] && ok "T1 manifest records 210 migrations" || bad "T1 manifest records 210 migrations (got $MANIFEST_MIG)"
-python3 -c "import json;m=json.load(open('$T1_DIR/manifest.json'));assert 'caddy_volume:caddy_data' in m['missing'] and 'caddy_volume:caddy_config' in m['missing']" \
-  && ok "T1 manifest records missing Caddy volumes" || bad "T1 manifest records missing Caddy volumes"
+python3 -c "import json;m=json.load(open('$T1_DIR/manifest.json'));assert 'caddy_volume:drup_caddy_data' in m['missing'] and 'caddy_volume:drup_caddy_config' in m['missing']" \
+  && ok "T1 manifest records missing Caddy volumes (MIG-02 step 7 default: drup_caddy_data/drup_caddy_config)" || bad "T1 manifest records missing Caddy volumes"
 SIG="$($PSQL_SRC -c "SELECT count(*) FROM backup_signals WHERE kind='nightly'" | tr -d '[:space:]')"
 [ "$SIG" = "1" ] && ok "T1 verified-success signal published (backup_signals nightly=1)" || bad "T1 verified-success signal published (got $SIG)"
 # umask 077: files 0600, dirs 0700.
@@ -400,6 +400,42 @@ if (cd "$REPO" && python3 scripts/test_deploy_metrics_ports.py > "$EVIDENCE_DIR/
 else
   bad "T14 test_deploy_metrics_ports.py passes (see $EVIDENCE_DIR/t14.out)"
 fi
+
+# --- T15: BAK_CADDY_VOLUMES default (MIG-02 step 7) ------------------
+echo "--- T15: BAK_CADDY_VOLUMES default resolves drup volumes; override still wins ---"
+mkdir -p "$TSDIR/vol/drup_caddy_data" "$TSDIR/vol/drup_caddy_config"
+printf 'caddy-data' > "$TSDIR/vol/drup_caddy_data/acme.json"
+printf 'caddy-config' > "$TSDIR/vol/drup_caddy_config/caddy.json"
+# Fake docker for T15 only: `volume inspect` succeeds for the drup
+# volumes (printing a real mountpoint dir) and fails for the old
+# caddy_data/caddy_config names; every other invocation fails.
+cat > "$FAKE_BIN/docker-volumes" <<'SHEOF'
+#!/bin/bash
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  vol="${@: -1}"
+  case "$vol" in
+    drup_caddy_data|drup_caddy_config) echo "$TSDIR_VOL/$vol"; exit 0;;
+    *) exit 1;;
+  esac
+fi
+echo "fake-docker-volumes: unsupported invocation" >&2
+exit 1
+SHEOF
+chmod +x "$FAKE_BIN/docker-volumes"
+# Default (no BAK_CADDY_VOLUMES): the drup volumes resolve and their
+# tarballs land in the manifest; nothing is recorded missing.
+TSDIR_VOL="$TSDIR/vol" BAK_DOCKER_BIN="$FAKE_BIN/docker-volumes" \
+  "$ENTRYPOINT" run nightly --dest "$FAKE_ROOT/backups/t15-default" > "$EVIDENCE_DIR/t15.out" 2>&1; T15_RC=$?
+check "$T15_RC" "T15 default-volumes run exit 0 (rc=$T15_RC)"
+python3 -c "import json;m=json.load(open('$FAKE_ROOT/backups/t15-default/manifest.json'));assert 'caddy-drup_caddy_data.tar.gz' in m['artifacts'] and 'caddy-drup_caddy_config.tar.gz' in m['artifacts'] and not [x for x in m['missing'] if x.startswith('caddy_volume:')]" \
+  && ok "T15 default resolves drup volumes (tarballs in manifest, none missing)" || bad "T15 default resolves drup volumes"
+# Explicit override still wins: the old names are requested, the fake
+# docker has no such volumes, and they are recorded missing.
+TSDIR_VOL="$TSDIR/vol" BAK_CADDY_VOLUMES="caddy_data caddy_config" BAK_DOCKER_BIN="$FAKE_BIN/docker-volumes" \
+  "$ENTRYPOINT" run nightly --dest "$FAKE_ROOT/backups/t15-override" > "$EVIDENCE_DIR/t15-override.out" 2>&1; T15O_RC=$?
+check "$T15O_RC" "T15 override run exit 0 (rc=$T15O_RC)"
+python3 -c "import json;m=json.load(open('$FAKE_ROOT/backups/t15-override/manifest.json'));assert 'caddy_volume:caddy_data' in m['missing'] and 'caddy_volume:caddy_config' in m['missing'] and not [a for a in m['artifacts'] if a.startswith('caddy-')]" \
+  && ok "T15 explicit override still wins (old names requested and recorded missing)" || bad "T15 explicit override still wins"
 
 echo "=== RESULT: $PASS passed, $FAIL failed ==="
 echo "evidence dir: $EVIDENCE_DIR"

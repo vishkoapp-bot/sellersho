@@ -1,0 +1,31 @@
+-- 202611200003: EDGE-01 step 2 — index for the allow-check correlated
+-- subquery (audit §3.3: do the index FIRST, before any cache).
+--
+-- Every custom-domain HTTPS request costs one synchronous allow check
+-- (Caddy forward_auth -> GET /internal/domains/allow ->
+-- StoreRepository.AllowedDomain), and that query's correlated subquery
+-- scans pending_approvals for the latest custom_domain approval of the
+-- store:
+--   SELECT p.status = 'approved' FROM pending_approvals p
+--   WHERE p.target_id = s.id AND p.entity_type = 'custom_domain'
+--     AND p.requested_data ->> 'value' = d.domain
+--   ORDER BY p.created_at DESC, p.id DESC LIMIT 1
+-- The table's only index was its PK on id, so every allow check did a
+-- sequential scan of pending_approvals (all entity types share the
+-- table) plus a JSONB ->> extraction per row — ~90% of the allow
+-- query's ~1.3 ms (audit §2.2, 5,003 rows), growing with the table.
+-- This index lets Postgres find the latest row for (target_id,
+-- entity_type) without scanning, and the JSONB filter then applies to
+-- the few matching rows. Expected effect: allow DB time ~1.3 ms ->
+-- ~0.1 ms. The index alone does NOT remove the 1:1 query multiplier
+-- (that is the step-3 cache, blocked on owner decision D-1); it makes
+-- misses cheap.
+--
+-- CONCURRENTLY is deliberately NOT used: the migration runner applies
+-- each migration inside a transaction (internal/migrations/runner.go
+-- apply()), and CREATE INDEX CONCURRENTLY cannot run inside one.
+-- Plain CREATE INDEX takes a brief SHARE lock on pending_approvals
+-- (writes block only for the build). Same form as the PERF-02
+-- bounding indexes (202611200002).
+CREATE INDEX IF NOT EXISTS idx_edge01_pending_approvals_target_lookup
+    ON pending_approvals (target_id, entity_type, created_at DESC, id DESC);

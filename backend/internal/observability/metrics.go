@@ -50,6 +50,27 @@ type Registry struct {
 	// (PERF-03 G7): e.g. "40001" for a serialization failure. The
 	// code alone can carry no parameter values.
 	sqlErrors map[string]int64
+	// domainAllow counts allow decisions by bounded outcome (EDGE-01
+	// step 1): "allowed" (204), "denied" (403), "error" (503 / repo
+	// unavailable). allowDuration is the allow-handler latency
+	// histogram (handleDomainPermission only, so it reconciles with
+	// the domain_allow HTTP class counter); allowDBQueries counts
+	// AllowedDomain DB queries, one per allow check that reaches the
+	// repository — from handleDomainPermission AND handleDomainStore,
+	// so the gap between this counter and the allow total is exactly
+	// the domain-store lookups.
+	allow          map[string]int64
+	allowDuration  *sample
+	allowDBQueries int64
+	// EDGE-01 step 3: allow-cache counters. allowCacheHits/Misses
+	// count AllowedDomain cache outcomes (a miss is a load that
+	// reached the DB); allowCacheEvictions counts LRU evictions at
+	// the entry cap. All three are value-free (no domain ever enters
+	// a series). hits + misses reconcile against the allow total
+	// minus the primary short-circuit (which never reaches the repo).
+	allowCacheHits      int64
+	allowCacheMisses    int64
+	allowCacheEvictions int64
 	// G-03 ring buffer (ring.go): last 1000 completed requests plus
 	// pending in-flight records, behind ringMu — a mutex SEPARATE
 	// from mu, so lookups never block /metrics scrapes and scrapes
@@ -73,7 +94,7 @@ type Registry struct {
 }
 
 func New() *Registry {
-	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}, sqlErrors: map[string]int64{}}
+	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}, sqlErrors: map[string]int64{}, allow: map[string]int64{}}
 }
 func (m *Registry) SetDB(db *sql.DB) { m.mu.Lock(); defer m.mu.Unlock(); m.db = db }
 
@@ -232,6 +253,77 @@ func (m *Registry) RecordSQLError(code string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sqlErrors[code]++
+}
+
+// RecordDomainAllow counts one allow decision under a bounded outcome
+// (EDGE-01 step 1): "allowed", "denied", "error". Anything else is
+// dropped, never a new series. The outcome is the handler's decision,
+// never a domain value — no tenant data enters the series.
+func (m *Registry) RecordDomainAllow(outcome string) {
+	outcome = bounded(outcome, "allowed", "denied", "error")
+	if outcome == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allow[outcome]++
+}
+
+// ObserveDomainAllow records one allow-handler latency sample
+// (EDGE-01 step 1) into the allow-duration histogram, using the same
+// buckets as the HTTP histograms.
+func (m *Registry) ObserveDomainAllow(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.allowDuration == nil {
+		m.allowDuration = &sample{Buckets: make([]int64, len(buckets))}
+	}
+	s := m.allowDuration
+	secs := d.Seconds()
+	s.Count++
+	s.Sum += secs
+	for i, b := range buckets {
+		if secs <= b {
+			s.Buckets[i]++
+		}
+	}
+}
+
+// RecordDomainAllowDBQuery counts one AllowedDomain DB query (EDGE-01
+// step 1). It is called from the repository, the single place every
+// allow check funnels through, so it attributes the query to the allow
+// path regardless of which handler triggered it.
+func (m *Registry) RecordDomainAllowDBQuery() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allowDBQueries++
+}
+
+// RecordDomainAllowCacheHit counts one AllowedDomain call answered
+// from the allow cache (EDGE-01 step 3), without a DB query.
+func (m *Registry) RecordDomainAllowCacheHit() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allowCacheHits++
+}
+
+// RecordDomainAllowCacheMiss counts one AllowedDomain call that missed
+// the allow cache and loaded from the DB (EDGE-01 step 3) — whether
+// the load succeeded, denied, or failed. hits + misses therefore
+// reconcile against the allow total minus the primary short-circuit
+// (which never reaches the repo).
+func (m *Registry) RecordDomainAllowCacheMiss() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allowCacheMisses++
+}
+
+// RecordDomainAllowCacheEviction counts one LRU eviction from the
+// allow cache (EDGE-01 step 3), wired via the cache's OnEvict hook.
+func (m *Registry) RecordDomainAllowCacheEviction() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allowCacheEvictions++
 }
 
 // SetAdmissionInflight records current admission-slot occupancy for a lane
@@ -448,6 +540,31 @@ func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(sqlCodes)
 	for _, code := range sqlCodes {
 		fmt.Fprintf(w, "sellersho_sql_errors_total{code=%q} %d\n", code, m.sqlErrors[code])
+	}
+	// EDGE-01 step 1: allow decisions. The outcome counter is emitted
+	// for all three outcomes even at zero, so the series always exists
+	// for reconciliation against the domain_allow HTTP class counter
+	// (sellersho_http_duration_seconds_count{class="domain_allow",...}).
+	// The DB-query counter is likewise always emitted.
+	for _, outcome := range []string{"allowed", "denied", "error"} {
+		fmt.Fprintf(w, "sellersho_domain_allow_total{outcome=%q} %d\n", outcome, m.allow[outcome])
+	}
+	fmt.Fprintf(w, "sellersho_domain_allow_db_queries_total %d\n", m.allowDBQueries)
+	// EDGE-01 step 3: allow-cache outcomes, always emitted (like the
+	// DB-query counter) so the series exist from boot.
+	fmt.Fprintf(w, "sellersho_domain_allow_cache_hits_total %d\n", m.allowCacheHits)
+	fmt.Fprintf(w, "sellersho_domain_allow_cache_misses_total %d\n", m.allowCacheMisses)
+	fmt.Fprintf(w, "sellersho_domain_allow_cache_evictions_total %d\n", m.allowCacheEvictions)
+	// Allow-handler latency histogram (no labels; same bucket set as
+	// the HTTP histograms). Emitted only once at least one allow call
+	// has been observed, like the pool-wait histogram below.
+	if m.allowDuration != nil && m.allowDuration.Count > 0 {
+		s := m.allowDuration
+		fmt.Fprintf(w, "sellersho_domain_allow_duration_seconds_count %d\nsellersho_domain_allow_duration_seconds_sum %g\n", s.Count, s.Sum)
+		for i, b := range buckets {
+			fmt.Fprintf(w, "sellersho_domain_allow_duration_seconds_bucket{le=%q} %d\n", fmt.Sprint(b), s.Buckets[i])
+		}
+		fmt.Fprintf(w, "sellersho_domain_allow_duration_seconds_bucket{le=\"+Inf\"} %d\n", s.Count)
 	}
 	for name, value := range processMetrics() {
 		fmt.Fprintf(w, "sellersho_%s %g\n", name, value)

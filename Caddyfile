@@ -29,6 +29,25 @@
 	email "{$ACME_EMAIL}"
 	on_demand_tls {
 		ask http://backend:8080/internal/domains/allow
+		# EDGE-01 step 5 — D-2 NOTE (owner decision Nov 20: "max_certs
+		# = 100"): there is NO max_certs directive in Caddy v2.
+		# `max_certs` was a Caddy v1 tls subdirective; Caddy 2.9.1's
+		# adapter rejects it here ("unrecognized parameter
+		# 'max_certs'") and rejects `interval`/`burst` too
+		# ("no longer supported") — the global on_demand_tls block
+		# accepts only `ask` (and `permission`). Shipping the line
+		# would break the deploy: deploy_remote.py runs `caddy
+		# validate` before including ssl.yml. The effective guards
+		# as shipped are: (a) the ask endpoint itself — unknown /
+		# revoked / malformed domains are denied BEFORE any ACME
+		# order, so a scanner cannot trigger issuance (the step-3
+		# deny-cache bounds the ask's DB cost); (b) the CA's own rate
+		# limits as backstop (LE 300 orders/3h; ZeroSSL's own, since
+		# ACME_EMAIL stays UNSET in prod — verified empty, ZeroSSL
+		# fallback issuance). If a hard numeric cap is still wanted,
+		# it needs a backend-side ask guard (the backend cannot see
+		# Caddy's cert store) and a fresh owner decision — it cannot
+		# be expressed in this file. Do not re-add max_certs.
 	}
 }
 
@@ -63,6 +82,15 @@
     tls {
         on_demand
     }
+    # EDGE-01 step 5 (audit §5.4/§7): edge access log. The Caddyfile
+    # had no `log` directive, so the edge emitted no access log at
+    # all. Default format (JSON) to stdout, i.e. the container log —
+    # the same sink the backend's stdout already uses. NOT `debug`:
+    # debug logging cost ~13 ms p50 at 100 RPS in the audit's runs;
+    # the INFO access log's cost is measured in the step-7 load
+    # report. Do NOT add `encode`: nginx already compresses
+    # everything worth compressing (audit §4.3.4).
+    log
     # Preserve deny/auth/proxy order explicitly; handle groups otherwise sort
     # before a top-level respond directive in the Caddy adapter.
     route {

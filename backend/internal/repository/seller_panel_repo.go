@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/drup/platform/internal/customdomain"
 	"github.com/drup/platform/internal/pricing"
 	"math"
 	"strings"
@@ -611,7 +612,19 @@ func (r *StoreRepository) RequestStoreChange(ctx context.Context, userID, slug, 
 	}
 	raw, _ := json.Marshal(map[string]string{"value": value, "storeId": store.ID})
 	_, err = r.db.ExecContext(ctx, `INSERT INTO pending_approvals(id,entity_type,target_id,title,requested_data,requested_by,status) VALUES($1,$2,$3,$4,$5,$6,'pending')`, "req-"+uuid.NewString(), kind, store.ID, fmt.Sprintf("%s: %s", kind, value), raw, userID)
-	return err
+	if err != nil {
+		return err
+	}
+	// EDGE-01 step 4: a new pending custom_domain row becomes the
+	// latest approval for the store, so the allow decision can flip
+	// approved -> denied until it is re-approved. store_name /
+	// store_slug rows never affect the allow check and are not
+	// invalidated. (Invalidate normalizes internally; an
+	// unnormalizable value is a no-op.)
+	if kind == "custom_domain" {
+		customdomain.DefaultAllowCache.Invalidate(value)
+	}
+	return nil
 }
 
 // --- Team 05 (Phase 2, live parity): seller discount campaigns (D48) ---

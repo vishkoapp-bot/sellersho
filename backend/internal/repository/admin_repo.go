@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/drup/platform/internal/customdomain"
 )
 
 type PendingApproval struct {
@@ -89,7 +91,19 @@ func (r *AdminRepository) CreatePendingApproval(ctx context.Context, item Pendin
 		VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW())
 	`
 	_, err = r.db.ExecContext(ctx, query, item.ID, item.EntityType, item.TargetID, item.Title, rawData, item.RequestedBy)
-	return err
+	if err != nil {
+		return err
+	}
+	// EDGE-01 step 4: a new pending custom_domain row becomes the
+	// latest approval for the store, so the allow decision can flip
+	// approved -> denied until it is reviewed. Other entity types
+	// never affect the allow check.
+	if item.EntityType == "custom_domain" {
+		if v, ok := item.RequestedData["value"].(string); ok && v != "" {
+			customdomain.DefaultAllowCache.Invalidate(v)
+		}
+	}
+	return nil
 }
 
 // GetPendingApprovalEntityType returns the entity_type of one
@@ -155,6 +169,21 @@ func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status,
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	// EDGE-01 step 4: the status flip is the admin approve/revoke
+	// path for custom domains (handleReviewApproval routes every
+	// non-product entity type here). Invalidate AFTER the commit so
+	// revocation takes effect on the next request (normally
+	// immediate; the 60s allow TTL is only the backstop for a missed
+	// invalidation). The domain lives in requested_data->>'value';
+	// the read is best-effort — a failure here must never fail a
+	// review that already committed, and the TTL still bounds it.
+	// Other entity types never affect the allow check.
+	if approvalEntity == "custom_domain" {
+		var domain string
+		if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(requested_data->>'value', '') FROM pending_approvals WHERE id = $1`, id).Scan(&domain); err == nil && domain != "" {
+			customdomain.DefaultAllowCache.Invalidate(domain)
+		}
 	}
 	// P1-2 (best-effort): generic (non-product) approval rejection -
 	// the requester. Product proposals are excluded: their rejection

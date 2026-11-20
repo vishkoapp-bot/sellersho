@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drup/platform/internal/customdomain"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/testdb"
 	"github.com/google/uuid"
@@ -42,6 +43,13 @@ func TestQual01DomainStoreHostBinding(t *testing.T) {
 		t.Helper()
 		exec(`INSERT INTO pending_approvals(id,entity_type,target_id,title,requested_data,requested_by,status)
 			VALUES($1,'custom_domain',$2,'Host fixture',jsonb_build_object('value',$3::text),$4,$5)`, uuid.NewString(), slug, host, owner, state)
+		// EDGE-01 step 4: this helper writes the approval row with
+		// raw SQL, bypassing the repository write paths — so it must
+		// do the invalidation those paths do. Without it, an earlier
+		// lookup's cached decision (including a cached DENY for a
+		// not-yet-approved domain) would outlive the new row until
+		// the TTL. Production writes never bypass the repo.
+		customdomain.DefaultAllowCache.Invalidate(host)
 	}
 	ownerA, slugA, hostA := fixture("09000040301")
 	ownerB, slugB, hostB := fixture("09000040302")
@@ -73,5 +81,7 @@ func TestQual01DomainStoreHostBinding(t *testing.T) {
 	approve(ownerB, slugB, hostB, "rejected")
 	assertLookup(hostB, hostA, slugA, http.StatusNotFound, "")
 	exec(`UPDATE store_domains SET status='disabled' WHERE domain=$1`, hostA)
+	// Same: the raw UPDATE bypasses DisableOwnedDomain's invalidation.
+	customdomain.DefaultAllowCache.Invalidate(hostA)
 	assertLookup(hostA, hostB, slugB, http.StatusNotFound, "")
 }

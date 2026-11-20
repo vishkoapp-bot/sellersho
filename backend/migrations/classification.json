@@ -3,14 +3,14 @@
   "generated_by": "scripts/release/build_classification.py (MIG-02 step 1). Regenerate: python3 scripts/release/build_classification.py, then python3 scripts/release/generate_classification_md.py.",
   "repo_commit": "92f9cca",
   "counts": {
-    "EXPAND": 95,
+    "EXPAND": 96,
     "BACKFILL": 53,
     "CONTRACT": 61,
     "DESTRUCTIVE": 1,
-    "total": 210
+    "total": 211
   },
   "verdicts": {
-    "compatible": 188,
+    "compatible": 189,
     "tightening": 18,
     "breaking": 4
   },
@@ -5999,6 +5999,23 @@
       "verdict": "compatible",
       "old_binary_write": "No old-binary write exists that this migration affects: additive only (new tables/columns nullable or defaulted, plain indexes, triggers/functions on new objects).",
       "notes": ""
+    },
+    {
+      "name": "202611200003_pending_approvals_target_lookup.up.sql",
+      "class": "EXPAND",
+      "sha256": "dd5469e842a95c3c10c25f17e2647f856e87ce5e26d8143206ca38e6eeb3f2ac",
+      "has_down_sql": true,
+      "tables": [],
+      "operations": [],
+      "runtime_ms_disposable": 51.6,
+      "chunked": false,
+      "timeout_lock_seconds": null,
+      "timeout_statement_seconds": null,
+      "post_conditions": [],
+      "post_condition_status": "none",
+      "verdict": "compatible",
+      "old_binary_write": "No old-binary write exists that this migration affects: additive only (a plain index on pending_approvals; the allow query keeps working with or without it).",
+      "notes": "EDGE-01 step 2. runtime_ms_disposable measured 2026-11-20 by the EDGE-01 implementation run: the migration runner applied only this file to a disposable DB seeded with 5,002 pending_approvals rows in 51.6 ms (see edge01-impl/evidence/verification-summary.md). EXPLAIN ANALYZE on the same seed: correlated subquery 1.13-1.19 ms (Seq Scan) -> 0.015-0.040 ms (Bitmap Index Scan); whole-query 1.34-1.67 ms -> 0.34-0.43 ms."
     }
   ]
 }

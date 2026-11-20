@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/customdomain"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/repository"
 	"net"
 	"net/http"
@@ -73,29 +74,41 @@ func handleOwnedDomainAction(w http.ResponseWriter, r *http.Request, repo *repos
 	t01WriteJSON(w, 200, map[string]bool{"success": true})
 }
 func handleDomainPermission(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository) {
+	// EDGE-01 step 1: every decision is counted (allowed/denied/error)
+	// and the handler latency is histogrammed. The duration defer
+	// covers all invocations including 405s, so the histogram is the
+	// handler's latency, not only the decision paths'; 405s on this
+	// endpoint are ~zero in practice (Caddy only sends GET).
+	start := time.Now()
+	defer func() { observability.Default.ObserveDomainAllow(time.Since(start)) }()
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
 		return
 	}
 	d, e := customdomain.Normalize(r.URL.Query().Get("domain"))
 	if e != nil {
+		observability.Default.RecordDomainAllow("denied")
 		http.Error(w, "Domain denied", 403)
 		return
 	}
 	for _, host := range strings.Split(os.Getenv("PLATFORM_DOMAINS"), ",") {
 		if strings.TrimSpace(host) == d {
+			observability.Default.RecordDomainAllow("allowed")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
 	if repo == nil {
+		observability.Default.RecordDomainAllow("error")
 		http.Error(w, "Unavailable", 503)
 		return
 	}
 	if _, e = repo.AllowedDomain(r.Context(), d); e != nil {
+		observability.Default.RecordDomainAllow("denied")
 		http.Error(w, "Domain denied", 403)
 		return
 	}
+	observability.Default.RecordDomainAllow("allowed")
 	w.WriteHeader(http.StatusNoContent)
 }
 func handleDomainStore(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository) {

@@ -157,3 +157,72 @@ func TestDependencyCollectionMigratedDatabase(t *testing.T) {
 		}
 	}
 }
+
+// TestEDGE01DomainAllowMetrics (EDGE-01 step 1): the allow outcome
+// counter, the allow-handler latency histogram and the allow DB-query
+// counter are exposed on :9090 with bounded labels only. An unknown
+// outcome is dropped and never grows a series.
+func TestEDGE01DomainAllowMetrics(t *testing.T) {
+	m := New()
+	// Series exist at zero before any allow call (reconciliation
+	// target: the domain_allow HTTP class counter).
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	s := w.Body.String()
+	for _, v := range []string{
+		`sellersho_domain_allow_total{outcome="allowed"} 0`,
+		`sellersho_domain_allow_total{outcome="denied"} 0`,
+		`sellersho_domain_allow_total{outcome="error"} 0`,
+		`sellersho_domain_allow_db_queries_total 0`,
+		// EDGE-01 step 3: cache series exist at zero from boot.
+		`sellersho_domain_allow_cache_hits_total 0`,
+		`sellersho_domain_allow_cache_misses_total 0`,
+		`sellersho_domain_allow_cache_evictions_total 0`,
+	} {
+		if !strings.Contains(s, v) {
+			t.Fatalf("missing zero series %s", v)
+		}
+	}
+	if strings.Contains(s, "sellersho_domain_allow_duration_seconds_count") {
+		t.Fatal("allow histogram must not exist before any observation")
+	}
+	m.RecordDomainAllow("allowed")
+	m.RecordDomainAllow("allowed")
+	m.RecordDomainAllow("denied")
+	m.RecordDomainAllow("error")
+	m.RecordDomainAllow("bogus-outcome")
+	m.RecordDomainAllowDBQuery()
+	m.RecordDomainAllowDBQuery()
+	m.RecordDomainAllowDBQuery()
+	m.RecordDomainAllowCacheHit()
+	m.RecordDomainAllowCacheHit()
+	m.RecordDomainAllowCacheMiss()
+	m.RecordDomainAllowCacheEviction()
+	m.ObserveDomainAllow(1 * time.Millisecond)
+	m.ObserveDomainAllow(2 * time.Millisecond)
+	w = httptest.NewRecorder()
+	m.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	s = w.Body.String()
+	for _, v := range []string{
+		`sellersho_domain_allow_total{outcome="allowed"} 2`,
+		`sellersho_domain_allow_total{outcome="denied"} 1`,
+		`sellersho_domain_allow_total{outcome="error"} 1`,
+		`sellersho_domain_allow_db_queries_total 3`,
+		`sellersho_domain_allow_cache_hits_total 2`,
+		`sellersho_domain_allow_cache_misses_total 1`,
+		`sellersho_domain_allow_cache_evictions_total 1`,
+		`sellersho_domain_allow_duration_seconds_count 2`,
+		// Sum is 3 ms; only the 0.00x prefix is asserted because the
+		// exact %g spelling of a float64 second-sum is rounding-shaped.
+		`sellersho_domain_allow_duration_seconds_sum 0.00`,
+		`sellersho_domain_allow_duration_seconds_bucket{le="0.005"} 2`,
+		`sellersho_domain_allow_duration_seconds_bucket{le="+Inf"} 2`,
+	} {
+		if !strings.Contains(s, v) {
+			t.Fatalf("missing or wrong %s in:\n%s", v, s)
+		}
+	}
+	if strings.Contains(s, "bogus-outcome") || strings.Contains(s, `outcome="other"`) {
+		t.Fatal("unbounded outcome grew a series")
+	}
+}

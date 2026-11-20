@@ -2548,7 +2548,7 @@ func run(signalCtx context.Context) (result error) {
 		handleT01WarehousePutaway(w, r, r.Context(), warehouseRepo)
 	}))
 	// Static File Server & Upload Routes (Secured with role requirement supplier/admin & content inspection)
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+	mux.Handle("/static/", staticFileHandler())
 	mux.HandleFunc("/api/v1/upload/product-image", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		HandleProductImageUpload(w, r, cfg.UploadDir)
 	}))

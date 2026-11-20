@@ -2,11 +2,24 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/drup/platform/internal/customdomain"
+	"github.com/drup/platform/internal/observability"
 	"github.com/google/uuid"
 	"time"
 )
+
+// EDGE-01 step 3: mirror LRU evictions into the observability
+// registry. The cache itself stays dependency-free (its OnEvict hook
+// is the only wiring point); hits/misses are recorded at the
+// AllowedDomain call site below, where the Load result is known.
+func init() {
+	customdomain.DefaultAllowCache.OnEvict = func() {
+		observability.Default.RecordDomainAllowCacheEviction()
+	}
+}
 
 type StoreDomain struct {
 	Domain     string     `json:"domain"`
@@ -73,7 +86,16 @@ func (r *StoreRepository) RequestDomain(ctx context.Context, userID, slug, raw s
 	if _, e = tx.ExecContext(ctx, `INSERT INTO pending_approvals(id,entity_type,target_id,title,requested_data,requested_by,status) VALUES($1,'custom_domain',$2,$3,$4,$5,'pending')`, "req-"+uuid.NewString(), id, "اتصال دامنه: "+domain, string(data), userID); e != nil {
 		return nil, e
 	}
-	return &d, tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return nil, e
+	}
+	// EDGE-01 step 4: the new pending row becomes the latest
+	// custom_domain approval for the store, so the allow decision can
+	// flip approved -> denied until it is re-approved. Invalidate
+	// after the commit (never inside the tx: a rollback must not
+	// evict a still-valid entry).
+	customdomain.DefaultAllowCache.Invalidate(domain)
+	return &d, nil
 }
 func (r *StoreRepository) VerifyOwnedDomain(ctx context.Context, userID, domain, edge string, resolver customdomain.Resolver) error {
 	domains, e := r.GetOwnedDomains(ctx, userID)
@@ -104,6 +126,9 @@ func (r *StoreRepository) VerifyOwnedDomain(ctx context.Context, userID, domain,
 	if n != 1 {
 		return ErrStoreForbidden
 	}
+	// EDGE-01 step 4: pending_dns -> active can flip the allow
+	// decision denied -> allowed.
+	customdomain.DefaultAllowCache.Invalidate(domain)
 	return nil
 }
 func (r *StoreRepository) DisableOwnedDomain(ctx context.Context, userID, domain string) error {
@@ -115,10 +140,46 @@ func (r *StoreRepository) DisableOwnedDomain(ctx context.Context, userID, domain
 	if n == 0 {
 		return ErrStoreForbidden
 	}
+	// EDGE-01 step 4: active -> disabled revokes the domain; the
+	// next allow check must see it (revocation is normally
+	// immediate; the 60s allow TTL is only the backstop).
+	customdomain.DefaultAllowCache.Invalidate(domain)
 	return nil
 }
 func (r *StoreRepository) AllowedDomain(ctx context.Context, domain string) (string, error) {
-	var slug string
-	e := r.db.QueryRowContext(ctx, `SELECT s.slug FROM store_domains d JOIN stores s ON s.id=d.store_id WHERE d.domain=$1 AND d.status='active' AND s.status='active' AND COALESCE((SELECT p.status='approved' FROM pending_approvals p WHERE p.target_id=s.id AND p.entity_type='custom_domain' AND p.requested_data->>'value'=d.domain ORDER BY p.created_at DESC,p.id DESC LIMIT 1),FALSE)`, domain).Scan(&slug)
-	return slug, e
+	// EDGE-01 step 3: the allow decision is served from the bounded
+	// hostname cache (customdomain.DefaultAllowCache) whenever
+	// possible. The cache is the single funnel for both callers
+	// (handleDomainPermission and handleDomainStore), so the second
+	// caller reuses the first caller's entry instead of re-querying.
+	// Load's singleflight coalesces concurrent misses for the same
+	// domain into one DB query. A load error is NOT cached (a
+	// transient DB failure must never poison the cache); sql.ErrNoRows
+	// (unknown/revoked domain) IS cached as a deny with the short TTL.
+	// RecordDomainAllowDBQuery fires only inside the loader, so it
+	// still counts exactly the DB queries the allow path runs.
+	dec, err, hit := customdomain.DefaultAllowCache.Load(domain, func() (customdomain.AllowDecision, error) {
+		observability.Default.RecordDomainAllowDBQuery()
+		var slug string
+		e := r.db.QueryRowContext(ctx, `SELECT s.slug FROM store_domains d JOIN stores s ON s.id=d.store_id WHERE d.domain=$1 AND d.status='active' AND s.status='active' AND COALESCE((SELECT p.status='approved' FROM pending_approvals p WHERE p.target_id=s.id AND p.entity_type='custom_domain' AND p.requested_data->>'value'=d.domain ORDER BY p.created_at DESC,p.id DESC LIMIT 1),FALSE)`, domain).Scan(&slug)
+		if e != nil {
+			if errors.Is(e, sql.ErrNoRows) {
+				return customdomain.AllowDecision{Allowed: false}, nil
+			}
+			return customdomain.AllowDecision{}, e
+		}
+		return customdomain.AllowDecision{Allowed: true, Slug: slug}, nil
+	})
+	if hit {
+		observability.Default.RecordDomainAllowCacheHit()
+	} else {
+		observability.Default.RecordDomainAllowCacheMiss()
+	}
+	if err != nil {
+		return "", err
+	}
+	if !dec.Allowed {
+		return "", sql.ErrNoRows
+	}
+	return dec.Slug, nil
 }

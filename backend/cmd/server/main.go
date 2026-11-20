@@ -384,6 +384,13 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/ready", state.Ready)
 	mux.HandleFunc("/api/health", state.Ready)
 
+	// REL-01 (G9): release contract endpoint - the commit this binary
+	// was built from plus the contract version (routes hash) it
+	// implements. The release validator and smoke suite compare this
+	// against the staged frontend's dist/contract.json before any
+	// traffic switch. See backend/cmd/server/version.go.
+	mux.HandleFunc("/api/version", handleVersion)
+
 	// 2. Categories Endpoint (Redis Cached)
 	mux.HandleFunc("/api/v1/categories", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

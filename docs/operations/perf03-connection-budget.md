@@ -59,8 +59,13 @@ them within noise, including exactly 19×500 on B again.
 - **G1 auth queries: 2.00 → 1.00 per request.** Old middleware ran
   `IsUserActive` + `ListActive` (7,751 calls each for 7,745 auth-me
   requests). New `LoadActiveState` is one indexed query returning
-  `is_active` + capabilities (13,497 calls for 13,497 requests). The
-  auth latency/throughput gain above is this fix. Blocked/capability
+  `is_active` + capabilities. The direction 2→1 is proven (legacy
+  queries flat in the new runs, delta 0), but the exact "13,497 calls
+  for 13,497 requests" ratio is NOT reproducible from the preserved
+  files: `run-A-new/statements-*` shows the combined query going
+  0 → 15,402 (likely `run_profile.sh` snapshots `pg_stat_statements`
+  with no `dbid` filter and/or requests outside the counted window).
+  The auth latency/throughput gain above is this fix. Blocked/capability
   state is still read live per request — no TTL, no cache.
 - **G2 catalog settings loads: 2× → 1× per request** (scope-tx load
   reused for response pricing; proven by pg_stat_statements deltas in

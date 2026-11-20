@@ -1,8 +1,16 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # REL-02: pinned to the exact image running on prod 2026-11-20
+    # (digest = live RepoDigest; re-confirm with `docker buildx imagetools
+    # inspect` if the tag is ever re-pulled).
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: drup_postgres
     restart: unless-stopped
+    logging: &rel02-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_USER: drup_admin
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,9 +26,11 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    # REL-02: pinned to the exact image running on prod 2026-11-20.
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: drup_redis
     restart: unless-stopped
+    logging: *rel02-logging
     # PERF-04: explicit persistence/eviction/memory policy — AOF on, fsync
     # every second, never evict holds/OTP (noeviction), 512 MB ceiling.
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD}"]
@@ -41,6 +51,7 @@ services:
     container_name: drup_backend
     restart: unless-stopped
     stop_grace_period: 30s
+    logging: *rel02-logging
     environment:
       PORT: "8080"
       STARTUP_TIMEOUT_SECONDS: "${STARTUP_TIMEOUT_SECONDS:-30}"
@@ -69,9 +80,15 @@ services:
         condition: service_healthy
 
   frontend:
-    image: nginx:1.27-alpine
+    # REL-02: pinned to the exact image running on prod 2026-11-20.
+    # The live image is nginx:alpine (nginx 1.31.6, verified
+    # `docker exec drup_frontend nginx -v`); the old repo tag
+    # nginx:1.27-alpine was drift — it did not describe prod. Pin the
+    # LIVE lineage (nginx:alpine@digest), never re-introduce 1.27.
+    image: nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
     container_name: drup_frontend
     restart: unless-stopped
+    logging: *rel02-logging
     ports:
       - "80:80"
     volumes:

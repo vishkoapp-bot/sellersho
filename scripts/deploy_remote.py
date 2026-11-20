@@ -523,6 +523,17 @@ runtime_env.setdefault('PLATFORM_DOMAINS', '46.249.98.190')
 for key in ['DOMAIN_EDGE_HOST', 'PLATFORM_DOMAINS']:
     os.environ[key] = runtime_env[key]
 os.environ.setdefault('PLATFORM_HTTP_HOST', '46.249.98.190')
+# REL-02 reconciliation (S-1): TAPIN_TOKEN_KEY lives only in the running
+# backend container's env — it is ABSENT from /opt/drup/.env (verified
+# 2026-11-20) — while docker-compose.prod.yml requires it with
+# ${...:?}. Export it into the interpolation environment from the live
+# container (the same source the runtime override above draws from) so
+# `compose config` can resolve it. If the live container ever lacks it,
+# the `:?` fails loudly instead of silently shipping an empty key. The
+# value is never printed: it travels only via the process environment
+# into compose interpolation and the runtime file, as before.
+if 'TAPIN_TOKEN_KEY' in runtime_env:
+    os.environ['TAPIN_TOKEN_KEY'] = runtime_env['TAPIN_TOKEN_KEY']
 runtime = {'services': {'backend': {'environment': runtime_env, 'stop_grace_period': '30s'}}}
 if ssl:
     edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190'}
@@ -530,9 +541,9 @@ if ssl:
         actual_edge_env = dict(v.split('=', 1) for v in inspect(previous_edge[0])['Config']['Env'])
         edge_env.update({k: actual_edge_env[k] for k in edge_env if k in actual_edge_env})
     runtime['services']['edge'] = {'environment': edge_env}
-    run('docker', 'pull', 'caddy:2-alpine')
+    run('docker', 'pull', 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0')
     run('docker', 'run', '--rm', '-e', 'PLATFORM_HTTP_HOST=46.249.98.190', '-v',
-        str(release / 'Caddyfile') + ':/etc/caddy/Caddyfile:ro', 'caddy:2-alpine',
+        str(release / 'Caddyfile') + ':/etc/caddy/Caddyfile:ro', 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0',
         'caddy', 'validate', '--config', '/etc/caddy/Caddyfile')
     compose_files.append(root / 'docker-compose.ssl.yml')
     # OBS-01 deploy-fix: the metrics-ports file MUST come after ssl.yml —
@@ -573,6 +584,11 @@ saved_files = ['backend/bin/server-linux', 'nginx.conf', 'docker-compose.ssl.yml
                'scripts/publish-backup-success.sh', 'scripts/backup/backup-entrypoint.sh', 'scripts/backup/publish-backup-failure.sh',
                'scripts/backup/check-backup-health.sh', 'scripts/backup/restore-verify.sh',
                'backup-auto.sh', 'backup-daily.sh', 'docker-compose.observability.yml',
+               # REL-02 reconciliation: the base + prod compose files are
+               # shipped from the release (see the early ship below), so
+               # the previous root copies must be in the backup or a
+               # rollback cannot restore them.
+               'docker-compose.yml', 'docker-compose.prod.yml',
                METRICS_PORTS_FILE]
 existed = {}
 for relative in saved_files:
@@ -794,6 +810,206 @@ def assert_metrics_ports(config_json, require_edge=True):
     return True
 
 
+# REL-02 (S-5): extend the assert_metrics_ports pattern to the whole
+# merged config — restart policies, resource limits, healthchecks and
+# log rotation — run before migrations, next to assert_metrics_ports.
+# Reads structural keys ONLY; environment values are never read, let
+# alone printed (the merged config carries interpolated secrets), and
+# every error names services / missing keys only.
+REL02_MERGED_EXPECTED = {
+    # service: (restart, memory limit, pids limit, healthcheck required?,
+    #           cpus limit, memory reservation, stop_grace_period or None)
+    # M-1: cpus / reservations / grace are asserted exactly, like
+    # memory / pids — a future edit that unpins an image, changes a CPU
+    # limit, or drops a grace period must fail this gate, not sail
+    # through it. grace=None means the compose files declare no grace
+    # period for that service (only backend/frontend/edge declare 30s).
+    # NOTE: pids lives inside deploy.resources.limits — a top-level
+    # `pids_limit` key alongside ANY deploy.resources block makes
+    # `docker compose config` fail ("can't set distinct values", Compose
+    # v5.6; caught by the real-merge validation 2026-11-20). Do not
+    # re-add a top-level pids_limit.
+    'postgres': ('always', '1024M', 256, True, '1.0', '256M', None),
+    'redis': ('always', '640M', 256, True, '0.5', '64M', None),
+    'backend': ('always', '512M', 512, True, '2.0', '128M', '30s'),
+    'frontend': ('always', '128M', 256, True, '0.5', '32M', '30s'),
+    'edge': ('unless-stopped', '256M', 256, True, '0.5', '64M', '30s'),
+    'prometheus': ('unless-stopped', '256M', 256, True, '0.25', '64M', None),
+    'grafana': ('unless-stopped', '256M', 256, True, '0.25', '64M', None),
+    'node-exporter': ('unless-stopped', '64M', 256, True, '0.25', '16M', None),
+    # nginx-exporter is scratch-based (no shell, no wget): it cannot
+    # carry a container healthcheck, so none is required for it — its
+    # health is proven by deploy_observability's nginx_up == 1 check.
+    'nginx-exporter': ('unless-stopped', '64M', 256, False, '0.25', '16M', None),
+}
+REL02_APP_PORTS = {5432, 6379, 8080, 8081, 9090, 2019}
+REL02_LOG_MAX_SIZE = '10m'
+REL02_LOG_MAX_FILE = '3'
+# Collector services live in docker-compose.observability.yml, which the
+# app deploy never merges — the app-deploy assertion skips them
+# (require_collectors=False); deploy_observability() asserts them on
+# the observability merge instead.
+REL02_COLLECTORS = frozenset({'prometheus', 'grafana', 'node-exporter', 'nginx-exporter'})
+
+
+def _canonical_memory(value):
+    """A memory value as a canonical "NM" string, or ''.
+
+    `docker compose config --format json` emits memory as a BYTES
+    string ('536870912'), while the repo files write '512M' —
+    normalize both to the '512M' form before comparing.
+    """
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if text.isdigit():
+        n = int(text)
+        if n % (1024 * 1024) == 0:
+            return f'{n // (1024 * 1024)}M'
+        if n % 1024 == 0:
+            return f'{n // 1024}K'
+        return text
+    return text.upper()
+
+
+def _merged_memory_limit(service):
+    """Memory limit as a canonical "NM" string from a merged-config
+    service dict, or ''."""
+    try:
+        value = (service or {}).get('deploy', {}).get('resources', {}).get('limits', {}).get('memory')
+    except AttributeError:
+        return ''
+    return _canonical_memory(value)
+
+
+def _merged_memory_reservation(service):
+    """Memory reservation as a canonical "NM" string from a merged-config
+    service dict, or ''."""
+    try:
+        value = (service or {}).get('deploy', {}).get('resources', {}).get('reservations', {}).get('memory')
+    except AttributeError:
+        return ''
+    return _canonical_memory(value)
+
+
+def _merged_cpus_limit(service):
+    """CPU limit as a canonical string from a merged-config service
+    dict, or ''.
+
+    `docker compose config --format json` emits cpus as a JSON number
+    (2, 0.5, 0.25), while the repo files write quoted strings ('2.0',
+    '0.5') — normalize both through float() so '2' == '2.0' == 2.
+    """
+    try:
+        value = (service or {}).get('deploy', {}).get('resources', {}).get('limits', {}).get('cpus')
+    except AttributeError:
+        return ''
+    if value is None:
+        return ''
+    try:
+        return str(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return ''
+
+
+def _image_is_digest_pinned(image):
+    """True when an image reference is digest-pinned: `name@sha256:<64
+    lowercase hex>`. Plain string ops only (no `re`) so the harness's
+    AST-extracted namespace — which provides `json` only — can exec
+    this helper unchanged."""
+    if not isinstance(image, str) or '@sha256:' not in image:
+        return False
+    digest = image.rsplit('@sha256:', 1)[1]
+    return len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
+
+
+def _merged_pids_limit(service):
+    """PIDs limit from a merged-config service dict, or None."""
+    try:
+        return (service or {}).get('deploy', {}).get('resources', {}).get('limits', {}).get('pids')
+    except AttributeError:
+        return None
+
+
+def assert_merged_config(config_json, require_edge=True, require_collectors=True):
+    """Fail unless the merged compose config carries the REL-02 budgets.
+
+    Checks, per service in REL02_MERGED_EXPECTED (edge skipped when
+    require_edge is False, collectors skipped when require_collectors
+    is False): restart policy, deploy.resources.limits.memory,
+    deploy.resources.limits.pids, deploy.resources.limits.cpus,
+    deploy.resources.reservations.memory, a healthcheck (except
+    nginx-exporter, see above), and json-file log rotation (max-size
+    10m, max-file 3). Also requires every service image to be
+    digest-pinned (`name@sha256:<64 hex>`) and, where the compose
+    files declare one, stop_grace_period to equal the declared value
+    (backend/frontend/edge: 30s). Also fails when any app/metrics port
+    (5432/6379/8080/8081/9090/2019) is published on a non-loopback
+    host IP — the public edge (80/443) is the only service allowed a
+    non-loopback publish. Raises RuntimeError naming only the
+    offending services / keys; returns True on success.
+    """
+    try:
+        config = json.loads(config_json)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError('merged compose config is not valid JSON') from error
+    services = config.get('services') or {}
+    problems = []
+    for service, (restart, memory, pids, need_health, cpus, reservation, grace) in REL02_MERGED_EXPECTED.items():
+        if service == 'edge' and not require_edge:
+            continue
+        if service in REL02_COLLECTORS and not require_collectors:
+            continue
+        cfg = services.get(service)
+        if cfg is None:
+            problems.append(f'{service}: missing from merged config')
+            continue
+        if not _image_is_digest_pinned(cfg.get('image') or ''):
+            problems.append(f'{service}: image is not digest-pinned')
+        if cfg.get('restart') != restart:
+            problems.append(f'{service}: restart is not {restart}')
+        if _merged_memory_limit(cfg) != memory:
+            problems.append(f'{service}: memory limit is not {memory}')
+        if _merged_pids_limit(cfg) != pids:
+            problems.append(f'{service}: pids limit is not {pids}')
+        if _merged_cpus_limit(cfg) != cpus:
+            problems.append(f'{service}: cpus limit is not {cpus}')
+        if _merged_memory_reservation(cfg) != reservation:
+            problems.append(f'{service}: memory reservation is not {reservation}')
+        if grace is not None and str(cfg.get('stop_grace_period') or '') != grace:
+            problems.append(f'{service}: stop_grace_period is not {grace}')
+        if need_health and not cfg.get('healthcheck'):
+            problems.append(f'{service}: healthcheck missing')
+        logging = cfg.get('logging') or {}
+        options = logging.get('options') or {}
+        if logging.get('driver') != 'json-file':
+            problems.append(f'{service}: logging driver is not json-file')
+        if str(options.get('max-size')) != REL02_LOG_MAX_SIZE:
+            problems.append(f'{service}: log max-size is not {REL02_LOG_MAX_SIZE}')
+        if str(options.get('max-file')) != REL02_LOG_MAX_FILE:
+            problems.append(f'{service}: log max-file is not {REL02_LOG_MAX_FILE}')
+        for entry in cfg.get('ports') or []:
+            if isinstance(entry, dict):
+                target = entry.get('target')
+                host_ip = entry.get('host_ip') or ''
+            else:
+                parts = str(entry).split(':')
+                try:
+                    target = int(parts[-1])
+                except ValueError:
+                    continue
+                host_ip = ':'.join(parts[:-2]) if len(parts) > 2 else ''
+            try:
+                target = int(target)
+            except (TypeError, ValueError):
+                continue
+            if target in REL02_APP_PORTS and host_ip != '127.0.0.1':
+                problems.append(f'{service}: port {target} published on a non-loopback host')
+    if problems:
+        raise RuntimeError('merged compose config fails REL-02 checks: ' + '; '.join(problems))
+    return True
+
+
 def compose_observability(*args):
     """docker compose with the collector file added (C-02). Only the
     observability step uses this: the app deploy and rollback use
@@ -842,6 +1058,13 @@ def deploy_observability():
     # OBS-01 (C-03 / B-1): refuse BEFORE pulling anything when the
     # disk cannot hold the collector images + deploy overhead.
     require_free_space(root)
+    # REL-02 (S-5): assert the collector rows (budgets/healthchecks/
+    # rotation) on the merged observability config before recreating
+    # anything. The app-deploy assertion above cannot see these rows:
+    # docker-compose.observability.yml is not in compose_files. Same
+    # function, superset config (app + collectors); require_edge follows
+    # the deploy's ssl flag, as in the app-deploy call.
+    assert_merged_config(compose_observability('config', '--format', 'json', capture=True), require_edge=ssl)
     compose_observability('up', '-d', '--no-deps', '--force-recreate',
             'prometheus', 'grafana', 'node-exporter', 'nginx-exporter')
     for _ in range(30):
@@ -908,6 +1131,21 @@ try:
     # Docker-host-only and are not claimed by this step (see
     # scripts/run_secret_checks_nodocker.py).
     run('python3', str(release / 'scripts/run_secret_checks_nodocker.py'), str(release))
+    # REL-02 reconciliation (S-1): ship the base + prod compose files
+    # from the release to root BEFORE any `compose config` invocation,
+    # so the deploy validates the config it will actually run. Until
+    # this step the root files were server-only literals the repo never
+    # reached (the audit's "prod.yml ship gap"): repo edits to pins,
+    # budgets, healthchecks and logging were fiction. The ship runs
+    # AFTER the secret check above (a literal credential in the release
+    # files must fail there, before anything is copied to root) and the
+    # previous root copies are in the backup via saved_files, so a
+    # rollback restores them exactly as for every other shipped file.
+    # The late ship loop below (success path) re-copies the same files;
+    # that copy is now a no-op safety net, kept so a future reader sees
+    # the full ship list in one place.
+    for name in ['docker-compose.yml', 'docker-compose.prod.yml']:
+        shutil.copy2(release / name, root / name)
     # SEC-01 (critic F-02 #4): validate the merged compose BEFORE any
     # SQL migration runs, so a bad compose fails fast with no DB
     # change. The runtime file is written first: compose config reads
@@ -920,6 +1158,15 @@ try:
     # metrics file is ssl-only, so a non-SSL deploy skips this.
     if ssl:
         assert_metrics_ports(compose('config', '--format', 'json', capture=True), require_edge=True)
+    # REL-02 (S-5): assert budgets/healthchecks/rotation + loopback-only
+    # app ports on the same merged config, before any migration or
+    # container move. The observability services are not in this merge
+    # (compose_files excludes docker-compose.observability.yml), so
+    # their rows are asserted inside deploy_observability() on the
+    # observability merge instead (same function, superset config).
+    # (Non-SSL deploys have no edge service: require_edge=False.)
+    assert_merged_config(compose('config', '--format', 'json', capture=True),
+                         require_edge=ssl, require_collectors=False)
     # MIG-02 step 3b — pre-deploy applied-set snapshot (version +
     # checksum, exactly what the rollback/forward-repair path needs to
     # know which rows this deploy added). Written before `migrate`
@@ -974,7 +1221,10 @@ try:
     # NOTE: METRICS_PORTS_FILE is NOT in this loop — critic B-1 moved
     # its ship to the top of this try block, before `compose config`,
     # because the config assertion needs the file to exist on disk.
-    for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml']:
+    # REL-02: the base + prod compose files are likewise shipped early
+    # (before `compose config`); this loop re-copies them as a no-op
+    # safety net so the full ship list stays visible in one place.
+    for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml', 'docker-compose.yml', 'docker-compose.prod.yml']:
         shutil.copy2(release / name, root / name)
     # OBS-01 (D-01/G-01): ship the collector config with the release so
     # the compose bind-mounts (./ops/observability/...) resolve on the
@@ -1173,7 +1423,11 @@ except Exception as deploy_error:
                     os.rename(root / 'dist', backup / 'failed-dist')
                 shutil.copytree(release / 'dist', root / 'dist')
             shutil.copy2(release / 'nginx.conf', root / 'nginx.conf')
-            for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml']:
+            # REL-02: forward repair re-ships the base + prod compose
+            # files too, exactly as the success path does — a repair
+            # that leaves stale root compose files behind would run the
+            # old pins/budgets/healthchecks under the new release.
+            for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml', 'docker-compose.yml', 'docker-compose.prod.yml']:
                 shutil.copy2(release / name, root / name)
             for source, destination in backup_scripts:
                 if not source.is_file():

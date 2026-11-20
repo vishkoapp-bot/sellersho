@@ -64,8 +64,8 @@ mkdir -p "`$release"
 git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
 test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
-docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
-docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
+docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
+docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23@sha256:60deed95d3888cc5e4d9ff8a10c54e5edc008c6ae3fba6187be6fb592e19e8c0 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
 # MIG-02 step 2 (D-1) -- the release manifest is built by
 # make_manifest.py, not hand-written: it carries the migration file
 # set + hashes, lastCompatibleRevision (recomputed from the

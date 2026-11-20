@@ -18,6 +18,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = 'a' * 40
 BASH = Path('D:/Git/bin/bash.exe')
+# REL-02: build images are digest-pinned in deploy.ps1 to the exact images
+# running on prod 2026-11-20. Keep these constants in sync with deploy.ps1.
+NODE_IMAGE = 'node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5'
+GO_IMAGE = 'golang:1.23@sha256:60deed95d3888cc5e4d9ff8a10c54e5edc008c6ae3fba6187be6fb592e19e8c0'
 
 
 class ServerBuildDelivery(unittest.TestCase):
@@ -106,7 +110,8 @@ function global:docker { throw 'Local Docker forbidden' }
         floor = re.fullmatch(r'>=(\d+)\.(\d+)\.(\d+)', engine)
         self.assertIsNotNone(floor, 'Review changed locked Node engine contract')
         image = next(arg for arg in self.node if arg.startswith('node:'))
-        major = int(re.fullmatch(r'node:(\d+)-alpine', image).group(1))
+        self.assertEqual(image, NODE_IMAGE, 'Build Node image must stay digest-pinned (REL-02)')
+        major = int(re.fullmatch(r'node:(\d+)-alpine(?:@sha256:[0-9a-f]{64})?', image).group(1))
         self.assertGreaterEqual((major, 0, 0), tuple(map(int, floor.groups())),
                                 f'{image} cannot satisfy locked Puppeteer engine {engine}')
         self.assertEqual(major, 24, 'Use the locally validated Node major')
@@ -127,7 +132,7 @@ function global:docker { throw 'Local Docker forbidden' }
         self.assertIn('$release/backend:/app', self.go)
         mounts = [self.go[i + 1] for i, arg in enumerate(self.go) if arg == '-v']
         self.assertEqual(set(mounts), {'$release/backend:/app', 'sellersho-go-mod-cache:/go/pkg/mod'})
-        self.assertIn('golang:1.23', self.go)
+        self.assertIn(GO_IMAGE, self.go, 'Build Go image must stay digest-pinned (REL-02)')
         for value in ('CGO_ENABLED=0', 'GOMAXPROCS=1'):
             self.assertIn(value, self.go)
             self.assertEqual(self.go[self.go.index(value) - 1], '-e')

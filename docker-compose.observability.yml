@@ -30,9 +30,34 @@
 # incident is cleared; never raise while near-full.
 services:
   prometheus:
-    image: prom/prometheus:v3.5.0
+    # REL-02: digest pin added to the existing version pin (same
+    # lineage v3.5.0 — the exact image running on prod 2026-11-20).
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     container_name: drup_prometheus
     restart: unless-stopped
+    # REL-02 budgets (audit §4.1): bounded by 128 MB TSDB retention.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+          pids: 256
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # REL-02 healthcheck (deploy_observability already polls /-/healthy
+    # from the host; this makes it a container healthcheck too). wget
+    # verified present and working in the live container 2026-11-20.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9091/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
     network_mode: host
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -52,9 +77,34 @@ services:
       - prometheus_data:/prometheus
 
   grafana:
-    image: grafana/grafana:11.6.2
+    # REL-02: digest pin added to the existing version pin (same
+    # lineage 11.6.2 — the exact image running on prod 2026-11-20).
+    image: grafana/grafana:11.6.2@sha256:a3464c5dadc2e16aaeb813aead8c852e81cc7bbfa851c66d96f016d5257b9848
     container_name: drup_grafana
     restart: unless-stopped
+    # REL-02 budgets (audit §4.1): largest collector, idle 79 MB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+          pids: 256
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # REL-02 healthcheck (deploy_observability already polls /api/health
+    # from the host; this makes it a container healthcheck too). wget
+    # verified present in the live container 2026-11-20.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     network_mode: host
     environment:
       GF_SERVER_HTTP_ADDR: "127.0.0.1"
@@ -78,9 +128,34 @@ services:
       - prometheus
 
   node-exporter:
-    image: prom/node-exporter:v1.9.1
+    # REL-02: digest pin added to the existing version pin (same
+    # lineage v1.9.1 — the exact image running on prod 2026-11-20).
+    image: prom/node-exporter:v1.9.1@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
     container_name: drup_node_exporter
     restart: unless-stopped
+    # REL-02 budgets (audit §4.1): trivial, idle 14 MB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+          pids: 256
+        reservations:
+          memory: 16M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # REL-02 healthcheck on /metrics (the exporter has no /-/healthy
+    # endpoint worth probing; /metrics proves it scrapes). wget
+    # verified present and working in the live container 2026-11-20.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9100/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
     network_mode: host
     pid: host
     command:
@@ -94,9 +169,31 @@ services:
       - /sys:/host/sys:ro
 
   nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:1.5.3
+    # REL-02: digest pin added to the existing version pin (same
+    # lineage 1.5.3 — the exact image running on prod 2026-11-20).
+    image: nginx/nginx-prometheus-exporter:1.5.3@sha256:85666e7fde7e253f1c6d978f9a961245df4c9cdb7677e1866d9bb28e8f9ee41d
     container_name: drup_nginx_exporter
     restart: unless-stopped
+    # REL-02 budgets (audit §4.1): trivial, idle 18 MB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+          pids: 256
+        reservations:
+          memory: 16M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # REL-02: NO container healthcheck — this image is scratch-based:
+    # no shell and no wget (verified live 2026-11-20: `docker exec`
+    # fails with "executable file not found"). Its health is already
+    # proven by deploy_observability(), which requires nginx_up == 1
+    # from the scrape before the deploy may claim success. Do not add
+    # a healthcheck here until the image ships a probe binary.
     network_mode: host
     command:
       - -nginx.scrape-uri=http://127.0.0.1:8081/status

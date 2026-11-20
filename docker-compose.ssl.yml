@@ -8,8 +8,37 @@ services:
   frontend:
     ports: !reset []
   edge:
-    image: caddy:2-alpine
+    # REL-02: pinned to the exact image running on prod 2026-11-20.
+    # Digest verified against the MIG-02 deploy log's pull record.
+    image: caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
+    # REL-02: 30s grace aligns with the backend (OPS-01); Caddy reload
+    # stays the hitless flip mechanism — never recreate the edge to
+    # change routing (see audit §5: the edge owns host 80/443).
+    stop_grace_period: 30s
+    # REL-02 budgets (audit §4.1): TLS + access-log buffers, idle 26 MB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 256
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # REL-02 healthcheck: the admin API on loopback proves Caddy is up
+    # with a loaded config (caddy validate is config-only). wget and
+    # curl verified present in the live edge container 2026-11-20.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
     environment:
       ACME_EMAIL: "${ACME_EMAIL:-}"
       PLATFORM_HTTP_HOST: "${PLATFORM_HTTP_HOST:-localhost}"
@@ -26,9 +55,13 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    # REL-02: health-gated — the edge only starts once frontend and
+    # backend are live, instead of serving 502s until they listen.
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
 volumes:
   caddy_data:
   caddy_config:

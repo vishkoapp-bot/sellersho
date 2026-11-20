@@ -237,6 +237,29 @@ class Rehearsal:
         FAKE_ROOT.mkdir(parents=True)
         (FAKE_ROOT / ".mig02-rehearsal").write_text("MIG-02 rehearsal fake root (disposable)\n")
         shutil.copytree(GIT_CHECKOUT / ".git", FAKE_ROOT / ".git")
+        # MIG-02 manifest fix (Nov 20, 2026): make_manifest.py now
+        # requires the release commit to resolve in --repo (fail-closed,
+        # never HEAD). The rehearsal's fake commit IDs ("a"*40, ...)
+        # are not git objects, so materialize one real commit per
+        # scenario — parented on the copied HEAD — and use its hash as
+        # the scenario's commit ID. The IDs stay opaque strings to the
+        # scenarios (release dir names, manifest "commit", deploy arg);
+        # only their values change from placeholder hex to real commit
+        # hashes, so `git log <release>` resolves the floor exactly as
+        # it did when the query ran against HEAD.
+        head = sh(["git", "-C", str(FAKE_ROOT), "rev-parse", "HEAD"],
+                  timeout=30, check=True).stdout.strip()
+        tree = sh(["git", "-C", str(FAKE_ROOT), "rev-parse",
+                   f"{head}^{{tree}}"], timeout=30, check=True).stdout.strip()
+        for name in FAKE_COMMITS:
+            FAKE_COMMITS[name] = sh(
+                ["git", "-C", str(FAKE_ROOT), "commit-tree", tree,
+                 "-p", head, "-m", f"MIG-02 rehearsal fake commit {name}"],
+                env={"GIT_AUTHOR_NAME": "mig02-rehearsal",
+                     "GIT_AUTHOR_EMAIL": "rehearsal@example.invalid",
+                     "GIT_COMMITTER_NAME": "mig02-rehearsal",
+                     "GIT_COMMITTER_EMAIL": "rehearsal@example.invalid"},
+                timeout=30, check=True).stdout.strip()
         (self.vol_dir / "drup_caddy_data").mkdir(parents=True, exist_ok=True)
         (self.vol_dir / "drup_caddy_config").mkdir(parents=True, exist_ok=True)
         (self.vol_dir / "drup_caddy_data" / "acme.json").write_text("{}")

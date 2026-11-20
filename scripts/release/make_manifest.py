@@ -94,7 +94,8 @@ def compose_images(stage: Path) -> dict:
     return images
 
 
-def compute_last_compatible(classification: dict, repo: Path) -> str:
+def compute_last_compatible(classification: dict, repo: Path,
+                            release_commit: str) -> str:
     """MIG-02 step 2 — the rollback floor, recomputed per release.
 
     Takes the classification entries with moves_floor=true (the
@@ -105,6 +106,16 @@ def compute_last_compatible(classification: dict, repo: Path) -> str:
     compatible with this schema: any binary at or after it understands
     the schema; anything before it may not.
 
+    The introducing-commit query is scoped to the RELEASE commit
+    (``git log <release_commit> ...``), never to the repo's HEAD:
+    the deploy host's checkout may sit on a branch whose history
+    does not contain the release commit at all (c47a9d5 deploy: the
+    server's HEAD was feature/dropshipper-discounts, which does not
+    contain ff57367, so the unscoped query found no introducing
+    commit for 202611110003 and the manifest gate failed closed).
+    The release commit is REQUIRED: it must resolve to a commit in
+    the repo, or this returns "" and the caller fails closed.
+
     The two pre-floor breakers (202610170009 trigger drop,
     202610250005 rename) resolve to the Nov 4 snapshot commit 2df713b,
     which is older than ff57367, so the current answer is ff57367
@@ -112,6 +123,23 @@ def compute_last_compatible(classification: dict, repo: Path) -> str:
     code references — see the classification). Returns "" on any
     failure so the caller fails closed instead of stamping a guess.
     """
+    if not release_commit:
+        print("release commit is required to compute lastCompatibleRevision "
+              "(refusing to default to HEAD)", file=sys.stderr)
+        return ""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify",
+                            f"{release_commit}^{{commit}}"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        print(f"git rev-parse failed for release commit {release_commit}: {exc}",
+              file=sys.stderr)
+        return ""
+    resolved = (r.stdout or "").strip()
+    if r.returncode != 0 or not resolved:
+        print(f"release commit {release_commit} is not a commit in {repo}; "
+              "refusing to compute lastCompatibleRevision", file=sys.stderr)
+        return ""
     breaking = [e["name"] for e in classification.get("entries", [])
                 if e.get("moves_floor")]
     if not breaking:
@@ -122,7 +150,8 @@ def compute_last_compatible(classification: dict, repo: Path) -> str:
     for name in breaking:
         rel = f"backend/migrations/{name}"
         try:
-            r = subprocess.run(["git", "-C", str(repo), "log", "--diff-filter=A",
+            r = subprocess.run(["git", "-C", str(repo), "log", resolved,
+                                "--diff-filter=A",
                                 "--format=%H", "--", rel],
                                capture_output=True, text=True, timeout=30)
         except Exception as exc:
@@ -130,7 +159,8 @@ def compute_last_compatible(classification: dict, repo: Path) -> str:
             return ""
         commits = [c for c in (r.stdout or "").splitlines() if c.strip()]
         if not commits:
-            print(f"no introducing commit found for {rel} (is {repo} the git repo?)", file=sys.stderr)
+            print(f"no introducing commit found for {rel} in the history of "
+                  f"release commit {resolved[:12]} (repo: {repo})", file=sys.stderr)
             return ""
         introducing = commits[0]
         try:
@@ -228,7 +258,8 @@ def main() -> int:
         return 2
     classification = json.loads(classification_path.read_text())
     repo = Path(args.repo) if args.repo else REPO
-    last_compatible = compute_last_compatible(classification, repo)
+    last_compatible = compute_last_compatible(classification, repo,
+                                              args.commit)
     if not last_compatible:
         print("cannot compute lastCompatibleRevision (see above); refusing to write a manifest without a rollback floor", file=sys.stderr)
         return 2

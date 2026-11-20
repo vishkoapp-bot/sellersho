@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -31,11 +32,30 @@ class ServerBuildDelivery(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='sellersho-server-build-') as folder:
             owned = Path(folder)
             (owned / 'deploy.ps1').write_bytes((ROOT / 'deploy.ps1').read_bytes())
-            # No real command can fall through to PATH. Unexpected Git operations,
-            # uploads, and build tools fail rather than touching a repository/server.
+            # SEC-01 gate files: deploy.ps1 runs scripts/run_secret_checks_nodocker.py
+            # against this owned dir, and that gate imports
+            # scripts/test_production_secrets (which imports
+            # scripts/credential_inventory) and reads docker-compose.prod.yml.
+            # Copy the real files so the gate runs against the real production
+            # compose text instead of failing on a missing module/file.
+            (owned / 'scripts').mkdir()
+            for name in ('run_secret_checks_nodocker.py', 'test_production_secrets.py',
+                         'credential_inventory.py'):
+                (owned / 'scripts' / name).write_bytes(
+                    (ROOT / 'scripts' / name).read_bytes())
+            (owned / 'docker-compose.prod.yml').write_bytes(
+                (ROOT / 'docker-compose.prod.yml').read_bytes())
+            # No real command can fall through to PATH except the test's own
+            # Python: deploy.ps1's SEC-01 gate resolves python via Get-Command,
+            # which needs PATH to contain the Python directory. Every other
+            # tool stays shimmed — PowerShell functions take precedence over
+            # PATH lookup, so git/ssh/scp/npm/go/tar/docker still cannot fall
+            # through. Backslashes are literal in a single-quoted PowerShell
+            # string; a single quote in the path is doubled.
+            python_dir = str(Path(sys.executable).resolve().parent)
             wrapper = r'''
 $ErrorActionPreference = 'Stop'
-$env:PATH = ''
+$env:PATH = '__PYTHON_DIR__'
 $global:remoteBodies = [System.Collections.Generic.List[string]]::new()
 $global:gitCalls = [System.Collections.Generic.List[string]]::new()
 function global:git {
@@ -69,7 +89,7 @@ function global:docker { throw 'Local Docker forbidden' }
 & (Join-Path $PSScriptRoot 'deploy.ps1') -BuildOnServer -SshHost fixture.invalid
 @{ bodies = @($global:remoteBodies); git = @($global:gitCalls) } |
     ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $PSScriptRoot 'captured.json')
-'''
+'''.replace('__PYTHON_DIR__', python_dir.replace("'", "''"))
             runner = owned / 'capture.ps1'
             runner.write_text(wrapper, encoding='utf-8')
             shell = shutil.which('powershell') or shutil.which('pwsh')

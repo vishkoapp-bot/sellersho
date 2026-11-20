@@ -85,6 +85,25 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(M.SafetyError): M.validate_mix(mix)
 
     @unittest.skipIf(M is None, 'guard not implemented')
+    def test_mix_weights_must_sum_to_100(self):
+        # Same total via a different split must still be refused: the
+        # contract is the exact mix AND the 100 total, not either alone.
+        with self.assertRaises(M.SafetyError): M.validate_mix([25,25,25,25])
+        with self.assertRaises(M.SafetyError): M.validate_mix([30,20,15,15,8,4,4,5])
+        M.validate_mix([30,20,15,15,8,4,4,4])
+
+    @unittest.skipIf(M is None, 'guard not implemented')
+    def test_workload_contract_gates_unread_fields(self):
+        import json
+        workload = json.loads((ROOT/'load-tests/workload.json').read_text())
+        M.validate_workload_contract(workload)
+        for key, bad in [('cpu_max_percent', 80), ('unexpected_error_rate_lt', 0.01),
+                         ('headroom_rps', 150), ('recovery_seconds', 300),
+                         ('total_api_rps', 50), ('dropped_iterations', 1)]:
+            with self.subTest(key=key), self.assertRaises(M.SafetyError):
+                M.validate_workload_contract(dict(workload, **{key: bad}))
+
+    @unittest.skipIf(M is None, 'guard not implemented')
     def test_failed_or_incomplete_runs_never_qualify(self):
         for evidence in ({}, {'errors': 0, 'identities': 1000}, {'dropped_iterations': 1}, {'wrong_amount': 1}):
             self.assertFalse(M.verdict(evidence)['certified'])

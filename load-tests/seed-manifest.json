@@ -18,7 +18,7 @@
   },
   "two_hour_required_each_write_queue": 28800,
   "required_total_write_stock_lower_bound": 86400,
-  "session_limitation": "1000distinct customer sessions;actual OTP and paced checkout drivers implemented;expiry/device acceptance pending",
+  "session_limitation": "1000 distinct customer sessions; actual OTP and paced checkout drivers implemented; session-lifecycle profile implemented (concurrent-device + OTP re-login + logout probe); true token expiry OPEN (no /auth/refresh endpoint, 3h JWT); logout does not revoke server-side (recorded finding, AUTH-01)",
   "canonical_saleable_units": 5000000,
   "origin_warehouses": 100,
   "historical_lines": 140000,

@@ -5,23 +5,25 @@ import {ArrivalScheduler} from './arrival-plan.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import {performance} from 'node:perf_hooks';
-const users=JSON.parse(fs.readFileSync('/sessions/users.json')).users;
+import {resolveTarget,loadSessions,loadCa} from './target-config.mjs';
+const capTarget=resolveTarget();
+const users=loadSessions(capTarget);
 if(users.length!==1000||new Set(users.map(u=>u.id)).size!==1000)throw Error('1000 distinct users required');
 const background=process.env.CAPACITY_BACKGROUND==='1';
-const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:fs.readFileSync('/trust/root.crt'),rejectUnauthorized:true});
+const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:loadCa(capTarget),rejectUnauthorized:true});
 const droppedSlots=[];
 const records=[],identities=new Set();let helpers=0,helperErrors=0,active=0,dropped=0,peakActive=0,maximumArrivalLag=0;
 function call(user,route,payload,kind,arrival=null){return new Promise(resolve=>{
  const started=performance.now();let done=false;
  const finish=(status,body)=>{if(done)return;done=true;records.push({principal:users.indexOf(user),route_class:kind,status,scheduled_ms:arrival?.scheduled_ms??null,arrival_lag_ms:arrival?started-start-arrival.scheduled_ms:null,started_ms:started-start,latency_ms:performance.now()-started});resolve({status,body})};
- const req=https.request({hostname:'capacity.example.test',path:route,method:payload?'POST':'GET',agent,timeout:5000,
-  headers:payload?{'Content-Type':'application/json'}:{Authorization:'Bearer '+user.token}},res=>{
+ const req=https.request({hostname:capTarget.ip||capTarget.host,port:capTarget.port,servername:capTarget.host,path:route,method:payload?'POST':'GET',agent,timeout:5000,
+  headers:payload?{'Content-Type':'application/json',Host:capTarget.host}:{Authorization:'Bearer '+user.token,Host:capTarget.host}},res=>{
    let text='';res.on('data',b=>{if(text.length<65536)text+=b});res.on('end',()=>{let body;try{body=JSON.parse(text)}catch{}finish(res.statusCode,body)});
  });req.on('timeout',()=>req.destroy());req.on('error',()=>finish(0));req.end(payload?JSON.stringify(payload):undefined);
 })}
 function readOTP(user){return new Promise(resolve=>{
  helpers++;let done=false;const finish=value=>{if(done)return;done=true;if(!value)helperErrors++;resolve(value)};
- const req=http.request({hostname:'sms',port:8081,path:'/fixture/otp',method:'POST',headers:{Authorization:process.env.CAPACITY_SMS_KEY,'Content-Type':'application/json'},timeout:5000},res=>{
+ const req=http.request({hostname:capTarget.smsHost,port:capTarget.smsPort,path:'/fixture/otp',method:'POST',headers:{Authorization:process.env.CAPACITY_SMS_KEY,'Content-Type':'application/json'},timeout:5000},res=>{
   let text='';res.on('data',b=>{if(text.length<8192)text+=b});res.on('end',()=>{try{finish(res.statusCode===200?JSON.parse(text).code:null)}catch{finish(null)}});
  });req.on('timeout',()=>req.destroy());req.on('error',()=>finish(null));req.end(JSON.stringify({recipient:'98'+user.mobile.slice(1)}));
 })}
@@ -43,7 +45,7 @@ await new Promise(resolve=>{const timer=setInterval(()=>{
  });
  browseSchedule?.drain(arrival=>{const i=arrival.ordinal,user=users[i%1000];
   if(arrival.missed_schedule||active>=1000){dropped++;droppedSlots.push({...arrival,flow:'browse',reason:arrival.missed_schedule?'missed_schedule':'active_limit'});return}
-  active++;peakActive=Math.max(peakActive,active);call(user,'/api/v1/products?page='+(i%20+1),null,'browse',arrival).finally(()=>active--);
+  active++;peakActive=Math.max(peakActive,active);call(user,'/api/v1/products?limit=24',null,'browse',arrival).finally(()=>active--);
  });
  if(loginSchedule.processed===1000&&(!browseSchedule||browseSchedule.processed===4000)&&active===0){clearInterval(timer);resolve()}
 },2)});

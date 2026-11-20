@@ -32,3 +32,10 @@ test('internal browser refuses external targets and missing run capability',asyn
  assert.throws(()=>validateInternalBrowserTarget({nonce,base:'https://localhost'},nonce));
  assert.throws(()=>validateInternalBrowserTarget({nonce,base:'https://capacity.example.test'},undefined));
 });
+test('native browser accepts only the exact loopback run target',async()=>{
+ const {validateNativeBrowserTarget}=await import('./browser-target.mjs');
+ const nonce='a'.repeat(24);
+ const target={nonce,base:'https://capacity.example.test:8443',port:8443,listen:'127.0.0.1'};
+ assert.doesNotThrow(()=>validateNativeBrowserTarget(target,nonce));
+ for(const change of [{listen:'0.0.0.0'},{base:'https://sellershow.ir:8443'},{base:'https://capacity.example.test:443'},{nonce:'b'.repeat(24)},{port:0}])assert.throws(()=>validateNativeBrowserTarget({...target,...change},nonce));
+});

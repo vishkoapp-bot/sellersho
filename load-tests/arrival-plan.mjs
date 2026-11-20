@@ -1,4 +1,4 @@
-const weights=[30,20,15,15,8,4,4,4];
+import {WEIGHTS as weights} from './workload.mjs';
 export function arrivalPlan(seconds,rps){
  if(!Number.isInteger(seconds)||seconds<1||seconds>7200||![100,200].includes(rps))throw Error('arrival plan outside bounded local contract');
  return {seconds,rps,offered:seconds*rps,counts:weights.map(w=>w*seconds*rps/100)};

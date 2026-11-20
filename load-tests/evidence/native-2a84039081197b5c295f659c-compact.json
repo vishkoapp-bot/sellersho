@@ -1,0 +1,23 @@
+{
+  "run": "2a84039081197b5c295f659c",
+  "scope": "local-only-native",
+  "certified": false,
+  "manifest_keys": [
+    "adapters",
+    "backend_pool",
+    "certified",
+    "cleanup",
+    "disk_class",
+    "failure",
+    "fixture_validity",
+    "host",
+    "limitations",
+    "logical_cpus",
+    "replicas",
+    "run",
+    "runner",
+    "scope",
+    "target",
+    "tls"
+  ]
+}

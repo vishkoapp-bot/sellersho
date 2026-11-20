@@ -4,18 +4,20 @@ import https from 'node:https';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-const users=JSON.parse(fs.readFileSync('/sessions/users.json')).users;
+import {resolveTarget,loadSessions,loadCa} from './target-config.mjs';
+const capTarget=resolveTarget();
+const users=loadSessions(capTarget);
 if(users.length!==1000||new Set(users.map(u=>u.id)).size!==1000||new Set(users.map(u=>u.token)).size!==1000)throw Error('1000 independent sessions required');
-const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:fs.readFileSync('/trust/root.crt'),rejectUnauthorized:true});
-const classes=['list','detail','store','account','quote','create','initiate','callback'],weights=[30,20,15,15,8,4,4,4];
+const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:loadCa(capTarget),rejectUnauthorized:true});
+import {CLASSES as classes,WEIGHTS as weights} from './workload.mjs';
 const requests=[],helpers=[],rows=[],identities=new Set();let active=0,dropped=0,start=0;
 function call(row,phase){return new Promise(resolve=>{
  let done=false;const begun=performance.now();const finish=(status,body)=>{if(done)return;done=true;
   const record={ordinal:row.ordinal,principal:row.principal,route_class:row.kind,status,started_ms:phase==='measured'?begun-start:null,latency_ms:performance.now()-begun};
   (phase==='measured'?requests:helpers).push(record);resolve({status,body,record});
  };
- const req=https.request({hostname:'capacity.example.test',path:row.path,method:row.body?'POST':'GET',agent,timeout:5000,
-  headers:{'Content-Type':'application/json',Authorization:'Bearer '+users[row.principal].token,...(row.body?.idempotencyKey?{'Idempotency-Key':row.body.idempotencyKey}:{})}},res=>{
+ const req=https.request({hostname:capTarget.ip||capTarget.host,port:capTarget.port,servername:capTarget.host,path:row.path,method:row.body?'POST':'GET',agent,timeout:5000,
+  headers:{'Content-Type':'application/json',Host:capTarget.host,Authorization:'Bearer '+users[row.principal].token,...(row.body?.idempotencyKey?{'Idempotency-Key':row.body.idempotencyKey}:{})}},res=>{
    let text='';res.on('data',b=>{if(text.length<262144)text+=b});res.on('end',()=>{let body;try{body=JSON.parse(text)}catch{}finish(res.statusCode,body)});res.on('error',()=>finish(0));
   });req.on('timeout',()=>req.destroy());req.on('error',()=>finish(0));req.end(row.body?JSON.stringify(row.body):undefined);
 })}
@@ -36,7 +38,7 @@ async function journey(principal){
   for(const kind of (readOnly?['list','detail','store','account']:classes)){
    if(performance.now()>=until)break;
    const row={ordinal:sequence++,principal,kind};
-   if(kind==='list')row.path='/api/v1/products?page='+(cycle%20+1);
+   if(kind==='list')row.path='/api/v1/products?limit=24';
    if(kind==='detail')row.path='/api/v1/products/cap-product-'+product;
    if(kind==='store')row.path='/api/v1/stores/cap-store-'+store;
    if(kind==='account')row.path='/api/v1/auth/me';

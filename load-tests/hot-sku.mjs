@@ -4,14 +4,16 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {evaluateHotSKU} from './hot-sku-policy.mjs';
-const users=JSON.parse(fs.readFileSync('/sessions/users.json')).users;
+import {resolveTarget,loadSessions,loadCa} from './target-config.mjs';
+const capTarget=resolveTarget();
+const users=loadSessions(capTarget);
 if(users.length!==1000||new Set(users.map(u=>u.id)).size!==1000)throw Error('independent full session fixture required');
-const agent=new https.Agent({keepAlive:true,maxSockets:100,ca:fs.readFileSync('/trust/root.crt'),rejectUnauthorized:true});
+const agent=new https.Agent({keepAlive:true,maxSockets:100,ca:loadCa(capTarget),rejectUnauthorized:true});
 const requests=[],helpers=[],summary={certified:false,scope:'LOCAL focused100-customer hot SKU; five units',contenders:100,paid:0,conflicts:0,wrongAmount:0,failures:0,duplicateCallbacks:0,failed_gates:[],requests_raw:requests,helper_requests_raw:helpers};
 function call(principal,kind,path,body,helper=false){return new Promise(resolve=>{
  let done=false;const start=performance.now();
  const finish=(status,data)=>{if(done)return;done=true;(helper?helpers:requests).push({principal,route_class:kind,status,latency_ms:performance.now()-start});resolve({status,body:data})};
- const req=https.request({hostname:'capacity.example.test',path,method:body?'POST':'GET',agent,timeout:10000,headers:{Authorization:'Bearer '+users[principal].token,'Content-Type':'application/json',...(body?.idempotencyKey?{'Idempotency-Key':body.idempotencyKey}:{})}},res=>{
+ const req=https.request({hostname:capTarget.ip||capTarget.host,port:capTarget.port,servername:capTarget.host,path,method:body?'POST':'GET',agent,timeout:10000,headers:{Authorization:'Bearer '+users[principal].token,'Content-Type':'application/json',Host:capTarget.host,...(body?.idempotencyKey?{'Idempotency-Key':body.idempotencyKey}:{})}},res=>{
   let raw='';res.on('data',b=>{if(raw.length<262144)raw+=b});res.on('end',()=>{let data;try{data=JSON.parse(raw)}catch{}finish(res.statusCode,data)});res.on('error',()=>finish(0));
  });req.on('timeout',()=>req.destroy());req.on('error',()=>finish(0));req.end(body?JSON.stringify(body):undefined);
 })}

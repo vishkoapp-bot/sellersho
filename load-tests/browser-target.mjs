@@ -15,4 +15,8 @@ export function validateInternalBrowserTarget(target,marker){
 export function validateRelayBrowserTarget(target,marker){
  if(!/^[a-f0-9]{24}$/.test(marker||'')||target.nonce!==marker||target.listen!=='127.0.0.1'||!Number.isInteger(target.port)||target.port<1||target.port>65535||target.base!=='https://capacity.example.test:'+target.port)throw Error('browser relay requires exact loopback/private run capability');
 }
+
+export function validateNativeBrowserTarget(target,marker){
+ if(!/^[a-f0-9]{24}$/.test(marker||'')||target.nonce!==marker||target.listen!=='127.0.0.1'||!Number.isInteger(target.port)||target.port<1||target.port>65535||target.base!=='https://capacity.example.test:'+target.port)throw Error('browser native target requires exact loopback/private run capability');
+}
 export function isNetworkResponse(row){return row.status>0&&!row.from_cache&&!row.from_service_worker}

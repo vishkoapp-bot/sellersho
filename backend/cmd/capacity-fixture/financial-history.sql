@@ -1,5 +1,12 @@
 -- Synthetic historical snapshots, only in the disposable guarded CAP database.
 -- This is load shape, not proof of production history or a migration repair.
+-- CAP-01 (2026-11-20): the UPDATE below flips profit_released false->true,
+-- which the FIN005 writer fence (migration 202611160002, Nov 16) only allows
+-- when the session carries sellersho.fin005_writer='v1' — the same
+-- transaction-local set_config the app's own release path uses
+-- (internal/repository/dispute_resolution.go). Without it the fixture
+-- fails on current HEAD (and would fail identically under Docker).
+SELECT set_config('sellersho.fin005_writer','v1',true);
 CREATE TEMP TABLE cap_history AS SELECT i, 'cap-order-'||i id,
   ((i-1)/100)%10 bucket, 1+(i%10000) product_number,
   now()-(30+i%330)*interval '1 day' occurred

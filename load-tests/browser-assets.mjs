@@ -5,23 +5,29 @@ import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {X509Certificate,createHash} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-import {validateInternalBrowserTarget,validateRelayBrowserTarget,isNetworkResponse} from './browser-target.mjs';
+import {validateInternalBrowserTarget,validateRelayBrowserTarget,validateNativeBrowserTarget,isNetworkResponse} from './browser-target.mjs';
 const [targetFile,rootCertificate,modulesRoot,output]=process.argv.slice(2);
 const target=JSON.parse(fs.readFileSync(targetFile));
 // The runner checks container/network IDs and labels before creation and load.
 // No Docker socket is exposed here; the private marker is mounted by that runner.
 const relay=process.env.CAPACITY_BROWSER_RELAY==='1';
-(relay?validateRelayBrowserTarget:validateInternalBrowserTarget)(target,process.env.SELLERSHO_CAPACITY_RUN);
+const native=process.env.CAPACITY_BROWSER_NATIVE==='1';
+(relay?validateRelayBrowserTarget:native?validateNativeBrowserTarget:validateInternalBrowserTarget)(target,process.env.SELLERSHO_CAPACITY_RUN);
 const require=createRequire(path.join(modulesRoot,'package.json'));
 const puppeteer=(await import(pathToFileURL(require.resolve('puppeteer')).href)).default;
 const certificate=new X509Certificate(fs.readFileSync(rootCertificate));
-const spki=createHash('sha256').update(certificate.publicKey.export({type:'spki',format:'der'})).digest('base64');
-const executable=relay?['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(p=>fs.existsSync(p)):'/usr/bin/chromium';
-const rows=[],pages=[],summary={certified:false,scope:'LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification',requests_raw:rows,pages,failed_gates:[],blocked_external:0,page_errors:0,tls:'exception pinned to this ephemeral CA public-key hash only;no global certificate bypass',generator_cpu_scope:'isolated Chromium container;not sustained capacity evidence'};
+// Relay-failure diagnosis (CAP-01 2026-11-20): the relay run pinned the CA cert SPKI, but Chrome's
+// --ignore-certificate-errors-spki-list matches the LEAF cert SPKI. The relay exchanged TLS handshake
+// bytes then aborted before any HTTP request - exactly a pin mismatch. Native runs pass the leaf SPKI
+// (CAPACITY_BROWSER_LEAF_SPKI); if native pages render with it, the hypothesis is confirmed.
+const spki=process.env.CAPACITY_BROWSER_LEAF_SPKI||createHash('sha256').update(certificate.publicKey.export({type:'spki',format:'der'})).digest('base64');
+const executable=relay?['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(p=>fs.existsSync(p)):native?undefined:'/usr/bin/chromium';
+const rows=[],pages=[],summary={certified:false,scope:'LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification',requests_raw:rows,pages,failed_gates:[],blocked_external:0,page_errors:0,tls:'exception pinned to this ephemeral CA public-key hash only;no global certificate bypass',tls_pin:process.env.CAPACITY_BROWSER_LEAF_SPKI?'leaf-spki':'ca-spki (legacy)',generator_cpu_scope:'isolated Chromium container;not sustained capacity evidence'};
 let browser;
 try{
  if(relay){summary.scope+=';loopback raw TLS relay functional evidence only';summary.timing_qualification='EXCLUDED: Docker exec relay and shared host browser timings';summary.generator_cpu_scope='host Chrome CPU unmeasured;not capacity evidence'}
- browser=await puppeteer.launch({headless:true,executablePath:executable,args:[...(relay?['--host-resolver-rules=MAP capacity.example.test 127.0.0.1']:['--no-sandbox']),'--no-proxy-server','--disable-background-networking','--disable-component-update','--ignore-certificate-errors-spki-list='+spki]});
+ if(native){summary.scope+=';native loopback nginx TLS endpoint, local puppeteer Chrome';summary.generator_cpu_scope='local puppeteer Chrome on shared VM;not sustained capacity evidence'}
+ browser=await puppeteer.launch({headless:true,executablePath:executable,args:[...((relay||native)?['--host-resolver-rules=MAP capacity.example.test 127.0.0.1']:[]),...(native?['--no-sandbox']:relay?[]:['--no-sandbox']),'--no-proxy-server','--disable-background-networking','--disable-component-update','--ignore-certificate-errors-spki-list='+spki]});
  summary.browser_version=await browser.version();
  await Promise.all(Array.from({length:10},async(_,principal)=>{
   const context=await browser.createBrowserContext();const page=await context.newPage();let phase='cold';const begun=new Map();

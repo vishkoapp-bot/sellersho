@@ -29,36 +29,41 @@
     },
     {
       "name": "hot-account",
-      "status": "OPEN",
+      "status": "IMPLEMENTED: 100 paid cancels on one store + duplicate-cancel probe + obligation oracle (hot-account.mjs); native run pending",
       "requires": "refund/payout/settlement contention and signed balance oracle"
     },
     {
       "name": "staff-report",
-      "status": "IMPLEMENTED30second role-scoped variant;not exercised;acceptance OPEN",
+      "status": "IMPLEMENTED 30 second role-scoped variant; native run pending; acceptance OPEN",
       "total_api_rps": 100,
       "requires": "warehouse/seller/admin roles and production worker schedule"
     },
     {
       "name": "cold-cache",
-      "status": "OPEN",
+      "status": "IMPLEMENTED: native --cold-cache (FLUSHALL + backend restart, cold vs warm labeled runs); native run pending",
       "requires": "fresh isolated Redis, separately labeled warm run"
     },
     {
       "name": "assets-tls-browser",
-      "status": "IMPLEMENTED10anonymous cold/warm contexts;internal image setup failed;bounded host relay FAILED before HTTP/zero rendered pages;timings excluded;acceptance OPEN",
+      "status": "REPLACED: relay FAILED (zero rendered pages, diagnosed CA-vs-leaf SPKI pin mismatch); native puppeteer Chrome + leaf-SPKI pin implemented; native run pending; timings excluded; acceptance OPEN",
       "requires": "built frontend and real browser cohort; extra assets/domain authorization requests counted"
     },
     {
       "name": "recovery",
-      "status": "OPEN;pure100/200RPS arrival planner only;continuous headroom/recovery integration not implemented",
+      "status": "IMPLEMENTED: native --headroom (200 RPS 300s + 100 RPS 120s recovery); native run pending",
       "burst_rps": 200,
       "burst_seconds": 300,
       "recovery_seconds": 120
     },
     {
       "name": "faults",
-      "status": "OPEN",
+      "status": "IMPLEMENTED: native --fault-provider-timeout / --fault-redis-loss / --fault-restart; native runs pending",
       "requires": "provider timeouts/ambiguous outcomes, restart boundaries, duplicate callback and conservation"
+    },
+    {
+      "name": "session-lifecycle",
+      "status": "IMPLEMENTED: 10-user cohort, concurrent-device reads, OTP re-login, logout probe (logout does not revoke server-side: recorded finding); true expiry OPEN (no refresh endpoint, 3h JWT)",
+      "requires": "OTP double, session fixture"
     }
   ]
 }

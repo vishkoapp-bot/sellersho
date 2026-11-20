@@ -43,19 +43,28 @@ SELECT 'cap-aged-position-'||i,'cap-aged-product-'||i,'cap-supplier-'||i,'cap-ag
 		t.Fatal(err)
 	}
 	defer db.ExecContext(ctx, `UPDATE platform_settings SET storage_fee_enabled=false WHERE id=1`)
+	// CAP-01 (2026-11-20): expectation corrected for the immutable
+	// receipt-history contract (4524ee3, FIN-006). The assessment now
+	// charges ONLY certified receipt lots in
+	// warehouse_storage_receipt_lots; a lot can only be created by a
+	// real post-cutover QC receipt or customer return (migration
+	// 202611150003 guard_storage_receipt_lot_insert), and "a missing
+	// receipt lot is explicit unknown history, never invented old
+	// debt". This synthetic aged cohort has positions/balances/
+	// movements but no certified lots, so the correct outcome is
+	// zero examined receipts and zero charges — NOT the pre-4524ee3
+	// expectation of 3320 charged days at 4160 Toman/day, which the
+	// old position-scanning assessment produced. Physical
+	// conservation (2000 units) is still asserted below. The
+	// fee-charging path itself is covered by
+	// storage_history_integration_test.go; the aged cohort's role
+	// here is the data floor + conservation, not fee computation.
 	run, err := suppliers.RunStorageFeeAssessment(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDays := 0
-	for i := 1; i <= 100; i++ {
-		days := 10 + (i%6)*20 - 30
-		if days > 0 {
-			wantDays += days
-		}
-	}
-	if run.ChargesCreated != wantDays || run.TotalCharged != int64(wantDays)*4160 {
-		t.Fatalf("aged fee units/days: %+v want days=%d rate=4160Toman/position/day", run, wantDays)
+	if run.ReceiptsExamined != 0 || run.ChargesCreated != 0 || run.TotalCharged != 0 || run.MoreWork {
+		t.Fatalf("aged cohort without certified receipt lots must be unscored: %+v", run)
 	}
 	replay, err := suppliers.RunStorageFeeAssessment(ctx)
 	if err != nil || replay.ChargesCreated != 0 || replay.TotalCharged != 0 {
@@ -63,11 +72,11 @@ SELECT 'cap-aged-position-'||i,'cap-aged-product-'||i,'cap-supplier-'||i,'cap-ag
 	}
 	var receipts, physical, positions, charged, checkpoint int64
 	if err := db.QueryRowContext(ctx, `SELECT
- (SELECT sum(quantity) FROM inventory_movements WHERE reference_type='capacity_aged_receipt'),
- (SELECT sum(quantity) FROM inventory_balances WHERE product_id LIKE 'cap-aged-product-%'),
- (SELECT sum(qty) FROM warehouse_storage_positions WHERE id LIKE 'cap-aged-position-%'),
- (SELECT sum(amount_toman) FROM warehouse_storage_fee_charges WHERE position_id LIKE 'cap-aged-position-%'),
- (SELECT sum(total_fee_charged_toman) FROM warehouse_storage_positions WHERE id LIKE 'cap-aged-position-%')`).Scan(&receipts, &physical, &positions, &charged, &checkpoint); err != nil {
+ (SELECT COALESCE(sum(quantity),0) FROM inventory_movements WHERE reference_type='capacity_aged_receipt'),
+ (SELECT COALESCE(sum(quantity),0) FROM inventory_balances WHERE product_id LIKE 'cap-aged-product-%'),
+ (SELECT COALESCE(sum(qty),0) FROM warehouse_storage_positions WHERE id LIKE 'cap-aged-position-%'),
+ (SELECT COALESCE(sum(amount_toman),0) FROM warehouse_storage_fee_charges WHERE position_id LIKE 'cap-aged-position-%'),
+ (SELECT COALESCE(sum(total_fee_charged_toman),0) FROM warehouse_storage_positions WHERE id LIKE 'cap-aged-position-%')`).Scan(&receipts, &physical, &positions, &charged, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	if receipts != 2000 || physical != receipts || positions != physical || charged != run.TotalCharged || checkpoint != charged {
@@ -76,5 +85,5 @@ SELECT 'cap-aged-position-'||i,'cap-aged-product-'||i,'cap-supplier-'||i,'cap-ag
 	if _, err := db.ExecContext(ctx, `UPDATE platform_settings SET storage_fee_enabled=false WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("aged cohort100positions/2000units ages10..110days;fee-enabled disposable variant charged%dToman across%ddays;replay0;flag restoredOFF", charged, wantDays)
+	t.Logf("aged cohort 100 positions/2000 units ages 10..110 days; no certified receipt lots, so assessment correctly scores 0 (unknown history, never invented debt); physical conservation holds; flag restored OFF")
 }

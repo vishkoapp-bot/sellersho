@@ -74,7 +74,14 @@ Five million current sellable demand units and2000distinct aged central units ha
 receipt provenance. Historical100000orders contain140000lines with varied quantities
 and60%delivered/10%shipped/10%processing/10%cancelled/10%pending status distribution,
 accepted immutable money snapshots,conserved supplier origins,80%paid transactions,
-historical receipts/captures and paired posted releases.100releases and100pending
+historical receipts/captures and paired posted releases. The real
+release cohort (100 releases via ReleaseClosedReturnWindows) runs as
+its own test/gate (TestCapacityReleaseCohort) after the floor test and
+is recorded in the manifest as release_cohort — on 2026-11-20 it
+released 0/100 on this VM because the app's 300ms per-candidate
+budget is exceeded by seq-scan-heavy eligibility checks (no index on
+ledger_entries.related_order_or_dispute; order_item_origins cast
+join); an app capacity finding, not a harness defect. 100pending
 payout reservations execute real repository helpers with idempotent replay and
 current/prior-month posted/reserved reconciliation.100aged positions cover10..110days;
 fee assessment is tested in a disposable flag-enabled variant then restoredOFF.
@@ -111,10 +118,27 @@ Docker cleanup. Host browser uses normal sandbox and only this ephemeral CA SPKI
 External page requests are blocked; browser and nginx/domain/API counters reconcile.
 Relay timing and unmeasured host-browser CPU are excluded from capacity evidence.
 
-Not yet completed:full price/ledger/refund oracle,hot-account,fault/restart/expiry/
-device,continuous200RPS headroom+recovery,qualified cold/warm cache comparison,
-full-duration commerce/journeys/staff and production-hardware CAP02. See current
-cap01-report.md and local-baseline-evidence.md for exact verdicts.
+CAP-01 native adapter (D1, 2026-11-20): scripts/load_test_native.py provisions
+disposable PG16 + scratch Redis + backend + doubles + nginx TLS on loopback (this VM
+cannot run Docker); Node drivers take target/CA/sessions from the environment via
+load-tests/target-config.mjs. D2: generator is Node-only; dead k6 scripts api-100rps.js
+and baseline.js were deleted (no k6 binary here; never invoked). D3: short baseline
+suite pinned to 10s/30s/90s. D4: no target parameter; hardcoded disposable domain
+capacity.example.test plus a guard refusing any other host/IP. D5: latency failures
+are app work; CAP-01 never tunes server code to pass. D6: deployment-hardware
+identity stays OPEN for CAP-02.
+Profiles added 2026-11-20: --hot-account (100 paid cancels, one store, duplicate-
+cancel probe + obligation oracle), --session-lifecycle (concurrent-device, OTP
+re-login, logout probe; true expiry OPEN, no refresh endpoint), --cold-cache
+(FLUSHALL + restart, cold vs warm labeled), --headroom (200 RPS 5 min + 100 RPS
+2 min recovery), --fault-provider-timeout / --fault-redis-loss / --fault-restart.
+Browser: relay failed (zero rendered pages); diagnosed as a CA-vs-leaf SPKI pin
+mismatch; replaced by a native puppeteer-Chrome profile with a leaf-SPKI pin.
+Oracle extended: price identity, refund-obligation existence/uniqueness/amount
+bound, ledger sanity; full ledger conservation across deferred releases stays
+OPEN (FIN-013). See cap01-progress.md and local-baseline-evidence.md for exact
+verdicts; full-duration commerce/journeys/staff and production-hardware CAP02
+remain open.
 
 Review fix 1: arrival and cleanup policy
 --------------------------------------

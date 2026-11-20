@@ -6,14 +6,16 @@ import {arrivalPlan,ArrivalScheduler,arrivalSummary} from './arrival-plan.mjs';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-const fixture=JSON.parse(fs.readFileSync('/sessions/users.json'));
+import {resolveTarget,loadSessions,loadCa} from './target-config.mjs';
+const capTarget=resolveTarget();
+const fixture={users:loadSessions(capTarget),staff:(()=>{try{return JSON.parse(fs.readFileSync(capTarget.sessionsFile)).staff||[]}catch{return []}})()};
 const staffVariant=process.env.CAPACITY_STAFF==='1';
 if(staffVariant&&fixture.staff?.length!==20)throw Error('20 independent authorized staff sessions required');
 const users=staffVariant?[...fixture.staff,...fixture.users.slice(20)]:fixture.users;
 
 if(users.length!==1000||new Set(users.map(u=>u.id)).size!==1000||new Set(users.map(u=>u.token)).size!==1000)throw Error('1000 independent sessions required');
-const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:fs.readFileSync('/trust/root.crt'),rejectUnauthorized:true});
-const classes=['list','detail','store','account','quote','create','initiate','callback'],weights=[30,20,15,15,8,4,4,4];
+const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:loadCa(capTarget),rejectUnauthorized:true});
+import {CLASSES as classes,WEIGHTS as weights} from './workload.mjs';
 const droppedSlots=[];let scheduler;
 const requests=[],helpers=[],rows=[],identities=new Set();let active=0,dropped=0,start=0;
 function call(row,phase){return new Promise(resolve=>{
@@ -21,8 +23,8 @@ function call(row,phase){return new Promise(resolve=>{
   const record={ordinal:row.ordinal,principal:row.principal,route_class:row.kind,status,scheduled_ms:row.arrival?.scheduled_ms??null,arrival_lag_ms:row.arrival?begun-start-row.arrival.scheduled_ms:null,started_ms:phase==='measured'?begun-start:null,latency_ms:performance.now()-begun};
   (phase==='measured'?requests:helpers).push(record);resolve({status,body,record});
  };
- const req=https.request({hostname:'capacity.example.test',path:row.path,method:row.body?'POST':'GET',agent,timeout:5000,
-  headers:{'Content-Type':'application/json',Authorization:'Bearer '+users[row.principal].token,...(row.body?.idempotencyKey?{'Idempotency-Key':row.body.idempotencyKey}:{})}},res=>{
+ const req=https.request({hostname:capTarget.ip||capTarget.host,port:capTarget.port,servername:capTarget.host,path:row.path,method:row.body?'POST':'GET',agent,timeout:5000,
+  headers:{'Content-Type':'application/json',Host:capTarget.host,Authorization:'Bearer '+users[row.principal].token,...(row.body?.idempotencyKey?{'Idempotency-Key':row.body.idempotencyKey}:{})}},res=>{
    let text='';res.on('data',b=>{if(text.length<262144)text+=b});res.on('end',()=>{let body;try{body=JSON.parse(text)}catch{}finish(res.statusCode,body)});res.on('error',()=>finish(0));
   });req.on('timeout',()=>req.destroy());req.on('error',()=>finish(0));req.end(row.body?JSON.stringify(row.body):undefined);
 })}
@@ -71,7 +73,7 @@ async function measured(kind,ordinal,arrival){
  else if(kind==='quote'){row=cart(quoteSerial%1000,quoteSerial++);row.forCheckout=quoteSerial%2===0;}
  else{
   const principal=staffVariant?20+readSerial++%980:readSerial++%1000,user=users[principal],product=1+((ordinal*7919)%10000),store=1+(product%100);
-  row={principal,userId:user.id,kind,path:kind==='list'?'/api/v1/products?page='+(ordinal%20+1):kind==='detail'?'/api/v1/products/cap-product-'+product:kind==='store'?'/api/v1/stores/cap-store-'+store:'/api/v1/auth/me'};
+  row={principal,userId:user.id,kind,path:kind==='list'?'/api/v1/products?limit=24':kind==='detail'?'/api/v1/products/cap-product-'+product:kind==='store'?'/api/v1/stores/cap-store-'+store:'/api/v1/auth/me'};
   if(kind==='account'){
    if(staffVariant){
     const principal=staffSerial++%20,user=users[principal],period=new Date().toISOString().slice(0,7);

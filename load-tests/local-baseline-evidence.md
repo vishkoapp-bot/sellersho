@@ -110,3 +110,49 @@ zero payment/order amount mismatches. Carrier success path: one cached quote
 provider call, zero outbound requests. FAILED latency: token p95/p99
 1393.317/1430.813 ms; callback 1017.468/1017.468; duplicate 156.387/156.387.
 Unchanged mutation gate 750/2000 ms. Cleanup verified; no capacity certification.
+
+## Native short baseline suite — 2026-11-20 ~01:00 Tehran (first full native run)
+
+Report `~/workspace/cap01-native-runs/sellersho-cap-report-500f7a0b7410`
+(nonce `b90799615573458d66d8b3a4`; compact evidence
+`load-tests/evidence/native-b90799615573458d66d8b3a4-compact.json`).
+Disposable PG16 + scratch Redis + backend + nginx TLS on loopback;
+fixture exit 0 (users 1210, suppliers 100, stores 100, products 10101,
+variants 50001, orders 100000, saleable 5,000,000). Release cohort
+FAILED 0/100 (separate gate; app 300ms per-candidate budget exceeded
+by seq-scan-heavy eligibility — see cap01-progress.md). Verdict
+certified:false by design (local preparation only; CAP-02 open).
+
+Profiles: 3/16 PASSED (fault-provider-timeout, fault-redis-loss,
+fault-restart); 13 FAILED, all labeled. ALL commerce oracles MATCHED
+within stated scope (price identity, ledger sanity, refund
+obligations, hot-sku, hot-account) — money conserved while
+latency/throughput gates fail.
+
+Route p95 (api-baseline): list 1089ms, detail 4369ms, store 1606ms,
+account 993ms, quote 3699ms, create 5091ms (gates: reads 300ms,
+writes 750ms). Journey list p95 12210ms, create 7815ms, 0 completed
+checkouts. Driver ceiling on this VM: api-baseline 357/1000 requests
+(643 dropped arrivals); headroom burst 20923/60000 (39077 dropped).
+CPU max 64.6%–375.6% vs 70% contract. Counter gates matched except
+api-rolling, journey-baseline, staff-baseline, headroom (requests
+passing domain auth but not reaching backend api metrics). OTP:
+otp_send 43% 503 (login-ramp) / 28% (otp-background) — app
+dependency-budget overload shedder; otp_verify 100% OK. Browser:
+10/10 pages HTTP 200 with leaf-SPKI pin, but all warm-render gates
+failed — pages load only the 29-char shell (3183B); SPA bundle does
+not render content in-window; timings excluded. session-lifecycle:
+concurrent-device 10/10, re-login 10/10, old-token-after-logout
+10/10 (logout does not revoke — recorded). hot-account: 100 paid, 0
+cancelled (cancel p95 8630ms). cold-cache-warm: fixture_preparation
+FAILED. fault_redis_loss: health 503 during loss, 200 after.
+fault_restart: oracle identical before/after, converged.
+
+Known harness defects found by this run (fixed after it, re-run
+pending): drivers use obsolete `?page=N` list pagination (page 2+
+→ 400 "invalid catalog page request" under the PERF-01 cursor
+contract) — browse 94% errors in otp-background are that 400;
+hot-sku preparation quote 409 inventory_origin_unavailable with the
+runner oracle simultaneously reporting the success state (sellable 0,
+captured 5, paid 5) — under investigation (hot-sku-first isolation
+run in progress at time of writing).

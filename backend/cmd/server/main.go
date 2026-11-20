@@ -662,11 +662,21 @@ func run(signalCtx context.Context) (result error) {
 				http.Error(w, `{"error":"Store not found"}`, http.StatusNotFound)
 				return
 			}
-			orders, err := orderRepo.GetOrdersByStoreID(ctx, store.ID)
+			opts, perr := parseListPage(r)
+			if perr != nil {
+				http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+				return
+			}
+			page, err := orderRepo.GetOrdersByStoreIDPage(ctx, store.ID, opts)
 			if err != nil {
+				if isInvalidCursorError(err) {
+					http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+					return
+				}
 				writeInternalError(w, err)
 				return
 			}
+			orders := page.Items
 			for i := range orders {
 				masked := privacy.MaskCustomerForRole(privacy.CustomerInfo{
 					FullName:   orders[i].CustomerFullName,
@@ -681,7 +691,10 @@ func run(signalCtx context.Context) (result error) {
 				orders[i].CustomerAddress = masked.Address
 				orders[i].CustomerPostalCode = masked.PostalCode
 			}
-			json.NewEncoder(w).Encode(orders)
+			if orders == nil {
+				orders = []domain.Order{}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"orders": orders, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 			return
 		}
 

@@ -290,12 +290,29 @@ func (r *OrderRepository) GetOrderByTrackingCode(ctx context.Context, code strin
 	return r.scanOrder(ctx, row)
 }
 
-// GetOrdersByStoreID retrieves orders for a store
-func (r *OrderRepository) GetOrdersByStoreID(ctx context.Context, storeID string) ([]domain.Order, error) {
-	query := "SELECT " + orderSelectColumns + " FROM orders WHERE store_id = $1 ORDER BY created_at DESC"
-	rows, err := r.db.QueryContext(ctx, query, storeID)
+// GetOrdersByStoreIDPage returns one cursor page of a store's orders,
+// newest first, keyed on (created_at DESC, id DESC). The page's order lines
+// are loaded in one batched query over the PAGE ids only (bounding the
+// order list alone does not fix item loading: a 50-order page used to
+// seq-scan all order_items; the Step-0 (order_id) index brings that to
+// ~0.3 ms). PERF-02 Step 3.
+func (r *OrderRepository) GetOrdersByStoreIDPage(ctx context.Context, storeID string, opts ListPageOptions) (ListPage[domain.Order], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := "SELECT " + orderSelectColumns + " FROM orders WHERE store_id = $1"
+	args := []interface{}{storeID}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.Order]{}, err
+		}
+		query += " AND (created_at, id) < ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[domain.Order]{}, err
 	}
 	defer rows.Close()
 
@@ -303,11 +320,57 @@ func (r *OrderRepository) GetOrdersByStoreID(ctx context.Context, storeID string
 	for rows.Next() {
 		var o domain.Order
 		if err := rows.Scan(orderScanDest(&o)...); err != nil {
-			return nil, err
+			return ListPage[domain.Order]{}, err
 		}
 		orders = append(orders, o)
 	}
-	return orders, nil
+	if err := rows.Err(); err != nil {
+		return ListPage[domain.Order]{}, err
+	}
+	if err := r.attachPageOrderItems(ctx, orders); err != nil {
+		return ListPage[domain.Order]{}, err
+	}
+	hasMore := len(orders) > limit
+	if hasMore {
+		orders = orders[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := orders[len(orders)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.Order]{Items: orders, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// attachPageOrderItems loads order lines for exactly the given orders in
+// one batched query (loadItemsByOrderIDs). An items-query failure leaves
+// items empty rather than failing the listing (the pre-PERF-02 behaviour
+// of the list paths).
+func (r *OrderRepository) attachPageOrderItems(ctx context.Context, orders []domain.Order) error {
+	if len(orders) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(orders))
+	for _, o := range orders {
+		ids = append(ids, o.ID)
+	}
+	if byOrder, ierr := r.loadItemsByOrderIDs(ctx, ids); ierr == nil {
+		for i := range orders {
+			orders[i].Items = byOrder[orders[i].ID]
+		}
+	}
+	return nil
+}
+
+// GetOrdersByStoreID retrieves orders for a store (legacy compat: the
+// first page only, at most MaxListLimit rows — the old unbounded list is
+// gone). HTTP handlers use GetOrdersByStoreIDPage.
+func (r *OrderRepository) GetOrdersByStoreID(ctx context.Context, storeID string) ([]domain.Order, error) {
+	page, err := r.GetOrdersByStoreIDPage(ctx, storeID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // ConfirmOrderDelivery confirms order delivery by the actual customer owner.
@@ -676,41 +739,6 @@ func (r *OrderRepository) scanOrder(ctx context.Context, row *sql.Row) (*domain.
 	return &o, nil
 }
 
-// GetOrdersByCustomerPhone retrieves orders placed by a specific customer phone
-func (r *OrderRepository) GetOrdersByCustomerPhone(ctx context.Context, phone string) ([]domain.Order, error) {
-	query := "SELECT " + orderSelectColumns + " FROM orders WHERE customer_phone = $1 ORDER BY created_at DESC"
-	rows, err := r.db.QueryContext(ctx, query, phone)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var orders []domain.Order
-	for rows.Next() {
-		var o domain.Order
-		if err := rows.Scan(orderScanDest(&o)...); err != nil {
-			return nil, err
-		}
-		orders = append(orders, o)
-	}
-	// Merge (g): same lines fix as the buyer-history list — attach
-	// order lines in one query so list and detail agree. An
-	// items-query failure leaves items empty rather than failing
-	// the listing.
-	if len(orders) > 0 {
-		ids := make([]string, 0, len(orders))
-		for _, o := range orders {
-			ids = append(ids, o.ID)
-		}
-		if byOrder, ierr := r.loadItemsByOrderIDs(ctx, ids); ierr == nil {
-			for i := range orders {
-				orders[i].Items = byOrder[orders[i].ID]
-			}
-		}
-	}
-	return orders, nil
-}
-
 // loadItemsByOrderIDs returns order lines grouped by order id, with the
 // product title resolved via LEFT JOIN. COALESCE keeps a line whose
 // product row is gone (the frontend falls back to the product id for
@@ -752,11 +780,28 @@ func (r *OrderRepository) loadItemsByOrderIDs(ctx context.Context, orderIDs []st
 	return byOrder, rows.Err()
 }
 
-func (r *OrderRepository) GetOrdersByCustomerUserID(ctx context.Context, userID string) ([]domain.Order, error) {
-	query := "SELECT " + orderSelectColumns + " FROM orders WHERE customer_user_id = $1::uuid ORDER BY created_at DESC"
-	rows, err := r.db.QueryContext(ctx, query, userID)
+// GetOrdersByCustomerUserIDPage returns one cursor page of a customer's
+// order history, newest first, keyed on (created_at DESC, id DESC).
+// ISO-D W4: the list carries order lines (loaded in one batched query over
+// the PAGE ids only) and refund summaries, so list and detail agree.
+// PERF-02 Step 3.
+func (r *OrderRepository) GetOrdersByCustomerUserIDPage(ctx context.Context, userID string, opts ListPageOptions) (ListPage[domain.Order], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := "SELECT " + orderSelectColumns + " FROM orders WHERE customer_user_id = $1::uuid"
+	args := []interface{}{userID}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.Order]{}, err
+		}
+		query += " AND (created_at, id) < ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[domain.Order]{}, err
 	}
 	defer rows.Close()
 
@@ -764,67 +809,40 @@ func (r *OrderRepository) GetOrdersByCustomerUserID(ctx context.Context, userID 
 	for rows.Next() {
 		var o domain.Order
 		if err := rows.Scan(orderScanDest(&o)...); err != nil {
-			return nil, err
+			return ListPage[domain.Order]{}, err
 		}
 		orders = append(orders, o)
 	}
-	// ISO-D W4: the buyer-history list previously returned orders without
-	// lines (unlike scanOrder, used by the detail path, which loads
-	// order_items). History cards therefore rendered empty items after a
-	// refresh (mapBackendOrder maps a nil items slice to []). Load all
-	// lines in one query and attach them, so list and detail agree.
-	// An items-query failure leaves items empty (the previous behavior)
-	// rather than failing the whole history listing.
-	if len(orders) > 0 {
-		ids := make([]string, 0, len(orders))
-		for _, o := range orders {
-			ids = append(ids, o.ID)
-		}
-		if byOrder, ierr := r.loadItemsByOrderIDs(ctx, ids); ierr == nil {
-			for i := range orders {
-				orders[i].Items = byOrder[orders[i].ID]
-			}
-		}
+	if err := rows.Err(); err != nil {
+		return ListPage[domain.Order]{}, err
+	}
+	if err := r.attachPageOrderItems(ctx, orders); err != nil {
+		return ListPage[domain.Order]{}, err
 	}
 	if err := r.attachRefundSummaries(ctx, orders); err != nil {
-		return nil, err
+		return ListPage[domain.Order]{}, err
 	}
-	return orders, nil
+	hasMore := len(orders) > limit
+	if hasMore {
+		orders = orders[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := orders[len(orders)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.Order]{Items: orders, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
 }
 
-// GetAllOrders retrieves all orders ordered by creation date
-func (r *OrderRepository) GetAllOrders(ctx context.Context) ([]domain.Order, error) {
-	query := "SELECT " + orderSelectColumns + " FROM orders ORDER BY created_at DESC"
-	rows, err := r.db.QueryContext(ctx, query)
+// GetOrdersByCustomerUserID lists a customer's orders (legacy compat: the
+// first page only, at most MaxListLimit rows — the old unbounded list is
+// gone). HTTP handlers use GetOrdersByCustomerUserIDPage.
+func (r *OrderRepository) GetOrdersByCustomerUserID(ctx context.Context, userID string) ([]domain.Order, error) {
+	page, err := r.GetOrdersByCustomerUserIDPage(ctx, userID, ListPageOptions{Limit: MaxListLimit})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var orders []domain.Order
-	for rows.Next() {
-		var o domain.Order
-		if err := rows.Scan(orderScanDest(&o)...); err != nil {
-			return nil, err
-		}
-		orders = append(orders, o)
-	}
-	// Merge (g): same lines fix as the buyer-history list — attach
-	// order lines in one query so list and detail agree. An
-	// items-query failure leaves items empty rather than failing
-	// the listing.
-	if len(orders) > 0 {
-		ids := make([]string, 0, len(orders))
-		for _, o := range orders {
-			ids = append(ids, o.ID)
-		}
-		if byOrder, ierr := r.loadItemsByOrderIDs(ctx, ids); ierr == nil {
-			for i := range orders {
-				orders[i].Items = byOrder[orders[i].ID]
-			}
-		}
-	}
-	return orders, nil
+	return page.Items, nil
 }
 
 func (r *OrderRepository) GetOrderByNumber(ctx context.Context, orderNumber string) (*domain.Order, error) {
@@ -1864,6 +1882,32 @@ func loadWarehouseDisplayByID(ctx context.Context, db *sql.DB, table string, ids
 	return out, rows.Err()
 }
 
+// loadReturnItemsByIDs loads return lines for a set of returns in ONE
+// query (return_items(return_id) is indexed). PERF-02 Step 4: the list path
+// used to call loadReturnItems once per return (N+1).
+func (r *OrderRepository) loadReturnItemsByIDs(ctx context.Context, returnIDs []string) (map[string][]CustomerReturnItem, error) {
+	byReturn := map[string][]CustomerReturnItem{}
+	if len(returnIDs) == 0 {
+		return byReturn, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, return_id, order_item_id, variant_id, qty, qc_status, received_at
+		FROM return_items WHERE return_id = ANY($1::uuid[]) ORDER BY id ASC
+	`, pq.Array(returnIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it CustomerReturnItem
+		if err := rows.Scan(&it.ID, &it.ReturnID, &it.OrderItemID, &it.VariantID, &it.Qty, &it.QCStatus, &it.ReceivedAt); err != nil {
+			return nil, err
+		}
+		byReturn[it.ReturnID] = append(byReturn[it.ReturnID], it)
+	}
+	return byReturn, rows.Err()
+}
+
 func (r *OrderRepository) loadReturnItems(ctx context.Context, returnID string) ([]CustomerReturnItem, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, return_id, order_item_id, variant_id, qty, qc_status, received_at
@@ -2335,54 +2379,101 @@ func (r *OrderRepository) GetCustomerReturn(ctx context.Context, id string) (*Cu
 	return r.scanCustomerReturn(ctx, row)
 }
 
-func (r *OrderRepository) listCustomerReturnsQuery(ctx context.Context, query string, args ...interface{}) ([]CustomerReturn, error) {
+// listCustomerReturnsPage runs one cursor page of a returns list. query
+// is the SELECT ... FROM ... WHERE ... fragment WITHOUT any ORDER BY or
+// LIMIT; the page key is (created_at DESC, id DESC) and the cursor is
+// decoded from opts. Return lines are loaded in ONE batched query for the
+// page (loadReturnItemsByIDs) and destination names in at most two batched
+// queries (fillReturnDestinationNames) — no per-return queries remain.
+// PERF-02 Step 4.
+func (r *OrderRepository) listCustomerReturnsPage(ctx context.Context, query string, args []interface{}, opts ListPageOptions, keyPrefix string) (ListPage[CustomerReturn], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[CustomerReturn]{}, err
+		}
+		query += fmt.Sprintf(" AND (%screated_at, %sid) < ($%d::timestamptz, $%d::uuid)", keyPrefix, keyPrefix, len(args)+1, len(args)+2)
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY %screated_at DESC, %sid DESC LIMIT $%d", keyPrefix, keyPrefix, len(args)+1)
+	args = append(args, limit+1)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[CustomerReturn]{}, err
 	}
 	defer rows.Close()
 	var out []CustomerReturn
 	for rows.Next() {
 		var cr CustomerReturn
 		if err := rows.Scan(customerReturnScanDest(&cr)...); err != nil {
-			return nil, err
+			return ListPage[CustomerReturn]{}, err
 		}
 		out = append(out, cr)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return ListPage[CustomerReturn]{}, err
 	}
-	for i := range out {
-		items, err := r.loadReturnItems(ctx, out[i].ID)
-		if err != nil {
-			return nil, err
+	if len(out) > 0 {
+		ids := make([]string, 0, len(out))
+		for i := range out {
+			ids = append(ids, out[i].ID)
 		}
-		out[i].Items = items
+		byReturn, err := r.loadReturnItemsByIDs(ctx, ids)
+		if err != nil {
+			return ListPage[CustomerReturn]{}, err
+		}
+		for i := range out {
+			out[i].Items = byReturn[out[i].ID]
+		}
 	}
 	ptrs := make([]*CustomerReturn, len(out))
 	for i := range out {
 		ptrs[i] = &out[i]
 	}
 	if err := r.fillReturnDestinationNames(ctx, ptrs); err != nil {
-		return nil, err
+		return ListPage[CustomerReturn]{}, err
 	}
-	return out, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := out[len(out)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[CustomerReturn]{Items: out, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// ListCustomerReturnsPage returns one cursor page of returns: a customer's
+// own returns, or ALL returns when customerID is empty (admin use only —
+// enforced by the handler, not by this query). PERF-02 Step 4.
+func (r *OrderRepository) ListCustomerReturnsPage(ctx context.Context, customerID string, opts ListPageOptions) (ListPage[CustomerReturn], error) {
+	if strings.TrimSpace(customerID) == "" {
+		return r.listCustomerReturnsPage(ctx, "SELECT "+customerReturnSelectColumns+" FROM customer_returns", nil, opts, "")
+	}
+	return r.listCustomerReturnsPage(ctx, "SELECT "+customerReturnSelectColumns+" FROM customer_returns WHERE customer_id = $1::uuid", []interface{}{customerID}, opts, "")
 }
 
 // ListCustomerReturns lists a customer's own returns; an empty
 // customerID lists all returns (admin use only — enforced by the
-// handler, not by this query).
+// handler, not by this query). Legacy compat: the first page only,
+// at most MaxListLimit rows. HTTP handlers use ListCustomerReturnsPage.
 func (r *OrderRepository) ListCustomerReturns(ctx context.Context, customerID string) ([]CustomerReturn, error) {
-	if strings.TrimSpace(customerID) == "" {
-		return r.listCustomerReturnsQuery(ctx, "SELECT "+customerReturnSelectColumns+" FROM customer_returns ORDER BY created_at DESC")
+	page, err := r.ListCustomerReturnsPage(ctx, customerID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
 	}
-	return r.listCustomerReturnsQuery(ctx, "SELECT "+customerReturnSelectColumns+" FROM customer_returns WHERE customer_id = $1::uuid ORDER BY created_at DESC", customerID)
+	return page.Items, nil
 }
 
 // ListCustomerReturnsByStore lists returns for orders of one store
 // (D10: stores/:slug/returns).
-func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeID string) ([]CustomerReturn, error) {
-	return r.listCustomerReturnsQuery(ctx, `
+// ListCustomerReturnsByStorePage returns one cursor page of returns for
+// orders of one store (D10: stores/:slug/returns). PERF-02 Step 4.
+func (r *OrderRepository) ListCustomerReturnsByStorePage(ctx context.Context, storeID string, opts ListPageOptions) (ListPage[CustomerReturn], error) {
+	return r.listCustomerReturnsPage(ctx, `
 		SELECT cr.id, cr.order_id, cr.customer_id, cr.status, cr.reason, cr.admin_note,
 		       COALESCE(cr.warehouse_id, ''), COALESCE(cr.prepaid, FALSE), COALESCE(cr.tracking_number, ''),
 		       cr.shipped_at, cr.return_code, cr.return_shipping_amount, cr.return_shipping_bearer,
@@ -2391,8 +2482,19 @@ func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeI
 		FROM customer_returns cr
 		JOIN orders o ON o.id = cr.order_id
 		WHERE o.store_id = $1
-		ORDER BY cr.created_at DESC
-	`, storeID)
+	`, []interface{}{storeID}, opts, "cr.")
+}
+
+// ListCustomerReturnsByStore lists returns for orders of one store
+// (D10: stores/:slug/returns). Legacy compat: the first page only,
+// at most MaxListLimit rows. HTTP handlers use
+// ListCustomerReturnsByStorePage.
+func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeID string) ([]CustomerReturn, error) {
+	page, err := r.ListCustomerReturnsByStorePage(ctx, storeID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // ListCustomerReturnsForWarehouse lists returns on their way back to
@@ -2406,7 +2508,9 @@ func (r *OrderRepository) ListCustomerReturnsByStore(ctx context.Context, storeI
 // warehouse's queue is its own (supplier-destined parcels surface
 // under their supplier warehouse id). Omitted or "" keeps the
 // unfiltered queue, the pre-filter behaviour.
-func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, destinationID ...string) ([]CustomerReturn, error) {
+// ListCustomerReturnsForWarehousePage returns one cursor page of the
+// warehouse returns queue. PERF-02 Step 4.
+func (r *OrderRepository) ListCustomerReturnsForWarehousePage(ctx context.Context, opts ListPageOptions, destinationID ...string) (ListPage[CustomerReturn], error) {
 	dest := ""
 	if len(destinationID) > 0 {
 		dest = destinationID[0]
@@ -2436,7 +2540,19 @@ func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, d
 	} else {
 		query += ` AND ($1 = '' OR warehouse_id = $1 OR destination_supplier_warehouse_id = $1)`
 	}
-	return r.listCustomerReturnsQuery(ctx, query+` ORDER BY created_at DESC`, args...)
+	return r.listCustomerReturnsPage(ctx, query, args, opts, "")
+}
+
+// ListCustomerReturnsForWarehouse lists returns on their way back to (or
+// at) the warehouse. Legacy compat: the first page only, at most
+// MaxListLimit rows. HTTP handlers use
+// ListCustomerReturnsForWarehousePage.
+func (r *OrderRepository) ListCustomerReturnsForWarehouse(ctx context.Context, destinationID ...string) ([]CustomerReturn, error) {
+	page, err := r.ListCustomerReturnsForWarehousePage(ctx, ListPageOptions{Limit: MaxListLimit}, destinationID...)
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 func (r *OrderRepository) guardedReturnExec(ctx context.Context, id, query string, args ...any) (sql.Result, error) {

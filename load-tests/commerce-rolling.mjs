@@ -36,7 +36,7 @@ const plan=arrivalPlan(duration,Number(process.env.CAPACITY_API_RPS||100));
 const generatorStarted=performance.now();
 const queues=new LifecycleQueues(users,Date.now,2000),target=plan.offered;
 let completed=0,fullCompleted=0,recoveryCalls=0,wrongAmount=0,quoteSerial=0,readSerial=0,staffSerial=0,fatal=null;
-const summary={certified:false,staff_variant:staffVariant,staff_mix_rationale:staffVariant?'Additional variant:15RPS account slots become seller/supplier balances,warehouse overview andadmin revenue;980customers+20staff=1000distinct principals;recovery remains within same budget':null,scope:'LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete',duration_seconds:duration,offered:target,failed_gates:[],requests_raw:requests,helper_requests_raw:helpers,dropped_slots_raw:droppedSlots};
+const summary={certified:false,staff_variant:staffVariant,staff_mix_rationale:staffVariant?'Additional variant:15RPS account slots become seller/supplier balances,warehouse overview and admin revenue; every other staff account slot is a PERF-02 report leg (seller report, supplier orders page, reconciliation summary, ledger filtered, statement page);980customers+20staff=1000distinct principals;recovery remains within same budget':null,scope:'LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete',duration_seconds:duration,offered:target,failed_gates:[],requests_raw:requests,helper_requests_raw:helpers,dropped_slots_raw:droppedSlots};
 function cart(principal,serial){
  if(staffVariant)principal=20+principal%980;
  const product=1+((serial*7919)%10000),store=1+(product%100),user=users[principal],logicalId='cap-'+crypto.randomUUID();
@@ -76,10 +76,20 @@ async function measured(kind,ordinal,arrival){
   row={principal,userId:user.id,kind,path:kind==='list'?'/api/v1/products?limit=24':kind==='detail'?'/api/v1/products/cap-product-'+product:kind==='store'?'/api/v1/stores/cap-store-'+store:'/api/v1/auth/me'};
   if(kind==='account'){
    if(staffVariant){
-    const principal=staffSerial++%20,user=users[principal],period=new Date().toISOString().slice(0,7);
+    const serial=staffSerial++,principal=serial%20,user=users[principal],period=new Date().toISOString().slice(0,7);
     const paths={seller:'/api/v1/stores/'+user.storeId+'/balance',supplier:'/api/v1/supplier/settlement/balance',warehouse_staff:'/api/v1/warehouse/overview',admin:'/api/v1/finance/reports/revenue?period='+period};
     if(!paths[user.role])throw Error('unsupported declared staff role');
-    row={principal,userId:user.id,kind,path:paths[user.role],staffRole:user.role,storeId:user.storeId,period};
+    // PERF-02 Step 12: every other staff account slot is a report leg so
+    // the 100-RPS mix exercises the bounded report paths at their agreed
+    // share (~7 RPS). Roles gate the legs: seller report needs OwnedStore;
+    // reconciliation/ledger/statement need the admin role; supplier orders
+    // is the supplier's own bounded list. warehouse_staff keeps overview.
+    const reportLegs={seller:['seller-report'],supplier:['supplier-orders'],warehouse_staff:[],admin:['reconciliation','ledger','statement']};
+    const reportPaths={'seller-report':'/api/v1/stores/'+user.storeId+'/report','supplier-orders':'/api/v1/supplier/orders?limit=50','reconciliation':'/api/v1/warehouse/inventory/reconciliation-report?view=summary&limit=50','ledger':'/api/v1/finance/ledger?limit=50','statement':'/api/v1/finance/stores/cap-store-1/statement?limit=50'};
+    const legs=reportLegs[user.role]||[];
+    let reportLeg=null,path=paths[user.role];
+    if(legs.length&&serial%2===1){reportLeg=legs[Math.floor(serial/2)%legs.length];path=reportPaths[reportLeg];}
+    row={principal,userId:user.id,kind,path,staffRole:user.role,storeId:user.storeId,period,reportLeg};
    }
    recovery=pendingFor('callback');
    if(recovery){recovery.item.recovering=true;recovery.item.recoveryAttempts=(recovery.item.recoveryAttempts||0)+1;row={...recovery.item,kind:'account',path:'/api/v1/orders',body:undefined};recoveryCalls++;}
@@ -87,7 +97,7 @@ async function measured(kind,ordinal,arrival){
  }
  if(!row){dropped++;droppedSlots.push({...arrival,reason:'missing_lifecycle_stage'});return}
  row={...row,ordinal,kind,arrival};identities.add(users[row.principal].id);
- const {status,body,record}=await call(row,'measured');record.recovery=!!recovery;
+ const {status,body,record}=await call(row,'measured');record.recovery=!!recovery;record.report_leg=row.reportLeg||null;
  const accepted=kind==='create'?(status===201||(!!recovery&&status===200)):status===200;
  record.assertion_ok=accepted;
  try{
@@ -98,7 +108,11 @@ async function measured(kind,ordinal,arrival){
   }else if(accepted){
    if(kind==='account'){
     record.staff_role=row.staffRole||null;
-    record.assertion_ok=row.staffRole==='seller'?body?.storeId===row.storeId&&Number.isSafeInteger(body.availableAmount):row.staffRole==='supplier'?Number.isSafeInteger(body?.available)&&Number.isSafeInteger(body?.earned):row.staffRole==='warehouse_staff'?Number.isSafeInteger(body?.inboundPending):row.staffRole==='admin'?body?.period===row.period&&Number.isSafeInteger(body?.totalRevenue):body?.userId===row.userId;
+    if(row.reportLeg){
+     record.assertion_ok=row.reportLeg==='seller-report'?Number.isSafeInteger(body?.revenue)&&Number.isSafeInteger(body?.orders):row.reportLeg==='supplier-orders'?Array.isArray(body?.orders):row.reportLeg==='reconciliation'?Array.isArray(body?.rows)&&Number.isSafeInteger(body?.total):row.reportLeg==='ledger'?Array.isArray(body?.entries):row.reportLeg==='statement'?Array.isArray(body?.entries)&&Number.isSafeInteger(body?.totalEntries):false;
+    }else{
+     record.assertion_ok=row.staffRole==='seller'?body?.storeId===row.storeId&&Number.isSafeInteger(body.availableAmount):row.staffRole==='supplier'?Number.isSafeInteger(body?.available)&&Number.isSafeInteger(body?.earned):row.staffRole==='warehouse_staff'?Number.isSafeInteger(body?.inboundPending):row.staffRole==='admin'?body?.period===row.period&&Number.isSafeInteger(body?.totalRevenue):body?.userId===row.userId;
+    }
    }
    else if(kind==='quote'){record.assertion_ok=body?.success===true;if(record.assertion_ok&&row.forCheckout)transition(kind,row,body);}
    else if(['create','initiate','callback'].includes(kind)){transition(kind,row,body);if(recovery)queues.resolve(kind,row.logicalId);}
@@ -152,6 +166,16 @@ summary.distinct_principals=identities.size;summary.dropped_iterations=dropped;
   const m={requests:rs.length,failed_assertions:rs.filter(r=>!r.assertion_ok).length,p95_ms:ts[Math.ceil(ts.length*.95)-1],p99_ms:ts[Math.ceil(ts.length*.99)-1]};summary.route_metrics[kind]=m;
   if(rs.length!==plan.counts[classes.indexOf(kind)]||m.failed_assertions||!ts.length||m.p95_ms>(read?300:750)||m.p99_ms>(read?1000:2000))summary.failed_gates.push(kind);
  }
+ // PERF-02 Step 12: per-report-leg latencies against the read gates
+ // (p95 300 ms / p99 1000 ms). Only in the staff variant — other profiles
+ // never run report legs, so gating them there would fail spuriously.
+ // A leg with zero requests fails: the leg never ran, so the report
+ // profile was not exercised.
+ summary.report_metrics={};
+ if(staffVariant){for(const leg of ['seller-report','supplier-orders','reconciliation','ledger','statement']){const rs=requests.filter(r=>r.report_leg===leg),ts=rs.map(r=>r.latency_ms).sort((a,b)=>a-b);
+  const m={requests:rs.length,failed_assertions:rs.filter(r=>!r.assertion_ok).length,p95_ms:ts.length?ts[Math.ceil(ts.length*.95)-1]:null,p99_ms:ts.length?ts[Math.ceil(ts.length*.99)-1]:null};summary.report_metrics[leg]=m;
+  if(!rs.length||m.failed_assertions||m.p95_ms>300||m.p99_ms>1000)summary.failed_gates.push('report_'+leg);
+ }}
  if(dropped||requests.length!==target||identities.size!==1000)summary.failed_gates.push('arrivals_or_identities');
  if(fatal||wrongAmount||queues.stats.expired||queues.stats.overflow||queues.stats.missing||queues.stats.ambiguous)summary.failed_gates.push('lifecycle_or_ambiguous_response');
  if(fatal)summary.failure=fatal;

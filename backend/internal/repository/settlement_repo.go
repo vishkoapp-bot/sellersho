@@ -325,27 +325,72 @@ func (r *FinanceRepository) ListMonthlyCycles(ctx context.Context) ([]MonthlySet
 	return out, rows.Err()
 }
 
+// ListMonthlyItemsPage returns one cursor page of a settlement cycle's
+// items, newest first, keyed on (created_at DESC, id DESC). PERF-02 Step 7.
+func (r *FinanceRepository) ListMonthlyItemsPage(ctx context.Context, period string, opts ListPageOptions) (ListPage[MonthlySettlementItem], error) {
+	return listMonthlyItemsPage(ctx, r.db, period, opts)
+}
+
 func (r *FinanceRepository) ListMonthlyItems(ctx context.Context, period string) ([]MonthlySettlementItem, error) {
-	return listMonthlyItems(ctx, r.db, period)
+	page, err := r.ListMonthlyItemsPage(ctx, period, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 func listMonthlyItems(ctx context.Context, q interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, period string) ([]MonthlySettlementItem, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status,created_at FROM monthly_settlement_items WHERE cycle_period=$1 ORDER BY created_at DESC`, period)
+	page, err := listMonthlyItemsPage(ctx, q, period, ListPageOptions{Limit: MaxListLimit})
 	if err != nil {
 		return nil, err
+	}
+	return page.Items, nil
+}
+
+func listMonthlyItemsPage(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, period string, opts ListPageOptions) (ListPage[MonthlySettlementItem], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := `SELECT id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status,created_at FROM monthly_settlement_items WHERE cycle_period=$1`
+	args := []any{period}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[MonthlySettlementItem]{}, err
+		}
+		query += " AND (created_at, id) < ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ListPage[MonthlySettlementItem]{}, err
 	}
 	defer rows.Close()
 	out := []MonthlySettlementItem{}
 	for rows.Next() {
 		var it MonthlySettlementItem
 		if err := rows.Scan(&it.ID, &it.CyclePeriod, &it.StoreID, &it.GrossAmount, &it.FeeAmount, &it.NetAmount, &it.PayoutRequestID, &it.Status, &it.CreatedAt); err != nil {
-			return nil, err
+			return ListPage[MonthlySettlementItem]{}, err
 		}
 		out = append(out, it)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ListPage[MonthlySettlementItem]{}, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := out[len(out)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[MonthlySettlementItem]{Items: out, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
 }
 
 // daysInMonth returns the number of days in the given year/month.

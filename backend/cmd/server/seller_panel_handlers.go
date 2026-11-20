@@ -125,16 +125,11 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			writeMethodNotAllowed(w)
 			return
 		}
-		start, end := r.URL.Query().Get("start"), r.URL.Query().Get("end")
-		for _, v := range []string{start, end} {
-			if v != "" {
-				if _, err := time.Parse("2006-01-02", v); err != nil {
-					http.Error(w, `{"error":"Invalid date"}`, 400)
-					return
-				}
-			}
-		}
-		if start != "" && end != "" && start > end {
+		// PERF-02 Step 6: the seller report is windowed (default 31 days,
+		// max 366). The SQL is unchanged — the Step-0 (order_id) index
+		// collapsed it from ~21 s to ~22 ms — only the window is bounded.
+		start, end, werr := defaultReportWindowBounds(r.URL.Query().Get("start"), r.URL.Query().Get("end"))
+		if werr != nil {
 			http.Error(w, `{"error":"Invalid date range"}`, 400)
 			return
 		}
@@ -159,12 +154,25 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 		return
 	case "payouts":
 		if r.Method == http.MethodGet {
-			items, err := fin.GetStorePayouts(r.Context(), claims.UserID, store.ID)
+			opts, perr := parseListPage(r)
+			if perr != nil {
+				http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+				return
+			}
+			page, err := fin.GetStorePayoutsPage(r.Context(), claims.UserID, store.ID, opts)
 			if err != nil {
+				if isInvalidCursorError(err) {
+					http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+					return
+				}
 				sellerError(w, err)
 				return
 			}
-			json.NewEncoder(w).Encode(items)
+			items := page.Items
+			if items == nil {
+				items = []repository.SettlementRequest{}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"payouts": items, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -357,10 +365,23 @@ func handleSellerTickets(w http.ResponseWriter, r *http.Request, repo *repositor
 		writeMethodNotAllowed(w)
 		return
 	}
-	items, err := repo.SellerTickets(r.Context(), claims.UserID)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := repo.SellerTicketsPage(r.Context(), claims.UserID, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		sellerError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(items)
+	items := page.Items
+	if items == nil {
+		items = []repository.SellerTicket{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"tickets": items, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }

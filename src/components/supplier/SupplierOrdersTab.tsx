@@ -72,6 +72,8 @@ export const SupplierOrdersTab: React.FC = () => {
   const { success, error } = useToast();
 
   const [backendOrders, setBackendOrders] = useState<SupplierOrder[]>([]);
+  const [ordersNextCursor, setOrdersNextCursor] = useState('');
+  const [ordersHasMore, setOrdersHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -143,13 +145,16 @@ export const SupplierOrdersTab: React.FC = () => {
     }
   };
 
-  // Fetch from backend API
-  const fetchSupplierOrders = async () => {
+  // Fetch from backend API — PERF-02 Step 9: cursor pages (50 rows);
+  // a cursor appends, a fresh load replaces.
+  const fetchSupplierOrders = async (cursor?: string) => {
     setLoading(true);
     setLoadError('');
     try {
-      const res = await supplierApi.getOrders();
-      setBackendOrders(res.orders || []);
+      const res = await supplierApi.getOrders({ limit: 50, cursor });
+      setBackendOrders((prev) => (cursor ? [...prev, ...(res.orders || [])] : (res.orders || [])));
+      setOrdersNextCursor(res.nextCursor || '');
+      setOrdersHasMore(!!res.hasMore);
     } catch (err: any) {
       setLoadError(err?.message || 'دریافت سفارش‌ها انجام نشد.');
     } finally {
@@ -472,7 +477,7 @@ export const SupplierOrdersTab: React.FC = () => {
           {(loadError.includes('دسترسی') || loadError.includes('Forbidden')) ? (
             <p>دسترسی شما به این بخش برقرار نیست. اگر حسابت به‌تازگی فعال شده، یک بار خارج و دوباره وارد شو؛ اگر مشکل ادامه داشت، با پشتیبانی تماس بگیر.</p>
           ) : (
-            <button type="button" onClick={fetchSupplierOrders} className="rounded-lg bg-white px-3 py-2 font-bold">تلاش دوباره</button>
+            <button type="button" onClick={() => void fetchSupplierOrders()} className="rounded-lg bg-white px-3 py-2 font-bold">تلاش دوباره</button>
           )}
         </div>
       )}
@@ -621,6 +626,12 @@ export const SupplierOrdersTab: React.FC = () => {
               </div>
             );
           })}
+          {ordersHasMore && (
+            <div className="pt-2 text-center">
+              <button type="button" onClick={() => void fetchSupplierOrders(ordersNextCursor)} disabled={loading} className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">نمایش بیشتر</button>
+              <p className="mt-1 text-[10px] text-slate-500">جستجو و فیلتر روی سفارش‌های بارگذاری‌شده اعمال می‌شود.</p>
+            </div>
+          )}
         </div>
       )}
 

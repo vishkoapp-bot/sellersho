@@ -302,17 +302,22 @@ func lockOrderFinanceTx(ctx context.Context, tx *sql.Tx, orderID string, wallet 
 }
 
 func discoverOrderFinanceAccountsTx(ctx context.Context, tx *sql.Tx, orderID string, wallet bool) ([]FinancialAccount, error) {
-	// TEST-02 round 4: compare the ids as text. order_items.id is UUID
-	// in the migrated schema but TEXT/VARCHAR(50) in several test
-	// rebuilds, while order_item_origins.order_item_id is UUID; the
-	// bare join fails with 42883 whenever the standing order_items
-	// rebuild is TEXT. In production both sides are UUIDs, so the text
-	// comparison is exact.
+	// PERF-02 Step 1 (D5): compare the ids as canonical UUIDs.
+	// order_items.id is UUID in the migrated schema; several test rebuilds
+	// declare it TEXT holding UUID strings, while
+	// order_item_origins.order_item_id is UUID in prod and TEXT in some of
+	// those same rebuilds. Casting BOTH sides to UUID compares canonical
+	// UUID values in every shape (UUID::uuid is an identity cast, and the
+	// planner strips it, so the order_item_origins(order_item_id) index is
+	// still used — measured 0.032 ms warm on the PERF-02 disposable seed
+	// vs 25-27 ms for the old ::text casts, which defeated both indexes).
+	// The old ::text comparison is gone: it forced a hash join over full
+	// seq scans of both tables (40-49 ms per candidate).
 	rows, err := tx.QueryContext(ctx, `SELECT 'seller',store_id FROM orders WHERE id=$1 AND COALESCE(store_id,'')<>''
  UNION SELECT 'seller',referrer_seller_id FROM orders WHERE id=$1 AND COALESCE(referrer_seller_id,'')<>''
  UNION SELECT 'seller',b.referrer_store_id FROM referral_bonuses b JOIN orders o ON o.store_id=b.referred_store_id WHERE o.id=$1 AND COALESCE(b.referrer_store_id,'')<>''
  UNION SELECT 'supplier',p.supplier_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=$1 AND COALESCE(p.supplier_id,'')<>''
- UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id::text=o.order_item_id::text WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
+ UNION SELECT 'supplier',o.supplier_id FROM order_item_origins o JOIN order_items oi ON oi.id::uuid=o.order_item_id::uuid WHERE oi.order_id=$1 AND COALESCE(o.supplier_id,'')<>''`, orderID)
 	if err != nil {
 		return nil, err
 	}

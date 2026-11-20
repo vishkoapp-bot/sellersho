@@ -508,25 +508,76 @@ type SellerTicket struct {
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
 	Messages  []string  `json:"messages"`
+	// MessageTotal is the full non-internal message count for the ticket;
+	// Messages carries at most MaxSellerTicketMessages (the latest ones,
+	// in chronological order). PERF-02 Step 6: the old ARRAY_AGG had no
+	// cap at all.
+	MessageTotal int `json:"messageTotal,omitempty"`
 }
 
-func (r *StoreRepository) SellerTickets(ctx context.Context, userID string) ([]SellerTicket, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT t.id,t.subject,t.status,t.created_at,COALESCE((SELECT ARRAY_AGG(body ORDER BY created_at) FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal),'{}') FROM support_tickets t WHERE requester_user_id=$1 ORDER BY created_at DESC`, userID)
+// MaxSellerTicketMessages caps the messages returned per ticket.
+const MaxSellerTicketMessages = 50
+
+// SellerTicketsPage returns one cursor page of a seller's support tickets,
+// newest first, keyed on (created_at DESC, id DESC). Each ticket carries
+// at most MaxSellerTicketMessages messages (the latest, in chronological
+// order) plus the full MessageTotal. PERF-02 Step 6.
+func (r *StoreRepository) SellerTicketsPage(ctx context.Context, userID string, opts ListPageOptions) (ListPage[SellerTicket], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := `SELECT t.id,t.subject,t.status,t.created_at,
+		COALESCE((SELECT ARRAY_AGG(body ORDER BY created_at) FROM (SELECT body,created_at FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal ORDER BY created_at DESC LIMIT 50) m),'{}'),
+		(SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal)
+		FROM support_tickets t WHERE requester_user_id=$1`
+	args := []interface{}{userID}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[SellerTicket]{}, err
+		}
+		query += " AND (t.created_at, t.id) < ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY t.created_at DESC, t.id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[SellerTicket]{}, err
 	}
 	defer rows.Close()
 	result := []SellerTicket{}
 	for rows.Next() {
 		var item SellerTicket
 		var msgs pq.StringArray
-		if err := rows.Scan(&item.ID, &item.Subject, &item.Status, &item.CreatedAt, &msgs); err != nil {
-			return nil, err
+		if err := rows.Scan(&item.ID, &item.Subject, &item.Status, &item.CreatedAt, &msgs, &item.MessageTotal); err != nil {
+			return ListPage[SellerTicket]{}, err
 		}
 		item.Messages = []string(msgs)
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ListPage[SellerTicket]{}, err
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := result[len(result)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[SellerTicket]{Items: result, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// SellerTickets returns a seller's support tickets. Legacy compat: the
+// first page only, at most MaxListLimit rows. HTTP handlers use
+// SellerTicketsPage.
+func (r *StoreRepository) SellerTickets(ctx context.Context, userID string) ([]SellerTicket, error) {
+	page, err := r.SellerTicketsPage(ctx, userID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 func (r *StoreRepository) CreateSellerTicket(ctx context.Context, userID, subject, message string) error {
 	if strings.TrimSpace(subject) == "" || len(subject) > 200 || strings.TrimSpace(message) == "" || len(message) > 10000 {

@@ -76,8 +76,12 @@ func (r *SupplierShipmentRepository) CreateShipment(ctx context.Context, shipmen
 	return tx.Commit()
 }
 
-// GetPendingShipments returns pending shipments for a given supplier (or all if empty/admin)
-func (r *SupplierShipmentRepository) GetPendingShipments(ctx context.Context, supplierID string) ([]domain.SupplierShipment, error) {
+// GetPendingShipmentsPage returns one cursor page of pending shipments for
+// a given supplier (or all if empty/admin), oldest first (work-queue
+// order). The cursor is the (created_at ASC, id ASC) keyset. PERF-02
+// Step 5: the old unbounded list is gone.
+func (r *SupplierShipmentRepository) GetPendingShipmentsPage(ctx context.Context, supplierID string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+	limit := NormalizeListLimit(opts.Limit)
 	query := `
 		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
@@ -88,12 +92,51 @@ func (r *SupplierShipmentRepository) GetPendingShipments(ctx context.Context, su
 		LEFT JOIN orders o ON s.order_id = o.id
 		WHERE ($1 = '' OR $1 = 'all' OR s.supplier_id = $1 OR s.supplier_id IN (SELECT id FROM suppliers WHERE owner_user_id::text = $1))
 		  AND s.status = 'pending'
-		ORDER BY s.created_at ASC
 	`
-
-	rows, err := r.db.QueryContext(ctx, query, supplierID)
+	args := []interface{}{supplierID}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.SupplierShipment]{}, err
+		}
+		// ASC queue: the next page is rows AFTER the cursor key.
+		query += " AND (s.created_at, s.id) > ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY s.created_at ASC, s.id ASC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	shipments, err := r.scanShipments(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query pending shipments: %w", err)
+		return ListPage[domain.SupplierShipment]{}, fmt.Errorf("failed to query pending shipments: %w", err)
+	}
+	hasMore := len(shipments) > limit
+	if hasMore {
+		shipments = shipments[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := shipments[len(shipments)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.SupplierShipment]{Items: shipments, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// GetPendingShipments returns pending shipments for a given supplier (or all if empty/admin)
+// Legacy compat: the first page only, at most MaxListLimit rows.
+// HTTP handlers use GetPendingShipmentsPage.
+func (r *SupplierShipmentRepository) GetPendingShipments(ctx context.Context, supplierID string) ([]domain.SupplierShipment, error) {
+	page, err := r.GetPendingShipmentsPage(ctx, supplierID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+// scanShipments runs a shipment list query and scans the rows.
+func (r *SupplierShipmentRepository) scanShipments(ctx context.Context, query string, args ...interface{}) ([]domain.SupplierShipment, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -115,15 +158,64 @@ func (r *SupplierShipmentRepository) GetPendingShipments(ctx context.Context, su
 		_ = json.Unmarshal(addressJSON, &s.ShippingAddress)
 		shipments = append(shipments, s)
 	}
-
 	if shipments == nil {
 		shipments = []domain.SupplierShipment{}
 	}
-	return shipments, nil
+	return shipments, rows.Err()
 }
 
-// GetShipments returns shipments matching supplier and optional status
-func (r *SupplierShipmentRepository) GetShipments(ctx context.Context, supplierID, status string) ([]domain.SupplierShipment, error) {
+// GetShipmentsPage returns one cursor page of shipments matching supplier
+// and optional status, newest first, keyed on (created_at DESC, id DESC).
+// PERF-02 Step 5.
+func (r *SupplierShipmentRepository) GetShipmentsPage(ctx context.Context, supplierID, status string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	whereClauses, args := shipmentWhereClauses(supplierID, status)
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.SupplierShipment]{}, err
+		}
+		whereClauses = append(whereClauses, fmt.Sprintf("(s.created_at, s.id) < ($%d::timestamptz, $%d::text)", len(args)+1, len(args)+2))
+		args = append(args, cursorAt, cursorID)
+	}
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = "WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereSQL += " AND " + whereClauses[i]
+		}
+	}
+	query := fmt.Sprintf(`
+		SELECT
+			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
+			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
+			s.created_at, s.updated_at,
+			COALESCE(o.order_number, '')
+		FROM supplier_shipments s
+		LEFT JOIN orders o ON s.order_id = o.id
+		%s
+		ORDER BY s.created_at DESC, s.id DESC LIMIT $%d
+	`, whereSQL, len(args)+1)
+	args = append(args, limit+1)
+	shipments, err := r.scanShipments(ctx, query, args...)
+	if err != nil {
+		return ListPage[domain.SupplierShipment]{}, fmt.Errorf("failed to query shipments: %w", err)
+	}
+	hasMore := len(shipments) > limit
+	if hasMore {
+		shipments = shipments[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := shipments[len(shipments)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.SupplierShipment]{Items: shipments, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// shipmentWhereClauses builds the supplier/status predicates shared by
+// GetShipments and GetShipmentsPage. argIdx tracks $ placeholders.
+func shipmentWhereClauses(supplierID, status string) ([]string, []interface{}) {
 	var whereClauses []string
 	var args []interface{}
 	argIdx := 1
@@ -139,56 +231,18 @@ func (r *SupplierShipmentRepository) GetShipments(ctx context.Context, supplierI
 		args = append(args, status)
 		argIdx++
 	}
+	return whereClauses, args
+}
 
-	whereSQL := ""
-	if len(whereClauses) > 0 {
-		whereSQL = "WHERE " + whereClauses[0]
-		for i := 1; i < len(whereClauses); i++ {
-			whereSQL += " AND " + whereClauses[i]
-		}
-	}
-
-	query := fmt.Sprintf(`
-		SELECT
-			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
-			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
-			s.created_at, s.updated_at,
-			COALESCE(o.order_number, '')
-		FROM supplier_shipments s
-		LEFT JOIN orders o ON s.order_id = o.id
-		%s
-		ORDER BY s.created_at DESC
-	`, whereSQL)
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
+// GetShipments returns shipments matching supplier and optional status.
+// Legacy compat: the first page only, at most MaxListLimit rows.
+// HTTP handlers use GetShipmentsPage.
+func (r *SupplierShipmentRepository) GetShipments(ctx context.Context, supplierID, status string) ([]domain.SupplierShipment, error) {
+	page, err := r.GetShipmentsPage(ctx, supplierID, status, ListPageOptions{Limit: MaxListLimit})
 	if err != nil {
-		return nil, fmt.Errorf("failed to query shipments: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var shipments []domain.SupplierShipment
-	for rows.Next() {
-		var s domain.SupplierShipment
-		var addressJSON []byte
-
-		err := rows.Scan(
-			&s.ID, &s.OrderID, &s.SupplierID, &addressJSON, &s.CustomerPhone, &s.CustomerName,
-			&s.Carrier, &s.TrackingNumber, &s.ShippedAt, &s.DeliveredAt, &s.Status, &s.SupplierNotes,
-			&s.CreatedAt, &s.UpdatedAt,
-			&s.OrderNumber,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan supplier shipment: %w", err)
-		}
-
-		_ = json.Unmarshal(addressJSON, &s.ShippingAddress)
-		shipments = append(shipments, s)
-	}
-
-	if shipments == nil {
-		shipments = []domain.SupplierShipment{}
-	}
-	return shipments, nil
+	return page.Items, nil
 }
 
 // GetShipmentByID retrieves a shipment record by its primary key

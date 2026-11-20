@@ -21,17 +21,33 @@ func handleGetFilteredLedger(w http.ResponseWriter, r *http.Request, ctx context
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	dateFrom := r.URL.Query().Get("dateFrom")
-	dateTo := r.URL.Query().Get("dateTo")
-	entries, err := finRepo.GetLedgerFiltered(ctx, dateFrom, dateTo)
+	// PERF-02 Step 6: the ledger is windowed (default 31 days, max 366)
+	// and cursor-paged (default 50, max 100). The old dateless full-table
+	// scan is gone.
+	dateFrom, dateTo, werr := defaultReportWindowBounds(r.URL.Query().Get("dateFrom"), r.URL.Query().Get("dateTo"))
+	if werr != nil {
+		http.Error(w, `{"error":"Invalid date range: expected YYYY-MM-DD dates within 366 days"}`, http.StatusBadRequest)
+		return
+	}
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := finRepo.GetLedgerFilteredPage(ctx, dateFrom, dateTo, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	entries := page.Items
 	if entries == nil {
 		entries = []domain.LedgerEntry{}
 	}
-	json.NewEncoder(w).Encode(entries)
+	json.NewEncoder(w).Encode(map[string]interface{}{"entries": entries, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit, "dateFrom": dateFrom, "dateTo": dateTo})
 }
 
 func handleGetStoreBalance(w http.ResponseWriter, r *http.Request, ctx context.Context, storeID string, finRepo *repository.FinanceRepository) {
@@ -128,17 +144,30 @@ func handleGetPendingSettlements(w http.ResponseWriter, r *http.Request, ctx con
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	list, err := finRepo.GetPendingSettlements(ctx)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := finRepo.GetPendingSettlementsPage(ctx, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	list := page.Items
 	if list == nil {
 		list = []repository.SettlementRequest{}
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":     true,
 		"settlements": list,
+		"nextCursor":  page.NextCursor,
+		"hasMore":     page.HasMore,
+		"limit":       page.Limit,
 	})
 }
 

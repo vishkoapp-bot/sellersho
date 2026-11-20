@@ -71,11 +71,22 @@ export interface ResolveDisputePayload {
 }
 
 export const financeApi = {
-  getLedger: async (): Promise<LedgerEntryDto[]> => {
-    return apiRequest<LedgerEntryDto[]>('/finance/ledger', {
+  // PERF-02 Step 9: the ledger endpoint now pages (envelope with
+  // `entries`); callers that need more than the first page pass a cursor.
+  getLedger: async (params?: { limit?: number; cursor?: string; dateFrom?: string; dateTo?: string }): Promise<LedgerEntryDto[]> => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    if (params?.dateFrom) query.set('dateFrom', params.dateFrom);
+    if (params?.dateTo) query.set('dateTo', params.dateTo);
+    const suffix = query.toString() ? `?${query}` : '';
+    const res = await apiRequest<any>(`/finance/ledger${suffix}`, {
       method: 'GET',
       auth: true,
     });
+    if (Array.isArray(res)) return res;
+    if (Array.isArray(res?.entries)) return res.entries;
+    return [];
   },
 
   getDisputes: async (): Promise<DisputeDto[]> => {

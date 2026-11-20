@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/drup/platform/internal/auth"
@@ -280,44 +279,67 @@ func handleGetHistoricalInventoryReport(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	page, limit, err := parseHistoricalReportPagination(r)
-	if err != nil {
-		http.Error(w, `{"error":"Invalid page or limit"}`, http.StatusBadRequest)
+	// PERF-02 Step 9: ?productId=<id> returns the single FULL row for
+	// that product (bounded evidence lists) — the detail the list view
+	// no longer ships. Same route, no new pattern: the route-table
+	// conflict test parses literal patterns only.
+	if productID := r.URL.Query().Get("productId"); productID != "" {
+		row, err := repo.GetHistoricalInventoryReportRow(ctx, productID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(row)
 		return
 	}
-	report, total, err := repo.GetHistoricalInventoryReportPage(ctx, page, limit)
+	opts, err := parseListPage(r)
 	if err != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	// PERF-02: OFFSET pagination is removed — ?page= is rejected so a
+	// stale client cannot silently page over a shifting window. Use
+	// ?cursor= from the previous response's nextCursor.
+	if r.URL.Query().Get("page") != "" {
+		http.Error(w, `{"error":"page pagination is removed; use cursor"}`, http.StatusBadRequest)
+		return
+	}
+	// PERF-02 Step 8d: ?view=summary (default) returns counts/flags only —
+	// no nested evidence JSONB is built; ?view=full returns the capped
+	// evidence lists. Per-product evidence always comes from the
+	// single-row endpoint.
+	view := r.URL.Query().Get("view")
+	if view == "" {
+		view = "summary"
+	}
+	if view != "summary" && view != "full" {
+		http.Error(w, `{"error":"view must be summary or full"}`, http.StatusBadRequest)
+		return
+	}
+	var report []repository.HistoricalInventoryReportRow
+	var total int
+	var nextCursor string
+	if view == "summary" {
+		report, total, nextCursor, err = repo.GetHistoricalInventoryReportSummaryCursorPage(ctx, opts.Limit, opts.Cursor)
+	} else {
+		report, total, nextCursor, err = repo.GetHistoricalInventoryReportCursorPage(ctx, opts.Limit, opts.Cursor)
+	}
+	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
 	if report == nil {
 		report = []repository.HistoricalInventoryReportRow{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"readOnly": true, "rows": report, "total": total, "page": page, "limit": limit})
-}
-
-// parseHistoricalReportPagination enforces the G4b report bounds: page is
-// 1-based and limit is clamped to repository.MaxHistoricalReportLimit; the
-// effective limit is echoed in the response so clamping is explicit.
-func parseHistoricalReportPagination(r *http.Request) (page, limit int, err error) {
-	page, limit = 1, repository.DefaultHistoricalReportLimit
-	q := r.URL.Query()
-	if v := q.Get("page"); v != "" {
-		page, err = strconv.Atoi(v)
-		if err != nil || page < 1 {
-			return 0, 0, errors.New("invalid historical report page")
-		}
-	}
-	if v := q.Get("limit"); v != "" {
-		limit, err = strconv.Atoi(v)
-		if err != nil || limit < 1 {
-			return 0, 0, errors.New("invalid historical report limit")
-		}
-		if limit > repository.MaxHistoricalReportLimit {
-			limit = repository.MaxHistoricalReportLimit
-		}
-	}
-	return page, limit, nil
+	json.NewEncoder(w).Encode(map[string]interface{}{"readOnly": true, "rows": report, "total": total, "limit": opts.Limit, "nextCursor": nextCursor, "hasMore": nextCursor != "", "view": view})
 }
 
 func handleReviewHistoricalInventory(w http.ResponseWriter, r *http.Request, ctx context.Context, returnRepo *repository.SupplierRepository, adminRepo *repository.AdminRepository) {

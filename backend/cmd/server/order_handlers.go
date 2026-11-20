@@ -1113,18 +1113,27 @@ func handleListOrders(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 
-	orders, err := orderRepo.GetOrdersByCustomerUserID(ctx, claims.UserID)
-
+	opts, err := parseListPage(r)
 	if err != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := orderRepo.GetOrdersByCustomerUserIDPage(ctx, claims.UserID, opts)
+	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	orders := page.Items
 	if orders == nil {
 		orders = []domain.Order{}
 	}
 
-	json.NewEncoder(w).Encode(orders)
+	json.NewEncoder(w).Encode(map[string]interface{}{"orders": orders, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }
 
 // ---- Team 03 (live parity, D19/D36/D64/D10) ----
@@ -1646,22 +1655,32 @@ func handleListCustomerReturns(w http.ResponseWriter, r *http.Request, ctx conte
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	var returns []repository.CustomerReturn
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	var page repository.ListPage[repository.CustomerReturn]
 	var err error
 	if claims.HasCapability("admin") {
 		customerID := strings.TrimSpace(r.URL.Query().Get("customerId"))
-		returns, err = orderRepo.ListCustomerReturns(ctx, customerID)
+		page, err = orderRepo.ListCustomerReturnsPage(ctx, customerID, opts)
 	} else {
-		returns, err = orderRepo.ListCustomerReturns(ctx, claims.UserID)
+		page, err = orderRepo.ListCustomerReturnsPage(ctx, claims.UserID, opts)
 	}
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	returns := page.Items
 	if returns == nil {
 		returns = []repository.CustomerReturn{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns})
+	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }
 
 func handleCreateCustomerReturnBody(w http.ResponseWriter, r *http.Request, ctx context.Context, orderRepo *repository.OrderRepository) {
@@ -1945,15 +1964,25 @@ func handleStoreReturns(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	returns, err := orderRepo.ListCustomerReturnsByStore(ctx, storeID)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := orderRepo.ListCustomerReturnsByStorePage(ctx, storeID, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	returns := page.Items
 	if returns == nil {
 		returns = []repository.CustomerReturn{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns})
+	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }
 
 // handleWarehousesReturns serves GET /api/v1/warehouses/returns (D10)
@@ -1975,13 +2004,23 @@ func handleWarehousesReturns(w http.ResponseWriter, r *http.Request, ctx context
 	if destinationID == "" {
 		destinationID = r.URL.Query().Get("warehouse_id")
 	}
-	returns, err := orderRepo.ListCustomerReturnsForWarehouse(ctx, destinationID)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := orderRepo.ListCustomerReturnsForWarehousePage(ctx, opts, destinationID)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	returns := page.Items
 	if returns == nil {
 		returns = []repository.CustomerReturn{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns})
+	json.NewEncoder(w).Encode(map[string]interface{}{"returns": returns, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }

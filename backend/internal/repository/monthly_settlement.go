@@ -51,21 +51,32 @@ func (r *FinanceRepository) GetMonthlySettlementCycle(ctx context.Context, perio
 // Running batches commit independently. Detail totals and item rows must share
 // one repeatable-read snapshot rather than disagree across two committed batches.
 func (r *FinanceRepository) GetMonthlySettlementDetail(ctx context.Context, period string) (*MonthlySettlementCycle, []MonthlySettlementItem, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	cycle, page, err := r.GetMonthlySettlementDetailPage(ctx, period, ListPageOptions{Limit: MaxListLimit})
 	if err != nil {
 		return nil, nil, err
+	}
+	return cycle, page.Items, nil
+}
+
+// GetMonthlySettlementDetailPage returns a settlement cycle with one cursor
+// page of its items. The cycle totals and the page share one repeatable-read
+// transaction, so they agree with each other. PERF-02 Step 7.
+func (r *FinanceRepository) GetMonthlySettlementDetailPage(ctx context.Context, period string, opts ListPageOptions) (*MonthlySettlementCycle, ListPage[MonthlySettlementItem], error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, ListPage[MonthlySettlementItem]{}, err
 	}
 	defer tx.Rollback()
 	cycle, err := scanMonthlyCycle(tx.QueryRowContext(ctx, monthlyCycleSelect+` WHERE c.period=$1`, period))
 	if err != nil {
-		return nil, nil, err
+		return nil, ListPage[MonthlySettlementItem]{}, err
 	}
-	items, err := listMonthlyItems(ctx, tx, period)
+	items, err := listMonthlyItemsPage(ctx, tx, period, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, ListPage[MonthlySettlementItem]{}, err
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, nil, err
+		return nil, ListPage[MonthlySettlementItem]{}, err
 	}
 	return cycle, items, nil
 }

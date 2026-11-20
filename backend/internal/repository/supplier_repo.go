@@ -452,22 +452,8 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 // Legacy pending_approval rows are activated per-row by an admin in the
 // Suppliers tab (ApproveSupplier); they are NOT auto-flipped by this code.
 
-// ListPendingSuppliers returns suppliers awaiting admin approval.
-func (r *SupplierRepository) ListPendingSuppliers(ctx context.Context) ([]domain.Supplier, error) {
-	query := `
-		SELECT s.id, s.owner_user_id, s.name, COALESCE(s.logo_url, ''), s.rating, s.total_products,
-		       s.delivery_score, s.warehouse_city, COALESCE(s.description, ''), COALESCE(s.badge, ''),
-		       COALESCE(s.supports_direct_shipping, FALSE), s.approval_status, s.created_at,
-		       u.mobile, u.full_name
-		FROM suppliers s
-		JOIN users u ON u.id = s.owner_user_id
-		WHERE s.approval_status = 'pending_approval'
-		ORDER BY s.created_at ASC
-	`
-	rows, err := r.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
+// scanPendingSuppliers scans the ListPendingSuppliers row shape.
+func scanPendingSuppliers(rows *sql.Rows) ([]domain.Supplier, error) {
 	defer rows.Close()
 	var out []domain.Supplier
 	for rows.Next() {
@@ -485,6 +471,62 @@ func (r *SupplierRepository) ListPendingSuppliers(ctx context.Context) ([]domain
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// ListPendingSuppliersPage returns one cursor page of suppliers awaiting
+// admin approval, oldest first, keyed on (created_at ASC, id ASC).
+// PERF-02 Step 7.
+func (r *SupplierRepository) ListPendingSuppliersPage(ctx context.Context, opts ListPageOptions) (ListPage[domain.Supplier], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := `
+		SELECT s.id, s.owner_user_id, s.name, COALESCE(s.logo_url, ''), s.rating, s.total_products,
+		       s.delivery_score, s.warehouse_city, COALESCE(s.description, ''), COALESCE(s.badge, ''),
+		       COALESCE(s.supports_direct_shipping, FALSE), s.approval_status, s.created_at,
+		       u.mobile, u.full_name
+		FROM suppliers s
+		JOIN users u ON u.id = s.owner_user_id
+		WHERE s.approval_status = 'pending_approval'
+	`
+	args := []interface{}{}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.Supplier]{}, err
+		}
+		query += " AND (s.created_at, s.id) > ($1::timestamptz, $2::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY s.created_at ASC, s.id ASC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ListPage[domain.Supplier]{}, err
+	}
+	out, err := scanPendingSuppliers(rows)
+	if err != nil {
+		return ListPage[domain.Supplier]{}, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := out[len(out)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.Supplier]{Items: out, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// ListPendingSuppliers returns suppliers awaiting admin approval.
+// Legacy compat: the first page only, at most MaxListLimit rows.
+// HTTP handlers use ListPendingSuppliersPage.
+func (r *SupplierRepository) ListPendingSuppliers(ctx context.Context) ([]domain.Supplier, error) {
+	page, err := r.ListPendingSuppliersPage(ctx, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // ApproveSupplier activates a pending supplier: flips approval_status,
@@ -4663,20 +4705,8 @@ func (r *SupplierRepository) GetSettlementHistory(ctx context.Context, supplierI
 // fields (approval, contract version, markup, warehouse-city provenance).
 // It backs GET /api/v1/admin/suppliers/list and /records (D15); the two
 // routes share this data and differ only in the fields the handlers emit.
-func (r *SupplierRepository) ListSuppliersForAdminDetail(ctx context.Context) ([]domain.Supplier, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, owner_user_id, name, COALESCE(logo_url, ''), rating, total_products, delivery_score,
-		       warehouse_city, COALESCE(description, ''), COALESCE(badge, ''), created_at,
-		       COALESCE(supports_direct_shipping, FALSE), default_markup_type, default_markup_value,
-		       COALESCE(signed_contract_version, 1), approval_status, approved_by, approved_at,
-		       rejection_reason, tapin_shop_id, COALESCE(warehouse_city_confirmed, FALSE),
-		       warehouse_city_source, suspended_at, suspended_by, suspension_reason
-		FROM suppliers
-		ORDER BY created_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
+// scanAdminDetailSuppliers scans the ListSuppliersForAdminDetail row shape.
+func scanAdminDetailSuppliers(rows *sql.Rows) ([]domain.Supplier, error) {
 	defer rows.Close()
 	out := []domain.Supplier{}
 	for rows.Next() {
@@ -4721,6 +4751,80 @@ func (r *SupplierRepository) ListSuppliersForAdminDetail(ctx context.Context) ([
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+const adminDetailSupplierSelect = `
+		SELECT id, owner_user_id, name, COALESCE(logo_url, ''), rating, total_products, delivery_score,
+		       warehouse_city, COALESCE(description, ''), COALESCE(badge, ''), created_at,
+		       COALESCE(supports_direct_shipping, FALSE), default_markup_type, default_markup_value,
+		       COALESCE(signed_contract_version, 1), approval_status, approved_by, approved_at,
+		       rejection_reason, tapin_shop_id, COALESCE(warehouse_city_confirmed, FALSE),
+		       warehouse_city_source, suspended_at, suspended_by, suspension_reason
+		FROM suppliers
+	`
+
+// ListSuppliersForAdminDetailPage returns one cursor page of suppliers with
+// the D55 record fields, newest first, keyed on (created_at DESC, id DESC).
+// status, when non-empty, filters by approval_status IN SQL (the handler
+// used to filter in Go after loading the whole list — that would break
+// paging). PERF-02 Step 7.
+func (r *SupplierRepository) ListSuppliersForAdminDetailPage(ctx context.Context, status string, opts ListPageOptions) (ListPage[domain.Supplier], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	query := adminDetailSupplierSelect
+	args := []interface{}{}
+	var where []string
+	if status != "" {
+		where = append(where, fmt.Sprintf("approval_status = $%d", len(args)+1))
+		args = append(args, status)
+	}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.Supplier]{}, err
+		}
+		where = append(where, fmt.Sprintf("(created_at, id) < ($%d::timestamptz, $%d::text)", len(args)+1, len(args)+2))
+		args = append(args, cursorAt, cursorID)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + where[0]
+		for _, w := range where[1:] {
+			query += " AND " + w
+		}
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ListPage[domain.Supplier]{}, err
+	}
+	out, err := scanAdminDetailSuppliers(rows)
+	if err != nil {
+		return ListPage[domain.Supplier]{}, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := out[len(out)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[domain.Supplier]{Items: out, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// ListSuppliersForAdminDetail returns every supplier with the D55 record
+// fields (approval, contract version, markup, warehouse-city provenance).
+// It backs GET /api/v1/admin/suppliers/list and /records (D15); the two
+// routes share this data and differ only in the fields the handlers emit.
+// Legacy compat: the first page only, at most MaxListLimit rows.
+// HTTP handlers use ListSuppliersForAdminDetailPage.
+func (r *SupplierRepository) ListSuppliersForAdminDetail(ctx context.Context) ([]domain.Supplier, error) {
+	rows, err := r.db.QueryContext(ctx, adminDetailSupplierSelect+` ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return scanAdminDetailSuppliers(rows)
 }
 
 // SupplierShippingMethod mirrors one row of supplier_shipping_methods.

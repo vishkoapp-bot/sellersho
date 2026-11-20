@@ -412,23 +412,35 @@ func handleT01MonthlyDetail(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 		return
 	}
 	repo := repository.NewFinanceRepository(db)
-	cycle, lines, err := repo.GetMonthlySettlementDetail(r.Context(), period)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	cycle, page, err := repo.GetMonthlySettlementDetailPage(r.Context(), period, opts)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, `{"error":"Cycle not found"}`, http.StatusNotFound)
 		return
 	}
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
 	items := []map[string]interface{}{}
-	for _, it := range lines {
+	for _, it := range page.Items {
 		items = append(items, map[string]interface{}{"id": it.ID, "storeId": it.StoreID, "grossAmount": it.GrossAmount, "feeAmount": it.FeeAmount, "netAmount": it.NetAmount, "payoutRequestId": it.PayoutRequestID, "status": it.Status})
 	}
 	t01WriteJSON(w, http.StatusOK, struct {
 		*repository.MonthlySettlementCycle
-		Items []map[string]interface{} `json:"items"`
-	}{cycle, items})
+		Items      []map[string]interface{} `json:"items"`
+		NextCursor string                   `json:"nextCursor,omitempty"`
+		HasMore    bool                     `json:"hasMore"`
+		Limit      int                      `json:"limit"`
+	}{cycle, items, page.NextCursor, page.HasMore, page.Limit})
 }
 
 // handleT01MonthlyRun starts/resumes the shared durable reservation service.

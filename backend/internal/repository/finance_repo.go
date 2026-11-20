@@ -410,8 +410,20 @@ func parseRevenuePeriod(period string) (time.Time, time.Time, error) {
 	return time.Time{}, time.Time{}, fmt.Errorf("invalid period %q: expected YYYY-Qn or YYYY-MM", period)
 }
 
-// GetLedgerFiltered returns ledger entries with date bounds
-func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dateTo string) ([]domain.LedgerEntry, error) {
+// GetLedgerFilteredPage returns one cursor page of ledger entries in a
+// bounded date window, newest first, keyed on (date DESC, id DESC).
+// Window contract (PERF-02 Step 6): dates are YYYY-MM-DD; both empty
+// defaults to the last DefaultReportWindowDays days; a window over
+// MaxReportWindowDays is rejected. The old unbounded, dateless full-table
+// scan (100,002 rows + a 6,472 kB sort spill to disk) is gone.
+func (r *FinanceRepository) GetLedgerFilteredPage(ctx context.Context, dateFrom, dateTo string, opts ListPageOptions) (ListPage[domain.LedgerEntry], error) {
+	limit := NormalizeListLimit(opts.Limit)
+	if dateFrom == "" && dateTo == "" {
+		dateFrom, dateTo = DefaultReportWindow()
+	}
+	if err := ValidateReportWindow(dateFrom, dateTo); err != nil {
+		return ListPage[domain.LedgerEntry]{}, err
+	}
 	query := `
 		SELECT id, date, target_account, target_type, type, amount, reason, operator,
 		       COALESCE(related_order_or_dispute, ''), created_at
@@ -430,11 +442,21 @@ func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dat
 		args = append(args, dateTo)
 		argIdx++
 	}
-	query += " ORDER BY date DESC"
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[domain.LedgerEntry]{}, err
+		}
+		query += fmt.Sprintf(" AND (date, id) < ($%d::timestamptz, $%d::text)", argIdx, argIdx+1)
+		args = append(args, cursorAt, cursorID)
+		argIdx += 2
+	}
+	query += fmt.Sprintf(" ORDER BY date DESC, id DESC LIMIT $%d", argIdx)
+	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[domain.LedgerEntry]{}, err
 	}
 	defer rows.Close()
 
@@ -445,11 +467,35 @@ func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dat
 			&e.ID, &e.Date, &e.TargetAccount, &e.TargetType, &e.Type, &e.Amount,
 			&e.Reason, &e.Operator, &e.RelatedOrderOrDispute, &e.CreatedAt,
 		); err != nil {
-			return nil, err
+			return ListPage[domain.LedgerEntry]{}, err
 		}
 		entries = append(entries, e)
 	}
-	return entries, nil
+	if err := rows.Err(); err != nil {
+		return ListPage[domain.LedgerEntry]{}, err
+	}
+	hasMore := len(entries) > limit
+	if hasMore {
+		entries = entries[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := entries[len(entries)-1]
+		nextCursor = EncodeCreatedAtCursor(last.Date, last.ID)
+	}
+	return ListPage[domain.LedgerEntry]{Items: entries, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// GetLedgerFiltered returns ledger entries with date bounds. Legacy
+// compat: the first page only, at most MaxListLimit rows, default 31-day
+// window when no dates are given. HTTP handlers use
+// GetLedgerFilteredPage.
+func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dateTo string) ([]domain.LedgerEntry, error) {
+	page, err := r.GetLedgerFilteredPage(ctx, dateFrom, dateTo, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // GetStoreBalance calculates real-time store financial balance including referral bonuses and 2% referral commissions
@@ -457,32 +503,70 @@ func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string)
 	return scanStoreBalance(ctx, r.db, storeID)
 }
 
-func (r *FinanceRepository) GetStorePayouts(ctx context.Context, ownerUserID, storeID string) ([]SettlementRequest, error) {
+// GetStorePayoutsPage returns one cursor page of a store's payout requests,
+// newest first, keyed on (created_at DESC, id DESC). PERF-02 Step 6.
+func (r *FinanceRepository) GetStorePayoutsPage(ctx context.Context, ownerUserID, storeID string, opts ListPageOptions) (ListPage[SettlementRequest], error) {
+	limit := NormalizeListLimit(opts.Limit)
 	var owns bool
 	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1 AND owner_user_id = $2)`, storeID, ownerUserID).Scan(&owns); err != nil {
-		return nil, err
+		return ListPage[SettlementRequest]{}, err
 	}
 	if !owns {
-		return nil, ErrStoreForbidden
+		return ListPage[SettlementRequest]{}, ErrStoreForbidden
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	query := `
 		SELECT id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status,
 		       COALESCE(available_balance,0), COALESCE(rejection_reason,''), created_at, processed_at,
 		       transfer_reference, transfer_confirmed_by, transfer_confirmed_at
-		FROM payout_requests WHERE store_id = $1 ORDER BY created_at DESC`, storeID)
+		FROM payout_requests WHERE store_id = $1`
+	args := []interface{}{storeID}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[SettlementRequest]{}, err
+		}
+		query += " AND (created_at, id) < ($2::timestamptz, $3::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[SettlementRequest]{}, err
 	}
 	defer rows.Close()
 	result := []SettlementRequest{}
 	for rows.Next() {
 		var item SettlementRequest
 		if err := rows.Scan(&item.ID, &item.StoreID, &item.RecipientType, &item.RecipientName, &item.Shaba, &item.BankName, &item.Amount, &item.Status, &item.AvailableBalance, &item.RejectionReason, &item.CreatedAt, &item.ProcessedAt, &item.TransferReference, &item.TransferConfirmedBy, &item.TransferConfirmedAt); err != nil {
-			return nil, err
+			return ListPage[SettlementRequest]{}, err
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ListPage[SettlementRequest]{}, err
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := result[len(result)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[SettlementRequest]{Items: result, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// GetStorePayouts returns a store's payout requests. Legacy compat: the
+// first page only, at most MaxListLimit rows. HTTP handlers use
+// GetStorePayoutsPage.
+func (r *FinanceRepository) GetStorePayouts(ctx context.Context, ownerUserID, storeID string) ([]SettlementRequest, error) {
+	page, err := r.GetStorePayoutsPage(ctx, ownerUserID, storeID, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUserID, storeID, shaba, bankName string, amount int64, clientKeys ...string) (*SettlementRequest, error) {
@@ -886,19 +970,32 @@ func (r *FinanceRepository) GetStoreStatementPage(ctx context.Context, storeID, 
 	return result, nil
 }
 
-// GetPendingSettlements returns payout requests awaiting finance approval
-func (r *FinanceRepository) GetPendingSettlements(ctx context.Context) ([]SettlementRequest, error) {
+// GetPendingSettlementsPage returns one cursor page of payout requests
+// awaiting finance approval, newest first, keyed on (created_at DESC,
+// id DESC). PERF-02 Step 6.
+func (r *FinanceRepository) GetPendingSettlementsPage(ctx context.Context, opts ListPageOptions) (ListPage[SettlementRequest], error) {
+	limit := NormalizeListLimit(opts.Limit)
 	query := `
 		SELECT id, store_id, supplier_id, recipient_type, recipient_name, shaba, bank_name,
 		       amount, status, rejection_reason, created_at, processed_at,
 		       transfer_reference, transfer_confirmed_by, transfer_confirmed_at
 		FROM payout_requests
 		WHERE status = 'pending'
-		ORDER BY created_at DESC
 	`
-	rows, err := r.db.QueryContext(ctx, query)
+	args := []interface{}{}
+	if opts.Cursor != "" {
+		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
+		if err != nil {
+			return ListPage[SettlementRequest]{}, err
+		}
+		query += " AND (created_at, id) < ($1::timestamptz, $2::text)"
+		args = append(args, cursorAt, cursorID)
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return ListPage[SettlementRequest]{}, err
 	}
 	defer rows.Close()
 
@@ -910,11 +1007,34 @@ func (r *FinanceRepository) GetPendingSettlements(ctx context.Context) ([]Settle
 			&s.Amount, &s.Status, &s.RejectionReason, &s.CreatedAt, &s.ProcessedAt,
 			&s.TransferReference, &s.TransferConfirmedBy, &s.TransferConfirmedAt,
 		); err != nil {
-			return nil, err
+			return ListPage[SettlementRequest]{}, err
 		}
 		list = append(list, s)
 	}
-	return list, nil
+	if err := rows.Err(); err != nil {
+		return ListPage[SettlementRequest]{}, err
+	}
+	hasMore := len(list) > limit
+	if hasMore {
+		list = list[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		last := list[len(list)-1]
+		nextCursor = EncodeCreatedAtCursor(last.CreatedAt, last.ID)
+	}
+	return ListPage[SettlementRequest]{Items: list, NextCursor: nextCursor, HasMore: hasMore, Limit: limit}, nil
+}
+
+// GetPendingSettlements returns payout requests awaiting finance approval.
+// Legacy compat: the first page only, at most MaxListLimit rows. HTTP
+// handlers use GetPendingSettlementsPage.
+func (r *FinanceRepository) GetPendingSettlements(ctx context.Context) ([]SettlementRequest, error) {
+	page, err := r.GetPendingSettlementsPage(ctx, ListPageOptions{Limit: MaxListLimit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // GetSettlementDetails returns a single payout request

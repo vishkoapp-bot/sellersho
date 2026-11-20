@@ -158,6 +158,14 @@ export interface HistoricalReconciliationRowCardProps {
   onReview: (row: HistoricalInventoryReportRow) => void;
 }
 
+// Evidence count for the card footer: the summary list ships the
+// server-side count (lists are empty there); full rows and test fixtures
+// fall back to the shipped list lengths.
+const evidenceCount = (row: HistoricalInventoryReportRow): number =>
+  typeof row.evidenceTotal === 'number' && row.evidenceTotal > 0
+    ? row.evidenceTotal
+    : row.locationBreakdown.length + row.activeReservations.length + row.movements.length + row.measurementEvidence.length;
+
 export const HistoricalReconciliationRowCard: React.FC<HistoricalReconciliationRowCardProps> = ({ row, onReview }) => {
   const verdict = deriveVerdict(row);
   const primary = primaryClassification(row);
@@ -195,7 +203,7 @@ export const HistoricalReconciliationRowCard: React.FC<HistoricalReconciliationR
         مدرک ورود: {row.hasInboundEvidence ? 'دارد' : 'ندارد'} · مدرک کنترل کیفیت: {row.hasQCEvidence ? 'دارد' : 'ندارد'} · مدرک جابه‌جایی: {row.hasPutawayEvidence ? 'دارد' : 'ندارد'} · مدرک مالی: {row.hasLedgerEvidence ? 'دارد' : 'ندارد'}
       </p>
       <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-2">
-        <span className="text-[10px] text-slate-500">مکان‌ها: {fa(row.locationBreakdown.length)} · رزرو فعال: {fa(row.activeReservations.length)} · جابه‌جایی: {fa(row.movements.length)}</span>
+        <span className="text-[10px] text-slate-500">مدرک‌ها: {fa(evidenceCount(row))} مورد{row.evidenceTruncated ? ' (بیش از حد نمایش)' : ''}</span>
         <button type="button" onClick={() => onReview(row)} className="flex items-center gap-1 rounded-xl bg-amber-600 px-3 py-2 text-[10px] font-bold text-white"><FileSearch className="h-3.5 w-3.5" strokeWidth={1.5} />بررسی مورد</button>
       </div>
     </article>
@@ -205,6 +213,9 @@ export const HistoricalReconciliationRowCard: React.FC<HistoricalReconciliationR
 export const HistoricalReconciliationReviewTab: React.FC = () => {
   const { success, error } = useToast();
   const [rows, setRows] = useState<HistoricalInventoryReportRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [nextCursor, setNextCursor] = useState('');
+  const [hasMore, setHasMore] = useState(false);
   const [query, setQuery] = useState('');
   const [classification, setClassification] = useState('all');
   const [reviewStatus, setReviewStatus] = useState('all');
@@ -213,13 +224,34 @@ export const HistoricalReconciliationReviewTab: React.FC = () => {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = async () => {
+  // PERF-02 Step 9: cursor pages (50 rows) over the summary view; a
+  // cursor appends, a fresh load replaces. Products past the first page
+  // are reviewable now — the old single-fetch left them unreachable.
+  const load = async (cursor?: string) => {
     setBusy(true);
     try {
-      const response = await historicalReviewApi.report();
-      setRows(response.rows || []);
+      const response = await historicalReviewApi.report({ limit: 50, cursor });
+      setRows((prev) => (cursor ? [...prev, ...(response.rows || [])] : (response.rows || [])));
+      setTotal(response.total || 0);
+      setNextCursor(response.nextCursor || '');
+      setHasMore(!!response.hasMore);
     } catch (cause) {
       error(cause instanceof Error ? cause.message : 'گزارش تطبیق دریافت نشد.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The list ships summary rows (no evidence payloads); the review modal
+  // needs the full row, so fetch it on demand for the selected product.
+  const openReview = async (item: HistoricalInventoryReportRow) => {
+    setBusy(true);
+    try {
+      const full = await historicalReviewApi.row(item.productId);
+      setSelected(full);
+      setNextStatus('in_review');
+    } catch (cause) {
+      error(cause instanceof Error ? cause.message : 'دریافت جزئیات کالا انجام نشد.');
     } finally {
       setBusy(false);
     }
@@ -295,8 +327,8 @@ export const HistoricalReconciliationReviewTab: React.FC = () => {
           </select>
         </div>
         <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-600 md:grid-cols-4">
-          <span>کل ردیف: <b>{fa(rows.length)}</b></span>
-          <span>نمایش فعلی: <b>{fa(filtered.length)}</b></span>
+          <span>کل ردیف: <b>{fa(total)}</b></span>
+          <span>بارگذاری‌شده: <b>{fa(rows.length)}</b></span>
           <span>نیازمند تصمیم: <b>{fa(rows.filter((row) => row.reviewStatus === 'needs_review').length)}</b></span>
           <span>تغییر موجودی: <b>هرگز</b></span>
         </div>
@@ -304,9 +336,16 @@ export const HistoricalReconciliationReviewTab: React.FC = () => {
 
       <section className="space-y-2">
         {filtered.map((row) => (
-          <HistoricalReconciliationRowCard key={row.productId} row={row} onReview={(item) => { setSelected(item); setNextStatus('in_review'); }} />
+          <HistoricalReconciliationRowCard key={row.productId} row={row} onReview={(item) => { void openReview(item); }} />
         ))}
       </section>
+
+      {hasMore && (
+        <div className="space-y-1 text-center">
+          <button type="button" onClick={() => void load(nextCursor)} disabled={busy} className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">نمایش بیشتر</button>
+          <p className="text-[10px] text-slate-500">جستجو و فیلتر روی ردیف‌های بارگذاری‌شده اعمال می‌شود.</p>
+        </div>
+      )}
 
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3">

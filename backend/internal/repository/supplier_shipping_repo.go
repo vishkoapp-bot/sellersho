@@ -107,6 +107,30 @@ func (r *SupplierShipmentRepository) AcceptShipment(ctx context.Context, supplie
 	return nil
 }
 
+// SupplierItemCounts returns the supplier item quantity per order for a set
+// of orders in ONE query. PERF-02 Step 5: the supplier orders tab used to
+// call SupplierItemCount once per shipment (N+1).
+func (r *SupplierShipmentRepository) SupplierItemCounts(ctx context.Context, orderIDs []string, supplierID string) (map[string]int, error) {
+	out := map[string]int{}
+	if len(orderIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT oi.order_id, COALESCE(SUM(oi.quantity), 0) FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ANY($1::text[]) AND p.supplier_id = $2 GROUP BY oi.order_id`, pq.Array(orderIDs), supplierID)
+	if err != nil {
+		return nil, fmt.Errorf("count supplier items: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var orderID string
+		var count int
+		if err := rows.Scan(&orderID, &count); err != nil {
+			return nil, err
+		}
+		out[orderID] = count
+	}
+	return out, rows.Err()
+}
+
 func (r *SupplierShipmentRepository) SupplierItemCount(ctx context.Context, orderID, supplierID string) (int, error) {
 	var count int
 	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(oi.quantity), 0) FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = $1 AND p.supplier_id = $2`, orderID, supplierID).Scan(&count)

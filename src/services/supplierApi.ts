@@ -437,7 +437,15 @@ export const supplierApi = {
   setCampaignStatus: (id: string, status: 'active' | 'paused') => apiRequest(`/supplier/campaigns/${encodeURIComponent(id)}/status`, { method: 'PUT', auth: true, body: JSON.stringify({ status }) }),
   createCampaign: (payload: Record<string, unknown>) => apiRequest<{ id: string; campaign_id: string }>('/supplier/campaigns/create', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   getCampaignStats: (id: string) => apiRequest<SupplierCampaignStatsDto>(`/supplier/campaigns/${encodeURIComponent(id)}/stats`, { method: 'GET', auth: true }),
-  getOrders: () => apiRequest<{ success: boolean; orders: SupplierOrderDto[] }>('/supplier/orders', { method: 'GET', auth: true }),
+  // PERF-02 Step 9: cursor pages (default 50, max 100). The handler
+  // still returns `success: true`; orders live under `orders`.
+  getOrders: (params?: { limit?: number; cursor?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    const suffix = query.toString() ? `?${query}` : '';
+    return apiRequest<{ success: boolean; orders: SupplierOrderDto[]; nextCursor: string; hasMore: boolean; limit: number }>(`/supplier/orders${suffix}`, { method: 'GET', auth: true });
+  },
   getOrderAddons: async (orderId: string) => { const r = await apiRequest<any>(`/supplier/orders/${encodeURIComponent(orderId)}/addons`, { method: "GET", auth: true }); return { addons: r.addons || [], total: r.total || 0 }; },
   // FIX 50 — live addons widget (Ql) clients.
   getAddons: async (): Promise<SupplierAddonDto[]> => { const r = await apiRequest<any>('/supplier/addons', { method: 'GET', auth: true }); return r.addons || []; },

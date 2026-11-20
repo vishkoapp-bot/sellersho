@@ -41,19 +41,32 @@ func handleGetPendingShipments(
 		supplierID = r.URL.Query().Get("supplierId")
 	}
 
-	shipments, err := shipmentRepo.GetPendingShipments(ctx, supplierID)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := shipmentRepo.GetPendingShipmentsPage(ctx, supplierID, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
+	shipments := page.Items
 
 	for _, s := range shipments {
 		_ = shipmentRepo.LogShipmentAudit(ctx, s.ID, claims.UserID, "viewed_pending_shipments")
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"shipments": shipments,
+		"success":    true,
+		"shipments":  shipments,
+		"nextCursor": page.NextCursor,
+		"hasMore":    page.HasMore,
+		"limit":      page.Limit,
 	})
 }
 
@@ -85,15 +98,28 @@ func handleGetSupplierShipments(
 	}
 
 	status := r.URL.Query().Get("status")
-	shipments, err := shipmentRepo.GetShipments(ctx, supplierID, status)
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := shipmentRepo.GetShipmentsPage(ctx, supplierID, status, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
+	shipments := page.Items
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"shipments": shipments,
+		"success":    true,
+		"shipments":  shipments,
+		"nextCursor": page.NextCursor,
+		"hasMore":    page.HasMore,
+		"limit":      page.Limit,
 	})
 }
 
@@ -426,7 +452,33 @@ func handleGetSupplierOrders(
 		}
 	}
 
-	shipments, err := shipmentRepo.GetShipments(ctx, supplierID, "")
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := shipmentRepo.GetShipmentsPage(ctx, supplierID, "", opts)
+	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	shipments := page.Items
+	// PERF-02 Step 5: one batched counts query + one batched lines query
+	// for the whole page — the old code ran both per shipment (2N queries).
+	var orderIDs []string
+	for _, s := range shipments {
+		orderIDs = append(orderIDs, s.OrderID)
+	}
+	itemCounts, err := shipmentRepo.SupplierItemCounts(ctx, orderIDs, supplierID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	fulfillmentLines, err := shipmentRepo.ListSupplierFulfillmentLinesForOrders(ctx, supplierID, orderIDs)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -468,15 +520,10 @@ func handleGetSupplierOrders(
 		if s.TrackingNumber != nil {
 			trackingStr = *s.TrackingNumber
 		}
-		itemCount, err := shipmentRepo.SupplierItemCount(ctx, s.OrderID, s.SupplierID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		lines, err := shipmentRepo.ListSupplierFulfillmentLines(ctx, s.SupplierID, s.OrderID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
+		itemCount := itemCounts[s.OrderID]
+		lines := fulfillmentLines[s.OrderID]
+		if lines == nil {
+			lines = []repository.SupplierFulfillmentLine{}
 		}
 		ordersView = append(ordersView, OrderItemView{
 			ID:             s.ID,
@@ -496,8 +543,11 @@ func handleGetSupplierOrders(
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"orders":  ordersView,
+		"success":    true,
+		"orders":     ordersView,
+		"nextCursor": page.NextCursor,
+		"hasMore":    page.HasMore,
+		"limit":      page.Limit,
 	})
 }
 

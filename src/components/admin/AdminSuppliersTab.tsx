@@ -696,7 +696,9 @@ export const AdminSuppliersTab: React.FC = () => {
     try {
       // /records (not /list) so the contract modal also has rejection
       // reason and Tapin connection state, which /list omits.
-      const suppliers = await apiRequest<AdminSupplierRow[]>('/admin/suppliers/records', { method: 'GET', auth: true });
+      // PERF-02 Step 9: /records now pages (envelope with `suppliers`).
+      const records = await apiRequest<any>('/admin/suppliers/records', { method: 'GET', auth: true });
+      const suppliers = Array.isArray(records) ? records : (records?.suppliers ?? []);
       setSuppliersList(Array.isArray(suppliers) ? suppliers : []);
       try {
         const methods = await apiRequest<ShippingMethodRow[]>('/admin/suppliers/shipping-methods', { method: 'GET', auth: true });

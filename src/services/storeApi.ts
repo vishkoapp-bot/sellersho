@@ -303,7 +303,13 @@ export const storeApi = {
   saveStoreProducts: async (slug: string, productIds: string[]): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/products`, { method: 'PUT', auth: true, body: JSON.stringify({ productIds }) }),
   purchaseService: async (slug: string, service: string, storeId: string): Promise<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}> => financeOperation<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}>(`/stores/${encodeURIComponent(slug)}/services`, { service }, `seller:${storeId}:service`, value => typeof value.id === 'string' && !!value.id && value.id === storeId && typeof value.activePlanId === 'string' && !!value.activePlanId && Number.isSafeInteger(value.amount) && value.amount > 0 && Number.isSafeInteger(value.durationDays) && value.durationDays > 0 && typeof value.planExpiresAt === 'string' && Number.isFinite(Date.parse(value.planExpiresAt))),
   getOwnedBalance: async (slug: string): Promise<StoreBalanceResponse> => apiRequest<StoreBalanceResponse>(`/stores/${encodeURIComponent(slug)}/balance`, { auth: true }),
-  getPayouts: async (slug: string): Promise<import('../types').PayoutRequest[]> => apiRequest<import('../types').PayoutRequest[]>(`/stores/${encodeURIComponent(slug)}/payouts`, { auth: true }),
+  // PERF-02 Step 9: payouts now page (envelope with `payouts`).
+  getPayouts: async (slug: string): Promise<import('../types').PayoutRequest[]> => {
+    const res = await apiRequest<any>(`/stores/${encodeURIComponent(slug)}/payouts`, { auth: true });
+    if (Array.isArray(res)) return res;
+    if (Array.isArray(res?.payouts)) return res.payouts;
+    return [];
+  },
   requestPayout: async (slug: string, amount: number, shaba: string, storeId: string): Promise<unknown> => financeOperation(`/stores/${encodeURIComponent(slug)}/payouts`, { amount, shaba }, `seller:${storeId}:payout`, value => typeof value.id === 'string' && !!value.id && typeof value.storeId === 'string' && value.storeId === storeId && value.amount === amount && value.status === 'pending'),
   // Team Settlement (Phase 3): seller wallet breakdown (pending vs
   // released profit) and early-withdrawal request/list. The seller
@@ -323,7 +329,13 @@ export const storeApi = {
     const params = new URLSearchParams(); if (start) params.set('start', start); if (end) params.set('end', end);
     return apiRequest<SellerReportResponse>(`/stores/${encodeURIComponent(slug)}/report?${params}`, { method: 'GET', auth: true });
   },
-  getSellerTickets: async (): Promise<SellerTicket[]> => apiRequest<SellerTicket[]>('/seller/tickets', { method: 'GET', auth: true }),
+  // PERF-02 Step 9: tickets now page (envelope with `tickets`).
+  getSellerTickets: async (): Promise<SellerTicket[]> => {
+    const res = await apiRequest<any>('/seller/tickets', { method: 'GET', auth: true });
+    if (Array.isArray(res)) return res;
+    if (Array.isArray(res?.tickets)) return res.tickets;
+    return [];
+  },
   createSellerTicket: async (subject: string, message: string): Promise<SellerTicket[]> => apiRequest<SellerTicket[]>('/seller/tickets', { method: 'POST', auth: true, body: JSON.stringify({ subject, message }) }),
 
   getStoreReferrals: async (slug: string): Promise<StoreReferralItem[]> => {

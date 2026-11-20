@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -22,12 +24,16 @@ import (
 // (ErrHistoricalEvidenceTooLarge, HTTP 400) — never silently truncated —
 // because the evidence list is part of the durable audit record.
 //
-// Full report (G4b): GET reconciliation-report is paginated with explicit
-// page/limit caps and deterministic ordering by product ID, and reports the
-// total row count. DefaultHistoricalReportLimit is the limit for callers
-// that pass no limit (including the existing frontend report fetch).
-// Limit values above MaxHistoricalReportLimit are clamped to the max; the
-// effective limit is echoed in the response.
+// Full report (G4b, tightened by PERF-02 D1): GET reconciliation-report
+// is cursor-paged with explicit limit caps and deterministic ordering by
+// product ID, and reports the total row count. DefaultHistoricalReportLimit
+// is the limit for callers that pass no limit (including the existing
+// frontend report fetch). Limit values above MaxHistoricalReportLimit are
+// clamped to the max; the effective limit is echoed in the response.
+// OFFSET pagination is gone: the cursor is the last product ID of the
+// previous page (opaque base64), so concurrent product inserts can neither
+// duplicate nor skip rows. The total is read in the same repeatable-read
+// transaction as the page, so it agrees with the page snapshot.
 //
 // Nested evidence (G4a/G4b): each nested evidence list inside one report row
 // (locations, reservations, movements, measurements) is capped at
@@ -38,8 +44,8 @@ import (
 const (
 	MaxHistoricalReviewEvidence      = 50
 	MaxHistoricalEvidenceEntryLength = 256
-	DefaultHistoricalReportLimit     = 200
-	MaxHistoricalReportLimit         = 200
+	DefaultHistoricalReportLimit     = 50
+	MaxHistoricalReportLimit         = 100
 	MaxHistoricalNestedEvidence      = 50
 )
 
@@ -125,6 +131,20 @@ type HistoricalInventoryReportRow struct {
 // historicalInventoryReportSQL is the deterministic read-only comparison.
 // Callers append a product filter and/or LIMIT/OFFSET; ordering by product
 // ID is applied by queryHistoricalReport.
+//
+// PERF-02 Step 2: has_ledger is a correlated EXISTS (movement -> ledger)
+// instead of `related IN (SELECT DISTINCT reference_id ...)`, which
+// re-scanned the whole ledger per product (35.7 ms/product in situ,
+// ~7.1 s per 200-row page; 0.06-0.08 ms correlated). Semantics are
+// identical: a ledger entry exists whose related_order_or_dispute equals
+// any movement reference_id of this product (NULLs match nothing either way).
+// PERF-02 Step 8c: each nested jsonb_agg reads from a LIMIT-50 subquery, so
+// the DB never builds unbounded JSONB for a dense product (a 5,005-movement
+// product built ~1.46 MB JSONB that Go then truncated to 50); the
+// SUM/COUNT aggregates still cover the full set. The four trailing count
+// columns are the TRUE per-list totals: the Go-side EvidenceTotal must come
+// from them, not from the capped list lengths (which would report 100 for
+// that same 5,005-movement product instead of 10006).
 const historicalInventoryReportSQL = `
 		SELECT p.id,p.title,COALESCE(p.supplier_id,''),p.stock,
 		       COALESCE(c.canonical_quantity,0),COALESCE(c.sellable_quantity,0),COALESCE(c.physical_quantity,0),COALESCE(c.canonical_rows,0),COALESCE(c.unreconciled_rows,0),
@@ -133,7 +153,8 @@ const historicalInventoryReportSQL = `
 		       COALESCE(m.has_inbound,FALSE),COALESCE(m.has_qc,FALSE),COALESCE(m.has_putaway,FALSE),COALESCE(m.has_ledger,FALSE),
 		       COALESCE(c.location_breakdown,'[]'::jsonb),COALESCE(res.active_reservations,'[]'::jsonb),
 		       COALESCE(m.movement_details,'[]'::jsonb),COALESCE(me.measurement_details,'[]'::jsonb),
-		       COALESCE(rv.review_id,''),COALESCE(rv.review_status,'needs_review')
+		       COALESCE(rv.review_id,''),COALESCE(rv.review_status,'needs_review'),
+		       COALESCE(c.canonical_rows,0),COALESCE(res.reservation_count,0),COALESCE(m.movement_count,0),COALESCE(me.measurement_count,0)
 		FROM products p
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM(quantity),0)::int AS canonical_quantity,
@@ -141,11 +162,64 @@ const historicalInventoryReportSQL = `
 			       COALESCE(SUM(quantity) FILTER (WHERE location_type IN ('warehouse','bin','in_transit') AND quantity > 0),0)::int AS physical_quantity,
 			       COUNT(*)::int AS canonical_rows,
 			       COUNT(*) FILTER (WHERE NOT reconciled OR owner_type='unreconciled' OR status='unreconciled')::int AS unreconciled_rows
-			       ,COALESCE(jsonb_agg(jsonb_build_object('locationKey',location_key,'locationType',location_type,'warehouseName',COALESCE(warehouse_name,''),'binCode',COALESCE(bin_code,''),'status',status,'quantity',quantity,'reconciled',reconciled) ORDER BY location_key,status),'[]'::jsonb) AS location_breakdown
+			       ,COALESCE((SELECT jsonb_agg(jsonb_build_object('locationKey',location_key,'locationType',location_type,'warehouseName',COALESCE(warehouse_name,''),'binCode',COALESCE(bin_code,''),'status',status,'quantity',quantity,'reconciled',reconciled) ORDER BY location_key,status) FROM (SELECT location_key,location_type,warehouse_name,bin_code,status,quantity,reconciled FROM inventory_balances WHERE product_id=p.id ORDER BY location_key,status LIMIT 50) ibl),'[]'::jsonb) AS location_breakdown
 			FROM inventory_balances ib WHERE ib.product_id=p.id
 		) c ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',ir.id,'locationKey',ir.location_key,'quantity',ir.quantity,'referenceId',ir.reference_id,'status',ir.status) ORDER BY ir.created_at),'[]'::jsonb) AS active_reservations
+			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',ir.id,'locationKey',ir.location_key,'quantity',ir.quantity,'referenceId',ir.reference_id,'status',ir.status) ORDER BY ir.created_at),'[]'::jsonb) AS active_reservations,
+			       (SELECT COUNT(*)::int FROM inventory_reservations WHERE product_id=p.id AND status='active') AS reservation_count
+			FROM (SELECT id,location_key,quantity,reference_id,status,created_at FROM inventory_reservations WHERE product_id=p.id AND status='active' ORDER BY created_at LIMIT 50) ir
+		) res ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(SUM(im.quantity),0)::int AS movement_quantity,
+			       BOOL_OR(im.reference_type='inbound_received') AS has_inbound,
+			       BOOL_OR(im.reference_type IN ('qc_pass','qc_failed')) AS has_qc,
+			       BOOL_OR(im.reference_type='putaway_confirmed') AS has_putaway,
+		       COUNT(*)::int AS movement_count,
+			       EXISTS (SELECT 1 FROM inventory_movements im2 WHERE im2.product_id=p.id AND EXISTS (SELECT 1 FROM ledger_entries le WHERE le.related_order_or_dispute=im2.reference_id)) AS has_ledger,
+			       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',id,'quantity',quantity,'fromStatus',from_status,'toStatus',to_status,'fromLocationKey',from_location_key,'toLocationKey',to_location_key,'referenceType',reference_type,'referenceId',reference_id,'createdAt',created_at) ORDER BY created_at) FROM (SELECT id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,created_at FROM inventory_movements WHERE product_id=p.id ORDER BY created_at LIMIT 50) iml),'[]'::jsonb) AS movement_details
+			FROM inventory_movements im WHERE im.product_id=p.id
+		) m ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',pm.id,'newLengthMm',pm.new_length_mm,'newWidthMm',pm.new_width_mm,'newHeightMm',pm.new_height_mm,'newWeightGrams',pm.new_weight_grams,'reason',pm.reason,'actorUserId',pm.actor_user_id,'createdAt',pm.created_at) ORDER BY pm.created_at),'[]'::jsonb) AS measurement_details,
+			       (SELECT COUNT(*)::int FROM product_measurement_events WHERE product_id=p.id) AS measurement_count
+			FROM (SELECT id,new_length_mm,new_width_mm,new_height_mm,new_weight_grams,reason,actor_user_id,created_at FROM product_measurement_events WHERE product_id=p.id ORDER BY created_at LIMIT 50) pm
+		) me ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT id AS review_id,review_status FROM historical_reconciliation_reviews WHERE product_id=p.id
+		) rv ON TRUE
+`
+
+// historicalInventoryReportSummarySQL is the summary-only twin of
+// historicalInventoryReportSQL (PERF-02 Step 8d): same rows, same
+// deterministic ordering, same scalar aggregates and flags — but NO nested
+// jsonb_agg evidence at all. The list view needs counts and
+// classifications, not evidence payloads; per-product evidence comes from
+// GetHistoricalInventoryReportRow. The four trailing columns are the
+// pre-truncation per-list evidence counts (balances, active reservations,
+// movements, measurements) so the row can still report EvidenceTotal and
+// EvidenceTruncated without building any JSONB.
+const historicalInventoryReportSummarySQL = `
+		SELECT p.id,p.title,COALESCE(p.supplier_id,''),p.stock,
+		       COALESCE(c.canonical_quantity,0),COALESCE(c.sellable_quantity,0),COALESCE(c.physical_quantity,0),COALESCE(c.canonical_rows,0),COALESCE(c.unreconciled_rows,0),
+		       COALESCE(m.movement_quantity,0),COALESCE(p.measurement_status,'unverified'),
+		       COALESCE(p.length_mm,0)>0 AND COALESCE(p.width_mm,0)>0 AND COALESCE(p.height_mm,0)>0 AND COALESCE(p.weight_grams,0)>0,
+		       COALESCE(m.has_inbound,FALSE),COALESCE(m.has_qc,FALSE),COALESCE(m.has_putaway,FALSE),COALESCE(m.has_ledger,FALSE),
+		       '[]'::jsonb,'[]'::jsonb,
+		       '[]'::jsonb,'[]'::jsonb,
+		       COALESCE(rv.review_id,''),COALESCE(rv.review_status,'needs_review'),
+		       COALESCE(c.canonical_rows,0),COALESCE(res.reservation_count,0),COALESCE(m.movement_count,0),COALESCE(me.measurement_count,0)
+		FROM products p
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(SUM(quantity),0)::int AS canonical_quantity,
+			       COALESCE(SUM(quantity) FILTER (WHERE status='sellable'),0)::int AS sellable_quantity,
+			       COALESCE(SUM(quantity) FILTER (WHERE location_type IN ('warehouse','bin','in_transit') AND quantity > 0),0)::int AS physical_quantity,
+			       COUNT(*)::int AS canonical_rows,
+			       COUNT(*) FILTER (WHERE NOT reconciled OR owner_type='unreconciled' OR status='unreconciled')::int AS unreconciled_rows
+			FROM inventory_balances ib WHERE ib.product_id=p.id
+		) c ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS reservation_count
 			FROM inventory_reservations ir WHERE ir.product_id=p.id AND ir.status='active'
 		) res ON TRUE
 		LEFT JOIN LATERAL (
@@ -153,12 +227,12 @@ const historicalInventoryReportSQL = `
 			       BOOL_OR(im.reference_type='inbound_received') AS has_inbound,
 			       BOOL_OR(im.reference_type IN ('qc_pass','qc_failed')) AS has_qc,
 			       BOOL_OR(im.reference_type='putaway_confirmed') AS has_putaway,
-			       EXISTS (SELECT 1 FROM ledger_entries le WHERE le.related_order_or_dispute IN (SELECT DISTINCT im2.reference_id FROM inventory_movements im2 WHERE im2.product_id=p.id)) AS has_ledger,
-			       COALESCE(jsonb_agg(jsonb_build_object('id',im.id,'quantity',im.quantity,'fromStatus',im.from_status,'toStatus',im.to_status,'fromLocationKey',im.from_location_key,'toLocationKey',im.to_location_key,'referenceType',im.reference_type,'referenceId',im.reference_id,'createdAt',im.created_at) ORDER BY im.created_at),'[]'::jsonb) AS movement_details
+		       COUNT(*)::int AS movement_count,
+			       EXISTS (SELECT 1 FROM inventory_movements im2 WHERE im2.product_id=p.id AND EXISTS (SELECT 1 FROM ledger_entries le WHERE le.related_order_or_dispute=im2.reference_id)) AS has_ledger
 			FROM inventory_movements im WHERE im.product_id=p.id
 		) m ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(jsonb_agg(jsonb_build_object('id',pm.id,'newLengthMm',pm.new_length_mm,'newWidthMm',pm.new_width_mm,'newHeightMm',pm.new_height_mm,'newWeightGrams',pm.new_weight_grams,'reason',pm.reason,'actorUserId',pm.actor_user_id,'createdAt',pm.created_at) ORDER BY pm.created_at),'[]'::jsonb) AS measurement_details
+			SELECT COUNT(*)::int AS measurement_count
 			FROM product_measurement_events pm WHERE pm.product_id=p.id
 		) me ON TRUE
 		LEFT JOIN LATERAL (
@@ -167,32 +241,150 @@ const historicalInventoryReportSQL = `
 `
 
 // GetHistoricalInventoryReport returns the first bounded page of the
-// deterministic read-only comparison. Use GetHistoricalInventoryReportPage
-// for explicit pagination.
+// deterministic read-only comparison. Use
+// GetHistoricalInventoryReportCursorPage for explicit pagination.
 func (r *SupplierRepository) GetHistoricalInventoryReport(ctx context.Context) ([]HistoricalInventoryReportRow, error) {
-	rows, _, err := r.GetHistoricalInventoryReportPage(ctx, 1, MaxHistoricalReportLimit)
+	rows, _, _, err := r.GetHistoricalInventoryReportCursorPage(ctx, MaxHistoricalReportLimit, "")
 	return rows, err
 }
 
-// GetHistoricalInventoryReportPage returns one deterministic page of the
-// read-only report (ordered by product ID) plus the total product count.
-// page is 1-based; limit is clamped to MaxHistoricalReportLimit.
-func (r *SupplierRepository) GetHistoricalInventoryReportPage(ctx context.Context, page, limit int) ([]HistoricalInventoryReportRow, int, error) {
-	if page < 1 || limit < 1 {
-		return nil, 0, errors.New("invalid historical report page")
+// encodeHistoricalReportCursor builds the opaque page token from the last
+// product ID of a page. The report orders by product ID ascending, so the
+// next page is every product with a greater ID.
+func encodeHistoricalReportCursor(productID string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(productID))
+}
+
+// decodeHistoricalReportCursor parses a page token back into a product ID.
+func decodeHistoricalReportCursor(cursor string) (string, error) {
+	if cursor == "" {
+		return "", nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return "", fmt.Errorf("invalid cursor: %w", err)
+	}
+	if len(raw) == 0 {
+		return "", fmt.Errorf("invalid cursor")
+	}
+	return string(raw), nil
+}
+
+// GetHistoricalInventoryReportCursorPage returns one deterministic page of
+// the read-only report (ordered by product ID ascending) plus the total
+// product count and the cursor for the next page ("" when this is the last
+// page). limit is clamped to MaxHistoricalReportLimit. The total and the
+// page are read in one repeatable-read transaction, so they agree with
+// each other even under concurrent product inserts; the cursor is stable
+// under inserts (a new product sorts after the cursor only if its ID is
+// greater, and is then seen on a later page, never duplicated).
+func (r *SupplierRepository) GetHistoricalInventoryReportCursorPage(ctx context.Context, limit int, cursor string) ([]HistoricalInventoryReportRow, int, string, error) {
+	if limit < 1 {
+		return nil, 0, "", errors.New("invalid historical report limit")
 	}
 	if limit > MaxHistoricalReportLimit {
 		limit = MaxHistoricalReportLimit
 	}
-	var total int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := r.queryHistoricalReport(ctx, "", limit, (page-1)*limit)
+	afterID, err := decodeHistoricalReportCursor(cursor)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
-	return rows, total, nil
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer tx.Rollback()
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&total); err != nil {
+		return nil, 0, "", err
+	}
+	query := historicalInventoryReportSQL
+	args := []any{}
+	if afterID != "" {
+		query += ` WHERE p.id > $1`
+		args = append(args, afterID)
+	}
+	query += ` ORDER BY p.id`
+	if afterID != "" {
+		query += ` LIMIT $2`
+	} else {
+		query += ` LIMIT $1`
+	}
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	scanned, err := scanHistoricalReportRows(rows)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, "", err
+	}
+	nextCursor := ""
+	if len(scanned) == limit {
+		nextCursor = encodeHistoricalReportCursor(scanned[len(scanned)-1].ProductID)
+	}
+	return scanned, total, nextCursor, nil
+}
+
+// GetHistoricalInventoryReportSummaryCursorPage returns one deterministic
+// summary page of the read-only report (ordered by product ID ascending)
+// plus the total product count and the cursor for the next page. Same
+// contract as GetHistoricalInventoryReportCursorPage, but the rows carry
+// counts and flags only — no nested evidence JSONB is built at all
+// (PERF-02 Step 8d). Per-product evidence comes from
+// GetHistoricalInventoryReportRow.
+func (r *SupplierRepository) GetHistoricalInventoryReportSummaryCursorPage(ctx context.Context, limit int, cursor string) ([]HistoricalInventoryReportRow, int, string, error) {
+	if limit < 1 {
+		return nil, 0, "", errors.New("invalid historical report limit")
+	}
+	if limit > MaxHistoricalReportLimit {
+		limit = MaxHistoricalReportLimit
+	}
+	afterID, err := decodeHistoricalReportCursor(cursor)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer tx.Rollback()
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&total); err != nil {
+		return nil, 0, "", err
+	}
+	query := historicalInventoryReportSummarySQL
+	args := []any{}
+	if afterID != "" {
+		query += ` WHERE p.id > $1`
+		args = append(args, afterID)
+	}
+	query += ` ORDER BY p.id`
+	if afterID != "" {
+		query += ` LIMIT $2`
+	} else {
+		query += ` LIMIT $1`
+	}
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	scanned, err := scanHistoricalReportRows(rows)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, "", err
+	}
+	nextCursor := ""
+	if len(scanned) == limit {
+		nextCursor = encodeHistoricalReportCursor(scanned[len(scanned)-1].ProductID)
+	}
+	return scanned, total, nextCursor, nil
 }
 
 // GetHistoricalInventoryReportRow returns the bounded report row for one
@@ -240,22 +432,35 @@ func scanHistoricalReportRows(rows *sql.Rows) ([]HistoricalInventoryReportRow, e
 	for rows.Next() {
 		var row HistoricalInventoryReportRow
 		var rawLocations, rawReservations, rawMovements, rawMeasurements []byte
-		if err := rows.Scan(&row.ProductID, &row.ProductTitle, &row.SupplierID, &row.LegacyStock, &row.CanonicalQuantity, &row.CanonicalSellableQuantity, &row.PhysicalQuantity, &row.CanonicalRows, &row.UnreconciledRows, &row.MovementQuantity, &row.MeasurementStatus, &row.HasMeasurement, &row.HasInboundEvidence, &row.HasQCEvidence, &row.HasPutawayEvidence, &row.HasLedgerEvidence, &rawLocations, &rawReservations, &rawMovements, &rawMeasurements, &row.ReviewID, &row.ReviewStatus); err != nil {
+		var balanceCount, reservationCount, movementCount, measurementCount int
+		if err := rows.Scan(&row.ProductID, &row.ProductTitle, &row.SupplierID, &row.LegacyStock, &row.CanonicalQuantity, &row.CanonicalSellableQuantity, &row.PhysicalQuantity, &row.CanonicalRows, &row.UnreconciledRows, &row.MovementQuantity, &row.MeasurementStatus, &row.HasMeasurement, &row.HasInboundEvidence, &row.HasQCEvidence, &row.HasPutawayEvidence, &row.HasLedgerEvidence, &rawLocations, &rawReservations, &rawMovements, &rawMeasurements, &row.ReviewID, &row.ReviewStatus, &balanceCount, &reservationCount, &movementCount, &measurementCount); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(rawLocations, &row.LocationBreakdown)
 		_ = json.Unmarshal(rawReservations, &row.ActiveReservations)
 		_ = json.Unmarshal(rawMovements, &row.Movements)
 		_ = json.Unmarshal(rawMeasurements, &row.MeasurementEvidence)
-		row.PhysicalInventory = row.PhysicalQuantity > 0
-		row.Difference = row.LegacyStock - row.CanonicalSellableQuantity
-		row.MeasurementClassification = measurementClassification(row)
-		boundHistoricalReportEvidence(&row)
-		row.Classification, row.EvidenceInsufficient, row.SuggestedAction, row.Classifications = classifyHistoricalRow(row)
-		row.Unresolved = unresolvedHistoricalRow(row)
+		finishHistoricalReportRow(&row)
+		// EvidenceTotal/Truncated come from the SQL-side per-list counts,
+		// not the (SQL-capped) list lengths: the full query caps each nested
+		// list at 50, so the lengths alone would under-report a dense
+		// product (a 5,005-movement product reported 100 instead of 10006).
+		row.EvidenceTotal = balanceCount + reservationCount + movementCount + measurementCount
+		row.EvidenceTruncated = balanceCount > MaxHistoricalNestedEvidence || reservationCount > MaxHistoricalNestedEvidence || movementCount > MaxHistoricalNestedEvidence || measurementCount > MaxHistoricalNestedEvidence
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// finishHistoricalReportRow derives the Go-side row fields (difference,
+// classification, evidence bounds) shared by the full and summary scans.
+func finishHistoricalReportRow(row *HistoricalInventoryReportRow) {
+	row.PhysicalInventory = row.PhysicalQuantity > 0
+	row.Difference = row.LegacyStock - row.CanonicalSellableQuantity
+	row.MeasurementClassification = measurementClassification(*row)
+	boundHistoricalReportEvidence(row)
+	row.Classification, row.EvidenceInsufficient, row.SuggestedAction, row.Classifications = classifyHistoricalRow(*row)
+	row.Unresolved = unresolvedHistoricalRow(*row)
 }
 
 // boundHistoricalReportEvidence caps each nested evidence list at

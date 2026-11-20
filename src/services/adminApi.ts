@@ -33,7 +33,7 @@ export interface HistoricalLocationDetail { locationKey:string; locationType:str
 export interface HistoricalReservationDetail { id:string; locationKey:string; quantity:number; referenceId:string; status:string; }
 export interface HistoricalMovementDetail { id:string; quantity:number; fromStatus?:string; toStatus?:string; fromLocationKey?:string; toLocationKey?:string; referenceType:string; referenceId:string; createdAt:string; }
 export interface HistoricalMeasurementEvidenceDetail { id:string; newLengthMm:number; newWidthMm:number; newHeightMm:number; newWeightGrams:number; reason:string; actorUserId:string; createdAt:string; }
-export interface HistoricalInventoryReportRow { productId:string; productTitle:string; supplierId?:string; legacyStock:number; canonicalQuantity:number; canonicalSellableQuantity:number; physicalQuantity:number; canonicalRows:number; unreconciledRows:number; movementQuantity:number; measurementStatus:string; hasMeasurement:boolean; hasInboundEvidence:boolean; hasQCEvidence:boolean; hasPutawayEvidence:boolean; hasLedgerEvidence:boolean; classifications:string[]; classification:string; evidenceInsufficient:boolean; unresolved:boolean; suggestedAction:string; difference:number; physicalInventory:boolean; measurementClassification:string; locationBreakdown:HistoricalLocationDetail[]; activeReservations:HistoricalReservationDetail[]; movements:HistoricalMovementDetail[]; measurementEvidence:HistoricalMeasurementEvidenceDetail[]; evidenceIds:string[]; reviewStatus:HistoricalReviewStatus; reviewId?:string; }
+export interface HistoricalInventoryReportRow { productId:string; productTitle:string; supplierId?:string; legacyStock:number; canonicalQuantity:number; canonicalSellableQuantity:number; physicalQuantity:number; canonicalRows:number; unreconciledRows:number; movementQuantity:number; measurementStatus:string; hasMeasurement:boolean; hasInboundEvidence:boolean; hasQCEvidence:boolean; hasPutawayEvidence:boolean; hasLedgerEvidence:boolean; classifications:string[]; classification:string; evidenceInsufficient:boolean; unresolved:boolean; suggestedAction:string; difference:number; physicalInventory:boolean; measurementClassification:string; locationBreakdown:HistoricalLocationDetail[]; activeReservations:HistoricalReservationDetail[]; movements:HistoricalMovementDetail[]; measurementEvidence:HistoricalMeasurementEvidenceDetail[]; evidenceIds:string[]; evidenceTotal?:number; evidenceTruncated?:boolean; reviewStatus:HistoricalReviewStatus; reviewId?:string; }
 
 export interface SettlementSettingsDto {
   settlementDay: number;
@@ -231,6 +231,18 @@ export const adminApi = {
 };
 
 export const historicalReviewApi = {
-  report: () => apiRequest<{ readOnly:boolean; rows:HistoricalInventoryReportRow[] }>('/warehouse/inventory/reconciliation-report', { method:'GET', auth:true }),
+  // PERF-02 Step 9: cursor pages over the summary view by default
+  // (counts/flags only, no nested evidence). Pass view:'full' only when
+  // the caller needs capped evidence lists for the whole page.
+  report: (params?: { limit?: number; cursor?: string; view?: 'summary' | 'full' }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    if (params?.view) query.set('view', params.view);
+    const suffix = query.toString() ? `?${query}` : '';
+    return apiRequest<{ readOnly:boolean; rows:HistoricalInventoryReportRow[]; total:number; limit:number; nextCursor:string; hasMore:boolean; view:string }>(`/warehouse/inventory/reconciliation-report${suffix}`, { method:'GET', auth:true });
+  },
+  // Single FULL row (bounded evidence lists) for the review modal.
+  row: (productId:string) => apiRequest<HistoricalInventoryReportRow>(`/warehouse/inventory/reconciliation-report?productId=${encodeURIComponent(productId)}`, { method:'GET', auth:true }),
   review: (productId:string, payload:{status:HistoricalReviewStatus; reason:string; evidence:string[]}) => apiRequest(`/warehouse/inventory/reconciliation-reviews/${encodeURIComponent(productId)}`, { method:'POST', auth:true, body:JSON.stringify(payload) }),
 };

@@ -2080,12 +2080,24 @@ func supplierAdminRecordRow(s domain.Supplier) map[string]interface{} {
 
 func (h *SupplierHandlers) handleAdminSuppliersDetail(w http.ResponseWriter, r *http.Request, records bool) {
 	w.Header().Set("Content-Type", "application/json")
-	list, err := h.supplierRepo.ListSuppliersForAdminDetail(r.Context())
+	// PERF-02 Step 7: the ?status= filter now applies IN SQL (filtering in
+	// Go after loading the whole list would break paging).
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := h.supplierRepo.ListSuppliersForAdminDetailPage(r.Context(), status, opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	list := page.Items
 	// Gap 13: supportsDirectShipping is emitted DERIVED from the
 	// shipping-method toggles, loaded here in ONE batched query for
 	// the whole list (the row builders are pure functions of the
@@ -2110,9 +2122,6 @@ func (h *SupplierHandlers) handleAdminSuppliersDetail(w http.ResponseWriter, r *
 	}
 	rows := []map[string]interface{}{}
 	for _, s := range list {
-		if status != "" && s.ApprovalStatus != status {
-			continue
-		}
 		var row map[string]interface{}
 		if records {
 			row = supplierAdminRecordRow(s)
@@ -2124,7 +2133,7 @@ func (h *SupplierHandlers) handleAdminSuppliersDetail(w http.ResponseWriter, r *
 		}
 		rows = append(rows, row)
 	}
-	json.NewEncoder(w).Encode(rows)
+	json.NewEncoder(w).Encode(map[string]interface{}{"suppliers": rows, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }
 
 // GET /api/v1/admin/suppliers/list (D15). Optional ?status= filter, e.g.
@@ -2158,11 +2167,21 @@ func (h *SupplierHandlers) HandleAdminSuppliersPending(w http.ResponseWriter, r 
 		writeMethodNotAllowed(w)
 		return
 	}
-	list, err := h.supplierRepo.ListPendingSuppliers(r.Context())
+	opts, perr := parseListPage(r)
+	if perr != nil {
+		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
+		return
+	}
+	page, err := h.supplierRepo.ListPendingSuppliersPage(r.Context(), opts)
 	if err != nil {
+		if isInvalidCursorError(err) {
+			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
+	list := page.Items
 	rows := []map[string]interface{}{}
 	for _, s := range list {
 		rows = append(rows, map[string]interface{}{
@@ -2173,7 +2192,7 @@ func (h *SupplierHandlers) HandleAdminSuppliersPending(w http.ResponseWriter, r 
 			"createdAt":      s.CreatedAt,
 		})
 	}
-	json.NewEncoder(w).Encode(rows)
+	json.NewEncoder(w).Encode(map[string]interface{}{"suppliers": rows, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
 }
 
 func supplierAdminReviewError(w http.ResponseWriter, err error) {

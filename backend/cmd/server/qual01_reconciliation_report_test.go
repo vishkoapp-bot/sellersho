@@ -41,14 +41,16 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 		}
 		handleGetHistoricalInventoryReport(w, r, r.Context(), repo)
 	})
-	request := func(method string, caps []string, want int) []byte {
+	// PERF-02: the default view is the summary (counts only, no nested
+	// evidence lists); the projection assertions need the full view.
+	request := func(method, query string, caps []string, want int) []byte {
 		t.Helper()
 		reader.capabilities = caps
 		token, err := service.GenerateTokenWithCapabilities("fixture-user", "", "", "logistics_specialist", []string{"logistics_specialist"}, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := httptest.NewRequest(method, "/api/v1/warehouse/inventory/reconciliation-report", nil)
+		r := httptest.NewRequest(method, "/api/v1/warehouse/inventory/reconciliation-report"+query, nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		handler(w, r)
@@ -57,15 +59,15 @@ func TestQual01HistoricalReconciliationReportProjection(t *testing.T) {
 		}
 		return w.Body.Bytes()
 	}
-	request(http.MethodGet, []string{"warehouse_staff"}, http.StatusForbidden)
-	request(http.MethodGet, []string{"logistics_specialist", "warehouse_staff"}, http.StatusForbidden)
-	request(http.MethodGet, []string{"admin", "warehouse_staff"}, http.StatusForbidden)
-	request(http.MethodGet, nil, http.StatusForbidden)
-	request(http.MethodPost, []string{"logistics_specialist"}, http.StatusMethodNotAllowed)
+	request(http.MethodGet, "", []string{"warehouse_staff"}, http.StatusForbidden)
+	request(http.MethodGet, "", []string{"logistics_specialist", "warehouse_staff"}, http.StatusForbidden)
+	request(http.MethodGet, "", []string{"admin", "warehouse_staff"}, http.StatusForbidden)
+	request(http.MethodGet, "", nil, http.StatusForbidden)
+	request(http.MethodPost, "", []string{"logistics_specialist"}, http.StatusMethodNotAllowed)
 	for _, role := range []string{"logistics_specialist", "admin"} {
-		body := request(http.MethodGet, []string{role}, http.StatusOK)
+		body := request(http.MethodGet, "?view=full", []string{role}, http.StatusOK)
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 5 || string(envelope["readOnly"]) != "true" {
+		if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 7 || string(envelope["readOnly"]) != "true" {
 			t.Fatalf("unexpected reconciliation envelope: %s (%v)", body, err)
 		}
 		var rows []map[string]any

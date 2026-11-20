@@ -18,8 +18,15 @@ on top of `NormalizeListLimit` (`backend/internal/repository/list_pagination.go`
 
 `?cursor=` malformed → **400** (`{"error":"cursor is invalid"}` — the raw
 token is never echoed). `?page=` on cursor-paged routes → **400**
-("page pagination is removed; use cursor"). OFFSET pagination is deleted
-from the codebase: no list endpoint accepts `?page=` / `?offset=`.
+("page pagination is removed; use cursor"). Cursor pagination is the
+contract for every route in §4 — but OFFSET pagination is NOT deleted
+from the codebase: the pre-existing exceptions in §6 still accept
+`?page=` / `?offset=` (warehouse-orders, product-reviews). Do not copy
+them; new list endpoints MUST use the cursor contract. (The
+`LIMIT…OFFSET` that used to sit in the reconciliation report's
+`queryHistoricalReport` was dead code — its only caller passed offset 0 —
+and was deleted in the PERF-02 critic-conditions round; the live
+reconciliation report pages by cursor.)
 
 Every paged response is an envelope:
 
@@ -51,10 +58,15 @@ issued that sorts **before** the cursor is never returned on later pages
 page). No row is ever duplicated across pages. Concurrent inserts therefore
 cannot shift or duplicate a page; they can only make the total grow.
 
-Every paged query runs inside one repeatable-read transaction where it also
-computes its `total`, so the page and the total agree with each other
-(reconciliation totals were previously computed outside any transaction and
-could disagree with the page under concurrent inserts).
+Only the reconciliation report (full and summary views), the monthly
+settlement detail, and the statement read their page and their `total`
+inside one repeatable-read transaction, so the page and the total agree
+with each other (reconciliation totals were previously computed outside
+any transaction and could disagree with the page under concurrent
+inserts). The other cursor-paged lists (orders, returns, shipments,
+payouts, ledger, tickets, supplier lists) run one keyset query per page
+and return NO `total` — their envelope carries `nextCursor` / `hasMore` /
+`limit` only. Clients must page to the end instead of expecting a total.
 
 ## 3. Report windows
 
@@ -64,7 +76,8 @@ take `?start=&end=` as `YYYY-MM-DD`:
 | Case | Window |
 |---|---|
 | both empty | default **31 days** ending today |
-| one empty | the other bound extended by 30 days |
+| end only | the end bound extended back 30 days (`end-30d..end`) |
+| start only | `start..today`, **max 366 days**; over-wide → 400 (a future start collapses to a single-day window) |
 | explicit | honored, **max 366 days**; `start > end` → 400 |
 | malformed date | 400 |
 
@@ -125,6 +138,16 @@ orders in `~/workspace/perf02-impl/scale_100k.sql` +
 
 ## 6. Pre-existing exceptions (NOT the contract — do not copy)
 
+- **Supplier warehouse-orders: `?page=` / `?pageSize=` OFFSET**
+  (`GET /api/v1/supplier/warehouse-orders` →
+  `GetSupplierWarehouseOrders` `LIMIT…OFFSET`, plus a per-order item
+  N+1). Pre-existing, NOT converted by PERF-02; follow-up task
+  (critic N2).
+- **Product reviews: `?offset=`** (`GET /api/v1/products/{id}/reviews`,
+  in-memory slice paging, limit 1–50). Pre-existing, NOT converted by
+  PERF-02; `GetProductReviews` also loads all reviews into memory with a
+  per-review `GetUserDisplayName` N+1 (critic observation, follow-up
+  inventory only).
 - **Statement page: max 200** (D1). Same 400/clamp/default policy,
   different ceiling.
 - **`t01ListRows`: silent default 100** on invalid/out-of-range input

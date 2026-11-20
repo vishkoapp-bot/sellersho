@@ -40,6 +40,10 @@ func handleGetFilteredLedger(w http.ResponseWriter, r *http.Request, ctx context
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
+		if isReportWindowError(err) {
+			http.Error(w, `{"error":"Invalid date range: expected YYYY-MM-DD dates within 366 days"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

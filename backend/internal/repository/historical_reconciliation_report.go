@@ -129,8 +129,13 @@ type HistoricalInventoryReportRow struct {
 }
 
 // historicalInventoryReportSQL is the deterministic read-only comparison.
-// Callers append a product filter and/or LIMIT/OFFSET; ordering by product
-// ID is applied by queryHistoricalReport.
+// Callers append a product filter (and, for the cursor pages, a keyset
+// bound + LIMIT); ordering is by product ID. There is no OFFSET pagination
+// on this report: the cursor pages key on product ID, and the single-row
+// lookup filters to one product. (The LIMITâ¦OFFSET that used to live in
+// queryHistoricalReport was dead code â its only caller passed offset 0 â
+// and was deleted in the PERF-02 critic-conditions round, not documented
+// away.)
 //
 // PERF-02 Step 2: has_ledger is a correlated EXISTS (movement -> ledger)
 // instead of `related IN (SELECT DISTINCT reference_id ...)`, which
@@ -391,7 +396,7 @@ func (r *SupplierRepository) GetHistoricalInventoryReportSummaryCursorPage(ctx c
 // product. The review path uses this instead of the full report so a product
 // past the first page is still reviewable.
 func (r *SupplierRepository) GetHistoricalInventoryReportRow(ctx context.Context, productID string) (HistoricalInventoryReportRow, error) {
-	rows, err := r.queryHistoricalReport(ctx, productID, 1, 0)
+	rows, err := r.queryHistoricalReport(ctx, productID)
 	if err != nil {
 		return HistoricalInventoryReportRow{}, err
 	}
@@ -401,25 +406,13 @@ func (r *SupplierRepository) GetHistoricalInventoryReportRow(ctx context.Context
 	return rows[0], nil
 }
 
-// queryHistoricalReport runs the deterministic read-only comparison.
-// An empty productID selects all products; otherwise one product.
-func (r *SupplierRepository) queryHistoricalReport(ctx context.Context, productID string, limit, offset int) ([]HistoricalInventoryReportRow, error) {
-	query := historicalInventoryReportSQL
-	args := []any{}
-	if productID != "" {
-		query += ` WHERE p.id = $1`
-		args = append(args, productID)
-	}
-	query += ` ORDER BY p.id`
-	if limit > 0 {
-		if productID != "" {
-			query += ` LIMIT $2 OFFSET $3`
-		} else {
-			query += ` LIMIT $1 OFFSET $2`
-		}
-		args = append(args, limit, offset)
-	}
-	rows, err := r.db.QueryContext(ctx, query, args...)
+// queryHistoricalReport runs the deterministic read-only comparison for one
+// product (the single-row review lookup). It carries no LIMIT/OFFSET
+// pagination: the report pages by cursor (product ID keyset) and this
+// helper filters to exactly one product.
+func (r *SupplierRepository) queryHistoricalReport(ctx context.Context, productID string) ([]HistoricalInventoryReportRow, error) {
+	query := historicalInventoryReportSQL + ` WHERE p.id = $1 ORDER BY p.id LIMIT 1`
+	rows, err := r.db.QueryContext(ctx, query, productID)
 	if err != nil {
 		return nil, err
 	}

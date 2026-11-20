@@ -310,9 +310,14 @@ func TestPerf02DenseProductReviewBounded(t *testing.T) {
 	ctx := context.Background()
 	f := opsFixtureNew(t, db)
 	product := "perf02-dense-" + uuid.NewString()[:8]
+	// N6(a): the movement/reservation/idempotency ids used to be fixed
+	// (mov-dense-1..5005, ...), colliding with probe rows from an earlier
+	// run on a reused DB. Scope every generated id to this run's product
+	// suffix so the test is re-runnable against the same database.
+	suffix := product[len("perf02-dense-"):]
 	opsExec(t, db, `INSERT INTO products(id,title,slug,supplier_id,original_price,supplier_base_cost,platform_margin,stock,length_mm,width_mm,height_mm,weight_grams,measurement_status,warehouse_name) VALUES($1,'dense product',$1,$2,2000,1000,0,100,100,100,100,100,'verified','ops warehouse')`, product, f.supplier)
-	opsExec(t, db, `INSERT INTO inventory_movements(id,product_id,quantity,reference_type,reference_id,created_at,idempotency_key) SELECT 'mov-dense-'||g,$1,1,'inbound_received','ref-'||g, now() - (g||' seconds')::interval, 'idem-'||g FROM generate_series(1,5005) g`, product)
-	opsExec(t, db, `INSERT INTO inventory_reservations(id,product_id,location_key,quantity,reference_type,reference_id,status,idempotency_key,created_at) SELECT 'res-dense-'||g,$1,'loc-1',1,'order','ref-'||g,'active','resk-'||g, now() - (g||' seconds')::interval FROM generate_series(1,5001) g`, product)
+	opsExec(t, db, `INSERT INTO inventory_movements(id,product_id,quantity,reference_type,reference_id,created_at,idempotency_key) SELECT 'mov-dense-'||$2||'-'||g,$1,1,'inbound_received','ref-'||$2||'-'||g, now() - (g||' seconds')::interval, 'idem-'||$2||'-'||g FROM generate_series(1,5005) g`, product, suffix)
+	opsExec(t, db, `INSERT INTO inventory_reservations(id,product_id,location_key,quantity,reference_type,reference_id,status,idempotency_key,created_at) SELECT 'res-dense-'||$2||'-'||g,$1,'loc-1',1,'order','ref-'||$2||'-'||g,'active','resk-'||$2||'-'||g, now() - (g||' seconds')::interval FROM generate_series(1,5001) g`, product, suffix)
 
 	repo := NewSupplierRepository(db)
 	start := time.Now()

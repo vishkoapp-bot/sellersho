@@ -180,14 +180,33 @@ func TestQual01HistoricalReconciliationReportPagination(t *testing.T) {
 	// Nested evidence is bounded per row with an explicit signal. The
 	// default summary view ships counts only; the full view ships the
 	// capped lists.
-	full := get("?view=full", http.StatusOK)
-	if string(full["view"]) != `"full"` {
-		t.Fatalf("view=full not echoed: %s", full["view"])
-	}
+	// N6(b): the fixture lookup used to read only the first full-view page
+	// (default limit 50). Product IDs sort ascending and the fixture id
+	// starts with "qual-", so on any DB with >50 products sorting before
+	// it the fixture is past page 1 and the lookup fails. Walk the cursor
+	// until the fixture is found (or the pages run out).
 	var found map[string]any
-	for _, row := range rowsOf(full) {
-		if row["productId"] == fixtures[0] {
-			found = row
+	cursor = ""
+	for {
+		env := get("?view=full&limit=50&cursor="+cursor, http.StatusOK)
+		if string(env["view"]) != `"full"` {
+			t.Fatalf("view=full not echoed: %s", env["view"])
+		}
+		for _, row := range rowsOf(env) {
+			if row["productId"] == fixtures[0] {
+				found = row
+			}
+		}
+		if found != nil {
+			break
+		}
+		var next string
+		if err := json.Unmarshal(env["nextCursor"], &next); err != nil {
+			t.Fatal(err)
+		}
+		cursor = next
+		if cursor == "" {
+			break
 		}
 	}
 	if found == nil {
@@ -205,11 +224,27 @@ func TestQual01HistoricalReconciliationReportPagination(t *testing.T) {
 		t.Fatalf("evidenceIds selection not capped: got %d", len(evidenceIDs))
 	}
 	// The summary row for the same product reports the same totals
-	// without shipping the lists.
+	// without shipping the lists. Same N6(b) cursor walk as the full view:
+	// the fixture may sit past the first summary page.
 	var summaryFound map[string]any
-	for _, row := range defRows {
-		if row["productId"] == fixtures[0] {
-			summaryFound = row
+	cursor = ""
+	for {
+		env := get("?limit=50&cursor="+cursor, http.StatusOK)
+		for _, row := range rowsOf(env) {
+			if row["productId"] == fixtures[0] {
+				summaryFound = row
+			}
+		}
+		if summaryFound != nil {
+			break
+		}
+		var next string
+		if err := json.Unmarshal(env["nextCursor"], &next); err != nil {
+			t.Fatal(err)
+		}
+		cursor = next
+		if cursor == "" {
+			break
 		}
 	}
 	if summaryFound == nil {

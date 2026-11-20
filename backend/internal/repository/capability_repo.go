@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/drup/platform/internal/accesspolicy"
+	"github.com/lib/pq"
 )
 
 // CapabilityRepository owns explicit identity capability membership. All
@@ -53,6 +55,106 @@ func (r *CapabilityRepository) ListActive(ctx context.Context, userID string) ([
 		return nil, err
 	}
 	return capabilities, nil
+}
+
+// LoadActiveState loads the whole per-request authorization state for
+// one identity in ONE indexed query (PERF-03 G1): whether a users row
+// exists, whether it is active, and its active capabilities. It
+// replaces the two sequential seq-scanning queries (ListActive +
+// IsUserActive) the auth middleware used to run per authenticated
+// request. It keeps the live per-request read: no TTL, no cache — a
+// block or capability revocation is visible on the very next request,
+// exactly as with the two-query path. Results are identical to
+// ListActive + IsUserActive combined: an unknown user yields
+// found=false with no capabilities (IsUserActive's ErrNoRows -> false
+// behaviour), and the super_admin capability is still withheld unless
+// the mobile is a super-admin mobile.
+// A non-UUID user id, or a database whose users.id is TEXT rather
+// than UUID (the TEST-02 fixture shape), cannot run the indexed join —
+// those inputs fall back to the legacy two queries, which carry the
+// ::text casts that tolerate them, plus an EXISTS check so Found stays
+// exact on that path too. The fallback never runs in production,
+// where user ids are always UUIDs and users.id is UUID.
+func (r *CapabilityRepository) LoadActiveState(ctx context.Context, userID string) (found bool, active bool, capabilities []string, err error) {
+	found, active, capabilities, err = r.loadActiveStateIndexed(ctx, userID)
+	if err == nil {
+		return found, active, capabilities, nil
+	}
+	if !isAuthTypeMismatch(err) {
+		return false, false, nil, err
+	}
+	var exists bool
+	if qerr := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id::text = $1)`, userID).Scan(&exists); qerr != nil {
+		return false, false, nil, qerr
+	}
+	if !exists {
+		return false, false, []string{}, nil
+	}
+	active, aerr := r.IsUserActive(ctx, userID)
+	if aerr != nil {
+		return false, false, nil, aerr
+	}
+	caps, cerr := r.ListActive(ctx, userID)
+	if cerr != nil {
+		return false, false, nil, cerr
+	}
+	return true, active, caps, nil
+}
+
+// loadActiveStateIndexed is the single-query hot path of
+// LoadActiveState: one PK lookup on users plus the active-capability
+// join, no ::text casts. Unknown user -> zero rows -> found=false.
+func (r *CapabilityRepository) loadActiveStateIndexed(ctx context.Context, userID string) (found bool, active bool, capabilities []string, err error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.is_active, uc.capability, u.mobile
+		FROM users u
+		LEFT JOIN user_capabilities uc ON uc.user_id = u.id AND uc.status = 'active'
+		WHERE u.id = $1
+		ORDER BY uc.capability
+	`, userID)
+	if err != nil {
+		return false, false, nil, fmt.Errorf("failed to load active state: %w", err)
+	}
+	defer rows.Close()
+	capabilities = []string{}
+	for rows.Next() {
+		var isActive bool
+		var capability sql.NullString
+		var mobile string
+		if err := rows.Scan(&isActive, &capability, &mobile); err != nil {
+			return false, false, nil, err
+		}
+		found = true
+		active = isActive
+		if !capability.Valid {
+			continue
+		}
+		if capability.String == accesspolicy.SuperAdminCapability && !accesspolicy.IsSuperAdminMobile(mobile) {
+			continue
+		}
+		capabilities = append(capabilities, capability.String)
+	}
+	if err := rows.Err(); err != nil {
+		return false, false, nil, err
+	}
+	return found, active, capabilities, nil
+}
+
+// isAuthTypeMismatch reports whether err is a PostgreSQL type error
+// of the kind the indexed auth join cannot survive (operator does not
+// exist, datatype mismatch, invalid UUID text) — the trigger for the
+// legacy-query fallback in LoadActiveState. Any other error (connect
+// failure, permission, ...) is real and must surface, never fall back.
+func isAuthTypeMismatch(err error) bool {
+	var pqErr *pq.Error
+	if !errors.As(err, &pqErr) {
+		return false
+	}
+	switch string(pqErr.Code) {
+	case "42883", "42804", "22P02":
+		return true
+	}
+	return false
 }
 
 func (r *CapabilityRepository) HasActive(ctx context.Context, userID, capability string) (bool, error) {

@@ -60,6 +60,10 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to initialize database connection")
 	}
+	// PERF-03 G4: cap the tool pool like the migration pool (was
+	// uncapped sql.Open defaults). Recovery work is sequential.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
 	defer db.Close()
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatal("Database connection failed")

@@ -18,6 +18,7 @@ import (
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // ---------------------------------------------------------------------------
@@ -618,6 +619,29 @@ func parseCatalogPageFilter(r *http.Request) (catalogpage.Filter, error) {
 	return filter, nil
 }
 
+// isSerializationFailure reports whether err is a PostgreSQL
+// serialization failure (SQLSTATE 40001): two RepeatableRead
+// transactions wrote the same rows and all but one must retry.
+func isSerializationFailure(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == "40001"
+}
+
+// retryCatalogTxOnSerialization runs attempt once, and exactly once
+// more if it fails with a serialization failure (PERF-03 G7). The
+// catalog snapshot tx refreshes stale price rows inside the tx, so a
+// cold-index burst collides under RepeatableRead and all but one
+// refresher lose with 40001; the retry re-probes against the winner's
+// committed refresh, finds no stale rows, and cannot collide again.
+// A second 40001 would need a price edit landing in the same ~100 ms
+// window as the burst — that surfaces as a 500 rather than looping.
+func retryCatalogTxOnSerialization(attempt func() error) error {
+	if err := attempt(); err == nil || !isSerializationFailure(err) {
+		return err
+	}
+	return attempt()
+}
+
 // handleProductsList serves the paged public catalog (PERF-01). It
 // prices every product with the live percent engine
 // (pricing.ResolveReferencePricing). The legacy absolute-fee engine is
@@ -701,101 +725,92 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// probed and refreshed (stale rows only) inside it, and the scope
 	// revision is re-read after any refresh, so cursors issued below
 	// bind the revision the selection actually ran under.
-	tx, err := catalogRepo.BeginCatalogTx(ctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// PERF-03 G7: the whole snapshot tx runs once more if it fails
+	// with a PostgreSQL serialization failure (40001) — see
+	// retryCatalogTxOnSerialization above.
+	var page repository.CatalogPricedPage
+	var inputs *repository.CatalogScopeInputs
+	runTx := func() error {
+		tx, err := catalogRepo.BeginCatalogTx(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
+		if err != nil {
+			return err
+		}
+		scope.Revision = revision
+		var after *catalogpage.Key
+		if token := r.URL.Query().Get("cursor"); token != "" {
+			key, err := catalogpage.Decode(token, scope, filter)
+			if err != nil {
+				return err
+			}
+			after = &key
+		}
+		inputs, err = catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
+		if err != nil {
+			return err
+		}
+		asOf := time.Now()
+		priced := filter.Sort == "cheapest" || filter.Sort == "expensive" || filter.Sort == "discount" || filter.MinPrice != nil || filter.MaxPrice != nil
+		if priced {
+			// Order/filter depends on every row's displayed price, so
+			// the whole filtered set is probed and stale rows refreshed
+			// before selection.
+			_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
+			if err != nil {
+				return err
+			}
+			if len(stale) > 0 {
+				if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
+					return err
+				}
+				if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
+					return err
+				}
+			}
+			page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
+			if err != nil {
+				return err
+			}
+		} else {
+			// Featured/newest/store-position selection needs no prices,
+			// so it runs first and the index is warmed for the page's
+			// IDs only (bounded by the page size).
+			page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
+			if err != nil {
+				return err
+			}
+			ids := make([]string, 0, len(page.Keys))
+			for _, k := range page.Keys {
+				ids = append(ids, k.ID)
+			}
+			stale, err := catalogRepo.ProbeCatalogPricesForIDsTx(ctx, tx, scope.ID, scope.OwnerType == "dropshipper", ids)
+			if err != nil {
+				return err
+			}
+			if len(stale) > 0 {
+				if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
+					return err
+				}
+				if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
+					return err
+				}
+			}
+		}
+		return tx.Commit()
 	}
-	defer tx.Rollback()
-	revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	scope.Revision = revision
-	var after *catalogpage.Key
-	if token := r.URL.Query().Get("cursor"); token != "" {
-		key, err := catalogpage.Decode(token, scope, filter)
+	if err := retryCatalogTxOnSerialization(runTx); err != nil {
 		if err == catalogpage.ErrRestart {
 			http.Error(w, `{"error":"catalog changed; restart paging","restart":true}`, http.StatusConflict)
 			return
 		}
-		if err != nil {
+		if err == catalogpage.ErrInvalid {
 			http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
 			return
 		}
-		after = &key
-	}
-	inputs, err := catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	asOf := time.Now()
-	priced := filter.Sort == "cheapest" || filter.Sort == "expensive" || filter.Sort == "discount" || filter.MinPrice != nil || filter.MaxPrice != nil
-	var page repository.CatalogPricedPage
-	if priced {
-		// Order/filter depends on every row's displayed price, so
-		// the whole filtered set is probed and stale rows refreshed
-		// before selection.
-		_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if len(stale) > 0 {
-			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
-		if err != nil {
-			if err == catalogpage.ErrInvalid {
-				http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		// Featured/newest/store-position selection needs no prices,
-		// so it runs first and the index is warmed for the page's
-		// IDs only (bounded by the page size).
-		page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
-		if err != nil {
-			if err == catalogpage.ErrInvalid {
-				http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		ids := make([]string, 0, len(page.Keys))
-		for _, k := range page.Keys {
-			ids = append(ids, k.ID)
-		}
-		stale, err := catalogRepo.ProbeCatalogPricesForIDsTx(ctx, tx, scope.ID, scope.OwnerType == "dropshipper", ids)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if len(stale) > 0 {
-			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, asOf); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -836,7 +851,23 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 	}
 
-	settings, _ := loadPricingSettings(ctx, pricingRepo)
+	// PERF-03 G2: reuse the scope inputs already loaded inside the
+	// snapshot transaction above (settings + locks + overrides) for
+	// response pricing instead of loading them a second time — the
+	// audit measured 8 pricing queries per list request (4 in the
+	// handler + the same 4 inside the scope tx). The values are from
+	// the same request and the same snapshot the page selection and
+	// price refresh ran under, so they are strictly more consistent
+	// with the selection than a second, later load would be; this is
+	// request-local reuse, not a cache — nothing survives the
+	// request. The fallbacks below are pure defense (a nil inputs
+	// field cannot happen: a load failure aborts the request above).
+	// The store row itself is NOT reused: inputs.Store carries only
+	// price-relevant fields, while storeVal below needs the full row.
+	settings := inputs.Settings
+	if settings == nil {
+		settings, _ = loadPricingSettings(ctx, pricingRepo)
+	}
 
 	// P2(a): a non-central store view loads store-filtered variants
 	// (hidden variants never reach pricing or the response). Central
@@ -853,8 +884,17 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	var overrides map[string]pricing.StoreVariantOverride
 	if store != nil {
 		storeVal = *store
-		locks = loadStoreMarginLocks(ctx, pricingRepo, store.ID)
-		overrides = loadVariantOverridesForStore(ctx, pricingRepo, store.ID)
+		// PERF-03 G2: same reuse as settings above — the tx already
+		// loaded this store's locks and variant overrides (same
+		// queries, same ordering, same productID/variantID keying).
+		locks = inputs.Locks
+		if locks == nil {
+			locks = loadStoreMarginLocks(ctx, pricingRepo, store.ID)
+		}
+		overrides = inputs.Overrides
+		if overrides == nil {
+			overrides = loadVariantOverridesForStore(ctx, pricingRepo, store.ID)
+		}
 	} else {
 		overrides = map[string]pricing.StoreVariantOverride{}
 	}
@@ -1258,40 +1298,41 @@ func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx contex
 	if scope.OwnerType != "dropshipper" {
 		scope.OwnerType = "central"
 	}
-	tx, err := catalogRepo.BeginCatalogTx(ctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback()
-	revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	scope.Revision = revision
-	inputs, err := catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(stale) > 0 {
-		if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, time.Now()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+	// PERF-03 G7: same one-retry-on-40001 contract as the list
+	// handler (see retryCatalogTxOnSerialization above): a cold-index
+	// burst collides on the refresh under RepeatableRead.
+	var bounds repository.CatalogPriceBounds
+	runTx := func() error {
+		tx, err := catalogRepo.BeginCatalogTx(ctx)
+		if err != nil {
+			return err
 		}
+		defer tx.Rollback()
+		revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID)
+		if err != nil {
+			return err
+		}
+		scope.Revision = revision
+		inputs, err := catalogRepo.LoadCatalogScopeInputsTx(ctx, tx, scope.ID)
+		if err != nil {
+			return err
+		}
+		_, stale, err := catalogRepo.ProbeCatalogPricesTx(ctx, tx, scope, filter)
+		if err != nil {
+			return err
+		}
+		if len(stale) > 0 {
+			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, time.Now()); err != nil {
+				return err
+			}
+		}
+		bounds, err = catalogRepo.GetCatalogPriceBoundsTx(ctx, tx, scope, filter)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
-	bounds, err := catalogRepo.GetCatalogPriceBoundsTx(ctx, tx, scope, filter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := tx.Commit(); err != nil {
+	if err := retryCatalogTxOnSerialization(runTx); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1381,19 +1422,15 @@ func authorizeStoreRead(w http.ResponseWriter, r *http.Request, jwtService *auth
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return false
 	}
-	if err := jwtService.RefreshCapabilities(r.Context(), claims); err != nil {
-		http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
-		return false
-	}
-	// ISO-E: AuthMiddleware denies blocked/inactive users on every guarded
-	// route, but this helper re-validates the token itself (the /stores/
-	// sub-routes are dispatched inside an otherwise unguarded handler), so
-	// a blocked seller could previously still read their own store orders,
+	// PERF-03 G1: single round trip (see AuthMiddleware). ISO-E: this
+	// helper re-validates the token itself (the /stores/ sub-routes are
+	// dispatched inside an otherwise unguarded handler), so a blocked
+	// seller could previously still read their own store orders,
 	// referrals and returns through /stores/<slug>/orders|referrals|
 	// referral-notifications|returns. Apply the same gate, with the same
 	// strings/statuses as AuthMiddleware. A nil/non-implementing reader
-	// keeps the previous behaviour (IsUserBlocked returns false, nil).
-	blocked, err := jwtService.IsUserBlocked(r.Context(), claims.UserID)
+	// keeps the previous behaviour (RefreshAuthState returns false, nil).
+	blocked, err := jwtService.RefreshAuthState(r.Context(), claims)
 	if err != nil {
 		http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
 		return false

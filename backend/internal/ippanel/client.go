@@ -21,6 +21,24 @@ var sharedBudget = func() *dependencybudget.Executor {
 	}
 	return dependencybudget.New(p)
 }()
+
+// otpBudget is the OTP-only executor (PERF-03 G3). SendPattern used to
+// share sharedBudget with the Credit/Recipients admin reads, so an
+// admin credit check could eat OTP tokens and vice versa — and the
+// 8/s token rate, which the CAP-01 login ramp proved binding (40.7%
+// OTP sheds at 13.6/s offered), was spent by every IPPanel caller at
+// once. OTP now has its own 8/s budget: the rate is UNCHANGED (do not
+// raise it — the vendor's real limit is still unknown, and a blind
+// raise just moves the 503s to the provider; calibration stays OPEN
+// pending IPPanel's documented limit), but admin reads can no longer
+// starve OTP sends, and OTP bursts can no longer starve admin reads.
+var otpBudget = func() *dependencybudget.Executor {
+	p := dependencybudget.DefaultPolicy(8, 8)
+	p.Observe = func(ctx context.Context, outcome string, d time.Duration) {
+		observability.LogOperation(ctx, "provider", "ippanel_request", outcome, d)
+	}
+	return dependencybudget.New(p)
+}()
 var sharedHTTP = &http.Client{Timeout: 6 * time.Second, Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second, KeepAlive: 30 * time.Second}).DialContext, ResponseHeaderTimeout: 3 * time.Second, MaxResponseHeaderBytes: 64 * 1024, MaxConnsPerHost: 8, MaxIdleConns: 16, MaxIdleConnsPerHost: 8, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 2 * time.Second}}
 
 type Client struct {
@@ -83,6 +101,16 @@ func New(baseURL, token, sender string) *Client {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any) error {
+	return c.requestBudget(ctx, sharedBudget, method, path, body, out)
+}
+
+// requestOTP is the OTP-send path: same wire behaviour as request,
+// but through the OTP-only budget (PERF-03 G3).
+func (c *Client) requestOTP(ctx context.Context, method, path string, body any, out any) error {
+	return c.requestBudget(ctx, otpBudget, method, path, body, out)
+}
+
+func (c *Client) requestBudget(ctx context.Context, budget *dependencybudget.Executor, method, path string, body any, out any) error {
 	var encoded []byte
 	var err error
 	if body != nil {
@@ -92,7 +120,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 		}
 	}
 	safe := method == http.MethodGet
-	reply, err := sharedBudget.Do(ctx, c.HTTP, func(callCtx context.Context) (*http.Request, error) {
+	reply, err := budget.Do(ctx, c.HTTP, func(callCtx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(callCtx, method, c.BaseURL+path, bytes.NewReader(encoded))
 		if err != nil {
 			return nil, err
@@ -148,7 +176,8 @@ func normalizeRecipient(m string) string {
 func (c *Client) SendPattern(ctx context.Context, recipient, pattern string, params map[string]string) ([]string, error) {
 	var out sendResponse
 	recipient = normalizeRecipient(recipient)
-	err := c.request(ctx, http.MethodPost, "/api/send", map[string]any{"sending_type": "pattern", "from_number": c.Sender, "code": pattern, "recipients": []string{recipient}, "params": params}, &out)
+	// PERF-03 G3: OTP sends use the OTP-only budget, never the shared one.
+	err := c.requestOTP(ctx, http.MethodPost, "/api/send", map[string]any{"sending_type": "pattern", "from_number": c.Sender, "code": pattern, "recipients": []string{recipient}, "params": params}, &out)
 	if err != nil {
 		return nil, err
 	}

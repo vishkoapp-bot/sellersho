@@ -55,6 +55,15 @@ type Config struct {
 	// migration must be skipped then (it would orphan dev tokens
 	// on the next restart, when the key is gone).
 	TapinTokenKeyExplicit bool
+	// DB pool bounds (PERF-03 G4), from DB_POOL_* env. Defaults
+	// preserve the historical 25/10 pool with unlimited connection
+	// reuse; see docs/operations/perf03-connection-budget.md for the
+	// whole-deployment budget (100 PostgreSQL connections, 3 reserved
+	// for superuser, <80% headroom rule).
+	DBPoolMaxOpen     int
+	DBPoolMaxIdle     int
+	DBPoolMaxLifetime time.Duration
+	DBPoolMaxIdleTime time.Duration
 }
 
 // Retired development defaults (SEC-01, gates G-01/G-03).
@@ -86,6 +95,32 @@ func LoadConfig() (*Config, error) {
 	shutdown, err := durationSeconds("SHUTDOWN_GRACE_SECONDS", 20, 25)
 	if err != nil {
 		return nil, err
+	}
+	// PERF-03 G4: validated pool bounds. Defaults preserve the
+	// historical 25/10 behaviour; any explicit value is validated
+	// here so a typo fails boot instead of silently over- or
+	// under-provisioning the pool.
+	poolMaxOpen, err := poolInt("DB_POOL_MAX_OPEN", 25)
+	if err != nil {
+		return nil, err
+	}
+	poolMaxIdle, err := poolInt("DB_POOL_MAX_IDLE", 10)
+	if err != nil {
+		return nil, err
+	}
+	poolMaxLifetime, err := poolSeconds("DB_POOL_MAX_LIFETIME_SECONDS", 0)
+	if err != nil {
+		return nil, err
+	}
+	poolMaxIdleTime, err := poolSeconds("DB_POOL_MAX_IDLE_SECONDS", 0)
+	if err != nil {
+		return nil, err
+	}
+	if poolMaxOpen < 1 || poolMaxOpen > 100 {
+		return nil, fmt.Errorf("DB_POOL_MAX_OPEN must be in 1..100 (got %d); the whole-deployment budget is 100 PostgreSQL connections with 3 reserved for superuser", poolMaxOpen)
+	}
+	if poolMaxIdle < 0 || poolMaxIdle > poolMaxOpen {
+		return nil, fmt.Errorf("DB_POOL_MAX_IDLE must be in 0..DB_POOL_MAX_OPEN (got %d, max open %d)", poolMaxIdle, poolMaxOpen)
 	}
 	// SEC-01: APP_ENV has NO default. An unset (or blank) APP_ENV is
 	// production behaviour — fail-closed. Development defaults apply
@@ -296,6 +331,10 @@ func LoadConfig() (*Config, error) {
 		TapinTokenKey:         tapinTokenKey,
 		TapinPreviousTokenKey: tapinPreviousTokenKey,
 		TapinTokenKeyExplicit: tapinTokenKeyExplicit,
+		DBPoolMaxOpen:         poolMaxOpen,
+		DBPoolMaxIdle:         poolMaxIdle,
+		DBPoolMaxLifetime:     poolMaxLifetime,
+		DBPoolMaxIdleTime:     poolMaxIdleTime,
 	}, nil
 }
 
@@ -352,6 +391,36 @@ func getBoolEnv(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return parsed
+}
+
+// poolInt reads an optional integer env var; unset or blank means def.
+// A present but unparsable value is an error, never a silent default.
+func poolInt(key string, def int) (int, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return def, nil
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return v, nil
+}
+
+// poolSeconds reads an optional non-negative seconds env var as a
+// duration; unset or blank means def seconds. 0 means "no limit".
+// The 0..86400 range (one day) bounds the value to something a pool
+// lifetime or idle timeout can sanely be.
+func poolSeconds(key string, def int) (time.Duration, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return time.Duration(def) * time.Second, nil
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds < 0 || seconds > 86400 {
+		return 0, fmt.Errorf("%s must be an integer in 0..86400", key)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func durationSeconds(key string, fallback, maximum int) (time.Duration, error) {

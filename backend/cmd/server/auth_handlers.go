@@ -37,17 +37,15 @@ func AuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.Han
 			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		if err := jwtService.RefreshCapabilities(r.Context(), claims); err != nil {
-			http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
-			return
-		}
-
-		// D57 (live IsUserBlocked/IsUserActive): a blocked or inactive
-		// user must not keep using an old token after admin block/unblock
-		// (handleSetUserActiveStatus toggles users.is_active). The error
-		// string reuses the existing login-time disabled-account message;
-		// no new status value or error string is invented (U53).
-		blocked, err := jwtService.IsUserBlocked(r.Context(), claims.UserID)
+		// PERF-03 G1: one round trip refreshes capabilities AND the
+		// blocked check (was RefreshCapabilities + IsUserBlocked, two
+		// sequential seq-scanning queries). Behaviour is identical:
+		// D57 — a blocked or inactive user must not keep using an old
+		// token after admin block/unblock (handleSetUserActiveStatus
+		// toggles users.is_active). The error string reuses the
+		// existing login-time disabled-account message; no new status
+		// value or error string is invented (U53).
+		blocked, err := jwtService.RefreshAuthState(r.Context(), claims)
 		if err != nil {
 			http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
 			return
@@ -84,11 +82,8 @@ func OptionalAuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) 
 			next(w, r)
 			return
 		}
-		if err := jwtService.RefreshCapabilities(r.Context(), claims); err != nil {
-			next(w, r)
-			return
-		}
-		blocked, err := jwtService.IsUserBlocked(r.Context(), claims.UserID)
+		// PERF-03 G1: single round trip (see AuthMiddleware above).
+		blocked, err := jwtService.RefreshAuthState(r.Context(), claims)
 		if err != nil || blocked {
 			next(w, r)
 			return

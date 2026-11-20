@@ -46,6 +46,10 @@ type Registry struct {
 	// inflight is the current admission-slot occupancy per lane
 	// ("api" = ordinary slots, "upload" = upload slots).
 	inflight map[string]int
+	// sqlErrors counts SQL failures by value-free SQLSTATE code
+	// (PERF-03 G7): e.g. "40001" for a serialization failure. The
+	// code alone can carry no parameter values.
+	sqlErrors map[string]int64
 	// G-03 ring buffer (ring.go): last 1000 completed requests plus
 	// pending in-flight records, behind ringMu — a mutex SEPARATE
 	// from mu, so lookups never block /metrics scrapes and scrapes
@@ -57,12 +61,106 @@ type Registry struct {
 	// ringInflight holds pending records keyed by request ID; the
 	// name differs from the admission `inflight` lane map above.
 	ringInflight map[string]*requestRecord
+	// dbWait is the pool-wait histogram (PERF-03 G5): one sample per
+	// sampling interval that saw new waits, equal to that interval's
+	// MEAN wait. database/sql exposes only cumulative wait counters,
+	// so per-wait observations do not exist; see sampleDBWaitLocked.
+	// dbWaitPrev/dbWaitSeen are the previous Stats snapshot.
+	dbWait     *sample
+	dbWaitPrev sql.DBStats
+	dbWaitSeen bool
+	dbWaitStop chan struct{}
 }
 
 func New() *Registry {
-	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}}
+	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}, sqlErrors: map[string]int64{}}
 }
 func (m *Registry) SetDB(db *sql.DB) { m.mu.Lock(); defer m.mu.Unlock(); m.db = db }
+
+// StartDBWaitSampling starts the pool-wait sampler (PERF-03 G5): every
+// interval it folds db.Stats() into the wait histogram (see
+// sampleDBWaitLocked). A nil db or non-positive interval is a no-op;
+// calling it twice is a no-op. The sampler runs until
+// StopDBWaitSampling.
+func (m *Registry) StartDBWaitSampling(db *sql.DB, interval time.Duration) {
+	if db == nil || interval <= 0 {
+		return
+	}
+	m.mu.Lock()
+	if m.dbWaitStop != nil {
+		m.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	m.dbWaitStop = stop
+	m.mu.Unlock()
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				m.mu.Lock()
+				m.sampleDBWaitLocked(db.Stats())
+				m.mu.Unlock()
+			}
+		}
+	}()
+}
+
+// StopDBWaitSampling stops the sampler started by StartDBWaitSampling.
+// Safe to call when no sampler runs.
+func (m *Registry) StopDBWaitSampling() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dbWaitStop != nil {
+		close(m.dbWaitStop)
+		m.dbWaitStop = nil
+	}
+}
+
+// sampleDBWaitLocked folds one sql.DBStats snapshot into the wait
+// histogram; the caller holds m.mu. database/sql exposes only
+// cumulative wait counters (WaitCount, WaitDuration), so each tick
+// with new waits contributes ONE sample: the MEAN wait of that
+// interval (duration delta / count delta). The histogram is therefore
+// a histogram of per-interval mean waits, not of individual waits —
+// its p95 answers "in 95% of sampled intervals the mean wait was
+// below X", which is the measurable form of the spec's
+// pool-wait-p95<25ms gate. It underestimates the true per-wait tail;
+// the largest interval mean is exposed alongside as a bound
+// (sellersho_db_wait_max_mean_seconds), so a p95 that looks fine next
+// to a large max mean is not mistaken for a clean bill of health.
+func (m *Registry) sampleDBWaitLocked(s sql.DBStats) {
+	if !m.dbWaitSeen {
+		m.dbWaitPrev = s
+		m.dbWaitSeen = true
+		return
+	}
+	dCount := s.WaitCount - m.dbWaitPrev.WaitCount
+	dDur := s.WaitDuration - m.dbWaitPrev.WaitDuration
+	m.dbWaitPrev = s
+	if dCount <= 0 || dDur <= 0 {
+		return
+	}
+	mean := dDur.Seconds() / float64(dCount)
+	if m.dbWait == nil {
+		m.dbWait = &sample{Buckets: make([]int64, len(buckets))}
+	}
+	m.dbWait.Count++
+	m.dbWait.Sum += mean
+	for i, b := range buckets {
+		if mean <= b {
+			m.dbWait.Buckets[i]++
+		}
+	}
+	m.gauges["db_wait_last_mean_seconds"] = mean
+	if max, ok := m.gauges["db_wait_max_mean_seconds"]; !ok || mean > max {
+		m.gauges["db_wait_max_mean_seconds"] = mean
+	}
+}
 func add(dst map[string]*sample, key string, d float64, req, res int64) {
 	s := dst[key]
 	if s == nil {
@@ -122,6 +220,18 @@ func (m *Registry) RecordReject(reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rejects[reason]++
+}
+
+// RecordSQLError counts one SQL failure under its value-free
+// SQLSTATE code (PERF-03 G7). An empty code is dropped, never a new
+// series.
+func (m *Registry) RecordSQLError(code string) {
+	if code == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sqlErrors[code]++
 }
 
 // SetAdmissionInflight records current admission-slot occupancy for a lane
@@ -330,6 +440,15 @@ func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, lane := range inflightLanes {
 		fmt.Fprintf(w, "sellersho_admission_inflight{lane=%q} %d\n", lane, m.inflight[lane])
 	}
+	// PERF-03 G7: SQL failures by SQLSTATE code (sorted for stable output).
+	sqlCodes := make([]string, 0, len(m.sqlErrors))
+	for code := range m.sqlErrors {
+		sqlCodes = append(sqlCodes, code)
+	}
+	sort.Strings(sqlCodes)
+	for _, code := range sqlCodes {
+		fmt.Fprintf(w, "sellersho_sql_errors_total{code=%q} %d\n", code, m.sqlErrors[code])
+	}
 	for name, value := range processMetrics() {
 		fmt.Fprintf(w, "sellersho_%s %g\n", name, value)
 	}
@@ -339,6 +458,17 @@ func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if m.db != nil {
 		s := m.db.Stats()
 		fmt.Fprintf(w, "sellersho_db_open %d\nsellersho_db_in_use %d\nsellersho_db_idle %d\nsellersho_db_wait_total %d\nsellersho_db_wait_seconds_total %g\n", s.OpenConnections, s.InUse, s.Idle, s.WaitCount, s.WaitDuration.Seconds())
+	}
+	// PERF-03 G5: pool-wait histogram (per-interval mean waits; see
+	// sampleDBWaitLocked). Emitted only once at least one interval
+	// with waits has been sampled.
+	if m.dbWait != nil && m.dbWait.Count > 0 {
+		s := m.dbWait
+		fmt.Fprintf(w, "sellersho_db_wait_seconds_count %d\nsellersho_db_wait_seconds_sum %g\n", s.Count, s.Sum)
+		for i, b := range buckets {
+			fmt.Fprintf(w, "sellersho_db_wait_seconds_bucket{le=%q} %d\n", fmt.Sprint(b), s.Buckets[i])
+		}
+		fmt.Fprintf(w, "sellersho_db_wait_seconds_bucket{le=\"+Inf\"} %d\n", s.Count)
 	}
 }
 func ValidateListenAddress(addr string) error {

@@ -14,12 +14,20 @@ import (
 
 func budgetFixture(t *testing.T, max int) {
 	t.Helper()
-	old := sharedBudget
+	// PERF-03 G3: OTP sends run through otpBudget, admin reads through
+	// sharedBudget, but these tests predate the split and their fixture
+	// must govern whichever gate the call under test uses. Point BOTH
+	// at the same fixture executor (the pre-G3 single-gate topology);
+	// the G3 split itself is covered by perf03_otp_isolation_test.go,
+	// which uses the real separate executors.
+	oldShared, oldOTP := sharedBudget, otpBudget
 	p := dependencybudget.DefaultPolicy(max, 100)
 	p.BackoffMin = time.Millisecond
 	p.BackoffMax = 2 * time.Millisecond
-	sharedBudget = dependencybudget.New(p)
-	t.Cleanup(func() { sharedBudget = old })
+	fixture := dependencybudget.New(p)
+	sharedBudget = fixture
+	otpBudget = fixture
+	t.Cleanup(func() { sharedBudget = oldShared; otpBudget = oldOTP })
 }
 func TestIPPanelReadsRetryButSMSSendsNeverReplay(t *testing.T) {
 	for _, safe := range []bool{true, false} {

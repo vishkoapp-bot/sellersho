@@ -37,6 +37,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to initialize migration database connection")
 	}
+	// PERF-03 G4: the migration pool used to be uncapped (sql.Open
+	// defaults: unlimited open connections). Migrations run
+	// sequentially, so 2 connections can never eat the deployment
+	// budget while the backend holds its 25.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
 	defer db.Close()
 	if _, err := migrations.Run(ctx, db, migrations.Options{
 		Dir: *dirFlag, AdoptLegacy: *adopt, LockTimeout: *lockTimeout,

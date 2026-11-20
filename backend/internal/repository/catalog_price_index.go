@@ -360,6 +360,19 @@ func (r *CatalogRepository) RefreshCatalogPricesTx(ctx context.Context, tx *sql.
 	if inputs == nil || len(productIDs) == 0 || asOf.IsZero() {
 		return false, nil
 	}
+	// PERF-03 G7 concurrency contract: this refresh runs inside the
+	// caller's RepeatableRead snapshot tx, so two transactions
+	// refreshing the same stale rows concurrently collide with 40001
+	// "could not serialize access due to concurrent update" (the first
+	// catalog burst on a cold index produced exactly 19x500, every one
+	// a 40001, captured by the sql_error code log). The callers handle
+	// that with ONE bounded retry of the whole snapshot tx (see
+	// retryCatalogTxOnSerialization in cmd/server): the retry re-probes
+	// against the winner's committed refresh and finds no stale rows.
+	// An advisory lock was tried and REJECTED here: it serializes the
+	// refresh execution but cannot refresh the loser's snapshot, which
+	// was taken at the tx's first read — before the lock — so the
+	// loser still fails with 40001 after waiting. Do not re-add it.
 	store := inputs.Store
 	settings := pricing.OrDefault(inputs.Settings)
 	locks := inputs.Locks

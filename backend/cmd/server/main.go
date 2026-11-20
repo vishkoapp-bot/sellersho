@@ -138,7 +138,14 @@ func run(signalCtx context.Context) (result error) {
 	defer stopStartup()
 	process := &lifecycle.Process{Grace: cfg.ShutdownGrace}
 	defer func() { result = errors.Join(result, process.Shutdown()) }()
-	db, err := repository.NewPostgresDBContext(startupCtx, cfg.DatabaseURL)
+	// PERF-03 G4: pool bounds come from the validated DB_POOL_* config
+	// (defaults preserve the historical 25/10 pool).
+	db, err := repository.NewPostgresDBWithPool(startupCtx, cfg.DatabaseURL, repository.PoolSettings{
+		MaxOpenConns:    cfg.DBPoolMaxOpen,
+		MaxIdleConns:    cfg.DBPoolMaxIdle,
+		ConnMaxLifetime: cfg.DBPoolMaxLifetime,
+		ConnMaxIdleTime: cfg.DBPoolMaxIdleTime,
+	})
 	if err != nil {
 		return err
 	}
@@ -2541,6 +2548,10 @@ func run(signalCtx context.Context) (result error) {
 
 	if db != nil {
 		observability.Default.SetDB(db.DB)
+		// PERF-03 G5: sample pool waits every 100 ms into the
+		// sellersho_db_wait_seconds histogram so the pool-wait-p95
+		// gate is measurable.
+		observability.Default.StartDBWaitSampling(db.DB, 100*time.Millisecond)
 	}
 	if err := startupCtx.Err(); err != nil {
 		return errors.New("startup canceled or exceeded STARTUP_TIMEOUT_SECONDS")
@@ -2571,6 +2582,7 @@ func run(signalCtx context.Context) (result error) {
 	}()
 	process.StopMetrics = func(ctx context.Context) error {
 		stopMetrics()
+		observability.Default.StopDBWaitSampling()
 		closeErr := metricsServer.Close()
 		select {
 		case <-metricsDone:

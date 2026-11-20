@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"github.com/lib/pq"
 	"io"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -53,9 +55,65 @@ func (c *sqlConn) PrepareContext(ctx context.Context, q string) (driver.Stmt, er
 }
 func (c *sqlConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if v, ok := c.Conn.(driver.ConnBeginTx); ok {
-		return v.BeginTx(ctx, opts)
+		tx, err := v.BeginTx(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &sqlTx{Tx: tx, ctx: ctx}, nil
 	}
 	return nil, driver.ErrSkip
+}
+
+// sqlTx wraps the driver transaction so a failed COMMIT or ROLLBACK
+// is captured like any other SQL failure (PERF-03 G7: under
+// RepeatableRead a serialization failure can surface at commit time).
+// Successful commits/rollbacks add no telemetry.
+type sqlTx struct {
+	driver.Tx
+	ctx context.Context
+}
+
+func (t *sqlTx) Commit() error {
+	err := t.Tx.Commit()
+	logSQLError(t.ctx, err)
+	return err
+}
+
+func (t *sqlTx) Rollback() error {
+	err := t.Tx.Rollback()
+	logSQLError(t.ctx, err)
+	return err
+}
+
+// sqlErrorCode returns the value-free PostgreSQL SQLSTATE for err
+// (PERF-03 G7), or "context" / "unknown" when there is none. Only
+// the 5-character code is ever recorded or logged — never the
+// message, which can carry parameter values.
+func sqlErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return string(pqErr.Code)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "context"
+	}
+	return "unknown"
+}
+
+// logSQLError records one SQL failure as a value-free code: a counter
+// in /metrics (sellersho_sql_errors_total{code}) and one log line
+// carrying the request id and the code, so a burst of 500s can be
+// attributed to a SQLSTATE without ever emitting the error text.
+func logSQLError(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+	code := sqlErrorCode(err)
+	Default.RecordSQLError(code)
+	log.Printf("sql_error request_id=%s code=%s", RequestID(ctx), code)
 }
 func (c *sqlConn) Ping(ctx context.Context) error {
 	if v, ok := c.Conn.(driver.Pinger); ok {
@@ -87,7 +145,10 @@ func (c *sqlConn) ExecContext(ctx context.Context, q string, args []driver.Named
 		return nil, driver.ErrSkip
 	}
 	start := time.Now()
-	defer func() { LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start)) }()
+	defer func() {
+		LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start))
+		logSQLError(ctx, err)
+	}()
 	return v.ExecContext(ctx, q, args)
 }
 func (c *sqlConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (rows driver.Rows, err error) {
@@ -99,6 +160,7 @@ func (c *sqlConn) QueryContext(ctx context.Context, q string, args []driver.Name
 	rows, err = v.QueryContext(ctx, q, args)
 	if err != nil {
 		LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start))
+		logSQLError(ctx, err)
 		return nil, err
 	}
 	return &sqlRows{Rows: rows, ctx: ctx, started: start}, nil
@@ -108,7 +170,10 @@ type sqlStmt struct{ driver.Stmt }
 
 func (s *sqlStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (res driver.Result, err error) {
 	start := time.Now()
-	defer func() { LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start)) }()
+	defer func() {
+		LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start))
+		logSQLError(ctx, err)
+	}()
 	if v, ok := s.Stmt.(driver.StmtExecContext); ok {
 		return v.ExecContext(ctx, args)
 	}
@@ -131,6 +196,7 @@ func (s *sqlStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (r
 	}
 	if err != nil {
 		LogOperation(ctx, "sql", "query", outcome(ctx, err), time.Since(start))
+		logSQLError(ctx, err)
 		return nil, err
 	}
 	return &sqlRows{Rows: rows, ctx: ctx, started: start}, nil
@@ -149,6 +215,7 @@ func (r *sqlRows) finish(err error) {
 			err = nil
 		}
 		LogOperation(r.ctx, "sql", "query", outcome(r.ctx, err), time.Since(r.started))
+		logSQLError(r.ctx, err)
 	})
 }
 func (r *sqlRows) Close() error { err := r.Rows.Close(); r.finish(err); return err }

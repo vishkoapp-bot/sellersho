@@ -103,6 +103,44 @@ func (s *JWTService) IsUserBlocked(ctx context.Context, userID string) (bool, er
 	return !active, nil
 }
 
+// ActiveStateReader is the single-query authorization-state read
+// behind JWTService.RefreshAuthState (PERF-03 G1).
+// CapabilityRepository implements it; readers that do not (unit-test
+// fakes, legacy wiring) fall back to the two-call RefreshCapabilities
+// + IsUserBlocked path, exactly as before.
+type ActiveStateReader interface {
+	LoadActiveState(context.Context, string) (found bool, active bool, capabilities []string, err error)
+}
+
+// RefreshAuthState refreshes the token's capabilities and reports
+// whether the token owner must be denied, in ONE database round trip
+// when the reader implements ActiveStateReader (PERF-03 G1). Blocked
+// means users.is_active = FALSE or no users row at all — the same
+// rule as IsUserBlocked — so a block or capability revocation is
+// visible on the very next request, with no TTL and no cache. The
+// capabilities are refreshed even for a blocked user, matching the
+// old order (RefreshCapabilities ran before the IsUserBlocked check).
+// A nil reader, an empty user id, or a reader without either state
+// method means "no status information": not blocked, preserving the
+// previous signature-only behaviour for those wirings.
+func (s *JWTService) RefreshAuthState(ctx context.Context, claims *UserClaims) (bool, error) {
+	if s.capabilityReader == nil || claims == nil || claims.UserID == "" {
+		return false, nil
+	}
+	if reader, ok := s.capabilityReader.(ActiveStateReader); ok {
+		found, active, capabilities, err := reader.LoadActiveState(ctx, claims.UserID)
+		if err != nil {
+			return false, err
+		}
+		claims.Capabilities = append([]string{}, capabilities...)
+		return !found || !active, nil
+	}
+	if err := s.RefreshCapabilities(ctx, claims); err != nil {
+		return false, err
+	}
+	return s.IsUserBlocked(ctx, claims.UserID)
+}
+
 func (s *JWTService) RefreshCapabilities(ctx context.Context, claims *UserClaims) error {
 	if s.capabilityReader == nil || claims == nil || claims.UserID == "" {
 		return nil

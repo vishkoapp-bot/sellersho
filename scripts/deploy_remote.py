@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -27,7 +28,8 @@ lock = open(root / '.deployment.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 release = root / 'releases' / commit
 backup = root / 'backups' / ('deploy-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + commit[:8])
-backup.mkdir(parents=True)
+# BAK-01: `backup` is NOT mkdir'd here — the entry point creates it
+# itself (atomic .tmp + mv, after verification) in the block below.
 
 
 def run(*args, capture=False, **kwargs):
@@ -116,22 +118,51 @@ def compose(*args, capture=False):
     return run(*cmd, *args, capture=capture)
 
 
+# BAK-01: the deploy backup is a call into the consolidated entry
+# point (scripts/backup/backup-entrypoint.sh) — not a second inline
+# pg_dump. The entry point writes the encrypted, manifested backup
+# set (DB -Fc + plain dumps, uploads, config, Caddy volumes) into
+# `backup`, verifies it (manifest + decrypt + gzip + pg_restore
+# --list — G5; the old --list-only check passed 4/6 single-byte
+# data corruptions the audit proved a real restore rejects), prunes
+# deploy backups to the newest 5 (G10), and publishes the
+# verified-success signal (kind='deploy'). It fails loudly (exit 1,
+# no success marker, immediate failure notice) on a pg_dump failure,
+# a missing encryption key, or a verification failure — the deploy
+# aborts before anything is touched. Exit 3 (backup files verified
+# good, success signal or off-site copy failed) is a loud WARNING,
+# not an abort: the marker file + failure notice already fired and
+# the 26 h staleness alert is the backstop. The saved files below
+# are passed as --include: paths under root keep their relative
+# path inside the backup dir, so the rollback below (which reads
+# backup/<relative>) works unchanged; backend-environment.json
+# (written to a temp file, not under root) lands in extra/.
 saved_files = ['backend/bin/server-linux', 'nginx.conf', 'docker-compose.ssl.yml', 'Caddyfile', '.deployed-commit',
-               'scripts/publish-backup-success.sh', 'backup-auto.sh', 'docker-compose.observability.yml',
+               'scripts/publish-backup-success.sh', 'scripts/backup/backup-entrypoint.sh', 'scripts/backup/publish-backup-failure.sh',
+               'scripts/backup/check-backup-health.sh', 'scripts/backup/restore-verify.sh',
+               'backup-auto.sh', 'backup-daily.sh', 'docker-compose.observability.yml',
                METRICS_PORTS_FILE]
 existed = {}
 for relative in saved_files:
-    src = root / relative
-    existed[relative] = src.exists()
-    if src.exists():
-        dst = backup / relative
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-with open(backup / 'postgres.dump', 'wb') as dump:
-    subprocess.run(['docker', 'exec', 'drup_postgres', 'pg_dump', '-U', 'drup_admin', '-d', 'drup_db', '-Fc'], stdout=dump, check=True)
-with open(backup / 'postgres.dump', 'rb') as dump:
-    subprocess.run(['docker', 'exec', '-i', 'drup_postgres', 'pg_restore', '--list'], stdin=dump, stdout=subprocess.DEVNULL, check=True)
-(backup / 'backend-environment.json').write_text(json.dumps(old_env))
+    existed[relative] = (root / relative).exists()
+entrypoint = release / 'scripts/backup/backup-entrypoint.sh'
+if not entrypoint.is_file():
+    entrypoint = root / 'scripts/backup/backup-entrypoint.sh'
+if not entrypoint.is_file():
+    raise SystemExit('BAK-01 backup entry point not found in the staged release or at /opt/drup/scripts/backup/backup-entrypoint.sh (the deploy coordinator installs it; refusing to deploy without a verified backup)')
+env_backup = Path(tempfile.mkdtemp(prefix='sellersho-backend-env-')) / 'backend-environment.json'
+env_backup.write_text(json.dumps(old_env))
+includes = []
+for relative in saved_files:
+    if existed[relative]:
+        includes += ['--include', str(root / relative)]
+includes += ['--include', str(env_backup)]
+backup_proc = subprocess.run([str(entrypoint), 'run', 'deploy', '--commit', commit, '--dest', str(backup)] + includes,
+                             env={**os.environ, 'BAK_ROOT': str(root)})
+if backup_proc.returncode == 3:
+    print('WARNING: entry-point backup files verified good but the success signal / off-site copy failed (exit 3; marker left in the backup dir; continuing the deploy)', flush=True)
+elif backup_proc.returncode != 0:
+    raise SystemExit(f'Entry-point backup failed (exit {backup_proc.returncode}); deploy aborted before any change')
 print('Backup:', backup, flush=True)
 xray_path = xray_previous = None
 dist_saved = changed = False
@@ -476,17 +507,24 @@ try:
     if obs_dst.exists():
         shutil.copytree(obs_dst, backup / 'ops-observability', dirs_exist_ok=True)
     shutil.copytree(obs_src, obs_dst, dirs_exist_ok=True)
-    # OBS-01 (D-02/G-06, supervisor F-4): ship the backup-success
-    # publisher and the updated backup-auto.sh (step 5 hook) with the
-    # release. backup-auto.sh expects the publisher at
-    # /opt/drup/scripts/publish-backup-success.sh; until both files are
-    # shipped the D-02 signal can never publish on prod. Previous
-    # versions were preserved in the deploy backup dir above via
-    # saved_files, and the rollback below restores them.
+    # OBS-01 (D-02/G-06, supervisor F-4) + BAK-01: ship the
+    # backup-success publisher and the consolidated backup entry
+    # point + its companions with the release. The entry point
+    # expects the publisher at
+    # /opt/drup/scripts/publish-backup-success.sh; until both files
+    # are shipped the D-02 signal can never publish on prod.
+    # Previous versions were preserved in the deploy backup dir
+    # above via saved_files, and the rollback below restores them.
     (root / 'scripts').mkdir(parents=True, exist_ok=True)
+    (root / 'scripts/backup').mkdir(parents=True, exist_ok=True)
     backup_scripts = [
         (release / 'scripts/publish-backup-success.sh', root / 'scripts/publish-backup-success.sh'),
+        (release / 'scripts/backup/backup-entrypoint.sh', root / 'scripts/backup/backup-entrypoint.sh'),
+        (release / 'scripts/backup/publish-backup-failure.sh', root / 'scripts/backup/publish-backup-failure.sh'),
+        (release / 'scripts/backup/check-backup-health.sh', root / 'scripts/backup/check-backup-health.sh'),
+        (release / 'scripts/backup/restore-verify.sh', root / 'scripts/backup/restore-verify.sh'),
         (release / 'backup-auto.sh', root / 'backup-auto.sh'),
+        (release / 'backup-daily.sh', root / 'backup-daily.sh'),
     ]
     for source, destination in backup_scripts:
         if not source.is_file():
@@ -497,7 +535,7 @@ try:
             raise RuntimeError(f'Backup script copy mismatch: {destination}')
         if not os.access(destination, os.X_OK):
             raise RuntimeError(f'Backup script not executable: {destination}')
-    print('Backup scripts shipped: scripts/publish-backup-success.sh, backup-auto.sh', flush=True)
+    print('Backup scripts shipped: scripts/publish-backup-success.sh, scripts/backup/backup-entrypoint.sh, scripts/backup/publish-backup-failure.sh, scripts/backup/check-backup-health.sh, scripts/backup/restore-verify.sh, backup-auto.sh, backup-daily.sh', flush=True)
     # Compose was already validated above (before migrations); it is
     # not re-run here.
     # Keep old hashed assets available to clients with already-open pages.

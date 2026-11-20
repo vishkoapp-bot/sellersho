@@ -477,7 +477,7 @@ class TestMetricsFileShippedBeforeConfig(unittest.TestCase):
         # `existed` already records the file's prior state for
         # rollback) and BEFORE the first `compose('config', ...)` call.
         src = DEPLOY_REMOTE.read_text()
-        backup_at = src.index("existed[relative] = src.exists()")
+        backup_at = src.index("existed[relative] = (root / relative).exists()")
         ship_at = src.index(
             "shutil.copy2(release / METRICS_PORTS_FILE, root / METRICS_PORTS_FILE)")
         # Indented statement form: the plain string also occurs in the

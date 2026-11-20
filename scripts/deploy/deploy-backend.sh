@@ -38,12 +38,15 @@
 # scripts/release/MIGRATION_INTERFACE.md).
 #
 # Protections ported from scripts/deploy_remote.py (G4):
-#   file lock, manifest validation, live-mount check, pg_dump backup
-#   (+ pg_restore --list validation), migration classification +
-#   staged migrate-linux execution inside the backend container,
-#   checksum-adoption check, binary swap via server-linux.new-<commit>
-#   + atomic mv (ETXTBSY-safe: never scp over the running binary),
-#   health-gated switch on /api/ready, scripted rollback.
+#   file lock, manifest validation, live-mount check, BAK-01
+#   entry-point backup (manifest + gzip + pg_restore --list
+#   verification, G5 — replaces the old inline pg_dump + --list-only
+#   check, which the BAK-01 audit proved insufficient),
+#   migration classification + staged migrate-linux execution
+#   inside the backend container, checksum-adoption check, binary
+#   swap via server-linux.new-<commit> + atomic mv (ETXTBSY-safe:
+#   never scp over the running binary), health-gated switch on
+#   /api/ready, scripted rollback.
 #
 # After the swap the frontend container is restarted too (nginx caches
 # the backend's old container IP at startup). Both compose files are
@@ -53,6 +56,7 @@
 #
 # Never prints secrets. Never sends OTP. Exit non-zero on any failure.
 set -euo pipefail
+umask 077  # BAK-01 G11: deploy backups hold secrets; files 0600.
 
 RELEASE="${1:-}"
 shift || true
@@ -172,13 +176,42 @@ if [ "$HAVE_DOCKER" -eq 1 ]; then
   echo "live-mount check OK: /app/server -> $MOUNT"
 fi
 
-# pg_dump backup (+ pg_restore --list validation), prod path only.
+# BAK-01 entry-point backup (deploy kind) + verification (G5),
+# prod path only. The entry point writes the encrypted, manifested
+# backup set (DB -Fc + plain dumps, uploads, config, Caddy volumes)
+# under $ROOT/backups/deploy-<commit>-<ts>/, verifies it (manifest
+# + decrypt + gzip + pg_restore --list), prunes deploy backups to
+# the newest 5 (G10), and publishes the verified-success signal.
+# It FAILS LOUDLY (nonzero, no success marker, immediate failure
+# notice) when pg_dump fails, when the encryption key is missing,
+# or when verification fails — the old inline pg_dump + --list-only
+# check could pass a corrupt backup (audit §4.3) and is gone.
+# The $BACKUP-server-linux / $BACKUP-release.json copies below the
+# entry-point call stay OUTSIDE the backup dir: rollback() reads
+# them directly, and the entry point also folds copies into the
+# backup set via --include.
 if [ "$HAVE_DOCKER" -eq 1 ]; then
-  docker exec drup_postgres pg_dump -U drup_admin -d drup_db -Fc > "$BACKUP-postgres.dump"
-  docker exec -i drup_postgres pg_restore --list < "$BACKUP-postgres.dump" >/dev/null
-  echo "pg_dump backup OK: $BACKUP-postgres.dump"
+  ENTRYPOINT=""
+  [ -x "$RELEASE/scripts/backup/backup-entrypoint.sh" ] && ENTRYPOINT="$RELEASE/scripts/backup/backup-entrypoint.sh"
+  [ -z "$ENTRYPOINT" ] && [ -x "$ROOT/scripts/backup/backup-entrypoint.sh" ] && ENTRYPOINT="$ROOT/scripts/backup/backup-entrypoint.sh"
+  [ -n "$ENTRYPOINT" ] || { echo "FAIL: backup entry point not found in the staged release or at $ROOT/scripts/backup/backup-entrypoint.sh (BAK-01: the deploy coordinator installs it; refusing to deploy without a verified backup)" >&2; exit 1; }
+  # Exit 3 (backup files verified good, success signal / off-site
+  # copy failed) is a loud WARNING, not an abort — see the entry
+  # point's exit-code contract. Any other nonzero exit aborts the
+  # deploy before any change.
+  set +e
+  BAK_ROOT="$ROOT" "$ENTRYPOINT" run deploy --commit "$COMMIT" --include "$BACKUP-server-linux" --include "$BACKUP-release.json"
+  ENTRY_RC=$?
+  set -e
+  if [ "$ENTRY_RC" -eq 3 ]; then
+    echo "WARNING: entry-point backup files verified good but the success signal / off-site copy failed (exit 3; marker left in the backup dir; continuing the deploy)" >&2
+  elif [ "$ENTRY_RC" -ne 0 ]; then
+    echo "FAIL: entry-point backup failed (exit $ENTRY_RC); deploy aborted before any change" >&2
+    exit "$ENTRY_RC"
+  fi
+  echo "entry-point backup OK (deploy $COMMIT)"
 else
-  echo "WARNING: no Docker here (--rehearse or no daemon): pg_dump backup SKIPPED — a real deploy must run on the host with Docker." >&2
+  echo "WARNING: no Docker here (--rehearse or no daemon): entry-point backup SKIPPED — a real deploy must run on the host with Docker." >&2
 fi
 
 # Migration classification + execution inside the backend container

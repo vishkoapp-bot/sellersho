@@ -29,8 +29,9 @@
 	email "{$ACME_EMAIL}"
 	on_demand_tls {
 		ask http://backend:8080/internal/domains/allow
-		# EDGE-01 step 5 — D-2 NOTE (owner decision Nov 20: "max_certs
-		# = 100"): there is NO max_certs directive in Caddy v2.
+		# EDGE-01 step 5 — D-2 NOTE (owner R-1 Nov 20: NO numeric cap
+		# at all — option (a)): there is NO max_certs directive in
+		# Caddy v2.
 		# `max_certs` was a Caddy v1 tls subdirective; Caddy 2.9.1's
 		# adapter rejects it here ("unrecognized parameter
 		# 'max_certs'") and rejects `interval`/`burst` too
@@ -44,10 +45,11 @@
 		# deny-cache bounds the ask's DB cost); (b) the CA's own rate
 		# limits as backstop (LE 300 orders/3h; ZeroSSL's own, since
 		# ACME_EMAIL stays UNSET in prod — verified empty, ZeroSSL
-		# fallback issuance). If a hard numeric cap is still wanted,
-		# it needs a backend-side ask guard (the backend cannot see
-		# Caddy's cert store) and a fresh owner decision — it cannot
-		# be expressed in this file. Do not re-add max_certs.
+		# fallback issuance). Owner R-1 (Nov 20): NO numeric cap —
+		# unlimited stores/domains as the platform grows. Accepted
+		# residual risk: issuance is bounded only by the admin
+		# approval process (each domain needs a store + admin
+		# approval). Do not re-add max_certs.
 	}
 }
 

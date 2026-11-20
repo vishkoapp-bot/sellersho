@@ -25,7 +25,8 @@ ATTENTION`.
 ```
 deploy fails
   │
-  ├─ read backup/.deployed-commit            → old commit
+  ├─ read /opt/drup/.deployed-commit (live root; the backup's
+  │     copy is encrypted, so it never holds plaintext) → old commit
   ├─ read schema_migrations (fresh)          → applied {version: checksum}
   ├─ read old release dir                    → old binary's migration set
   └─ rollback_precheck()

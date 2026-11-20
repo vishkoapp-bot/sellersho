@@ -32,6 +32,15 @@ What each scenario proves (evidence under the evidence dir):
     R-5  unavailable rollback points recorded in .rollback-points.json.
     R-6  accepted data never erased: row counts + checksums of orders
          and ledger rows before/after a rollback.
+    R-7  mid-migrate failure commits a breaking-shaped migration
+         (supervisor fix item 1): the rollback pre-check must see the
+         changed schema via backup/applied-before.json and fire the
+         floor check (pre-floor old binary => incompatible => Mode B
+         taken, old binary never restored). The repair itself cannot
+         complete here — the failing migration is deterministic, so
+         the new binary retries it at boot and fails closed; the
+         honest terminal state is ROLLBACK NEEDS ATTENTION (runbook
+         §4), not a blind restore.
 """
 import argparse
 import hashlib
@@ -87,7 +96,7 @@ MY_FILES = [
 ]
 
 FAKE_COMMITS = {"R-1": "a" * 40, "R-2": "b" * 40, "R-3": "c" * 40,
-                "R-6-ok": "d" * 40, "R-6-fail": "e" * 40}
+                "R-6-ok": "d" * 40, "R-6-fail": "e" * 40, "R-7": "f" * 40}
 
 
 def sh(argv, env=None, timeout=300, input_text=None, check=False, cwd=None):
@@ -370,8 +379,19 @@ class Rehearsal:
             (release / "backend/migrations" / "MIGRATION_CLASSIFICATION.md").write_text(
                 gen_mod.render(doc), encoding="utf-8")
         if old_deploy_remote:
-            shutil.copy2(GIT_CHECKOUT / "scripts/deploy_remote.py",
-                         release / "scripts/deploy_remote.py")
+            # Negative control: stage the PRE-MIG-02 deploy_remote.py
+            # from git history, never from the live checkout. Copying
+            # the live file silently stages the NEW script once the
+            # checkout moves past 92f9cca, and the control stops
+            # controlling (supervisor re-run, Nov 20 2026). Fail loudly
+            # when the blob is unavailable; the "MIG-02" guard proves
+            # the staged blob really predates the change set.
+            old_script = sh(["git", "-C", str(GIT_CHECKOUT), "show",
+                             "92f9cca:scripts/deploy_remote.py"],
+                            timeout=60, check=True).stdout
+            assert "MIG-02" not in old_script, \
+                "staged control script is not pre-MIG-02 (contains MIG-02)"
+            (release / "scripts/deploy_remote.py").write_text(old_script)
         result = sh([sys.executable, str(self.clean_tree / "scripts/release/make_manifest.py"),
                      "--stage", str(release), "--commit", manifest_commit or commit,
                      "--branch", "main", "--payment-mode", "real",
@@ -600,6 +620,14 @@ BREAK_ENTRY = Rehearsal.test_entry(
     [{"sql": "SELECT count(*) FROM mig02_r3_balances", "expected": 0}],
     "Drops a legacy unique constraint and replaces it with partial unique indexes (202611110003 pattern); old-binary upserts on the legacy arbiter would fail.")
 
+R7_BREAK_SQL = M_BREAK_SQL.replace("mig02_r3_balances", "mig02_r7_balances")
+
+R7_BREAK_ENTRY = Rehearsal.test_entry(
+    "202611210001_mig02_r7_legacy_break.up.sql", R7_BREAK_SQL, "CONTRACT",
+    "breaking",
+    [{"sql": "SELECT count(*) FROM mig02_r7_balances", "expected": 0}],
+    "R-7 (supervisor fix item 1): breaking-shaped migration that the failing deploy COMMITS before the next file fails — the pre-deploy snapshot must not contain it, so the rollback pre-check must see a changed schema and fire the floor check instead of restoring the pre-floor binary.")
+
 ACCEPTED_ORDERS_SQL = """
 INSERT INTO stores (id, name, slug, owner_type, owner_name, total_sales, status)
 VALUES ('store-fix-1', 'MIG-02 fixture store', 'mig02-fix', 'dropshipper', 'fixture-owner', 0, 'active');
@@ -701,7 +729,11 @@ def scenario_r2(r: Rehearsal):
     control = {
         "deploy_failed": code != 0,
         "rollback_needs_attention": "ROLLBACK NEEDS ATTENTION" in out,
-        "no_rollback_point": not (FAKE_ROOT / "backups").glob("*/rollback-point.json") or True,
+        # The pre-MIG-02 script predates rollback-point.json entirely
+        # (0 mentions in 92f9cca:scripts/deploy_remote.py), so a real
+        # control run records no rollback point. (Was `... or True` —
+        # always true — supervisor fix item 3.)
+        "no_rollback_point": not list((FAKE_ROOT / "backups").glob("*/rollback-point.json")),
     }
     healthy, log = r.boot_check(db, FAKE_ROOT / "backend/migrations", "r2-control")
     # The server logs the generic fail-closed line (the migrate CLI's
@@ -711,6 +743,8 @@ def scenario_r2(r: Rehearsal):
     r.write_evidence("r2-control.json", control)
     print("R-2 control:", control, flush=True)
     assert control["deploy_failed"] and control["rollback_needs_attention"], "control did not reproduce the failure"
+    assert control["no_rollback_point"], \
+        "control wrote a rollback-point.json; the pre-MIG-02 script must not record one"
     assert control["old_binary_boot_failed_with_missing_migration"], \
         "control boot did not reproduce the §2.2 failure"
 
@@ -796,6 +830,85 @@ def scenario_r3(r: Rehearsal):
                         "checks": checks, "rollback_point": rp}
     r.write_evidence("r3.json", r.results["R-3"])
     print("R-3:", r.results["R-3"]["verdict"], checks, flush=True)
+
+
+def scenario_r7(r: Rehearsal):
+    print("\n===== R-7: mid-migrate failure commits a breaking migration (supervisor fix item 1) =====", flush=True)
+    db = "mig02_r7"
+    old = r.git_rev("2df713b")          # pre-floor binary (before ff57367)
+    new_commit = FAKE_COMMITS["R-7"]
+    # The breaking-shaped migration sorts BEFORE the failing one, so
+    # `migrate` commits it and then fails on M2 — the exact Mode A
+    # shape. With the old `migrationsApplied` test the schema was
+    # misread as unchanged (the list is only set after a *successful*
+    # migrate) and the floor check was bypassed.
+    extra = {"202611210001_mig02_r7_legacy_break.up.sql": R7_BREAK_SQL,
+             "202611210002_mig02_r1_stock_check.up.sql": M_FAIL_SQL}
+    entries = [R7_BREAK_ENTRY, FAIL_ENTRY]
+    create_db(db)
+    r.apply_base(db)
+    r.seed(db, negative_stock=True)
+    r.reset_fake_root_state(old, db)
+    r.stage_old_release(old)
+    release = r.stage_release(new_commit, extra, entries, manifest_commit=new_commit)
+    code, out = r.run_deploy(new_commit, db, r.evidence / "r7-deploy.log")
+    assert code != 0, "R-7 deploy must fail at M2 (mid-migrate)"
+    backups = sorted((FAKE_ROOT / "backups").glob("*"))
+    rp = None
+    for b in backups:
+        if (b / "rollback-point.json").is_file():
+            rp = json.loads((b / "rollback-point.json").read_text())
+    assert rp is not None, "rollback-point.json missing"
+    assert backups, "R-7 must leave a backup dir"
+    before = json.loads((backups[-1] / "applied-before.json").read_text())
+    new_bin_sha = hashlib.sha256((release / "backend/bin/server-linux").read_bytes()).hexdigest()
+    live_bin_sha = hashlib.sha256((FAKE_ROOT / "backend/bin/server-linux").read_bytes()).hexdigest()
+    # What this scenario proves — the pre-check DECISION, not a full
+    # repair: the failing migration is deterministic (a CHECK the
+    # fixture violates), so the forward repair CANNOT complete: Mode B
+    # copies the manifest into the persistent dir and the new binary
+    # retries the pending migration at boot, failing closed on the
+    # same check violation the deploy hit. The honest terminal state
+    # is therefore ROLLBACK NEEDS ATTENTION (runbook §4: diagnose
+    # from the backup, repair forward with a hotfix — never restore
+    # the proven-incompatible old binary). R-3 already proves Mode B
+    # *succeeds* when the failure is post-migrate; R-7 proves the
+    # fix-item-1 decision (floor check fires on the fresh applied
+    # set, Mode B is taken, no blind restore) on the mid-migrate
+    # failure the old `migrationsApplied` test misread.
+    checks = {
+        "deploy_failed": code != 0,
+        "breaking_migration_committed_before_failure": pg(
+            db, "SELECT count(*) FROM schema_migrations WHERE version LIKE '%mig02_r7%'") == "1",
+        "breaking_migration_absent_from_snapshot": not any(
+            "mig02_r7" in v for v in before.get("versions", [])),
+        # The floor check must fire on the fresh applied set (not the
+        # empty migrationsApplied list): pre-floor old binary + schema
+        # changed => incompatible => Mode B path taken, never a blind
+        # restore of the pre-floor binary.
+        "precheck_incompatible": rp.get("compatibility", {}).get("verdict") == "incompatible",
+        "floor_check_fired": "predates lastCompatibleRevision" in rp.get("compatibility", {}).get("reason", ""),
+        "mode_b_attempted": rp.get("repair") == "mode-b",
+        "live_binary_is_new": live_bin_sha == new_bin_sha,
+        "old_binary_not_restored": rp.get("restoredCommit") is None,
+        "rollback_needs_attention": "ROLLBACK NEEDS ATTENTION" in out,
+        "terminal_status_rollback_failed": rp.get("status") == "rollback-failed",
+        "rollback_error_is_health": "Backend health check failed" in str(rp.get("rollbackError", "")),
+    }
+    healthy, log = r.boot_check(db, FAKE_ROOT / "backend/migrations", "r7")
+    # The repaired binary must fail boot on the SAME deterministic
+    # migration (pending-file retry at boot), not on a wrong binary
+    # or a missing-migration validation error.
+    checks["new_binary_fails_on_same_migration"] = (
+        not healthy and "202611210002_mig02_r1_stock_check.up.sql failed" in log)
+    checks["breaking_migration_applied_once"] = pg(
+        db, "SELECT count(*) FROM schema_migrations WHERE version LIKE '%mig02_r7%'") == "1"
+    checks["failed_migration_not_applied"] = pg(
+        db, "SELECT count(*) FROM schema_migrations WHERE version LIKE '%mig02_r1%'") == "0"
+    r.results["R-7"] = {"verdict": "PASS" if all(checks.values()) else "FAIL",
+                        "checks": checks, "rollback_point": rp}
+    r.write_evidence("r7.json", r.results["R-7"])
+    print("R-7:", r.results["R-7"]["verdict"], checks, flush=True)
 
 
 def scenario_r4(r: Rehearsal):
@@ -922,7 +1035,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-dir", default=str(Path.home() / "workspace/mig02-evidence"))
     parser.add_argument("--keep", action="store_true")
-    parser.add_argument("--scenarios", default="R-1,R-2,R-3,R-4,R-5,R-6")
+    parser.add_argument("--scenarios", default="R-1,R-2,R-3,R-4,R-5,R-6,R-7")
     args = parser.parse_args()
     wanted = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     r = Rehearsal(args.evidence_dir, keep=args.keep)
@@ -940,6 +1053,8 @@ def main():
             scenario_r4(r)
         if "R-6" in wanted:
             scenario_r6(r)
+        if "R-7" in wanted:
+            scenario_r7(r)
         if "R-5" in wanted:
             scenario_r5(r)
     finally:
@@ -954,7 +1069,7 @@ def main():
             except Exception:
                 pass
             for name in ("mig02_r1", "mig02_r2", "mig02_r3", "mig02_r4_pre",
-                         "mig02_r4_post", "mig02_r6"):
+                         "mig02_r4_post", "mig02_r6", "mig02_r7"):
                 try:
                     drop_db(name)
                 except Exception:

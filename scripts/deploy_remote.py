@@ -226,6 +226,30 @@ def git_is_ancestor(repo, ancestor, commit):
     return result.returncode == 0
 
 
+def compute_schema_changed(backup_dir, applied_now, migrations_applied):
+    """Step 4 — did this deploy change the schema?
+
+    `migrationsApplied` in the rollback point is only assigned after
+    a *successful* migrate run, so a mid-migrate failure (the exact
+    Mode A scenario: files 1..k-1 committed, file k failed) left it
+    empty and the old test misread the schema as unchanged — which
+    bypassed the lastCompatibleRevision floor check in
+    rollback_precheck() and could restore a pre-floor binary onto the
+    new schema. Compare the fresh applied set against the pre-deploy
+    snapshot `backup/applied-before.json` (written before `migrate`
+    runs) instead; fall back to the rollback-point list only when the
+    snapshot is unreadable (e.g. the deploy failed before the
+    snapshot was written — in which case `migrate` never ran, so the
+    fallback value is correct anyway).
+    """
+    try:
+        before = json.loads((Path(backup_dir) / 'applied-before.json').read_text())
+        before_versions = set(before.get('versions') or [])
+        return set(applied_now) != before_versions
+    except Exception:
+        return bool(migrations_applied)
+
+
 def rollback_precheck(applied, old_set, aliases, persistent_dir, release_dir,
                       old_release_dir, manifest_checksums, lcr, old_commit, repo,
                       schema_changed=True):
@@ -1071,6 +1095,10 @@ except Exception as deploy_error:
     # is refused when the old binary cannot run this schema.
     print('Deployment failed; deciding rollback strategy (MIG-02 step 4).', flush=True)
     rollback_point['reason'] = f'{type(deploy_error).__name__}: {deploy_error}'
+    # Pre-try fallback only: recomputed from the fresh applied set +
+    # the pre-deploy snapshot below, once query_applied() succeeds.
+    # (If the query itself raises, the pre-check fails closed to
+    # `incompatible` and this value is never used.)
     schema_changed = bool(rollback_point.get('migrationsApplied'))
     old_commit = ''
     applied_now = {}
@@ -1091,6 +1119,14 @@ except Exception as deploy_error:
             old_release = root / 'releases' / old_commit
         applied_now = query_applied()
         applied_known = True
+        # MIG-02 fix (supervisor F-1): `migrationsApplied` is only set
+        # after a *successful* migrate run, so a mid-migrate failure
+        # left it empty and the schema was misread as unchanged,
+        # bypassing the floor check. Compare the fresh applied set
+        # against the pre-deploy snapshot instead (falls back to the
+        # rollback-point list when the snapshot is unreadable).
+        schema_changed = compute_schema_changed(
+            backup, applied_now, rollback_point.get('migrationsApplied'))
         old_set = {p.name for p in (old_release / 'backend/migrations').glob('*.up.sql')} if old_release.is_dir() else set()
         aliases = load_aliases(old_release) or load_aliases(release)
         verdict = rollback_precheck(applied_now, old_set, aliases, root / 'backend/migrations',

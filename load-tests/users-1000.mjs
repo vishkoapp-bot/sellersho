@@ -76,4 +76,4 @@ const summary={certified:false,scope:'LOCAL closed-loop1000independent complete 
  completed_checkouts:completed,actual_checkout_rps:completed/elapsed,peak_inflight:peak,retained_sessions:users.length,retained_ambiguous:ambiguous.size,
  degraded_readonly_sessions:ambiguous.size,wrong_amount:wrongAmount,failed_gates:gates,route_metrics:routeMetrics,requests_raw:requests,
  note:'Errors remain failed; ambiguous mutations retain bounded per-user state and stop further writes for that user, never hidden retry. Full pricing/ledger/refund/device/browser gates remain open.'};
-fs.writeFileSync('/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=gates.length?1:0;
+fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=gates.length?1:0;

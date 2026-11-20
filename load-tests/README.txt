@@ -100,8 +100,8 @@ remains failed. The30second local run failed;long durations are not executed.
 --journey-baseline:90seconds;--journey:30minutes.1000independent closed-loop carts,
 orders and sessions,uniform5..15second think time;actual throughput reported.
 The90second run failed at catalog reads,with zero complete checkouts. Neither
-profile implies100RPS or certification. api-100rps.js is an older prepared k6
-alternative,not used by the runner. See profiles.json and local-baseline-evidence.md
+profile implies100RPS or certification. api-100rps.js was a k6 script deleted 2026-11-20 (see the D2 note
+below); it is not used by the runner. See profiles.json and local-baseline-evidence.md
 for implemented versus open profiles and retained measurements.
 
 Additional prepared diagnostics:
@@ -124,7 +124,9 @@ cannot run Docker); Node drivers take target/CA/sessions from the environment vi
 load-tests/target-config.mjs. D2: generator is Node-only; dead k6 scripts api-100rps.js
 and baseline.js were deleted (no k6 binary here; never invoked). D3: short baseline
 suite pinned to 10s/30s/90s. D4: no target parameter; hardcoded disposable domain
-capacity.example.test plus a guard refusing any other host/IP. D5: latency failures
+capacity.example.test plus a guard refusing any other host/IP; an unset
+connect IP resolves the hostname first and refuses any non-loopback
+answer (this VM's resolver sinkholes unresolvable names to 198.18.245.17x). D5: latency failures
 are app work; CAP-01 never tunes server code to pass. D6: deployment-hardware
 identity stays OPEN for CAP-02.
 Profiles added 2026-11-20: --hot-account (100 paid cancels, one store, duplicate-

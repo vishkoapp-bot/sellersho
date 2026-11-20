@@ -1,0 +1,31 @@
+{
+  "run": "a7176686b6b71af3f37c3a45",
+  "scope": "local-only-native",
+  "certified": false,
+  "manifest_keys": [
+    "adapters",
+    "backend_binary_sha256",
+    "backend_pool",
+    "backend_source_sha256",
+    "certified",
+    "cleanup",
+    "disk_class",
+    "failure",
+    "fixture_validity",
+    "frontend_build",
+    "frontend_build_sha256",
+    "go_toolchain",
+    "host",
+    "limitations",
+    "logical_cpus",
+    "migration_digests",
+    "replicas",
+    "run",
+    "runner",
+    "scope",
+    "source",
+    "target",
+    "tls"
+  ],
+  "frontend_build": "ok"
+}

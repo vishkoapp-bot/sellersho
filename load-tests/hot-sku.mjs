@@ -56,4 +56,4 @@ try{
   if(!times.length||p95>750||p99>2000)summary.failed_gates.push(kind+'_latency');
  }
 }catch(error){summary.failed_gates.push('preparation_or_execution');summary.failure=error.message}
-finally{summary.requests=requests.length;summary.helper_api_calls=helpers.length;summary.distinct_principals=new Set(requests.map(r=>r.principal)).size;agent.destroy();fs.writeFileSync('/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=summary.failed_gates.length?1:0}
+finally{summary.requests=requests.length;summary.helper_api_calls=helpers.length;summary.distinct_principals=new Set(requests.map(r=>r.principal)).size;agent.destroy();fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=summary.failed_gates.length?1:0}

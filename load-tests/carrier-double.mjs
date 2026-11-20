@@ -26,5 +26,5 @@ export function createCarrierDouble({marker,key,delay=50,mode='success'}={}){
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const server=createCarrierDouble({marker:process.env.SELLERSHO_CAPACITY_RUN,key:process.env.CAPACITY_CARRIER_KEY,delay:Number(process.env.CAPACITY_CARRIER_DELAY_MS||50),mode:process.env.CAPACITY_CARRIER_MODE||'success'});
- server.listen(8082,'0.0.0.0');
+ server.listen(Number(process.env.CAPACITY_CARRIER_PORT||8082),'0.0.0.0');
 }

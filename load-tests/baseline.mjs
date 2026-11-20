@@ -47,5 +47,5 @@ const summary={generator_version:process.version,scope:sessions.length?'1000 ind
  count_note:'domain authorization count derived from configured forward_auth; independent server counters remain required',requests_raw:results,dropped_slots_raw:droppedSlots};
 Object.assign(summary,arrivalSummary(scheduler,results,summary.elapsed_seconds));
 summary.failed_gates=evaluate(summary,sessions.length>0,'read');
-fs.writeFileSync('/tmp/summary.json',JSON.stringify(summary,null,2));
+fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json',JSON.stringify(summary,null,2));
 process.exitCode=summary.failed_gates.length?1:0;

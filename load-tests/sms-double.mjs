@@ -24,5 +24,5 @@ export function createSMSDouble({marker,key,delayMs=25,mode='success'}){
  });
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
- createSMSDouble({marker:process.env.SELLERSHO_CAPACITY_RUN,key:process.env.CAPACITY_SMS_KEY,delayMs:Number(process.env.CAPACITY_SMS_DELAY_MS||25),mode:process.env.CAPACITY_SMS_MODE||'success'}).listen(8081,'0.0.0.0');
+ createSMSDouble({marker:process.env.SELLERSHO_CAPACITY_RUN,key:process.env.CAPACITY_SMS_KEY,delayMs:Number(process.env.CAPACITY_SMS_DELAY_MS||25),mode:process.env.CAPACITY_SMS_MODE||'success'}).listen(Number(process.env.CAPACITY_SMS_PORT||8081),'0.0.0.0');
 }

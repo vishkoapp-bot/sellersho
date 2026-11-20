@@ -1,0 +1,1717 @@
+{
+  "run": "05879119c0db957ebaaeaa03",
+  "scope": "local-only-native",
+  "certified": false,
+  "manifest_keys": [
+    "adapters",
+    "api-baseline_counter_gate",
+    "api-baseline_cpu_max_percent",
+    "api-baseline_elapsed_seconds",
+    "api-baseline_exit",
+    "api-baseline_oracle",
+    "api-baseline_oracle_gate",
+    "api-baseline_received_counts",
+    "api-baseline_resource_samples",
+    "api-rolling_counter_gate",
+    "api-rolling_cpu_max_percent",
+    "api-rolling_elapsed_seconds",
+    "api-rolling_exit",
+    "api-rolling_oracle",
+    "api-rolling_oracle_gate",
+    "api-rolling_received_counts",
+    "api-rolling_resource_samples",
+    "backend_binary_sha256",
+    "backend_pool",
+    "backend_source_sha256",
+    "baseline_counter_gate",
+    "baseline_cpu_max_percent",
+    "baseline_elapsed_seconds",
+    "baseline_exit",
+    "baseline_received_counts",
+    "baseline_resource_samples",
+    "browser-assets_exit",
+    "browser_counter_gate",
+    "browser_received_counts",
+    "browser_scope",
+    "carrier_double_counts",
+    "certified",
+    "cleanup",
+    "cold-cache-cold_counter_gate",
+    "cold-cache-cold_cpu_max_percent",
+    "cold-cache-cold_elapsed_seconds",
+    "cold-cache-cold_exit",
+    "cold-cache-cold_oracle",
+    "cold-cache-cold_oracle_gate",
+    "cold-cache-cold_received_counts",
+    "cold-cache-cold_resource_samples",
+    "cold-cache-warm_counter_gate",
+    "cold-cache-warm_cpu_max_percent",
+    "cold-cache-warm_elapsed_seconds",
+    "cold-cache-warm_exit",
+    "cold-cache-warm_oracle",
+    "cold-cache-warm_oracle_gate",
+    "cold-cache-warm_received_counts",
+    "cold-cache-warm_resource_samples",
+    "cold_cache",
+    "disk_class",
+    "fault-provider-timeout_counter_gate",
+    "fault-provider-timeout_cpu_max_percent",
+    "fault-provider-timeout_elapsed_seconds",
+    "fault-provider-timeout_exit",
+    "fault-provider-timeout_oracle",
+    "fault-provider-timeout_oracle_gate",
+    "fault-provider-timeout_received_counts",
+    "fault-provider-timeout_resource_samples",
+    "fault_provider_timeout",
+    "fault_redis_loss",
+    "fault_restart",
+    "fixture",
+    "fixture-baseline_counter_gate",
+    "fixture-baseline_cpu_max_percent",
+    "fixture-baseline_elapsed_seconds",
+    "fixture-baseline_exit",
+    "fixture-baseline_received_counts",
+    "fixture-baseline_resource_samples",
+    "fixture_exit",
+    "fixture_measured_counts",
+    "fixture_read_samples",
+    "fixture_scope",
+    "fixture_validity",
+    "frontend_build",
+    "frontend_build_sha256",
+    "go_toolchain",
+    "headroom",
+    "headroom-recovery_counter_gate",
+    "headroom-recovery_cpu_max_percent",
+    "headroom-recovery_elapsed_seconds",
+    "headroom-recovery_exit",
+    "headroom-recovery_oracle",
+    "headroom-recovery_oracle_gate",
+    "headroom-recovery_received_counts",
+    "headroom-recovery_resource_samples",
+    "headroom_counter_gate",
+    "headroom_cpu_max_percent",
+    "headroom_elapsed_seconds",
+    "headroom_exit",
+    "headroom_oracle",
+    "headroom_oracle_gate",
+    "headroom_received_counts",
+    "headroom_resource_samples",
+    "host",
+    "hot-account_counter_gate",
+    "hot-account_cpu_max_percent",
+    "hot-account_elapsed_seconds",
+    "hot-account_exit",
+    "hot-account_received_counts",
+    "hot-account_resource_samples",
+    "hot-sku-restart_counter_gate",
+    "hot-sku-restart_cpu_max_percent",
+    "hot-sku-restart_elapsed_seconds",
+    "hot-sku-restart_exit",
+    "hot-sku-restart_received_counts",
+    "hot-sku-restart_resource_samples",
+    "hot-sku_counter_gate",
+    "hot-sku_cpu_max_percent",
+    "hot-sku_elapsed_seconds",
+    "hot-sku_exit",
+    "hot-sku_received_counts",
+    "hot-sku_resource_samples",
+    "hot_account_oracle",
+    "hot_account_oracle_gate",
+    "hot_sku_oracle",
+    "hot_sku_oracle_gate",
+    "hot_sku_oracle_restart",
+    "hot_sku_oracle_restart_gate",
+    "journey-baseline_counter_gate",
+    "journey-baseline_cpu_max_percent",
+    "journey-baseline_elapsed_seconds",
+    "journey-baseline_exit",
+    "journey-baseline_oracle",
+    "journey-baseline_oracle_gate",
+    "journey-baseline_received_counts",
+    "journey-baseline_resource_samples",
+    "limitations",
+    "logical_cpus",
+    "login-ramp_counter_gate",
+    "login-ramp_cpu_max_percent",
+    "login-ramp_elapsed_seconds",
+    "login-ramp_exit",
+    "login-ramp_received_counts",
+    "login-ramp_resource_samples",
+    "migration_digests",
+    "otp-background_counter_gate",
+    "otp-background_cpu_max_percent",
+    "otp-background_elapsed_seconds",
+    "otp-background_exit",
+    "otp-background_received_counts",
+    "otp-background_resource_samples",
+    "postgres_settings",
+    "profile_failed",
+    "release_cohort",
+    "replicas",
+    "run",
+    "runner",
+    "scope",
+    "service_versions",
+    "session-lifecycle_counter_gate",
+    "session-lifecycle_cpu_max_percent",
+    "session-lifecycle_elapsed_seconds",
+    "session-lifecycle_exit",
+    "session-lifecycle_received_counts",
+    "session-lifecycle_resource_samples",
+    "sms_double_counts",
+    "source",
+    "staff-baseline_counter_gate",
+    "staff-baseline_cpu_max_percent",
+    "staff-baseline_elapsed_seconds",
+    "staff-baseline_exit",
+    "staff-baseline_oracle",
+    "staff-baseline_oracle_gate",
+    "staff-baseline_received_counts",
+    "staff-baseline_resource_samples",
+    "target",
+    "tls"
+  ],
+  "frontend_build": "ok",
+  "baseline_received_counts": {
+    "api": 0,
+    "domain_allow": 1,
+    "probe": 1,
+    "asset": 0,
+    "other": 0
+  },
+  "baseline_counter_gate": "matched",
+  "baseline_exit": 0,
+  "fixture_exit": 0,
+  "release_cohort": {
+    "exit": 1,
+    "released": 0,
+    "status": "FAILED"
+  },
+  "fixture_measured_counts": {
+    "users": 1210,
+    "suppliers": 100,
+    "stores": 100,
+    "products": 10101,
+    "product_variants": 50001,
+    "orders": 100000,
+    "saleable_units": 5000000
+  },
+  "fixture-baseline_received_counts": {
+    "api": 771,
+    "domain_allow": 771,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "fixture-baseline_counter_gate": "matched",
+  "fixture-baseline_exit": 1,
+  "login-ramp_received_counts": {
+    "api": 1306,
+    "domain_allow": 1306,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "login-ramp_counter_gate": "matched",
+  "login-ramp_exit": 1,
+  "otp-background_received_counts": {
+    "api": 1859,
+    "domain_allow": 2194,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "otp-background_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 1859, 'domain_allow': 2194, 'probe': 0, 'asset': 0, 'other': 0} expected=2194)",
+  "otp-background_exit": 1,
+  "api-baseline_received_counts": {
+    "api": 521,
+    "domain_allow": 536,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "api-baseline_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 521, 'domain_allow': 536, 'probe': 0, 'asset': 0, 'other': 0} expected=536)",
+  "api-baseline_exit": 1,
+  "api-baseline_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999998,
+    "sku_projection": 4999998,
+    "net_captured": 192003,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 2,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "api-baseline_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "api-rolling_received_counts": {
+    "api": 862,
+    "domain_allow": 994,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "api-rolling_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 862, 'domain_allow': 994, 'probe': 0, 'asset': 0, 'other': 0} expected=994)",
+  "api-rolling_exit": 1,
+  "api-rolling_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999998,
+    "sku_projection": 4999998,
+    "net_captured": 192003,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "api-rolling_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "journey-baseline_received_counts": {
+    "api": 3102,
+    "domain_allow": 5812,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "journey-baseline_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 3102, 'domain_allow': 5812, 'probe': 0, 'asset': 0, 'other': 0} expected=5812)",
+  "journey-baseline_exit": 1,
+  "journey-baseline_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999998,
+    "sku_projection": 4999998,
+    "net_captured": 192003,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "journey-baseline_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "hot-sku_received_counts": {
+    "api": 319,
+    "domain_allow": 320,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "hot-sku_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 319, 'domain_allow': 320, 'probe': 0, 'asset': 0, 'other': 0} expected=320)",
+  "hot-sku_exit": 1,
+  "hot_sku_oracle": {
+    "source": 5,
+    "sellable": 0,
+    "captured": 5,
+    "sku": 0,
+    "paid_orders": 5,
+    "amount_mismatch": 0
+  },
+  "hot_sku_oracle_gate": "matched: five conserved units and paid orders after duplicate callbacks",
+  "staff-baseline_received_counts": {
+    "api": 813,
+    "domain_allow": 900,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "staff-baseline_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 813, 'domain_allow': 900, 'probe': 0, 'asset': 0, 'other': 0} expected=900)",
+  "staff-baseline_exit": 1,
+  "staff-baseline_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999998,
+    "sku_projection": 4999998,
+    "net_captured": 192003,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "staff-baseline_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "hot-account_received_counts": {
+    "api": 599,
+    "domain_allow": 600,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "hot-account_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 599, 'domain_allow': 600, 'probe': 0, 'asset': 0, 'other': 0} expected=600)",
+  "hot-account_exit": 1,
+  "hot_account_oracle": {
+    "hot_paid_orders": 100,
+    "hot_cancelled_paid": 0,
+    "hot_cancelled_without_obligation": 0,
+    "hot_duplicate_obligations": 0,
+    "hot_obligation_amount_mismatch": 0,
+    "scope": "one cancellation obligation per cancelled paid order on the shared store; duplicate cancels must not create a second obligation; obligation amount must equal the source payment"
+  },
+  "hot_account_oracle_gate": "matched within stated scope",
+  "session-lifecycle_received_counts": {
+    "api": 70,
+    "domain_allow": 70,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "session-lifecycle_counter_gate": "matched",
+  "session-lifecycle_exit": 1,
+  "browser_received_counts": {
+    "api": 106,
+    "domain_allow": 198,
+    "probe": 0,
+    "asset": 2,
+    "other": 0
+  },
+  "browser_counter_gate": "CHECK: domain_allow=198 vs network_responses=150 (see browser-assets-summary.json)",
+  "browser-assets_exit": 1,
+  "browser_scope": "10 anonymous real-browser contexts, cold/warm built UI and assets, native loopback nginx TLS; no credential injection; timings excluded",
+  "cold-cache-cold_received_counts": {
+    "api": 457,
+    "domain_allow": 462,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "cold-cache-cold_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 457, 'domain_allow': 462, 'probe': 0, 'asset': 0, 'other': 0} expected=462)",
+  "cold-cache-cold_exit": 1,
+  "cold-cache-cold_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999906,
+    "sku_projection": 4999906,
+    "net_captured": 192095,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "cold-cache-cold_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "cold-cache-warm_received_counts": {
+    "api": 498,
+    "domain_allow": 533,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "cold-cache-warm_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 498, 'domain_allow': 533, 'probe': 0, 'asset': 0, 'other': 0} expected=533)",
+  "cold-cache-warm_exit": 1,
+  "cold-cache-warm_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999906,
+    "sku_projection": 4999906,
+    "net_captured": 192095,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "cold-cache-warm_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "cold_cache": "cold run: fresh isolated Redis (FLUSHALL) + backend restart, then warm run on the same fixture; compare cold-cache-cold-summary.json vs cold-cache-warm-summary.json; cache-state difference is explicit, not averaged away",
+  "headroom_received_counts": {
+    "api": 12911,
+    "domain_allow": 17125,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "headroom_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 12911, 'domain_allow': 17125, 'probe': 0, 'asset': 0, 'other': 0} expected=17125)",
+  "headroom_exit": 1,
+  "headroom_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999906,
+    "sku_projection": 4999906,
+    "net_captured": 192095,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "headroom_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "headroom-recovery_received_counts": {
+    "api": 3648,
+    "domain_allow": 4153,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "headroom-recovery_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 3648, 'domain_allow': 4153, 'probe': 0, 'asset': 0, 'other': 0} expected=4153)",
+  "headroom-recovery_exit": 1,
+  "headroom-recovery_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999906,
+    "sku_projection": 4999906,
+    "net_captured": 192095,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "headroom-recovery_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "headroom": {
+    "burst": "200 API RPS for 300s (bounded rejection/queues permitted above target)",
+    "recovery": "100 API RPS for 120s; recovery gate = recovery run latency/error gates pass",
+    "burst_exit": 1,
+    "recovery_exit": 1,
+    "burst_failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ],
+    "recovery_failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ]
+  },
+  "fault-provider-timeout_received_counts": {
+    "api": 481,
+    "domain_allow": 486,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "fault-provider-timeout_counter_gate": "FAILED: attempted/client requests do not reconcile to backend/domain counts (received={'api': 481, 'domain_allow': 486, 'probe': 0, 'asset': 0, 'other': 0} expected=486)",
+  "fault-provider-timeout_exit": 1,
+  "fault-provider-timeout_oracle": {
+    "source_receipt_units": 5192001,
+    "physical_sellable": 4999906,
+    "sku_projection": 4999906,
+    "net_captured": 192095,
+    "payment_order_amount_mismatch": 0,
+    "price_payable_mismatch": 0,
+    "price_discount_mismatch": 0,
+    "ledger_negative_amount": 0,
+    "ledger_orphan_order": 0,
+    "paid_orders_without_ledger_entry": 0,
+    "paid_cancelled_without_obligation": 0,
+    "duplicate_obligations": 0,
+    "obligation_over_source": 0,
+    "orders_with_multiple_refunds": 0,
+    "scope": "stock projections/captures + payment-order amounts + price identity (payable/discount vs persisted item snapshots) + refund-obligation existence/uniqueness/amount bound + ledger sanity (negative/orphan only); paid_orders_without_ledger_entry is INFORMATIONAL, not a gate: release postings are deferred by design; full ledger conservation across releases/settlements remains OPEN (FIN-013)"
+  },
+  "fault-provider-timeout_oracle_gate": "matched within stated scope (ledger conservation across deferred releases still OPEN)",
+  "fault_provider_timeout": {
+    "mode": "CAPACITY_PAYMENT_MODE=timeout during a 10s exact-mix run; backend restarted to success mode after",
+    "driver_exit": 1,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "arrival_schedule"
+    ],
+    "note": "timeout-mode failures are EXPECTED (ambiguous verification); the gate is the oracle: no duplicate payment/order effects and no missing refund obligations in the window"
+  },
+  "fault_redis_loss": {
+    "health_during_loss_status": 503,
+    "dependency_visible": true,
+    "redis_recovered": true,
+    "health_after_restart_status": 200
+  },
+  "hot-sku-restart_received_counts": {
+    "api": 1,
+    "domain_allow": 1,
+    "probe": 0,
+    "asset": 0,
+    "other": 0
+  },
+  "hot-sku-restart_counter_gate": "matched",
+  "hot-sku-restart_exit": 1,
+  "fault_restart": {
+    "hot_sku_exit_before_restart": 1,
+    "oracle_before_restart": {
+      "source": 5,
+      "sellable": 0,
+      "captured": 5,
+      "sku": 0,
+      "paid_orders": 5,
+      "amount_mismatch": 0
+    },
+    "oracle_after_restart": {
+      "source": 5,
+      "sellable": 0,
+      "captured": 5,
+      "sku": 0,
+      "paid_orders": 5,
+      "amount_mismatch": 0
+    },
+    "converged": true,
+    "note": "backend SIGKILL + restart; paid orders / obligations / stock must be identical after restart; the hot-sku-restart driver re-run is expected to fail preparation (five units already consumed by the main hot-sku run) and does not decide this profile"
+  },
+  "profile_failed": [
+    "fixture-baseline",
+    "login-ramp",
+    "otp-background",
+    "api-baseline",
+    "api-rolling",
+    "journey-baseline",
+    "hot-sku",
+    "staff-baseline",
+    "hot-account",
+    "session-lifecycle",
+    "browser-assets",
+    "cold-cache",
+    "headroom"
+  ],
+  "sms_double_counts": {
+    "sms_sends": 776,
+    "sms_rejected": 0,
+    "retained_codes": 598,
+    "delay_ms": 25,
+    "mode": "success"
+  },
+  "carrier_double_counts": {
+    "quotes": 694,
+    "rejected": 0,
+    "transport_failures": 0,
+    "outbound_requests": 0
+  },
+  "baseline-summary": {
+    "scope": "health only",
+    "offered": 1,
+    "requests": 1,
+    "dropped_iterations": 0,
+    "distinct_principals": 0,
+    "errors": 0,
+    "failed_gates": [],
+    "route_metrics": null,
+    "elapsed_seconds": 1.0467155270000001,
+    "p95_ms": 42.80167200000005,
+    "p99_ms": 42.80167200000005,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "matched",
+    "cpu_max_percent": null
+  },
+  "fixture-baseline-summary": {
+    "scope": "1000 independent auth reads only",
+    "offered": 1000,
+    "requests": 771,
+    "dropped_iterations": 229,
+    "distinct_principals": 771,
+    "errors": 0,
+    "failed_gates": [
+      "arrival_schedule",
+      "request_count",
+      "dropped_iterations",
+      "identity_participation"
+    ],
+    "route_metrics": null,
+    "elapsed_seconds": 10.008580916000001,
+    "p95_ms": 60.328801999999996,
+    "p99_ms": 76.92644799999925,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "login-ramp-summary": {
+    "scope": "LOCAL actual customer OTP login ramp",
+    "offered": 2000,
+    "requests": 1306,
+    "dropped_iterations": 180,
+    "distinct_principals": 486,
+    "errors": null,
+    "failed_gates": [
+      "request_count",
+      "http_error",
+      "identity_or_login_assertion",
+      "arrival_schedule",
+      "dropped_iterations"
+    ],
+    "route_metrics": {
+      "otp_send": {
+        "requests": 820,
+        "errors": 334,
+        "p95_ms": 117.81719299999531,
+        "p99_ms": 158.5225100000025
+      },
+      "otp_verify": {
+        "requests": 486,
+        "errors": 0,
+        "p95_ms": 99.12320199999976,
+        "p99_ms": 134.3536469999999
+      }
+    },
+    "elapsed_seconds": 60.095410392,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "otp-background-summary": {
+    "scope": "LOCAL actual customer OTP login ramp with 100 total API RPS background browsing",
+    "offered": 6000,
+    "requests": 2194,
+    "dropped_iterations": 3086,
+    "distinct_principals": 227,
+    "errors": null,
+    "failed_gates": [
+      "otp_verify_latency",
+      "browse_latency",
+      "request_count",
+      "http_error",
+      "identity_or_login_assertion",
+      "arrival_schedule",
+      "dropped_iterations"
+    ],
+    "route_metrics": {
+      "otp_send": {
+        "requests": 378,
+        "errors": 98,
+        "p95_ms": 607.7454829999988,
+        "p99_ms": 829.2530280000001
+      },
+      "otp_verify": {
+        "requests": 280,
+        "errors": 53,
+        "p95_ms": 1065.8322709999993,
+        "p99_ms": 1527.833762
+      },
+      "browse": {
+        "requests": 1536,
+        "errors": 391,
+        "p95_ms": 3991.4894429999995,
+        "p99_ms": 4375.821691000001
+      }
+    },
+    "elapsed_seconds": 61.499601072,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "api-baseline-summary": {
+    "scope": "SHORT LOCAL exact100API RPS commerce mix,10seconds",
+    "offered": 1000,
+    "requests": 296,
+    "dropped_iterations": 704,
+    "distinct_principals": 296,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 88,
+        "failed_assertions": 7,
+        "p95_ms": 3794.3524309999993,
+        "p99_ms": 4422.7877489999955
+      },
+      "detail": {
+        "requests": 70,
+        "failed_assertions": 3,
+        "p95_ms": 3516.6050479999976,
+        "p99_ms": 3915.276665000005
+      },
+      "store": {
+        "requests": 47,
+        "failed_assertions": 5,
+        "p95_ms": 1473.492320999998,
+        "p99_ms": 2117.716321
+      },
+      "account": {
+        "requests": 44,
+        "failed_assertions": 5,
+        "p95_ms": 911.9143879999974,
+        "p99_ms": 1086.3664619999981
+      },
+      "quote": {
+        "requests": 17,
+        "failed_assertions": 3,
+        "p95_ms": 2138.3560690000013,
+        "p99_ms": 2138.3560690000013
+      },
+      "create": {
+        "requests": 19,
+        "failed_assertions": 15,
+        "p95_ms": 5498.814932000001,
+        "p99_ms": 5498.814932000001
+      },
+      "initiate": {
+        "requests": 1,
+        "failed_assertions": 0,
+        "p95_ms": 4786.376153000005,
+        "p99_ms": 4786.376153000005
+      },
+      "callback": {
+        "requests": 10,
+        "failed_assertions": 10,
+        "p95_ms": 5402.165431000001,
+        "p99_ms": 5402.165431000001
+      }
+    },
+    "elapsed_seconds": 15.014892655999997,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "api-rolling-summary": {
+    "scope": "LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete",
+    "offered": 3000,
+    "requests": 713,
+    "dropped_iterations": 2287,
+    "distinct_principals": 552,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 217,
+        "failed_assertions": 114,
+        "p95_ms": 5507.508692999996,
+        "p99_ms": 5787.489816999994
+      },
+      "detail": {
+        "requests": 165,
+        "failed_assertions": 87,
+        "p95_ms": 5576.725887000008,
+        "p99_ms": 5887.131066999995
+      },
+      "store": {
+        "requests": 89,
+        "failed_assertions": 25,
+        "p95_ms": 2100.506336000006,
+        "p99_ms": 2868.6140679999953
+      },
+      "account": {
+        "requests": 113,
+        "failed_assertions": 60,
+        "p95_ms": 5520.913108000008,
+        "p99_ms": 5610.606566999995
+      },
+      "quote": {
+        "requests": 55,
+        "failed_assertions": 21,
+        "p95_ms": 5297.378293000002,
+        "p99_ms": 5587.904934000006
+      },
+      "create": {
+        "requests": 7,
+        "failed_assertions": 7,
+        "p95_ms": 5691.367837000005,
+        "p99_ms": 5691.367837000005
+      },
+      "initiate": {
+        "requests": 26,
+        "failed_assertions": 24,
+        "p95_ms": 5607.529762000006,
+        "p99_ms": 5625.607879000003
+      },
+      "callback": {
+        "requests": 41,
+        "failed_assertions": 41,
+        "p95_ms": 5473.796095000005,
+        "p99_ms": 6071.681276999996
+      }
+    },
+    "elapsed_seconds": 34.35206315800001,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": 0,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "journey-baseline-summary": {
+    "scope": "LOCAL closed-loop1000independent complete checkout journeys; actual throughput only",
+    "offered": null,
+    "requests": 5812,
+    "dropped_iterations": null,
+    "distinct_principals": 1000,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "identities_or_business_assertions"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 4314,
+        "failed_assertions": 2912,
+        "p95_ms": 10497.834844,
+        "p99_ms": 13579.521484999997
+      },
+      "detail": {
+        "requests": 1151,
+        "failed_assertions": 784,
+        "p95_ms": 4980.046051999998,
+        "p99_ms": 7412.608143000005
+      },
+      "store": {
+        "requests": 282,
+        "failed_assertions": 203,
+        "p95_ms": 4589.507152999999,
+        "p99_ms": 5389.677298999995
+      },
+      "account": {
+        "requests": 60,
+        "failed_assertions": 47,
+        "p95_ms": 4590.798760999998,
+        "p99_ms": 4608.830969000002
+      },
+      "quote": {
+        "requests": 4,
+        "failed_assertions": 2,
+        "p95_ms": 4949.034545000002,
+        "p99_ms": 4949.034545000002
+      },
+      "create": {
+        "requests": 1,
+        "failed_assertions": 0,
+        "p95_ms": 7937.531525000013,
+        "p99_ms": 7937.531525000013
+      },
+      "initiate": {
+        "requests": 0,
+        "failed_assertions": 0
+      },
+      "callback": {
+        "requests": 0,
+        "failed_assertions": 0
+      }
+    },
+    "elapsed_seconds": 106.280351695,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": 0,
+    "actual_api_rps": 54.685554830295395,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "hot-sku-summary": {
+    "scope": "LOCAL focused100-customer hot SKU; five units",
+    "offered": null,
+    "requests": 115,
+    "dropped_iterations": null,
+    "distinct_principals": 100,
+    "errors": null,
+    "failed_gates": [
+      "five_winners_ninety_five_explicit_conflicts",
+      "amount_or_response_assertion",
+      "duplicate_callback_replay",
+      "initiate_latency",
+      "callback_latency",
+      "duplicate_callback_latency"
+    ],
+    "route_metrics": {
+      "initiate": {
+        "requests": 100,
+        "p95_ms": 2738.292168,
+        "p99_ms": 3609.8356410000015
+      },
+      "callback": {
+        "requests": 5,
+        "p95_ms": 5876.730435999998,
+        "p99_ms": 5876.730435999998
+      },
+      "duplicate_callback": {
+        "requests": 10,
+        "p95_ms": 8019.044092,
+        "p99_ms": 8019.044092
+      }
+    },
+    "elapsed_seconds": 17.789739265000005,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": 100,
+    "paid": 5,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "staff-baseline-summary": {
+    "scope": "LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete",
+    "offered": 3000,
+    "requests": 638,
+    "dropped_iterations": 2362,
+    "distinct_principals": 464,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 184,
+        "failed_assertions": 104,
+        "p95_ms": 5517.866397999998,
+        "p99_ms": 5779.788044000001
+      },
+      "detail": {
+        "requests": 135,
+        "failed_assertions": 67,
+        "p95_ms": 5787.933161999994,
+        "p99_ms": 5900.668662000004
+      },
+      "store": {
+        "requests": 119,
+        "failed_assertions": 18,
+        "p95_ms": 2804.810665000012,
+        "p99_ms": 3882.8270020000055
+      },
+      "account": {
+        "requests": 88,
+        "failed_assertions": 62,
+        "p95_ms": 5710.7778409999955,
+        "p99_ms": 5801.213122000001
+      },
+      "quote": {
+        "requests": 35,
+        "failed_assertions": 7,
+        "p95_ms": 5107.041471999997,
+        "p99_ms": 5676.998863000001
+      },
+      "create": {
+        "requests": 39,
+        "failed_assertions": 38,
+        "p95_ms": 5612.167468,
+        "p99_ms": 5620.131543000003
+      },
+      "initiate": {
+        "requests": 16,
+        "failed_assertions": 12,
+        "p95_ms": 5594.304614000001,
+        "p99_ms": 5594.304614000001
+      },
+      "callback": {
+        "requests": 22,
+        "failed_assertions": 22,
+        "p95_ms": 5696.697520999995,
+        "p99_ms": 5698.414135999999
+      }
+    },
+    "elapsed_seconds": 34.52182715,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": 0,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "hot-account-summary": {
+    "scope": "LOCAL hot-account: 100 paid orders on one store, concurrent paid-cancel + duplicate cancel retry",
+    "offered": null,
+    "requests": 200,
+    "dropped_iterations": null,
+    "distinct_principals": null,
+    "errors": null,
+    "failed_gates": [
+      "cancel_latency",
+      "duplicate_cancel_latency",
+      "cancel_count",
+      "duplicate_cancel_not_rejected",
+      "unexpected_cancel_outcome"
+    ],
+    "route_metrics": {
+      "cancel": {
+        "requests": 100,
+        "p95_ms": 8804.095459000004,
+        "p99_ms": 8910.945490000013
+      },
+      "duplicate_cancel": {
+        "requests": 100,
+        "p95_ms": 8709.54846999998,
+        "p99_ms": 8751.901599000004
+      }
+    },
+    "elapsed_seconds": 17.83891189299998,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": 100,
+    "paid": 100,
+    "cancelled": 0,
+    "duplicate_rejected": 0,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "session-lifecycle-summary": {
+    "scope": "LOCAL session lifecycle: 10-user cohort, concurrent-device reads, OTP re-login, logout behavior",
+    "offered": null,
+    "requests": 70,
+    "dropped_iterations": null,
+    "distinct_principals": null,
+    "errors": null,
+    "failed_gates": [
+      "logout_does_not_revoke_token"
+    ],
+    "route_metrics": null,
+    "elapsed_seconds": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": 10,
+    "re_login_ok": 10,
+    "old_token_after_logout_still_valid": 10,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "browser-assets-summary": {
+    "scope": "LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification;native loopback nginx TLS endpoint, local puppeteer Chrome",
+    "offered": null,
+    "requests": 187,
+    "dropped_iterations": null,
+    "distinct_principals": null,
+    "errors": null,
+    "failed_gates": [
+      "render_2_warm",
+      "render_3_warm",
+      "render_0_warm",
+      "render_8_warm",
+      "render_9_warm",
+      "render_5_warm",
+      "render_7_warm",
+      "render_6_warm",
+      "render_1_warm",
+      "render_4_warm",
+      "network_or_ui_errors"
+    ],
+    "route_metrics": null,
+    "elapsed_seconds": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  },
+  "cold-cache-cold-summary": {
+    "scope": "SHORT LOCAL exact100API RPS commerce mix,10seconds",
+    "offered": 1000,
+    "requests": 222,
+    "dropped_iterations": 778,
+    "distinct_principals": 222,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 64,
+        "failed_assertions": 2,
+        "p95_ms": 5005.114733999995,
+        "p99_ms": 5213.819495999996
+      },
+      "detail": {
+        "requests": 49,
+        "failed_assertions": 4,
+        "p95_ms": 4896.025533,
+        "p99_ms": 5308.650069999996
+      },
+      "store": {
+        "requests": 19,
+        "failed_assertions": 0,
+        "p95_ms": 1796.8685170000026,
+        "p99_ms": 1796.8685170000026
+      },
+      "account": {
+        "requests": 42,
+        "failed_assertions": 0,
+        "p95_ms": 1206.9371350000001,
+        "p99_ms": 1703.7174119999981
+      },
+      "quote": {
+        "requests": 16,
+        "failed_assertions": 2,
+        "p95_ms": 3920.330476000003,
+        "p99_ms": 3920.330476000003
+      },
+      "create": {
+        "requests": 7,
+        "failed_assertions": 5,
+        "p95_ms": 5563.109581999997,
+        "p99_ms": 5563.109581999997
+      },
+      "initiate": {
+        "requests": 5,
+        "failed_assertions": 2,
+        "p95_ms": 5712.084941000001,
+        "p99_ms": 5712.084941000001
+      },
+      "callback": {
+        "requests": 20,
+        "failed_assertions": 20,
+        "p95_ms": 5922.159768999998,
+        "p99_ms": 5928.339437000002
+      }
+    },
+    "elapsed_seconds": 15.063192343999996,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "cold-cache-warm-summary": {
+    "scope": "SHORT LOCAL exact100API RPS commerce mix,10seconds",
+    "offered": 1000,
+    "requests": 293,
+    "dropped_iterations": 707,
+    "distinct_principals": 293,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 101,
+        "failed_assertions": 16,
+        "p95_ms": 4480.8961899999995,
+        "p99_ms": 5168.906457000005
+      },
+      "detail": {
+        "requests": 52,
+        "failed_assertions": 2,
+        "p95_ms": 4796.945445999998,
+        "p99_ms": 4923.556318999996
+      },
+      "store": {
+        "requests": 31,
+        "failed_assertions": 3,
+        "p95_ms": 1513.7286739999981,
+        "p99_ms": 1606.1686820000032
+      },
+      "account": {
+        "requests": 47,
+        "failed_assertions": 17,
+        "p95_ms": 862.0560120000009,
+        "p99_ms": 913.1634919999997
+      },
+      "quote": {
+        "requests": 30,
+        "failed_assertions": 9,
+        "p95_ms": 3015.963867999999,
+        "p99_ms": 3408.9802839999975
+      },
+      "create": {
+        "requests": 1,
+        "failed_assertions": 1,
+        "p95_ms": 5059.774922999997,
+        "p99_ms": 5059.774922999997
+      },
+      "initiate": {
+        "requests": 15,
+        "failed_assertions": 12,
+        "p95_ms": 5394.615014999996,
+        "p99_ms": 5394.615014999996
+      },
+      "callback": {
+        "requests": 16,
+        "failed_assertions": 16,
+        "p95_ms": 5372.027393999997,
+        "p99_ms": 5372.027393999997
+      }
+    },
+    "elapsed_seconds": 15.251596444999995,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "headroom-summary": {
+    "scope": "LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete",
+    "offered": 60000,
+    "requests": 16877,
+    "dropped_iterations": 43123,
+    "distinct_principals": 1000,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 6000,
+        "failed_assertions": 2436,
+        "p95_ms": 3720.920246000009,
+        "p99_ms": 4401.491374999998
+      },
+      "detail": {
+        "requests": 3485,
+        "failed_assertions": 1590,
+        "p95_ms": 3231.098154999985,
+        "p99_ms": 3898.7953430000343
+      },
+      "store": {
+        "requests": 1824,
+        "failed_assertions": 861,
+        "p95_ms": 1468.3084249999956,
+        "p99_ms": 1944.291698000001
+      },
+      "account": {
+        "requests": 2304,
+        "failed_assertions": 1143,
+        "p95_ms": 1221.6951420000114,
+        "p99_ms": 1797.2426879999985
+      },
+      "quote": {
+        "requests": 2056,
+        "failed_assertions": 965,
+        "p95_ms": 2386.4528280000086,
+        "p99_ms": 2924.524502
+      },
+      "create": {
+        "requests": 1046,
+        "failed_assertions": 733,
+        "p95_ms": 5883.45812700002,
+        "p99_ms": 6567.577709000005
+      },
+      "initiate": {
+        "requests": 154,
+        "failed_assertions": 82,
+        "p95_ms": 5352.435786999995,
+        "p99_ms": 6360.448059000002
+      },
+      "callback": {
+        "requests": 8,
+        "failed_assertions": 8,
+        "p95_ms": 5867.439379999996,
+        "p99_ms": 5867.439379999996
+      }
+    },
+    "elapsed_seconds": 301.853397072,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": 0,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "headroom-recovery-summary": {
+    "scope": "LOCAL rolling100API RPS commerce measurements; full financial/refund oracle incomplete",
+    "offered": 12000,
+    "requests": 3848,
+    "dropped_iterations": 8152,
+    "distinct_principals": 1000,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "lifecycle_or_ambiguous_response",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 1287,
+        "failed_assertions": 206,
+        "p95_ms": 5083.706069,
+        "p99_ms": 5701.464361000006
+      },
+      "detail": {
+        "requests": 869,
+        "failed_assertions": 215,
+        "p95_ms": 5085.938246999984,
+        "p99_ms": 5503.598077000002
+      },
+      "store": {
+        "requests": 431,
+        "failed_assertions": 129,
+        "p95_ms": 1370.3884470000048,
+        "p99_ms": 2311.361474000005
+      },
+      "account": {
+        "requests": 744,
+        "failed_assertions": 246,
+        "p95_ms": 3482.485428999993,
+        "p99_ms": 5368.0997329999955
+      },
+      "quote": {
+        "requests": 238,
+        "failed_assertions": 55,
+        "p95_ms": 3705.907717000002,
+        "p99_ms": 5014.4537830000045
+      },
+      "create": {
+        "requests": 163,
+        "failed_assertions": 130,
+        "p95_ms": 5290.33627,
+        "p99_ms": 5773.969666999998
+      },
+      "initiate": {
+        "requests": 51,
+        "failed_assertions": 24,
+        "p95_ms": 5208.107928999998,
+        "p99_ms": 5636.253285999992
+      },
+      "callback": {
+        "requests": 65,
+        "failed_assertions": 65,
+        "p95_ms": 5726.179443000001,
+        "p99_ms": 6016.264492999995
+      }
+    },
+    "elapsed_seconds": 121.6353363,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": 0,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "fault-provider-timeout-summary": {
+    "scope": "SHORT LOCAL exact100API RPS commerce mix,10seconds",
+    "offered": 1000,
+    "requests": 246,
+    "dropped_iterations": 754,
+    "distinct_principals": 246,
+    "errors": null,
+    "failed_gates": [
+      "list",
+      "detail",
+      "store",
+      "account",
+      "quote",
+      "create",
+      "initiate",
+      "callback",
+      "arrivals_or_identities",
+      "arrival_schedule"
+    ],
+    "route_metrics": {
+      "list": {
+        "requests": 67,
+        "failed_assertions": 1,
+        "p95_ms": 4803.204905000006,
+        "p99_ms": 5393.243137000005
+      },
+      "detail": {
+        "requests": 53,
+        "failed_assertions": 0,
+        "p95_ms": 4400.856922999999,
+        "p99_ms": 4969.232091000005
+      },
+      "store": {
+        "requests": 31,
+        "failed_assertions": 0,
+        "p95_ms": 2294.569475999997,
+        "p99_ms": 2387.679879000003
+      },
+      "account": {
+        "requests": 44,
+        "failed_assertions": 3,
+        "p95_ms": 811.961722,
+        "p99_ms": 1193.7145510000046
+      },
+      "quote": {
+        "requests": 22,
+        "failed_assertions": 0,
+        "p95_ms": 2825.566297000005,
+        "p99_ms": 2901.7403970000014
+      },
+      "create": {
+        "requests": 6,
+        "failed_assertions": 3,
+        "p95_ms": 5551.537664999996,
+        "p99_ms": 5551.537664999996
+      },
+      "initiate": {
+        "requests": 9,
+        "failed_assertions": 5,
+        "p95_ms": 5315.257820999999,
+        "p99_ms": 5315.257820999999
+      },
+      "callback": {
+        "requests": 14,
+        "failed_assertions": 14,
+        "p95_ms": 5485.279570000006,
+        "p99_ms": 5485.279570000006
+      }
+    },
+    "elapsed_seconds": 13.623506422000006,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": null,
+    "paid": null,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": "FAILED",
+    "cpu_max_percent": null
+  },
+  "hot-sku-restart-summary": {
+    "scope": "LOCAL focused100-customer hot SKU; five units",
+    "offered": null,
+    "requests": 0,
+    "dropped_iterations": null,
+    "distinct_principals": 0,
+    "errors": null,
+    "failed_gates": [
+      "preparation_or_execution"
+    ],
+    "route_metrics": null,
+    "elapsed_seconds": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "completed_checkouts": null,
+    "actual_api_rps": null,
+    "contenders": 100,
+    "paid": 0,
+    "cancelled": null,
+    "duplicate_rejected": null,
+    "concurrent_device_ok": null,
+    "re_login_ok": null,
+    "old_token_after_logout_still_valid": null,
+    "scheduling_gate": null,
+    "cpu_max_percent": null
+  }
+}

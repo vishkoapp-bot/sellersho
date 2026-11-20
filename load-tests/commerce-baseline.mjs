@@ -81,4 +81,4 @@ try{
  if(summary.scheduling_gate!=='matched')summary.failed_gates.push('arrival_schedule');
  summary.amount_oracle_scope='Token amount must equal persisted order payable; independent pricing-policy oracle remains required';
 }catch(error){summary.failed_gates.push('fixture_preparation');summary.failure=error.message;summary.requests=requests.length;}
-finally{agent.destroy();fs.writeFileSync('/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=summary.failed_gates.length?1:0;}
+finally{agent.destroy();fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=summary.failed_gates.length?1:0;}

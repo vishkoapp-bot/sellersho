@@ -22,7 +22,7 @@ const certificate=new X509Certificate(fs.readFileSync(rootCertificate));
 // (CAPACITY_BROWSER_LEAF_SPKI); if native pages render with it, the hypothesis is confirmed.
 const spki=process.env.CAPACITY_BROWSER_LEAF_SPKI||createHash('sha256').update(certificate.publicKey.export({type:'spki',format:'der'})).digest('base64');
 const executable=relay?['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(p=>fs.existsSync(p)):native?undefined:'/usr/bin/chromium';
-const rows=[],pages=[],summary={certified:false,scope:'LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification',requests_raw:rows,pages,failed_gates:[],blocked_external:0,page_errors:0,tls:'exception pinned to this ephemeral CA public-key hash only;no global certificate bypass',tls_pin:process.env.CAPACITY_BROWSER_LEAF_SPKI?'leaf-spki':'ca-spki (legacy)',generator_cpu_scope:'isolated Chromium container;not sustained capacity evidence'};
+const rows=[],pages=[],summary={certified:false,scope:'LOCAL anonymous real-browser UI/assets burst10contexts;not1000-user or checkout qualification',requests_raw:rows,pages,failed_gates:[],blocked_external:0,blocked_urls:[],page_errors:0,tls:'exception pinned to this ephemeral CA public-key hash only;no global certificate bypass',tls_pin:process.env.CAPACITY_BROWSER_LEAF_SPKI?'leaf-spki':'ca-spki (legacy)',generator_cpu_scope:'isolated Chromium container;not sustained capacity evidence'};
 let browser;
 try{
  if(relay){summary.scope+=';loopback raw TLS relay functional evidence only';summary.timing_qualification='EXCLUDED: Docker exec relay and shared host browser timings';summary.generator_cpu_scope='host Chrome CPU unmeasured;not capacity evidence'}
@@ -36,7 +36,7 @@ try{
    page.on('request',req=>{
     const url=new URL(req.url());
     if(['data:','blob:'].includes(url.protocol)){req.continue();return}
-    if(url.origin!==target.base){summary.blocked_external++;req.abort();return}
+    if(url.origin!==target.base){summary.blocked_external++;summary.blocked_urls.push(req.url());req.abort();return}
     begun.set(req,performance.now());req.continue();
    });
    page.on('response',res=>{

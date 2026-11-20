@@ -10,7 +10,7 @@ PostgreSQL 16 + Redis 7 + nginx + Node 24 instead of containers:
     sellersho:test-guard marker,
   * backend built from the working copy and run on 127.0.0.1 with
     APP_ENV=test + the committed test-gated payment/carrier/SMS doubles,
-  * nginx on 127.0.0.1:8443 terminating TLS for capacity.example.test
+  * nginx on a loopback port terminating TLS for capacity.example.test
     (ephemeral CA, 2-day certs) with auth_request domain authorization
     against the backend /internal/domains/allow endpoint — the same
     authorization hop Caddy performed in the Docker runner,
@@ -140,8 +140,20 @@ class NativeRun:
         self.work = pathlib.Path(tempfile.mkdtemp(prefix='sellersho-cap-native-'))
         self.backend_port = free_port()
         self.redis_port = free_port()
-        self.nginx_port = 8443
-        self.sms_port = 8081
+        # Critic condition 4: no fixed ports where the harness owns the
+        # choice. nginx/SMS used 8443/8081, so two concurrent runs
+        # collided and the second failed opaquely; both are now drawn
+        # from free_port(). The CARRIER port stays fixed at 8082: the
+        # backend's startup gate (cmd/server/capacity_adapters.go)
+        # requires CAPACITY_CARRIER_BASE_URL to be exactly
+        # http://carrier:8082, and changing that gate is app code —
+        # out of scope for this harness task. So two concurrent runs
+        # still collide on the carrier double; see start_doubles(),
+        # which now fails fast with a clear error naming the held port
+        # instead of dying opaquely. Residual limitation, recorded
+        # in cap01-progress.md — not pretended fixed.
+        self.nginx_port = free_port()
+        self.sms_port = free_port()
         self.carrier_port = 8082
         self.procs = {}
         self.redis_dir = None
@@ -154,7 +166,7 @@ class NativeRun:
             'host': os.uname().sysname + ' ' + os.uname().release,
             'logical_cpus': os.cpu_count(), 'disk_class': 'unmeasured',
             'target': 'capacity.example.test (hardcoded disposable domain; no target parameter exists)',
-            'tls': 'ephemeral CA (2-day) + nginx 127.0.0.1:8443; auth_request domain authorization to backend /internal/domains/allow; private key never exported',
+            'tls': 'ephemeral CA (2-day) + nginx 127.0.0.1:%d; auth_request domain authorization to backend /internal/domains/allow; private key never exported' % self.nginx_port,
             'backend_pool': {'max_open': 25, 'max_idle': 10}, 'replicas': 1,
             'adapters': {'payment': 'test-only bounded latency double; committed startup gate',
                          'sms': 'private in-memory double, 25ms success default',
@@ -281,7 +293,7 @@ END $$;""" % (role_pass, role_pass))
     def appenv(self, payment_mode='success'):
         return self.child_env({
             'TRACKING_WEBHOOK_SECRET': secrets.token_hex(32),
-            'IPPANEL_ENABLED': 'true', 'IPPANEL_BASE_URL': 'http://sms:8081/v1',
+            'IPPANEL_ENABLED': 'true', 'IPPANEL_BASE_URL': 'http://sms:%d/v1' % self.sms_port,
             'IPPANEL_API_KEY': self.smskey, 'IPPANEL_SENDER': 'synthetic',
             'IPPANEL_PATTERN_CODE': 'synthetic',
             'ENABLE_NETWORK_VOLUME_INCENTIVE': 'false',
@@ -330,11 +342,13 @@ END $$;""" % (role_pass, role_pass))
             return False
 
     def start_doubles(self):
-        env = {**os.environ, 'SELLERSHO_CAPACITY_RUN': self.nonce, 'CAPACITY_SMS_KEY': self.smskey}
+        env = {**os.environ, 'SELLERSHO_CAPACITY_RUN': self.nonce, 'CAPACITY_SMS_KEY': self.smskey,
+               'CAPACITY_SMS_PORT': str(self.sms_port)}
         sms_log = open(self.work / 'sms.log', 'w')
         self.procs['sms'] = subprocess.Popen(['node', str(LOADTESTS / 'sms-double.mjs')], env=env,
                                              stdout=sms_log, stderr=subprocess.STDOUT)
-        env2 = {**os.environ, 'SELLERSHO_CAPACITY_RUN': self.nonce, 'CAPACITY_CARRIER_KEY': self.carrierkey}
+        env2 = {**os.environ, 'SELLERSHO_CAPACITY_RUN': self.nonce, 'CAPACITY_CARRIER_KEY': self.carrierkey,
+                'CAPACITY_CARRIER_PORT': str(self.carrier_port)}
         carrier_log = open(self.work / 'carrier.log', 'w')
         self.procs['carrier'] = subprocess.Popen(['node', str(LOADTESTS / 'carrier-double.mjs')], env=env2,
                                                  stdout=carrier_log, stderr=subprocess.STDOUT)
@@ -345,6 +359,17 @@ END $$;""" % (role_pass, role_pass))
                                   headers={'Authorization': 'Bearer ' + self.carrierkey})
             if s1 == 200 and s2 == 200:
                 break
+            # Fail fast with a clear lock error: if a double died at
+            # startup its port is held by another run (the carrier
+            # port 8082 is FIXED by the backend's startup gate, so a
+            # second concurrent run always collides there; the SMS
+            # port is dynamic and only collides on a free_port race).
+            for name, proc, port in (('sms', self.procs['sms'], self.sms_port),
+                                     ('carrier', self.procs['carrier'], self.carrier_port)):
+                if proc.poll() is not None:
+                    raise SafetyError('%s double exited at startup; port %d is held by another run — '
+                                      'concurrent native runs share the fixed carrier port 8082 '
+                                      '(backend startup gate) and cannot run together' % (name, port))
             time.sleep(0.2)
         else:
             raise SafetyError('SMS/carrier doubles did not start')
@@ -604,6 +629,13 @@ http {
                'CAPACITY_SMS_HOST': '127.0.0.1',
                'CAPACITY_SMS_PORT': str(self.sms_port),
                'CAPACITY_SMS_KEY': self.smskey,
+               # Critic condition 4: the drivers' summary path is
+               # run-scoped (this run's own work dir), not the global
+               # /tmp/summary.json two concurrent runs overwrote. The
+               # killed long run's orphaned driver kept writing
+               # /tmp/summary.json after its runner died; a run-scoped
+               # path makes that harmless.
+               'CAPACITY_SUMMARY_FILE': str(self.work / 'summary.json'),
                'SELLERSHO_CAPACITY_RUN': self.nonce}
         if extra:
             env.update(extra)
@@ -627,7 +659,7 @@ http {
 
     def run_driver(self, name, driver, extra_env, timeout):
         """Run one Node driver; returns (exit_status, summary dict|None)."""
-        summary_path = pathlib.Path('/tmp/summary.json')
+        summary_path = self.work / 'summary.json'
         if summary_path.exists():
             summary_path.unlink()
         before = self.metrics()
@@ -663,7 +695,7 @@ http {
             (self.out / (name + '-summary.json')).write_text(json.dumps(summary, indent=2))
         else:
             status = 1
-            self.manifest[name + '_summary'] = 'MISSING: driver wrote no /tmp/summary.json'
+            self.manifest[name + '_summary'] = 'MISSING: driver wrote no run-scoped summary.json'
         if summary is not None:
             a, b = metrics_counts(after), metrics_counts(before)
             received = {k: a[k] - b[k] for k in a}
@@ -982,6 +1014,16 @@ http {
                              'fault_restart', 'browser_counter_gate', 'browser_scope', 'frontend_build',
                              'release_cohort')):
                 compact[key] = value
+        # Critic condition 1a: the compact must reconstruct the pass/fail
+        # list and the provider counts. None of these keys matches the
+        # suffix filter above (profile_failed ends in no listed suffix;
+        # the double counts end in _counts), so copy them explicitly.
+        # b907's compact omitted all three; the failed list lived only
+        # in the uncommitted manifest, and the SMS/carrier counts only
+        # in the uncommitted doubles endpoints.
+        for key in ('profile_failed', 'sms_double_counts', 'carrier_double_counts'):
+            if key in self.manifest:
+                compact[key] = self.manifest[key]
         for name in self.out.glob('*-summary.json'):
             try:
                 summary = json.loads(name.read_text())
@@ -996,6 +1038,16 @@ http {
         target = LOADTESTS / 'evidence' / ('native-' + self.nonce + '-compact.json')
         target.write_text(json.dumps(compact, indent=2))
         return target
+
+
+def verdict_evidence(run, suite_status):
+    """Evidence for verdict.json: the BASELINE profile's own exit, plus
+    the suite exit under its own key. The suite exit previously rode
+    under 'baseline_exit' (b907: verdict said 1 while the baseline
+    profile itself exited 0) — the two must never share a key again.
+    A missing baseline exit (smoke never ran) is None, not the suite
+    exit, so a reader can tell 'not run' from 'failed'."""
+    return {'baseline_exit': run.manifest.get('baseline_exit'), 'suite_exit': suite_status}
 
 
 def main():
@@ -1101,7 +1153,7 @@ def main():
             run.manifest['cleanup'] = 'FAILED'
             status = 1
         (out / 'manifest.json').write_text(json.dumps(run.manifest, indent=2))
-        (out / 'verdict.json').write_text(json.dumps(verdict({'baseline_exit': status}), indent=2))
+        (out / 'verdict.json').write_text(json.dumps(verdict(verdict_evidence(run, status)), indent=2))
         try:
             compact_path = run.write_compact_evidence()
             print('compact evidence:', compact_path, flush=True)

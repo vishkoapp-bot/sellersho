@@ -51,8 +51,8 @@ certifies production readiness. `certified:false` on every run by design.
 | Synthetic fixtures | EXISTS | EXISTS |
 | Prod-target refusal | PARTIAL | EXISTS (D4: no-target-parameter + guard + unit tests) |
 | Weights sum | PARTIAL | EXISTS (sum===100 in workload.mjs + validate_mix(); Node + Python tests) |
-| Counts split | PARTIAL | EXISTS (countsFor() exact-split; 10/30/90s verified in tests) |
-| Duplicate-effect | PARTIAL | EXISTS for callbacks (hot-sku) + cancels (new hot-account profile + SQL oracle); full ledger conservation still OPEN (FIN-013) |
+| Counts split | PARTIAL | PARTIAL (countsFor() splits exactly in tests, but the live path is arrivalPlan(), which computes the split inline and never calls countsFor — the exact-split guarantee is proven for the helper, not for the path the drivers run) |
+| Duplicate-effect | PARTIAL | PARTIAL (callback duplicate-effect proven for hot-sku; the hot-cancel oracle is vacuous on 0 cancels — b907: 100 paid, 0 cancelled, cancel p95 8630ms, none completed in-window, so the duplicate-cancel probe never exercised a completed cancel; full ledger conservation still OPEN (FIN-013)) |
 | Staff profile | OPEN | IMPLEMENTED, run natively (--staff-baseline, 980 customers + 20 staff) |
 | Hot-account profile | OPEN | IMPLEMENTED (hot-account.mjs: 100 paid cancels on one store + duplicate-cancel probe + obligation oracle) |
 | Cold-cache profile | OPEN | IMPLEMENTED (--cold-cache: FLUSHALL + backend restart, cold vs warm labeled runs) |
@@ -159,10 +159,24 @@ certifies production readiness. `certified:false` on every run by design.
   otp-background (184/668) — the app's dependency-budget overload
   shedder; otp_verify 100% OK both runs.
   Browser: 10/10 pages HTTP 200 with leaf-SPKI pin (relay
-  diagnosis CONFIRMED — native mode works), but all 10 warm-render
-  gates failed: pages load only the 29-char shell (transfer 3183B,
-  0 page errors) — the SPA bundle does not render content in the
-  window; timings excluded per plan.
+  diagnosis CONFIRMED — native mode works), but render was
+  PARTIAL/intermittent, not a uniform shell (an earlier draft of this
+  note wrongly said all pages loaded only the 29-char shell): warm
+  principals 1 and 8 DID render fully (11,365 chars, root_children
+  2; the same two reached 994 chars cold) while 5 warm pages served
+  the 29-char shell and 3 rendered 0 chars; all 10 warm-render gates
+  still failed (the two full renders each carry 1 broken image).
+  Failures underneath: broken logo
+  /static/uploads/logo/logo-icon.png 404 (4 requests, warm
+  principals 1 and 8) + /api/v1/domain-store 404 on 17 requests
+  (every page, cold and warm) + blocked_external 20 whose URLs were
+  never logged in b907 — browser-assets.mjs now records every
+  blocked URL in blocked_urls. 0 page errors. Timings excluded per
+  plan.
+  Headroom oracle variance (informational, not gated):
+  paid_orders_without_ledger_entry was 6 in the headroom burst
+  oracle vs 0 in every other commerce oracle in b907 — unexplained;
+  no cause established, no gate depends on it.
   session-lifecycle: concurrent-device 10/10, re-login 10/10,
   old-token-after-logout 10/10 (logout does not revoke — recorded).
   hot-account: 100 paid, 0 cancelled (cancel p95 8630ms — cancels
@@ -246,6 +260,75 @@ certifies production readiness. `certified:false` on every run by design.
   fee-charging path is covered by storage_history_integration_test.go.
   No app code was changed.)
 
+## Critic conditions — closed post-b907 (2026-11-20)
+
+- Evidence integrity (condition 1): write_compact_evidence() now
+  copies profile_failed + sms_double_counts + carrier_double_counts
+  (b907's compact omitted all three); verdict.json now writes the
+  baseline profile's own exit under baseline_exit plus the suite exit
+  under suite_exit (b907's verdict said baseline_exit 1 while the
+  profile itself exited 0). Tests:
+  test_compact_evidence_includes_profile_failed_and_double_counts +
+  test_verdict_evidence_uses_baseline_profile_exit_not_suite_exit
+  (native Python tests now 9).
+- Doc honesty (condition 2): profiles.json records every b907
+  outcome (no "native run pending" remains); README.txt:103 no
+  longer describes deleted api-100rps.js in present tense; browser
+  claim corrected above; gate table downgraded (counts-split and
+  duplicate-effect/cancels → PARTIAL); headroom
+  paid_orders_without_ledger_entry: 6 variance recorded above.
+- Target-guard DNS hole (condition 5): CLOSED. resolveTarget() now
+  resolves the hostname before any driver request when no IP is
+  pinned and refuses anything but loopback (Docker generator
+  excepted: private address + /.dockerenv only; the SMS double
+  hostname 'sms' gets the same treatment). The hole was live, not
+  theoretical: this VM's resolver answers 198.18.245.176 for
+  unresolvable names (getent: capacity.example.test →
+  198.18.245.176; any unresolvable name → 198.18.245.17x), so a
+  manual driver without CAPACITY_TARGET_IP would have connected
+  there. Unit tests prove a hostile mapping is refused
+  (target-config.test.mjs; Node tests now 37).
+- Concurrent-run hardening (critic §3): the drivers' summary path is
+  run-scoped (CAPACITY_SUMMARY_FILE under the run's work dir; they
+  fall back to /tmp/summary.json only when run manually) and the
+  nginx/SMS ports are drawn from free_port() (were fixed 8443/8081).
+  The CARRIER port stays fixed at 8082 — NOT pretended fixed: the
+  backend's startup gate (cmd/server/capacity_adapters.go) requires
+  CAPACITY_CARRIER_BASE_URL to be exactly http://carrier:8082, and
+  changing that gate is app code, out of scope here. The first
+  post-fix run proved the constraint: with a dynamic carrier port
+  the backend refused to start ("capacity carrier endpoint must be
+  the isolated harness alias", run a7176686b6b71af3f37c3a45). So two
+  concurrent native runs still collide on the carrier double;
+  start_doubles() now fails fast with a clear error naming the held
+  port instead of dying opaquely. Full concurrent-run support needs
+  a backend-gate change in a follow-up task. Proven in the field
+  while fixing: the killed long run's orphaned commerce-rolling
+  driver (pid 15270, PPID 1) kept writing /tmp/summary.json after
+  its runner died; it was terminated during env cleanup, and the
+  run-scoped path makes that class harmless.
+- Fault-restart regression test: test_fault_restart_does_not_clobber_hot_sku
+  is now behavioral — it drives the real run_fault_restart with
+  stubbed environment collaborators and asserts the main hot-sku
+  summary, oracle and exit survive the re-run + restart.
+
+## Long runs — killed, not finished (2026-11-20 ~05:36 Tehran)
+
+- The coordinator killed the long-duration runs (Python runner pid
+  10913). Partial evidence in
+  ~/workspace/cap01-native-runs/sellersho-cap-report-1e6e4ae9cfa1 +
+  long-runs.log: the run had seeded the fixture (disposable DB
+  sellersho_test_589bba890c470bbeaf98191a, release cohort 0/100
+  FAILED as in b907) and started api-sustained before the kill; no
+  manifest/verdict was written (SIGKILL, no finally block). The
+  ~05:00 Tehran finish claim is ABANDONED — no long run completed.
+  Long runs are CAP-02 input, not CAP-01 acceptance.
+- 7-hour fixture-child elapsed anomaly: OPEN harness-reliability
+  item for CAP-02 diagnosis. Candidates: VM freeze/restore
+  distortion, shared-VM contention — neither established. (Reported
+  in the coordinator's kill report; no corroborating line was found
+  in the run logs available to this team.)
+
 (Results appended after each native run; see load-tests/evidence/
 native-<nonce>-compact.json for the committable record and
 ~/workspace/cap01-native-runs/sellersho-cap-report-<nonce>/ for raw
@@ -259,6 +342,74 @@ hidden.)
   when finished. Never claimed complete before they finish.
   Rolling-feeder queue behavior (bound 2000, 15-min payment holds):
   starvation/drop behavior recorded honestly from the run summaries.
+
+## Clean full short suite, post-fix (2026-11-20, nonce 05879119c0db957ebaaeaa03)
+
+- Run 02:20–02:55 UTC (05:50–06:25 Tehran), ~35 min, report
+  sellersho-cap-report-f12c4cf62694, compact
+  load-tests/evidence/native-05879119c0db957ebaaeaa03-compact.json,
+  console + Node/Python/vet/route-table outputs in
+  load-tests/evidence/cap01-clean-short-suite.txt. Fixture exit 0
+  (users 1210, suppliers 100, stores 100, products 10101, variants
+  50001, orders 100000, saleable 5,000,000 — identical to b907);
+  release cohort FAILED 0/100 again (same app finding, seq-scan
+  release path). Baseline smoke PASSED (exit 0); 13 profiles FAILED,
+  3 passed (fault-provider-timeout, fault-redis-loss,
+  fault-restart) — same shape as b907. ALL commerce oracles MATCHED
+  within stated scope. Verdict.json in the NEW shape: baseline_exit
+  0, suite_exit 1. Compact now carries profile_failed + sms/carrier
+  double counts (verified read back).
+- SUPERSESSION: b907's list/browse numbers are SUPERSEDED by this
+  run and must not be quoted as the current baseline — the
+  pagination fix changed every commerce list request (b907's
+  api-baseline list p95 1089ms was measured on fast-failing 400s;
+  this run's 3794ms is on valid first-page requests).
+- Per-profile (all FAILED on latency/throughput/counter gates
+  unless noted; oracles matched):
+  fixture-baseline 771/1000, 229 dropped, max arrival lag 59ms;
+  login-ramp otp_send 486 OK / 334x503 (40.7%), otp_verify 486/486
+  OK; otp-background browse 1145 OK / 273x500 / 118x503 (25.5%
+  errors, all 500/503 — the pagination 400s are gone), otp_send 280
+  OK / 62x500 / 36x503, otp_verify 227 OK / 24x500 / 29x503;
+  api-baseline 296/1000 (704 dropped), route p95s list 3794,
+  detail 3517, store 1473, account 912, quote 2138, create 5499,
+  initiate 4786, callback 5402ms, counter gate FAILED (api 521 vs
+  domain_allow 536); api-rolling 713/3000 (2287 dropped), 0
+  completed checkouts, route p95s ~5.1–5.7s; journey-baseline 5812
+  requests, 0 completed checkouts, list p95 10498, create 7938ms;
+  hot-sku 5 paid, oracle matched, FAILED latency/count gates
+  (initiate p95 2738, callback 5877, duplicate-callback 8019ms) —
+  CLOBBER FIX VERIFIED: hot-sku-summary.json is the main run
+  (paid 5) and hot-sku-restart-summary.json is separate (paid 0,
+  preparation failed as expected); staff-baseline 638/3000 (2362
+  dropped), 0 checkouts; hot-account 100 paid, 0 cancelled (cancel
+  p95 8804ms) — oracle vacuous again, confirming the PARTIAL
+  downgrade; session-lifecycle concurrent 10/10, re-login 10/10,
+  old-token 10/10, only failed gate logout_does_not_revoke_token;
+  browser-assets 10/10 pages 200, warm render 6x29-char shell,
+  3x0 chars, 1x994 — NO full render this run (b907 had two full
+  11,365-char warm renders; render is intermittent across runs
+  too); blocked_external 13, URLs NOW LOGGED — the storefront
+  hotlinks Snapp CDN category images
+  (web-cdn.snapp.ir/fintech-marketing/ecommerce/categories/{appliances,beauty,digital,fashion,gold}.png;
+  APP finding, not a harness defect — the category images are
+  external hotlinks, follow-up, not CAP-01); domain-store 404 x17
+  again; logo 404 x1 (warm principal 4); counter gate CHECK
+  (domain_allow 198 vs network_responses 150); cold-cache cold
+  222/1000 (list p95 5005, create 5563), warm 293/1000 (list 4481,
+  create 5060) — warm RAN this time (b907's warm never started);
+  headroom burst 16877/60000 (43123 dropped), recovery 3848/12000
+  (8152 dropped), 0 checkouts, recovery gate failed;
+  fault-provider-timeout / fault-redis-loss / fault-restart all ok
+  (restart oracle converged).
+- CPU max 10.8% (session-lifecycle) – 274.3% (headroom-recovery);
+  only session-lifecycle (10.8%) and baseline (16.9%) under the 70%
+  contract. SMS double 776 sends, 0 rejected; carrier 694 quotes,
+  0 rejected, 0 outbound requests.
+- paid_orders_without_ledger_entry variance: api-baseline 2 this
+  run (b907: headroom 6, api-baseline 0) — the value moves between
+  profiles and runs, still unexplained, informational only, not
+  gated.
 
 ## What remains open (exact reasons)
 
@@ -290,3 +441,21 @@ hidden.)
 - EDIT load-tests/README.txt, profiles.json, seed-manifest.json
 - DELETE load-tests/api-100rps.js, load-tests/baseline.js (dead k6)
 - No Go/app code changed; no migration; no binary change (harness only).
+
+## Post-fix changes (critic conditions, 2026-11-20 — this section)
+
+- EDIT scripts/load_test_native.py (compact evidence keys,
+  verdict_evidence(), dynamic nginx/SMS ports, run-scoped summary
+  path, carrier-port fail-fast), scripts/test_load_test_native.py
+  (compact + verdict tests, behavioral fault-restart test)
+- EDIT load-tests/target-config.mjs (+ .test.mjs: DNS-hole guard)
+- EDIT load-tests/browser-assets.mjs (blocked_urls logging),
+  sms-double.mjs / carrier-double.mjs (env port override),
+  baseline.mjs, commerce-baseline.mjs, commerce-rolling.mjs,
+  hot-account.mjs, hot-sku.mjs, login-otp.mjs,
+  session-lifecycle.mjs, users-1000.mjs (run-scoped summary path)
+- EDIT load-tests/profiles.json, README.txt, cap01-progress.md
+- NEW load-tests/evidence/native-05879119c0db957ebaaeaa03-compact.json
+  (clean post-fix suite), native-a7176686b6b71af3f37c3a45-compact.json
+  (aborted carrier-gate run), cap01-clean-short-suite.txt
+  (Node/Python/vet/route-table outputs + both runs' console output)

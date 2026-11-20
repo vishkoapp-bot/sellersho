@@ -1,0 +1,114 @@
+CAP-01 clean post-fix short baseline suite — test-run log
+started: 2026-11-20T02:14:24Z / 2026-11-20T05:44:24 Tehran
+HEAD: c61b9f1f2a1879a12611796f8020441a7de1eb13
+work: fixes for critic conditions 1,2,3,5 + concurrent-run hardening + behavioral fault-restart test
+
+=== 1. Node unit tests (load-tests/*.test.mjs) ===
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1657.379127
+
+=== 2. Python native harness tests ===
+----------------------------------------------------------------------
+Ran 9 tests in 0.146s
+
+OK
+
+=== 3. Python isolated (Docker) harness tests ===
+----------------------------------------------------------------------
+Ran 14 tests in 0.127s
+
+OK
+
+=== 4. go vet (capacity-fixture + server — no Go code touched by this task; vet as regression evidence) ===
+vet exit: 0
+
+=== 5. TestRouteTableNoConflicts ===
+=== RUN   TestRouteTableNoConflicts
+--- PASS: TestRouteTableNoConflicts (0.01s)
+PASS
+ok  	github.com/drup/platform/cmd/server	0.019s
+disposable database ready: sellersho_test_a7176686b6b71af3f37c3a45
+disposable Redis ready: 127.0.0.1:40837/15
+backend built: 54acbb942c71c3f1
+frontend built
+doubles up (sms :32867, carrier :43777)
+ephemeral CA + leaf cert ready
+nginx config ok
+dropped disposable database sellersho_test_a7176686b6b71af3f37c3a45
+compact evidence: /home/hatch/workspace/sellersho/load-tests/evidence/native-a7176686b6b71af3f37c3a45-compact.json
+LOCAL native baseline exit: 1 reports: /home/hatch/workspace/cap01-native-runs/sellersho-cap-report-b3f37b1e49f9 CAP-02 remains OPEN
+
+NOTE: the runner output above this line is ABORTED run a7176686b6b71af3f37c3a45
+(carrier-gate failure: dynamic carrier port refused by the backend startup
+gate; see cap01-progress.md). The clean re-run follows below.
+=== CLEAN RE-RUN (post carrier-gate fix) started 2026-11-20T02:20:31Z ===
+disposable database ready: sellersho_test_05879119c0db957ebaaeaa03
+disposable Redis ready: 127.0.0.1:45807/15
+backend built: 54acbb942c71c3f1
+frontend built
+doubles up (sms :52923, carrier :8082)
+ephemeral CA + leaf cert ready
+nginx config ok
+backend up on 127.0.0.1:60927 (payment mode success)
+nginx up on 127.0.0.1:41789
+release cohort: {'exit': 1, 'released': 0, 'status': 'FAILED'}
+backend up on 127.0.0.1:60927 (payment mode success)
+fixture seeded + backend resumed
+=== profile: fixture-baseline
+profile FAILED: fixture-baseline
+=== profile: login-ramp
+profile FAILED: login-ramp
+=== profile: otp-background
+profile FAILED: otp-background
+=== profile: api-baseline
+profile FAILED: api-baseline
+=== profile: api-rolling
+profile FAILED: api-rolling
+=== profile: journey-baseline
+profile FAILED: journey-baseline
+=== profile: hot-sku
+profile FAILED: hot-sku
+=== profile: staff-baseline
+profile FAILED: staff-baseline
+=== profile: hot-account
+profile FAILED: hot-account
+=== profile: session-lifecycle
+profile FAILED: session-lifecycle
+=== profile: browser-assets
+profile FAILED: browser-assets
+=== profile: cold-cache
+backend up on 127.0.0.1:60927 (payment mode success)
+profile FAILED: cold-cache
+=== profile: headroom
+profile FAILED: headroom
+=== profile: fault-provider-timeout
+backend up on 127.0.0.1:60927 (payment mode timeout)
+backend up on 127.0.0.1:60927 (payment mode success)
+profile ok: fault-provider-timeout
+=== profile: fault-redis-loss
+profile ok: fault-redis-loss
+=== profile: fault-restart
+backend up on 127.0.0.1:60927 (payment mode success)
+profile ok: fault-restart
+dropped disposable database sellersho_test_05879119c0db957ebaaeaa03
+compact evidence: /home/hatch/workspace/sellersho/load-tests/evidence/native-05879119c0db957ebaaeaa03-compact.json
+LOCAL native baseline exit: 1 reports: /home/hatch/workspace/cap01-native-runs/sellersho-cap-report-f12c4cf62694 CAP-02 remains OPEN
+
+=== CLOSING (post-suite re-verification, 2026-11-20T02:58Z) ===
+Clean suite nonce 05879119c0db957ebaaeaa03, report sellersho-cap-report-f12c4cf62694:
+suite exit 1; baseline smoke ok (exit 0); 13 profiles FAILED, 3 fault profiles ok.
+Verdict.json: baseline_exit 0, suite_exit 1 (new shape verified live).
+Compact: profile_failed + sms_double_counts + carrier_double_counts present (read back).
+Hot-sku clobber fix verified live: hot-sku-summary.json is the main run (paid 5);
+hot-sku-restart-summary.json is separate (paid 0, preparation failed as expected).
+Fault-restart oracle converged (before == after, 5 paid).
+Final unit tests: Node 37/37, Python native 9/9, Python isolated 14/14; go vet clean;
+TestRouteTableNoConflicts PASS (see section 5 above). No secrets in committed evidence.
+No Go/app code changed; no migration; no binary change — push only, no deploy.
+b907 list/browse numbers are superseded by this run (see cap01-progress.md).

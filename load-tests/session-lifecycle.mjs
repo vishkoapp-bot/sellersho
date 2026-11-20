@@ -123,6 +123,6 @@ try {
   summary.requests = requests.length;
   agentA.destroy();
   agentB.destroy();
-  fs.writeFileSync('/tmp/summary.json', JSON.stringify(summary, null, 2));
+  fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json', JSON.stringify(summary, null, 2));
   process.exitCode = summary.failed_gates.length ? 1 : 0;
 }

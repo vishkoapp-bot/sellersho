@@ -3,11 +3,39 @@ import assert from 'node:assert/strict';
 import {CAPACITY_HOST, resolveTarget} from './target-config.mjs';
 
 test('default target is the disposable domain only', () => {
-  const t = resolveTarget({});
+  // No IP pinned: the hostname must resolve to loopback first (the
+  // injected resolver stands in for the system resolver).
+  const t = resolveTarget({}, {lookupHosts: () => ['127.0.0.1']});
   assert.equal(t.host, CAPACITY_HOST);
   assert.equal(t.port, 443);
   assert.equal(t.protocol, 'https');
-  assert.equal(t.ip, '');
+  assert.equal(t.ip, '127.0.0.1');
+  assert.equal(t.smsHost, '127.0.0.1');
+});
+
+test('hostile/stale hostname resolution is refused before any request (critic condition 5)', () => {
+  // A stale /etc/hosts or DNS entry pointing the disposable domain at
+  // a real host must never become a connect target. This VM's own
+  // resolver answers 198.18.245.176 for unresolvable names, so the
+  // hole was live, not theoretical.
+  for (const addrs of [['93.184.216.34'], ['46.249.98.190'], ['198.18.245.176'], ['172.18.0.3']]) {
+    assert.throws(() => resolveTarget({}, {lookupHosts: () => addrs, inContainer: () => false}), /non-loopback/);
+  }
+  assert.throws(() => resolveTarget({}, {lookupHosts: () => null}), /does not resolve/);
+  assert.throws(() => resolveTarget({}, {lookupHosts: () => []}), /does not resolve/);
+  // The SMS double hostname gets the same treatment.
+  assert.throws(
+    () => resolveTarget({CAPACITY_TARGET_IP: '127.0.0.1'}, {lookupHosts: (h) => (h === 'sms' ? ['93.184.216.34'] : ['127.0.0.1'])}),
+    /SMS double|non-loopback/,
+  );
+});
+
+test('loopback resolution pins the connect IP; Docker-private resolution stays hostname-based', () => {
+  const t = resolveTarget({}, {lookupHosts: () => ['127.0.0.1', '::1']});
+  assert.equal(t.ip, '127.0.0.1');
+  const d = resolveTarget({}, {lookupHosts: () => ['172.18.0.3'], inContainer: () => true});
+  assert.equal(d.ip, '');
+  assert.equal(d.smsHost, 'sms');
 });
 
 test('native loopback override keeps the disposable hostname', () => {

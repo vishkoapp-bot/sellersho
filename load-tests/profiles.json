@@ -1,69 +1,69 @@
 {
   "profiles": [
     {
-      "name": "api-100rps",
       "file": "commerce-rolling.mjs",
-      "status": "IMPLEMENTED30s/30min/2h;30s failed local baseline retained;long durations not executed;full financial/return oracle pending"
+      "name": "api-100rps",
+      "status": "IMPLEMENTED; native run b907 (2026-11-20): api-baseline 10s FAILED, api-rolling 30s FAILED (latency + counter gates; commerce oracles matched within stated scope); long durations not executed; full financial/return oracle pending"
     },
     {
+      "file": "users-1000.mjs",
       "name": "users-1000",
-      "status": "IMPLEMENTED90s/30min;90s failed local baseline retained;full30min not executed",
-      "vus": 1000,
-      "think_time_seconds": "uniform5..15",
       "requires": "independent carts, orders, sessions and actual throughput",
-      "file": "users-1000.mjs"
+      "status": "IMPLEMENTED; native run b907: journey-baseline 90s FAILED (0 completed checkouts, list p95 12210ms, create p95 7815ms); full 30min not executed",
+      "think_time_seconds": "uniform5..15",
+      "vus": 1000
     },
     {
-      "name": "login-ramp",
-      "status": "IMPLEMENTED: OTP-only local PASS;OTP+background FAILED;all raw counts retained",
       "distinct_users": 1000,
+      "name": "login-ramp",
+      "requires": "actual challenge/verification/password calls, SMS double, background browsing at combined 100 API RPS",
       "seconds": 60,
-      "requires": "actual challenge/verification/password calls, SMS double, background browsing at combined 100 API RPS"
+      "status": "IMPLEMENTED; native run b907: OTP-only local FAILED — otp_send 43% 503s (362/849, app dependency-budget shedder), otp_verify 100% OK; OTP+background FAILED; all raw counts retained"
     },
     {
-      "name": "hot-sku",
-      "status": "IMPLEMENTED/EXECUTED:five paid/95stock conflicts/10duplicate callbacks/stock and amount assertions matched;FAILED token and callback latency;100principals only;acceptance OPEN",
       "contenders": 100,
+      "name": "hot-sku",
+      "status": "IMPLEMENTED/EXECUTED: native run b907: FAILED (latency gates) — main run bought 5 units with oracle matched, but its summary/exit were clobbered by the fault-restart re-run (fixed post-b907: re-run renamed hot-sku-restart); hot-sku-first isolation run 1037f06dc41a: 5 paid, oracle matched, latency/count gates failed; acceptance OPEN",
       "stock": 5,
       "successful_captures": 5
     },
     {
       "name": "hot-account",
-      "status": "IMPLEMENTED: 100 paid cancels on one store + duplicate-cancel probe + obligation oracle (hot-account.mjs); native run pending",
-      "requires": "refund/payout/settlement contention and signed balance oracle"
+      "requires": "refund/payout/settlement contention and signed balance oracle",
+      "status": "IMPLEMENTED; native run b907: FAILED — 100 paid, 0 cancelled (cancel p95 8630ms, cancels never completed in-window; obligation oracle matched vacuously on 0 cancels — see cap01-progress.md gate-table downgrade); duplicate-cancel probe never exercised a completed cancel"
     },
     {
       "name": "staff-report",
-      "status": "IMPLEMENTED 30 second role-scoped variant; native run pending; acceptance OPEN",
-      "total_api_rps": 100,
-      "requires": "warehouse/seller/admin roles and production worker schedule"
+      "requires": "warehouse/seller/admin roles and production worker schedule",
+      "status": "IMPLEMENTED; native run b907: staff-baseline 30s FAILED (counter gate api 846 vs domain_allow 932; oracles matched); acceptance OPEN",
+      "total_api_rps": 100
     },
     {
       "name": "cold-cache",
-      "status": "IMPLEMENTED: native --cold-cache (FLUSHALL + backend restart, cold vs warm labeled runs); native run pending",
-      "requires": "fresh isolated Redis, separately labeled warm run"
+      "requires": "fresh isolated Redis, separately labeled warm run",
+      "status": "IMPLEMENTED; native run b907: FAILED — cold run list p95 2600ms, create p95 5011ms; cold-cache-warm never started (fixture_preparation FAILED, no warm summary)"
     },
     {
       "name": "assets-tls-browser",
-      "status": "REPLACED: relay FAILED (zero rendered pages, diagnosed CA-vs-leaf SPKI pin mismatch); native puppeteer Chrome + leaf-SPKI pin implemented; native run pending; timings excluded; acceptance OPEN",
-      "requires": "built frontend and real browser cohort; extra assets/domain authorization requests counted"
+      "requires": "built frontend and real browser cohort; extra assets/domain authorization requests counted",
+      "status": "REPLACED: relay FAILED (zero rendered pages, diagnosed CA-vs-leaf SPKI pin mismatch); native puppeteer Chrome + leaf-SPKI pin implemented; native run b907: FAILED — 10/10 pages HTTP 200 with leaf-SPKI pin (relay diagnosis CONFIRMED) but render PARTIAL/intermittent: warm principals 1 and 8 rendered fully (11,365 chars), 5 warm pages served the 29-char shell, 3 warm pages rendered 0 chars; broken logo /static/uploads/logo/logo-icon.png 404 + /api/v1/domain-store 404 on 17 requests + blocked_external 20 (URLs unlogged in b907; logged from the post-fix run); timings excluded; acceptance OPEN"
     },
     {
-      "name": "recovery",
-      "status": "IMPLEMENTED: native --headroom (200 RPS 300s + 100 RPS 120s recovery); native run pending",
       "burst_rps": 200,
       "burst_seconds": 300,
-      "recovery_seconds": 120
+      "name": "recovery",
+      "recovery_seconds": 120,
+      "status": "IMPLEMENTED; native run b907: headroom FAILED — burst 20923/60000 (39077 dropped), recovery run FAILED (latency/error gates); headroom oracle paid_orders_without_ledger_entry was 6 vs 0 in every other commerce oracle (unexplained, informational, not gated)"
     },
     {
       "name": "faults",
-      "status": "IMPLEMENTED: native --fault-provider-timeout / --fault-redis-loss / --fault-restart; native runs pending",
-      "requires": "provider timeouts/ambiguous outcomes, restart boundaries, duplicate callback and conservation"
+      "requires": "provider timeouts/ambiguous outcomes, restart boundaries, duplicate callback and conservation",
+      "status": "IMPLEMENTED; native run b907: fault-provider-timeout PASSED as a profile (timeout-mode driver failures expected; oracle matched), fault-redis-loss PASSED (health 503 during loss, 200 after restart), fault-restart PASSED (oracle converged before/after SIGKILL restart; hot-sku summary clobber fixed post-b907)"
     },
     {
       "name": "session-lifecycle",
-      "status": "IMPLEMENTED: 10-user cohort, concurrent-device reads, OTP re-login, logout probe (logout does not revoke server-side: recorded finding); true expiry OPEN (no refresh endpoint, 3h JWT)",
-      "requires": "OTP double, session fixture"
+      "requires": "OTP double, session fixture",
+      "status": "IMPLEMENTED; native run b907: FAILED (latency gates) — concurrent-device 10/10, re-login 10/10, old-token-after-logout 10/10 (logout does not revoke server-side: recorded finding); true expiry OPEN (no refresh endpoint, 3h JWT)"
     }
   ]
 }

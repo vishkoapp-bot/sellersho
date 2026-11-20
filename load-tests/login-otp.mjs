@@ -70,4 +70,4 @@ const summary={certified:false,scope:'LOCAL actual customer OTP login ramp'+(bac
  missed_schedule_slots:loginSchedule.missed+(browseSchedule?.missed||0),missed_schedule_api_calls:loginSchedule.missed*2+(browseSchedule?.missed||0),arrival_tolerance_ms:10,
  planned_api_rps:expected/60,actual_attempted_api_rps:records.length/((performance.now()-start)/1000),actual_response_api_rps:records.filter(r=>r.status>0).length/((performance.now()-start)/1000),
  schedule_scope:'login flow arrivals plus independent browsing;OTP verify is dependent fan-out,not a separately paced API slot;planned API rate is nominal fan-out only'};
-fs.writeFileSync('/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=failed.length?1:0;
+fs.writeFileSync(process.env.CAPACITY_SUMMARY_FILE||'/tmp/summary.json',JSON.stringify(summary,null,2));process.exitCode=failed.length?1:0;

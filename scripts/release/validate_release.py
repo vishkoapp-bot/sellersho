@@ -22,6 +22,9 @@ Checks:
       the manifest AND dist/contract.json.
   G10 docs/fa and backend/internal/networkreward are absent from the
       stage (both on disk and in the manifest's exclusion record).
+  N1  node_modules is absent from the stage (make_release.sh removes
+      it after the frontend build; a staged release must not carry
+      231 MB of retained dependencies).
   Payment (D5): mode must be explicitly set; mock mode in a
       --production release fails (a placeholder provider must never
       ship to prod); real mode with PSP credentials present but
@@ -220,6 +223,17 @@ def main() -> int:
         f.fail(f"env files present in staged release (archive must contain none): {env_files}")
     else:
         f.ok("no .env* files in staged release")
+    # N1: node_modules must not ship in the staged release
+    # (make_release.sh removes it after the frontend build; it was
+    # 231 MB of retained dependencies). is_symlink() is checked too:
+    # Path.exists() is False for a dangling symlink.
+    nm = stage / "node_modules"
+    if nm.is_symlink() or nm.exists():
+        kind = "symlink" if nm.is_symlink() else "directory"
+        f.fail(f"node_modules present in staged release ({kind}) — "
+               f"dependencies must not ship (N1)")
+    else:
+        f.ok("no node_modules in staged release (N1)")
     for path in dist.rglob("*.js"):
         if b"VITE_USE_MOCK" in path.read_bytes():
             f.fail(f"VITE_USE_MOCK literal survived into built bundle: {path.relative_to(stage)}")

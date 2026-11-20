@@ -20,7 +20,12 @@
 #                     (make_release.sh), validate it (manifest, checksums,
 #                     VITE allow-list, contract, exclusions, payment mode),
 #                     run the VITE + planted-.env.local negative controls,
-#                     then run the smoke suite against disposable
+#                     the --production negative control (mock-mode release
+#                     must fail production validation, N7) and the
+#                     --db-url classification controls against the
+#                     service Postgres (unmigrated DB must fail,
+#                     migrated DB must pass, N5/N7), then run the
+#                     smoke suite against disposable
 #                     Postgres 16 + Redis 7 services. Node 24 / Go 1.27
 #                     are the canonical release toolchain (G7).
 #   deps            — govulncheck (Go, fails on any affecting-code vulnerability) +
@@ -192,7 +197,11 @@ jobs:
       - name: workflow cannot reach production addresses
         run: |
           # No production host, domain, or credential-bearing URL may appear here.
-          if grep -rE '46\.249\.98\.190|sellershow\.ir|40kaman\.com|postgres://[^t]|DATABASE_URL=.+@' .github/workflows/ci.yml; then
+          # The guard's own line is excluded from the scan (grep -v):
+          # the pattern text itself contains the forbidden literals,
+          # so scanning it would self-match and the step could never
+          # pass (as on main before this fix).
+          if grep -v -F "grep -rE" .github/workflows/ci.yml | grep -E '46\.249\.98\.190|sellershow\.ir|40kaman\.com|postgres://[^t]|DATABASE_URL=.+@'; then
             echo "production address found in the CI workflow"
             exit 1
           fi
@@ -276,6 +285,46 @@ jobs:
             exit 1
           fi
           echo "negative control OK: planted .env.local fails validation"
+      - name: --production negative control — mock-mode release must fail production validation (N7)
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          if python3 scripts/release/validate_release.py --stage "releases/$COMMIT" --commit "$COMMIT" --production; then
+            echo "NEGATIVE CONTROL FAILED: mock-mode release passed --production validation"
+            exit 1
+          fi
+          echo "negative control OK: mock-mode release fails --production validation"
+      - name: --db-url classification against service Postgres (N5/N7)
+        env:
+          PGPASSWORD: smoke-ci-password
+        run: |
+          set -e
+          COMMIT="$(git rev-parse HEAD)"
+          # The URL is assembled at runtime (never written literally):
+          # this workflow's own ci-self-test guard forbids a literal
+          # credential-bearing postgres URL in the file. It points only at the
+          # disposable service Postgres on localhost; the password is
+          # the same disposable service password already declared
+          # above for the postgres service.
+          DB_URL="$(printf '%s://%s:%s@%s:%s/%s' postgres postgres "$PGPASSWORD" localhost 5432 rel01_dburl)"
+          ADMIN_URL="$(printf '%s://%s:%s@%s:%s/%s' postgres postgres "$PGPASSWORD" localhost 5432 postgres)"
+          psql "$ADMIN_URL" -c "DROP DATABASE IF EXISTS rel01_dburl;" -c "CREATE DATABASE rel01_dburl;"
+          # Negative control: an unmigrated DB (empty schema_migrations
+          # table, all 210 migrations pending, unreviewed historical)
+          # must FAIL with --db-required.
+          psql "$DB_URL" -c "CREATE TABLE schema_migrations (version text PRIMARY KEY);"
+          if python3 scripts/release/validate_release.py --stage "releases/$COMMIT" --commit "$COMMIT" --db-url "$DB_URL" --db-required; then
+            echo "NEGATIVE CONTROL FAILED: validation passed an unmigrated DB with --db-url"
+            exit 1
+          fi
+          echo "negative control OK: unmigrated DB fails --db-url --db-required validation"
+          # Positive control: apply the staged migrations with the
+          # staged migrate binary, then classification must pass
+          # (0 pending) with --db-required.
+          psql "$ADMIN_URL" -c "DROP DATABASE rel01_dburl;" -c "CREATE DATABASE rel01_dburl;"
+          DATABASE_URL="$DB_URL" "releases/$COMMIT/backend/bin/migrate-linux" -db "$DB_URL" -dir "releases/$COMMIT/backend/migrations"
+          python3 scripts/release/validate_release.py --stage "releases/$COMMIT" --commit "$COMMIT" --db-url "$DB_URL" --db-required
+          echo "--db-url classification OK: 0 pending after staged migrate"
+          psql "$ADMIN_URL" -c "DROP DATABASE IF EXISTS rel01_dburl;"
       - name: smoke suite on disposable fixtures
         env:
           SMOKE_PG_HOST: localhost

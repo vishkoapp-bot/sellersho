@@ -32,8 +32,34 @@ needs.
    NOT restored over new orders (the `deploy_remote.py` design
    choice). REL-01 adds no DB-restore step.
 
+## Deploy-time classification (N5 — REL-01 fix round)
+
+`scripts/deploy/deploy-backend.sh` runs the pending enumeration
+**pre-swap, only when `--db-url <url>` is supplied**: it calls
+`validate_release.py --db-url <url> --db-required` (read-only,
+same `classify_history` rules) before the backup/swap. Without
+`--db-url` NO classification runs at deploy time — the script says
+so loudly (a WARNING, not a silent pass) and the in-container
+migrate still applies pending migrations without the
+unreviewed-historical check. The old comment claiming the check
+"runs first inside validate --db-url on the operator side" was
+wrong (neither deploy script ever passed `--db-url`) and is
+corrected in the script (C5).
+
+The prod URL is supplied by the operator at deploy time from the
+host's live config and is never committed, never printed, and never
+forwarded over the remote (SSH) path. `psql` must be present on the
+deploy host for the check (with `--db-required` a missing psql
+fails the deploy loudly rather than skipping the gate).
+
 ## What MIG-02 must define (not done here)
 
+- **Automating the prod `--db-url` supply**: today the operator
+  must pass it explicitly at every backend deploy; a deploy that
+  forgets it proceeds with only the loud warning. MIG-02 owns
+  making the classification unconditional (e.g. deriving the URL
+  from the live host config inside the script) or making a missing
+  `--db-url` a hard failure.
 - **`lastCompatibleRevision`**: the last app revision whose binary
   is compatible with this release's schema. REL-01 records the
   field as `null`. MIG-02 fills it (per release) and the validator

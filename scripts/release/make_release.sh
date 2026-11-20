@@ -4,7 +4,10 @@
 #
 #   scripts/release/make_release.sh [--commit <sha>] [--payment-mode mock|real]
 #       [--repo <path>] [--out-dir <path>] [--production]
-#       [--allow-dirty-worktree] [--node-modules auto|npm-ci|symlink]
+#       [--allow-dirty-worktree] [--node-modules npm-ci|auto|symlink]
+#       (default --node-modules=npm-ci: a failed npm ci fails the
+#       release loudly; --node-modules=auto is the explicit opt-in
+#       that still allows the read-only symlink fallback, N6)
 #
 # What it does, in order:
 #   1. Resolves the exact commit (default HEAD) in the git checkout.
@@ -22,15 +25,21 @@
 #      VITE_*). The allow-list is EMPTY (D4).
 #   5. Builds the backend from the staged source with the release
 #      commit + contract hash injected via -ldflags (G9).
+#   5b. N1: node_modules is removed from the stage after the frontend
+#      build (it was 231 MB of retained dependencies in the staged
+#      release); validate_release.py asserts its absence.
 #   6. G3: writes the extended release.json via make_manifest.py.
 #   7. Runs validate_release.py (manifest, checksums, VITE, contract,
 #      exclusions, payment mode, migration set). A failure here stops
 #      the release.
-#   8. Prunes staged releases/<commit>/ dirs to the newest 5 (D3).
+#   8. Prunes staged releases/<commit>/ dirs to the newest 5 (D3);
+#      skipped when $REPO/releases does not exist (N3 — e.g.
+#      --out-dir outside the repo on a checkout with no releases/).
 #
 # It never touches production, never sends OTP, never deploys. The
-# deploy scripts (~/workspace/deploy-frontend.sh,
-# ~/workspace/deploy-backend.sh) consume the staged release this
+# deploy scripts (scripts/deploy/deploy-frontend.sh,
+# scripts/deploy/deploy-backend.sh in the repo; ~/workspace/ entry
+# points are symlinks to them, C6) consume the staged release this
 # produces. Exit non-zero on any failure; on success it prints the
 # stage path, manifest path and checksums.
 set -euo pipefail
@@ -42,7 +51,7 @@ REPO=""
 OUT_DIR=""
 PRODUCTION=0
 ALLOW_DIRTY=0
-NODE_MODULES_MODE="auto"
+NODE_MODULES_MODE="npm-ci"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -165,9 +174,13 @@ setup_node_modules() {
     return 0
   fi
   if [ "$NODE_MODULES_MODE" = "npm-ci" ]; then
-    echo "FAIL: npm ci failed and --node-modules=npm-ci forbids the symlink fallback." >&2
+    echo "FAIL: npm ci failed and --node-modules=npm-ci forbids the symlink fallback (default, N6)." >&2
     return 1
   fi
+  # N6: the symlink fallback exists ONLY under an explicit
+  # --node-modules=auto (or =symlink); the default (npm-ci) fails
+  # loudly above instead of silently shipping a release whose
+  # dependencies were never installed.
   echo "WARNING: npm ci failed; falling back to read-only symlink of $REPO/node_modules (recorded in manifest)." >&2
   if [ ! -d "$REPO/node_modules" ]; then
     echo "FAIL: no $REPO/node_modules to symlink and npm ci failed." >&2
@@ -184,6 +197,23 @@ echo "building frontend in stage (scrubbed env: no VITE_*, no inherited shell)..
 (cd "$OUT_DIR" && env -i HOME="$HOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" PUPPETEER_SKIP_DOWNLOAD=true "$NPM_BIN" run build)
 [ -f "$OUT_DIR/dist/index.html" ] || { echo "FAIL: frontend build produced no dist/index.html" >&2; exit 1; }
 echo "frontend build OK: $(find "$OUT_DIR/dist" -type f | wc -l) dist files"
+
+# N1: node_modules served its purpose (the frontend build) and must
+# not ship in the staged release — it was 231 MB of retained
+# dependencies. Remove the directory (npm ci) or the symlink
+# (--node-modules=symlink/auto fallback) before manifest/tar, so the
+# staged release contains only the built artifacts + source.
+# rm without a trailing slash removes a symlink itself, never its
+# target; the explicit -L test guards the directory case.
+if [ -L "$OUT_DIR/node_modules" ]; then
+  rm "$OUT_DIR/node_modules"
+  echo "node_modules symlink removed from stage (N1)"
+elif [ -d "$OUT_DIR/node_modules" ]; then
+  rm -rf "$OUT_DIR/node_modules"
+  echo "node_modules removed from stage (N1)"
+fi
+[ ! -e "$OUT_DIR/node_modules" ] && [ ! -L "$OUT_DIR/node_modules" ] \
+  || { echo "FAIL: node_modules still present in stage after N1 removal" >&2; exit 1; }
 
 # --- backend build (staged source, ldflags inject commit + contract) ----
 mkdir -p "$OUT_DIR/backend/bin"
@@ -216,6 +246,12 @@ VALIDATE_ARGS=(--stage "$OUT_DIR" --commit "$COMMIT")
 python3 "$SCRIPT_DIR/validate_release.py" "${VALIDATE_ARGS[@]}"
 
 # --- D3 retention: newest 5 staged releases ------------------------------
+# N3: with --out-dir outside the repo, $REPO/releases may not exist
+# at all — the old code iterdir()'d it unconditionally and crashed
+# with FileNotFoundError AFTER VALIDATE OK (no RELEASE OK). Guard it.
+if [ ! -d "$REPO/releases" ]; then
+  echo "retention skipped: $REPO/releases does not exist (N3)"
+else
 python3 - "$REPO/releases" <<'EOF'
 import sys
 from pathlib import Path
@@ -227,6 +263,7 @@ for old in dirs[:-5]:
     shutil.rmtree(old)
     print(f"pruned old staged release: {old.name}")
 EOF
+fi
 
 echo "RELEASE OK: $OUT_DIR"
 echo "  manifest: $OUT_DIR/release.json"

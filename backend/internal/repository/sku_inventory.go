@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type skuAllocation struct {
@@ -478,21 +479,47 @@ func restoreOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 	if len(captures) == 0 {
 		return false, nil
 	}
-	balanceGuards, err := tx.QueryContext(ctx, `SELECT b.id FROM inventory_balances b WHERE EXISTS(SELECT 1 FROM order_inventory_captures c CROSS JOIN LATERAL jsonb_array_elements(c.allocations) a WHERE c.order_id=$1 AND a->>'balanceId'=b.id) ORDER BY b.id COLLATE "C" FOR UPDATE`, orderID)
-	if err != nil {
-		return true, err
-	}
-	for balanceGuards.Next() {
-		var id string
-		if err := balanceGuards.Scan(&id); err != nil {
-			balanceGuards.Close()
+	// INV-12: the old EXISTS … jsonb_array_elements guard forced a full
+	// sequential scan of inventory_balances on every paid cancellation
+	// (6.6 ms at 20k rows here, linear in table size). Parse the (few)
+	// allocation arrays in Go first and lock exactly those balance IDs
+	// in sorted order — the same lock-order discipline as
+	// lockInventoryParentsTx / LockTransactionRowsTx. The per-allocation
+	// validation below still runs; this guard only pre-locks the rows.
+	balanceIDs := map[string]bool{}
+	for _, c := range captures {
+		var allocations []skuAllocation
+		if err := json.Unmarshal(c.raw, &allocations); err != nil {
 			return true, err
 		}
+		for _, a := range allocations {
+			if a.BalanceID != "" {
+				balanceIDs[a.BalanceID] = true
+			}
+		}
 	}
-	err = balanceGuards.Err()
-	balanceGuards.Close()
-	if err != nil {
-		return true, err
+	ids := make([]string, 0, len(balanceIDs))
+	for id := range balanceIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) > 0 {
+		balanceGuards, err := tx.QueryContext(ctx, `SELECT id FROM inventory_balances WHERE id = ANY($1) ORDER BY id COLLATE "C" FOR UPDATE`, pq.Array(ids))
+		if err != nil {
+			return true, err
+		}
+		for balanceGuards.Next() {
+			var id string
+			if err := balanceGuards.Scan(&id); err != nil {
+				balanceGuards.Close()
+				return true, err
+			}
+		}
+		err = balanceGuards.Err()
+		balanceGuards.Close()
+		if err != nil {
+			return true, err
+		}
 	}
 	for _, c := range captures {
 		if c.restored == c.qty {

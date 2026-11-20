@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/jobrunner"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/repository"
 )
 
@@ -43,4 +44,31 @@ func (w *BackgroundWorker) monthlySettlement(ctx context.Context) (jobrunner.Res
 	// count. Keep financial totals in its existing settlement panel; never sum
 	// the same cumulative count on every scheduler tick.
 	return jobrunner.Result{}, err
+}
+
+// refundReconciliation is the FIN-013 production caller for
+// ReconcileOrderRefunds (audit §2.2): the unknown-outcome work queue
+// finally drains on a schedule instead of only in its test. The batch
+// is bounded (25 obligations/run) and the provider call happens
+// outside any SQL transaction (ProcessOrderRefund's own contract), so
+// a provider timeout stalls at most this tick. A nil provider (no PSP
+// adapter until FIN-010) returns 0 completed and no error — the tick
+// still records last-success, so a stalled adapter is visible as a
+// growing backlog, not as a failing job. Retries are counted, never
+// hidden: a failed obligation stays in the queue for the next tick.
+func (w *BackgroundWorker) refundReconciliation(ctx context.Context) (jobrunner.Result, error) {
+	if w.orderRepo == nil {
+		return jobrunner.Result{}, errors.New("order repository unavailable")
+	}
+	started := time.Now()
+	completed, err := w.orderRepo.ReconcileOrderRefunds(ctx, w.refundProvider, 25)
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	observability.LogOperation(ctx, "worker", "refund-reconciliation", outcome, time.Since(started))
+	if err != nil {
+		return jobrunner.Result{Affected: int64(completed)}, err
+	}
+	return jobrunner.Result{Affected: int64(completed)}, nil
 }

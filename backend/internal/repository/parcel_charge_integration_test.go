@@ -220,7 +220,29 @@ func TestParcelChargeCorrectionChain(t *testing.T) {
 		t.Fatal("new correction after cancellation")
 	}
 }
+
+// FIN-013 §1 (P4) + audit §1 a: the FIN-004 probe — parcel-charge
+// business idempotency. The audit named this regression
+// TestAuditFinanceParcelChargeHasBusinessIdempotency; that name did
+// not exist in the tree, so it is added here as the designated
+// regression alongside TestParcelChargeConcurrent (same scenario, one
+// shared helper — do not let the two drift apart).
+//
+// Synchronization (audit §1 d): 12 goroutines released together with
+// a sync.WaitGroup (no sleeps); the parcel lock serializes the charge
+// transition; corrections are explicit reversal/adjustment events.
+// Deterministic sync: WaitGroup + parcel-row lock; assertions read
+// the durable counts after wg.Wait().
+func TestAuditFinanceParcelChargeHasBusinessIdempotency(t *testing.T) {
+	parcelChargeConcurrentScenario(t)
+}
+
 func TestParcelChargeConcurrent(t *testing.T) {
+	parcelChargeConcurrentScenario(t)
+}
+
+func parcelChargeConcurrentScenario(t *testing.T) {
+	t.Helper()
 	db := parcelFixture(t)
 	repo := NewSupplierRepository(db)
 	ctx := context.Background()

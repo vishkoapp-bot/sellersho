@@ -62,6 +62,20 @@ type Registry struct {
 	allow          map[string]int64
 	allowDuration  *sample
 	allowDBQueries int64
+	// FIN-013 finance signals: event counters by bounded label only.
+	// No account/order/user ID and no payment field (token, SHABA,
+	// reference, amount) ever enters a series — the labels below are
+	// the complete closed sets. financeInvariant counts detected
+	// conservation violations by check; financeReservationRejected
+	// counts rejections that protected availability by reason;
+	// financeReconDiff counts non-zero differences found by a
+	// reconciliation run by oracle check; jobRetries counts bounded
+	// retries per job (the poller already publishes per-job backlog /
+	// oldest-age; this is the missing retry dimension).
+	financeInvariant           map[string]int64
+	financeReservationRejected map[string]int64
+	financeReconDiff           map[string]int64
+	jobRetries                 map[string]int64
 	// EDGE-01 step 3: allow-cache counters. allowCacheHits/Misses
 	// count AllowedDomain cache outcomes (a miss is a load that
 	// reached the DB); allowCacheEvictions counts LRU evictions at
@@ -94,7 +108,7 @@ type Registry struct {
 }
 
 func New() *Registry {
-	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}, sqlErrors: map[string]int64{}, allow: map[string]int64{}}
+	return &Registry{http: map[string]*sample{}, ops: map[string]*sample{}, gauges: map[string]float64{}, pending: map[string]bool{}, rejects: map[string]int64{}, inflight: map[string]int{}, ringInflight: map[string]*requestRecord{}, sqlErrors: map[string]int64{}, allow: map[string]int64{}, financeInvariant: map[string]int64{}, financeReservationRejected: map[string]int64{}, financeReconDiff: map[string]int64{}, jobRetries: map[string]int64{}}
 }
 func (m *Registry) SetDB(db *sql.DB) { m.mu.Lock(); defer m.mu.Unlock(); m.db = db }
 
@@ -208,10 +222,14 @@ func bounded(v string, allowed ...string) string {
 }
 func (m *Registry) Observe(component, operation, outcome string, d time.Duration) {
 	component = bounded(component, "redis", "provider", "sql", "worker", "backup")
-	// Worker operations are the six job IDs (D-05): one distinct
-	// operation per job. There is no job named "reconciliation" and
-	// no shared label; an unknown job ID collapses to "other".
-	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query", "hold", "release", "has_hold", "otp_reserve", "otp_verify")
+	// Worker operations are the seven job IDs (D-05 + FIN-013): one
+	// distinct operation per job. There is no job named
+	// "reconciliation" and no shared label; an unknown job ID
+	// collapses to "other". The FIN-013 finance query operations
+	// (treasury_cash_position, store_balance, settlement_candidates,
+	// refund_work_queue) are per-query latency series for the §2.6
+	// hot paths; they carry no account or order identifiers.
+	operation = bounded(operation, "get", "set", "setnx", "del", "eval", "evalsha", "ping", "pipeline", "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation", "backup", "query", "hold", "release", "has_hold", "otp_reserve", "otp_verify", "treasury_cash_position", "store_balance", "settlement_candidates", "refund_work_queue")
 	outcome = bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded")
 	key := fmt.Sprintf(`component=%q,operation=%q,outcome=%q`, component, operation, outcome)
 	m.mu.Lock()
@@ -241,6 +259,89 @@ func (m *Registry) RecordReject(reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rejects[reason]++
+}
+
+// RecordFinanceInvariantFailure counts one detected finance
+// conservation violation under a bounded check name (FIN-013 §5):
+// "balance_conservation" (ledger vs orders/payouts/obligations),
+// "cumulative_refund" (refunds would exceed captured),
+// "reservation_availability" (a reservation would exceed signed
+// availability), "sum_parts_parent" (parts do not sum to the parent),
+// "money_validation" (a money value failed FIN-012 validation).
+// Anything else collapses to "other" and is still counted, never a
+// new series. Callers record the detection, never the amounts.
+func (m *Registry) RecordFinanceInvariantFailure(check string) {
+	check = bounded(check, "balance_conservation", "cumulative_refund", "reservation_availability", "sum_parts_parent", "money_validation")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.financeInvariant[check]++
+}
+
+// FinanceInvariantFailuresTotal returns the cumulative invariant
+// failures across all checks (the poller's new-failure delta input).
+func (m *Registry) FinanceInvariantFailuresTotal() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, n := range m.financeInvariant {
+		total += n
+	}
+	return total
+}
+
+// RecordFinanceReservationRejected counts one availability-protecting
+// rejection under a bounded reason (FIN-013 §5): "exceeds_availability"
+// (payout/reservation above signed availability), "duplicate_cycle"
+// (a second reservation for the same period/store), "coupon_exhausted"
+// (last-use coupon already taken). Unknown reasons are dropped, never
+// a new series. Legitimate rejections are expected traffic — the alert
+// fires on a rate spike / invariant context, never on one rejection.
+func (m *Registry) RecordFinanceReservationRejected(reason string) {
+	reason = bounded(reason, "exceeds_availability", "duplicate_cycle", "coupon_exhausted")
+	if reason == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.financeReservationRejected[reason]++
+}
+
+// RecordFinanceReconciliationDiff counts one non-zero difference found
+// by a reconciliation run, by oracle check (FIN-013 §6.5): the ten
+// check names are the oracle's. Unknown kinds are dropped.
+func (m *Registry) RecordFinanceReconciliationDiff(kind string) {
+	kind = bounded(kind, "orders_payments", "payments_ledger", "cancellations_obligations", "obligations_outcomes", "settlement", "coupons", "referral", "storage", "treasury", "statements")
+	if kind == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.financeReconDiff[kind]++
+}
+
+// FinanceReconciliationDiffsTotal returns the cumulative
+// reconciliation differences across all oracle checks.
+func (m *Registry) FinanceReconciliationDiffsTotal() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, n := range m.financeReconDiff {
+		total += n
+	}
+	return total
+}
+
+// RecordJobRetry counts one bounded retry of a scheduled job, by job ID
+// (FIN-013 §5: the retry counter the six-job gauges never had). The
+// seven job IDs are the closed set; anything else is dropped.
+func (m *Registry) RecordJobRetry(job string) {
+	job = bounded(job, "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation")
+	if job == "other" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobRetries[job]++
 }
 
 // RecordSQLError counts one SQL failure under its value-free
@@ -345,7 +446,7 @@ func (m *Registry) SetAdmissionInflight(lane string, n int) {
 func LogOperation(ctx context.Context, component, operation, outcome string, d time.Duration) {
 	Default.Observe(component, operation, outcome, d)
 	Default.RecordSpan(ctx, component, operation, outcome, d)
-	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded"), d.Milliseconds())
+	log.Printf("operation request_id=%s component=%s operation=%s outcome=%s duration_ms=%d", RequestID(ctx), bounded(component, "redis", "provider", "sql", "worker", "backup"), bounded(operation, "request", "tapin_request", "ippanel_request", "verify", "refund", "unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation", "backup", "query"), bounded(outcome, "success", "error", "timeout", "canceled", "unknown", "overloaded"), d.Milliseconds())
 }
 
 type response struct {
@@ -513,6 +614,21 @@ func (m *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	for name, value := range m.gauges {
 		fmt.Fprintf(w, "sellersho_%s %g\n", name, value)
+	}
+	// FIN-013 finance signals: every known label is always emitted
+	// (zero included) so the series exist from boot and the alert
+	// rules can use increase() without a missing-series gap.
+	for _, check := range []string{"balance_conservation", "cumulative_refund", "reservation_availability", "sum_parts_parent", "money_validation", "other"} {
+		fmt.Fprintf(w, "sellersho_finance_invariant_failures_total{check=%q} %d\n", check, m.financeInvariant[check])
+	}
+	for _, reason := range []string{"exceeds_availability", "duplicate_cycle", "coupon_exhausted"} {
+		fmt.Fprintf(w, "sellersho_finance_reservation_rejected_total{reason=%q} %d\n", reason, m.financeReservationRejected[reason])
+	}
+	for _, kind := range []string{"orders_payments", "payments_ledger", "cancellations_obligations", "obligations_outcomes", "settlement", "coupons", "referral", "storage", "treasury", "statements"} {
+		fmt.Fprintf(w, "sellersho_finance_reconciliation_differences_total{kind=%q} %d\n", kind, m.financeReconDiff[kind])
+	}
+	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation"} {
+		fmt.Fprintf(w, "sellersho_job_retries_total{job=%q} %d\n", job, m.jobRetries[job])
 	}
 	// D-06: admission rejects (counter by reason) and admission-slot
 	// occupancy (gauge by lane). Sorted for stable output.

@@ -59,10 +59,10 @@ func (h RedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 }
 func (m *Registry) SetGauge(name string, value float64) {
 	// Per-job worker gauges (D-04): last-success timestamp, backlog
-	// count and oldest-age for ALL six jobs. The legacy worker_expiry_*
+	// count and oldest-age for ALL seven jobs. The legacy worker_expiry_*
 	// names are kept as aliases of unpaid-order-expiry so existing
 	// dashboard panels and gate G-02 keep working.
-	name = bounded(name, "postgres_up", "redis_up", "pg_connections", "pg_locked", "pg_deadlocks_total", "pg_transactions_total", "redis_pool_hits_total", "redis_pool_misses_total", "redis_pool_timeouts_total", "redis_pool_connections", "worker_expiry_last_success_timestamp_seconds", "worker_expiry_backlog", "worker_expiry_oldest_age_seconds", "worker_unpaid_order_expiry_last_success_timestamp_seconds", "worker_unpaid_order_expiry_backlog", "worker_unpaid_order_expiry_oldest_age_seconds", "worker_ad_cleanup_last_success_timestamp_seconds", "worker_ad_cleanup_backlog", "worker_ad_cleanup_oldest_age_seconds", "worker_qc_response_deadline_last_success_timestamp_seconds", "worker_qc_response_deadline_backlog", "worker_qc_response_deadline_oldest_age_seconds", "worker_supplier_sla_last_success_timestamp_seconds", "worker_supplier_sla_backlog", "worker_supplier_sla_oldest_age_seconds", "worker_delivery_lock_releaser_last_success_timestamp_seconds", "worker_delivery_lock_releaser_backlog", "worker_delivery_lock_releaser_oldest_age_seconds", "worker_monthly_settlement_last_success_timestamp_seconds", "worker_monthly_settlement_backlog", "worker_monthly_settlement_oldest_age_seconds", "backup_last_success_timestamp_seconds", "disk_free_ratio", "pg_active_connections", "pg_idle_connections")
+	name = bounded(name, "postgres_up", "redis_up", "pg_connections", "pg_locked", "pg_deadlocks_total", "pg_transactions_total", "redis_pool_hits_total", "redis_pool_misses_total", "redis_pool_timeouts_total", "redis_pool_connections", "worker_expiry_last_success_timestamp_seconds", "worker_expiry_backlog", "worker_expiry_oldest_age_seconds", "worker_unpaid_order_expiry_last_success_timestamp_seconds", "worker_unpaid_order_expiry_backlog", "worker_unpaid_order_expiry_oldest_age_seconds", "worker_ad_cleanup_last_success_timestamp_seconds", "worker_ad_cleanup_backlog", "worker_ad_cleanup_oldest_age_seconds", "worker_qc_response_deadline_last_success_timestamp_seconds", "worker_qc_response_deadline_backlog", "worker_qc_response_deadline_oldest_age_seconds", "worker_supplier_sla_last_success_timestamp_seconds", "worker_supplier_sla_backlog", "worker_supplier_sla_oldest_age_seconds", "worker_delivery_lock_releaser_last_success_timestamp_seconds", "worker_delivery_lock_releaser_backlog", "worker_delivery_lock_releaser_oldest_age_seconds", "worker_monthly_settlement_last_success_timestamp_seconds", "worker_monthly_settlement_backlog", "worker_monthly_settlement_oldest_age_seconds", "worker_refund_reconciliation_last_success_timestamp_seconds", "worker_refund_reconciliation_backlog", "worker_refund_reconciliation_oldest_age_seconds", "backup_last_success_timestamp_seconds", "disk_free_ratio", "pg_active_connections", "pg_idle_connections", "finance_oldest_unknown_refund_seconds", "finance_unknown_refund_count", "finance_oldest_unknown_payment_seconds", "finance_unknown_payment_count", "finance_balance_mismatch_count", "finance_lock_wait_seconds")
 	if name == "other" {
 		return
 	}
@@ -99,10 +99,18 @@ var workerJobs = []workerJob{
 	{id: "supplier-sla", gaugePrefix: "worker_supplier_sla", staleAfter: 93, historyTable: "operations_job_runs", historyJobColumn: "job", backlogQuery: `SELECT COUNT(*),COALESCE(GREATEST(0,EXTRACT(EPOCH FROM clock_timestamp()-MIN(due)))::float8,0) FROM (SELECT COALESCE(m.assessed_at+INTERVAL '30 seconds',s.created_at) AS due FROM suppliers s LEFT JOIN supplier_sla_metrics m ON m.supplier_id=s.id WHERE (m.assessed_at IS NULL OR m.assessed_at<=NOW()-INTERVAL '30 seconds') AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='supplier-sla' AND r.candidate=s.id AND r.next_retry_at>clock_timestamp()) ORDER BY due LIMIT 1001) q`},
 	{id: "delivery-lock-releaser", gaugePrefix: "worker_delivery_lock_releaser", staleAfter: 190, historyTable: "job_runs", historyJobColumn: "job_id", backlogQuery: `SELECT COUNT(*),COALESCE(GREATEST(0,EXTRACT(EPOCH FROM clock_timestamp()-MIN(due)))::float8,0) FROM (SELECT due FROM (SELECT shipped_at+INTERVAL '20 days' AS due FROM orders o WHERE status IN ('shipped','delivered_unconfirmed') AND NOT profit_released AND shipped_at<=NOW()-INTERVAL '20 days' AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-confirm' AND r.candidate=o.id AND r.next_retry_at>clock_timestamp()) UNION ALL SELECT return_window_ends_at AS due FROM orders o WHERE status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW() AND NOT EXISTS(SELECT 1 FROM background_job_candidate_retry r WHERE r.job='delivery-release' AND r.candidate=o.id AND r.next_retry_at>clock_timestamp())) q ORDER BY due LIMIT 1001) q`},
 	{id: "monthly-settlement", gaugePrefix: "worker_monthly_settlement", staleAfter: 184, historyTable: "operations_job_runs", historyJobColumn: "job", backlogQuery: `SELECT COUNT(*),COALESCE(GREATEST(0,EXTRACT(EPOCH FROM clock_timestamp()-MIN(due)))::float8,0) FROM (SELECT p.next_attempt_at AS due FROM monthly_settlement_progress p JOIN monthly_settlement_cycles c ON c.period=p.cycle_period WHERE c.status<>'completed' AND p.state='pending' AND p.next_attempt_at<=NOW() ORDER BY p.next_attempt_at LIMIT 1001) q`},
+	// FIN-013: the refund-reconciliation job (wires ReconcileOrderRefunds
+	// on its production schedule). Its backlog is the unknown-outcome
+	// work queue itself: obligations with stored status 'unknown'
+	// (the order_refund_obligations_work index serves this
+	// index-only). With no PSP adapter configured (FIN-010 blocked)
+	// the job's runs are inert no-ops, but its gauges still publish —
+	// the queue is visible even while execution waits on the adapter.
+	{id: "refund-reconciliation", gaugePrefix: "worker_refund_reconciliation", staleAfter: 190, historyTable: "operations_job_runs", historyJobColumn: "job", backlogQuery: `SELECT COUNT(*),COALESCE(GREATEST(0,EXTRACT(EPOCH FROM clock_timestamp()-MIN(created_at)))::float8,0) FROM order_refund_obligations WHERE status='unknown'`},
 }
 
 // pollWorkerGauges publishes last-success / backlog / oldest-age gauges
-// for ALL six jobs (D-04) and reports whether any job is stale (D-04
+// for ALL seven jobs (D-04 + FIN-013) and reports whether any job is stale (D-04
 // alert input). A query that fails (e.g. a table missing pre-migration)
 // leaves that job's gauges untouched instead of failing the whole poll.
 // A job with no successful run on record (last == 0) counts as stale,
@@ -151,6 +159,64 @@ func (m *Registry) pollWorkerGauges(c context.Context, db *sql.DB) bool {
 		m.SetGauge("worker_expiry_oldest_age_seconds", oldest)
 	}
 	return stale
+}
+
+// pollFinanceGauges publishes the FIN-013 finance queue/mismatch gauges
+// (audit §5) and returns the oldest unknown-outcome age across payments
+// and refunds (seconds) plus whether either queue query succeeded.
+// Definitions (see docs/operations/finance-invariants-runbook.md):
+//   - unknown refund: order_refund_obligations with stored status
+//     'unknown' — the work-queue predicate, served index-only by
+//     order_refund_obligations_work. (The latest-event resolution can
+//     promote one to 'pending'; the queue counts the stored status,
+//     the same predicate the admin queue endpoint lists.)
+//   - unknown payment: payment_transactions still 'pending' — issued,
+//     outcome not yet known. payment_transactions has no 'unknown'
+//     status; pending IS the unknown-outcome state.
+//   - balance mismatch: orders whose profit was RELEASED (flag set)
+//     but which have no order-linked ledger entry at all, plus
+//     paid-cancelled orders with no cancellation obligation (oracle
+//     checks 2+3, §6.5). CORRECTION (FIN-013 implementation, verified
+//     in code + in TestFIN013PaidOrderHasNoLedgerEntry): a merely-paid
+//     order has NO ledger entry by design — the first order-linked
+//     entry is written at staged profit release (return window close,
+//     >=7 days after delivery), never at payment (MarkPaymentPaid
+//     writes none; AddLedgerEntry has no production callers). The
+//     CAP-01 "anomaly" paid_orders_without_ledger_entry = 6 was
+//     therefore not a discrepancy: the headroom burst completed 5
+//     checkouts and the oracle counted 6 unreleased paid orders. The
+//     mismatch gauge counts only RELEASED orders missing their release
+//     entry — the state that would actually be inconsistent.
+//   - lock wait: longest current lock wait in pg_stat_activity.
+// A query that fails leaves that gauge untouched instead of failing
+// the whole poll, like pollWorkerGauges.
+func (m *Registry) pollFinanceGauges(c context.Context, db *sql.DB) (float64, bool) {
+	var oldest float64
+	known := false
+	var count, age float64
+	if err := db.QueryRowContext(c, `SELECT COUNT(*),COALESCE(EXTRACT(EPOCH FROM (clock_timestamp()-MIN(created_at))),0)::float8 FROM order_refund_obligations WHERE status='unknown'`).Scan(&count, &age); err == nil {
+		m.SetGauge("finance_unknown_refund_count", count)
+		m.SetGauge("finance_oldest_unknown_refund_seconds", age)
+		oldest = age
+		known = true
+	}
+	if err := db.QueryRowContext(c, `SELECT COUNT(*),COALESCE(EXTRACT(EPOCH FROM (clock_timestamp()-MIN(created_at))),0)::float8 FROM payment_transactions WHERE status='pending'`).Scan(&count, &age); err == nil {
+		m.SetGauge("finance_unknown_payment_count", count)
+		m.SetGauge("finance_oldest_unknown_payment_seconds", age)
+		if age > oldest {
+			oldest = age
+		}
+		known = true
+	}
+	var mismatch float64
+	if err := db.QueryRowContext(c, `SELECT (SELECT COUNT(*) FROM orders o WHERE o.profit_released AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.related_order_or_dispute=o.id)) + (SELECT COUNT(*) FROM orders o WHERE o.payment_status='paid' AND o.status='cancelled' AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation'))`).Scan(&mismatch); err == nil {
+		m.SetGauge("finance_balance_mismatch_count", mismatch)
+	}
+	var lockWait float64
+	if err := db.QueryRowContext(c, `SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (now()-xact_start))),0)::float8 FROM pg_stat_activity WHERE wait_event_type='Lock' AND datname=current_database()`).Scan(&lockWait); err == nil {
+		m.SetGauge("finance_lock_wait_seconds", lockWait)
+	}
+	return oldest, known
 }
 
 // pollBackupSignal reads the verified backup-success timestamp published
@@ -306,14 +372,24 @@ func sloFromHTTPDelta(prev map[string]httpHistSnapshot, cur map[string]*sample) 
 func (m *Registry) PollDependencies(ctx context.Context, client *redis.Client) {
 	var previousRequests, previousErrors int64
 	var prevHTTP map[string]httpHistSnapshot
+	// FIN-013: cumulative finance-signal totals at the previous tick;
+	// the alert fires on NEW invariant failures / reconciliation
+	// differences in the window, not on a cumulative total that could
+	// never recover (see alerts.go conditions).
+	var previousInvariantFailures, previousReconDiffs int64
 	collect := func() {
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		// jobStale is per-job now (D-04): true when ANY of the six jobs
+		// jobStale is per-job now (D-04): true when ANY of the seven jobs
 		// has no successful run within its own threshold. It defaults
 		// to false when the DB is unreachable, so a DB outage reports
 		// dependency_loss, not a spurious job_stale.
 		jobStale := false
+		// FIN-013 finance gauges + alert inputs (unknown-outcome age,
+		// new invariant failures / reconciliation differences).
+		unknownOldest, unknownKnown := 0.0, false
+		financeInvariantNew := int64(0)
+		var financeMismatch float64
 		m.mu.Lock()
 		db := m.db
 		m.mu.Unlock()
@@ -337,11 +413,20 @@ func (m *Registry) PollDependencies(ctx context.Context, client *redis.Client) {
 					m.SetGauge("pg_deadlocks_total", deadlocks)
 					m.SetGauge("pg_transactions_total", queries)
 				}
-				// Per-job worker gauges for all six jobs (D-04); the
-				// return value feeds the job_stale alert condition.
+				// Per-job worker gauges for all seven jobs (D-04 +
+				// FIN-013); the return value feeds the job_stale alert
+				// condition.
 				jobStale = m.pollWorkerGauges(c, db)
 				// Verified backup-success signal (D-02).
 				m.pollBackupSignal(c, db)
+				// FIN-013 finance queue/mismatch gauges.
+				unknownOldest, unknownKnown = m.pollFinanceGauges(c, db)
+				m.mu.Lock()
+				financeMismatch = m.gauges["finance_balance_mismatch_count"]
+				m.mu.Unlock()
+				financeInvariantNew = m.FinanceInvariantFailuresTotal() - previousInvariantFailures + m.FinanceReconciliationDiffsTotal() - previousReconDiffs
+				previousInvariantFailures = m.FinanceInvariantFailuresTotal()
+				previousReconDiffs = m.FinanceReconciliationDiffsTotal()
 			}
 		}
 		if client != nil {
@@ -378,7 +463,7 @@ func (m *Registry) PollDependencies(ctx context.Context, client *redis.Client) {
 		// known=false), so boot-time cumulative history never trips it.
 		slo, nextHTTP := sloFromHTTPDelta(prevHTTP, m.http)
 		prevHTTP = nextHTTP
-		snap := AlertSnapshot{Requests: requests - previousRequests, Errors: errors - previousErrors, DependencyLost: m.gauges["postgres_up"] == 0 || m.gauges["redis_up"] == 0, JobStale: jobStale, DiskKnown: known, DiskFreeRatio: ratio, BackupFailed: backupKnown && time.Now().Unix()-int64(backup) > 93600, SLOKnown: slo.known, SLOReadP95: slo.readP95, SLOReadP99: slo.readP99, SLOMutationP95: slo.mutationP95, SLOMutationP99: slo.mutationP99}
+		snap := AlertSnapshot{Requests: requests - previousRequests, Errors: errors - previousErrors, DependencyLost: m.gauges["postgres_up"] == 0 || m.gauges["redis_up"] == 0, JobStale: jobStale, DiskKnown: known, DiskFreeRatio: ratio, BackupFailed: backupKnown && time.Now().Unix()-int64(backup) > 93600, SLOKnown: slo.known, SLOReadP95: slo.readP95, SLOReadP99: slo.readP99, SLOMutationP95: slo.mutationP95, SLOMutationP99: slo.mutationP99, FinanceInvariantNew: financeInvariantNew, FinanceBalanceMismatch: financeMismatch, FinanceUnknownOldest: unknownOldest, FinanceUnknownKnown: unknownKnown}
 		m.mu.Unlock()
 		previousRequests = requests
 		previousErrors = errors

@@ -11,6 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// FIN-013 §1 d — synchronization note (P6/P7, FIN-006 probes
+// TestFIN006TopUpDoesNotInheritOldReceiptAge /
+// TestFIN006DepartureRetainsUnpaidCompletedDays): sequential
+// disposable-DB assertions against a pinned snapshot tariff and
+// measurement (a reprice would fail the test). No goroutines, no
+// sleeps — determinism comes from the snapshot discipline, not timing.
+
 func fin006Fixture(t *testing.T) (*sql.DB, opsFixture, string) {
 	t.Helper()
 	db := operationsDB(t)

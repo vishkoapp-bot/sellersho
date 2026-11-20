@@ -334,3 +334,69 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 100
+
+  # --- FIN-013 finance rules: every rule has a firing case and a
+  # quiet case. All series synthetic. The runbook_url annotation is
+  # pinned in the firing cases — a finance alert without a runbook
+  # link fails the task's acceptance sentence.
+  # SellershoFinanceInvariant: counter increases in the window.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_invariant_failures_total{check="balance_conservation"}'
+        values: 0+0x20 1+0x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceInvariant
+        exp_alerts:
+          - exp_labels: {alertname: SellershoFinanceInvariant, severity: critical, check: "balance_conservation"}
+            exp_annotations: {summary: "New financial invariant failure or reconciliation difference", runbook_url: "docs/operations/finance-invariants-runbook.md"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_invariant_failures_total{check="balance_conservation"}'
+        values: 0+0x40
+      - series: 'sellersho_finance_reconciliation_differences_total{kind="statements"}'
+        values: 0+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceInvariant
+        exp_alerts: []
+  # SellershoFinanceBalanceMismatch: live mismatch gauge > 0.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_balance_mismatch_count'
+        values: 1+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceBalanceMismatch
+        exp_alerts:
+          - exp_labels: {alertname: SellershoFinanceBalanceMismatch, severity: critical}
+            exp_annotations: {summary: "Live finance balance mismatch greater than zero", runbook_url: "docs/operations/finance-invariants-runbook.md"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_balance_mismatch_count'
+        values: 0+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceBalanceMismatch
+        exp_alerts: []
+  # SellershoFinanceUnknownStale: oldest unknown outcome > 3600s.
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_oldest_unknown_refund_seconds'
+        values: 3601+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceUnknownStale
+        exp_alerts:
+          - exp_labels: {alertname: SellershoFinanceUnknownStale, severity: warning}
+            exp_annotations: {summary: "Unknown payment or refund outcome older than 1 hour", runbook_url: "docs/operations/finance-invariants-runbook.md"}
+  - interval: 15s
+    input_series:
+      - series: 'sellersho_finance_oldest_unknown_refund_seconds'
+        values: 100+0x40
+      - series: 'sellersho_finance_oldest_unknown_payment_seconds'
+        values: 200+0x40
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SellershoFinanceUnknownStale
+        exp_alerts: []

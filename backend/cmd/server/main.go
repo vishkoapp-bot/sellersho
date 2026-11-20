@@ -239,6 +239,15 @@ func run(signalCtx context.Context) (result error) {
 		backgroundWorker.SetOrderRepository(orderRepo)
 		backgroundWorker.SetRedisClient(redisClient)
 		backgroundWorker.SetFinanceRepository(finRepo)
+		// FIN-013 §2.2: no PSP refund adapter exists until FIN-010
+		// supplies one (RealShaparakGatewayClient still returns
+		// ErrVerificationFailed). The refund-reconciliation job is
+		// wired with an explicit nil provider — a recorded no-op per
+		// tick — rather than left unwired: the queue, its gauges and
+		// the admin trigger are live, and execution activates with a
+		// one-line SetRefundProvider call when the adapter lands.
+		// Never substitute a test double here.
+		backgroundWorker.SetRefundProvider(nil)
 		process.StopWorker = backgroundWorker.StopContext
 		// SEC-01: encrypt legacy-plaintext supplier Tapin tokens in
 		// place (gate G-10). Idempotent; a row that fails any check
@@ -2496,6 +2505,11 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/finance/reports/revenue/monthly", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01FinanceRevenueMonthly(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/finance/settlements/monthly", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01MonthlyList(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/finance/settlements/monthly/run", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) { handleT01MonthlyRun(w, r, db.DB) }))
+	// FIN-013 § 2.4: unknown-outcome refund work queue (list) + manual
+	// reconcile trigger. Both are finance-role only; the trigger is a
+	// 503 until FIN-010 supplies a PSP refund adapter.
+	mux.HandleFunc("/api/v1/finance/refunds/unknown-queue", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) { handleFIN013RefundUnknownQueue(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/finance/refunds/reconcile", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) { handleFIN013RefundReconcile(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/finance/settlements/monthly/", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/finance/settlements/monthly/")
 		if sub == "" || strings.Contains(sub, "/") {

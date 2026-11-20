@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/google/uuid"
 )
@@ -351,7 +352,20 @@ func listMonthlyItems(ctx context.Context, q interface {
 
 func listMonthlyItemsPage(ctx context.Context, q interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, period string, opts ListPageOptions) (ListPage[MonthlySettlementItem], error) {
+}, period string, opts ListPageOptions) (result ListPage[MonthlySettlementItem], err error) {
+	// FIN-013: per-query finance latency for the monthly-settlement
+	// candidates list (audit §2.6 Q6) — one histogram sample per call,
+	// outcome only, no amounts or identifiers. Wired on this shared
+	// primitive so every list path (public page, full list, cycle
+	// detail page) emits exactly once.
+	started := time.Now()
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+		}
+		observability.Default.Observe("sql", "settlement_candidates", outcome, time.Since(started))
+	}()
 	limit := NormalizeListLimit(opts.Limit)
 	query := `SELECT id,cycle_period,store_id,gross_amount,fee_amount,net_amount,payout_request_id,status,created_at FROM monthly_settlement_items WHERE cycle_period=$1`
 	args := []any{period}

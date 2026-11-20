@@ -8,9 +8,10 @@
 # and notice it. Do NOT describe these rules as "alerting the operator".
 # The operator channel is the in-app admin-panel notification inbox,
 # driven by the in-app poller (backend/internal/observability:
-# PollDependencies -> DeliverAlerts), which covers six conditions (API
+# PollDependencies -> DeliverAlerts), which covers eight conditions (API
 # errors, dependency loss, expiry stalled, disk pressure, backup stale,
-# latency-SLO breach). The two SLO-breach rules below are likewise
+# latency-SLO breach, finance invariant, finance unknown stale — the
+# last two added by FIN-013). The two SLO-breach rules below are likewise
 # display-only; the poller now delivers the SLO breach itself
 # (slo_breach, same thresholds), so the Prometheus copies are
 # visualization only. If a
@@ -97,3 +98,36 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations: {summary: "Mutation API latency above the agreed SLO bound (mutation p95 750ms / p99 2000ms)"}
+      # FIN-013: finance signals, visualization-only like every rule in
+      # this file — the delivery path is the in-app inbox conditions
+      # finance_invariant / finance_unknown_stale
+      # (backend/internal/observability/alerts.go), same thresholds.
+      # Every rule links the finance runbook
+      # (docs/operations/finance-invariants-runbook.md); a finance
+      # alert without a runbook link fails the task's acceptance
+      # sentence. No account/order/user ID and no payment field ever
+      # enters a series (bounded labels only, metrics.go).
+      - alert: SellershoFinanceInvariant
+        expr: increase(sellersho_finance_invariant_failures_total[10m]) > 0 or increase(sellersho_finance_reconciliation_differences_total[10m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "New financial invariant failure or reconciliation difference"
+          runbook_url: "docs/operations/finance-invariants-runbook.md"
+          description: "A conservation check failed or the reconciliation oracle found a nonzero difference. Triage per runbook §2/§4; never post a manual ledger entry without the finance-domain reviewer."
+      - alert: SellershoFinanceBalanceMismatch
+        expr: sellersho_finance_balance_mismatch_count > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "Live finance balance mismatch greater than zero"
+          runbook_url: "docs/operations/finance-invariants-runbook.md"
+          description: "Released orders without a release ledger entry, or paid-cancelled orders without a cancellation obligation. A merely-paid order has no ledger entry by design (§2.2 of the runbook) — only a released order missing its entry is a mismatch."
+      - alert: SellershoFinanceUnknownStale
+        expr: sellersho_finance_oldest_unknown_refund_seconds > 3600 or sellersho_finance_oldest_unknown_payment_seconds > 3600
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Unknown payment or refund outcome older than 1 hour"
+          runbook_url: "docs/operations/finance-invariants-runbook.md"
+          description: "The oldest unknown outcome is over the 1-hour bound (a proposal for the finance reviewer to confirm). Triage per runbook §6; never guess an outcome."

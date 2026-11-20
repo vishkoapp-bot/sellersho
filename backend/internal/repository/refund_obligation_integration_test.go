@@ -14,6 +14,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// FIN-013 §1 d — synchronization note (P3, FIN-003 probe
+// TestFIN003PaidCancellationPreservesTenMillionLiability): sequential
+// disposable-DB assertions; obligation + event rows asserted by
+// business identity after each step. No goroutines, no sleeps —
+// determinism comes from the durable obligation row, not timing.
+
 // fin003RestorePrincipalGuards re-creates the two FIN003 migration
 // triggers (202611150004) that destructive fixtures destroy by
 // dropping payment_transactions / orders. See fin003PendingOrder.

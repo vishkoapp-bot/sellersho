@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/lib/pq"
 	"math/rand/v2"
@@ -212,6 +213,11 @@ func reserveOrderCouponTx(ctx context.Context, tx *sql.Tx, o domain.Order) error
 		return ErrCouponInvalid
 	}
 	if max.Valid && count >= max.Int64 {
+		// FIN-013: the last-use rejection is the signal — the coupon
+		// is exhausted, so no reservation is created and no silent
+		// undiscounted order follows. Only the bounded reason is
+		// recorded, never the coupon code or the order.
+		observability.Default.RecordFinanceReservationRejected("coupon_exhausted")
 		return ErrCouponExhausted
 	}
 

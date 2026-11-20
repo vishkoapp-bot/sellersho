@@ -135,6 +135,15 @@ export function loadSessions(target) {
   return JSON.parse(fs.readFileSync(target.sessionsFile)).users;
 }
 
+// FIN-013: the staff cohort (sellers/suppliers/admins) from the same
+// sessions file — coupon-burst and independent-account need seller
+// principals, and loadSessions only returns the 1000 customers.
+export function loadStaffSessions(target) {
+  const data = JSON.parse(fs.readFileSync(target.sessionsFile));
+  if (!Array.isArray(data.staff)) throw Error('staff sessions missing from sessions file');
+  return data.staff;
+}
+
 export function loadCa(target) {
   return fs.readFileSync(target.caFile);
 }

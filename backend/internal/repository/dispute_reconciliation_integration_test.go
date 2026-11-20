@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// FIN-013 §1 d — synchronization note (P5, FIN-005 probe
+// TestAuditFinanceRejectedDisputeReleasesSeller): sequential
+// disposable-DB assertions; verdict + release eligibility are
+// reconciled in one transaction (reconcileDisputeEligibilityTx), so
+// no wait or barrier is needed — determinism comes from the atomic
+// verdict+release, not timing.
+
 func TestAuditFinanceRejectedDisputeReleasesSeller(t *testing.T)  { fin005ReviewedRecovery(t, false) }
 func TestFIN005ReviewedLegacyRecoveryAndDuplicate(t *testing.T)   { fin005ReviewedRecovery(t, false) }
 func TestFIN005MissingReviewedProvenanceRemainsHeld(t *testing.T) { fin005ReviewedRecovery(t, true) }

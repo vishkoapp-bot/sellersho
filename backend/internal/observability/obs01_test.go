@@ -28,9 +28,11 @@ func TestWorkerGaugesForAllJobs(t *testing.T) {
 	if stale := m.pollWorkerGauges(ctx, db); !stale {
 		t.Fatal("jobs with no successful run must be stale")
 	}
-	// One successful run per job: five in operations_job_runs,
+	// One successful run per job: six in operations_job_runs,
 	// delivery-lock-releaser in job_runs (where JobStore records it).
-	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "monthly-settlement"} {
+	// FIN-013 adds the seventh: refund-reconciliation, also recorded
+	// in operations_job_runs by the runner's JobStore.
+	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "monthly-settlement", "refund-reconciliation"} {
 		if _, e := db.Exec(`INSERT INTO operations_job_runs(job,affected,error,started_at,finished_at) VALUES($1,0,'',now(),now())`, job); e != nil {
 			t.Fatal(e)
 		}
@@ -47,6 +49,7 @@ func TestWorkerGaugesForAllJobs(t *testing.T) {
 	for _, prefix := range []string{
 		"worker_unpaid_order_expiry", "worker_ad_cleanup", "worker_qc_response_deadline",
 		"worker_supplier_sla", "worker_delivery_lock_releaser", "worker_monthly_settlement",
+		"worker_refund_reconciliation",
 	} {
 		for _, suffix := range []string{"_last_success_timestamp_seconds", "_backlog", "_oldest_age_seconds"} {
 			if !strings.Contains(s, "sellersho_"+prefix+suffix) {
@@ -109,10 +112,13 @@ func TestRejectCounterAndInflight(t *testing.T) {
 }
 
 // OBS-01 D-05: no job may be recorded under "reconciliation" (or the old
-// "expiry"/"settlement" labels); the six job IDs are the operations.
+// "expiry"/"settlement" labels); the seven job IDs are the operations.
+// FIN-013's job is "refund-reconciliation" — a distinct job ID, not the
+// retired shared "reconciliation" label — so it is listed among the
+// allowed operations below and must NOT trip the retired-label check.
 func TestWorkerOperationsAreJobIDs(t *testing.T) {
 	m := New()
-	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement"} {
+	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation"} {
 		m.Observe("worker", job, "success", time.Millisecond)
 	}
 	m.Observe("worker", "reconciliation", "success", time.Millisecond)
@@ -121,7 +127,7 @@ func TestWorkerOperationsAreJobIDs(t *testing.T) {
 	w := httptest.NewRecorder()
 	m.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	s := w.Body.String()
-	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement"} {
+	for _, job := range []string{"unpaid-order-expiry", "ad-cleanup", "qc-response-deadline", "supplier-sla", "delivery-lock-releaser", "monthly-settlement", "refund-reconciliation"} {
 		if !strings.Contains(s, `operation="`+job+`"`) {
 			t.Fatalf("missing operation %q", job)
 		}

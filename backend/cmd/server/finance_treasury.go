@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/drup/platform/internal/observability"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 )
@@ -75,6 +76,10 @@ func (e *treasuryPaidPayoutError) Error() string {
 // number of Toman inside the JSON-safe bound.
 func treasuryMoney(v int64) (int64, error) {
 	if v > pricing.MaxTransportMoney || v < -pricing.MaxTransportMoney {
+		// FIN-013: a money value outside the valid bound is an
+		// invariant failure, not a quiet error — the counter carries
+		// only the bounded check name, never the value.
+		observability.Default.RecordFinanceInvariantFailure("money_validation")
 		return 0, pricing.ErrInvalidMoney
 	}
 	return v, nil
@@ -394,9 +399,27 @@ func computeTreasuryCashPosition(ctx context.Context, q repository.TreasuryQueri
 	// again the only place it is netted, exactly once.
 	var heldInOrders, heldOrderCount int64
 	{
+		// FIN-013 (Q4): the pre-aggregation form below is semantically
+		// identical to the six-correlated-subqueries form it replaces
+		// (each reversal sum is NULL when the order has no rows, and
+		// COALESCE to 0, exactly as before), but it aggregates each
+		// reversal table ONCE instead of probing it per held order.
+		// Measured on a disposable 100k-order / 60k-held seed:
+		// 1,215-1,915 ms -> 139-413 ms (4-9x; the upper end is with
+		// 20k rows in the reversal tables). The audit's Q4 index
+		// candidates were validated NEGATIVELY on the same seed (two
+		// shapes, 6.7 MB / 3.6 MB, planner never uses either at 60%
+		// selectivity) and are deliberately NOT shipped — see
+		// ~/workspace/fin013-audit/q4-evidence.md. Caveat: this form
+		// aggregates the whole reversal tables; if they grow to
+		// millions of rows a maintained aggregate is the follow-up.
 		err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(net),0), COALESCE(COUNT(*) FILTER (WHERE net > 0),0) FROM (
-			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE((SELECT SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) FROM customer_return_financial_events WHERE order_id=o.id AND component='seller_profit'),0) - COALESCE((SELECT SUM(amount) FROM seller_profit_reversals WHERE order_id=o.id),0), 0) + GREATEST(COALESCE(o.referral_commission,0) - COALESCE((SELECT SUM(amount) FROM referral_commission_reversals WHERE order_id=o.id),0), 0) AS net
-			FROM orders o WHERE o.payment_status='paid' AND COALESCE(o.profit_released,FALSE)=FALSE AND o.status IN ('delivered','delivered_confirmed')
+			SELECT GREATEST(COALESCE(o.dropshipper_profit,0) - COALESCE(crfe.s,0) - COALESCE(spr.s,0), 0) + GREATEST(COALESCE(o.referral_commission,0) - COALESCE(rcr.s,0), 0) AS net
+			FROM orders o
+			LEFT JOIN (SELECT order_id, SUM(CASE WHEN operation='debit' THEN amount ELSE -amount END) AS s FROM customer_return_financial_events WHERE component='seller_profit' GROUP BY order_id) crfe ON crfe.order_id=o.id
+			LEFT JOIN (SELECT order_id, SUM(amount) AS s FROM seller_profit_reversals GROUP BY order_id) spr ON spr.order_id=o.id
+			LEFT JOIN (SELECT order_id, SUM(amount) AS s FROM referral_commission_reversals GROUP BY order_id) rcr ON rcr.order_id=o.id
+			WHERE o.payment_status='paid' AND COALESCE(o.profit_released,FALSE)=FALSE AND o.status IN ('delivered','delivered_confirmed')
 		) s`).Scan(&heldInOrders, &heldOrderCount)
 		if err != nil {
 			return nil, err
@@ -686,6 +709,7 @@ func handleTreasuryCashPosition(w http.ResponseWriter, r *http.Request, db *sql.
 	}
 	days := t01TreasuryDays(r)
 	ctx := r.Context()
+	started := time.Now()
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		writeInternalError(w, err)
@@ -693,6 +717,14 @@ func handleTreasuryCashPosition(w http.ResponseWriter, r *http.Request, db *sql.
 	}
 	defer tx.Rollback()
 	pos, err := computeTreasuryCashPosition(ctx, tx, days)
+	// FIN-013: per-query finance latency for the treasury cash-position
+	// report (audit §2.6 Q4 family) — one histogram sample per report
+	// load, outcome only, no amounts or identifiers.
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	observability.Default.Observe("sql", "treasury_cash_position", outcome, time.Since(started))
 	if err != nil {
 		if errors.Is(err, repository.ErrFinancePrincipalUnresolved) {
 			sellerError(w, err)

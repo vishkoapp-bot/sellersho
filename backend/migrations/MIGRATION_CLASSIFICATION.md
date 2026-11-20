@@ -7,7 +7,7 @@
 > this file. `validate_release.py` fails a release when any `*.up.sql`
 > file is missing from the classification.
 
-Repo commit classified: `92f9cca`. Counts: EXPAND 96 / BACKFILL 53 / CONTRACT 61 / DESTRUCTIVE 1 (total 211). Verdicts: compatible 189 / tightening 18 / breaking 4.
+Repo commit classified: `92f9cca`. Counts: EXPAND 96 / BACKFILL 53 / CONTRACT 62 / DESTRUCTIVE 1 (total 212). Verdicts: compatible 190 / tightening 18 / breaking 4.
 
 ## Verdict vocabulary
 
@@ -511,6 +511,16 @@ Post-conditions:
 Old-binary write: No old-binary write exists: the partial unique index is on request_key_sha256, a NEW nullable column; old inserts leave it NULL and the partial predicate (WHERE request_key_sha256 IS NOT NULL) excludes them.
 
 QUAL-01 withdrawal-intent idempotency; the probe in step 4 exercises this index.
+
+### `202611200004_fin013_alert_codes.up.sql` — compatible
+
+Old-binary write: No old-binary write exists that the new set rejects: observability_alert_state.code widens +finance_invariant +finance_unknown_stale (prior CHECK in 202611180004). An old binary running against the new schema only ever writes the six old codes.
+
+FIN-013: the two new in-app alert codes must be writable or DeliverAlerts fails on every tick (the loop upserts all eight codes) and no alert of any kind is delivered. Regression caught by the existing observability suite (5 tests). Runtime measured 2026-11-20 on a disposable DB: 35.485 ms drop + 32.602 ms re-add.
+
+Post-conditions:
+
+- `SELECT count(*) FROM pg_constraint WHERE conrelid='observability_alert_state'::regclass AND conname='observability_alert_state_code_check' AND pg_get_constraintdef(oid) LIKE '%finance_invariant%' AND pg_get_constraintdef(oid) LIKE '%finance_unknown_stale%'` → eq 1
 
 ## Backfill files (53)
 

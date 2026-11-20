@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/domain"
+	"github.com/drup/platform/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -500,7 +501,21 @@ func (r *FinanceRepository) GetLedgerFiltered(ctx context.Context, dateFrom, dat
 
 // GetStoreBalance calculates real-time store financial balance including referral bonuses and 2% referral commissions
 func (r *FinanceRepository) GetStoreBalance(ctx context.Context, storeID string) (*StoreBalance, error) {
-	return scanStoreBalance(ctx, r.db, storeID)
+	// FIN-013: per-query finance latency for the one-store balance
+	// read (audit §2.6 Q2) — one histogram sample per call, outcome
+	// only, no amounts or identifiers. Wired here, the single entry
+	// point for the standalone balance read (balance endpoint, seller
+	// panel, settlement sweep), not inside scanStoreBalance — the
+	// statement path calls scanStoreBalance as a sub-step of statement
+	// generation and must not be counted as a standalone balance read.
+	started := time.Now()
+	balance, err := scanStoreBalance(ctx, r.db, storeID)
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	observability.Default.Observe("sql", "store_balance", outcome, time.Since(started))
+	return balance, err
 }
 
 // GetStorePayoutsPage returns one cursor page of a store's payout requests,
@@ -604,6 +619,11 @@ func (r *FinanceRepository) RequestOwnedStorePayout(ctx context.Context, ownerUs
 		return nil, err
 	}
 	if amount > available {
+		// FIN-013: the rejection itself is the signal — a payout above
+		// signed availability is refused here, never partially paid.
+		// The counter carries only the bounded reason, never the
+		// amounts or the account.
+		observability.Default.RecordFinanceReservationRejected("exceeds_availability")
 		return nil, ErrStoreInput
 	}
 	id := "pay-req-" + uuid.NewString()

@@ -29,6 +29,19 @@ type AlertSnapshot struct {
 	// never a fabricated healthy value and never a breach).
 	SLOKnown                                               bool
 	SLOReadP95, SLOReadP99, SLOMutationP95, SLOMutationP99 float64
+	// FIN-013 finance alert inputs (audit §5): FinanceInvariantNew is
+	// the count of NEW invariant failures + reconciliation differences
+	// in the last poll window (a delta, so the condition recovers when
+	// the failures stop — a cumulative total could never recover);
+	// FinanceBalanceMismatch is the live mismatch gauge (paid orders
+	// without a ledger entry, paid-cancelled orders without an
+	// obligation); FinanceUnknownOldest is the oldest unknown
+	// payment/refund age in seconds (FinanceUnknownKnown false when
+	// neither queue query succeeded — unknown, never a fabricated 0).
+	FinanceInvariantNew     int64
+	FinanceBalanceMismatch  float64
+	FinanceUnknownOldest    float64
+	FinanceUnknownKnown     bool
 }
 
 // Latency SLO bounds (CAP-01, agreed): read p95 <= 300 ms / p99 <=
@@ -44,10 +57,17 @@ const (
 	sloMutationP99 = 2.0
 )
 
-var alertTitles = map[string]string{"api_errors": "خطای بیش از حد درخواست‌های سایت", "dependency_loss": "قطع ارتباط پایگاه داده یا کش", "job_stale": "توقف اجرای موفق کار زمان‌بندی‌شده", "disk_pressure": "کمبود فضای دیسک سرور", "backup_failure": "خطا یا تأخیر نسخه پشتیبان", "slo_breach": "نقض حد آستانه تأخیر سرویس (SLO)"}
+// Finance unknown-outcome staleness bound (FIN-013 §5, a proposal for
+// the finance reviewer to confirm): an unknown payment or refund older
+// than 1 hour needs a human — the reconciler retries on its own
+// schedule, but an outcome unknown for an hour means the provider
+// never answered and the money is neither confirmed nor failed.
+const financeUnknownStaleSeconds = 3600
+
+var alertTitles = map[string]string{"api_errors": "خطای بیش از حد درخواست‌های سایت", "dependency_loss": "قطع ارتباط پایگاه داده یا کش", "job_stale": "توقف اجرای موفق کار زمان‌بندی‌شده", "disk_pressure": "کمبود فضای دیسک سرور", "backup_failure": "خطا یا تأخیر نسخه پشتیبان", "slo_breach": "نقض حد آستانه تأخیر سرویس (SLO)", "finance_invariant": "نقض پایستگی مالی یا عدم تطابق تراز", "finance_unknown_stale": "پرداخت یا استرداد با نتیجه نامشخص قدیمی"}
 
 func (s AlertSnapshot) conditions() map[string]bool {
-	return map[string]bool{"api_errors": s.Requests > 0 && float64(s.Errors)/float64(s.Requests) > .001, "dependency_loss": s.DependencyLost, "job_stale": s.JobStale, "disk_pressure": s.DiskKnown && s.DiskFreeRatio < .15, "backup_failure": s.BackupFailed, "slo_breach": s.SLOKnown && (s.SLOReadP95 > sloReadP95 || s.SLOReadP99 > sloReadP99 || s.SLOMutationP95 > sloMutationP95 || s.SLOMutationP99 > sloMutationP99)}
+	return map[string]bool{"api_errors": s.Requests > 0 && float64(s.Errors)/float64(s.Requests) > .001, "dependency_loss": s.DependencyLost, "job_stale": s.JobStale, "disk_pressure": s.DiskKnown && s.DiskFreeRatio < .15, "backup_failure": s.BackupFailed, "slo_breach": s.SLOKnown && (s.SLOReadP95 > sloReadP95 || s.SLOReadP99 > sloReadP99 || s.SLOMutationP95 > sloMutationP95 || s.SLOMutationP99 > sloMutationP99), "finance_invariant": s.FinanceInvariantNew > 0 || s.FinanceBalanceMismatch > 0, "finance_unknown_stale": s.FinanceUnknownKnown && s.FinanceUnknownOldest > financeUnknownStaleSeconds}
 }
 
 // diskPressureBand maps a free ratio to a severity band. Band 0 is
@@ -105,7 +125,16 @@ func (m *Registry) DeliverAlerts(ctx context.Context, s AlertSnapshot) error {
 	}
 	defer tx.Rollback()
 	// Fixed iteration order avoids deadlocks between collectors/processes.
-	for _, code := range []string{"api_errors", "dependency_loss", "job_stale", "disk_pressure", "backup_failure", "slo_breach"} {
+	// FIN-013 §13.8 RULE — read before adding a code here: any future
+	// alert code MUST widen the observability_alert_state_code_check
+	// CHECK in the same migration. DeliverAlerts upserts EVERY code in
+	// this list on every tick, so a code the CHECK does not allow
+	// violates the constraint, fails the whole alert transaction, and
+	// NO alert of any kind is delivered (disk, SLO, job-stale
+	// included) — that is exactly how the finance_invariant /
+	// finance_unknown_stale codes broke all alert delivery until
+	// migration 202611200004 widened the CHECK.
+	for _, code := range []string{"api_errors", "dependency_loss", "job_stale", "disk_pressure", "backup_failure", "slo_breach", "finance_invariant", "finance_unknown_stale"} {
 		active := conditions[code] || m.pending[code]
 		// The severity band is only meaningful for disk_pressure; every
 		// other code stores 0. While the disk incident stays active the

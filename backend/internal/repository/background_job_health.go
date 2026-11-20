@@ -37,6 +37,12 @@ func BackgroundJobHealth(ctx context.Context, db *sql.DB) ([]JobHealth, error) {
 		{"unpaid-order-expiry", 5 * time.Second, 3 * time.Second}, {"ad-cleanup", 10 * time.Second, 2 * time.Second},
 		{"qc-response-deadline", 30 * time.Second, 2 * time.Second}, {"supplier-sla", 30 * time.Second, 3 * time.Second},
 		{"delivery-lock-releaser", time.Minute, 10 * time.Second}, {"monthly-settlement", time.Minute, 4 * time.Second},
+		// FIN-013: the refund reconciler joins the panel. Its Stale
+		// definition is the same 3*period+timeout rule (190 s); it is
+		// never Disabled — with no PSP adapter the tick is a recorded
+		// no-op, and a growing backlog (not a stale flag) is the
+		// signal that execution is waiting on FIN-010.
+		{"refund-reconciliation", time.Minute, 10 * time.Second},
 	}
 	out := make([]JobHealth, 0, len(definitions))
 	for _, d := range definitions {
@@ -87,6 +93,15 @@ func jobBacklog(ctx context.Context, db *sql.DB, h *JobHealth) error {
 		review = `SELECT 1 FROM background_job_candidate_retry r JOIN suppliers s ON s.id=r.candidate WHERE r.job='supplier-sla' AND r.next_retry_at>clock_timestamp() LIMIT 1001`
 	case "ad-cleanup":
 		ready = `SELECT due FROM (SELECT bucket+INTERVAL '10 minutes' AS due FROM ad_request_limits WHERE bucket<NOW()-INTERVAL '10 minutes' UNION ALL SELECT expires_at+INTERVAL '1 hour' AS due FROM ad_fraud_keys WHERE expires_at<NOW()-INTERVAL '1 hour')q ORDER BY due LIMIT 1001`
+	case "refund-reconciliation":
+		// FIN-013: ready work is the unknown-outcome queue itself
+		// (stored status 'unknown', oldest first). Review work is an
+		// obligation the reconciler has already attempted and left in
+		// 'failed' terminal state with no succeeded event — it needs
+		// a human decision (re-try with a new adapter, or manual
+		// settlement), not another automatic tick.
+		ready = `SELECT created_at AS due FROM order_refund_obligations WHERE status='unknown' AND NOT EXISTS(SELECT 1 FROM order_refund_poll_state s WHERE s.obligation_id=order_refund_obligations.id AND s.next_reconcile_at>clock_timestamp()) ORDER BY created_at LIMIT 1001`
+		review = `SELECT 1 FROM order_refund_obligations o WHERE o.status='failed' AND NOT EXISTS(SELECT 1 FROM order_refund_events e WHERE e.obligation_id=o.id AND e.status='succeeded') LIMIT 1001`
 	}
 	if ready != "" {
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(GREATEST(0,EXTRACT(EPOCH FROM clock_timestamp()-MIN(due)))::bigint,0) FROM (`+ready+`) q`).Scan(&h.Ready, &h.OldestReadySeconds); err != nil {

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/drup/platform/internal/observability"
+	"github.com/drup/platform/internal/payment"
 	"github.com/drup/platform/internal/repository"
 	"time"
 )
@@ -22,6 +23,14 @@ type BackgroundWorker struct {
 	orderRepo   *repository.OrderRepository
 	finRepo     *repository.FinanceRepository
 	redisClient *repository.RedisClient
+	// refundProvider executes unknown-outcome refunds for the
+	// refund-reconciliation job. It is nil until FIN-010 adopts a
+	// real PSP adapter (ProcessOrderRefund treats nil as "leave the
+	// durable obligation untouched"), so the job is inert-but-visible
+	// until then: it still ticks, still records last-success, and the
+	// unknown-outcome queue gauges still publish. Never wire a test
+	// double here.
+	refundProvider payment.RefundProvider
 }
 
 func (w *BackgroundWorker) SetRedisClient(r *repository.RedisClient) { w.redisClient = r }
@@ -45,9 +54,18 @@ func (w *BackgroundWorker) SetFinanceRepository(r *repository.FinanceRepository)
 	w.finRepo = r
 }
 
+// SetRefundProvider wires the PSP refund adapter for the
+// refund-reconciliation job (FIN-013 §2.2). Pass nil until FIN-010
+// supplies a real adapter; a nil provider makes each tick a
+// recorded no-op that leaves every durable obligation untouched.
+// Call before Start; the runner snapshots the wiring.
+func (w *BackgroundWorker) SetRefundProvider(p payment.RefundProvider) {
+	w.refundProvider = p
+}
+
 func (w *BackgroundWorker) runner() *jobrunner.Runner {
 	w.engineOnce.Do(func() {
-		snapshot := &BackgroundWorker{db: w.db, orderRepo: w.orderRepo, finRepo: w.finRepo, redisClient: w.redisClient}
+		snapshot := &BackgroundWorker{db: w.db, orderRepo: w.orderRepo, finRepo: w.finRepo, redisClient: w.redisClient, refundProvider: w.refundProvider}
 		w.engine = jobrunner.New(repository.JobStore{DB: w.db}, snapshot.jobs())
 	})
 	return w.engine

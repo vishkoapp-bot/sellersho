@@ -28,6 +28,15 @@ func (w *BackgroundWorker) jobs() []jobrunner.Job {
 			return jobrunner.Result{Affected: n, Confirmed: c}, e
 		}},
 		{ID: "monthly-settlement", Period: 60 * time.Second, Timeout: 4 * time.Second, Run: w.monthlySettlement},
+		// FIN-013 §2.2: the refund reconciler finally has a production
+		// caller. Every 60 s it asks the repository to apply one
+		// confirmed outcome per unknown-outcome obligation (bounded
+		// batch of 25, 10 s timeout — the same shape as the other
+		// jobs). With no PSP adapter (FIN-010 blocked) the provider
+		// is nil and the call is a recorded no-op: the queue stays
+		// visible through its gauges and the admin endpoint, and
+		// execution activates the moment FIN-010 wires the adapter.
+		{ID: "refund-reconciliation", Period: 60 * time.Second, Timeout: 10 * time.Second, Run: w.refundReconciliation},
 	}
 }
 func (w *BackgroundWorker) expireOrders(ctx context.Context) (jobrunner.Result, error) {

@@ -1805,39 +1805,83 @@ func TestTreasuryNegativeLiquidCashIsUnknownNotNegative(t *testing.T) {
 }
 
 // ---------------------------------------------------------------- G-14
+// FIN-013 R3: order-independent (delta) form, like G-13. The old form
+// asserted ABSOLUTE global state (liquidCash null, cashStatus
+// "unknown", allTimeIn 50,000,000) while sibling tests leave verified
+// cash in the shared DB via append-only ledger rows that
+// treasuryCleanup cannot delete — so it passed alone (0.55s) and
+// failed in the combined treasury set (liquidCash 212,000,000,
+// cashStatus "partial"), identically on pristine b464d03 (proven
+// pre-existing, not a FIN-013 regression). The delta form asserts
+// exactly what this test owns: one paid order with no receipt adds
+// 50,000,000 of unresolved provider cash and nothing to verified
+// cash, and the report still demands reconciliation.
 func TestTreasuryProductionHttpUnknownCash(t *testing.T) {
 	db := treasuryTestDB(t)
 	f := treasuryNewFixture("g14")
 	t.Cleanup(func() { treasuryCleanup(t, db, f) })
-	// One paid order with no receipt and no other evidence at all.
+	pre := treasuryReadOK(t, db)
+	// One paid order with no receipt and no other evidence of its own.
 	treasurySeedOrder(t, db, f, treasuryOrderSpec{Payable: 50000000})
+	c := treasuryReadOK(t, db)
 
-	rec := treasuryCall(t, db, "cash-position")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("cash-position status=%d body=%s", rec.Code, rec.Body.String())
+	// The unverified order's whole value is unresolved provider cash.
+	treasuryDeltaInt(t, pre.UnresolvedProviderCash, c.UnresolvedProviderCash, 50000000, "unresolvedProviderCash")
+	treasuryDeltaInt(t, pre.UnverifiedPaidOrders, c.UnverifiedPaidOrders, 50000000, "unverifiedPaidOrders")
+	treasuryDeltaInt(t, pre.AllTimeIn, c.AllTimeIn, 50000000, "allTimeIn")
+	// Unverified cash adds no verified cash: the reported figure is
+	// unchanged in VALUE by this order. The only legitimate change is
+	// the D-16 nil/0 flip — with no verified cash at all the report
+	// renders 0, and once unresolved value appears it renders null
+	// (unknown) instead. treasuryDeltaPtr cannot express this (a nil
+	// pre-reading demands an exact post value, and a nil post is a
+	// legitimate flip from 0), so the comparison is written out.
+	sameCash := func(pre, post *int64) bool {
+		if pre == nil && post == nil {
+			return true
+		}
+		if pre != nil && post != nil {
+			return *pre == *post
+		}
+		// The D-16 flip: 0 (no cash at all) <-> nil (unknown).
+		if pre != nil && *pre == 0 && post == nil {
+			return true
+		}
+		if pre == nil && post != nil && *post == 0 {
+			return true
+		}
+		return false
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"liquidCash":null`) || !strings.Contains(body, `"safeToSpend":null`) {
-		t.Fatalf("unknown cash must be JSON null, not 0: %s", body)
+	if !sameCash(pre.LiquidCash, c.LiquidCash) {
+		t.Fatalf("liquidCash changed on an unverified order: pre=%v post=%v (unverified cash must add no verified cash)", pre.LiquidCash, c.LiquidCash)
 	}
-	var c treasuryCash
-	if err := json.Unmarshal([]byte(body), &c); err != nil {
-		t.Fatalf("cash-position response is not JSON: %v", err)
+	if !sameCash(pre.SafeToSpend, c.SafeToSpend) {
+		t.Fatalf("safeToSpend changed on an unverified order: pre=%v post=%v", pre.SafeToSpend, c.SafeToSpend)
 	}
-	if c.LiquidCash != nil || c.SafeToSpend != nil {
-		t.Fatalf("liquidCash=%v safeToSpend=%v want both null", c.LiquidCash, c.SafeToSpend)
+	// D-16, pinned exactly where the old absolute form pinned it:
+	// when no paid-order value existed before this test's seed
+	// (allTimeIn 0, nothing unresolved), the seeded order is the ONLY
+	// cash evidence and it is all unverified, so liquidCash and
+	// safeToSpend must render as JSON null, never 0.
+	if pre.AllTimeIn == 0 && pre.UnresolvedProviderCash == 0 {
+		if c.LiquidCash != nil || c.SafeToSpend != nil {
+			t.Fatalf("unknown cash must be JSON null, not 0: liquidCash=%v safeToSpend=%v", c.LiquidCash, c.SafeToSpend)
+		}
 	}
-	if c.CashStatus != "unknown" {
-		t.Fatalf("cashStatus=%q want unknown", c.CashStatus)
+	// cashStatus follows the same rule as treasuryAssertIdentity:
+	// unknown while no verified cash exists, partial while verified
+	// cash coexists with unresolved cash. The seeded order leaves
+	// unresolved > 0, so the status is unknown-or-partial depending
+	// only on the pre-existing verified cash — never "verified".
+	wantStatus := "partial"
+	if c.LiquidCash == nil {
+		wantStatus = "unknown"
+	}
+	if c.CashStatus != wantStatus {
+		t.Fatalf("cashStatus=%q want %q (liquidCash=%v unresolved=%d)", c.CashStatus, wantStatus, c.LiquidCash, c.UnresolvedProviderCash)
 	}
 	if !c.ReconciliationRequired {
-		t.Fatal("reconciliationRequired=false want true")
-	}
-	if c.UnresolvedProviderCash != 50000000 {
-		t.Fatalf("unresolvedProviderCash=%d want 50000000", c.UnresolvedProviderCash)
-	}
-	if c.AllTimeIn != 50000000 {
-		t.Fatalf("allTimeIn=%d want 50000000", c.AllTimeIn)
+		t.Fatal("reconciliationRequired=false want true (unresolved provider cash exists)")
 	}
 }
 

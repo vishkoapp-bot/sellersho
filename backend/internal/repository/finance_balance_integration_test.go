@@ -12,6 +12,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// FIN-013 §1 d — synchronization note (P1, FIN-001 probe
+// TestAuditFinanceRefundCannotBeWithdrawn): sequential disposable-DB
+// assertions; the account guard is enforced by LockAccountsTx +
+// waitFinanceAccountGuard (row-lock wait, no sleeps). No goroutines,
+// no time-based waiting — determinism comes from the shared balance
+// definition asserted after each step.
+
 // openGapMoneyDB enters only through testdb.Open's disposable marker guard.
 func openFinanceBalanceDB(t *testing.T) *sql.DB {
 	t.Helper()

@@ -1,0 +1,26 @@
+-- 202611200004_fin013_alert_codes (FIN-013 §5 — REQUIRED, not optional).
+--
+-- The FIN-013 instrumentation added two in-app alert conditions
+-- (alerts.go: finance_invariant, finance_unknown_stale) and two
+-- matching Prometheus rules, but the observability_alert_state CHECK
+-- still allows only the six OBS-01 codes. DeliverAlerts upserts ALL
+-- EIGHT codes on every tick (fixed iteration order, alerts.go) — so
+-- the first finance_invariant upsert violates the CHECK and the whole
+-- alert transaction fails: NO alert of ANY kind is delivered (disk,
+-- SLO, job-stale included). Five observability tests fail on this
+-- (TestSLOBreachDeliversExactlyOneAdminRow,
+-- TestDiskPressureRenotifiesOnWorseningBand,
+-- TestAdminAlertDeliveryDeduplicatedAndRearmed,
+-- TestPollDependenciesDeliversAlertsEndToEnd,
+-- TestPollDependenciesDeliversSLOBreach) — the regression was caught
+-- by the existing suite, not by production.
+--
+-- This migration widens the CHECK to the eight codes, exactly as
+-- 202611180004 did for slo_breach (same shape: drop + re-add, class
+-- CONTRACT, verdict compatible — an old binary running against the
+-- new schema is unaffected: it only ever writes the six old codes).
+-- The drop + re-add is one statement pair inside the runner's
+-- per-migration transaction; the table holds at most eight rows (one
+-- per code), so the rewrite is trivial.
+ALTER TABLE observability_alert_state DROP CONSTRAINT observability_alert_state_code_check;
+ALTER TABLE observability_alert_state ADD CONSTRAINT observability_alert_state_code_check CHECK (code IN ('api_errors','dependency_loss','job_stale','disk_pressure','backup_failure','slo_breach','finance_invariant','finance_unknown_stale'));

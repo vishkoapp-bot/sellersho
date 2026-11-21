@@ -440,6 +440,16 @@ def load_aliases(release_dir):
 
 previous_edge = run('docker', 'ps', '--filter', 'label=com.docker.compose.project=drup',
                     '--filter', 'label=com.docker.compose.service=edge', '--format', '{{.ID}}', capture=True).splitlines()
+# REL-02 deploy fix — `ssl` is the deploy's effective SSL flag, not the
+# caller's bare argument: a live edge container means this IS an SSL
+# deployment (the edge serves host 80/443, compose_files includes
+# ssl.yml below, and the deploy recreates the edge). Every downstream
+# use — compose_files, the metrics-ports assert, require_edge=ssl —
+# already treats it that way, so require_edge=ssl is correct as
+# written; the b464d03 failure was NOT this boolean, it was the stale
+# ssl file the assert read (see the early ship below). Do not "fix"
+# this line by dropping the `or bool(previous_edge)`: that would make
+# the assert skip the edge on a host that runs one.
 ssl = ssl or bool(previous_edge)
 # OBS-01 (C-02): docker-compose.observability.yml is DELIBERATELY absent
 # here. It holds Grafana's ${GRAFANA_ADMIN_PASSWORD:?} fail-fast; this
@@ -1010,16 +1020,23 @@ def assert_merged_config(config_json, require_edge=True, require_collectors=True
     return True
 
 
-def compose_observability(*args):
+def compose_observability(*args, capture=False):
     """docker compose with the collector file added (C-02). Only the
     observability step uses this: the app deploy and rollback use
     compose(), which never includes docker-compose.observability.yml,
     so an unset GRAFANA_ADMIN_PASSWORD cannot block them.
+
+    capture mirrors compose() above: deploy_observability() calls this
+    with capture=True for the `config --format json` assertion. Until
+    the REL-02 deploy fix this parameter was missing, so that call
+    raised TypeError — the assert line was added by REL-02 (69c8400)
+    but never executed end to end before the b464d03 deploy failed
+    earlier at the ssl assert, so the bug hid behind the first one.
     """
     cmd = ['docker', 'compose', '--project-directory', str(root)]
     for file in compose_files + [root / 'docker-compose.observability.yml']:
         cmd += ['-f', str(file)]
-    return run(*cmd, *args)
+    return run(*cmd, *args, capture=capture)
 
 
 def deploy_observability():
@@ -1146,6 +1163,26 @@ try:
     # the full ship list in one place.
     for name in ['docker-compose.yml', 'docker-compose.prod.yml']:
         shutil.copy2(release / name, root / name)
+    # REL-02 deploy fix (ssl ship-order bug — the failed b464d03
+    # deploy): docker-compose.ssl.yml MUST ship here, before ANY
+    # `compose config` invocation, exactly like base+prod above. Until
+    # this fix it shipped only in the late loop below (after the
+    # migrations), so assert_merged_config validated a MIXED config —
+    # NEW base/prod + the OLD root ssl file — whose edge service has
+    # no digest pin, budgets, healthcheck or logging, and the deploy
+    # failed fail-closed at that assert on every SSL deploy. The ship
+    # is ssl-gated, mirroring the compose_files entry above: a
+    # non-SSL deploy has no edge service and must not gain one.
+    # docker-compose.observability.yml ships here too (unconditionally,
+    # like the late loop): its own assert runs inside
+    # deploy_observability(), after the late loop, so it was not
+    # live-broken — but leaving it late would leave the same
+    # mixed-config hazard one refactor away from the collectors. Both
+    # files are in saved_files above, so rollback restores the
+    # previous root copies exactly as for base+prod.
+    if ssl:
+        shutil.copy2(release / 'docker-compose.ssl.yml', root / 'docker-compose.ssl.yml')
+    shutil.copy2(release / 'docker-compose.observability.yml', root / 'docker-compose.observability.yml')
     # SEC-01 (critic F-02 #4): validate the merged compose BEFORE any
     # SQL migration runs, so a bad compose fails fast with no DB
     # change. The runtime file is written first: compose config reads
@@ -1164,7 +1201,12 @@ try:
     # (compose_files excludes docker-compose.observability.yml), so
     # their rows are asserted inside deploy_observability() on the
     # observability merge instead (same function, superset config).
-    # (Non-SSL deploys have no edge service: require_edge=False.)
+    # require_edge=ssl is exact: ssl is already OR'd with
+    # bool(previous_edge) at the top, so a host running an edge
+    # asserts it, and a host without one skips it — and the early ship
+    # above guarantees the edge the assert sees is the release's, not
+    # the previous root file's. (Non-SSL deploys have no edge service:
+    # require_edge=False.)
     assert_merged_config(compose('config', '--format', 'json', capture=True),
                          require_edge=ssl, require_collectors=False)
     # MIG-02 step 3b — pre-deploy applied-set snapshot (version +
@@ -1224,6 +1266,11 @@ try:
     # REL-02: the base + prod compose files are likewise shipped early
     # (before `compose config`); this loop re-copies them as a no-op
     # safety net so the full ship list stays visible in one place.
+    # REL-02 deploy fix: docker-compose.ssl.yml and
+    # docker-compose.observability.yml are likewise shipped early now
+    # (before `compose config`) — the ssl file's late ship was the
+    # b464d03 failure (the assert validated a mixed config); this loop
+    # re-copies them as the same no-op safety net.
     for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml', 'docker-compose.yml', 'docker-compose.prod.yml']:
         shutil.copy2(release / name, root / name)
     # OBS-01 (D-01/G-01): ship the collector config with the release so

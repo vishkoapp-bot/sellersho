@@ -545,6 +545,117 @@ class TestComposeShipWiring(unittest.TestCase):
         self.assertLess(secret_check, ship, "secret check must run before the ship")
         self.assertLess(ship, config, "compose ship must run before compose config")
 
+    def test_ssl_shipped_early_before_compose_config(self):
+        # REL-02 deploy fix: the b464d03 deploy failed fail-closed at
+        # assert_merged_config because docker-compose.ssl.yml shipped
+        # only in the late loop (after migrations) — the assert
+        # validated NEW base/prod + the OLD root ssl file, whose edge
+        # has no digest pin, budgets, healthcheck or logging. The ssl
+        # file must ship before the first `compose config`, like
+        # base+prod. (First occurrence: the early ship; the late loop
+        # re-copy is the no-op safety net, pinned by
+        # test_forward_repair_reships_compose_files.)
+        ship = SOURCE.index(
+            "shutil.copy2(release / 'docker-compose.ssl.yml', root / 'docker-compose.ssl.yml')")
+        config = SOURCE.index("\n    compose('config', '--quiet')\n")
+        merged_assert = SOURCE.index("assert_merged_config(compose('config'")
+        secret_check = SOURCE.index("run_secret_checks_nodocker.py")
+        self.assertLess(secret_check, ship, "secret check must run before the ssl ship")
+        self.assertLess(ship, config, "ssl ship must run before compose config")
+        self.assertLess(ship, merged_assert, "ssl ship must run before the merged-config assert")
+
+    def test_ssl_early_ship_is_ssl_gated(self):
+        # The early ssl ship mirrors the compose_files entry: only an
+        # SSL deploy has an edge service. An unconditional ship would
+        # plant an edge file on a non-SSL root.
+        self.assertIn(
+            "if ssl:\n        shutil.copy2(release / 'docker-compose.ssl.yml', "
+            "root / 'docker-compose.ssl.yml')",
+            SOURCE)
+
+    def test_observability_shipped_early_before_compose_config(self):
+        # Same mixed-config hazard, one refactor away from the
+        # collectors: docker-compose.observability.yml carries the
+        # REL-02 pins/budgets/healthchecks the observability merge
+        # asserts, so it must also ship before any `compose config`
+        # (its own assert runs later, inside deploy_observability(),
+        # but the file must already be the release's by then).
+        ship = SOURCE.index(
+            "shutil.copy2(release / 'docker-compose.observability.yml', "
+            "root / 'docker-compose.observability.yml')")
+        config = SOURCE.index("\n    compose('config', '--quiet')\n")
+        self.assertLess(ship, config,
+                        "observability ship must run before compose config")
+
+    def test_saved_files_covers_ssl_and_observability(self):
+        # The early-shipped files must be in the deploy backup or a
+        # rollback after a failed assert cannot restore the previous
+        # root copies.
+        m = re.search(r"saved_files = \[(.*?)\]\n", SOURCE, re.S)
+        self.assertIsNotNone(m, "saved_files list not found")
+        self.assertIn("'docker-compose.ssl.yml'", m.group(1))
+        self.assertIn("'docker-compose.observability.yml'", m.group(1))
+
+    def test_ssl_flag_includes_previous_edge(self):
+        # require_edge=ssl is exact only because ssl is already OR'd
+        # with bool(previous_edge): a live edge container makes the
+        # deploy an SSL deploy, so the assert must require the edge —
+        # and the early ship must have put the release's ssl file in
+        # place for it to read. Dropping the `or` would let the assert
+        # skip the edge on a host that runs one.
+        self.assertIn("ssl = ssl or bool(previous_edge)", SOURCE)
+        self.assertIn(
+            "assert_merged_config(compose('config', '--format', 'json', capture=True),\n"
+            "                         require_edge=ssl, require_collectors=False)",
+            SOURCE)
+
+
+class TestComposeObservabilityCapture(unittest.TestCase):
+    """deploy_observability() calls compose_observability(..., capture=True).
+
+    REL-02 added that call, but compose_observability() took *args only
+    and rejected the keyword — a TypeError that hid behind the b464d03
+    ssl-assert failure (the deploy never got that far). The fix drill
+    exposed it at deploy_observability() after the binary swap, so the
+    retry would have failed there instead. Pin the signature + the
+    pass-through to run() with a stubbed run (no Docker)."""
+
+    def _load(self):
+        tree = ast.parse(SOURCE)
+        nodes = [n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == "compose_observability"]
+        self.assertEqual(len(nodes), 1, "compose_observability not found")
+        calls = {}
+
+        def stub_run(*args, capture=False, **kwargs):
+            calls["args"] = args
+            calls["capture"] = capture
+            return '{"services": {}}'
+
+        namespace = {"run": stub_run, "root": Path("/opt/drup"),
+                     "compose_files": [Path("/opt/drup/docker-compose.yml")]}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]),
+                     str(DEPLOY_REMOTE), "exec"), namespace)  # noqa: S102 — test harness, repo-owned source
+        return namespace["compose_observability"], calls
+
+    def test_capture_kwarg_accepted_and_forwarded(self):
+        fn, calls = self._load()
+        self.assertEqual(fn("config", "--format", "json", capture=True),
+                         '{"services": {}}')
+        self.assertTrue(calls["capture"], "capture=True must reach run()")
+        self.assertIn("config", calls["args"])
+        self.assertIn("--format", calls["args"])
+
+    def test_observability_file_appended_after_app_files(self):
+        fn, calls = self._load()
+        fn("up", "-d", capture=False)
+        argv = list(calls["args"])
+        obs = str(Path("/opt/drup/docker-compose.observability.yml"))
+        self.assertIn(obs, argv)
+        self.assertGreater(argv.index(obs),
+                           argv.index(str(Path("/opt/drup/docker-compose.yml"))))
+        self.assertFalse(calls["capture"])
+
     def test_forward_repair_reships_compose_files(self):
         self.assertIn(
             "for name in ['Caddyfile', 'docker-compose.ssl.yml', "

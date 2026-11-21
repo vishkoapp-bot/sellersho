@@ -78,7 +78,7 @@ func TestCapacityDataFloor(t *testing.T) {
 			t.Fatal(err)
 		}
 		rows.Close()
-		staffRows, err := db.Query(`SELECT u.id::text,u.mobile,u.full_name,u.role,COALESCE(s.id,''),COALESCE(p.id,'') FROM users u LEFT JOIN stores s ON s.owner_user_id=u.id LEFT JOIN suppliers p ON p.owner_user_id=u.id WHERE u.full_name LIKE 'cap-staff-%' OR u.full_name IN (SELECT 'cap-seller-'||i FROM generate_series(1,5)i) OR u.full_name IN (SELECT 'cap-supplier-user-'||i FROM generate_series(1,5)i) ORDER BY u.role,u.mobile`)
+		staffRows, err := db.Query(`SELECT u.id::text,u.mobile,u.full_name,u.role,COALESCE(s.id,''),COALESCE(p.id,'') FROM users u LEFT JOIN stores s ON s.owner_user_id=u.id LEFT JOIN suppliers p ON p.owner_user_id=u.id WHERE u.full_name LIKE 'cap-staff-%' OR u.full_name IN (SELECT 'cap-seller-'||i FROM generate_series(1,100)i) OR u.full_name IN (SELECT 'cap-supplier-user-'||i FROM generate_series(1,5)i) ORDER BY u.role,u.mobile`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,8 +98,13 @@ func TestCapacityDataFloor(t *testing.T) {
 		if err := staffRows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		if len(staff) != 20 {
-			t.Fatalf("staff session cohort=%d want20", len(staff))
+		// CAP-02 W-1.4: 115 staff sessions (10 cap-staff + 100 cap-seller +
+		// 5 cap-supplier-user). The staff variant of commerce-rolling.mjs
+		// still uses exactly 20 of them (first 5 per role), so the
+		// measured mix is unchanged; the full 100 seller sessions are
+		// what independent-account.mjs needs.
+		if len(staff) != 115 {
+			t.Fatalf("staff session cohort=%d want115", len(staff))
 		}
 		b, err := json.Marshal(map[string]any{"users": users, "staff": staff, "scope": "synthetic sessions; not startup login evidence"})
 		if err != nil {

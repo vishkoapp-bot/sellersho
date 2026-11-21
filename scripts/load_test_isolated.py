@@ -128,11 +128,12 @@ class Run:
         self.verify_network()
         for cid,name in self.containers:
             verify_container(json.loads(self.docker('inspect',cid))[0],cid,name,self.nonce,self.network,self.network_id)
-    def create(self,alias,image,args=(),env=None,mounts=(),extra=()):
+    def create(self,alias,image,args=(),env=None,mounts=(),extra=(),writable=()):
         self.verify_network(); name=self.network+'-'+alias
         cmd=['create','--name',name,'--network',self.network_id,'--network-alias',alias,'--label',LABEL+'='+self.nonce,'--log-driver','local','--log-opt','max-size=10m','--log-opt','max-file=2']
         for key in (env or {}): cmd+=['--env',key]
         for source,target in mounts: cmd+=['--mount',f'type=bind,source={source},destination={target},readonly']
+        for source,target in writable: cmd+=['--mount',f'type=bind,source={source},destination={target}']
         cmd+=list(extra)+[image]+list(args)
         cid=self.docker(*cmd,env=dict(os.environ,**(env or {}))).strip()
         self.containers.append((cid,name));self.verify_network()
@@ -317,13 +318,13 @@ class Run:
         self.manifest['browser_scope']='10anonymous real-browser contexts,cold/warm built UI and assets;no credential injection;not1000-user or fullcheckout acceptance'
         self.manifest['browser_exit']=status
         return status
-    def baseline(self, smoke=False, login=False, otp=False, background=False, commerce=False, rolling=0, journey=0, hot=False, staff=False):
+    def baseline(self, smoke=False, login=False, otp=False, background=False, commerce=False, rolling=0, journey=0, hot=False, staff=False, inventory=False, coupon=False, independent=False):
         self.verify()
         run_started=self.sql("SELECT clock_timestamp()") if (commerce or rolling or journey or hot) else None
         before=self.docker('exec',self.backend,'wget','-q','-O','-','http://127.0.0.1:9090/metrics')
         prefix='setup' if smoke else 'baseline'
         (self.out/(prefix+'-metrics-before.prom')).write_text(before)
-        cid=self.create('smoke' if smoke else 'generator','node:24-bookworm-slim',['node','/tests/hot-sku.mjs' if hot and not smoke else '/tests/users-1000.mjs' if journey and not smoke else '/tests/commerce-rolling.mjs' if rolling and not smoke else '/tests/commerce-baseline.mjs' if commerce and not smoke else '/tests/login-otp.mjs' if otp and not smoke else '/tests/baseline.mjs'],env={'CAPACITY_SMOKE':'1' if smoke else '0','CAPACITY_PROFILE':'login' if login else 'auth','CAPACITY_SMS_KEY':self.smskey,'CAPACITY_BACKGROUND':'1' if background else '0','CAPACITY_DURATION_SECONDS':str(journey or rolling or 30),'CAPACITY_STAFF':'1' if staff else '0'},mounts=[(self.tests,'/tests'),(self.work/'root.crt','/trust/root.crt')]+([(self.work/'users.json','/sessions/users.json')] if (self.work/'users.json').exists() else []))
+        cid=self.create('smoke' if smoke else 'generator','node:24-bookworm-slim',['node','/tests/inventory-100rps.js' if inventory and not smoke else '/tests/coupon-burst.mjs' if coupon and not smoke else '/tests/independent-account.mjs' if independent and not smoke else '/tests/hot-sku.mjs' if hot and not smoke else '/tests/users-1000.mjs' if journey and not smoke else '/tests/commerce-rolling.mjs' if rolling and not smoke else '/tests/commerce-baseline.mjs' if commerce and not smoke else '/tests/login-otp.mjs' if otp and not smoke else '/tests/baseline.mjs'],env={'CAPACITY_SMOKE':'1' if smoke else '0','CAPACITY_PROFILE':'login' if login else 'auth','CAPACITY_SMS_KEY':self.smskey,'CAPACITY_BACKGROUND':'1' if background else '0','CAPACITY_DURATION_SECONDS':str(journey or rolling or 30),'CAPACITY_STAFF':'1' if staff else '0','INV12_PROBE_APPROVED':os.environ.get('INV12_PROBE_APPROVED','0')},mounts=[(self.tests,'/tests'),(self.work/'root.crt','/trust/root.crt')]+([(self.work/'users.json','/sessions/users.json')] if (self.work/'users.json').exists() else []))
         samples=[]; stop=threading.Event(); started=time.monotonic()
         def sample():
             while not stop.is_set():
@@ -339,6 +340,14 @@ class Run:
         try: status=int(self.docker('wait',cid,timeout=max(600,rolling+1800,journey+1800)).strip())
         finally: stop.set();sampler.join(timeout=40)
         if sampler.is_alive() or self.manifest.get('sampling_error'): status=1
+        # CAP-02 W-1.2: inventory-100rps keeps its INV12_PROBE_APPROVED=1
+        # refusal — the driver exits 2 before any request (no summary is
+        # written, so there is nothing to reconcile). The refusal is the
+        # expected outcome, recorded as a gate, never a pass.
+        if inventory and status==2:
+            self.manifest['inventory_100rps_gate']='refused: INV12_PROBE_APPROVED=1 not set (INV-12 probe approval required; driver exited 2 before any request)'
+            self.manifest['baseline_exit']=2
+            return 2
         self.manifest[prefix+'_resource_samples']=samples
         self.manifest['sampling_scope']='approximately every5seconds during short local run; not sustained/soak certification'
         self.manifest['log_plumbing']='detached Docker backend; local logging driver bounded10MiB*2; no native backend PIPE; finite CLI/build pipes drained by subprocess.run'
@@ -391,7 +400,7 @@ class Run:
               'ledger_negative_amount',(SELECT count(*) FROM ledger_entries WHERE date>='{ts}' AND amount<0),
               'ledger_orphan_order',(SELECT count(*) FROM ledger_entries l WHERE l.date>='{ts}' AND l.related_order_or_dispute IS NOT NULL AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.id=l.related_order_or_dispute)),
               'paid_orders_without_ledger_entry',(SELECT count(*) FROM orders o WHERE o.created_at>='{ts}' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%') AND o.payment_status='paid' AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.related_order_or_dispute=o.id)),
-              'paid_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='{ts}' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%') AND o.payment_status IN ('cancelled','refund_pending') AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
+              'paid_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='{ts}' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%') AND o.payment_status='paid' AND o.status='cancelled' AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
               'duplicate_obligations',(SELECT count(*) FROM (SELECT purpose,business_id,source_payment_id FROM order_refund_obligations GROUP BY 1,2,3 HAVING count(*)>1) d),
               'obligation_over_source',(SELECT count(*) FROM order_refund_obligations WHERE created_at>='{ts}' AND amount_toman>source_amount_toman),
               'orders_with_multiple_refunds',(SELECT count(*) FROM (SELECT order_id FROM refunds GROUP BY order_id HAVING count(*)>1) d)
@@ -409,6 +418,25 @@ class Run:
                 self.manifest['oracle_gate'] = 'FAILED: price/ledger/refund oracle mismatch (see commerce_price_ledger_refund_oracle)'
             else:
                 self.manifest['oracle_gate'] = 'matched within stated scope (ledger conservation across deferred releases still OPEN)'
+        if coupon and not smoke:
+            # CAP-02 W-1.3 (Docker side): same oracle as the native
+            # oracle_coupon_burst — used_count == occupying reservations,
+            # consumed == discounted orders, silent-discount 0; deadlocks
+            # counted from pg_stat_database; driver retries are 0 by
+            # construction (no retry loop in the driver).
+            coupon_oracle=json.loads(self.sql("SELECT json_build_object("
+              "'coupons',(SELECT count(*) FROM seller_discount_codes WHERE code LIKE 'FIN013BURST%'),"
+              "'used_count_mismatch',(SELECT count(*) FROM seller_discount_codes c WHERE c.code LIKE 'FIN013BURST%' AND c.used_count <> (SELECT COUNT(*) FROM order_coupon_reservations r WHERE r.coupon_id=c.id AND r.state IN ('reserved','consumed','review_hold'))),"
+              "'consumed_reservations',(SELECT count(*) FROM order_coupon_reservations r JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold')),"
+              "'discounted_orders',(SELECT count(*) FROM orders o JOIN order_coupon_reservations r ON r.order_id=o.id JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold') AND COALESCE(o.coupon_discount_amount,0)>0),"
+              "'silent_discount',(SELECT count(*) FROM orders o JOIN order_coupon_reservations r ON r.order_id=o.id JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold') AND COALESCE(o.coupon_discount_amount,0)=0),"
+              "'reserved_inflight',(SELECT count(*) FROM order_coupon_reservations r JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state='reserved'),"
+              "'deadlocks',(SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()))"))
+            coupon_oracle['scope']='per-coupon reservation/counter/order agreement for the FIN013BURST coupons (FIN-013 check 6); zero silently-undiscounted orders; deadlocks counted from pg_stat_database; driver retries are 0 by construction'
+            self.manifest['coupon_burst_oracle']=coupon_oracle
+            if coupon_oracle['used_count_mismatch'] or coupon_oracle['silent_discount'] or coupon_oracle['consumed_reservations']!=coupon_oracle['discounted_orders']:
+                status=1;self.manifest['coupon_burst_oracle_gate']='FAILED'
+            else:self.manifest['coupon_burst_oracle_gate']='matched: used_count == occupying reservations, consumed == discounted orders, silent-discount 0 (deadlocks=%s)'%coupon_oracle['deadlocks']
         self.manifest['setup_smoke_exit' if smoke else 'baseline_exit']=status
         self.manifest['sms_double_counts']=json.loads(self.docker('exec',self.sms,'node','-e',"fetch('http://127.0.0.1:8081/metrics',{headers:{Authorization:process.env.CAPACITY_SMS_KEY}}).then(r=>r.text()).then(console.log)"))
         self.manifest['carrier_double_counts']=json.loads(self.docker('exec',self.carrier,'node','-e',"fetch('http://127.0.0.1:8082/metrics',{headers:{Authorization:'Bearer '+process.env.CAPACITY_CARRIER_KEY}}).then(r=>r.text()).then(console.log)"))
@@ -445,6 +473,333 @@ class Run:
         self.delete_owned_work()
         if failures: raise SafetyError('Identity-checked cleanup failed for: '+','.join(failures))
 
+    # -- CAP-02 W-3 fault matrix (Docker) --------------------------------
+    # Faithful port of the native runner's W-3 profiles, using Docker
+    # primitives (docker kill/start/stop, self.sql, generator containers).
+    # UNPROVEN on this VM: Docker cannot run here, so no Docker W-3
+    # profile has ever executed; the native profiles are the proven ones.
+    # Every Docker W-3 result records docker_host_required=True and must
+    # be re-run on a Docker host before it is trusted. The FIN-014 leg of
+    # the W-2.1 gate is deferred on Docker (fin014-report needs a DSN to
+    # the container DB); the exact host command is recorded in each gate
+    # report.
+    def docker_health(self):
+        return subprocess.run(['docker','exec',self.backend,'wget','-q','-O','-','http://127.0.0.1:8080/api/health'],capture_output=True).returncode==0
+    def docker_wait_health(self, timeout=120):
+        for _ in range(timeout*2):
+            if self.docker_health(): return True
+            time.sleep(0.5)
+        return False
+    def run_container_driver(self, name, driver, extra_env, timeout=600, wait=True):
+        env={'CAPACITY_SMOKE':'0','CAPACITY_PROFILE':'auth','CAPACITY_SMS_KEY':self.smskey,'CAPACITY_BACKGROUND':'0','CAPACITY_DURATION_SECONDS':'30','CAPACITY_STAFF':'0','INV12_PROBE_APPROVED':os.environ.get('INV12_PROBE_APPROVED','0')}
+        env.update(extra_env or {})
+        state_dir=self.work/'fault-state'; state_dir.mkdir(exist_ok=True)
+        mounts=[(self.tests,'/tests'),(self.work/'root.crt','/trust/root.crt')]+([(self.work/'users.json','/sessions/users.json')] if (self.work/'users.json').exists() else [])
+        cid=self.create(name,'node:24-bookworm-slim',['node','/tests/'+driver],env=env,mounts=mounts,writable=[(state_dir,'/state')])
+        if not wait: return cid, None
+        status=int(self.docker('wait',cid,timeout=timeout).strip())
+        summary=None
+        try:
+            self.docker('cp',cid+':/tmp/summary.json',self.out/(name+'-summary.json'))
+            summary=json.loads((self.out/(name+'-summary.json')).read_text())
+        except Exception: pass
+        return status, summary
+    def docker_gate(self, name, since):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('cap02_reconcile',ROOT/'scripts'/'cap02_reconcile.py')
+        mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        report={'name':name,'verdict':'PASS','legs':[],'docker_host_required':True,
+                'fin014_note':'FIN-014 leg DEFERRED on Docker: run scripts/cap02_reconcile.py leg 3 on the Docker host with a DSN to the container DB (publish the PG port, or run inside the network) before trusting this verdict'}
+        oracle=json.loads(self.sql(mod.COMMERCE_SQL.replace('{TS}',since.replace("'","''"))))
+        stock_ok=(oracle['physical_sellable']+oracle['net_captured']==oracle['source_receipt_units'] and oracle['sku_projection']==oracle['physical_sellable'] and not oracle['payment_order_amount_mismatch'])
+        oracle_fail=(oracle['price_payable_mismatch'] or oracle['price_discount_mismatch'] or oracle['ledger_negative_amount'] or oracle['ledger_orphan_order'] or oracle['paid_cancelled_without_obligation'] or oracle['duplicate_obligations'] or oracle['obligation_over_source'] or oracle['orders_with_multiple_refunds'])
+        report['legs'].append({'name':'commerce (runner oracle_commerce)','status':'PASS' if (stock_ok and not oracle_fail) else 'FAIL','oracle':oracle,'paid_orders_without_ledger_entry':'INFO (not a gate)'})
+        counts={}
+        for line in self.sql((ROOT/'scripts'/'fin013-oracle.sql').read_text()).splitlines():
+            if '|' in line:
+                k,v=line.split('|',1); counts[k]=int(v)
+        rows=[]; fin013_ok=True
+        for k,v in counts.items():
+            if k=='orders_payments_no_payment_record': ok=(v==1); note='informational, expected exactly 1 (legacy seed ord-ready-pick-001)'
+            else: ok=(v==0); note=''
+            rows.append({'check':k,'value':v,'status':'PASS' if ok else 'FAIL','note':note})
+            if not ok: fin013_ok=False
+        report['legs'].append({'name':'FIN-013 10-point oracle','status':'PASS' if fin013_ok else 'FAIL','rows':rows})
+        inv_rows=[]; inv_ok=True
+        has_fn=int(self.sql("SELECT count(*) FROM pg_proc WHERE proname='expected_storage_departure_sources'"))
+        for cname,csql in mod.INV12_CHECKS:
+            if cname=='inv_over_departures' and not has_fn:
+                inv_rows.append({'check':cname,'value':None,'status':'N/A','note':'expected_storage_departure_sources() absent on this DB'}); continue
+            value=int(self.sql(csql))
+            inv_rows.append({'check':cname,'value':value,'status':'PASS' if value==0 else 'FAIL'})
+            if value!=0: inv_ok=False
+        inv_rows.append({'check':'per_lot_movement_reconstruction','value':None,'status':'N/A','note':'NOT-APPLICABLE on capacity-run DBs (see cap02_reconcile.py)'})
+        report['legs'].append({'name':'INV-12 section-5 inventory checks','status':'PASS' if inv_ok else 'FAIL','rows':inv_rows})
+        if any(leg['status']!='PASS' for leg in report['legs']): report['verdict']='FAIL'
+        (self.out/(name+'-reconcile.json')).write_text(json.dumps(report,indent=2))
+        self.manifest[name+'_reconcile']={'verdict':report['verdict'],'report':str(self.out/(name+'-reconcile.json')),'docker_host_required':True}
+        return (0 if report['verdict']=='PASS' else 1), report
+    def docker_plant_double_receipt(self, order_id=None):
+        if order_id is None:
+            order_id=self.sql("SELECT id FROM orders WHERE store_id='cap-store-1' AND payment_status='paid' AND (SELECT count(*) FROM order_payment_receipts WHERE order_id=orders.id)=1 ORDER BY created_at DESC LIMIT 1")
+        if not order_id: return None
+        receipts=int(self.sql("SELECT count(*) FROM order_payment_receipts WHERE order_id='%s'"%order_id))
+        if receipts!=1: return None
+        row=self.sql("SELECT id, order_number, amount FROM payment_transactions WHERE order_id='%s' AND status='paid'"%order_id)
+        if not row: return None
+        _txn_id,order_number,amount=row.split('|')
+        customer=self.sql("SELECT customer_user_id FROM orders WHERE id='%s'"%order_id)
+        cust=("'%s'"%customer) if customer else 'NULL'
+        suffix=secrets.token_hex(4)
+        txn2='cap-double-txn-'+suffix; ver2='cap-double-ver-'+suffix; rcpt2='cap-double-rcpt-'+suffix
+        self.sql("INSERT INTO payment_transactions (id, order_id, order_number, gateway_token, rrn, amount, status) VALUES ('%s','%s','%s','cap-double-token-%s',NULL,%s,'failed')"%(txn2,order_id,order_number,suffix,amount))
+        self.sql("INSERT INTO order_payment_verifications (id, payment_id, order_id, customer_id, amount_toman, currency, funding_kind) VALUES ('%s','%s','%s',%s,%s,'TOMAN','simulated')"%(ver2,txn2,order_id,cust,amount))
+        self.sql("INSERT INTO order_payment_receipts (id, verification_id, funding_kind, payment_id, order_id, customer_id, amount_toman, currency, provider_reference, verified_at) VALUES ('%s','%s','simulated','%s','%s',%s,%s,'TOMAN','cap-double-ref-%s',NOW())"%(rcpt2,ver2,txn2,order_id,cust,amount,suffix))
+        return {'order_id':order_id,'txn':txn2,'verification':ver2,'receipt':rcpt2}
+    def docker_unplant_double_receipt(self, planted):
+        if not planted: return
+        # Receipts + verifications are immutable by trigger (same as the
+        # native unplant_double_receipt): disable, delete, re-enable.
+        self.sql("ALTER TABLE order_payment_receipts DISABLE TRIGGER payment_receipt_identity; ALTER TABLE order_payment_verifications DISABLE TRIGGER payment_verification_identity; DELETE FROM order_payment_receipts WHERE id='%s'; DELETE FROM order_payment_verifications WHERE id='%s'; DELETE FROM payment_transactions WHERE id='%s'; ALTER TABLE order_payment_receipts ENABLE TRIGGER payment_receipt_identity; ALTER TABLE order_payment_verifications ENABLE TRIGGER payment_verification_identity"%(planted['receipt'],planted['verification'],planted['txn']))
+    def restart_backend_docker(self, latencies=None):
+        env=dict(self.appenv); env['CAPACITY_PAYMENT_LATENCIES_MS']=latencies or '25,25,50,50,150'
+        old=self.backend
+        try: self.docker('stop',old)
+        except Exception: pass
+        try: self.docker('rm',old)
+        except Exception: pass
+        self.containers=[(c,n) for c,n in self.containers if c!=old]
+        self.backend=self.create('backend','alpine:latest',['/server'],env=env,mounts=[(self.work/'server','/server'),(self.source/'migrations','/migrations')])
+        if not self.docker_wait_health(): raise SafetyError('backend health failed after restart')
+    def run_fault_boundary_docker(self, boundary):
+        key='fault_boundary_'+boundary+'_docker'; result={'boundary':boundary,'docker_host_required':True}
+        since=self.sql('SELECT clock_timestamp()')
+        state_path=self.work/'fault-state'/('boundary-'+boundary+'.json')
+        setup_env={'CAPACITY_BOUNDARY':boundary,'CAPACITY_BOUNDARY_PHASE':'setup','CAPACITY_BOUNDARY_STATE_FILE':'/state/boundary-'+boundary+'.json'}
+        s,_=self.run_container_driver('fault-boundary-%s-setup'%boundary,'fault-boundary.mjs',setup_env,300)
+        result['setup_exit']=s
+        if s!=0 or not state_path.exists():
+            result['error']='setup failed'; self.manifest[key]=result; return 1
+        state=json.loads(state_path.read_text()); result['order_id']=state['orderId']
+        if boundary=='b1':
+            self.docker('kill',self.backend); self.docker('start',self.backend)
+            if not self.docker_wait_health(): result['error']='backend did not recover'; self.manifest[key]=result; return 1
+            result['kill_point']='before callback'
+        elif boundary in ('b2','b3'):
+            if boundary=='b2': self.restart_backend_docker(latencies='5000,5000,5000,5000,5000')
+            attempt,lost=0,False
+            while attempt<3 and not lost:
+                attempt+=1
+                cb_name='fault-boundary-%s-callback-%d'%(boundary,attempt)
+                cb_env={'CAPACITY_BOUNDARY':boundary,'CAPACITY_BOUNDARY_PHASE':'callback','CAPACITY_BOUNDARY_STATE_FILE':'/state/boundary-'+boundary+'.json'}
+                cid,_=self.run_container_driver(cb_name,'fault-boundary.mjs',cb_env,300,wait=False)
+                killed=False; deadline=time.monotonic()+20
+                while time.monotonic()<deadline:
+                    try: logs=self.docker('logs',cid)
+                    except Exception: logs=''
+                    if 'CAPACITY_CALLBACK_STARTED' in logs:
+                        if boundary=='b2': time.sleep(1.0)
+                        self.docker('kill',self.backend); killed=True; break
+                    try:
+                        if int(self.docker('wait',cid,timeout=1).strip()) is not None: break
+                    except Exception: pass
+                    time.sleep(0.1)
+                try: rc=int(self.docker('wait',cid,timeout=60).strip())
+                except Exception: rc=None
+                st=json.loads(state_path.read_text())
+                result['callback_attempt_%d'%attempt]={'exit':rc,'outcome':st.get('callback_outcome'),'killed_mid_flight':killed}
+                lost=(st.get('callback_outcome')=='lost')
+                if lost: break
+                try: self.docker('start',self.backend)
+                except Exception: self.restart_backend_docker(latencies='5000,5000,5000,5000,5000' if boundary=='b2' else None)
+                if not self.docker_wait_health(): result['error']='backend did not recover after retry'; self.manifest[key]=result; return 1
+                s2,_=self.run_container_driver('fault-boundary-%s-setup-%d'%(boundary,attempt),'fault-boundary.mjs',setup_env,300)
+                if s2!=0: result['error']='retry setup failed'; break
+                state=json.loads(state_path.read_text()); result['order_id']=state['orderId']
+            result['callback_attempts']=attempt; result['callback_lost']=lost
+            if not lost:
+                result['error']='boundary not exercised: kill never landed mid-callback in %d attempts (Docker log polling is ~100ms; b3 is best-effort here)'%attempt
+                self.manifest[key]=result; return 1
+            try: self.docker('start',self.backend)
+            except Exception: self.restart_backend_docker()
+            if not self.docker_wait_health(): result['error']='backend did not recover'; self.manifest[key]=result; return 1
+        elif boundary=='b4':
+            order_id=state['orderId']
+            self.sql("CREATE OR REPLACE FUNCTION cap_boundary_b4_slow() RETURNS trigger AS $$ BEGIN IF NEW.id = '%s' AND NEW.status='cancelled' AND OLD.status<>'cancelled' THEN PERFORM pg_sleep(0.15); END IF; RETURN NEW; END $$ LANGUAGE plpgsql; DROP TRIGGER IF EXISTS cap_boundary_b4_slow_trg ON orders; CREATE TRIGGER cap_boundary_b4_slow_trg BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION cap_boundary_b4_slow();"%order_id)
+            # Queue-jump: the boundary order's payment_expires_at is moved
+            # to a fixed ancient time so it sorts FIRST in the expiry job's
+            # ORDER BY payment_expires_at queue (the fixture leaves a ~7200
+            # expired backlog the job cannot drain within the profile's
+            # window; the hold DURATION is not what b4 tests). Deadline=NOW.
+            self.sql("UPDATE orders SET payment_expires_at='2000-01-01 00:00:00+00' WHERE id='%s'"%order_id)
+            deadline=time.time()
+            observed=False; kill_deadline=time.time()+60
+            while time.time()<kill_deadline:
+                if time.time()>=deadline:
+                    n=int(self.sql("SELECT count(*) FROM pg_stat_activity WHERE datname='%s' AND state='active' AND wait_event='PgSleep'"%self.database))
+                    if n>0: observed=True; break
+                time.sleep(0.05)
+            self.docker('kill',self.backend); self.docker('start',self.backend)
+            result['kill_point']='during expiry batch (PgSleep observed)' if observed else 'after deadline (batch not observed; best-effort)'
+            result['expiry_batch_observed']=observed
+            if not self.docker_wait_health(): result['error']='backend did not recover'; self.manifest[key]=result; return 1
+            expired=False
+            for _ in range(240):
+                if self.sql("SELECT status FROM orders WHERE id='%s'"%order_id)=='cancelled': expired=True; break
+                time.sleep(0.5)
+            result['expired_after_restart']=expired
+            self.sql('DROP TRIGGER IF EXISTS cap_boundary_b4_slow_trg ON orders; DROP FUNCTION IF EXISTS cap_boundary_b4_slow();')
+            if not expired: result['error']='order did not expire after restart'; self.manifest[key]=result; return 1
+        replay_env={'CAPACITY_BOUNDARY':boundary,'CAPACITY_BOUNDARY_PHASE':'replay','CAPACITY_BOUNDARY_STATE_FILE':'/state/boundary-'+boundary+'.json'}
+        s,_=self.run_container_driver('fault-boundary-%s-replay'%boundary,'fault-boundary.mjs',replay_env,300)
+        result['replay_exit']=s
+        if s!=0: result['error']='replay failed (not exactly once)'; self.manifest[key]=result; return 1
+        gate_exit,report=self.docker_gate('fault-boundary-'+boundary,since)
+        result['gate_exit']=gate_exit; result['gate_verdict']=report['verdict']
+        if gate_exit!=0: result['error']='W-2.1 gate FAILED on the clean run'; self.manifest[key]=result; return 1
+        plant_order=state['orderId'] if boundary!='b4' else None
+        planted=self.docker_plant_double_receipt(plant_order)
+        if planted is None: result['negative_control']={'error':'no paid order to plant against'}; self.manifest[key]=result; return 1
+        nc_exit,nc_report=self.docker_gate('fault-boundary-'+boundary+'-nc',since)
+        result['negative_control']={'planted_order':planted['order_id'],'gate_exit':nc_exit,'gate_verdict':nc_report['verdict'],'expected':'FAIL'}
+        self.docker_unplant_double_receipt(planted)
+        nc2_exit,nc2_report=self.docker_gate('fault-boundary-'+boundary+'-nc-clean',since)
+        result['negative_control_restore']={'gate_exit':nc2_exit,'gate_verdict':nc2_report['verdict'],'expected':'PASS'}
+        ok=nc_exit!=0 and nc2_exit==0
+        if not ok: result['error']='negative control misbehaved (planted gate exit %s, restored gate exit %s)'%(nc_exit,nc2_exit)
+        self.manifest[key]=result; return 0 if ok else 1
+    def run_fault_db_loss_docker(self):
+        key='fault_db_loss_docker'; result={'loss_seconds':30,'docker_host_required':True}
+        since=self.sql('SELECT clock_timestamp()')
+        load_cid,_=self.run_container_driver('fault-db-loss-load','commerce-rolling.mjs',{'CAPACITY_DURATION_SECONDS':'120'},900,wait=False)
+        time.sleep(30)
+        self.docker('stop',self.pg)
+        health_during=[]
+        for _ in range(6): health_during.append(self.docker_health()); time.sleep(1)
+        result['health_during_loss']=health_during
+        time.sleep(30-6)
+        self.docker('start',self.pg)
+        recovered=self.docker_wait_health(60)
+        result['recovered']=recovered
+        try: load_exit=int(self.docker('wait',load_cid,timeout=120).strip())
+        except Exception: load_exit=None
+        result['load_exit']=load_exit
+        gate_exit,report=self.docker_gate('fault-db-loss',since)
+        result['gate_exit']=gate_exit; result['gate_verdict']=report['verdict']
+        self.docker('stop',self.pg)
+        nc_health=[]
+        for _ in range(10): nc_health.append(self.docker_health()); time.sleep(1)
+        result['negative_control_health_during_loss']=nc_health
+        result['negative_control_stayed_down']=all(not h for h in nc_health)
+        self.docker('start',self.pg)
+        restored=self.docker_wait_health(60)
+        result['negative_control_restored']=restored
+        ok=(recovered and gate_exit==0 and result['negative_control_stayed_down'] and restored)
+        if not ok: result['error']='recovered=%s gate_exit=%s nc_stayed_down=%s restored=%s'%(recovered,gate_exit,result['negative_control_stayed_down'],restored)
+        self.manifest[key]=result; return 0 if ok else 1
+    def run_fault_worker_failover_docker(self):
+        key='fault_worker_failover_docker'; result={'docker_host_required':True}
+        since=self.sql('SELECT clock_timestamp()')
+        try:
+            self.sql("INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,payment_expires_at) SELECT 'cap-w33-e-'||g::text,'cap-w33-e-'||g::text,'cap-store-1','job',2000,2000,'job','09123456789','x','x','x','1234512345','cap-w33-e-'||g::text,'2000-01-01 00:00:00+00'::timestamptz FROM generate_series(1,60)g; INSERT INTO order_items(id,order_id,product_id,quantity,wholesale_cost,platform_fee,seller_margin,final_unit_price) SELECT md5('cap-w33-e-'||g::text)::uuid,'cap-w33-e-'||g::text,'cap-product-1',1,1000,0,1000,2000 FROM generate_series(1,60)g; CREATE OR REPLACE FUNCTION cap_w33_slow_expiry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id LIKE 'cap-w33-e-%' AND NEW.status='cancelled' THEN PERFORM pg_sleep(0.025); END IF; RETURN NEW; END $$; DROP TRIGGER IF EXISTS cap_w33_slow_expiry_trg ON orders; CREATE TRIGGER cap_w33_slow_expiry_trg BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION cap_w33_slow_expiry();")
+            stock_before=self.sql("SELECT stock FROM products WHERE id='cap-product-1'")
+            owner_before=self.sql("SELECT owner FROM background_job_state WHERE job='unpaid-order-expiry'")
+            committed=0
+            for _ in range(300):
+                committed=int(self.sql("SELECT count(*) FROM orders WHERE id LIKE 'cap-w33-e-%' AND status='cancelled'"))
+                if committed>=3: break
+                time.sleep(0.1)
+            result['expiry_committed_before_kill']=committed
+            if committed<3: result['error']='expiry batch made no committed progress'; self.manifest[key]=result; return 1
+            self.docker('kill',self.backend); time.sleep(6); self.docker('start',self.backend)
+            if not self.docker_wait_health(): result['error']='backend did not recover'; self.manifest[key]=result; return 1
+            cancelled=0
+            for _ in range(240):
+                cancelled=int(self.sql("SELECT count(*) FROM orders WHERE id LIKE 'cap-w33-e-%' AND status='cancelled'"))
+                if cancelled==60: break
+                time.sleep(0.5)
+            stock_after=self.sql("SELECT stock FROM products WHERE id='cap-product-1'")
+            owner_after=self.sql("SELECT owner FROM background_job_state WHERE job='unpaid-order-expiry'")
+            result['expiry']={'cancelled':cancelled,'stock_unchanged':stock_before==stock_after,'owner_before':owner_before,'owner_after':owner_after,'lease_takeover':bool(owner_before) and owner_before!=owner_after}
+            if cancelled!=60 or stock_before!=stock_after: result['error']='expiry batch did not drain exactly once'; self.manifest[key]=result; return 1
+            picked=self.sql("SELECT string_agg(id, ',') FROM (SELECT o.id FROM orders o WHERE o.status='delivered_confirmed' AND o.profit_released AND o.referrer_seller_id IS NULL AND (SELECT count(*) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id AND l.operator='system:delivery-lock-releaser')=2 ORDER BY o.id LIMIT 20) s")
+            if not picked: result['error']='no 20 released orders with exactly 2 ledger entries to un-release'; self.manifest[key]=result; return 1
+            ids=picked.split(','); id_list="'"+"','".join(ids)+"'"
+            self.sql("ALTER TABLE ledger_entries DISABLE TRIGGER trg_ledger_entries_append_only; ALTER TABLE ledger_entries DISABLE TRIGGER fin005_linked_ledger_immutable; DELETE FROM ledger_entries WHERE related_order_or_dispute IN (%s) AND operator='system:delivery-lock-releaser'; ALTER TABLE ledger_entries ENABLE TRIGGER trg_ledger_entries_append_only; ALTER TABLE ledger_entries ENABLE TRIGGER fin005_linked_ledger_immutable; UPDATE orders SET profit_released=false, profit_released_at=NULL, referral_commission_released=false WHERE id IN (%s)"%(id_list,id_list))
+            self.sql("CREATE OR REPLACE FUNCTION cap_w33_slow_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.related_order_or_dispute IN (%s) THEN PERFORM pg_sleep(0.025); END IF; RETURN NEW; END $$; DROP TRIGGER IF EXISTS cap_w33_slow_release_trg ON ledger_entries; CREATE TRIGGER cap_w33_slow_release_trg BEFORE INSERT ON ledger_entries FOR EACH ROW EXECUTE FUNCTION cap_w33_slow_release();"%id_list)
+            owner_rel_before=self.sql("SELECT owner FROM background_job_state WHERE job='delivery-lock-releaser'")
+            first=0
+            for _ in range(900):
+                first=int(self.sql("SELECT count(*) FROM ledger_entries WHERE related_order_or_dispute IN (%s) AND operator='system:delivery-lock-releaser'"%id_list))
+                if first>=1: break
+                time.sleep(0.1)
+            result['release_entries_before_kill']=first
+            if first<1: result['error']='release batch never started (no ledger entry in 90 s)'; self.manifest[key]=result; return 1
+            self.docker('kill',self.backend); time.sleep(15); self.docker('start',self.backend)
+            if not self.docker_wait_health(): result['error']='backend did not recover'; self.manifest[key]=result; return 1
+            released=0
+            for _ in range(360):
+                released=int(self.sql("SELECT count(*) FROM orders WHERE id IN (%s) AND profit_released"%id_list))
+                if released==20: break
+                time.sleep(0.5)
+            paired=self.sql("SELECT count(*) FROM (SELECT o.id FROM orders o WHERE o.id IN (%s) AND o.profit_released AND (SELECT count(*) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id AND l.operator='system:delivery-lock-releaser')=2 AND (SELECT COALESCE(SUM(CASE WHEN l.type='credit' THEN l.amount ELSE -l.amount END),0) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id AND l.operator='system:delivery-lock-releaser')=0) s"%id_list)
+            replay=int(self.sql("SELECT count(*) FROM orders WHERE id IN (%s) AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW()"%id_list))
+            owner_rel_after=self.sql("SELECT owner FROM background_job_state WHERE job='delivery-lock-releaser'")
+            result['release']={'released':released,'paired_balanced':int(paired),'replay_candidates':replay,'owner_before':owner_rel_before,'owner_after':owner_rel_after,'lease_takeover':bool(owner_rel_before) and owner_rel_before!=owner_rel_after}
+            if released!=20 or int(paired)!=20 or replay!=0: result['error']='release batch did not re-release exactly once'; self.manifest[key]=result; return 1
+            gate_exit,report=self.docker_gate('fault-worker-failover',since)
+            result['gate_exit']=gate_exit; result['gate_verdict']=report['verdict']
+            if gate_exit!=0: result['error']='W-2.1 gate FAILED after failover'; self.manifest[key]=result; return 1
+        finally:
+            self.sql('DROP TRIGGER IF EXISTS cap_w33_slow_expiry_trg ON orders; DROP FUNCTION IF EXISTS cap_w33_slow_expiry(); DROP TRIGGER IF EXISTS cap_w33_slow_release_trg ON ledger_entries; DROP FUNCTION IF EXISTS cap_w33_slow_release();')
+        self.manifest[key]=result; return 0
+    def run_fault_redis_load_docker(self):
+        key='fault_redis_load_docker'; result={'docker_host_required':True,'host_crash_1s_loss_window':'untestable-by-kill (process kill loses nothing on this scratch Redis; the prod AOF-everysec window needs a host-level test)'}
+        since=self.sql('SELECT clock_timestamp()')
+        state_path=self.work/'fault-state'/'boundary-b1.json'
+        s,_=self.run_container_driver('fault-redis-load-setup','fault-boundary.mjs',{'CAPACITY_BOUNDARY':'b1','CAPACITY_BOUNDARY_PHASE':'setup','CAPACITY_BOUNDARY_STATE_FILE':'/state/boundary-b1.json'},300)
+        if s!=0 or not state_path.exists(): result['error']='order preparation failed'; self.manifest[key]=result; return 1
+        state=json.loads(state_path.read_text()); result['order_id']=state['orderId']
+        load_cid,_=self.run_container_driver('fault-redis-load-load','commerce-rolling.mjs',{'CAPACITY_DURATION_SECONDS':'120'},900,wait=False)
+        time.sleep(30)
+        self.docker('stop',self.network+'-cache')
+        health_during=[]
+        for _ in range(3): health_during.append(self.docker_health()); time.sleep(1)
+        result['health_during_redis_down']=health_during
+        self.docker('start',self.network+'-cache')
+        env={k:v for k,v in os.environ.items() if k in ('PATH','SystemRoot','SYSTEMROOT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','HOME','GOPATH','GOCACHE')}
+        env.update(GOOS='linux',GOARCH='amd64',CGO_ENABLED='0')
+        self.command(['go','build','-o',str(self.work/'redis-recover'),'./cmd/redis-recover'],env=env,cwd=self.source)
+        rebuild_cid=self.create('recover','alpine:latest',['/redis-recover','rebuild','-db',self.appenv['DATABASE_URL'],'-redis',self.appenv['REDIS_URL']],mounts=[(self.work/'redis-recover','/redis-recover')])
+        cb_cid,_=self.run_container_driver('fault-redis-load-callback','fault-boundary.mjs',{'CAPACITY_BOUNDARY':'b1','CAPACITY_BOUNDARY_PHASE':'callback','CAPACITY_BOUNDARY_STATE_FILE':'/state/boundary-b1.json'},300,wait=False)
+        try: rebuild_rc=int(self.docker('wait',rebuild_cid,timeout=300).strip())
+        except Exception: rebuild_rc=None
+        try: cb_rc=int(self.docker('wait',cb_cid,timeout=60).strip())
+        except Exception: cb_rc=None
+        result['rebuild_exit']=rebuild_rc; result['callback_exit']=cb_rc
+        st=json.loads(state_path.read_text()); result['callback_during_rebuild']={'outcome':st.get('callback_outcome'),'body':st.get('callback_body')}
+        callback_ok=False
+        if st.get('callback_outcome')=='paid': callback_ok=True; result['callback_outcome']='paid (hold survived/rebuilt in time)'
+        elif st.get('callback_outcome','').startswith('other:409'):
+            obligations=int(self.sql("SELECT count(*) FROM order_refund_obligations WHERE order_id='%s'"%state['orderId']))
+            result['callback_outcome']='refund path (hold expired during rebuild)'; result['refund_obligations']=obligations; callback_ok=obligations>=1
+        else: result['callback_outcome']='unexpected: %s'%st.get('callback_outcome')
+        recovered=self.docker_wait_health(60); result['recovered']=recovered
+        try: load_exit=int(self.docker('wait',load_cid,timeout=120).strip())
+        except Exception: load_exit=None
+        result['load_exit']=load_exit
+        gate_exit,report=self.docker_gate('fault-redis-load',since)
+        result['gate_exit']=gate_exit; result['gate_verdict']=report['verdict']
+        ok=(recovered and rebuild_rc==0 and callback_ok and gate_exit==0)
+        if not ok: result['error']='recovered=%s rebuild=%s callback_ok=%s gate_exit=%s'%(recovered,rebuild_rc,callback_ok,gate_exit)
+        self.manifest[key]=result; return 0 if ok else 1
+    def run_fault_docker(self, profile):
+        if profile.startswith('fault-boundary-'): return self.run_fault_boundary_docker(profile[len('fault-boundary-'):])
+        if profile=='fault-db-loss': return self.run_fault_db_loss_docker()
+        if profile=='fault-worker-failover': return self.run_fault_worker_failover_docker()
+        if profile=='fault-redis-load': return self.run_fault_redis_load_docker()
+        raise SafetyError('unknown Docker fault profile: '+profile)
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser-relay',action='store_true',help='Bounded host browser functional UI/count profile through guarded loopback rawTLS relay;timings excluded')
@@ -461,20 +816,31 @@ def main():
     parser.add_argument('--otp-background',action='store_true',help='OTP login with browsing:6000 API calls/60s,100 total API RPS')
     parser.add_argument('--login-ramp',action='store_true',help='Actual customer OTP request+verify for1000users/60s; local only')
     parser.add_argument('--fixture-baseline',action='store_true',help='Seed full cardinality and probe 1000 independent signed sessions; still not commerce qualification')
+    parser.add_argument('--inventory-100rps',action='store_true',help='CAP-02 W-1.2: 100-RPS inventory probe; KEEPS its INV12_PROBE_APPROVED=1 refusal (exits 2 without approval); registration only')
+    parser.add_argument('--coupon-burst',action='store_true',help='CAP-02 W-1.2: coupon-burst contention profile with the runner-side oracle (W-1.3); Certified:false')
+    parser.add_argument('--independent-account',action='store_true',help='CAP-02 W-1.2: 100 independent-account profile; registration only')
+    parser.add_argument('--fault-boundary-b1',action='store_true',help='CAP-02 W-3.1 (Docker): kill before callback, replay exactly once; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-boundary-b2',action='store_true',help='CAP-02 W-3.1 (Docker): kill ~1s into slow payment verification; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-boundary-b3',action='store_true',help='CAP-02 W-3.1 (Docker): kill after callback flush, before response read; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-boundary-b4',action='store_true',help='CAP-02 W-3.1 (Docker): kill during expiry batch after the 15-min hold deadline; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-db-loss',action='store_true',help='CAP-02 W-3.2 (Docker): 30s DB loss via docker stop/start; fails closed; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-worker-failover',action='store_true',help='CAP-02 W-3.3 (Docker): kill mid-batch for expiry and delivery/release; diagnostic scale; UNPROVEN on this VM')
+    parser.add_argument('--fault-redis-load',action='store_true',help='CAP-02 W-3.4 (Docker): Redis restart under load + rebuild + callback-during-rebuild; diagnostic scale; UNPROVEN on this VM')
     parser.add_argument('--baseline',action='store_true',help='10 seconds, health only; never certification')
     parser.add_argument('--output',type=Path,default=Path(tempfile.gettempdir())/('sellersho-cap-report-'+secrets.token_hex(6)))
     args=parser.parse_args()
     _workload=json.loads((ROOT/'load-tests/workload.json').read_text())
     validate_mix(_workload['weights'])
     validate_workload_contract(_workload)
-    if not (args.staff_baseline or args.browser_assets or args.browser_relay or args.hot_sku or args.baseline or args.fixture_baseline or args.login_ramp or args.otp_login or args.otp_background or args.api_baseline or args.api_rolling or args.api_sustained or args.api_soak or args.journey_baseline or args.journey): parser.error('Select a local profile; commerce qualification remains gated')
+    if not (args.staff_baseline or args.browser_assets or args.browser_relay or args.hot_sku or args.baseline or args.fixture_baseline or args.login_ramp or args.otp_login or args.otp_background or args.api_baseline or args.api_rolling or args.api_sustained or args.api_soak or args.journey_baseline or args.journey or args.inventory_100rps or args.coupon_burst or args.independent_account or args.fault_boundary_b1 or args.fault_boundary_b2 or args.fault_boundary_b3 or args.fault_boundary_b4 or args.fault_db_loss or args.fault_worker_failover or args.fault_redis_load): parser.error('Select a local profile; commerce qualification remains gated')
     args.output.mkdir(parents=True,exist_ok=False)
     run=Run(args.output,browser=args.browser_assets); status=1
     try:
         run.start()
         if run.baseline(smoke=True): raise SafetyError('TLS/domain setup smoke failed before full fixture seeding')
-        if args.staff_baseline or args.hot_sku or args.fixture_baseline or args.login_ramp or args.otp_login or args.otp_background or args.api_baseline or args.api_rolling or args.api_sustained or args.api_soak or args.journey_baseline or args.journey: run.fixture()
-        status=run.browser_assets(relay=args.browser_relay) if args.browser_assets or args.browser_relay else run.baseline(staff=args.staff_baseline,hot=args.hot_sku,otp=args.login_ramp or args.otp_login or args.otp_background,background=args.otp_background,commerce=args.api_baseline,rolling=7200 if args.api_soak else 1800 if args.api_sustained else 30 if args.api_rolling or args.staff_baseline else 0,journey=1800 if args.journey else 90 if args.journey_baseline else 0)
+        if args.staff_baseline or args.hot_sku or args.fixture_baseline or args.login_ramp or args.otp_login or args.otp_background or args.api_baseline or args.api_rolling or args.api_sustained or args.api_soak or args.journey_baseline or args.journey or args.inventory_100rps or args.coupon_burst or args.independent_account or args.fault_boundary_b1 or args.fault_boundary_b2 or args.fault_boundary_b3 or args.fault_boundary_b4 or args.fault_db_loss or args.fault_worker_failover or args.fault_redis_load: run.fixture()
+        fault_profile=('fault-boundary-b1' if args.fault_boundary_b1 else 'fault-boundary-b2' if args.fault_boundary_b2 else 'fault-boundary-b3' if args.fault_boundary_b3 else 'fault-boundary-b4' if args.fault_boundary_b4 else 'fault-db-loss' if args.fault_db_loss else 'fault-worker-failover' if args.fault_worker_failover else 'fault-redis-load' if args.fault_redis_load else None)
+        status=run.run_fault_docker(fault_profile) if fault_profile else run.browser_assets(relay=args.browser_relay) if args.browser_assets or args.browser_relay else run.baseline(staff=args.staff_baseline,hot=args.hot_sku,otp=args.login_ramp or args.otp_login or args.otp_background,background=args.otp_background,commerce=args.api_baseline,rolling=7200 if args.api_soak else 1800 if args.api_sustained else 30 if args.api_rolling or args.staff_baseline else 0,journey=1800 if args.journey else 90 if args.journey_baseline else 0,inventory=args.inventory_100rps,coupon=args.coupon_burst,independent=args.independent_account)
     except Exception as exc:
         run.manifest['failure']=str(exc) if isinstance(exc,SafetyError) else type(exc).__name__
     finally:

@@ -102,13 +102,33 @@ PROFILES = {
     'fault-provider-timeout': (None, 0, {}, 900),
     'fault-redis-loss': (None, 0, {}, 600),
     'fault-restart': (None, 0, {}, 600),
+    # CAP-02 W-1.2: the three profiles CAP-01 left unregistered. Registration
+    # only — no driver behavior change. inventory-100rps keeps its
+    # INV12_PROBE_APPROVED=1 refusal (the driver exits 2 without it);
+    # coupon-burst keeps Certified:false in its own summary.
+    'inventory-100rps': ('inventory-100rps.js', 0, {}, 900),
+    'coupon-burst': ('coupon-burst.mjs', 0, {}, 900),
+    'independent-account': ('independent-account.mjs', 0, {}, 600),
+    # CAP-02 W-3: fault-matrix profiles (diagnostic scale on the disposable
+    # native env; 100-RPS executions gated on D-1). See run_fault_boundary /
+    # run_fault_db_loss / run_fault_worker_failover / run_fault_redis_load.
+    'fault-boundary-b1': (None, 0, {}, 900),
+    'fault-boundary-b2': (None, 0, {}, 900),
+    'fault-boundary-b3': (None, 0, {}, 900),
+    'fault-boundary-b4': (None, 0, {}, 1800),
+    'fault-db-loss': (None, 0, {}, 900),
+    'fault-worker-failover': (None, 0, {}, 900),
+    'fault-redis-load': (None, 0, {}, 900),
 }
 NEEDS_FIXTURE = {'fixture-baseline', 'login-ramp', 'otp-login', 'otp-background',
                  'api-baseline', 'api-rolling', 'api-sustained', 'api-soak',
                  'journey-baseline', 'journey', 'hot-sku', 'staff-baseline',
                  'hot-account', 'session-lifecycle', 'browser-assets',
                  'cold-cache', 'headroom', 'fault-provider-timeout',
-                 'fault-restart'}
+                 'fault-restart', 'inventory-100rps', 'coupon-burst',
+                 'independent-account', 'fault-boundary-b1', 'fault-boundary-b2',
+                 'fault-boundary-b3', 'fault-boundary-b4', 'fault-db-loss',
+                 'fault-worker-failover', 'fault-redis-load'}
 
 
 def free_port():
@@ -301,7 +321,10 @@ END $$;""" % (role_pass, role_pass))
             'PORT': str(self.backend_port), 'MIGRATIONS_DIR': str(BACKEND / 'migrations'),
             'SELLERSHO_CAPACITY_RUN': self.nonce,
             'CAPACITY_PAYMENT_MODE': payment_mode,
-            'CAPACITY_PAYMENT_LATENCIES_MS': '25,25,50,50,150',
+            # CAP-02 W-3.1: latencies are overridable per start_backend call
+            # (b2 needs a slow verify so the kill lands mid-verification);
+            # the default is the fast double used by every other profile.
+            'CAPACITY_PAYMENT_LATENCIES_MS': getattr(self, '_payment_latencies', '25,25,50,50,150'),
             'CAPACITY_CARRIER_BASE_URL': 'http://carrier:8082',
             'CAPACITY_CARRIER_KEY': self.carrierkey,
         })
@@ -493,7 +516,10 @@ http {
         launcher.write_text('#!/bin/sh\nmount --bind "$CAP_HOSTS_FILE" /etc/hosts\nexec "$CAP_SERVER_BIN"\n')
         launcher.chmod(0o700)
 
-    def start_backend(self, payment_mode='success'):
+    def start_backend(self, payment_mode='success', latencies=None):
+        # latencies: CAPACITY_PAYMENT_LATENCIES_MS override for this start
+        # only (W-3.1 b2 slow-verify). None restores the fast default.
+        self._payment_latencies = latencies or '25,25,50,50,150'
         log = open(self.work / 'backend.log', 'ab')
         env = self.appenv(payment_mode)
         env['CAP_HOSTS_FILE'] = str(self.work / 'hosts')
@@ -513,6 +539,16 @@ http {
                 return
             time.sleep(0.5)
         raise SafetyError('backend health startup timeout')
+
+    def kill_backend(self):
+        """SIGKILL the backend process (a crash, not a graceful shutdown).
+        The launcher execs the server binary, so the Popen object IS the
+        server. Used by the W-3 fault profiles; stop_backend() is the
+        graceful variant and is NOT a crash."""
+        proc = self.procs.pop('backend', None)
+        if proc:
+            proc.kill()
+            proc.wait(timeout=15)
 
     def stop_backend(self):
         proc = self.procs.pop('backend', None)
@@ -549,8 +585,21 @@ http {
             'CAPACITY_FINANCE_HISTORY': '1',
             'CAPACITY_CARRIER_KEY': self.carrierkey,
         })
+        # CAP-02 W-1.5: record the fixture child's elapsed time (monotonic
+        # + wall clock) in the manifest, so a future "7-hour fixture"
+        # anomaly is bounded by measurement instead of guessed at (VM
+        # freeze/restore vs contention). The monotonic clock is the
+        # arbiter: if it reads ~7 h the time really passed; if it reads
+        # minutes while a child timestamp reads hours, the child's clock
+        # jumped.
+        fixture_started_mono = time.monotonic()
+        fixture_started_wall = time.time()
         result = self.run([str(self.work / 'fixture'), '-test.v', '-test.run=^TestCapacityDataFloor$',
                            '-test.timeout=15m'], env=fenv, cwd=BACKEND, timeout=960, check=False)
+        self.manifest['fixture_elapsed'] = {
+            'seconds': round(time.monotonic() - fixture_started_mono, 1),
+            'started_wall': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(fixture_started_wall)),
+            'finished_wall': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time()))}
         safe_log = redact(result.stdout + result.stderr, self._secrets)
         (self.out / 'fixture-redacted.log').write_text(safe_log)
         m = re.findall(r'CAPACITY_METRIC supplier_balance sample=(\d+) duration_ms=(\d+)', safe_log)
@@ -722,6 +771,8 @@ http {
             self.oracle_hot_sku(status)
         if name == 'hot-account':
             self.oracle_hot_account(run_started, status)
+        if name == 'coupon-burst':
+            self.oracle_coupon_burst(run_started, status)
         return status, summary
 
     def oracle_commerce(self, name, run_started, status):
@@ -738,7 +789,7 @@ http {
           'ledger_negative_amount',(SELECT count(*) FROM ledger_entries WHERE date>='%s' AND amount<0),
           'ledger_orphan_order',(SELECT count(*) FROM ledger_entries l WHERE l.date>='%s' AND l.related_order_or_dispute IS NOT NULL AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.id=l.related_order_or_dispute)),
           'paid_orders_without_ledger_entry',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status='paid' AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.related_order_or_dispute=o.id)),
-          'paid_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status IN ('cancelled','refund_pending') AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
+          'paid_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status='paid' AND o.status='cancelled' AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
           'duplicate_obligations',(SELECT count(*) FROM (SELECT purpose,business_id,source_payment_id FROM order_refund_obligations GROUP BY 1,2,3 HAVING count(*)>1) d),
           'obligation_over_source',(SELECT count(*) FROM order_refund_obligations WHERE created_at>='%s' AND amount_toman>source_amount_toman),
           'orders_with_multiple_refunds',(SELECT count(*) FROM (SELECT order_id FROM refunds GROUP BY order_id HAVING count(*)>1) d)
@@ -783,8 +834,8 @@ http {
         oracle = json.loads(self.psql(self.database, """
         SELECT json_build_object(
           'hot_paid_orders',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status='paid'),
-          'hot_cancelled_paid',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status IN ('cancelled','refund_pending')),
-          'hot_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status IN ('cancelled','refund_pending') AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
+          'hot_cancelled_paid',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status='paid' AND o.status='cancelled'),
+          'hot_cancelled_without_obligation',(SELECT count(*) FROM orders o WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND o.customer_user_id IN (SELECT id FROM users WHERE full_name LIKE 'cap-customer-%%') AND o.payment_status='paid' AND o.status='cancelled' AND NOT EXISTS (SELECT 1 FROM order_refund_obligations r WHERE r.order_id=o.id AND r.purpose='cancellation')),
           'hot_duplicate_obligations',(SELECT count(*) FROM (SELECT r.purpose,r.business_id,r.source_payment_id FROM order_refund_obligations r JOIN orders o ON o.id=r.order_id WHERE o.created_at>='%s' AND o.store_id='cap-store-1' GROUP BY 1,2,3 HAVING count(*)>1) d),
           'hot_obligation_amount_mismatch',(SELECT count(*) FROM order_refund_obligations r JOIN orders o ON o.id=r.order_id JOIN payment_transactions p ON p.id=r.source_payment_id WHERE o.created_at>='%s' AND o.store_id='cap-store-1' AND r.purpose='cancellation' AND r.amount_toman<>p.amount)
         )""" % (ts, ts, ts, ts, ts)))
@@ -797,6 +848,41 @@ http {
             self.manifest['hot-account_exit'] = 1
         else:
             self.manifest['hot_account_oracle_gate'] = 'matched within stated scope'
+
+    def oracle_coupon_burst(self, run_started, status):
+        """CAP-02 W-1.3: runner-side oracle for coupon-burst.mjs (owed since
+        FIN-013 §3.2, on the hot-account pattern). Counts live in
+        order_coupon_reservations / seller_discount_codes / orders:
+        used_count must equal occupying reservations (reserved/consumed/
+        review_hold — FIN-013 check 6); consumed reservations must equal
+        discounted orders; silent-discount count (a consumed reservation
+        whose order carries coupon_discount_amount=0) must be 0. The driver
+        does not retry (each attempt is one shot), so retries are 0 by
+        construction; deadlocks are counted from pg_stat_database and
+        reported, never hidden."""
+        oracle = json.loads(self.psql(self.database, """
+        SELECT json_build_object(
+          'coupons',(SELECT count(*) FROM seller_discount_codes WHERE code LIKE 'FIN013BURST%'),
+          'used_count_mismatch',(SELECT count(*) FROM seller_discount_codes c WHERE c.code LIKE 'FIN013BURST%' AND c.used_count <> (SELECT COUNT(*) FROM order_coupon_reservations r WHERE r.coupon_id=c.id AND r.state IN ('reserved','consumed','review_hold'))),
+          'consumed_reservations',(SELECT count(*) FROM order_coupon_reservations r JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold')),
+          'discounted_orders',(SELECT count(*) FROM orders o JOIN order_coupon_reservations r ON r.order_id=o.id JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold') AND COALESCE(o.coupon_discount_amount,0)>0),
+          'silent_discount',(SELECT count(*) FROM orders o JOIN order_coupon_reservations r ON r.order_id=o.id JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state IN ('consumed','review_hold') AND COALESCE(o.coupon_discount_amount,0)=0),
+          'reserved_inflight',(SELECT count(*) FROM order_coupon_reservations r JOIN seller_discount_codes c ON c.id=r.coupon_id WHERE c.code LIKE 'FIN013BURST%' AND r.state='reserved'),
+          'deadlocks',(SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()))"""))
+        oracle['scope'] = ('per-coupon reservation/counter/order agreement for the '
+            'FIN013BURST coupons (FIN-013 check 6); zero silently-undiscounted '
+            'orders; deadlocks counted from pg_stat_database; driver retries '
+            'are 0 by construction (no retry loop in the driver)')
+        self.manifest['coupon_burst_oracle'] = oracle
+        if (oracle['used_count_mismatch'] or oracle['silent_discount']
+                or oracle['consumed_reservations'] != oracle['discounted_orders']):
+            self.manifest['coupon_burst_oracle_gate'] = 'FAILED'
+            self.manifest['coupon-burst_exit'] = 1
+        else:
+            self.manifest['coupon_burst_oracle_gate'] = (
+                'matched: used_count == occupying reservations, consumed == '
+                'discounted orders, silent-discount 0 (deadlocks=%s)'
+                % oracle['deadlocks'])
 
     # -- orchestrated profiles ----------------------------------------------
     def run_browser(self):
@@ -959,14 +1045,798 @@ http {
             'note': 'backend SIGKILL + restart; paid orders / obligations / stock must be identical after restart; the hot-sku-restart driver re-run is expected to fail preparation (five units already consumed by the main hot-sku run) and does not decide this profile'}
         return 0 if converged else 1
 
+    # -- CAP-02 W-3 fault matrix ------------------------------------------
+    def reconcile_gate(self, name, since):
+        """Run the W-2.1 consolidated gate (scripts/cap02_reconcile.py)
+        against this run's DB, windowed at `since`. Returns (exit_code,
+        report_dict_or_None). The report is written to
+        <out>/<name>-reconcile.json. Exit 0 = PASS, 1 = FAIL, 2 = REFUSED."""
+        out_path = self.out / (name + '-reconcile.json')
+        env = {**os.environ,
+               'PATH': str(HOME / 'go' / 'bin') + ':' + str(PG_BIN) + ':' + os.environ.get('PATH', ''),
+               'HOME': str(HOME)}
+        result = self.run([sys.executable, str(ROOT / 'scripts' / 'cap02_reconcile.py'),
+                           '--db', self.dsn, '--since', since,
+                           '--out', str(out_path)],
+                          env=env, cwd=ROOT, timeout=900, check=False)
+        report = None
+        try:
+            report = json.loads(out_path.read_text())
+        except Exception:
+            pass
+        self.manifest[name + '_reconcile'] = {
+            'exit': result.returncode,
+            'verdict': (report or {}).get('verdict'),
+            'report': str(out_path)}
+        return result.returncode, report
+
+    def plant_double_receipt(self, order_id=None):
+        """Plant a second payment receipt for an already-paid order — a
+        double-capture effect. NOTE: the literal 'duplicate paid
+        payment_transactions row' plant is impossible by construction: the
+        partial unique index payment_transactions_one_active_per_order
+        (status IN ('pending','paid') AND NOT compensation_capture) rejects
+        a second active row for the same order, which is itself the app's
+        guard against double capture. The receipt plant is the faithful
+        double-effect instead: FIN-013 check 1 counts receipts per paid
+        order and requires exactly 1, so a second receipt makes the W-2.1
+        gate FAIL. The planted rows reference a fresh 'failed' transaction
+        (outside the partial index) so the plant itself never fights the
+        guard. Returns the planted ids, or None if no paid order exists."""
+        if order_id is None:
+            # Must already have EXACTLY 1 receipt: FIN-013 check 1
+            # requires exactly 1 receipt per paid order, so the plant
+            # (a 2nd receipt) only trips it when the order starts at 1.
+            # A paid fixture order with 0 receipts (e.g. cap-order-96699
+            # in run 8) would go 0 -> 1 and PASS the gate, making the
+            # negative control silently ineffective (bug 15).
+            order_id = self.psql(self.database,
+                "SELECT id FROM orders WHERE store_id='cap-store-1' AND "
+                "payment_status='paid' AND (SELECT count(*) FROM "
+                "order_payment_receipts WHERE order_id=orders.id)=1 "
+                "ORDER BY created_at DESC LIMIT 1")
+        if not order_id:
+            return None
+        receipts = int(self.psql(self.database,
+            "SELECT count(*) FROM order_payment_receipts WHERE order_id='%s'"
+            % order_id))
+        if receipts != 1:
+            return None
+        row = self.psql(self.database,
+            "SELECT id, order_number, amount FROM payment_transactions "
+            "WHERE order_id='%s' AND status='paid'" % order_id)
+        if not row:
+            return None
+        _txn_id, order_number, amount = row.split('|')
+        customer = self.psql(self.database,
+            "SELECT customer_user_id FROM orders WHERE id='%s'" % order_id)
+        cust = ("'%s'" % customer) if customer else 'NULL'
+        suffix = secrets.token_hex(4)
+        txn2 = 'cap-double-txn-' + suffix
+        ver2 = 'cap-double-ver-' + suffix
+        rcpt2 = 'cap-double-rcpt-' + suffix
+        self.psql(self.database,
+            "INSERT INTO payment_transactions (id, order_id, order_number, "
+            "gateway_token, rrn, amount, status) VALUES ('%s','%s','%s',"
+            "'cap-double-token-%s',NULL,%s,'failed')"
+            % (txn2, order_id, order_number, suffix, amount))
+        self.psql(self.database,
+            "INSERT INTO order_payment_verifications (id, payment_id, "
+            "order_id, customer_id, amount_toman, currency, funding_kind) "
+            "VALUES ('%s','%s','%s',%s,%s,'TOMAN','simulated')"
+            % (ver2, txn2, order_id, cust, amount))
+        self.psql(self.database,
+            "INSERT INTO order_payment_receipts (id, verification_id, "
+            "funding_kind, payment_id, order_id, customer_id, amount_toman, "
+            "currency, provider_reference, verified_at) VALUES "
+            "('%s','%s','simulated','%s','%s',%s,%s,'TOMAN',"
+            "'cap-double-ref-%s',NOW())"
+            % (rcpt2, ver2, txn2, order_id, cust, amount, suffix))
+        return {'order_id': order_id, 'txn': txn2,
+                'verification': ver2, 'receipt': rcpt2}
+
+    def unplant_double_receipt(self, planted):
+        if not planted:
+            return
+        # Receipts + verifications are immutable by trigger
+        # (payment_receipt_identity on order_payment_receipts and
+        # payment_verification_identity on order_payment_verifications,
+        # both calling immutable_order_refund_evidence()): a plain
+        # DELETE raises. The restore disables both triggers, deletes
+        # the planted rows, and re-enables them (verified tgenabled='O'
+        # after) — the same append-only restore pattern as the W-2.1
+        # commerce plant. payment_transactions has no such trigger.
+        self.psql(self.database,
+            "ALTER TABLE order_payment_receipts DISABLE TRIGGER payment_receipt_identity; "
+            "ALTER TABLE order_payment_verifications DISABLE TRIGGER payment_verification_identity; "
+            "DELETE FROM order_payment_receipts WHERE id='%s'; "
+            "DELETE FROM order_payment_verifications WHERE id='%s'; "
+            "DELETE FROM payment_transactions WHERE id='%s'; "
+            "ALTER TABLE order_payment_receipts ENABLE TRIGGER payment_receipt_identity; "
+            "ALTER TABLE order_payment_verifications ENABLE TRIGGER payment_verification_identity"
+            % (planted['receipt'], planted['verification'], planted['txn']))
+
+    def restart_backend(self, latencies=None):
+        if self.procs.get('backend'):
+            self.stop_backend()
+        self.start_backend(latencies=latencies)
+
+    def run_fault_boundary(self, boundary):
+        """CAP-02 W-3.1: kill at one payment/hold boundary, replay, assert
+        exactly-one-effect via the W-2.1 gate, plus a negative control
+        (planted double receipt -> gate FAILS -> restore -> gate PASSES).
+        b4's order is unpaid, so its negative control plants against the
+        most recent paid order in the run — a durable double-expiry has no
+        footprint to plant (expiry is idempotent by design; the hold-release
+        double-run is Redis-idempotent), and the plant proves the gate was
+        live for this boundary's run."""
+        key = 'fault_boundary_' + boundary
+        result = {'boundary': boundary}
+        since = self.psql(self.database, "SELECT clock_timestamp()::text")
+        state_file = self.work / ('boundary-' + boundary + '.json')
+        setup_env = {'CAPACITY_BOUNDARY': boundary,
+                     'CAPACITY_BOUNDARY_PHASE': 'setup',
+                     'CAPACITY_BOUNDARY_STATE_FILE': str(state_file)}
+        s, _ = self.run_driver('fault-boundary-%s-setup' % boundary,
+                               'fault-boundary.mjs', setup_env, 300)
+        result['setup_exit'] = s
+        if s != 0 or not state_file.exists():
+            result['error'] = 'setup failed'
+            self.manifest[key] = result
+            return 1
+        state = json.loads(state_file.read_text())
+        result['order_id'] = state['orderId']
+        if boundary == 'b1':
+            # Kill before any callback is sent (authorize done, capture
+            # not started); replay sends the callback, exactly once.
+            self.kill_backend()
+            result['kill_point'] = 'before callback'
+            self.start_backend()
+        elif boundary in ('b2', 'b3'):
+            # Callback sent while the runner kills mid-flight. b2 uses a
+            # slow verify (5 s) so the kill lands ~1 s into verification;
+            # b3 uses fast verify and kills on the marker, so the window
+            # is sub-100 ms — retry up to 3 times with a fresh order.
+            if boundary == 'b2':
+                self.restart_backend(latencies='5000,5000,5000,5000,5000')
+            attempt, lost = 0, False
+            while attempt < 3 and not lost:
+                attempt += 1
+                cb_name = 'fault-boundary-%s-callback-%d' % (boundary, attempt)
+                cb_env = self.driver_env({
+                    'CAPACITY_BOUNDARY': boundary,
+                    'CAPACITY_BOUNDARY_PHASE': 'callback',
+                    'CAPACITY_BOUNDARY_STATE_FILE': str(state_file),
+                    'CAPACITY_SUMMARY_FILE': str(self.work / (cb_name + '-summary.json'))})
+                log = open(self.work / (cb_name + '.log'), 'w')
+                proc = subprocess.Popen(
+                    ['node', str(LOADTESTS / 'fault-boundary.mjs')],
+                    env=cb_env, stdout=log, stderr=subprocess.STDOUT, cwd=LOADTESTS)
+                killed, deadline = False, time.time() + 20
+                while time.time() < deadline:
+                    try:
+                        st = json.loads(state_file.read_text())
+                    except Exception:
+                        st = {}
+                    if st.get('callback_started_at'):
+                        if boundary == 'b2':
+                            time.sleep(1.0)
+                        self.kill_backend()
+                        killed = True
+                        break
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.02)
+                rc = proc.wait(timeout=60)
+                st = json.loads(state_file.read_text())
+                result['callback_attempt_%d' % attempt] = {
+                    'exit': rc, 'outcome': st.get('callback_outcome'),
+                    'killed_mid_flight': killed}
+                lost = (st.get('callback_outcome') == 'lost')
+                if lost:
+                    break
+                # Kill landed too late (callback completed): fresh backend
+                # + fresh order, retry.
+                self.restart_backend(
+                    latencies='5000,5000,5000,5000,5000' if boundary == 'b2' else None)
+                s2, _ = self.run_driver(
+                    'fault-boundary-%s-setup-%d' % (boundary, attempt),
+                    'fault-boundary.mjs', setup_env, 300)
+                if s2 != 0:
+                    result['error'] = 'retry setup failed'
+                    break
+                state = json.loads(state_file.read_text())
+                result['order_id'] = state['orderId']
+            result['callback_attempts'] = attempt
+            result['callback_lost'] = lost
+            if not lost:
+                result['error'] = ('boundary not exercised: kill never '
+                    'landed mid-callback in %d attempts' % attempt)
+                self.manifest[key] = result
+                return 1
+            # Restart (not plain start): if the driver timed out instead of
+            # being killed, the old backend is still alive.
+            self.restart_backend()
+        elif boundary == 'b4':
+            # Hold-expiry boundary: install a slow-expiry trigger
+            # (pg_sleep(0.15) on the boundary order's expiry — the repo's
+            # TestJobsCrashRestartAndMidBatchCancellation technique, but
+            # the sleep MUST stay inside the expiry job's 300 ms
+            # per-candidate timeout (operations_repo.go: expireUnpaidOrder
+            # runs under context.WithTimeout(ctx, 300ms)) AND inside the
+            # job's 3 s per-attempt deadline (operations.go:13). The first
+            # b4 attempt used pg_sleep(10), which exceeds both, so the
+            # candidate failed at 300 ms on every 5 s attempt, the order
+            # stayed unexpired, and the runner never observed the batch
+            # (a 2 s sleep would fail the same way). pg_sleep(0.15) is
+            # long enough for the runner's tightened poll (~0.1 s) to
+            # observe PgSleep and kill mid-batch, and short enough
+            # (~150 ms + ~50 ms base) to complete within 300 ms.
+            # TestJobsCrashRestartAndMidBatchCancellation technique), wait
+            # for the 15-min deadline, kill while the worker's batch is
+            # inside the trigger (observed via pg_stat_activity PgSleep),
+            # restart, and require the order to expire exactly once.
+            order_id = state['orderId']
+            self.psql(self.database, """
+              CREATE OR REPLACE FUNCTION cap_boundary_b4_slow() RETURNS trigger AS $$
+              BEGIN
+                IF NEW.id = '%s' AND NEW.status='cancelled' AND OLD.status<>'cancelled' THEN
+                  PERFORM pg_sleep(0.15);
+                END IF;
+                RETURN NEW;
+              END $$ LANGUAGE plpgsql;
+              DROP TRIGGER IF EXISTS cap_boundary_b4_slow_trg ON orders;
+              CREATE TRIGGER cap_boundary_b4_slow_trg BEFORE UPDATE ON orders
+                FOR EACH ROW EXECUTE FUNCTION cap_boundary_b4_slow();
+            """ % order_id)
+            # Queue-jump (deviation from the audit's real 15-min hold
+            # wait, recorded in capacity-evidence.txt): the boundary
+            # order's payment_expires_at is moved to a fixed ancient
+            # time ('2000-01-01') so it sorts FIRST in the expiry job's
+            # ORDER BY payment_expires_at queue. The fixture leaves a
+            # ~7200-order expired backlog and the job processes ~21
+            # candidates per 5 s batch (3 s deadline, ~140 ms each), so
+            # a genuinely 15-min-held order waits ~28 min behind it
+            # and the profile's window (deadline + 30 s, then a 120 s
+            # expired-poll) never sees it (runs 3/5/7: the order never
+            # expired). The hold DURATION is not what b4 tests — the
+            # kill-during-expiry + exactly-once is — and that mechanism
+            # is identical with an ancient expiry. The deadline for the
+            # wait loop is therefore NOW (the order is already expired);
+            # the job picks it up on its next 5 s tick.
+            self.psql(self.database,
+                "UPDATE orders SET payment_expires_at='2000-01-01 00:00:00+00' WHERE id='%s'"
+                % order_id)
+            deadline = time.time()
+            observed, kill_deadline = False, time.time() + 60
+            while time.time() < kill_deadline:
+                if time.time() >= deadline:
+                    n = int(self.psql(self.database,
+                        "SELECT count(*) FROM pg_stat_activity WHERE "
+                        "datname='%s' AND state='active' AND wait_event='PgSleep'"
+                        % self.database))
+                    if n > 0:
+                        observed = True
+                        break
+                # Tight poll: the trigger sleep is only ~150 ms, so a
+                # 0.2 s poll would usually miss the PgSleep window.
+                time.sleep(0.05)
+            self.kill_backend()
+            result['kill_point'] = ('during expiry batch (PgSleep observed)'
+                if observed else 'after deadline (batch not observed; best-effort)')
+            result['expiry_batch_observed'] = observed
+            self.start_backend()
+            expired = False
+            for _ in range(240):
+                if self.psql(self.database,
+                        "SELECT status FROM orders WHERE id='%s'" % order_id) == 'cancelled':
+                    expired = True
+                    break
+                time.sleep(0.5)
+            result['expired_after_restart'] = expired
+            self.psql(self.database,
+                "DROP TRIGGER IF EXISTS cap_boundary_b4_slow_trg ON orders; "
+                "DROP FUNCTION IF EXISTS cap_boundary_b4_slow();", check=False)
+            if not expired:
+                result['error'] = 'order did not expire after restart'
+                self.manifest[key] = result
+                return 1
+        # --- replay: the same callback (b1/b2/b3) or the expiry read (b4) ---
+        replay_env = {'CAPACITY_BOUNDARY': boundary,
+                      'CAPACITY_BOUNDARY_PHASE': 'replay',
+                      'CAPACITY_BOUNDARY_STATE_FILE': str(state_file)}
+        s, _ = self.run_driver('fault-boundary-%s-replay' % boundary,
+                               'fault-boundary.mjs', replay_env, 300)
+        result['replay_exit'] = s
+        if s != 0:
+            result['error'] = 'replay failed (not exactly once)'
+            self.manifest[key] = result
+            return 1
+        # --- W-2.1 gate, then the negative control ---
+        gate_exit, report = self.reconcile_gate('fault-boundary-' + boundary, since)
+        result['gate_exit'] = gate_exit
+        result['gate_verdict'] = (report or {}).get('verdict')
+        if gate_exit != 0:
+            result['error'] = 'W-2.1 gate FAILED on the clean run'
+            self.manifest[key] = result
+            return 1
+        plant_order = state['orderId'] if boundary != 'b4' else None
+        planted = self.plant_double_receipt(plant_order)
+        if planted is None:
+            result['negative_control'] = {'error': 'no paid order to plant against'}
+            self.manifest[key] = result
+            return 1
+        nc_exit, nc_report = self.reconcile_gate(
+            'fault-boundary-' + boundary + '-nc', since)
+        result['negative_control'] = {
+            'planted_order': planted['order_id'], 'gate_exit': nc_exit,
+            'gate_verdict': (nc_report or {}).get('verdict'),
+            'expected': 'FAIL'}
+        self.unplant_double_receipt(planted)
+        nc2_exit, nc2_report = self.reconcile_gate(
+            'fault-boundary-' + boundary + '-nc-clean', since)
+        result['negative_control_restore'] = {
+            'gate_exit': nc2_exit,
+            'gate_verdict': (nc2_report or {}).get('verdict'),
+            'expected': 'PASS'}
+        ok = nc_exit != 0 and nc2_exit == 0
+        if not ok:
+            result['error'] = 'negative control misbehaved (planted gate exit %s, restored gate exit %s)' % (nc_exit, nc2_exit)
+            self.manifest[key] = result
+            return 1
+        self.manifest[key] = result
+        return 0
+
+    def run_fault_db_loss(self):
+        """CAP-02 W-3.2: DB-loss profile (native). Loss duration 30 s,
+        applied as ALTER DATABASE ... CONNECTION LIMIT 0 + pg_terminate_backend
+        on the run DB's test_runner backends (the shared PG cluster on 5433
+        is never stopped). REVOKE CONNECT does NOT work here: test_runner
+        OWNS the run DB, and the owner bypasses the CONNECT privilege check
+        (verified live 2026-11-21 — a direct test_runner connect succeeded
+        after REVOKE; CONNECTION LIMIT 0 blocks the owner, verified the
+        same way: health stayed degraded/down for 5 samples and recovered
+        on LIMIT -1). A commerce-rolling driver runs a 120 s load window
+        across the loss. Assertions: health goes 503 during the loss,
+        recovers to 200 after the limit is lifted, the commerce oracle
+        matches for the window, and the W-2.1 gate PASSES (no partial
+        effects). FAILS CLOSED if the DB never comes back (bounded 60 s
+        recovery wait). The negative control re-applies the loss after
+        recovery and requires health to stay non-200 for 10 s, proving the
+        recovery check does not false-positive."""
+        key = 'fault_db_loss'
+        result = {'loss_seconds': 30}
+        since = self.psql(self.database, "SELECT clock_timestamp()::text")
+        load_name = 'fault-db-loss-load'
+        load_env = self.driver_env({
+            'CAPACITY_DURATION_SECONDS': '120',
+            'CAPACITY_SUMMARY_FILE': str(self.work / (load_name + '-summary.json'))})
+        load_log = open(self.work / (load_name + '.log'), 'w')
+        load = subprocess.Popen(
+            ['node', str(LOADTESTS / 'commerce-rolling.mjs')],
+            env=load_env, stdout=load_log, stderr=subprocess.STDOUT, cwd=LOADTESTS)
+        # Lead time before the loss: the driver's bootstrap is sequential
+        # (~150 ms per principal, ~15 s for 100) and a 503 during it fails
+        # the whole load with failed_gates ["bootstrap"] (run 3: the 10 s
+        # lead let the loss land on principal 67's bootstrap_order).
+        # 30 s lets bootstrap finish so the loss hits the running window.
+        time.sleep(30)
+        terminated = self.psql(self.database,
+            "ALTER DATABASE %s CONNECTION LIMIT 0; "
+            "SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM "
+            "pg_stat_activity WHERE datname='%s' AND usename='test_runner' "
+            "AND pid<>pg_backend_pid()) s"
+            % (self.database, self.database))
+        result['terminated_backends'] = terminated
+        health_during = []
+        for _ in range(6):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            health_during.append(status)
+            time.sleep(1)
+        result['health_during_loss'] = health_during
+        time.sleep(30 - 6)
+        self.psql(self.database,
+            "ALTER DATABASE %s CONNECTION LIMIT -1" % self.database)
+        recovered = False
+        for _ in range(120):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            if status == 200:
+                recovered = True
+                break
+            time.sleep(0.5)
+        result['health_after_recovery'] = status
+        result['recovered'] = recovered
+        try:
+            load.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            load.kill()
+            load.wait(timeout=15)
+        result['load_exit'] = load.returncode
+        try:
+            load_summary = json.loads(
+                (self.work / (load_name + '-summary.json')).read_text())
+            result['load_requests'] = load_summary.get('requests')
+            result['load_failed_gates'] = load_summary.get('failed_gates')
+        except Exception:
+            result['load_requests'] = None
+        self.oracle_commerce('fault-db-loss', since, 0)
+        result['oracle'] = self.manifest.get('fault-db-loss_oracle')
+        result['oracle_gate'] = self.manifest.get('fault-db-loss_oracle_gate')
+        gate_exit, report = self.reconcile_gate('fault-db-loss', since)
+        result['gate_exit'] = gate_exit
+        result['gate_verdict'] = (report or {}).get('verdict')
+        # Negative control: loss again, health must stay down (the check
+        # must report the outage, not pass on a stale healthy read).
+        self.psql(self.database,
+            "ALTER DATABASE %s CONNECTION LIMIT 0; "
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname='%s' AND usename='test_runner' AND pid<>pg_backend_pid()"
+            % (self.database, self.database))
+        nc_health = []
+        for _ in range(10):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            nc_health.append(status)
+            time.sleep(1)
+        result['negative_control_health_during_loss'] = nc_health
+        result['negative_control_stayed_down'] = all(s != 200 for s in nc_health)
+        self.psql(self.database,
+            "ALTER DATABASE %s CONNECTION LIMIT -1" % self.database)
+        restored = False
+        for _ in range(120):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            if status == 200:
+                restored = True
+                break
+            time.sleep(0.5)
+        result['negative_control_restored'] = restored
+        ok = (recovered and str(result['oracle_gate']).startswith('matched')
+              and gate_exit == 0 and result['negative_control_stayed_down']
+              and restored)
+        if not ok:
+            result['error'] = ('recovered=%s oracle_gate=%s gate_exit=%s '
+                'nc_stayed_down=%s restored=%s'
+                % (recovered, result['oracle_gate'], gate_exit,
+                   result['negative_control_stayed_down'], restored))
+        self.manifest[key] = result
+        return 0 if ok else 1
+
+    def run_fault_worker_failover(self):
+        """CAP-02 W-3.3: worker-failover profile (native). Kills the
+        backend mid-batch for (a) the unpaid-order-expiry batch (60 seeded
+        expired orders, pg_sleep(0.025) per order — the repo's
+        TestJobsCrashRestartAndMidBatchCancellation technique) and (b) the
+        delivery-lock-releaser batch (20 already-released orders
+        un-released, pg_sleep(0.025) per ledger insert). Asserts lease
+        takeover (background_job_state owner changes), no double-execution
+        (each order cancelled once; each released order has exactly 2
+        balanced ledger entries; the release eligibility query returns 0
+        after the re-release), unchanged stock, and backlog drains. Against
+        JOB-01 lease semantics (expiry 5 s period / 3 s timeout; release
+        60 s period / 10 s timeout)."""
+        key = 'fault_worker_failover'
+        result = {}
+        since = self.psql(self.database, "SELECT clock_timestamp()::text")
+        try:
+            # --- (a) expiry batch ---
+            # The 60 seeded orders use a fixed ANCIENT payment_expires_at
+            # ('2000-01-01') so they sort FIRST in the expiry job's
+            # ORDER BY payment_expires_at queue. The fixture leaves a
+            # ~7200-order expired backlog and the job processes ~21
+            # candidates per 5 s batch (3 s deadline, ~140 ms each), so
+            # a newly-expired order (2 min past) waits ~28 min behind
+            # it and the profile's ">=3 committed" wait never fires
+            # (run 7: 0 committed). The ancient expiry does not change
+            # what is tested (lease takeover + exactly-once + drain);
+            # it only makes the seeded batch reachable.
+            self.psql(self.database, """
+              INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,payment_expires_at)
+              SELECT 'cap-w33-e-'||g::text,'cap-w33-e-'||g::text,'cap-store-1','job',2000,2000,'job','09123456789','x','x','x','1234512345','cap-w33-e-'||g::text,'2000-01-01 00:00:00+00'::timestamptz FROM generate_series(1,60)g;
+              INSERT INTO order_items(id,order_id,product_id,quantity,wholesale_cost,platform_fee,seller_margin,final_unit_price)
+              SELECT md5('cap-w33-e-'||g::text)::uuid,'cap-w33-e-'||g::text,'cap-product-1',1,1000,0,1000,2000 FROM generate_series(1,60)g;
+              CREATE OR REPLACE FUNCTION cap_w33_slow_expiry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id LIKE 'cap-w33-e-%' AND NEW.status='cancelled' THEN PERFORM pg_sleep(0.025); END IF; RETURN NEW; END $$;
+              DROP TRIGGER IF EXISTS cap_w33_slow_expiry_trg ON orders;
+              CREATE TRIGGER cap_w33_slow_expiry_trg BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION cap_w33_slow_expiry();
+            """)
+            stock_before = self.psql(self.database,
+                "SELECT stock FROM products WHERE id='cap-product-1'")
+            owner_before = self.psql(self.database,
+                "SELECT owner FROM background_job_state WHERE job='unpaid-order-expiry'")
+            committed = 0
+            for _ in range(300):
+                committed = int(self.psql(self.database,
+                    "SELECT count(*) FROM orders WHERE id LIKE 'cap-w33-e-%' AND status='cancelled'"))
+                if committed >= 3:
+                    break
+                time.sleep(0.1)
+            result['expiry_committed_before_kill'] = committed
+            if committed < 3:
+                result['error'] = 'expiry batch made no committed progress'
+                self.manifest[key] = result
+                return 1
+            self.kill_backend()
+            time.sleep(6)  # lease timeout 3 s + 2 s + margin
+            self.start_backend()
+            cancelled = 0
+            for _ in range(240):
+                cancelled = int(self.psql(self.database,
+                    "SELECT count(*) FROM orders WHERE id LIKE 'cap-w33-e-%' AND status='cancelled'"))
+                if cancelled == 60:
+                    break
+                time.sleep(0.5)
+            stock_after = self.psql(self.database,
+                "SELECT stock FROM products WHERE id='cap-product-1'")
+            owner_after = self.psql(self.database,
+                "SELECT owner FROM background_job_state WHERE job='unpaid-order-expiry'")
+            result['expiry'] = {
+                'cancelled': cancelled, 'stock_unchanged': stock_before == stock_after,
+                'owner_before': owner_before, 'owner_after': owner_after,
+                'lease_takeover': bool(owner_before) and owner_before != owner_after}
+            if cancelled != 60 or stock_before != stock_after:
+                result['error'] = 'expiry batch did not drain exactly once (cancelled=%s stock_changed=%s)' % (cancelled, stock_before != stock_after)
+                self.manifest[key] = result
+                return 1
+            # --- (b) delivery/release batch ---
+            picked = self.psql(self.database, """
+              SELECT string_agg(id, ',') FROM (
+                SELECT o.id FROM orders o WHERE o.status='delivered_confirmed' AND o.profit_released
+                  AND o.referrer_seller_id IS NULL
+                  AND (SELECT count(*) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id
+                    AND l.operator='system:delivery-lock-releaser')=2
+                ORDER BY o.id LIMIT 20) s""")
+            if not picked:
+                result['error'] = 'no 20 released orders with exactly 2 ledger entries to un-release'
+                self.manifest[key] = result
+                return 1
+            ids = picked.split(',')
+            id_list = "'" + "','".join(ids) + "'"
+            # The release (releaseClosedReturnWindowTx) sets
+            # profit_released, profit_released_at AND
+            # referral_commission_released=TRUE; the candidate query
+            # requires referral_commission_released=FALSE, so the
+            # un-release must reset that flag too or the 20 orders are
+            # never candidates again (bug 14: run 5's release batch
+            # waited 90 s for a ledger entry that never came because
+            # the flag stayed TRUE on all 20). The picked orders have
+            # no referrer, so no referral bonus can double-release.
+            self.psql(self.database,
+                "ALTER TABLE ledger_entries DISABLE TRIGGER trg_ledger_entries_append_only; "
+                "ALTER TABLE ledger_entries DISABLE TRIGGER fin005_linked_ledger_immutable; "
+                "DELETE FROM ledger_entries WHERE related_order_or_dispute IN (%s) AND operator='system:delivery-lock-releaser'; "
+                "ALTER TABLE ledger_entries ENABLE TRIGGER trg_ledger_entries_append_only; "
+                "ALTER TABLE ledger_entries ENABLE TRIGGER fin005_linked_ledger_immutable; "
+                "UPDATE orders SET profit_released=false, profit_released_at=NULL, referral_commission_released=false WHERE id IN (%s)"
+                % (id_list, id_list))
+            self.psql(self.database, """
+              CREATE OR REPLACE FUNCTION cap_w33_slow_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.related_order_or_dispute IN (%s) THEN PERFORM pg_sleep(0.025); END IF; RETURN NEW; END $$;
+              DROP TRIGGER IF EXISTS cap_w33_slow_release_trg ON ledger_entries;
+              CREATE TRIGGER cap_w33_slow_release_trg BEFORE INSERT ON ledger_entries FOR EACH ROW EXECUTE FUNCTION cap_w33_slow_release();
+            """ % id_list)
+            owner_rel_before = self.psql(self.database,
+                "SELECT owner FROM background_job_state WHERE job='delivery-lock-releaser'")
+            first = 0
+            for _ in range(900):
+                first = int(self.psql(self.database,
+                    "SELECT count(*) FROM ledger_entries WHERE related_order_or_dispute IN (%s) AND operator='system:delivery-lock-releaser'" % id_list))
+                if first >= 1:
+                    break
+                time.sleep(0.1)
+            result['release_entries_before_kill'] = first
+            if first < 1:
+                result['error'] = 'release batch never started (no ledger entry in 90 s)'
+                self.manifest[key] = result
+                return 1
+            self.kill_backend()
+            time.sleep(15)  # lease timeout 10 s + 2 s + margin
+            self.start_backend()
+            released = 0
+            for _ in range(360):
+                released = int(self.psql(self.database,
+                    "SELECT count(*) FROM orders WHERE id IN (%s) AND profit_released" % id_list))
+                if released == 20:
+                    break
+                time.sleep(0.5)
+            paired = self.psql(self.database, """
+              SELECT count(*) FROM (
+                SELECT o.id FROM orders o WHERE o.id IN (%s) AND o.profit_released
+                  AND (SELECT count(*) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id AND l.operator='system:delivery-lock-releaser')=2
+                  AND (SELECT COALESCE(SUM(CASE WHEN l.type='credit' THEN l.amount ELSE -l.amount END),0) FROM ledger_entries l WHERE l.related_order_or_dispute=o.id AND l.operator='system:delivery-lock-releaser')=0
+              ) s""" % id_list)
+            replay = int(self.psql(self.database,
+                "SELECT count(*) FROM orders WHERE id IN (%s) AND status='delivered_confirmed' AND NOT profit_released AND return_window_ends_at<=NOW()" % id_list))
+            owner_rel_after = self.psql(self.database,
+                "SELECT owner FROM background_job_state WHERE job='delivery-lock-releaser'")
+            result['release'] = {
+                'released': released, 'paired_balanced': int(paired),
+                'replay_candidates': replay,
+                'owner_before': owner_rel_before, 'owner_after': owner_rel_after,
+                'lease_takeover': bool(owner_rel_before) and owner_rel_before != owner_rel_after}
+            if released != 20 or int(paired) != 20 or replay != 0:
+                result['error'] = 'release batch did not re-release exactly once (released=%s paired=%s replay=%s)' % (released, paired, replay)
+                self.manifest[key] = result
+                return 1
+            gate_exit, report = self.reconcile_gate('fault-worker-failover', since)
+            result['gate_exit'] = gate_exit
+            result['gate_verdict'] = (report or {}).get('verdict')
+            if gate_exit != 0:
+                result['error'] = 'W-2.1 gate FAILED after failover'
+                self.manifest[key] = result
+                return 1
+        finally:
+            self.psql(self.database,
+                "DROP TRIGGER IF EXISTS cap_w33_slow_expiry_trg ON orders; "
+                "DROP FUNCTION IF EXISTS cap_w33_slow_expiry(); "
+                "DROP TRIGGER IF EXISTS cap_w33_slow_release_trg ON ledger_entries; "
+                "DROP FUNCTION IF EXISTS cap_w33_slow_release();", check=False)
+        self.manifest[key] = result
+        return 0
+
+    def https_json(self, method, path, token, body=None):
+        """One HTTPS call to the nginx front door, with the run CA and the
+        capacity.example.test SNI/Host (the host's resolver has no such
+        name; the aliases exist only inside the backend's mount namespace).
+        Returns (status, parsed_json_or_None). Used by the redis-load
+        callback probe, where a node driver would be the wrong tool."""
+        import socket, ssl, http.client
+        ctx = ssl.create_default_context(cafile=str(self.work / 'root.crt'))
+        raw = socket.create_connection(('127.0.0.1', self.nginx_port), timeout=10)
+        tls = ctx.wrap_socket(raw, server_hostname='capacity.example.test')
+        conn = http.client.HTTPConnection('capacity.example.test', self.nginx_port, timeout=10)
+        conn.sock = tls
+        headers = {'Host': 'capacity.example.test',
+                   'Content-Type': 'application/json'}
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        conn.request(method, path,
+                     body=json.dumps(body) if body is not None else None,
+                     headers=headers)
+        resp = conn.getresponse()
+        raw_body = resp.read()
+        conn.close()
+        try:
+            parsed = json.loads(raw_body)
+        except Exception:
+            parsed = None
+        return resp.status, parsed
+
+    def run_fault_redis_load(self):
+        """CAP-02 W-3.4: Redis restart under load (native). A
+        commerce-rolling driver runs a 120 s load window; Redis is stopped
+        mid-window, restarted, and its holds are rebuilt from PG via
+        `redis-recover rebuild`. A prepared order's callback is sent
+        DURING the rebuild: it must either pay (hold survived/rebuilt in
+        time) or follow the refund path (409 inventory_hold_expired AND a
+        refund obligation recorded) — never lost money. Asserts health
+        503 during the outage, 200 after, rebuild exit 0, oracle match,
+        and the W-2.1 gate PASS. The host-crash <=1 s AOF loss window is
+        untestable-by-kill and is recorded as such (this profile kills the
+        process, not the host)."""
+        key = 'fault_redis_load'
+        result = {'host_crash_1s_loss_window': 'untestable-by-kill (process kill loses nothing on this scratch Redis; the prod AOF-everysec window needs a host-level test)'}
+        since = self.psql(self.database, "SELECT clock_timestamp()::text")
+        users = json.loads((self.work / 'users.json').read_text())['users']
+        user = users[20]
+        destination = {'province': 'Tehran', 'city': 'Tehran',
+                       'address': 'Synthetic redis-load address', 'postalCode': '1111111111'}
+        product = 500
+        sku_hash = hashlib.md5(('cap-sku-' + str((product - 1) * 5 + 1)).encode()).hexdigest()
+        variant = (sku_hash[:8] + '-' + sku_hash[8:12] + '-' + sku_hash[12:16]
+                   + '-' + sku_hash[16:20] + '-' + sku_hash[20:])
+        items = [{'productId': 'cap-product-' + str(product), 'variantId': variant, 'quantity': 1}]
+        status, quote = self.https_json('POST', '/api/v1/shipping/quote', user['token'],
+                                        {'items': items, 'destination': destination})
+        if status != 200 or not (quote or {}).get('quoteId'):
+            result['error'] = 'quote preparation failed: %s' % status
+            self.manifest[key] = result
+            return 1
+        status, order = self.https_json('POST', '/api/v1/orders', user['token'],
+            {'storeId': 'cap-store-1', 'items': items, 'shippingQuoteId': quote['quoteId'],
+             'customerInfo': {**destination, 'fullName': 'Synthetic capacity customer', 'phone': user['mobile']},
+             'paymentMethod': 'cash', 'idempotencyKey': 'cap-redis-load-' + secrets.token_hex(8)})
+        if status != 201 or not (order or {}).get('id'):
+            result['error'] = 'order preparation failed: %s' % status
+            self.manifest[key] = result
+            return 1
+        status, token = self.https_json('POST', '/api/v1/payments/shaparak/token', user['token'],
+            {'orderId': order['id'], 'orderNumber': order['orderNumber'], 'amount': order['payableAmount']})
+        if status != 200 or not (token or {}).get('token'):
+            result['error'] = 'token issuance failed: %s' % status
+            self.manifest[key] = result
+            return 1
+        result['order_id'] = order['id']
+        load_name = 'fault-redis-load-load'
+        load_env = self.driver_env({
+            'CAPACITY_DURATION_SECONDS': '120',
+            'CAPACITY_SUMMARY_FILE': str(self.work / (load_name + '-summary.json'))})
+        load_log = open(self.work / (load_name + '.log'), 'w')
+        load = subprocess.Popen(
+            ['node', str(LOADTESTS / 'commerce-rolling.mjs')],
+            env=load_env, stdout=load_log, stderr=subprocess.STDOUT, cwd=LOADTESTS)
+        # Same 30 s lead as db-loss: the driver's bootstrap (~15 s) must
+        # finish before Redis goes down, or bootstrap fails outright.
+        time.sleep(30)
+        self.stop_proc('redis')
+        health_during = []
+        for _ in range(3):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            health_during.append(status)
+            time.sleep(1)
+        result['health_during_redis_down'] = health_during
+        self.provision_redis()
+        # Rebuild holds from PG while the callback is sent concurrently:
+        # whichever lands first, money must be conserved.
+        env = {**os.environ,
+               'PATH': str(HOME / 'go' / 'bin') + ':' + os.environ.get('PATH', ''),
+               'HOME': str(HOME)}
+        rebuild = subprocess.Popen(
+            [str(HOME / 'go' / 'bin' / 'go'), 'run', './cmd/redis-recover', 'rebuild',
+             '-db', self.dsn, '-redis', self.redis_url],
+            env=env, cwd=BACKEND, stdout=open(self.work / 'redis-rebuild.log', 'w'),
+            stderr=subprocess.STDOUT, text=True)
+        cb_status, cb_body = self.https_json(
+            'POST', '/api/v1/payments/shaparak/callback', user['token'],
+            {'token': token['token'], 'orderNumber': order['orderNumber'],
+             'amount': order['payableAmount']})
+        rebuild_rc = rebuild.wait(timeout=300)
+        result['rebuild_exit'] = rebuild_rc
+        result['callback_during_rebuild'] = {'status': cb_status, 'body': cb_body}
+        callback_ok = False
+        if cb_status == 200 and (cb_body or {}).get('status') == 'paid':
+            callback_ok = True
+            result['callback_outcome'] = 'paid (hold survived/rebuilt in time)'
+        elif cb_status == 409 and (cb_body or {}).get('code') == 'inventory_hold_expired':
+            obligations = int(self.psql(self.database,
+                "SELECT count(*) FROM order_refund_obligations WHERE order_id='%s'" % order['id']))
+            result['callback_outcome'] = 'refund path (hold expired during rebuild)'
+            result['refund_obligations'] = obligations
+            callback_ok = obligations >= 1
+        else:
+            result['callback_outcome'] = 'unexpected: %s %s' % (cb_status, cb_body)
+        recovered = False
+        for _ in range(120):
+            status, _ = self.http_get(
+                'http://127.0.0.1:%d/api/health' % self.backend_port, timeout=5)
+            if status == 200:
+                recovered = True
+                break
+            time.sleep(0.5)
+        result['health_after_recovery'] = status
+        result['recovered'] = recovered
+        try:
+            load.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            load.kill()
+            load.wait(timeout=15)
+        result['load_exit'] = load.returncode
+        self.oracle_commerce('fault-redis-load', since, 0)
+        result['oracle'] = self.manifest.get('fault-redis-load_oracle')
+        result['oracle_gate'] = self.manifest.get('fault-redis-load_oracle_gate')
+        gate_exit, report = self.reconcile_gate('fault-redis-load', since)
+        result['gate_exit'] = gate_exit
+        result['gate_verdict'] = (report or {}).get('verdict')
+        ok = (recovered and rebuild_rc == 0 and callback_ok
+              and str(result['oracle_gate']).startswith('matched') and gate_exit == 0)
+        if not ok:
+            result['error'] = ('recovered=%s rebuild=%s callback_ok=%s '
+                'oracle_gate=%s gate_exit=%s'
+                % (recovered, rebuild_rc, callback_ok,
+                   result['oracle_gate'], gate_exit))
+        self.manifest[key] = result
+        return 0 if ok else 1
+
     # -- cleanup ------------------------------------------------------------
     def close(self, keep=False):
         failures = []
-        for name in ('backend', 'nginx', 'sms', 'carrier', 'redis'):
-            try:
-                self.stop_proc(name)
-            except Exception:
-                failures.append(name)
+        if not keep:
+            for name in ('backend', 'nginx', 'sms', 'carrier', 'redis'):
+                try:
+                    self.stop_proc(name)
+                except Exception:
+                    failures.append(name)
         if not keep:
             for name in ('backend.log', 'nginx-error.log', 'nginx-access.log',
                          'redis.log', 'sms.log', 'carrier.log'):
@@ -993,13 +1863,52 @@ http {
                 shutil.rmtree(self.redis_dir, ignore_errors=True)
             shutil.rmtree(self.work, ignore_errors=True)
         else:
+            # CAP-02 W-1.5: --keep-env now leaves a RUNNABLE env (it used
+            # to stop every process and keep only the work dir + DB, so
+            # "kept-env" was a work-dir-only stub). Processes stay up;
+            # env.sh exports everything a follow-up driver/run needs and
+            # stop-env.sh tears the env down (kills the PIDs, drops the
+            # disposable DB). Secrets inside; both files are 600/700.
+            pids = {name: (proc.pid if proc is not None and proc.poll() is None else None)
+                    for name, proc in self.procs.items()}
             env_path = self.work / 'env.sh'
-            env_path.write_text('# Native capacity env (KEEP-ENV mode). Secrets inside; chmod 600.\n'
-                                '# Backend: http://127.0.0.1:%d  TLS: https://capacity.example.test:%d (via nginx)\n'
-                                '# Sessions: %s  CA: %s\n' % (self.backend_port, self.nginx_port,
-                                                             self.work / 'users.json', self.work / 'root.crt'))
+            env_path.write_text(
+                '# Native capacity env (KEEP-ENV mode). Secrets inside; chmod 600.\n'
+                '# Backend: http://127.0.0.1:%d  TLS: https://capacity.example.test:%d (via nginx)\n'
+                '# Sessions: %s  CA: %s\n'
+                '# Database: %s  Redis: %s\n'
+                '# PIDs: %s\n'
+                'export CAPACITY_TARGET_HOST=capacity.example.test\n'
+                'export CAPACITY_TARGET_PORT=%d\n'
+                'export CAPACITY_TARGET_PROTOCOL=https\n'
+                'export CAPACITY_TARGET_IP=127.0.0.1\n'
+                'export CAPACITY_CA_FILE=%s\n'
+                'export CAPACITY_SESSIONS_FILE=%s\n'
+                'export CAPACITY_DB=%s\n'
+                'export CAPACITY_DSN=%s\n'
+                'export CAPACITY_REDIS_URL=%s\n'
+                % (self.backend_port, self.nginx_port,
+                   self.work / 'users.json', self.work / 'root.crt',
+                   self.database, self.redis_url, json.dumps(pids),
+                   self.nginx_port, self.work / 'root.crt',
+                   self.work / 'users.json', self.database, self.dsn,
+                   self.redis_url))
             os.chmod(env_path, 0o600)
-            print('KEPT native env; work dir:', self.work, 'env file:', env_path, flush=True)
+            live_pids = ' '.join(str(p) for p in pids.values() if p)
+            stop_path = self.work / 'stop-env.sh'
+            stop_path.write_text(
+                '#!/bin/sh\n'
+                '# Tear down a --keep-env native capacity env.\n'
+                'kill %s 2>/dev/null\n'
+                'sleep 2\n'
+                '%s -h 127.0.0.1 -p 5433 -U gap13 -d postgres -c \'DROP DATABASE "%s" WITH (FORCE);\'\n'
+                'rm -rf %s\n'
+                'echo stopped\n'
+                % (live_pids, str(PG_BIN / 'psql'), self.database,
+                   self.redis_dir or ''))
+            os.chmod(stop_path, 0o700)
+            print('KEPT native env (runnable); work dir:', self.work,
+                  'env file:', env_path, 'stop:', stop_path, flush=True)
         if failures:
             raise SafetyError('native cleanup failures: ' + ','.join(failures))
 
@@ -1111,6 +2020,14 @@ def main():
                 s = run.run_fault_redis_loss()
             elif profile == 'fault-restart':
                 s = run.run_fault_restart()
+            elif profile.startswith('fault-boundary-'):
+                s = run.run_fault_boundary(profile[len('fault-boundary-'):])
+            elif profile == 'fault-db-loss':
+                s = run.run_fault_db_loss()
+            elif profile == 'fault-worker-failover':
+                s = run.run_fault_worker_failover()
+            elif profile == 'fault-redis-load':
+                s = run.run_fault_redis_load()
             else:
                 s, _ = run.run_driver(profile, driver, extra, timeout)
             if s:

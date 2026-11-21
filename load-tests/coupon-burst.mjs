@@ -43,7 +43,12 @@ const summary = {
   scope: 'LOCAL coupon-burst: maxUses=1 x100 attempts, maxUses=100 x1000 attempts, one coupon on cap-store-1',
   variants: {},
   failed_gates: [], requests_raw: requests, helper_requests_raw: helpers,
-  oracle_scope: 'runner SQL: reservation count == used_count == discounted orders per coupon (order_coupon_reservations state IN (reserved,consumed,review_hold) vs seller_discount_codes.used_count); zero silently-undiscounted orders (orders with the coupon code and coupon_discount_amount=0 must not exist)',
+  oracle_scope: 'runner-side oracle_coupon_burst (scripts/load_test_native.py, CAP-02 W-1.3): '
+    + 'used_count == occupying reservations (reserved/consumed/review_hold), '
+    + 'consumed reservations == discounted orders, silent-discount count == 0; '
+    + 'deadlocks counted from pg_stat_database; driver retries are 0 by '
+    + 'construction (no retry loop). The runner FAILS the profile on any '
+    + 'of used_count_mismatch > 0, silent_discount > 0, or consumed != discounted.',
 };
 
 function call(principal, kind, path, body, helper = false, tokenOverride = null) {
@@ -79,7 +84,7 @@ function uuid(text) {
 
 async function createCoupon(code, maxUses) {
   const now = Date.now();
-  const res = await call(-1, 'prepare_coupon', '/api/v1/seller/stores/' + storeSlug + '/discount-codes',
+  const res = await call(-1, 'prepare_coupon', '/api/v1/stores/' + storeSlug + '/discount-codes',
     {code, mode: 'percent', value: 10, startsAt: new Date(now - 3600e3).toISOString(), endsAt: new Date(now + 7200e3).toISOString(), maxUses}, true, seller.token);
   if (res.status !== 201 || !res.body?.id) throw Error('coupon creation failed: ' + res.status + ' ' + JSON.stringify(res.body)?.slice(0, 200));
   return res.body;

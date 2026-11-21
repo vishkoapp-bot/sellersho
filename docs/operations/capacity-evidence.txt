@@ -1,0 +1,794 @@
+# Capacity evidence — CAP-02 (P1: prove integrated correctness at 1,000 users and 100 RPS)
+#
+# SPEC-REQUIRED FILE (CAP-02 acceptance). This file is the evidence record,
+# NOT a certification.
+#
+#   certified: false
+#   status: NOT READY (CAP-02 audit, 2026-11-21, ~/workspace/cap02-audit/CAP-02-audit.md)
+#
+# No certification gate can pass or be claimed until the owner answers the
+# hardware/staging question (D-1) and the log fix + deploy queue land
+# (D-2, D-3). No number from the shared VM in this file is a capacity
+# result; VM numbers are labeled DIAGNOSTIC / BASELINE only.
+#
+# SLO targets in force (spec, unchanged since CAP-01 — never loosened,
+# restated, or "reinterpreted"):
+#   read p95 300 ms / p99 1000 ms; mutation p95 750 ms / p99 2000 ms;
+#   unexpected_error_rate_lt 0.001; dropped_iterations 0; cpu_max_percent 70;
+#   headroom 200 RPS / 300 s; recovery 120 s; login 1000 users / 60 s;
+#   mix 30/20/15/15/8/4/4/4; sustained 1800 s; soak 7200 s.
+# Targets the spec names without numbers (memory/queue bounds, cutover
+# error budget) are owner questions (D-7) — recorded here, not filled in.
+#
+# Release identity for every run in this file: the run manifest records
+# the release commit / image / config identifiers (MIG-02 manifest
+# wiring). A result is always attributable to an exact release — never
+# to "main, roughly".
+#
+# Run log (every failed/repeated run is recorded, including diagnostics):
+#   see load-tests/cap01-progress.md (CAP-01 runs) and §5 below (CAP-02 runs).
+
+# =============================================================================
+# §1. Decisions log — D-1..D-8 (CAP-02 audit §9). NONE ANSWERED as of 2026-11-21.
+# =============================================================================
+#
+# D-1  Intended hardware / staging host — UNANSWERED.
+#      Missing input: which machine runs the qualification (prod VPS
+#      46.249.98.190 itself? a second identical VPS? a bigger staging
+#      host?), its vCPU/RAM/disk, and whether the claim is "passes on
+#      prod-shaped hardware" or "passes on bigger hardware with a stated
+#      scaling argument". The 4 vCPU figure is UNCONFIRMED — no file
+#      states prod vCPU count. Also: is a persistent staging host to be
+#      created, or is the disposable Docker env on a large host the staging?
+#      Blocks: everything in Phase 4; acceptance A17.
+#      W-0.3 verification (2026-11-21, read-only SSH listing on prod):
+#      NO staging exists on prod anymore. `docker ps -a` shows only the
+#      9 live drup_* containers (backend, frontend, edge, postgres,
+#      redis, prometheus, grafana, node-exporter, nginx-exporter); no
+#      drup_staging_pg / drup_staging_redis. `docker volume ls` shows
+#      only drup_caddy_config, drup_caddy_data, drup_grafana_data,
+#      drup_postgres_data, drup_prometheus_data, drup_redis_data,
+#      sellersho-go-mod-cache, sellersho-npm-build-cache — no
+#      drup-staging_* volumes. The Q3 prune deleted the stopped staging
+#      containers/volumes the REL-02 audit found (Exited 255, ~2 weeks
+#      prior; ~600 MB+). The de-facto isolated staging remains the
+#      disposable Docker env (scripts/load_test_isolated.py), which
+#      needs a Docker host and cannot run on this VM.
+#
+# D-2  REL-02 Q4 log fix — UNANSWERED.
+#      Missing input: "May prod backend logging drop per-query SQL
+#      success lines (keeping errors + slow-query lines + request
+#      summaries), so the 100-RPS load does not fill the disk in hours?
+#      What replaces them as the debugging surface — the existing
+#      Prometheus sellersho_ metrics plus error logs?" (REL-02 audit Q4,
+#      verbatim.) Blocks: any sustained 100-RPS run on prod-shaped
+#      logging; A2, W-4.3. Arithmetic bound: ~15 log lines/request x
+#      ~186 B ≈ 280 KB/s ≈ 24 GB/day at sustained 100 RPS.
+#
+# D-3  Deploy queue unblock — OPEN.
+#      Missing input: R-1 green run on the owner's laptop (fix a22b40c
+#      pushed; owner must re-run `python
+#      scripts/test_deploy_server_build.py -v` after `git pull` and
+#      report green), then R-2 rehearsal. Without this, REL-02 /
+#      FIN-013 / INV-12 / FIN-014 stay undeployed and CAP-02 qualifies
+#      the wrong binaries. Blocks: W-0.2; the code under test.
+#      UPDATE 2026-11-21 ~03:35 Tehran (memory): R-1 re-run — PATH fix
+#      WORKED (7 tests run, was 0): 4 pass, 5 fail. 4 failures are
+#      environmental (Docker Desktop NOT running on the owner's laptop).
+#      1 failure is a REAL mismatch: the test asserts 'release.json' in
+#      the emitted release script but deploy.ps1's remote body never
+#      mentions it (make_manifest.py writes it; prod deploys do produce
+#      it) — REL-02 team must decide: add a test -f check to deploy.ps1
+#      or fix the stale assertion; do not silently drop it. R-1 stays
+#      OPEN until a green run on the owner's laptop is reported.
+#
+# D-4  FIN-010 provider scope — UNANSWERED.
+#      Missing input: is CAP-02 certification simulator-only for payments
+#      (with FIN-010 recorded as the launch blocker for real payments),
+#      or does qualification wait for Zarinpal merchant/sandbox access?
+#      No real PSP transactions have been attempted; none may be attempted
+#      without that access. Blocks: A12 (real half), A19 at full count, GO-01.
+#
+# D-5  Hot-account admission (FIN-013) — UNANSWERED.
+#      Missing input: per-account admission/queueing with a retryable
+#      response, or carving the hot-account shape out of the mutation SLO
+#      — and the budget the run is judged against (current: 5 s lock
+#      budget, 750 ms SLO; measured: 58–64/100 succeed, p95 ~6.4 s).
+#      Same question as INV-12 (c). Blocks: A7 (hot-account), W-4.2,
+#      A18/A19 at full concurrency.
+#
+# D-6  Snapshot producer (FIN-014 Q1 / INV-12 (d)) — UNANSWERED.
+#      Missing input: who produces the scrubbed representative snapshot,
+#      from what source, and where it lives. Blocks production-shaped
+#      data for the reconciliation totals and the migration/rollback
+#      rehearsal. (Producer must confirm the column list covers every
+#      PII-bearing column before running the scrub on a real backup.)
+#      Blocks: A21 at production shape; FIN-014 cutover; W-4.3.
+#
+# D-7  Thresholds the spec names but never numbers — UNANSWERED.
+#      Missing input: memory and queue bounds (what is the memory ceiling
+#      per service under load? what queue depth/lag fails the test?), and
+#      the error budget for cutover/recovery (REL-02 Q2: literally zero
+#      failed requests, or a number?). Also REL-02 Q1 (5-min maintenance
+#      window per deploy, or zero-downtime required before the next
+#      deploy). Blocks: A17 (memory/queue), A14, W-3.5, W-4.3.
+#
+# D-8  Login-ramp + token-lifecycle scope — UNANSWERED.
+#      Missing input: (a) OTP shedder: is the 8/s in-app IPPanel budget
+#      recalibrated for the ramp, is the ramp run against the SMS double
+#      with the shedder raised in staging, or is the ramp's pass criterion
+#      restated as a scope decision? (IPPanel's real OTP limit is still
+#      unknown — PERF-03 G3.) (b) True token expiry: short-lived-token
+#      test build, or a 3 h+ run? (c) Logout revocation: fix in AUTH-01,
+#      or record as a known limitation with the gate waived by scope
+#      decision? Blocks: A4, A20.
+
+# =============================================================================
+# §2. Verified CAP-01 baseline (the baseline every CAP-02 measurement is
+#     diffed against). Source: load-tests/evidence/
+#     native-05879119c0db957ebaaeaa03-compact.json (clean post-fix run).
+# =============================================================================
+#
+#   run:        native-05879119c0db957ebaaeaa03
+#   date:       2026-11-20 02:20-02:55 UTC (05:50-06:25 Tehran), ~35 min
+#   report:     ~/workspace/cap01-native-runs/sellersho-cap-report-f12c4cf62694
+#   scope:      local-only-native (shared VM, 1.5 vCPU / 6 GB — NOT intended hardware)
+#   certified:  false
+#   result:     13 of 16 profiles FAILED, 3 passed (fault profiles, by oracle —
+#               see honesty nuance below, not exit-0 passes)
+#   fixture:    exit 0 (users 1210, suppliers 100, stores 100, products 10101,
+#               variants 50001, orders 100000, saleable 5,000,000)
+#   release cohort: FAILED 0/100 (PERF-02 later reports 0 -> 99/100; the
+#               CAP-02 diagnostic re-run in §5 is the measurement that
+#               confirms or refutes that claim)
+#
+#   Failed (13): fixture-baseline, login-ramp, otp-background, api-baseline,
+#     api-rolling, journey-baseline, hot-sku, staff-baseline, hot-account,
+#     session-lifecycle, browser-assets, cold-cache, headroom.
+#   Passed (3, oracle-convergence passes — fault-provider-timeout exit 1 by
+#     design, oracle matched; fault-redis-loss; fault-restart): see audit §1.1.
+#
+#   Per-profile headline numbers (clean run 0587; full table in the audit §1.2):
+#     fixture-baseline 771/1000, 229 dropped, max arrival lag 59 ms
+#     login-ramp otp_send 486 OK / 334x503 (40.7% — in-app 8/s OTP shedder)
+#     otp-background browse 1145 OK / 273x500 / 118x503 (25.5% errors)
+#     api-baseline 296/1000 (704 dropped); list p95 3794, detail 3517,
+#       store 1473, account 912, quote 2138, create 5499, initiate 4786,
+#       callback 5402 ms; counter gate FAILED (api 521 vs domain_allow 536)
+#     api-rolling 713/3000 (2287 dropped), 0 completed checkouts
+#     journey-baseline 5812 requests, 0 completed checkouts,
+#       list p95 10498, create 7938 ms
+#     hot-sku 5 paid, oracle matched, latency/count gates failed
+#     staff-baseline 638/3000 (2362 dropped), 0 checkouts
+#     hot-account 100 paid, 0 cancelled (cancel p95 8804 ms); oracle
+#       matched vacuously on 0 cancels
+#     session-lifecycle concurrent-device 10/10, re-login 10/10,
+#       old-token-after-logout 10/10; only failed gate:
+#       logout_does_not_revoke_token (logout is a server-side no-op)
+#     browser-assets 10/10 pages HTTP 200, NO full render this run;
+#       blocked_external 13 (Snapp CDN hotlinks); /api/v1/domain-store
+#       404 x17; logo 404 x1
+#     cold-cache cold 222/1000 (list p95 5005, create 5563);
+#       warm 293/1000 (list 4481, create 5060)
+#     headroom burst 16877/60000 (43123 dropped); recovery 3848/12000
+#       (8152 dropped), 0 checkouts, recovery gate failed
+#     CPU max 10.8% (session-lifecycle) - 274.3% (headroom-recovery)
+#       vs the 70% contract; SMS double 776 sends, 0 rejected;
+#       carrier 694 quotes, 0 rejected, 0 outbound requests
+#
+#   Money conservation: ALL commerce oracles MATCHED within stated scope
+#     in both baseline runs (price identity, ledger sanity, refund
+#     obligations, hot-sku 5 = sellable 0 + captured 5, hot-account).
+#     Scope bound: "ledger conservation across deferred releases still
+#     OPEN" (FIN-013) — release postings happen after the return window,
+#     not inside a run window; no run can observe them end-to-end.
+#
+#   Supersession: b907's list/browse numbers are SUPERSEDED by the 0587
+#     run (pagination fix changed every commerce list request). The b907
+#     compact IS tracked in git
+#     (load-tests/evidence/native-b90799615573458d66d8b3a4-compact.json,
+#     committed in 8c5559b) — the PERF-02 ledger note that claimed "no
+#     b907 compact exists anywhere findable" was corrected 2026-11-21
+#     (CAP-02 implementation; audit §1.5).
+#
+#   Unexplained variance (informational, NOT gated):
+#     paid_orders_without_ledger_entry was 6 in the b907 headroom oracle
+#     vs 0 in every other b907 commerce oracle; 2 in the clean run's
+#     api-baseline (b907: 0). See §5 for the CAP-02 diagnostic finding.
+
+# =============================================================================
+# §3. Consolidated post-run reconciliation gate (W-2.1) — DEFINITION
+# =============================================================================
+#
+# Command: python3 scripts/cap02_reconcile.py --db <disposable-DSN>
+#          [--since <ISO-timestamp>] [--out <dir>]
+#
+# Runs, in order, and emits ONE PASS/FAIL with per-check rows:
+#   1. Runner oracle_commerce (same SQL as load_test_native.py
+#      oracle_commerce, windowed by --since; paid_orders_without_ledger_entry
+#      is INFORMATIONAL, not a gate — paid orders have no ledger entry by
+#      design until staged profit release, >= 7 days after delivery;
+#      see FIN-013 oracle check 2).
+#      Supported usage is windowed: always pass --since <run_started>.
+#      A whole-DB invocation (no --since) is EXPECTED to fail on seed
+#      data: the fixture seeds 2 orphan ledger entries (ADJ-301/ADJ-302
+#      -> DISP-701/ORD-702774) with no matching orders rows, which trip
+#      the commerce leg. Fixture-seed fidelity follow-up: seeded ledger
+#      entries should reference seeded orders (or the orphan check
+#      should baseline them). Not a gate defect — the runner always
+#      passes --since.
+#   2. FIN-013 10-point oracle (scripts/fin013-oracle.sql, run via psql
+#      against the run DB). FAIL on any difference_count > 0, except
+#      check 1b (orders_payments_no_payment_record), which is INFORMATIONAL
+#      with expected value exactly 1 (legacy seed ord-ready-pick-001);
+#      any other value is a FAIL. Check 7 (referral) is a STRICT fail
+#      when > 0; it is the known-open FIN-011 asymmetry until the
+#      follow-up fix lands, and a firing check 7 is recorded as such,
+#      never edited away.
+#   3. FIN-014 report (backend/cmd/fin014-report, read-only, repeatable-
+#      read). FAIL on certainCount > 0, EXCEPT the migration-seed baseline:
+#      migrations 000008 lines 136-137 seed two pending payouts
+#      (PAYOUT-PENDING-001 store-bibi, PAYOUT-PENDING-002 store-sepehr)
+#      that exceed their stores' signed availability, so the report flags
+#      exactly these two as certain on EVERY DB built from these
+#      migrations. The leg PASSES when the certain set is a subset of
+#      {PAYOUT-PENDING-001, PAYOUT-PENDING-002} and FAILS on any certain
+#      defect outside it (proven by the W-2.1 plant: a planted paid
+#      cancellation adds a 3rd certain defect and flips the leg to FAIL).
+#      Whether the seed itself should be fixed is a FIN-014 question, not
+#      a CAP-02 gate question. ambiguousCount / unresolvedCount are
+#      recorded, not gating. FIN011Pinned is a pinned known-open item,
+#      not a failure.
+#   4. INV-12 §5 inventory checks (docs/operations/inventory-reconciliation.md
+#      §3, global form): negative balances, duplicate movements,
+#      allocation-sum mismatches, over-departures, product projection vs
+#      sellable balance sums, orphan-reservation count,
+#      reservation-vs-return_requested mismatch, origin mismatches,
+#      capture/restore movement totals vs capture rows (aggregated at
+#      PRODUCT level — see below). FAIL on any nonzero row/drift outside
+#      the recorded baselines. Per-lot movement-sum reconstruction
+#      (§3.1 full form) is NOT-APPLICABLE on capacity-run DBs: seeded
+#      balances have no corresponding movement row, and the opening
+#      snapshot it needs is blocked on D-6. It is recorded as
+#      NOT-APPLICABLE with that reason, never as PASS.
+#      Two shape findings from the W-2.1 proof (2026-11-21, kept DB):
+#      (a) inv_capture_moves_mismatch aggregates at PRODUCT level, not
+#      variant: the app's order_capture movements carry product_id with
+#      variant_id NULL (all 36 run-window movements), while captures
+#      carry the specific variant_id, so a per-variant reconstruction
+#      can never match; captures are rolled up via product_variants.
+#      The per-variant form is also quadratic (one movements seq scan
+#      per distinct variant) and timed out at 300 s — the single-
+#      aggregation form runs in ~0.5 s. (b) inv_variant_projection_drift
+#      is NOT-APPLICABLE: inventory_balances never carries a variant_id
+#      (0/10,101 rows), so the per-variant sum is always 0 while every
+#      variant has stock=100 — it would report all 50,007 variants on
+#      every DB. Whether variant-level balances are required is an
+#      INV-12 design question. (c) inv_product_projection_drift excludes
+#      the six base-seed real products prod-1..prod-6 (static stock, no
+#      balances rows at all) — drifters outside that set still fail.
+#
+# Guard (fail closed): the gate REFUSES any database that is not a marked
+#   disposable DB — same rule as fin014-report: database name must match
+#   ^sellersho_test_[a-z0-9_]+$ AND public.sellersho_test_guard must name
+#   it. Refusal is exit 2 with no check rows. No prod DB is ever accepted.
+#
+# Supervisor gate (audit §8 W-2.1): the gate must fail closed on a seeded
+#   anomaly — one planted mismatch per oracle family (commerce / FIN-013 /
+#   FIN-014 / INV-12), each verified to flip its leg to FAIL. Evidence in §5.
+
+# =============================================================================
+# §4. Correlation report (W-2.2) — DEFINITION
+# =============================================================================
+#
+# Collector: scripts/cap02_correlate.py — builds the per-run appendix
+#   (route latency <-> SQL / locks / pool / Redis / edge / provider /
+#   CPU / memory) from /metrics snapshots + pg_stat_statements +
+#   run manifests. Inputs: a run output dir (manifest.json +
+#   *-metrics-before.prom / *-metrics-after.prom + *-summary.json).
+#   No Prometheus scrape required: the collector works from the runner's
+#   own /metrics snapshots, so the prod Prometheus 9090 scrape outage
+#   (see follow-up item below) does not block it.
+#
+# Proof rule (audit §8 W-2.2): the collector must reproduce one known
+#   CAP-01 finding from raw data before it is trusted on new runs.
+#   Proof target: the OTP shedder 40.7% (login-ramp otp_send 486 OK /
+#   334x503 in the 0587 compact) and/or the catalog ~31 RPS ceiling
+#   (PERF-03: catalog c20 28.1 -> 31.5 RPS). Proof result recorded in §5.
+#
+# FOLLOW-UP ITEM (discrete, for the coordinator — NOT implemented here):
+#   Prometheus 9090 publish fix (PERF-03 C2). The repo compose publishes
+#   127.0.0.1:9090:9090 for the backend, but the LIVE /opt/drup compose
+#   files contain NO 9090 mapping; host 9090 is NOT listening; Prometheus
+#   scrapes sellersho-backend at 127.0.0.1:9090, so that target is DOWN
+#   and the sellersho_db_wait_seconds histogram is exposed but NOT
+#   scraped. The fix rides the REL-02 deploy path and needs its own
+#   commit/deploy decision. DO NOT touch docker-compose.prod.yml in
+#   CAP-02 implementation work.
+
+# =============================================================================
+# §5. CAP-02 runs (appended after each run; every failed/repeated run logged)
+# =============================================================================
+#
+# --- W-1.1 Phase 1 DIAGNOSTIC re-run (not a capacity result) ---
+# Run nonce b5b450178a3953f7445f8ebb (output dir nonce
+# 2abdc5f9986649d119f9d714), 2026-11-21. Report:
+# ~/workspace/cap02-runs/sellersho-cap02-diag-2abdc5f9986649d119f9d714/
+# Compact: load-tests/evidence/native-b5b450178a3953f7445f8ebb-compact.json
+# Suite exit 1 (expected). Same VM shape, same 16-profile short suite.
+# 13/16 FAILED, 3 passed (fault profiles, by oracle) — the same shape as
+# 0587. Per-profile diff table vs 0587: load-tests/cap01-progress.md
+# (section "CAP-02 W-1.1 diagnostic re-run").
+# Headlines: fixture 996/1000 (was 771/1000, 4 dropped vs 229);
+# api-baseline 495/1000 (was 296/1000), counter gate now MATCHED (was
+# FAILED), account p95 191ms now UNDER the 300ms read SLO; api-rolling
+# 1546/3000 (was 713/3000), counter gate now MATCHED; journey 7373 req,
+# 2 completed checkouts (was 5812, 0); hot-account 100 paid, 64
+# cancelled (was 0), cancel p95 4016ms (was 8804ms) — 64/100 is exactly
+# the FIN-013 measured range (58–64/100); cold-cache cold 493/1000 (was
+# 222/1000); headroom burst 22520/60000 (was 16877/60000), recovery
+# 5893/12000 with 2 checkouts (was 3848/12000, 0). Route p95s fell
+# 3–4x on most commerce routes (api-baseline list 3794→911,
+# create 5499→1540, initiate 4786→435; hot-sku callback 5877→901).
+# Still FAILED on every latency/dropped gate: no SLO is met, and no
+# number here is a capacity result. CPU max 135.3% (api-baseline) —
+# over the 70% SLO as before; this VM cannot prove the CPU SLO.
+# Release cohort: 99/100 released (was 0/100), the 100th candidate hit
+# the 300ms per-candidate budget (57014); paired balanced ledger
+# entries, release replay 0. PERF-02's claim "0 -> 99/100" is CONFIRMED
+# by this re-run; the cohort gate still wants 100, so it stays FAILED.
+# Login-ramp shedder cap CONFIRMED unchanged: otp_send 487 OK / 512x503
+# (was 486/334) — ~487 OK per 60s ≈ 8.1/s, the 8/s in-app budget.
+# paid_orders_without_ledger_entry — EXPLAINED: the count scales with
+# the paid orders each profile produced in its window (api-baseline 26,
+# api-rolling 78, cold 25/37, headroom 21, headroom-recovery 121,
+# journey 2, staff 44, fault-provider-timeout 0). It equals unreleased
+# paid orders in the window (paid orders have no ledger entry by design
+# until staged profit release; FIN-013 oracle check 2 counts only
+# RELEASED paid orders). Corroborated: journey 2 == 2 completed
+# checkouts; fault-provider-timeout 0 == 0 paid. INFORMATIONAL, not a gate.
+# HARNESS DEFECT FOUND BY THIS RUN (fixed in the same change set):
+# CancelOrder sets ONLY status='cancelled', never payment_status (stays
+# 'paid'). The runner's oracle_commerce (paid_cancelled_without_
+# obligation) and oracle_hot_account (hot_cancelled_paid,
+# hot_cancelled_without_obligation) filtered on payment_status IN
+# ('cancelled','refund_pending') — a predicate matching ZERO rows by
+# construction (no code path ever sets those values). In 0587 the bug
+# was invisible (0 cancels completed); in b5b4 64 cancels completed but
+# the oracle still reported 0. Fixed in scripts/load_test_native.py,
+# scripts/load_test_isolated.py and scripts/cap02_reconcile.py to
+# payment_status='paid' AND status='cancelled' (FIN-013 check 3
+# semantics). The FIN-013 leg of the W-2.1 gate already used the correct
+# predicate, so the consolidated gate would have caught a missing
+# obligation where the runner oracle was blind.
+#
+# --- W-2.1 supervisor gate: seeded-anomaly fail-closed proof ---
+# PROVEN 2026-11-21 on the kept disposable DB of verification run 1
+# (sellersho_test_cdd7a6b35d436851718e95fb; reports in
+# ~/workspace/cap02-runs/sellersho-cap02-verify-15a62497c3491b8cdbdd4a3a/
+# w21-clean*.json / w21-plant-*.json). Clean run: PASS (exit 0, ~22 s)
+# — commerce PASS, FIN-013 PASS, FIN-014 PASS (certain 2, within the
+# seed baseline), INV-12 PASS. Four planted mismatches, each restored
+# between runs, each flipped its leg to FAIL (gate exit 1):
+#   commerce: INSERT negative ledger_entries row (-1) -> commerce FAIL,
+#     ledger_negative_amount=1. Restore note: ledger_entries is
+#     append-only (triggers trg_ledger_entries_append_only +
+#     fin005_linked_ledger_immutable block DELETE/UPDATE); the planted
+#     row was removed by disabling both triggers, deleting, re-enabling
+#     (verified tgenabled='O' for both). A reversing journal entry does
+#     NOT restore the check (it counts negative rows, not the net).
+#   FIN-013: paid order payable_amount +1 -> FIN-013 FAIL,
+#     orders_payments=1. Known overlap: the same bump also trips the
+#     commerce leg (payment_order_amount_mismatch=1,
+#     price_payable_mismatch=1, and stock_identity, which bundles the
+#     payment-amount agreement) — one underlying mismatch, not three
+#     defects. Restored by setting payable_amount back.
+#   FIN-014: paid order status -> cancelled, no obligation -> FIN-014
+#     FAIL, certain_defects=3 (the planted order, outside the seed
+#     baseline). Known overlap: commerce paid_cancelled_without_
+#     obligation=1 and FIN-013 cancellations_obligations=1 fire too
+#     (documented overlap). Restored by setting status back.
+#   INV-12: products stock+1 (cap-product-1, 500->501) -> INV-12 FAIL,
+#     inv_product_projection_drift=1. Restored by setting stock back.
+# Final clean re-run after all restores: PASS (exit 0).
+# Refusal checks: non-disposable DB name (drup) -> REFUSED, exit 2;
+# guard-marker mismatch (scratch DB named sellersho_test_* whose
+# marker named another DB) -> REFUSED, exit 2; scratch DB dropped.
+# Gate-shape findings proven by this run (now in §3 + the script):
+# FIN-014 seed baseline; INV-12 capture_moves at product level (and
+# the quadratic per-variant form timed out at 300 s — rewritten to a
+# single aggregation, ~0.5 s); inv_variant_projection_drift N/A;
+# inv_product_projection_drift excludes prod-1..prod-6.
+#
+# --- W-3.x fault profiles at diagnostic scale: verification run 1 ---
+# Run nonce 15a62497c3491b8cdbdd4a3a, 2026-11-21, DB
+# sellersho_test_cdd7a6b35d436851718e95fb. Suite exit 1. Profiles:
+# fixture-baseline PASSED (release cohort 100/100 PASS — the first
+# 100/100; W-1.1 was 99/100); coupon-burst, independent-account,
+# session-lifecycle, staff-baseline, fault-boundary-b1..b4,
+# fault-db-loss FAILED; fault-worker-failover ABORTED the suite
+# (uncaught psql error, manifest['failure']); fault-redis-load never
+# ran. The run PROVED 7 harness/driver bugs (all fixed in the same
+# change set; re-verification run 2 in progress, nonce
+# c0837439f88ffcb1):
+#   1. fault-boundary replay + session-lifecycle orders read: GET
+#      /api/v1/orders returns {orders:[...], nextCursor, hasMore,
+#      limit}, NOT a bare array (order_handlers.go:1136). The boundary
+#      replay threw 'own-orders read failed: 200' although the replay
+#      HAD paid the order; the session-lifecycle disjointness check
+#      passed VACUOUSLY (both sides [] ). Fixed: read body.orders.
+#      (The cohort users do have orders — 1000 across the first 10 —
+#      so the fixed check is real, not vacuous.)
+#   2. b2/b3 callback outcome: the driver expected a dropped connection
+#      (status 0) but nginx returns 502 when the upstream dies and a
+#      backend killed mid-response can surface as 500. Fixed: a 5xx
+#      during the kill window counts as 'lost' (effect unknown; the
+#      replay + gate decide). Raw status preserved in callback_status.
+#   3. b4 deadline: the create-order response carries NO paymentExpiresAt
+#      (the domain Order struct has no such field) — the setup always
+#      wrote null and b4 failed early. Fixed: the setup records
+#      created_at (hold start) and the runner computes deadline =
+#      created_at + 15 min (hard-coded hold maximum).
+#   4. coupon-burst + independent-account URLs: the drivers called
+#      /api/v1/seller/stores/<slug>/discount-codes|payouts, but that
+#      handler only serves variant routes and returns http.NotFound
+#      (plain-text 404) for anything else. The real routes live under
+#      /api/v1/stores/<slug>/... (main.go:544 handler, seller role).
+#      Fixed the prefix in both drivers. (Evidence: independent-account
+#      got 962x404 + 40x503 + 8x500; coupon creation got 404.)
+#   5. db-loss mechanism: REVOKE CONNECT does NOT block the DB owner.
+#      test_runner OWNS the run DB, and the owner bypasses the CONNECT
+#      check — a direct test_runner connect SUCCEEDED after REVOKE, and
+#      health recovered within ~1 s. Fixed: ALTER DATABASE ...
+#      CONNECTION LIMIT 0 + pg_terminate_backend (verified live: direct
+#      connect fails 'too many connections', health stays degraded/down
+#      for 5 samples, recovers on LIMIT -1). Both the loss and the
+#      negative control use it now.
+#   6. db-loss + redis-load load windows: both ran commerce-rolling with
+#      CAPACITY_DURATION_SECONDS=60, but the driver only accepts
+#      30/120/300/1800/7200 — the load driver threw immediately
+#      (load_exit=1, load_requests=null). Fixed: 120 s windows.
+#   7. worker-failover release batch SQL: ledger_entries has NO
+#      order_id / direction / amount_toman columns — the columns are
+#      related_order_or_dispute / type / amount (release pair:
+#      operator='system:delivery-lock-releaser'). The bad query raised
+#      inside run_fault_worker_failover, escaped to main, and aborted
+#      the suite (fault-redis-load never ran). Fixed in both runners.
+#      (The Docker runner had the same 4 bugs: b4 deadline, two 60 s
+#      windows, ledger columns. The Docker db-loss uses docker
+#      stop/start, so no REVOKE issue there.)
+# W-1.4 / W-2.3 regression evidence from run 1 (unchanged by the fixes):
+#   independent-account accounts_used=100 (fixture extension works);
+#   session-lifecycle switch_ok=10, switch_negative_control_ok=10,
+#   switch_negative_control_failed=0 (identity switching real; the
+#   orders part was vacuous — see bug 1); staff-baseline: all 20
+#   staff-slot principals (0-19) present, 50 report-leg requests
+#   (seller-report 21, supplier-orders 14, ledger 6, reconciliation 5,
+#   statement 4).
+# Verification run 1 compact:
+# load-tests/evidence/native-cdd7a6b35d436851718e95fb-compact.json.
+# The run-1 disposable DB was dropped after the W-2.1 proof (teardown).
+#
+# --- Environment incident (2026-11-21, during this work) ---
+# A runtime restart wiped /tmp (the kept env's work dir + env.sh +
+# stop-env.sh) and emptied ~/pgx-rootfs/usr/lib/postgresql/16/bin|lib
+# (binaries gone; only doc/share remained), and stopped the PG cluster
+# on 5433. The kept backend/nginx/redis processes died. Rebuilt per
+# ~/workspace/fin008-work/fin008-env-fixed.md: re-extracted the PG 16
+# server .deb (~/pgdeb/postgresql-16_16.15) into ~/pgx-rootfs (postgres,
+# pg_ctl, initdb restored; client binaries from psql-tmp); libpq5 +
+# libllvm17t64 were already present system-wide (ldconfig shows
+# libpq.so.5 and libLLVM-17.so.1 — the JIT dependency the Nov 19
+# lesson requires); postgres user/group uid 103/gid 105 already
+# existed; chmod o+x /home/hatch; restarted the cluster from the
+# surviving ~/gap13pg/data on 5433 (the run-1 DB survived with 100,176
+# orders — the W-2.1 proof ran against it after the rebuild). nginx
+# 1.24.0, node v24.22.1, redis-server 7.0.15, Go 1.27.2 all survived.
+# The W-2.1 reconcile run that was in flight during the restart never
+# wrote its output (w21-clean.json missing) and was re-run after the
+# rebuild.
+#
+# --- W-3.x fault profiles: verification run 2 (re-run with fixes) ---
+# Run nonce c0837439f88ffcb1, 2026-11-21, DB
+# sellersho_test_508835e1a582f3a35a2d8bec. Suite exit 1. Profiles:
+# fixture-baseline FAILED (release cohort 99/100 — the 100th candidate
+# hit the 300ms budget again; run 1's 100/100 was the lucky draw, 99/100
+# is the typical value); coupon-burst, independent-account,
+# session-lifecycle, staff-baseline FAILED on latency/overload gates
+# (diagnostic, not mechanism — see below); fault-boundary-b1 ABORTED the
+# suite at the negative-control restore (unplant DELETE blocked by the
+# payment-receipt immutability trigger — bug 8, fixed); b2/b3/b4,
+# db-loss, worker-failover, redis-load never ran. Compact:
+# load-tests/evidence/native-508835e1a582f3a35a2d8bec-compact.json.
+# MECHANISM PROOFS from run 2 (the fixes work):
+#   coupon-burst: creation SUCCEEDED (2x201); silent_discount=0 in both
+#     variants; the runner oracle gate MATCHED (used_count == occupying
+#     reservations, consumed == discounted, silent 0, deadlocks 0).
+#     Profile FAILED only on burst_latency / other_outcomes (VM overload:
+#     maxUses100 accepted 75/100, 925 'other' = 500/503s).
+#   independent-account: payouts now REACH the handler (153x201 created);
+#     the rest were 500/503 under 1000-concurrent load on 1.5 vCPU
+#     (conc_p95 6403 ms vs solo 671 ms). accounts_used=100.
+#   session-lifecycle: ONLY failed gate is logout_does_not_revoke_token
+#     (known limitation); switch_ok=10, switch_orders_disjoint=10,
+#     negative control 10/10 — the W-2.3 assertions pass with REAL order
+#     lists (the fix works; no longer vacuous).
+#   fault-boundary-b1: replay EXACTLY ONCE (failed_gates [], replay_paid,
+#     1 order row visible); W-2.1 gate after replay PASS (all 4 legs);
+#     negative-control gate FAIL (FIN-013 check 1 — the planted double
+#     receipt, as designed). The profile is proven except its restore.
+#   BUG 8 (found by run 2, fixed in the same change set): the negative-
+#     control unplant DELETEs the planted receipt + verification, but
+#     order_payment_receipts has trigger payment_receipt_identity and
+#     order_payment_verifications has payment_verification_identity
+#     (both BEFORE DELETE OR UPDATE, calling
+#     immutable_order_refund_evidence()). A plain DELETE raises, the
+#     exception escaped run_fault_boundary, and the suite aborted.
+#     Fixed in both runners: disable both triggers, delete, re-enable
+#     (same append-only restore pattern as the W-2.1 commerce plant).
+#     Mechanism verified live on the run-2 DB (3 planted rows deleted,
+#     0 left, both triggers tgenabled='O'). The run-2 kept env was
+#     verified runnable (backend health 200) and torn down with its
+#     stop-env.sh (processes stopped, DB dropped) — the W-1.5 --keep-env
+#     fix proven end-to-end.
+# Verification run 3 (continuation: b1, b2, b3, b4, db-loss,
+# worker-failover, redis-load) — nonce 1062d3b72990574d, 2026-11-21,
+# DB sellersho_test_c4a555840848d7f556e72bd5. Suite exit 1.
+#   fault-boundary-b1/b2/b3: PASSED (replay exactly once, 1 order row,
+#     W-2.1 gate PASS, negative control FAIL -> restore -> PASS).
+#     The W-3.1 boundary matrix is PROVEN for the three callback
+#     boundaries. Compact: native-c4a555840848d7f556e72bd5-compact.json.
+#   fault-boundary-b4: FAILED (order never expired). BUG 9: the
+#     slow-expiry trigger used pg_sleep(10), which exceeds BOTH the
+#     expiry job's 300 ms per-candidate timeout (operations_repo.go:
+#     WithTimeout(ctx, 300ms)) and its 3 s per-attempt deadline
+#     (operations.go:13) — every 5 s attempt failed at 300 ms, the
+#     order stayed unexpired, the runner never observed the batch.
+#     A 2 s sleep would fail the same way. FIXED (both runners):
+#     pg_sleep(0.15) + the runner's PgSleep poll tightened 0.2 s ->
+#     0.05 s (a 150 ms window needs a ~0.1 s poll to observe).
+#   fault-db-loss: FAILED on the load only (load_exit 1, requests 0,
+#     failed_gates ["bootstrap"]). The LOSS mechanism worked: health
+#     503 x6 during, 200 after, recovered, oracle matched, W-2.1 gate
+#     exit 0, negative control stayed down + restored. BUG 10: the
+#     10 s lead before the loss is shorter than the driver's ~15 s
+#     sequential bootstrap (100 principals x ~150 ms); the loss landed
+#     on principal 67's bootstrap_order (503) and the driver failed
+#     the whole load at bootstrap. FIXED (both runners): 30 s lead.
+#   fault-worker-failover: FAILED on its precondition ("expiry batch
+#     made no committed progress", 0 committed). ROOT CAUSE (app/VM,
+#     not a harness bug): the unpaid-order-expiry job entered a
+#     sustained deadline_exceeded failure mode at 01:56:37 (BEFORE the
+#     b4 order was expirable, so NOT the b4 trigger) — every 5 s
+#     attempt ran ~3000 ms and failed, 0 expiries committed, backlog
+#     grew to 61 expired orders. The job processes candidates
+#     sequentially (300 ms cap each, 3 s overall); once a batch
+#     exceeds 3 s the failed candidates are retried (not dropped), so
+#     the backlog only grows — a death spiral with no recovery on
+#     this VM shape. The b4 10 s trigger aggravated it after 02:02:23
+#     but did not start it. The first failure's trigger is not
+#     established (VM contention from the b2/b3 restarts is the
+#     leading hypothesis). Run 4 runs worker-failover FIRST on a
+#     fresh DB (healthy job) and b4 LAST.
+#   fault-redis-load: NEVER RAN (manifest null, no profile line).
+#     BUG 11: run_fault_redis_load reads the session file as a bare
+#     list (users[20]), but users.json is a dict {scope, staff[115],
+#     users[1000]} — users[20] raised KeyError, which main()'s
+#     try/except recorded as manifest failure 'KeyError' (type name
+#     only, no traceback) and ended the suite. FIXED (native):
+#     users['users'][20]. (Docker prepares via the b1 setup, no
+#     such read.) The redis-load 30 s lead fix (same bootstrap
+#     reason as db-loss) was applied to both runners.
+#   Run 3's kept env was verified runnable and torn down via
+#   stop-env.sh (processes stopped, DB dropped).
+# Verification run 4 (worker-failover, db-loss, redis-load, b4) —
+# nonce f440940cc2138671, 2026-11-21, DB
+# sellersho_test_d54ac5772407ffc5a8284c9a. ABORTED during
+# worker-failover's release batch (no profile result recorded).
+# BUG 12: the profile's un-release DELETEs the 2 ledger entries of
+# 20 released orders, but ledger_entries is append-only (triggers
+# trg_ledger_entries_append_only + fin005_linked_ledger_immutable
+# block DELETE) — the psql raised and escaped to main(). FIXED
+# (both runners): disable both triggers, delete, re-enable (same
+# pattern as the W-2.1 commerce plant). Mechanism proven live on
+# the run-4 DB (order cap-order-1: 2 entries deleted, 0 left, both
+# triggers 'O'). The expiry batch (a) completed before the abort,
+# so the expiry job WAS healthy on the fresh DB. Run 4's kept env
+# was torn down via stop-env.sh (DB dropped).
+# Verification run 5 (worker-failover, db-loss, redis-load, b4) —
+# nonce 421ed02686223277, 2026-11-21, DB
+# sellersho_test_55cf940c1e3ef0d195137728. Suite exit 1. ALL FOUR
+# FAILED, but three are harness bugs (fixed) and one is ordering:
+#   worker-failover: FAILED "release batch never started (no ledger
+#     entry in 90 s)". The EXPIRY batch worked (5 committed before
+#     the kill). BUG 14: the un-release reset profit_released but
+#     NOT referral_commission_released; the release candidate query
+#     requires referral_commission_released=FALSE, and the release
+#     sets it TRUE — so all 20 un-released orders were ineligible
+#     (proven: 20 orders match the base predicates, 0 match the full
+#     candidate query, and the flag is the single blocking filter).
+#     FIXED (both runners): un-release now also sets
+#     referral_commission_released=false. (Picked orders have no
+#     referrer, so no bonus can double-release.)
+#   db-loss: FAILED although every assertion is TRUE (recovered,
+#     oracle matched, gate exit 0, negative control stayed down +
+#     restored). BUG 13: the ok condition compared the oracle_gate
+#     STRING to the literal 'matched', but oracle_commerce sets it
+#     to 'matched within stated scope (ledger conservation across
+#     deferred releases still OPEN)' — the comparison is always
+#     False. FIXED (native): .startswith('matched') (the hot-sku
+#     check already used startswith; the Docker gate checks oracle
+#     rows directly and never had this bug). The load ran (5989
+#     requests, bootstrap 0x503 — the 30 s lead fix works); its
+#     latency gates fail on this VM as expected (diagnostic).
+#   redis-load: FAILED although every assertion is TRUE (recovered,
+#     rebuild exit 0, callback_ok, oracle matched, gate exit 0) —
+#     same BUG 13, same fix. MECHANISM PROVEN: the callback during
+#     rebuild took the REFUND path (409 inventory_hold_expired, 1
+#     refund obligation recorded — never lost money); the rebuild
+#     completed (14356 hold pools); the load ran (4900 requests).
+#   fault-boundary-b4: FAILED "order did not expire after restart"
+#     (batch not observed). The expiry job entered its death spiral
+#     again (last_success 02:36:46, failing since) — the backlog
+#     from the db-loss/redis-load load windows (many unpaid orders
+#     whose 15-min holds lapsed during b4's wait) exceeded what the
+#     job's 3 s deadline can process, so it never reached the b4
+#     order. NOT a trigger problem (0.15 s is within the 300 ms
+#     per-candidate timeout). FIX: run 6 puts b4 FIRST, before any
+#     load-creating profile.
+#   Run 5 fixture release cohort: 100/100 PASS (second 100/100).
+#   Run 5's kept env was torn down via stop-env.sh (DB dropped).
+# Verification run 6 (b4, worker-failover, db-loss, redis-load) —
+# nonce 7c2758391e8bf5c3, 2026-11-21, DB
+# sellersho_test_93c49670958cc14117ab05ba. ABORTED by a VM/runtime
+# restart at ~03:08 UTC (mid-b4 wait; the runner died, no profile
+# result recorded). The restart wiped /tmp (the kept env's work dir)
+# and removed the apt-installed libpq5, libllvm17t64, nginx, and the
+# postgres system user — the same class of incident as 2026-11-21
+# (the PG binaries + data dir under ~ survived). Environment
+# REBUILT: postgres user/group recreated (uid 103/gid 105), chmod
+# o+x /home/hatch, libpq5 16.15 + libllvm17t64 1:17.0.6 installed,
+# nginx 1.24.0 installed, PG cluster restarted on 5433 (16.15,
+# accepting connections), orphaned run-6 DB dropped. The b4 order
+# (created 02:58:11, deadline 03:13:11) never expired — the run
+# died before the deadline. Before the restart, the expiry job was
+# HEALTHY (last_success 03:03:29, no error, 0 backlog) and the
+# fixture cohort was 100/100 PASS — the b4-first ordering works.
+# Verification run 7 (b4, worker-failover, db-loss, redis-load) —
+# nonce 779fb38e62d37e4d, 2026-11-21, DB
+# sellersho_test_dc1b9928868ad588f2a06872. Suite exit 1.
+#   fault-db-loss: PASSED (load 6300 requests; bootstrap 0x503).
+#     Bug 13 fix CONFIRMED.
+#   fault-redis-load: PASSED (refund path, 1 obligation, rebuild
+#     exit 0). Bug 11 + bug 13 fixes CONFIRMED.
+#   fault-boundary-b4: FAILED "order did not expire after restart"
+#     (batch not observed). fault-worker-failover: FAILED "expiry
+#     batch made no committed progress" (0 committed). SAME ROOT
+#     CAUSE (app/VM, not a harness bug): the fixture leaves a
+#     ~7202-order expired backlog (cap-order-* orders whose 15-min
+#     holds lapsed) and the expiry job processes ~21 candidates per
+#     5 s batch (3 s deadline, ~140 ms per candidate), so a
+#     newly-expired order waits ~28 min behind it (the job's ORDER
+#     BY payment_expires_at is oldest-first). The job entered its
+#     deadline_exceeded death spiral again (last_success 03:27:21)
+#     because the backlog exceeds what a 3 s batch can clear.
+#     FIX (both runners, b4 + worker-failover expiry batch): the
+#     test orders' payment_expires_at is set to a fixed ancient time
+#     ('2000-01-01') so they sort FIRST in the expiry queue. This
+#     DEVIATES from the audit's real 15-min hold wait for b4: the
+#     hold DURATION is not what b4 tests (the kill-during-expiry +
+#     exactly-once is), and a real 15-min hold cannot be first in
+#     the queue while the fixture backlog exists. The b4 wait loop
+#     now polls from NOW (deadline = now, kill_deadline = now+60 s)
+#     instead of created_at + 15 min, so b4 takes ~2 min, not 17.
+#   Run 7 fixture release cohort: 100/100 PASS (fourth 100/100).
+#   Run 7's kept env: torn down after run 8 launches (see below).
+# Verification run 8 (b4, worker-failover, db-loss, redis-load) —
+# nonce a7282eb4e83641aa, 2026-11-21, DB
+# sellersho_test_75633d4ec93d931c5c56fe7d. Suite exit 1.
+#   fault-worker-failover: PASSED (expiry 60/60 cancelled, stock
+#     unchanged; release 20/20 re-released, 20 paired balanced, 0
+#     replay candidates, lease takeover True). Queue-jump + bug 14
+#     CONFIRMED.
+#   fault-db-loss: PASSED. fault-redis-load: PASSED.
+#   fault-boundary-b4: FAILED only on the negative control. The
+#     MECHANISM worked: PgSleep observed (kill mid-batch), order
+#     expired after restart, replay exit 0, W-2.1 gate exit 0. BUG 15:
+#     the negative-control plant picked cap-order-96699, a paid
+#     fixture order with 0 receipts — planting a 2nd receipt made it
+#     1, which PASSES FIN-013 check 1 (exactly 1), so the gate
+#     stayed PASS and the control "misbehaved". FIXED (both runners):
+#     the plant now requires the target to already have exactly 1
+#     receipt (SQL filter + a post-pick count guard returning None).
+#   Run 8 fixture release cohort: 100/100 PASS (fifth 100/100).
+#   Run 8's kept env: torn down after run 9 launches.
+# Verification run 9 (fault-boundary-b4 ONLY) — nonce
+# c8626551691a229d, 2026-11-21, DB
+# sellersho_test_855e69324245c75f03a05940. Suite exit 1.
+#   fault-boundary-b4: FAILED only on the negative control ("no
+#     paid order to plant against"). The MECHANISM worked again
+#     (PgSleep observed, order expired, replay 0, gate 0). ROOT
+#     CAUSE: FIN-013 check 1's receipt leg applies only when a
+#     verification exists, and the fixture's 800 paid orders on
+#     cap-store-1 all have 0 receipts AND 0 verifications (receipts
+#     are only written by the live payment flow). The bug-15 filter
+#     (exactly 1 receipt) therefore finds nothing in a b4-ONLY run
+#     — the negative control needs a paid order that went through
+#     the live callback. FIX (run composition, not code): run b4
+#     after b1, whose replay pays an order (verification + exactly
+#     1 receipt) that the plant can target. Run 10 = b1 + b4.
+#   Run 9 fixture release cohort: 99/100 (the marginal 100th
+#     candidate again; runs 1/5/6/7/8 were 100/100).
+#   Run 9's kept env: torn down after run 10 launches.
+# Verification run 10 (fault-boundary-b1, fault-boundary-b4) —
+# nonce 0f5c7c2049c146ce, 2026-11-21, DB
+# sellersho_test_7aa2c3317412da983039b93d. SUITE EXIT 0 (first
+# exit-0 verification run; failure None, profile_failed None).
+#   fault-boundary-b1: PASSED (negative control gate 1/FAIL,
+#     restore 0/PASS).
+#   fault-boundary-b4: PASSED. kill mid-batch (PgSleep observed),
+#     order expired after restart, replay 0, gate 0; negative
+#     control planted against the b1 order (verification + exactly
+#     1 receipt) -> gate 1/FAIL as expected; restore -> gate 0/PASS.
+#     The b4 negative control now works because b1 ran first and
+#     paid an order through the live callback.
+#   Run 10 fixture release cohort: 100/100 PASS (sixth 100/100;
+#     runs 2 and 9 were 99/100 — the 100th candidate is
+#     timing-marginal, 99-100 across runs).
+#   Run 10's kept env was VERIFIED runnable (backend direct health
+#     200, env.sh + stop-env.sh present) and torn down via
+#     stop-env.sh (processes stopped, DB dropped) — the W-1.5
+#     --keep-env fix proven end-to-end (third time).
+#
+# === W-3.x FAULT MATRIX — FINAL STATUS (2026-11-21) ===
+# All seven fault profiles are PROVEN at diagnostic scale on the
+# disposable native env (each with a passing run AND a failing
+# negative control, per the audit's W-3.1 requirement):
+#   fault-boundary-b1/b2/b3: PASSED run 3 (replay exactly once,
+#     gate PASS, negative control FAIL -> restore PASS).
+#   fault-boundary-b4: PASSED run 10 (kill mid-expiry-batch
+#     observed, order expired exactly once, replay 0, gate 0,
+#     negative control FAIL -> restore PASS). Deviation from the
+#     audit design: the boundary order's payment_expires_at is set
+#     to '2000-01-01' (first in the expiry queue) instead of a real
+#     15-min hold, because the fixture's ~7200-order expired backlog
+#     makes the job unable to reach a newly-expired order within the
+#     profile's window; the hold DURATION is not what b4 tests.
+#   fault-db-loss: PASSED runs 7 + 8 (health 503 during, 200
+#     after, oracle matched, gate 0, negative control stayed down
+#     + restored).
+#   fault-worker-failover: PASSED run 8 (expiry 60/60, stock
+#     unchanged; release 20/20, 20 paired balanced, 0 replay
+#     candidates, lease takeover True).
+#   fault-redis-load: PASSED runs 7 + 8 (rebuild exit 0, callback
+#     took the refund path: 409 inventory_hold_expired, 1 refund
+#     obligation — never lost money).
+#   failed-replacement: BLOCKED (W-3.5, REL-02 Q1 + staged design
+#     missing) — recorded, not built.
+# The 100-RPS executions of these profiles remain GATED on D-1
+# (hardware/staging) — the diagnostic-scale proofs above do not
+# certify 100-RPS behaviour. Docker ports of all seven profiles
+# are WRITTEN but UNPROVEN (Docker cannot run on this VM;
+# docker_host_required: True).
+# Harness bugs found and fixed during verification (runs 1-10):
+#  8 unplant DELETE blocked by payment-receipt immutability
+#    triggers (disable/delete/re-enable); 9 b4 pg_sleep(10) exceeded
+#    the job's 300 ms per-candidate timeout (now 0.15 s + 0.05 s
+#    poll); 10 db-loss/redis-load 10 s lead shorter than the driver's
+#    ~15 s bootstrap (now 30 s); 11 redis-load read users.json as a
+#    bare list (it is a dict; now ['users'][20]); 12 worker-failover
+#    un-release DELETE blocked by ledger append-only triggers
+#    (disable/delete/re-enable); 13 db-loss/redis-load compared the
+#    oracle_gate STRING to 'matched' (now .startswith('matched'));
+#    14 un-release did not reset referral_commission_released, so
+#    the 20 orders were never release candidates again (now reset);
+#    15 the double-receipt plant targeted a paid order with 0
+#    receipts (0 -> 1 passes check 1; now requires exactly 1).
+# App/VM findings (not harness bugs): the expiry job and the
+# release job both enter a deadline_exceeded / job_failed death
+# spiral when their candidate backlog exceeds what a 3 s / 10 s
+# batch can clear on this VM (~21 expiry candidates per 5 s batch;
+# the fixture leaves ~7200 expired orders). Failed candidates are
+# retried, not dropped, so the backlog only grows. This is a real
+# capacity/robustness signal for the staging hardware decision
+# (D-1), not a defect in the fault profiles.

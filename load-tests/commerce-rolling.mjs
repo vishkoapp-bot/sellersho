@@ -10,8 +10,19 @@ import {resolveTarget,loadSessions,loadCa} from './target-config.mjs';
 const capTarget=resolveTarget();
 const fixture={users:loadSessions(capTarget),staff:(()=>{try{return JSON.parse(fs.readFileSync(capTarget.sessionsFile)).staff||[]}catch{return []}})()};
 const staffVariant=process.env.CAPACITY_STAFF==='1';
-if(staffVariant&&fixture.staff?.length!==20)throw Error('20 independent authorized staff sessions required');
-const users=staffVariant?[...fixture.staff,...fixture.users.slice(20)]:fixture.users;
+// CAP-02 W-1.4: the fixture now mints 115 staff sessions (10 cap-staff +
+// 100 cap-seller + 5 cap-supplier-user). The staff variant still uses
+// exactly 20 — the first 5 per role in ORDER BY role, mobile order
+// (5 admin cap-staff-6..10, 5 seller cap-seller-1..5, 5 supplier
+// cap-supplier-user-1..5, 5 warehouse cap-staff-1..5) — reproducing
+// exactly today's 20 principals, so the measured mix is unchanged.
+const staff20=(()=>{
+  const byRole={};
+  for(const s of fixture.staff||[])(byRole[s.role]||=[]).push(s);
+  return ['admin','seller','supplier','warehouse_staff'].flatMap((r)=>(byRole[r]||[]).slice(0,5));
+})();
+if(staffVariant&&staff20.length!==20)throw Error('20 independent authorized staff sessions required (5 per role)');
+const users=staffVariant?[...staff20,...fixture.users.slice(20)]:fixture.users;
 
 if(users.length!==1000||new Set(users.map(u=>u.id)).size!==1000||new Set(users.map(u=>u.token)).size!==1000)throw Error('1000 independent sessions required');
 const agent=new https.Agent({keepAlive:true,maxSockets:1000,ca:loadCa(capTarget),rejectUnauthorized:true});

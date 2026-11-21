@@ -459,3 +459,291 @@ hidden.)
   (clean post-fix suite), native-a7176686b6b71af3f37c3a45-compact.json
   (aborted carrier-gate run), cap01-clean-short-suite.txt
   (Node/Python/vet/route-table outputs + both runs' console output)
+
+## CAP-02 W-1.1 diagnostic re-run (2026-11-21, run nonce b5b450178a3953f7445f8ebb, output dir nonce 2abdc5f9986649d119f9d714)
+
+DIAGNOSTIC, certified:false, never a capacity result. Same VM shape as
+0587, same 16-profile short suite, native runner. Purpose: measure the
+combined PERF-02 + PERF-03 + EDGE-01 effect against the 0587 compact,
+profile by profile. Suite exit 1 (expected: 13 profiles failed).
+Report: ~/workspace/cap02-runs/sellersho-cap02-diag-2abdc5f9986649d119f9d714/
+Compact: load-tests/evidence/native-b5b450178a3953f7445f8ebb-compact.json
+
+Per-profile diff vs 0587 (requests delivered / offered; route p95 ms;
+SLOs: read p95 300ms, mutation p95 750ms — NOT loosened):
+
+| profile | 0587 delivered | b5b4 delivered | 0587 route p95 | b5b4 route p95 | verdict |
+|---|---|---|---|---|---|
+| fixture-baseline | 771/1000 (229 dropped) | 996/1000 (4 dropped) | — | p95 5.7ms | FAILED both (arrival/identity gates) |
+| login-ramp | 1306 req; otp_send 486 OK / 334×503 (40.7% shed) | 1486 req; otp_send 487 OK / 512×503 (51.3% shed) | otp_send p95 118ms | otp_send p95 72ms | FAILED both; shedder cap CONFIRMED: ~487 OK / 60s ≈ 8.1/s, unchanged |
+| otp-background | 2194 req; browse 1145 OK / 273×500 / 118×503 | 2596 req; browse 1746 req, 40 errors (2.3%) | browse p95 3991ms | browse p95 2323ms | FAILED both; browse error rate 25.5% → 2.3% |
+| api-baseline | 296/1000 (704 dropped) | 495/1000 (505 dropped) | list 3794, detail 3517, store 1473, account 912, quote 2138, create 5499, initiate 4786, callback 5402 | list 911, detail 822, store 431, account 191, quote 302, create 1540, initiate 435, callback 3276 | FAILED both; counter gate now MATCHED (was FAILED); account p95 191ms now UNDER the 300ms read SLO |
+| api-rolling | 713/3000 (2287 dropped), 0 checkouts | 1546/3000 (1454 dropped), 0 checkouts | list 5508, detail 5577, create 5691, callback 5474 | list 1022, detail 884, create 1490, callback 2256 | FAILED both; counter gate now MATCHED (was FAILED) |
+| journey-baseline | 5812 req, 0 checkouts | 7373 req, 2 checkouts | list 10498, detail 4980, create 7938 | list 6430, detail 2615, create 4535 | FAILED both; first completed checkouts in a journey run (0 → 2) |
+| hot-sku | 5 paid | 5 paid | initiate 2738, callback 5877, dup-callback 8019 | initiate 600, callback 901, dup-callback 1323 | FAILED both (latency gates); oracle matched both |
+| staff-baseline | 638/3000 (2362 dropped) | 984/3000 (2016 dropped) | list 5518, create 5612, callback 5697 | list 3403, create 5479, callback 5316 | FAILED both |
+| hot-account | 100 paid, 0 cancelled, cancel p95 8804ms | 100 paid, 64 cancelled, cancel p95 4016ms | cancel 8804, dup-cancel 8710 | cancel 4016, dup-cancel 2214 | FAILED both (latency gates); cancels now COMPLETE 64/100 — exactly the FIN-013 measured range (58–64/100) |
+| session-lifecycle | 70 req; logout_does_not_revoke_token | 70 req; logout_does_not_revoke_token | — | — | FAILED both (same single gate) |
+| browser-assets | 187 req; render gates failed | 285 req; render gates failed | — | — | FAILED both |
+| cold-cache cold | 222/1000 | 493/1000 | list 5005, create 5563 | list 974, create 1298 | FAILED both |
+| cold-cache warm | 293/1000 | 480/1000 | list 4481, create 5060 | list 1127, create 2431 | FAILED both |
+| headroom burst | 16877/60000, 0 checkouts | 22520/60000, 0 checkouts | list 3721, create 5883 | (burst p95s in summary) | FAILED both |
+| headroom recovery | 3848/12000, 0 checkouts | 5893/12000, 2 checkouts | list 5084, create 5290 | — | FAILED both |
+| fault-provider-timeout | ok (oracle converged) | ok | — | — | ok both |
+| fault-redis-loss | ok | ok | — | — | ok both |
+| fault-restart | ok | ok | — | — | ok both |
+
+Release cohort: 0587 released 0/100 (FAILED); b5b4 released 99/100
+(FAILED, want 100) — the 100th candidate hit the 300ms per-candidate
+budget (57014). PERF-02's claim "0 → 99/100" is CONFIRMED by this
+re-run: 99 released with paired balanced ledger entries, release replay
+0. The gate still wants 100, so the cohort gate stays FAILED.
+
+CPU max: api-baseline 135.3% (of the 1.5-shared-vCPU VM — over the 70%
+SLO as before; this VM cannot prove the CPU SLO), headroom 137.5%,
+journey 126.7%. CPU is not a pass/fail signal on this VM shape.
+
+paid_orders_without_ledger_entry — EXPLAINED (W-1.1 informational
+finding, was "6 in b907 headroom, 2 in 0587 api-baseline"): the count
+now scales with the paid orders each profile produced in its window
+(api-baseline 26, api-rolling 78, cold 25/37, headroom 21, headroom
+recovery 121, journey 2, staff 44, fault-provider-timeout 0). It equals
+unreleased paid orders in the window — paid orders have no ledger entry
+by design until staged profit release (FIN-013 oracle check 2, which
+counts only RELEASED paid orders). Corroborated by the exact matches:
+journey 2 == 2 completed checkouts; fault-provider-timeout 0 == 0 paid
+(timeout mode verifies nothing). NOT a gate; recorded, not hidden.
+
+HARNESS DEFECT FOUND BY THIS RUN (fixed in the same change set):
+CancelOrder sets ONLY status='cancelled' — it never touches
+payment_status (which stays 'paid'). The runner's oracle_commerce
+(paid_cancelled_without_obligation) and oracle_hot_account
+(hot_cancelled_paid, hot_cancelled_without_obligation) filtered on
+payment_status IN ('cancelled','refund_pending') — a predicate that
+matches ZERO rows by construction (no code path ever sets those
+values). In 0587 the bug was invisible (0 cancels completed); in b5b4
+64 cancels completed but the oracle still reported 0. Fixed in
+scripts/load_test_native.py, scripts/load_test_isolated.py and
+scripts/cap02_reconcile.py to payment_status='paid' AND
+status='cancelled' (FIN-013 check 3 semantics). The FIN-013 leg of the
+W-2.1 gate already used the correct predicate, so the consolidated
+gate would have caught a missing obligation where the runner oracle
+was blind.
+
+## CAP-02 W-1.5 harness-reliability records (2026-11-21)
+
+- 7-hour fixture-child elapsed anomaly: NO corroborating line exists
+  in ~/workspace/cap01-native-runs/long-runs.log (untimestamped, ends
+  at the api-sustained start); the figure exists only in the
+  coordinator's kill report. Verdict: BOUNDED UNKNOWN, with mitigation.
+  The runner now records fixture elapsed (monotonic seconds + wall
+  start/finish) in the manifest (fixture_elapsed) on every run, so a
+  future anomaly is bounded by measurement: if the monotonic clock
+  reads ~7h the time really passed; if it reads minutes while a child
+  timestamp reads hours, the child's clock jumped (VM freeze/restore).
+  No cause is claimed.
+- --keep-env FIXED (scripts/load_test_native.py close()): it used to
+  stop every process and keep only the work dir + DB, so "kept-env"
+  was a work-dir-only stub. It now leaves a RUNNABLE env (processes
+  stay up) and writes env.sh (ports, DB, DSN, Redis URL, CA, sessions,
+  PIDs; 600) + stop-env.sh (kills the PIDs, drops the disposable DB;
+  700).
+- Carrier port 8082 concurrency limit: RECORDED as a known constraint.
+  The backend startup gate (backend/cmd/server/capacity_adapters.go)
+  requires CAPACITY_CARRIER_BASE_URL exactly http://carrier:8082, so
+  two native runs on one host collide on the carrier port and
+  start_doubles() fails fast naming the held port. The backend-gate
+  change is separate app work, NOT CAP-02 — the gate was not changed.
+
+## CAP-02 W-3.5 failed replacement under load — BLOCKED (2026-11-21)
+
+DO NOT BUILD. Blocked on REL-02 Q1 (5-min maintenance window) + the
+staged design, which does not exist. R-3 is expected to FAIL until the
+staged design exists — that failure is evidence, not a defect to hide.
+Recorded in docs/operations/capacity-evidence.txt §5 and
+load-tests/profiles.json (failed-replacement: BLOCKED).
+
+## CAP-02 verification run 1 — 7 harness/driver bugs found + fixed (2026-11-21)
+
+Run nonce 15a62497c3491b8cdbdd4a3a, DB sellersho_test_cdd7a6b35d436851718e95fb.
+Suite exit 1. fixture-baseline PASSED (release cohort 100/100 PASS — the
+first 100/100; W-1.1 was 99/100). coupon-burst, independent-account,
+session-lifecycle, staff-baseline, fault-boundary-b1..b4, fault-db-loss
+FAILED; fault-worker-failover ABORTED the suite (uncaught psql error in
+the release-batch query — ledger_entries has no order_id column — so
+fault-redis-load never ran). Compact:
+load-tests/evidence/native-cdd7a6b35d436851718e95fb-compact.json.
+
+1. Orders-list shape: GET /api/v1/orders returns {orders:[...]}, not a
+   bare array. The boundary replay threw although the replay HAD paid;
+   the session-lifecycle disjointness check passed vacuously (both []).
+   Fixed in fault-boundary.mjs + session-lifecycle.mjs (read body.orders).
+2. b2/b3 callback outcome: nginx returns 502 when the upstream dies; a
+   backend killed mid-response can surface as 500. A 5xx during the kill
+   window now counts as 'lost' (effect unknown; replay + gate decide).
+3. b4 deadline: the create-order response carries NO paymentExpiresAt.
+   The setup now records created_at and the runner computes deadline =
+   created_at + 15 min.
+4. Coupon/payout URLs: the drivers used /api/v1/seller/stores/<slug>/...,
+   which only serves variant routes (http.NotFound otherwise). The real
+   routes are /api/v1/stores/<slug>/discount-codes|payouts. Fixed the
+   prefix in coupon-burst.mjs + independent-account.mjs.
+5. DB-loss mechanism: REVOKE CONNECT does not block the DB owner
+   (test_runner owns the run DB). Now ALTER DATABASE ... CONNECTION
+   LIMIT 0 + pg_terminate_backend (verified live).
+6. db-loss + redis-load load windows were 60 s; the driver only accepts
+   30/120/300/1800/7200. Now 120 s.
+7. Worker-failover release SQL used l.order_id / direction / amount_toman;
+   the columns are related_order_or_dispute / type / amount (release pair:
+   operator='system:delivery-lock-releaser'). Fixed in both runners.
+   (Docker runner had the same bugs 3, 6, 7; its db-loss uses docker
+   stop/start, so no REVOKE issue there.)
+
+W-1.4 / W-2.3 evidence from run 1: independent-account accounts_used=100;
+session-lifecycle switch_ok=10, negative control 10/10; staff-baseline:
+all 20 staff-slot principals present, 50 report-leg requests.
+Re-verification run 2 (nonce c0837439f88ffcb1) in progress with all fixes.
+
+## CAP-02 W-2.1 gate proof (2026-11-21, kept DB of run 1)
+
+Clean run PASS (exit 0) — after two earlier clean attempts failed closed
+first: clean FAIL (FIN-014 leg error) → clean2 FAIL (INV-12) → clean3 PASS.
+Four plants, each flipped its leg to FAIL and
+was restored: commerce negative ledger row (ledger_negative_amount=1;
+restore needs the append-only triggers disabled/re-enabled — a
+reversing entry does NOT restore the count); FIN-013 payable_amount +1
+(orders_payments=1; also trips commerce payment/price checks — one
+mismatch, not three defects); FIN-014 paid order -> cancelled
+(certain_defects=3, the planted order outside the seed baseline;
+also trips FIN-013 check 3 + commerce paid_cancelled — documented
+overlap); INV-12 products stock+1 (inv_product_projection_drift=1).
+Final clean re-run PASS. Refusals: non-disposable name -> exit 2;
+guard-marker mismatch -> exit 2. Gate-shape findings: FIN-014 seed
+baseline {PAYOUT-PENDING-001, PAYOUT-PENDING-002}; INV-12 capture_moves
+at PRODUCT level (movements carry NULL variant_id) with the quadratic
+per-variant form rewritten (~0.5 s vs >300 s timeout);
+inv_variant_projection_drift N/A (balances never carry variant_id);
+inv_product_projection_drift excludes seed prod-1..prod-6. Full record:
+docs/operations/capacity-evidence.txt §5; reports in
+~/workspace/cap02-runs/sellersho-cap02-verify-15a62497c3491b8cdbdd4a3a/
+w21-*.json. The run-1 disposable DB was dropped after the proof.
+
+## Environment incident (2026-11-21)
+
+A runtime restart wiped /tmp (the kept env) and emptied
+~/pgx-rootfs/usr/lib/postgresql/16/bin|lib, and stopped the PG cluster
+on 5433. Rebuilt per ~/workspace/fin008-work/fin008-env-fixed.md:
+re-extracted the PG 16 server .deb into ~/pgx-rootfs; libpq5 +
+libllvm17t64 already present system-wide; postgres uid 103/gid 105
+already existed; chmod o+x /home/hatch; restarted the cluster from
+the surviving ~/gap13pg/data (the run-1 DB survived — the W-2.1 proof
+ran against it after the rebuild). The in-flight W-2.1 reconcile never
+wrote its output and was re-run.
+
+## CAP-02 verification run 2 — fixes proven at mechanism level; bug 8 found (2026-11-21)
+
+Run nonce c0837439f88ffcb1, DB sellersho_test_508835e1a582f3a35a2d8bec.
+Suite exit 1. fixture-baseline FAILED (release cohort 99/100 — run 1's
+100/100 was the lucky draw; 99/100 is typical). coupon-burst,
+independent-account, session-lifecycle, staff-baseline FAILED on
+latency/overload gates only. fault-boundary-b1 ABORTED the suite at the
+negative-control restore (bug 8); b2/b3/b4, db-loss, worker-failover,
+redis-load never ran. Compact:
+load-tests/evidence/native-508835e1a582f3a35a2d8bec-compact.json.
+Mechanism proofs: coupon creation 2x201, silent_discount=0 both
+variants, runner oracle gate MATCHED; independent-account payouts reach
+the handler (153x201), accounts_used=100; session-lifecycle ONLY failed
+gate is logout_does_not_revoke_token, switch_ok=10,
+switch_orders_disjoint=10 (real order lists), negative control 10/10;
+b1 replay exactly once (1 order row), W-2.1 gate after replay PASS (all
+4 legs), negative-control gate FAIL (FIN-013 check 1, as designed).
+BUG 8: the unplant DELETEs the planted receipt + verification, but both
+tables have BEFORE DELETE OR UPDATE triggers calling
+immutable_order_refund_evidence(). Fixed in both runners: disable both
+triggers, delete, re-enable (verified live on the run-2 DB: 3 rows
+deleted, 0 left, both triggers 'O'). The run-2 kept env was verified
+runnable (health 200) and torn down via stop-env.sh (processes stopped,
+DB dropped) — the W-1.5 --keep-env fix proven end-to-end.
+Continuation run 3 (b1, b2, b3, b4, db-loss, worker-failover,
+redis-load) in progress, nonce 1062d3b72990574d.
+
+## CAP-02 verification run 3 — b1/b2/b3 PASSED; bugs 9/10/11 found + fixed (2026-11-21)
+
+Run nonce 1062d3b72990574d, DB sellersho_test_c4a555840848d7f556e72bd5.
+Suite exit 1. fault-boundary-b1/b2/b3 PASSED (replay exactly once,
+W-2.1 gate PASS, negative control FAIL -> restore -> PASS) — the W-3.1
+callback boundaries are proven. b4, db-loss, worker-failover FAILED;
+redis-load never ran. Compact:
+load-tests/evidence/native-c4a555840848d7f556e72bd5-compact.json.
+BUG 9 (b4): the slow-expiry trigger used pg_sleep(10), exceeding both
+the expiry job's 300 ms per-candidate timeout and its 3 s per-attempt
+deadline — the candidate failed at 300 ms on every attempt and the
+order never expired. Fixed (both runners): pg_sleep(0.15) + poll
+0.2 s -> 0.05 s.
+BUG 10 (db-loss): the 10 s lead before the loss is shorter than the
+driver's ~15 s sequential bootstrap; the loss landed on principal 67's
+bootstrap_order (503) and the load failed at bootstrap (the loss
+mechanism itself worked: health 503 -> 200, oracle matched, gate
+exit 0, negative control PASS). Fixed (both runners): 30 s lead.
+BUG 11 (redis-load): run_fault_redis_load read users.json as a bare
+list (users[20]) but it is a dict {scope, staff, users} — KeyError
+aborted the suite (recorded as manifest failure 'KeyError'). Fixed:
+users['users'][20]. The 30 s lead was also applied to redis-load.
+WORKER-FAILOVER precondition failure: the unpaid-order-expiry job
+entered a sustained deadline_exceeded mode at 01:56:37 (before the b4
+order was expirable), 0 expiries committed, backlog 61 — a death
+spiral (failed candidates are retried, not dropped, so the backlog
+only grows). App/VM finding, not a harness bug; the b4 trigger
+aggravated it after 02:02:23 but did not start it. Run 4 runs
+worker-failover first on a fresh DB, b4 last.
+
+## CAP-02 verification runs 3–10 — fault matrix proven; bugs 9–15 fixed (2026-11-21)
+
+Run 3 (nonce 1062d3b72990574d): b1/b2/b3 PASSED (replay exactly once,
+gate PASS, negative control FAIL -> restore PASS). b4/db-loss/
+worker-failover FAILED; redis-load never ran. Bugs 9 (b4 pg_sleep(10)
+> 300 ms per-candidate timeout), 10 (db-loss 10 s lead < ~15 s
+bootstrap), 11 (redis-load users.json is a dict, KeyError) found.
+Run 4 (f440940cc2138671): ABORTED at worker-failover's un-release
+DELETE. Bug 12 (ledger append-only triggers block the DELETE).
+Run 5 (421ed02686223277): worker-failover FAILED (release batch never
+started); db-loss + redis-load FAILED although every assertion was
+TRUE; b4 FAILED (expiry job death spiral from the load backlog).
+Bugs 13 (oracle_gate string compared to 'matched') + 14 (un-release
+did not reset referral_commission_released) found. Redis-load's
+refund path proven (409 inventory_hold_expired, 1 obligation).
+Run 6 (7c2758391e8bf5c3): ABORTED by a VM/runtime restart at ~03:08
+UTC (mid-b4 wait; /tmp wiped, libpq5/libllvm17t64/nginx/postgres
+user removed). Environment rebuilt (user 103/105, o+x, libpq5 16.15,
+libllvm17t64 1:17.0.6, nginx 1.24.0, PG 16.15 on 5433); orphaned DB
+dropped. Before the restart the expiry job was healthy and the
+fixture cohort was 100/100.
+Run 7 (779fb38e62d37e4d): db-loss PASSED, redis-load PASSED. b4 +
+worker-failover FAILED (fixture ~7200-order expired backlog starves
+newly-expired orders; the job processes ~21 per 5 s batch). Fix:
+queue-jump (test orders' payment_expires_at -> '2000-01-01', first
+in the expiry queue). b4 deviates from the audit's real 15-min hold
+wait — the hold DURATION is not what b4 tests.
+Run 8 (a7282eb4e83641aa): worker-failover PASSED (expiry 60/60,
+release 20/20 paired, lease takeover), db-loss PASSED, redis-load
+PASSED. b4's mechanism worked (PgSleep observed, expired, replay 0,
+gate 0) but the negative control picked a paid order with 0 receipts
+(0 -> 1 passes check 1). Bug 15 (plant requires exactly 1 receipt).
+Run 9 (c8626551691a229d, b4 only): mechanism worked again, but the
+plant found no target — the fixture's 800 paid orders all have 0
+receipts/verifications, so the negative control needs a prior live
+payment in the same run. Fix: run b4 after b1.
+Run 10 (0f5c7c2049c146ce, b1 + b4): SUITE EXIT 0. b1 PASSED, b4
+PASSED (kill mid-batch observed, expired, replay 0, gate 0,
+negative control FAIL -> restore PASS, planted against the b1
+order). Fixture cohort 100/100 (sixth 100/100; runs 2 and 9 were
+99/100 — the 100th candidate is timing-marginal).
+FINAL: all seven fault profiles PROVEN at diagnostic scale (b1/b2/
+b3/b4, db-loss, worker-failover, redis-load), each with a passing
+run AND a failing negative control. The 100-RPS executions remain
+gated on D-1. Docker ports are written but UNPROVEN.
+App/VM finding: the expiry and release jobs both enter a
+deadline_exceeded / job_failed death spiral when their candidate
+backlog exceeds what a 3 s / 10 s batch can clear on this VM;
+failed candidates are retried, not dropped, so the backlog only
+grows. A real capacity/robustness signal for D-1.

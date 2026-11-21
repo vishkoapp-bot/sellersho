@@ -11,6 +11,15 @@
 //   the driver measures that instead of assuming revocation.
 // - Concurrent-device: the same token used from two agents at once
 //   must return the same identity, never another user's data.
+// - CAP-02 W-2.3: account switching mid-journey — switch to another
+//   user and assert identity + own-orders follow the NEW session and
+//   the old session's data does not leak. Carts are per-store
+//   localStorage (drup_carts); no server-side cart exists, so there is
+//   no server cart state to switch or leak — identity + orders are the
+//   server-side assertions. Negative control: assertIdentityAs(userB,
+//   tokenA) must flag the mismatch; if it ever returns ok, the gate
+//   switch_negative_control_failed fires (the endpoint returned B's
+//   identity for A's token — a real cross-account leak).
 // Certified:false by design; failures are findings, not crashes.
 import https from 'node:https';
 import http from 'node:http';
@@ -32,23 +41,25 @@ const summary = {
   refresh_endpoint: 'absent (no /auth/refresh route in backend/cmd/server/main.go)',
   expiry_test: 'OPEN: 3h JWT lifetime exceeds any short run; no refresh endpoint to exercise; re-login path covered instead',
   concurrent_device_ok: 0, re_login_ok: 0, old_token_after_logout_still_valid: 0,
+  switch_ok: 0, switch_orders_disjoint: 0,
+  switch_negative_control_ok: 0, switch_negative_control_failed: 0,
   failed_gates: [], requests_raw: requests,
 };
 
-function call(user, path, body, agent, kind) {
+function callAs(token, principal, path, body, agent, kind) {
   return new Promise((resolve) => {
     let done = false;
     const start = performance.now();
     const finish = (status, data) => {
       if (done) return;
       done = true;
-      requests.push({principal: users.indexOf(user), route_class: kind, status, latency_ms: performance.now() - start});
+      requests.push({principal, route_class: kind, status, latency_ms: performance.now() - start});
       resolve({status, body: data});
     };
     const req = https.request({hostname: capTarget.ip || capTarget.host, port: capTarget.port, servername: capTarget.host,
       path, method: body ? 'POST' : 'GET', agent, timeout: 5000,
-      headers: body ? {'Content-Type': 'application/json', Host: capTarget.host, Authorization: 'Bearer ' + user.token}
-                    : {Authorization: 'Bearer ' + user.token, Host: capTarget.host}}, (res) => {
+      headers: body ? {'Content-Type': 'application/json', Host: capTarget.host, Authorization: 'Bearer ' + token}
+                    : {Authorization: 'Bearer ' + token, Host: capTarget.host}}, (res) => {
       let text = '';
       res.on('data', (b) => { if (text.length < 65536) text += b; });
       res.on('end', () => { let data; try { data = JSON.parse(text); } catch {} finish(res.statusCode, data); });
@@ -57,6 +68,10 @@ function call(user, path, body, agent, kind) {
     req.on('error', () => finish(0));
     req.end(body ? JSON.stringify(body) : undefined);
   });
+}
+
+function call(user, path, body, agent, kind) {
+  return callAs(user.token, users.indexOf(user), path, body, agent, kind);
 }
 
 function readOTP(user) {
@@ -77,6 +92,15 @@ function readOTP(user) {
 
 function identityOk(body, user) {
   return body?.userId === user.id || body?.id === user.id || body?.user?.id === user.id || body?.data?.id === user.id;
+}
+
+// W-2.3 negative-control helper: returns true iff /auth/me with the
+// given token reports the EXPECTED user's identity. Called with a
+// mismatched (user, token) pair it must return false; if it ever
+// returns true, the endpoint leaked across accounts.
+async function assertIdentityAs(expectedUser, token, principal, agent) {
+  const me = await callAs(token, principal, '/api/v1/auth/me', null, agent, 'me_assert_identity');
+  return me.status === 200 && identityOk(me.body, expectedUser);
 }
 
 try {
@@ -105,6 +129,42 @@ try {
     } else {
       summary.failed_gates.push('relogin_failed_' + i);
     }
+    // W-2.3 (CAP-02): account switching mid-journey. Switch to the
+    // NEXT cohort user and assert identity + own-orders follow the NEW
+    // session and the old session's data does not leak.
+    const other = users[(i + 1) % COHORT];
+    const switchedIdentityOk = await assertIdentityAs(other, other.token, (i + 1) % COHORT, agentA);
+    // Negative control: assertIdentityAs(other, user.token) must flag
+    // the mismatch (return false) — the token belongs to `user`, so the
+    // endpoint must report `user`, never `other`. If it ever returns
+    // true, the endpoint leaked across accounts.
+    const ncOk = await assertIdentityAs(user, user.token, i, agentA);
+    const ncMismatch = await assertIdentityAs(other, user.token, i, agentA);
+    const noLeak = ncOk && !ncMismatch;
+    if (!ncMismatch) {
+      summary.switch_negative_control_ok++;
+    } else {
+      summary.switch_negative_control_failed++;
+      summary.failed_gates.push('switch_negative_control_failed');
+    }
+    const ordersMe = await call(user, '/api/v1/orders', null, agentA, 'orders_before_switch');
+    const ordersOther = await callAs(other.token, (i + 1) % COHORT, '/api/v1/orders', null, agentA, 'orders_after_switch');
+    // GET /api/v1/orders returns {orders:[...], nextCursor, hasMore,
+    // limit} — NOT a bare array (order_handlers.go:1136). Reading
+    // body.orders (not body) is what makes this disjointness check real;
+    // a bare-array assumption yields [] for both users and passes
+    // vacuously.
+    const idsMe = new Set((Array.isArray(ordersMe.body) ? ordersMe.body : ordersMe.body?.orders || []).map((o) => o.id));
+    const idsOther = new Set((Array.isArray(ordersOther.body) ? ordersOther.body : ordersOther.body?.orders || []).map((o) => o.id));
+    const disjoint = ordersMe.status === 200 && ordersOther.status === 200 && [...idsMe].every((id) => !idsOther.has(id));
+    if (switchedIdentityOk && noLeak && disjoint) {
+      summary.switch_ok++;
+      summary.switch_orders_disjoint++;
+    } else {
+      if (!switchedIdentityOk) summary.failed_gates.push('switch_identity_' + i);
+      if (!noLeak) summary.failed_gates.push('switch_leak_' + i);
+      if (!disjoint) summary.failed_gates.push('switch_orders_overlap_' + i);
+    }
     // Logout with the ORIGINAL token, then probe whether it still works.
     const logout = await call(user, '/api/v1/auth/logout', {}, agentA, 'logout');
     const after = await call(user, '/api/v1/auth/me', null, agentA, 'me_after_logout');
@@ -112,6 +172,8 @@ try {
   }
   if (summary.concurrent_device_ok !== COHORT) summary.failed_gates.push('concurrent_device');
   if (summary.re_login_ok !== COHORT) summary.failed_gates.push('re_login');
+  if (summary.switch_ok !== COHORT) summary.failed_gates.push('account_switch');
+  if (summary.switch_negative_control_failed) summary.failed_gates.push('switch_negative_control');
   // Logout not revoking the token is a recorded finding (AUTH-01
   // territory), not a driver error: the gate fails honestly so the
   // missing revocation is visible in the verdict, never hidden.

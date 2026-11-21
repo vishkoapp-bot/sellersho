@@ -127,6 +127,58 @@ to the backend/frontend/edge services so container logs are bounded at
 change because it alters production logging behaviour and belongs in the
 same deploy review as the collector stack.
 
+## Per-run correlation appendix (CAP-02 W-2.2)
+
+The spec's correlation — route latency ↔ SQL / locks / pool / Redis /
+edge / provider / CPU / memory — is automated by
+`scripts/cap02_correlate.py`. It reads a runner output directory
+(`manifest.json` + `<profile>-metrics-before.prom` /
+`<profile>-metrics-after.prom` + `<profile>-summary.json`) and emits a
+per-profile appendix (JSON + readable text) joining:
+
+- driver route p95/p99 (from the summary) with backend-received
+  per-route status counts (from the `/metrics` histogram deltas);
+- provider overloads (`sellersho_operation_duration_seconds`,
+  component=provider, outcome=overloaded — the IPPanel shedder);
+- SQL operation counts/seconds by outcome, pool waits
+  (`sellersho_db_wait_total` / `sellersho_db_wait_seconds_total`),
+  PostgreSQL transactions/deadlocks, Redis pool misses/timeouts;
+- worker backlogs after the profile, process CPU seconds and heap,
+  manifest CPU-max and received counts.
+
+```bash
+python3 scripts/cap02_correlate.py --run-dir <run-output-dir> [--out <dir>]
+# optional pg_stat_statements dump (TSV: query, calls, mean_ms, total_ms, rows)
+python3 scripts/cap02_correlate.py --run-dir <run-output-dir> --pgstat <file>
+```
+
+No Prometheus scrape is required: the runner snapshots `/metrics`
+itself per profile, so the collector works while the prod Prometheus
+backend scrape is DOWN (PERF-03 C2 — the 9090 publish fix rides the
+REL-02 deploy path; see `docs/operations/capacity-evidence.txt` §4).
+Without `--pgstat` the SQL section is limited to the `/metrics`
+operation counters and says so — statement text is never invented.
+
+**Proof (audit §8 W-2.2 gate — PASSED 2026-11-21):** the collector
+reproduces the known CAP-01 OTP-shedder finding from raw data before
+being trusted on new runs:
+
+```bash
+python3 scripts/cap02_correlate.py \
+  --run-dir ~/workspace/cap01-native-runs/sellersho-cap-report-f12c4cf62694 \
+  --proof otp-shedder
+# PROOF otp-shedder: MATCH
+#   metrics_otp_send_200: 486, metrics_otp_send_503: 334,
+#   metrics_provider_overloaded: 334, shed_rate: 0.4073
+#   (expected 486 / 334 / 0.407 — the 0587 clean-run numbers)
+```
+
+The 334×503s are the in-app 8/s IPPanel dependency-budget shedder
+(PERF-03 audit: 487 OK / 333 shed = 40.6% predicted vs 486/334 =
+40.7% observed), visible three ways in the same window: driver
+summary, `/metrics` http counts, and the provider `overloaded`
+operation counter — all three agree at 334.
+
 ## Limits of the lookup
 
 1. **The ring is recent-only.** It holds the last 1000 completed

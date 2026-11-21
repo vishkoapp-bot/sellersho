@@ -15,14 +15,12 @@
 // (finance_balance_integration_test.go:237) — this profile is the
 // HTTP-scale version of that test.
 //
-// Fixture note: the capacity fixture mints only 5 seller sessions
-// (cap-seller-1..5, main_test.go:81). The driver uses every seller
-// session present (accounts_used is reported) with 10 attempts each,
-// so it runs and proves the point today across 5 independent accounts;
-// the full 100-account shape needs the fixture's staff query extended
-// to cap-seller-1..100 — a one-line fixture change, not a profile
-// change. Throughput reported: completed independent debits/second at
-// p95 <= 750 ms, with the solo-vs-concurrent comparison.
+// Fixture note (CAP-02 W-1.4, DONE): the capacity fixture now mints 100
+// seller sessions (cap-seller-1..100, main_test.go:81). The driver uses
+// every seller session present (accounts_used is reported) with 10
+// attempts each, so it runs the full 100-account shape. Throughput
+// reported: completed independent debits/second at p95 <= 750 ms, with
+// the solo-vs-concurrent comparison.
 // Certified:false by design.
 import https from 'node:https';
 import fs from 'node:fs';
@@ -43,7 +41,7 @@ const summary = {
   scope: 'LOCAL independent-account throughput: N seller accounts x10 concurrent payout attempts each, solo-vs-concurrent p95',
   accounts_used: sellers.length,
   accounts_target: 100,
-  fixture_note: 'fixture mints 5 seller sessions today (cap-seller-1..5); extend the staff query in backend/cmd/capacity-fixture/main_test.go to cap-seller-1..100 for the full 100-account shape',
+  fixture_note: 'fixture mints 100 seller sessions (cap-seller-1..100, CAP-02 W-1.4); the full 100-account shape is runnable',
   failed_gates: [], requests_raw: requests, helper_requests_raw: helpers,
   oracle_scope: 'runner SQL: one payout_requests row per accepted attempt (no duplicates by Idempotency-Key), sum(amount) per store equals the accepted count x 10000 Toman; zero payout requests for rejected attempts',
 };
@@ -90,7 +88,7 @@ function p95(times) {
 }
 
 async function payout(seller, kind, keySuffix) {
-  const res = await call(seller, kind, '/api/v1/seller/stores/' + seller.storeId + '/payouts',
+  const res = await call(seller, kind, '/api/v1/stores/' + seller.storeId + '/payouts',
     {amount: PAYOUT_AMOUNT_TOMAN, shaba: SHEBA, idempotencyKey: 'cap-indep-' + seller.storeId + '-' + keySuffix + '-' + crypto.randomUUID()});
   return res;
 }

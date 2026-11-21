@@ -1,0 +1,170 @@
+GO-01 — RELEASE CHECKLIST — Selersho release 89079c1
+=====================================================
+Reviewable release record for the exact commit below.
+Source for every factual claim: ~/workspace/go01-evidence-pack.md
+(cited as "evidence §N") and ~/workspace/go01-staging-assessment.md
+(cited as "staging §N"). No fresh prod read was done for this file.
+No credential values anywhere in this file — key NAMES only (§8).
+
+1. RELEASE IDENTITY
+-------------------
+- Commit: 89079c1 (full: 89079c1d137ee3aa3aa77a01d3af774f01968457) (evidence §1)
+- Commit message: "REL-02 deploy fix: ship ssl + observability early, accept capture kwarg (cherry-picked from 412a688; supervisor GO)" (evidence §1)
+- Committed: 2026-11-21 13:45:27 UTC (evidence §1)
+- Prior prod: d8164e4 (EDGE-01), 2026-11-20 18:26:28 UTC (evidence §1)
+- Diff d8164e4..89079c1: 94 files, none frontend — 51 backend, 19 load-tests, 11 scripts, 5 docs, 2 ops, 4 compose, Caddyfile, deploy.ps1 (evidence §1)
+- Diff stat: 24,428 insertions(+), 6,209 deletions(-) (evidence §1)
+- Commits in range d8164e4..89079c1 (9): 69c8400 REL-02; b464d03 EDGE-01 follow-up; f4937f4 FIN-013; 2bd8f82 INV-12 Phase A; a22b40c REL-02 R-1 fix; 0a10e0a FIN-014; b665f5e REL-02 R-1; 5842f47 CAP-02; 89079c1 deploy fix (evidence §1)
+- Binary sha256: 7c29ddd38a96fa26666d0e92a220e6e869ebc2bf8c2d500fcc1f98e88736be51 — identical in release build / host /opt/drup/backend/bin/server-linux / in-container /app/server, and identical to FIN-014's binary (expected: CAP-02 changes no production Go code) (evidence §1)
+- Release manifest / contract (Gate 3, RELEASE OK): 26 dist files, 213 migrations, contract c455d4f21994, LCR ff5736731797 confirmed ancestor of 89079c1 (evidence §1)
+- Migrations in release: 213 files; schema_migrations count on prod: 225; newest migration: 202611210001_fin014_repair_batches.up.sql; 0 migrations applied by this deploy (evidence §1)
+- Frontend (live dist byte-identical to server build): index-BS3X0Xo5.js 7b4cd594..., index-DAOxysNM.css 1dae9bd5..., index.html ffe64a2d... (evidence §1)
+- Deploy target: prod 46.249.98.190, /opt/drup; deployed and verified healthy 2026-11-21 ~18:06-18:10 Tehran (evidence §1, §10)
+
+2. GATES GREEN FOR THIS EXACT RELEASE
+--------------------------------------
+- SEC-01: 4/4 (evidence §10; staging §2)
+- Release gate: RELEASE OK — 213 migrations, contract c455d4f21994, LCR ff57367; 1 known warning: real payment mode with no PSP pair — FIN-010, expected (evidence §1)
+- Boot gate: TestRouteTableNoConflicts PASS + built binary booted against disposable PG16 / scratch Redis, health 200 (evidence §10; staging §2)
+- Harness: 49/49; test_load_test_native 9/9; test_load_test_isolated 14/14; go vet clean (evidence §10)
+- Supervisor: GO, ID 6ad1d716 — own re-runs of all gates (evidence §10)
+- Independent verifier: GO, ID cd253e53 — "no discrepancies ... on all 11 checks" (evidence §10; staging §2)
+- Note: gates were re-run per deploy in the queue (REL-02 -> FIN-013 -> INV-12 -> FIN-014 -> CAP-02); the values above are the CAP-02 / 89079c1 pass (evidence §10)
+- Staging rehearsal: NOT a gate result — see §10 (PARTIAL; drain FAIL, recovery FAIL).
+
+3. MIGRATIONS + ROLLBACK COMPATIBILITY
+----------------------------------------
+- Rollback points: /opt/drup/.rollback-points.json has 8 entries; latest 89079c1 deployed, migrationsApplied: [], deployedAt: 2026-11-21T14:36:37Z, LCR ff573673...; backup-dir copy /opt/drup/backups/deploy-20261121T143637Z-89079c1d/rollback-point.json agrees (evidence §2)
+- Rollback floor (LCR): ff57367 (full ff573673179777202f21b6a647c499fa49a6b132), confirmed ancestor of 89079c1 (evidence §2)
+- Rollback procedure: ~/workspace/sellersho/docs/operations/rollback-runbook.md (MIG-02, schema-aware rollback) (evidence §2)
+- Outcomes (§0 of runbook): compatible-binary restore; Mode A repair + restore (stranded migration files copied in, sha-verified); Mode B forward repair (old binary NOT restored; new release stays live) (evidence §2)
+- Rule: a deploy rollback NEVER restores the database over newly received orders; additive migration data is retained (evidence §2)
+- DR restore: OWNER-PENDING (decision D-6, Nov 20, 2026) — no freeze automation exists and none may be built until owner / management approve (evidence §2)
+- Real rollback proof (REL-02): first deploy attempt b464d03 failed closed at deploy_remote.py:1168 (assert_merged_config, edge not digest-pinned); prod rolled back to d8164e4, healthy, zero migrations applied (evidence §2; staging §1)
+- R-2 rehearsal rollback drill: rollback point rolled-back, restoredCommit d8164e4, write-path probe PROBE_OK 3/3 (evidence §2; staging §1)
+- Note: R-2 rehearsed the deploy script and rollback code path, not a staging rehearsal (staging §1, §4)
+
+4. HISTORICAL STOCK / MONEY RECONCILIATION
+-------------------------------------------
+- FIN-014 CLI re-run (disposable DB, seed data only): schemaVersion 213; certain 2 / ambiguous 0 / unresolved 1 / total 3 (seed rows, e.g. PAYOUT-PENDING-001/002 payout-oversubscription + one uncertain-PSP row); FIN-011 pinned note intact; supervisor independently re-ran with identical numbers (evidence §3)
+- FIN-013 oracle (SELECT-only scripts/fin013-oracle.sql, re-run fresh on prod by worker, supervisor, and both verifiers): 10/10 pass/fail checks return 0 — orders_payments, payments_ledger, cancellations_obligations, obligations_outcomes, settlement, coupons, referral, storage, treasury, statements (evidence §3)
+- Pre-existing finding 1b (informational, NOT a deploy regression): 6 paid orders with NO payment record at all (no payment_transactions row, no verification), Oct 19-25, all profit_released=true with ledger entries present — money flow completed; consistent with manual payment-confirmation bridge pattern; recorded for FIN-011 follow-up (evidence §3)
+  - ord-2c3c3d2f... Oct 19, 680,000 T; ord-ccaff3f1... Oct 20, 128,700 T; ord-dade392e... / ord-e5cfee78... / ord-0724e351... Oct 21 01:53-01:54, 134,600 T each (three overnight money-path test orders); ord-1c7e8a6a... Oct 25, 252,231 T (evidence §3)
+  - Zero such orders created after deploy start (evidence §3)
+  - Live gauge sellersho_finance_unknown_payment_count = 3 (oldest ~35.5 days) counts a different population (unknown-payment) than 1b's 6 (no-payment-record); not expected to match (evidence §3)
+- INV-12 §3.1 drift (pre-existing, not a defect): aggregate-vs-lot drift, whole catalog: 14 products / 137 variants, all balance_sum = 0 — aggregate-only stock with zero inventory_balances rows; all 45 products that HAVE balances agree exactly; inventory_balances 53 rows across 45 products; products total 59; order_inventory_captures total 0; all 14 drift products created Oct 16-28, 2026; zero balances created after the deploy (evidence §3)
+- FIN-011 pinned (PINNED, not fixed): referral asymmetry, oracle check 7 — reversal 5,000 vs conserved 7,500, 2,500 Toman/case undercount in the dispute-then-wallet order; self-heals on the later dispute leg; release gate catches it pre-release; reverse-order case still pinned at 5,000 in TestFIN009AuditMixedDisputeThenWalletCountsOnce (evidence §3)
+- EVIDENCE GAP — FLAG: the workspace file ~/workspace/sellersho/historical-reconciliation-report.json (readOnly: true) contains 251 rows (180 unresolved / 71 resolved, counted from the file). Its provenance is UNVERIFIED — which snapshot/run produced it, and whether its 180 unresolved rows are the live prod population, was NOT established. Do NOT quote its 180 unresolved rows as a prod finding. A fresh, labelled FIN-014 report run (or the run's own manifest) is needed before the 251-row file is quoted as a prod finding (evidence §3, Evidence Gaps §1)
+
+5. PAYMENT SANDBOX EVIDENCE: NONE
+-----------------------------------
+- FIN-010 is BLOCKED externally. There is NO real PSP proof for this release. No Zarinpal merchant access, no sandbox access, no adapter, no merchant ID, no ZARINPAL_* variable anywhere (evidence §4)
+- gateway.go RealShaparak VerifyTransaction still returns ErrVerificationFailed; payment_handlers.go:100 fabricates a local token SHP-TKN-<random>; :367 placeholder URL https://gateway.shaparak.ir/payment/<token>; prod callback 403 fail-closed; prod .env + both compose files have 0 PSP-var lines and 0 Zarinpal mentions (evidence §4)
+- Live payment path is manual payment confirmation (the §3 finding 1b is the visible trace of it) (evidence §4)
+- Wallet checkout stays DISABLED (no wallet method wired in the payment path) (evidence §4)
+- Release validator (scripts/release/validate_release.py:25-40): real mode with PSP credentials present but FIN-010 verification not recorded FAILS; real mode with no PSP pair PASSES with a recorded warning (the documented live prod state; VerifyTransaction fails closed at payment time until FIN-010 lands) (evidence §1, §4)
+- This release is NOT ready for normal paid commerce through a payment gateway.
+- FIN-010 readiness checklist (owner ask: merchant ID UUID, sandbox arrangement, HTTPS callback URL to register, refund/reverse scope + terminal IPs, sandbox smoke-test go-ahead) is in ~/workspace/fin010-work/ (evidence §4)
+
+6. RAW 1,000-USER / 100-RPS RESULTS — A FAILING BASELINE, NOT A PASS
+-----------------------------------------------------------------------
+- CAP-02 / CAP-01 diagnostic re-run: 13 of 16 profiles FAILED, 3 passed (the 3 passes are fault profiles, by oracle); certified: false; status NOT READY (evidence §5)
+- Profiles: 22 in load-tests/profiles.json (api-100rps, users-1000, login-ramp, hot-sku, hot-account, staff-report, cold-cache, assets-tls-browser, recovery, faults, session-lifecycle, inventory-100rps, coupon-burst, independent-account, fault-boundary-b1..b4, fault-db-loss, fault-worker-failover, fault-redis-load, failed-replacement) (evidence §5)
+- SLO targets in force (unchanged since CAP-01, never loosened): read p95 300 ms / p99 1000 ms; mutation p95 750 ms / p99 2000 ms; unexpected_error_rate < 0.001; dropped_iterations 0; cpu_max 70%; headroom 200 RPS / 300 s; recovery 120 s; login 1000 users / 60 s; mix 30/20/15/15/8/4/4/4; sustained 1800 s; soak 7200 s (evidence §5)
+- No number from the shared VM is a capacity result; VM numbers are DIAGNOSTIC / BASELINE only (evidence §5)
+- No qualification run: Phase 4 qualification runs were NOT run — BLOCKED on owner decisions D-1+D-2+D-3 (evidence §5)
+- No load test, qualification run, or fault profile was run against prod (evidence §5)
+- Zero certification claims on prod: grep for certified: true / CERTIFIED / capacity certified in the deployed capacity-evidence.txt = 0/0/0 (evidence §5)
+- Fault profiles at diagnostic scale: all seven PROVEN at diagnostic scale, but the diagnostic-scale proofs do not qualify the system (evidence §5)
+
+7. BACKUP / RESTORE EVIDENCE
+-----------------------------
+- Latest backup: /opt/drup/backups/deploy-20261121T143637Z-89079c1d (deploy backup for 89079c1, sealed + verified) (evidence §6)
+- BAK-01 restore evidence (rehearsal, synthetic set, 210 migrations, 2026-11-20): pg_restore 38,116 ms (38.1 s); recovery (restore start -> validated) 39 s; data age 51 s — explicitly a LOWER BOUND, not a prod RTO: prod volume and host-rebuild steps (provision, install, certs, DNS, smoke) were not measured and dominate a real RTO (evidence §6)
+  - Footnote: the BAK-01 audit headline says 38.7 s while the implementation report says 38,116 ms (38.1 s) — a 0.6 s discrepancy between the two sources; this record uses 38,116 ms.
+- Harness: scripts/backup/test-backup-entrypoint.sh — 57-check harness, 57/57 PASS (failure injection, corruption, encryption round-trip, retention, umask, wrappers, deploy rehearsal, full restore), independently re-run by the critic (evidence §6)
+- Nightly cron (unchanged schedule): 41 4 * * * (04:41 Tehran) — backup-entrypoint.sh run nightly; backup key at /opt/drup/.backup-encryption-key (root-only 0600, value never printed/stored) (evidence §6)
+- Restore verification *script* exists (`scripts/backup/restore-verify.sh`, never yet run on a prod backup); the weekly schedule is PROPOSED, not created — owner approval naming the schedule still owed (BAK-01 O3). Owner: TBD by that approval. (evidence §6)
+- Retention: nightly 7 days; deploy newest 5 (evidence §6)
+- Off-site copy: default OFF; destination choice pending the owner (G2); Google Drive EXCLUDED by explicit owner decision (evidence §6)
+- Backup-key offline copies still owed (owner + Haji-Bashi) — host loss = all encrypted backups unrecoverable (evidence §6, Evidence Gaps §6)
+- RPO / RTO interim targets: RPO <= 24 h, RTO <= 4 h (daily dumps); spec target RPO <= 15 min / RTO <= 60 min is NOT met and is owner-blocked (needs WAL/PITR or streaming replica + standby host) (backup-runbook §9, cited in evidence §6)
+
+8. REQUIRED RUNTIME CONFIGURATION — NAMES ONLY, NEVER VALUES
+--------------------------------------------------------------
+- Verified key names (from credential-inventory.json, 17 records, 9 distinct key values — 7 secret keys + 2 runtime references `redis.command`, `redis.test`; scope: tracked production Compose + reachable Git history, no runtime inspection): POSTGRES_PASSWORD, REDIS_PASSWORD, DATABASE_URL, REDIS_URL, JWT_SECRET, TRACKING_WEBHOOK_SECRET, TAPIN_TOKEN_KEY (evidence §7)
+- Additionally from the live backend env (28 key names, names + lengths only, never values): IPPANEL_API_KEY, PSP_API_KEY, PSP_TERMINAL_ID, TAPIN_TOKEN_PREVIOUS_KEY, TEST_OTP_CODE, TEST_OTP_NUMBERS (evidence §7)
+- PSP pair (PSP_API_KEY, PSP_TERMINAL_ID) and test-OTP entries (TEST_OTP_CODE, TEST_OTP_NUMBERS) are EMPTY, as expected (no PSP pair, FIN-010) (evidence §7)
+- TAPIN presence: absent from .env (count 0), present in the live backend env (evidence §7)
+- Note: the full 28-name list is UNVERIFIED from workspace sources — the complete enumeration lives only in the prod /tmp/sellersho-backend-env-* files, deliberately not re-read here (owner keep decision; names+lengths only) (evidence §7, Evidence Gaps §2)
+- No secret value is recorded in this checklist. See docs/operations/credential-inventory.json and docs/operations/credential-lifecycle.md for lifecycle / rotation procedures.
+
+9. INCIDENT OWNERSHIP
+----------------------
+- Owner: Mohammad Hossein Khan Mohammadi — owner of the platform, final decision authority (evidence §8)
+- Co-super-admin / decision-maker: Mohammad Haji-Bashi (evidence §8)
+- Finance domain: the finance-domain reviewer (currently the owner + Haji-Bashi) decides every compensating entry, refund, and release (evidence §8)
+- Per-area owners (by runbook):
+  - Backup + restore: docs/operations/backup-runbook.md (BAK-01); restore-verify schedule owner: TBD by that approval (weekly schedule proposed, not created — see §7); crons need owner approval naming the schedule (evidence §8)
+  - Rollback: docs/operations/rollback-runbook.md (MIG-02); deploy script scripts/deploy_remote.py implements it (evidence §8)
+  - Finance invariants / reconciliation oracle: docs/operations/finance-invariants-runbook.md (FIN-013); escalation §2 — live mismatch > 0 -> finance-domain reviewer immediately, freeze affected payouts first (evidence §8)
+  - Inventory reconciliation: docs/operations/inventory-reconciliation.md (INV-12) (evidence §8)
+  - Capacity evidence: docs/operations/capacity-evidence.txt (CAP-02) (evidence §8)
+  - Credential lifecycle: docs/operations/credential-lifecycle.md — JWT rotation invalidates every old JWT; TAPIN rotation deploys the new key with the old one as previous (evidence §8)
+- Backup encryption key: host file + offline copy held by the owner + offline copy held by a named deputy (Haji-Bashi proposed); a single host-only copy is NOT recovery (evidence §8)
+- DR write-freeze procedure: OWNER-PENDING (D-6) — owner / management decide; no automation to be built until approved (evidence §8)
+- Live credential exposure awaiting owner decision: 8 /tmp/sellersho-* dirs on prod hold live runtime env values; owner decided Nov 21 ~15:01 "نه، فعلاً نگهشون دار" — KEEP, do not delete, do not re-ask unprompted (evidence §8)
+
+10. STAGING REHEARSAL — HONEST STATUS
+---------------------------------------
+- Verdict: PARTIAL — the staging-rehearsal clause as written is NOT satisfied (staging, verdict)
+- No staging rehearsal of this release exists. There is no staging host, no staging environment separate from prod, and no run anywhere that deployed the release to an isolated environment, drove traffic through it, drained it, smoke-checked it, and restored a backup into it (staging, verdict)
+- Do NOT claim a staging rehearsal happened. R-2 + post-deploy prod smoke checks + a synthetic restore are NOT a staging rehearsal, and relabelling them as one would be a fake pass (staging §6)
+- Sub-clause scorecard:
+  - Graceful drain: FAIL — no evidence. Drain exists as code/config only (GET /api/ready / GET /api/health 503 when draining; stop_grace_period 30s; SHUTDOWN_GRACE_SECONDS default 20); never exercised under traffic in any environment. Deploy records show momentary downtime (REL-02 retry: one transient curl:(7) during edge recreate; measured blackout ~1-3s), not graceful drain (staging §1)
+  - Smoke checks: PARTIAL — prod only, not staging. Post-deploy prod checks (health/site/JS 200, 9/9 containers) are strong and independently verified, but they ran on live prod after the deploy, not in staging before it (staging §2)
+  - Backup integrity: PARTIAL — synthetic only. Restore mechanism proven on synthetic data (57/57 harness, 38,116 ms restore, 39 s recovery); no prod backup has ever been restore-verified; no off-site copy exists (staging §3)
+  - Recovery without lost orders: FAIL — proven gap. Daily backups have a proven ~24 h loss window (an order written ~100 ms after the backup was correctly absent after restore); the reconciliation procedure that would close it is owner-pending (D-6), unapproved and never rehearsed (staging §3)
+- Blocker: CAP-02 decision D-1 (intended hardware / staging host) UNANSWERED by the owner since the CAP-02 audit — which machine runs qualification/staging (prod VPS 46.249.98.190 itself? a second identical VPS? a bigger staging host?), its vCPU/RAM/disk, and whether the claim is "passes on prod-shaped hardware" or "passes on bigger hardware with a stated scaling argument"; the 4 vCPU figure is unconfirmed (staging §5)
+- Secondary blocker for the recovery sub-clause only: D-6 (DR write-freeze / reconciliation procedure) — owner/management must approve who may freeze order acceptance and how customers/stores are told, and the procedure must then be rehearsed (staging §5)
+- Two paths forward (owner's choice):
+  - (a) Keep GO-01 OPEN pending D-1, then run a genuine post-hoc staging rehearsal of 89079c1 (deploy to staging -> traffic + drain -> smoke -> backup restore + reconciliation drill -> rollback / forward-repair). The deployment having already happened does not make this meaningless: it would still be genuine evidence for this exact release, and would leave a real staging environment standing for the next release (staging §6)
+  - (b) Close GO-01 only with a documented, owner-signed staging gap — i.e. close it the way the mission closes blocked items: with the gap named in the record ("staging rehearsal not performed; no staging host; drain unproven; recovery-without-lost-orders unproven; accepted by owner on <date>"), the same pattern as FIN-010 / TEST-02's explicit OPEN-with-reason, except here the owner explicitly accepts the residual risk. Defensible ONLY with the owner's explicit written acceptance; without it, it is fake closure (staging §6)
+
+11. POST-RELEASE OBSERVED HEALTH (verifier ~18:10 Tehran)
+-----------------------------------------------------------
+- Verifier: independent verifier, fresh checks 2026-11-21 ~14:38-14:40 UTC (18:08-18:10 Tehran), read-only SSH + SELECT-only DB reads (evidence §10)
+- .deployed-commit = 89079c1d137ee3aa3aa77a01d3af774f01968457 — PASS (evidence §10)
+- Health: server loopback 127.0.0.1:8080/api/health 200 (status:ok, postgres:up, redis:up); via edge http://46.249.98.190/api/health 200; public site 200; live JS asset assets/index-BS3X0Xo5.js 200; metrics 127.0.0.1:8081/status 200 — PASS (evidence §10)
+- Containers: 9/9 Up, RestartCount 0 on all 9; healthy on 8/9 (drup_nginx_exporter Up, no health object — same as before) — PASS (evidence §10)
+- DB schema_migrations: 225, newest 202611210001_fin014_repair_batches.up.sql — PASS (evidence §10)
+- Rollback point: 8 entries, latest 89079c1 deployed, migrationsApplied: [] — PASS (evidence §10)
+- Backend logs: 0 panic / fatal in last 300 lines — PASS (evidence §10)
+- Disk: /dev/vda1 25G, 16G used, 7.9G free, 67% — PASS (evidence §10)
+- Oracle re-run fresh: 10/10 = 0; informational 1b = 6 (same pre-existing IDs) — PASS (evidence §10)
+- Finance endpoints: GET /api/v1/finance/refunds/unknown-queue 401 unauthenticated / 403 with customer token; POST /api/v1/finance/refunds/reconcile 401 / 403; GET /api/v1/auth/me with token 200 — PASS (evidence §10)
+- Refund-reconciliation job ticked 2x at 14:38:49 UTC on the new binary, outcome=success duration_ms=0/1 — PASS (evidence §10)
+- FIN-014 tables row counts 0/0/0 (fin014_report_runs / fin014_repair_batches / fin014_repair_operations) — PASS (evidence §10)
+- Known non-blockers:
+  - Verifier F-1 (pre-existing, not a regression): direct TLS to https://sellershow.ir fails at Caddy (zero certs); real-user HTTPS presumably via Cloudflare Tunnel — external-network HTTPS check still owed as follow-up (evidence §10, Evidence Gaps §5)
+  - Steps 5-6 owed (all five deploys): healthcheck soak; log-rotation confirmation + per-query line-rate re-measurement; containers were ~2 min old at verification time (evidence §9, §10, Evidence Gaps §4)
+  - Direct :8080 from the VM unreachable (port not exposed externally; health verified via edge + loopback) (evidence §10)
+  - Boot-gate re-run overwrote the worker's boot-gate.log (supervisor stdout saved as supervisor-boot-gate.log) (evidence §10)
+
+12. PENDING DECISIONS (no answers invented)
+--------------------------------------------
+- REL-02 Q1 (maintenance window): approve a 5-minute announced maintenance window per deploy as interim posture, or require zero-downtime before the next deploy — UNANSWERED (evidence §9)
+- REL-02 Q2 (error budget): approved downtime / error budget under the 100-RPS rehearsal profile — literally zero failed requests, or a number (e.g. <0.1%)? No budget has ever been approved; without a number the criterion is untestable — UNANSWERED (evidence §9)
+- INV-12 Phase B (a)-(d) — UNANSWERED (evidence §9):
+  - (a) Logging — may the 100-RPS probe run before the REL-02 Q4 log fix, or must it wait?
+  - (b) Hardware — where does the probe run (larger staging host, or deferred to CAP-02's prod-shaped hardware)?
+  - (c) Cancel admission — FIN-013 per-account admission/queueing for CancelOrder (known 58-64/100 success under the current 5 s lock budget); which budget is the probe judged against?
+  - (d) Snapshot — who produces the scrubbed representative snapshot, and from what source? Blocks migration rehearsal, dry-run reconciliation totals, and the inventory rollback rehearsal.
+- FIN-014 Q1-Q8 (evidence §9): Q1 snapshot producer; Q3 which writers switch and when (relative to FIN-010); Q4 canonical settlement writer; Q5 release-gate threshold + FIN-013 bounds; Q6 FIN-011 follow-up — keep pinned; Q7 staging host + REL-02 unblock; Q8 repair-batch approval authority. Q2 RESOLVED: FIN-004/005/007 are DONE per the audit; progress ledger fixed (FIN-013 TODO -> DONE f4937f4). Cutover stays NOT READY until Q3 and the switch decisions land.
+- CAP-02 D-1-D-8: NONE ANSWERED as of 2026-11-21 (evidence §9). D-1 intended hardware / staging host; D-2 REL-02 Q4 log fix; D-3 deploy queue unblock — OPEN in the deployed file, though the queue itself is now complete (docs follow-up only); D-4 FIN-010 provider scope; D-5 hot-account admission (FIN-013); D-6 snapshot producer (FIN-014 Q1 / INV-12 (d)); D-7 thresholds the spec names but never numbers; D-8 login-ramp + token-lifecycle scope.
+- TEST-02: OPEN, pending the owner's F-UP-2 decision (scratch-schema refactor if round 5 leaves failures that provably need it) (evidence §9)
+- FIN-010: BLOCKED externally — resume only when Zarinpal merchant/sandbox access arrives; never fake-closed (evidence §9)
+
+13. RELEASE STATUS LINE
+------------------------
+Status: GO-01 acceptance: NOT MET — staging-rehearsal clause failed (see §10); release deployed and verified healthy on 2026-11-21 (commit 89079c1).

@@ -1,0 +1,928 @@
+SELLERSHO — INCIDENT RUNBOOK
+Release: 89079c1 (main HEAD, deployed to prod 46.249.98.190, /opt/drup)
+Date: 2026-11-21
+Owners: Mohammad Hossein Khan Mohammadi (owner, final authority);
+  Mohammad Haji-Bashi (co-super-admin / decision-maker).
+  Finance-domain reviewer = owner + Haji-Bashi (money decisions).
+Prod health at release verification (2026-11-21 ~18:06-18:10 Tehran):
+  health 200 (server + edge), site 200, JS asset 200, 9/9 containers Up,
+  RestartCount 0, schema_migrations 225, binary sha256 7c29ddd3...,
+  0 panic/fatal in last 300 backend log lines.
+
+================================================================
+0. DECLARING AN INCIDENT
+================================================================
+  Declaration rule: an incident is declared when any TRIGGER in
+  sections 1-6 reproduces (a signal that does not reproduce is not
+  an incident), or when the owner declares one. The on-call operator
+  declares it; the owner (or Haji-Bashi in the owner's absence)
+  confirms the severity and owns the close-out.
+  Severity (this runbook's working scale):
+    SEV-1 — money moving wrongly, data loss or unrecoverable DB,
+      site down, or a deploy that cannot roll back. Owner paged
+      immediately; all other work stops.
+    SEV-2 — a function degraded (provider outage, worker lag, queue
+      growing) with no money moved yet. Owner told the same day.
+    SEV-3 — warning / watch (a gauge rising, a stale backup, a
+      single transient rejection). Recorded in the incident log;
+      reviewed at the next review, no paging.
+  Contact paths: phone + Telegram for the owner (Mohammad Hossein
+  Khan Mohammadi) and for Haji-Bashi. Phone numbers are deliberately
+  NOT printed in this repo document — use the numbers in the
+  operator's own contacts (also recorded in the mission memory:
+  ~/memory/people/mohammad-haji-bashi.md for Haji-Bashi).
+  If the owner is unreachable, Haji-Bashi decides; if neither is
+  reachable, the operator freezes first (per the incident's own
+  freeze step) and records, but takes no money-moving action.
+  Incident log: no permanent incident-log location has been named
+  yet — TBD by the owner. Until one is named, record every incident
+  in the mission progress ledger
+  ~/workspace/sellersho-backlog-progress.md (date, severity,
+  trigger, actions taken, owner decision). Do not leave an incident
+  unrecorded.
+  Close-out: an incident is over when its TRIGGER is green again
+  AND the owner (or Haji-Bashi) says so in the log entry. The
+  close-out entry records what happened, what was done, and what
+  follow-up is owed — including any gap this runbook exposed.
+
+HOW TO USE THIS RUNBOOK
+1. Find your incident below (1-6). Do TRIGGER first — confirm the signal
+   before acting. A signal that does not reproduce is not an incident.
+2. Do FIRST 15 MINUTES in order. Do not skip the freeze step where one
+   is listed; freezing first is cheaper than unwinding a wrong payout.
+3. Do not improvise a compensating entry, a manual ledger edit, a
+   manual refund, or a DB restore. Every money repair needs the OWNER
+   named in that section. Every DB restore is DR-only (see 5).
+4. Money unit is Toman everywhere (int64). A figure 10x too big is a
+   Rial/Toman mix-up until proven otherwise.
+5. Never print credential values. Never send an OTP. Never touch
+   docs/fa/ or backend/internal/networkreward/.
+6. Sources are cited by path + section at the end of each incident.
+   Key procedures are restated here so an incident can be worked
+   from this file alone; the cited runbook governs on any conflict.
+
+================================================================
+1. REFUND-UNKNOWN (unknown-payment / unknown-outcome queue)
+================================================================
+Source: docs/operations/finance-invariants-runbook.md §6, §2, §7;
+  ~/workspace/go01-evidence-pack.md §3, §10.
+
+(a) TRIGGER — how you know it happened
+  1. Gauge sellersho_finance_unknown_payment_count > 0, or rising.
+     Known population at release verification: gauge = 3,
+     oldest ~35.5 days. That population alone is NOT a new incident;
+     a rise, or an oldest age passing the reviewer's bound, is.
+  2. Inbox alert finance_unknown_stale (oldest unknown payment or
+     refund older than 1 hour — PROPOSAL, not a confirmed decision;
+     finance reviewer confirms the bound).
+  3. GET /api/v1/finance/refunds/unknown-queue?limit=25 (finance
+     roles only) returns rows. Unauthenticated it answers 401;
+     with a customer token it answers 403. A 200 with rows is the
+     actionable surface; oldest items first, age in seconds.
+  4. POST /api/v1/finance/refunds/reconcile answers
+     503 refund_provider_unavailable — expected today (see (d)).
+
+  CONTEXT, NOT A NEW INCIDENT — pre-existing finding 1b:
+  6 paid orders with NO payment record at all (no
+  payment_transactions row, no verification), Oct 19-25:
+  ord-2c3c3d2f... (Oct 19, 680,000 T), ord-ccaff3f1... (Oct 20,
+  128,700 T), ord-dade392e... / ord-e5cfee78... / ord-0724e351...
+  (Oct 21 01:53-01:54, 134,600 T each — the three overnight
+  money-path test orders), ord-1c7e8a6a... (Oct 25, 252,231 T).
+  All six are profit_released=true with ledger entries present.
+  Pre-existing, pre-dates the deploys by 4+ weeks; zero such orders
+  created after deploy start. Consistent with the manual
+  payment-confirmation bridge pattern. Recorded for the FIN-011
+  follow-up. Do not re-open as a fresh incident; do not "fix" by
+  inventing payment records.
+
+(b) FIRST 15 MINUTES
+  1. List the queue: GET /api/v1/finance/refunds/unknown-queue?limit=25
+     with a finance-role token. Record oldest age, order, amount,
+     purpose, latest-event state for each row.
+  2. Check whether the reconciler job is alive (see incident 3):
+     refund-reconciliation ticks ~60 s; a tick with a nil provider
+     still records last-success.
+  3. If the job is stale, fix the job first (incident 3) — the queue
+     cannot drain without it.
+  4. If the job is running and the provider is nil (FIN-010 blocked),
+     record the queue size and oldest age. Do NOT escalate as an
+     incident — but DO escalate if the queue grows without bound or
+     the oldest age passes the reviewer's bound.
+  5. Freeze affected payouts first if any row involves money already
+     moved or a payout about to be released on that order/account:
+     no payout-hold mechanism exists in the release. Until one is
+     built, the freeze step is: escalate to the finance-domain
+     reviewer immediately and record the affected payout-request
+     IDs; do NOT confirm any manual transfer on them. Building a
+     hold action is owed work, not a runbook step. See (f).
+
+(c) DIAGNOSIS
+  1. Distinguish the three causes, in this order:
+     (i) Job stale — no ticks / tick errors (incident 3).
+     (ii) Provider nil — FIN-010 blocked, no PSP adapter wired;
+         each tick is a recorded no-op. This is the expected state
+         today, not a fault in the job.
+     (iii) Provider answered ambiguously (timeout / unknown result)
+         — outcome stays unknown by design; retry is bounded and
+         counted. Escalate only if the same obligation fails
+         repeatedly past the reviewer's retry bound.
+  2. A merely-paid order with NO ledger entry is BY DESIGN — the
+     first order-linked entry is written at staged profit release
+     (return window close, >= 7 days after delivery), never at
+     payment. Only a RELEASED order without its release entry is a
+     mismatch (finance-invariants-runbook.md §2 step 2).
+  3. Check the live-mismatch query in finance-invariants-runbook.md
+     §2 (released_without_ledger; paid_cancelled_without_obligation).
+     Live mismatch > 0 is incident 2, not this one — go to incident 2.
+
+(d) FIX / RECOVERY
+  1. No automatic fix exists today. Until FIN-010 wires the PSP
+     refund adapter, the reconciler cannot confirm or deny any
+     outcome.
+  2. When the adapter lands, execution activates via
+     BackgroundWorker.SetRefundProvider; the manual trigger
+     POST /api/v1/finance/refunds/reconcile runs one bounded pass
+     (25 obligations). Until then it answers 503, by design.
+  3. Recovery of a single obligation is a finance-domain reviewer
+     decision, recorded with its reason, executed as a ledger event
+     — never an UPDATE, never a hand-marked resolution.
+
+(e) OWNER
+  Owner + Haji-Bashi (finance-domain reviewer) decide every
+  compensating entry, refund, and release. Operator triages,
+  gathers evidence, escalates. Escalation: unknown outcome ageing
+  past the reviewer's bound (1 h proposed, unconfirmed — see (a)2)
+  with a running reconciler and a live provider — same day;
+  unknown outcome ageing while FIN-010 blocks the adapter —
+  record, reviewer at the next review (no incident).
+
+(f) DO NOT
+  - Never mark an obligation resolved by hand, and never guess an
+    outcome. An unknown outcome stays unknown until the provider
+    confirms or denies it.
+  - Never post a manual ledger entry, edit an obligation, or
+    release held profit to "make it balance".
+  - Never "fix" paid orders without ledger entries (see (c) step 2).
+  - Never treat the 503 from POST /api/v1/finance/refunds/reconcile
+    as a bug to work around — it is the fail-closed answer while
+    no provider is wired.
+
+================================================================
+2. RECONCILIATION MISMATCH (finance / inventory totals disagree)
+================================================================
+Source: docs/operations/finance-invariants-runbook.md §2, §4, §7, §8;
+  docs/operations/inventory-reconciliation.md §3, §5;
+  ~/workspace/go01-evidence-pack.md §3.
+
+(a) TRIGGER — how you know it happened
+  1. FIN-013 oracle: scripts/fin013-oracle.sql — all 10 checks must
+     return 0 difference (orders_payments, payments_ledger,
+     cancellations_obligations, obligations_outcomes, settlement,
+     coupons, referral, storage, treasury, statements).
+     At release verification, re-run fresh on prod by worker,
+     supervisor, and both verifiers: 10/10 = 0. Any check != 0 is
+     this incident. "Zero difference" means exactly zero; there is
+     no tolerance.
+  2. Inbox finance_invariant, or gauge
+     sellersho_finance_balance_mismatch_count > 0, or counter
+     sellersho_finance_invariant_failures_total{check} increased.
+  3. FIN-014 report CLI (disposable DB only, never prod):
+     FIN014_DATABASE_URL=postgres://.../sellersho_test_<hex>
+     go run ./backend/cmd/fin014-report
+     Release gate: scripts/fin014-release-gate.sh --report
+     <report.json> [--max-certain N]. Default MAX_CERTAIN=0,
+     fail-closed. certain > 0 fails the gate.
+     Disposable-DB seed run at FIN-014 close-out: certain 2 /
+     ambiguous 0 / unresolved 1 / total 3 (seed rows, e.g.
+     PAYOUT-PENDING-001/002). That seed run is NOT a prod finding.
+  4. INV-12 §3 checks (disposable copy / scrubbed snapshot, never
+     prod directly): §3.1 aggregate-vs-lot drift, §3.2 orphan
+     reservations, §3.3 origin mismatch, §3.4 structural invariants
+     (negative balances, duplicate movement idempotency keys,
+     allocation-sum mismatches, over-departures). Any non-zero
+     result is this incident.
+     Known pre-existing context: INV-12 §3.1 drift, 14 products /
+     137 variants, all balance_sum = 0 (aggregate-only stock with
+     zero inventory_balances rows; all 45 products that HAVE
+     balances agree exactly). Pre-existing, not a defect; recorded
+     for the FIN-014 follow-up. Do not treat as a new incident.
+  5. FIN-014 live state on prod at release verification:
+     fin014_report_runs / fin014_repair_batches /
+     fin014_repair_operations row counts 0/0/0 — no repair ran,
+     no writer switched.
+
+(b) FIRST 15 MINUTES
+  1. Freeze affected payouts first: no payout-hold mechanism exists
+     in the release. Until one is built, the freeze step is:
+     escalate to the finance-domain reviewer immediately and record
+     the affected payout-request IDs; do NOT confirm any manual
+     transfer on them. Building a hold action is owed work, not a
+     runbook step. Freeze affected stock promises: no stop-switch
+     exists for these entry points. The executable freeze is the
+     drain behaviour (GET /api/ready 503 when draining) or stopping
+     order acceptance at the edge — both need the owner decision
+     recorded here — and the stock-promise freeze is owed work, not
+     an executable step. Do this before touching data.
+  2. Preserve evidence: order id(s), amounts, the oracle output,
+     the FIN-014 report JSON, the §3 query outputs. Record the
+     check name / kind label for every nonzero difference.
+  3. Escalate to the finance-domain reviewer immediately with the
+     numbers. Do not start a repair.
+  4. If the counter moved but the gauge is 0 and the oracle is
+     clean, the failure was transient (e.g. a money_validation
+     rejection of an out-of-range value at the treasury boundary):
+     record it in the incident note with the check name and close
+     it as rejected-input, not as a conservation break.
+
+(c) DIAGNOSIS
+  1. Identify the check: the `check` label on the counter, or which
+     of the two live-mismatch counts is nonzero (released without
+     ledger; paid-cancelled without cancellation obligation).
+  2. Run the oracle (scripts/fin013-oracle.sql) and the INV-12 §3
+     queries against a disposable copy / scrubbed snapshot — never
+     against prod directly for the inventory queries.
+  3. Run the FIN-014 report on a fresh snapshot (never prod data):
+     snapshot producer restores a backup to a disposable DB and
+     scrubs it — see scripts/fin014-snapshot-scrub.sh --help.
+     NOTE: the dry-run reconciliation totals procedure is BLOCKED
+     on a scrubbed representative snapshot that does not exist
+     (inventory-reconciliation.md §5; FIN-014 Q1 unanswered).
+     Do not invent totals from production data.
+  4. Classify each row per the FIN-014 report: certain /
+     ambiguous / unresolved; cash_basis verified_gateway /
+     simulated / unverified / unknown. Uncertain historical
+     records stay visible and block unsafe automatic payouts
+     until reconciled.
+
+(d) FIX / RECOVERY
+  1. No repair runs without a repair batch approved per FIN-014 Q8.
+     Q8 (repair-batch approval authority — approver + granularity)
+     is UNANSWERED. Until Q8 is answered, repairs need owner +
+     Haji-Bashi sign-off on the specific batch, recorded in the
+     batch row (approved_by + approved_at; status approved/applying).
+     The apply command refuses without that record:
+     FIN014_DATABASE_URL=... go run ./backend/cmd/fin014-apply
+     -batch <batch-id>. Do not invent an approver or hardcode one.
+  2. Propose a repair batch from the report (content-derived
+     operation IDs; re-proposing the same report regenerates the
+     same IDs and collides instead of duplicating). Certain defects
+     get exactly one operation; ambiguous cases get a held operation
+     (or none) with a reason. No cash-moving operation is proposed
+     for anything but verified_gateway.
+  3. Apply bounded (25/run), resumable, predicate-checked
+     in-transaction. Rerun the report (rerun proof): second report
+     must have zero remaining certain defects among the
+     apply-eligible classes, and a second apply must write zero
+     new rows.
+  4. Rollback for FIN-014 is forward-repair, never history rewrite:
+     a bad repair is corrected by a new compensating event (a new
+     batch from a fresh report), never by editing or deleting
+     posted ledger entries, receipts, obligations, or snapshots.
+     Repair-batch tables are append-only once applied; only a
+     `failed` operation may be re-proposed with fresh predicates.
+  5. FIN-011 asymmetry is PINNED (2,500 Toman/case): oracle check 7
+     — reversal 5,000 vs conserved 7,500, undercount 2,500
+     Toman/case in the dispute-then-wallet order; self-heals on
+     the later dispute leg; the release gate catches it pre-release.
+     Status at FIN-013 close-out: NOT landed — the reverse-order
+     case is still pinned at 5,000 in
+     TestFIN009AuditMixedDisputeThenWalletCountsOnce. Do NOT "fix"
+     it inside an incident. Do not re-litigate the policy; assert
+     the numbers. FIN-014 Q6: keep pinned.
+
+(e) OWNER
+  Finance-domain reviewer (owner + Haji-Bashi), immediately, for
+  any live mismatch > 0 or any oracle difference. Freeze affected
+  payouts first. When in doubt, escalate with the numbers rather
+  than acting: a wrong compensating entry is worse than a slow one.
+
+(f) DO NOT
+  - Never post a manual ledger entry, edit an obligation, or
+    release held profit to "make it balance". A compensating entry
+    is a reviewer decision, recorded with its reason, and is itself
+    a ledger event — never an UPDATE.
+  - Never apply a repair batch to "make the gate pass".
+  - Never run the FIN-014 report or the INV-12 §3 queries against
+    production data directly.
+  - Never edit or delete posted ledger entries, receipts,
+    obligations, or snapshots; never drop provenance/placement
+    data (order_item_origins, order_inventory_captures,
+    inventory_movements, warehouse lots/positions/placements,
+    departures, exceptions, inbound lines / QC dispositions).
+  - Never "fix" the FIN-011 pinned asymmetry inside an incident.
+
+================================================================
+3. WORKER LAG (refund-reconciliation job not draining)
+================================================================
+Source: docs/operations/finance-invariants-runbook.md §1, §6;
+  ~/workspace/go01-evidence-pack.md §10.
+
+(a) TRIGGER — how you know it happened
+  "Lag" here means one of these three, not slowness in general:
+  1. No ticks: the refund-reconciliation job has no successful run
+     within its threshold — inbox job_stale / Prometheus
+     SellershoExpiryStalled pattern on gauges
+     sellersho_worker_refund_reconciliation_*.
+     Normal: job runs every 60 s (10 s timeout, bounded batch
+     of 25). At release verification it ticked 2x at 14:38:49 UTC
+     on the new binary, outcome=success duration_ms=0/1.
+  2. Tick errors: sellersho_job_retries_total{job} rising for
+     refund-reconciliation, or ticks recording failure instead of
+     last-success. A retry that succeeds is not an incident.
+  3. Growing backlog: the unknown-queue (incident 1) grows while
+     the job reports success — the queue is not draining.
+  NOTE: a tick with a nil provider still records last-success, so
+  a stalled adapter is visible as a growing backlog, not as a
+  failing job. Do not read "job healthy" as "queue draining".
+
+(b) FIRST 15 MINUTES
+  1. Read the job gauges (sellersho_worker_refund_reconciliation_*)
+     and the unknown-queue size/oldest age (incident 1, step (b)1).
+     Record last-success time, tick count, retry count.
+  2. Check backend health: /api/health must report status: ok,
+     postgres: up, redis: up. Check 9/9 containers Up, RestartCount.
+     Check backend logs for panic/fatal (release verification:
+     0 in last 300 lines).
+  3. Do NOT mark obligations resolved by hand to clear the backlog.
+  4. If the queue is growing, treat the money exposure as incident 1
+     and notify the finance-domain reviewer the same day.
+
+(c) DIAGNOSIS
+  1. Job stale + backend down/unhealthy: backend/container fault —
+     go to (d) step 1.
+  2. Job ticking, provider nil: expected today. FIN-010 blocked;
+     each tick is a recorded no-op; the queue stays visible through
+     its gauges and the admin endpoint, and execution activates the
+     moment FIN-010 wires the adapter (BackgroundWorker.
+     SetRefundProvider). Not a job fault — record it, do not
+     escalate as an incident unless the queue grows without bound.
+  3. Job ticking, provider live, same obligation failing repeatedly:
+     provider ambiguity (timeout / unknown result) — outcome stays
+     unknown by design. Escalate past the reviewer's retry bound.
+  4. Lock / pool pressure as a cause: check
+     sellersho_finance_lock_wait_seconds, sellersho_pg_locked, and
+     pool wait. Never kill a finance transaction to clear a lock
+     without the reviewer: a killed refund leaves the obligation
+     unknown (safe, and visible in the queue).
+
+(d) FIX / RECOVERY
+  1. Restart/recreate path (worker lives in the backend process):
+     recreate the backend container — per rollback-runbook.md §2
+     step 8, `docker compose -f docker-compose.yml
+     -f docker-compose.prod.yml up -d --no-deps --force-recreate
+     backend frontend` (plus `edge` when it was running), using
+     BOTH compose files (docker-compose.yml +
+     docker-compose.prod.yml), then restart the frontend (see
+     incident 6 for the full swap mechanics and verification).
+     Then confirm /api/health 200 and a fresh successful tick.
+  2. If the job stays stale after recreate, escalate: do not keep
+     restarting. Treat as incident 2 risk (below).
+  3. No per-query SQL success logging to investigate: per-query
+     lines are the disk risk (~15 lines/request). Use the §1
+     histograms. Error logs stay on.
+
+(e) OWNER
+  On-call operator investigates; finance-domain reviewer (owner +
+  Haji-Bashi) if a legitimate request was rejected or money is
+  exposed. Escalation point: if lag persists, treat as incident 2
+  risk — reconciliation stops covering new orders, so new
+  unknown outcomes accumulate unseen. At that point the reviewer
+  decides whether to freeze affected payouts (incident 2 (b)1).
+
+(f) DO NOT
+  - Never mark an obligation resolved by hand, and never guess an
+    outcome, to clear a backlog.
+  - Never kill a finance transaction to clear a lock without the
+    reviewer.
+  - Never raise the pool cap (max open 25, PERF-03) as an incident
+    fix; raising the cap is a PERF-03 decision, not an incident fix.
+  - Never re-enable per-query success logging to investigate.
+
+================================================================
+4. PROVIDER OUTAGE (TAPIN / IPPanel / PSP)
+================================================================
+Source: ~/workspace/go01-evidence-pack.md §4, §7;
+  docs/operations/finance-invariants-runbook.md §6, §8.2;
+  docs/operations/credential-lifecycle.md (TAPIN rotation).
+
+(a) TRIGGER — how you know it happened
+  No dedicated TAPIN or IPPanel outage metric is named in the cited
+  runbooks. Confirm by the symptoms below, not by a single gauge:
+  1. TAPIN (shipping labels): label creation / shipment calls fail
+     or time out; orders stuck awaiting labels; backend logs show
+     TAPIN call failures. TAPIN presence: absent from prod `.env`
+     (count 0), present in the live backend env (TAPIN_TOKEN_KEY).
+     Supplier tokens are stored AES-256-GCM "enc:v1:"; a wrong
+     TAPIN_TOKEN_KEY fails boot (total re-encryption failure) —
+     so a token-key fault looks like a boot failure, not a label
+     failure. Distinguish the two before acting.
+  2. IPPanel (SMS/OTP): OTP sends fail or time out; users report no
+     SMS; backend logs show IPPanel call failures. IPPANEL_API_KEY
+     is in the live backend env. NOTE: agents must NEVER trigger
+     an OTP send for any number to "test" this — use the saved
+     customer token / reported user failures, never a live OTP probe.
+  3. PSP / Zarinpal: there is NO live PSP — see (d). A "PSP outage"
+     cannot happen. If a payment callback fails, that is the
+     fail-closed manual path, not a provider outage.
+  4. General confirmation: /api/health 200 with postgres: up,
+     redis: up narrows it to the provider (platform healthy);
+     health failing narrows it to the platform (not this incident).
+
+(b) FIRST 15 MINUTES
+  1. Confirm which provider, and whether the platform itself is
+     healthy (health endpoint, 9/9 containers, 0 panic/fatal).
+  2. Record scope: which orders / labels / OTPs are affected, since
+     when, with the log lines / error text. Do not guess scope.
+     Log location: backend container drup_backend —
+     docker logs drup_backend --since 2h 2>&1 | grep 'operation=tapin_request'
+     (TAPIN calls log component=provider operation=tapin_request
+     outcome=error|timeout|overloaded; IPPanel calls log the same
+     way with operation=ippanel_request —
+     backend/internal/observability/metrics.go:449).
+  3. Tell the owner (see (e)) with the scope. The owner decides
+     whether to pause order acceptance — do not pause it yourself
+     on a provider suspicion alone.
+  4. Do not retry a failing provider call in a loop, and do not
+     re-send OTPs. Do not rotate a provider key inside an incident
+     (rotation needs the previous-key window — see (f)).
+
+(c) DIAGNOSIS
+  1. TAPIN: is it a label-call failure (provider down / token
+     rejected) or a boot failure (wrong TAPIN_TOKEN_KEY — total
+     re-encryption failure fails boot)? Boot failure is a deploy /
+     credential incident, not a provider outage.
+  2. IPPanel: is it an IPPanel failure or an app-side OTP fault?
+     Check whether other SMS-dependent flows fail the same way,
+     and whether the failure started at a provider-side time
+     boundary. Do not send a test OTP to find out.
+  3. PSP: if anyone reports a "PSP outage", verify first that a PSP
+     exists — it does not (see (d)). Redirect to the manual
+     confirmation path.
+
+(d) FIX / RECOVERY
+  1. TAPIN: honest fallback is manual label handling + owner
+     decision. No automatic fallback exists in the cited runbooks.
+     Do not invent one. Hold affected shipments, keep the orders
+     and their inventory captures intact, and let the owner decide
+     whether to pause order acceptance or to process labels
+     manually through the provider's own channel.
+  2. IPPanel: honest fallback is manual OTP handling + owner
+     decision. No automatic fallback exists in the cited runbooks.
+     Do not invent one. Do not send OTPs yourself; do not use a
+     test OTP code to bypass the flow.
+  3. PSP / Zarinpal — state plainly: FIN-010 is BLOCKED externally.
+     There is no Zarinpal merchant access, no sandbox access, no
+     adapter, no merchant ID, no ZARINPAL_* variable anywhere;
+     gateway.go RealShaparak VerifyTransaction returns
+     ErrVerificationFailed; payment_handlers.go fabricates a local
+     token SHP-TKN-<random>; the placeholder URL is
+     https://gateway.shaparak.ir/payment/<token>; prod callback
+     403 fail-closed. The live path is MANUAL PAYMENT
+     CONFIRMATION. The runbook for it is:
+     (i) manual confirmation continues — no automatic capture is
+         attempted; (ii) VerifyTransaction fails closed at payment
+         time until FIN-010 lands; (iii) wallet checkout stays
+         DISABLED (no wallet method wired in the payment path);
+     (iv) the release validator records this state explicitly
+         (real mode with no PSP pair passes with a recorded
+         warning). Resume only when Zarinpal merchant/sandbox
+         access arrives; never fake-closed.
+  4. Recovery = provider recovers, then re-drive held *labels* once;
+     held OTPs are re-driven only on the affected user's own fresh
+     request, never by the operator proactively. Re-drive is manual
+     through the provider's own channel under owner direction — no
+     re-drive endpoint or job exists in the release; confirm the work
+     was not already done (label already issued / OTP already
+     delivered) before re-driving, so nothing is double-created or
+     double-sent for the same order.
+
+(e) OWNER
+  Owner (Mohammad Hossein Khan Mohammadi) decides whether to pause
+  order acceptance, and whether to process held work manually.
+  Haji-Bashi is co-decision-maker. For money effects (manual
+  payment confirmation disputes), the finance-domain reviewer
+  (owner + Haji-Bashi) decides.
+
+(f) DO NOT
+  - Never invent a fallback that does not exist. If the honest
+    fallback is "manual process + owner decision", say so.
+  - Never trigger an OTP send for any number to test IPPanel.
+  - Never rotate TAPIN_TOKEN_KEY without the previous-key window:
+    deploy the new key with the old one as
+    TAPIN_TOKEN_PREVIOUS_KEY (decryption fallback, dual-read);
+    the startup pass re-encrypts every row to the new key; then
+    drop TAPIN_TOKEN_PREVIOUS_KEY. Dropping it has NO automatic
+    mechanism — the deploy runner re-harvests the running
+    container's env into /opt/drup/.env.deploy.runtime.json on
+    EVERY deploy, so the previous key comes back unless the
+    operator HAND-EDITS that runtime JSON AND the container env.
+    Never rotate the live key without the previous-key window:
+    rows encrypted under a dropped key become unreadable.
+  - Never restore the old binary after a TAPIN re-encryption boot:
+    the old binary cannot read "enc:v1:" rows; rollback after the
+    first prod boot is re-deploying the SEC-01 binary, and the
+    deploy backup's postgres.dump is the pre-boot plaintext-token
+    source.
+  - Never attempt an automatic PSP capture. There is no PSP.
+
+================================================================
+5. RESTORE (database / host loss — DR only)
+================================================================
+Source: docs/operations/backup-runbook.md §1-§9;
+  docs/operations/rollback-runbook.md §5;
+  ~/workspace/go01-evidence-pack.md §6;
+  ~/workspace/go01-staging-assessment.md §3.
+
+(a) TRIGGER — how you know it happened
+  1. Host loss or unrecoverable DB. A deploy failure is NOT this
+     incident — deploy failures go to incident 6; a deploy rollback
+     NEVER restores the DB.
+  2. Backup failure signals: entry point exit 1 (DB unreachable /
+     dump error, or encryption key missing); exit 3 (backup good,
+     success signal or off-site copy failed — marker
+     .signal-failed / .offsite-failed); no verified backup within
+     26 h (staleness alert fires — treat as a backup outage).
+  3. `verify` fails: encrypted manifest (ciphertext tampered /
+     truncated), plaintext manifest (decrypted content != recorded
+     hashes), gzip -t (truncated/corrupt), or pg_restore --list
+     (catalogue unreadable). Do NOT use that backup; fall back to
+     the previous verified backup.
+
+(b) FIRST 15 MINUTES
+  1. Confirm the loss scope: is the DB unrecoverable, or is the
+     host gone? If the DB is readable, this is not a restore —
+     stop and diagnose instead.
+  2. Do NOT start a restore on prod, and do NOT point any service
+     at a restored DB, until the owner has approved the DR
+     procedure (see (d) step 1 — D-6, OWNER-PENDING).
+  3. Identify the latest verified backup set. Locations:
+     /opt/drup/backups/auto/<YYYY-MM-DD>/ (nightly),
+     /opt/drup/backups/deploy-<commit>-<ts>/ (deploy).
+     Latest deploy backup: /opt/drup/backups/deploy-20261121T143637Z-89079c1d
+     (sealed + verified). Retention: nightly 7 days; deploy newest 5.
+     Nightly cron: 41 4 * * * (04:41 Tehran)
+     BAK_CADDY_VOLUMES="drup_caddy_data drup_caddy_config"
+     /opt/drup/scripts/backup/backup-entrypoint.sh run nightly.
+  4. Check the encryption key exists and is readable:
+     /opt/drup/.backup-encryption-key (root-only 0600, value never
+     printed/stored). If it is missing/unreadable, restore it from
+     the OFFLINE holder copy — never invent a new one (a new key
+     cannot decrypt old backups). If no offline copy exists, the
+     backups are unrecoverable — say so to the owner (see KNOWN GAPS).
+
+(c) DIAGNOSIS
+  1. Verify the chosen set before restoring:
+     scripts/backup/backup-entrypoint.sh verify <backup-dir>
+     (manifest + decrypt + gzip + pg_restore --list). Exit non-zero
+     = do not use that set; try the previous verified backup.
+  2. Check manifest.json: schema_migrations count, created_utc
+     (data age = now - created_utc; interim RPO target <= 24 h).
+  3. If several backups fail verification, suspect the disk/host,
+     not the backups.
+
+(d) FIX / RECOVERY
+  1. DR WRITE-FREEZE / RECONCILIATION PROCEDURE — OWNER-PENDING
+     (decision D-6, Nov 20, 2026). The procedure to be approved is:
+     (i) Freeze order acceptance — stop new orders/payments at the
+         edge (who may freeze, and how customers and stores are
+         told, to be approved under D-6). No freeze automation
+         exists today. (ii) Restore to a point — from the latest
+         verified backup set (verify, then restore-verify.sh).
+         (iii) Reconcile orders/payments/ledger accepted after the
+         backup point — source of truth in the DB-loss case: the last
+         verified backup plus whatever survives outside the DB
+         (order-confirmation SMS/email logs, manual-confirmation
+         records, the finance inbox — named explicitly). There is no
+         live system to list from and no gateway records (no PSP
+         exists). Where no such source exists, post-backup orders are
+         unrecoverable except by customer/store report. Re-enter or
+         refund each identified one explicitly; never silently drop
+         accepted data. Reconciliation is a manual, audited step —
+         there is no script for it until D-6 approves the procedure.
+         Which outside-the-DB sources count as the source of truth
+         is a D-6 decision input, not an executable step as written.
+         (iv) Re-open traffic only after reconciliation — health +
+         write-path probe green, row counts and checksums of the
+         reconciled orders verified before/after.
+     THIS IS NOT AN IMPLEMENTED CAPABILITY — do not execute it as
+     if it were; get owner/management approval first. No freeze
+     automation exists and none may be built until the owner /
+     management approve the procedure itself.
+  2. Restore-verify job (on an ISOLATED host, never prod, never the
+     backup host's live DB):
+     export BAK_ADMIN_PSQL="psql -h <isolated-host> -U <user> -d postgres -v ON_ERROR_STOP=1 -At"
+     export BAK_PG_RESTORE_CMD="pg_restore -h <isolated-host> -U <user>"
+     export BAK_KEY_FILE=/path/to/key
+     scripts/backup/restore-verify.sh <backup-dir> --report <report.json>
+     Exit 0 only when every check passes AND the interim targets
+     hold (RPO <= 24 h data age, RTO <= 4 h recovery time). The
+     disposable DB is dropped afterwards (unless --keep-db).
+  3. Manual steps (when the job cannot run) — per backup-runbook.md
+     §5: verify the set; decrypt to a scratch dir (openssl enc -d
+     -aes-256-cbc -pbkdf2 -md sha256 -salt -pass file:/path/to/key);
+     (cd /tmp/restore && sha256sum -c MANIFEST.sha256); createdb
+     <target> && pg_restore -d <target> /tmp/restore/db.dump;
+     extract uploads + config (+ Caddy volumes if present);
+     validate (§6 checklist below) BEFORE pointing any service at
+     it; boot the backend against the restored DB in isolation and
+     run the smoke suite scripts/release/smoke_release.py (health,
+     login, catalog, idempotent order recovery). Only then promote
+     the restored DB. Caveat: use a scratch dir with room for the
+     decrypted backup; /tmp is a 512 MB tmpfs and a prod-scale
+     decrypt may not fit — the /tmp/restore path above is the
+     backup runbook's own example, not a guarantee it fits.
+  4. Validation checklist (every restore): schema_migrations count
+     == manifest.json value; stores / products / orders (+ statuses)
+     / order items; ledger rows + sum; inventory quantity sum;
+     payment receipts count (verified chain); custom domains
+     (active); media refs (every products.image_url under
+     /static/uploads/ exists in the restored uploads tree); config
+     present (nginx.conf, Caddyfile); Caddy volume archive present
+     (if the host used SSL); data age <= 24 h; recovery time
+     <= 4 h.
+  5. HONEST LIMITS — read before promising a recovery time:
+     (i) Restore proven on synthetic data ONLY: pg_restore
+         38,116 ms (38.1 s), recovery (restore start -> validated)
+         39 s, data age 51 s — a LOWER BOUND, not a prod RTO.
+         Prod volume and host-rebuild steps (provision, install,
+         certs, DNS, smoke) were not measured and dominate a real
+         RTO. Harness scripts/backup/test-backup-entrypoint.sh
+         57/57 PASS (failure injection, corruption, encryption
+         round-trip, retention, umask, wrappers, deploy rehearsal,
+         full restore).
+     (ii) NO prod backup has ever been restore-verified.
+     (iii) NO off-site copy exists (default OFF; destination choice
+         pending the owner, G2; Google Drive EXCLUDED by explicit
+         owner decision Nov 16, 2026 — do not propose it).
+     (iv) Backup-key offline copies (owner + Haji-Bashi) still
+         owed — host loss = all encrypted backups unrecoverable.
+         Loss of the key = loss of every encrypted backup.
+     (v) ~24 h RPO loss window: daily dumps -> worst-case ~24 h
+         data loss (proven: an order written ~100 ms after the
+         backup was correctly absent after restore). The spec
+         target RPO <= 15 min / RTO <= 60 min needs WAL/PITR or a
+         streaming replica plus a standby host — daily dumps cannot
+         meet it. Step 2 (hourly dumps, RPO <= 1 h / RTO <= 2 h)
+         is DESIGNED, not implemented.
+     (vi) RECOVERY WITHOUT LOST ORDERS IS NOT CURRENTLY PROVABLE.
+         The reconciliation procedure that would close the ~24 h
+         window is D-6 OWNER-PENDING, unapproved and never
+         rehearsed. Do not promise zero lost orders.
+     (vii) Redis data is deliberately NOT backed up: holds are
+         rebuildable from PG (redis-recover rebuild); OTPs live
+         120 s and are not recoverable by design.
+
+(e) OWNER
+  Owner (Mohammad Hossein Khan Mohammadi) + management approve the
+  DR write-freeze/reconciliation procedure (D-6) before any restore
+  that touches live traffic. Backup encryption key: host file PLUS
+  an offline copy held by the owner PLUS an offline copy held by a
+  named deputy (Haji-Bashi proposed). Weekly restore verification
+  (Sunday 05:30 Tehran, proposed) and daily health check (05:05,
+  proposed) were NOT created — they need owner approval naming the
+  schedule.
+
+(f) DO NOT
+  - Never restore a DB as a deploy rollback. Deploys never restore
+    the DB (incident 6).
+  - Never restore on prod, and never point a service at a restored
+    DB, before validation (§6 checklist) and D-6 approval.
+  - Never invent a backup key. A missing key makes the entry point
+    FAIL LOUDLY (exit 1, no backup). There is no unencrypted fallback.
+  - Never silently drop accepted data: every order/payment/ledger
+    entry after the backup point is re-entered or refunded
+    explicitly, with an audit record.
+  - Never propose Google Drive as the off-site destination.
+  - Never claim the 38 s / 39 s synthetic timings as a prod RTO.
+
+================================================================
+6. ROLLBACK (failed deploy — code/config only, never the DB)
+================================================================
+Source: docs/operations/rollback-runbook.md §0-§8;
+  scripts/deploy_remote.py (implements this runbook);
+  ~/workspace/go01-evidence-pack.md §2, §10.
+
+(a) TRIGGER — how you know it happened
+  1. A deploy fails (deploy_remote.py exits non-zero) and prints a
+     rollback pre-check verdict, or prints ROLLBACK NEEDS ATTENTION.
+  2. Post-deploy verification fails: /api/health not 200 with
+     status: ok, postgres: up, redis: up; write-path probe does not
+     print PROBE_OK; binary sha in-container != local; containers
+     not 9/9 Up.
+  3. Rollback points: /opt/drup/.rollback-points.json has 8 entries;
+     latest 89079c1 deployed, migrationsApplied: [], deployedAt
+     2026-11-21T14:36:37Z, LCR ff573673...; backup-dir copy
+     /opt/drup/backups/deploy-20261121T143637Z-89079c1d/rollback-point.json
+     agrees.
+  4. Rollback floor (lastCompatibleRevision, LCR): ff57367
+     (ff573673179777202f21b6a647c499fa49a6b132), confirmed ancestor
+     of 89079c1. A binary older than the floor must never be
+     restored over the new schema.
+  5. REAL PROOF (not a drill): REL-02 first attempt b464d03 failed
+     fail-closed at deploy_remote.py:1168 (assert_merged_config,
+     edge not digest-pinned), rolled back to d8164e4, zero
+     migrations applied, prod healthy. R-2 rehearsal rollback drill
+     (fake root, disposable PG16 + scratch Redis): failure after
+     ship, rollback restored all 8 root files byte-identical,
+     write-path probe 3/3, row counts unchanged.
+
+(b) FIRST 15 MINUTES
+  1. Read the deploy log tail: the pre-check verdict
+     ("Rollback pre-check: <verdict> — <reason>") and the
+     rollback-point.json in the deploy backup dir (commit, floor,
+     migrations applied, files copied/removed, compatibility
+     verdict, reason, status).
+  2. Record before-counts (rollback-runbook.md §6) BEFORE any
+     rollback/repair, so the after-check can prove nothing was erased:
+     docker exec drup_postgres psql -U drup_admin -d drup_db -Atc
+       "SELECT count(*), COALESCE(sum(total_amount),0) FROM orders"
+     docker exec drup_postgres psql -U drup_admin -d drup_db -Atc
+       "SELECT count(*), COALESCE(sum(amount),0) FROM ledger_entries"
+  3. Let deploy_remote.py run its rollback path. Do not hand-restore
+     the old binary while the script is deciding — the pre-check
+     decides the outcome (see (d)).
+  4. If the script prints ROLLBACK NEEDS ATTENTION, stop and
+     escalate (see (e)). Do NOT restore the old binary by hand at
+     that point — it was already proven incompatible.
+
+(c) DIAGNOSIS — the three outcomes (rollback-runbook.md §0, §1)
+  1. Compatible-binary restore: old binary is at/after LCR and
+     every applied migration resolves into its migration set.
+  2. Mode A repair + restore: same, except some migrations this
+     deploy applied are not yet filed in the persistent migration
+     dir (stranded files). Symptom: old binary would fail boot
+     with "applied migration <name> missing from required directory".
+  3. Mode B forward repair: old binary predates LCR, or an applied
+     migration resolves to no file anywhere, or the old release dir
+     is gone. The old binary is NOT restored; the new release stays
+     live (recreated + verified).
+  4. Pre-check cannot run (e.g. DB unreadable): verdict
+     "incompatible" — a blind restore is never attempted.
+  5. NOTE: when the failed deploy applied NO migrations, the live
+     schema is the one the old binary was already running, so the
+     floor check does not apply (restore proceeds).
+
+(d) FIX / RECOVERY
+  1. BOOT GATE FIRST — before ANY server change: TestRouteTableNoConflicts
+     (cmd/server/routetable_conflict_test.go) must pass, and the built
+     binary must boot locally against a disposable PG16 + scratch
+     Redis and answer health 200 (the tool that does this is
+     scripts/release/smoke_release.py). Container-up + HTTP 200 after
+     deploy is still required, but the boot test happens BEFORE the
+     swap, not after.
+  2. Compatible restore (rollback-runbook.md §2, in deploy_remote.py):
+     remove container migration staging dir; stop edge containers
+     when the deploy had started SSL; restore every file in
+     saved_files from the deploy backup dir (backend/bin/server-linux,
+     nginx.conf, docker-compose.ssl.yml, Caddyfile, .deployed-commit,
+     backup scripts, docker-compose.observability.yml,
+     docker-compose.metrics-ports.yml — files that did not exist
+     before are unlinked); restore previous collector config tree,
+     previous dist, previous Xray config, previous runtime file
+     (.env.deploy.runtime.json); recreate; health(); write-path
+     probe; record rollback-point.json and append to
+     /opt/drup/.rollback-points.json. Expected tail:
+     "PROBE_OK expect=current (3/3 write-path checks passed,
+     transaction rolled back, row counts unchanged)" and
+     "Previous code restored; additive migration data retained.
+     Database backup was not restored." — and still exit non-zero,
+     so the original deploy failure is reviewed.
+  3. Mode A (rollback-runbook.md §3): for each stranded file, copy
+     it from the failed release dir (or the old release dir) into
+     the persistent dir /opt/drup/backend/migrations, verifying
+     sha256 against the checksum in schema_migrations
+     (CRLF-normalized) — fail loudly when no source copy matches.
+     Then restore per step 2. Manual equivalent (only if the
+     scripted path cannot run) is in rollback-runbook.md §3
+     (applied-vs-filed comm, per-file cp + sha verify, recreate,
+     health + probe).
+  4. Mode B (rollback-runbook.md §4): persistent dir re-synced from
+     the new release's manifest (copy exactly the manifest files,
+     sha256-verified); new binary, dist, nginx.conf, compose files
+     and backup scripts (re-)shipped from the failed release dir;
+     recreate; health(); write-path probe (--expect current) must
+     print PROBE_OK; record rollback-point.json (status
+     forward-repaired, repair: mode-b, observabilityReverified:
+     false) and write .deployed-commit with the NEW commit. Follow-up
+     (manual): verify the observability stack separately
+     (Prometheus targets up per job, alert rules loaded,
+     nginx_up == 1, a sellersho_ series returning data, Grafana
+     /api/health database: ok). Then diagnose the original failure
+     from the deploy backup dir.
+  5. BINARY-SWAP MECHANICS (every swap, deploy or rollback):
+     upload the binary as server-linux.next (the temp name
+     deploy_remote.py uses), then atomic-rename it into place
+     (os.replace; scp directly over the running bind-mounted
+     binary fails ETXTBSY — the running process keeps the old inode
+     until recreate). Upload command:
+     scp <local-binary> root@46.249.98.190:/opt/drup/backend/bin/server-linux.next
+     Recreate with BOTH compose files: docker compose
+     -f docker-compose.yml -f docker-compose.prod.yml up -d
+     --no-deps --force-recreate backend frontend (plus `edge` when
+     it was running), then verify the in-container sha (never one
+     file alone — without the prod file the wrong static mount is
+     used and all product images 404). Restart the frontend too
+     after recreating the backend (nginx caches the backend's old
+     container IP at startup — 502 on all API calls until frontend
+     restarts).
+     Verify: in-container sha256sum /app/server == local binary
+     sha; /api/health 200 (status: ok, postgres: up, redis: up);
+     site 200; 9/9 containers Up, RestartCount 0.
+  6. Write-path probe (the gate health alone does not prove):
+     python3 <release>/scripts/release/write_path_probe.py
+     --docker-container drup_postgres --expect current
+     Exercises the inventory-balance upsert, a review insert and a
+     withdrawal-intent insert inside ONE transaction that is always
+     rolled back, then verifies row counts are unchanged and prints
+     PROBE_OK. /api/health passing does NOT prove the write paths work.
+  7. After any rollback / repair, re-run the §6 before/after
+     queries (see (b) step 2): both pairs must be identical.
+     Rehearsal R-6 proves this end to end.
+  8. If the forward repair itself fails (health or probe still red):
+     script prints ROLLBACK NEEDS ATTENTION and exits non-zero with
+     the new release in place but unverified. Escalate to §5 DR
+     restore ONLY when the database itself is unrecoverable;
+     otherwise diagnose from the deploy backup and repair forward
+     (a minimal hotfix release on top of the failed one).
+
+(e) OWNER
+  Owner (Mohammad Hossein Khan Mohammadi) is final authority on
+  whether a failed deploy is rolled back, forward-repaired, or
+  held for a hotfix. ROLLBACK NEEDS ATTENTION escalates to the
+  owner immediately — do not hand-restore an incompatible binary.
+  The deploy script records each outcome in rollback-point.json
+  and appends to /opt/drup/.rollback-points.json.
+
+(f) DO NOT
+  - A deploy rollback NEVER restores the DB over newly received
+    orders. The DB is append-only forward: a rollback restores
+    code and configuration; a forward repair lands a newer release
+    that understands the current schema; a DB restore is DR-only
+    (incident 5) and never happens silently.
+  - Never restore a binary older than the floor ff57367 over the
+    new schema.
+  - Never scp directly over the running bind-mounted binary
+    (ETXTBSY). Upload as server-linux.next, then atomic-rename it
+    into place (os.replace).
+  - Never deploy with one compose file alone; never rm -rf
+    /opt/drup/dist (breaks the nginx bind mount — clean contents
+    only, rm -rf /opt/drup/dist/*); never mv/rename /opt/drup/dist.
+  - Never treat container-up + HTTP 200 as proof the right binary
+    runs — verify the in-container sha.
+  - Never skip the boot gate before a server change, and never skip
+    the write-path probe after one.
+
+================================================================
+KNOWN GAPS (do not close by editing this file — owner answers them)
+================================================================
+  1. D-1 — No staging host. No staging rehearsal of release 89079c1
+     exists; graceful drain is unproven (drain exists as code/config
+     only — GET /api/ready and /api/health 503 when draining,
+     stop_grace_period 30s — never exercised under traffic in any
+     environment); smoke checks were post-deploy prod checks, not
+     staging. CAP-02 D-1 (intended hardware / staging host) UNANSWERED.
+  2. D-6 — DR write-freeze/reconciliation procedure unapproved
+     (incident 5 (d)1). Recovery without lost orders is NOT
+     currently provable; ~24 h RPO loss window is measured.
+  3. Q8 — FIN-014 repair-batch approval authority unanswered
+     (approver + granularity). Until answered, repairs need owner +
+     Haji-Bashi sign-off on the specific batch (incident 2 (d)1).
+  4. FIN-010 — No PSP. No Zarinpal merchant/sandbox access, no
+     adapter, no merchant ID. Live path is manual payment
+     confirmation; VerifyTransaction fails closed. Resume only when
+     access arrives; never fake-closed.
+  5. Backup-key offline copies owed (owner + Haji-Bashi). Until then
+     host loss = all encrypted backups unrecoverable. No off-site
+     copy; no prod backup ever restore-verified.
+  6. Verifier F-1 — Direct TLS to https://sellershow.ir fails at
+     Caddy (zero certs, pre-existing, not a regression); real-user
+     HTTPS presumably via Cloudflare Tunnel — external-network HTTPS
+     check owed as follow-up.
+  7. Also owed post-deploy: healthcheck soak; log-rotation
+     confirmation + per-query line-rate re-measurement.
+  8. FIN-014 Q1 (snapshot producer), Q3 (which writers switch, when),
+     Q4 (canonical settlement writer), Q5 (release-gate threshold +
+     FIN-013 bounds), Q7 (staging host) — unanswered. FIN-011
+     asymmetry stays PINNED (2,500 Toman/case). TEST-02 OPEN pending
+     the owner's F-UP-2 decision.
+
+================================================================
+SOURCES (read these, do not duplicate them)
+================================================================
+  - ~/workspace/go01-evidence-pack.md (§2 rollback, §3 reconciliation,
+    §4 payments, §6 backup, §8 ownership, §9 pending decisions, §10 health)
+  - ~/workspace/go01-staging-assessment.md (staging gap: drain unproven,
+    recovery-without-lost-orders unproven, D-1/D-6 blockers)
+  - ~/workspace/sellersho/docs/operations/rollback-runbook.md (MIG-02)
+  - ~/workspace/sellersho/docs/operations/backup-runbook.md (BAK-01)
+  - ~/workspace/sellersho/docs/operations/finance-invariants-runbook.md
+    (FIN-013 §2 escalation, §4 oracle, §6 unknown queue, §8 FIN-014)
+  - ~/workspace/sellersho/docs/operations/inventory-reconciliation.md
+    (INV-12 §3 checks, §4 rollback note, §5 blocked dry-run)
+  - ~/workspace/sellersho/docs/operations/credential-lifecycle.md
+    (SEC-01: TAPIN rotation, PSP pair rule)
+  - scripts/deploy_remote.py (deploy + schema-aware rollback)
+  - scripts/fin013-oracle.sql; scripts/fin014-release-gate.sh;
+    backend/cmd/fin014-report; backend/cmd/fin014-apply
+  - scripts/backup/backup-entrypoint.sh; scripts/backup/restore-verify.sh

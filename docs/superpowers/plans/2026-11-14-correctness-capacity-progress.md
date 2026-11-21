@@ -46,7 +46,7 @@ DONE refers to the task-specific local gate described below. It does not certify
 | FIN-008 | DONE | f5203a4 | [Treasury cash evidence](../../../backend/migrations/202611180001_treasury_cash_evidence.up.sql) |
 | FIN-011 | DONE | d231813 | Completion section below (gates G-01…G-12) |
 | FIN-009 | DONE | 85d91f3 | Completion section below (gates G-01…G-16) |
-| FIN-013 | TODO | — | — |
+| FIN-013 | DONE | f4937f4 | [Finance invariants runbook](../../operations/finance-invariants-runbook.md) |
 | CHECKOUT-02 | DONE | 9122e4de | Completion section below (gates G-01…G-15) |
 | TEST-02 | Checkpoint OPEN | 8302d23 / 1ef7092 | [Frontend baseline](../../frontend-test-baseline.md) |
 | OPS-01 | DONE | 7ee671b | [Process lifecycle](../../operations/process-lifecycle.md) |

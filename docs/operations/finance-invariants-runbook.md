@@ -283,3 +283,174 @@ investigate a finance alert. Error logs stay on.
 
 When in doubt, escalate with the numbers rather than acting: a
 wrong compensating entry is worse than a slow one.
+
+## 8. FIN-014 — historical reconciliation and staged financial cutover
+
+FIN-014 is the dry-run tooling for the staged cutover. **Cutover is
+NOT READY** (audit verdict): the report/proposal/apply tooling below
+is the deliverable; no live writer has switched, and no switch is
+built in this round. The switch point is the named gate
+`FIN014CutoverGate` (`backend/internal/repository/fin014_repair_batch.go`);
+which writers move and when is owner decision Q3 (relative to
+FIN-010) and is still unanswered. Do not invent a switch date.
+
+### 8.1 Dry-run procedure
+
+1. Produce the snapshot (Q1): the snapshot producer restores a
+   backup to a disposable database and scrubs it — see
+   `scripts/fin014-snapshot-scrub.sh --help` and the spec in §8.5.
+   Never run the report against production data.
+2. Generate the report (read-only, provably so — two runs are
+   byte-identical and write nothing):
+   `FIN014_DATABASE_URL=postgres://.../sellersho_test_<hex> go run ./backend/cmd/fin014-report`
+   The report classifies every row into one of 8 defect classes
+   with `cash_basis` (`verified_gateway` / `simulated` /
+   `unverified` / `unknown`) and confidence (`certain` /
+   `ambiguous` / `unresolved`). It carries `fin011Pinned: true` —
+   the known-open FIN-011 referral asymmetry (oracle check 7:
+   reversal 5000 vs conserved 7500, 2500 Toman/case undercount),
+   PINNED, never edited away.
+3. Propose a repair batch from the report (content-derived
+   operation IDs; re-proposing the same report regenerates the same
+   IDs and collides instead of duplicating). Certain defects get
+   exactly one operation; ambiguous cases get a held operation (or
+   none) with a reason. No cash-moving operation is proposed for
+   anything but `verified_gateway`.
+4. Review the batch (see §8.2), then apply it — bounded (25/run),
+   resumable, predicate-checked in-transaction:
+   `FIN014_DATABASE_URL=... go run ./backend/cmd/fin014-apply -batch <batch-id>`
+   The apply command requires the Q8 approval record in the batch
+   row; without it, it refuses and says so.
+5. Rerun the report (the rerun proof): the second report must have
+   zero remaining certain defects among the apply-eligible classes,
+   and a second apply must write zero new rows. Held-certain
+   defects persist with documented reasons (settlement items — Q4
+   canonical writer unanswered, report-only; coupon-1 — raising
+   the cap would ratify the oversubscription; a D4 dispute release
+   the release path refuses).
+
+### 8.2 Batch review / approval flow (Q8)
+
+- A batch is stored in `proposed` status. Nothing applies until
+  the batch row carries `approved_by` + `approved_at` (status
+  `approved`/`applying`). The approver role and the approval
+  granularity are named by the owner (Q8) — until the owner names
+  them, the apply command refuses and the batch waits. Do not
+  invent an approver or hardcode one.
+- Review checklist for the approver: every operation's
+  expected-before predicates match the live rows; every amount is
+  in Toman and inside the FIN-012 bounds; no operation touches a
+  `held` case; settlement-item repairs are report-only (Q4) and
+  must not appear as applied operations; class-8 rows are
+  lookup-only until FIN-010 lands (no PSP adapter — never simulate
+  PSP proof).
+- A failed operation may be re-proposed with fresh predicates once
+  the underlying data is fixed; the content-derived ID still
+  identifies the same repair, and re-proposal cannot duplicate an
+  applied one.
+- Cash-basis semantics (do not misread the empty payout-action
+  set): the proposal validator's payout-action gate set is
+  intentionally empty — no payout-moving action is proposed at
+  all — and parcel reversals are proposed with cash_basis
+  `unknown` because they reverse a recorded debit, bounded by it,
+  and claim no funding. A future reviewer must not read the empty
+  set as a missing gate.
+
+### 8.3 Cutover steps (when Q3 lands — not before)
+
+1. Owner answers Q3 (which writers switch, when, relative to
+   FIN-010) and Q8 (approval authority). Record both here.
+2. Wire `FIN014CutoverGate` (config flag + writer fence following
+   the FIN-005/FIN-007 `set_config` pattern) for exactly the
+   writers Q3 names.
+3. Run the dry-run procedure (§8.1) on a fresh snapshot; the
+   release gate (§8.4) must pass.
+4. Switch the writers; rerun the report; the cutover is complete
+   only when the rerun proof passes on the switched writers.
+
+### 8.4 Release gate
+
+`scripts/fin014-release-gate.sh --report <report.json>
+[--max-certain N] [--marker <path>]` evaluates one report JSON.
+It exits 0 and writes the success marker only when
+`certainCount <= max-certain`; otherwise it exits non-zero and
+writes **no** marker (a stale marker is deleted at the start of
+every run, so a failure never leaves a passing marker behind).
+The threshold is owner decision Q5 — **do NOT invent a lax
+allowance**: `--max-certain` defaults to **0** (fail-closed) and
+may be raised only by an explicit parameter. Q5 may set a
+per-class allowance; record it here when it lands.
+
+Release-evidence checklist (attach to every release that touches
+a money path):
+- [ ] Schema version (migration count) and the FIN-014 migration
+      `202611210001` applied (or the release's own floor).
+- [ ] Regression output: oracle regression green except pinned
+      check 7; full finance cohort green; `go build` + `go vet`
+      clean; `gofmt` clean on touched files.
+- [ ] Reconciliation totals: the FIN-014 report JSON (certain /
+      ambiguous / unresolved counts + per-class counts) and the
+      oracle check results for the same snapshot.
+- [ ] Unresolved queue: every unresolved row listed, with the
+      owner of each (lookup-only until FIN-010; never guessed).
+- [ ] Release-gate result: the gate script's exit code + success
+      marker (or the explicit `--max-certain` override, if any,
+      with who authorized it).
+- [ ] Runbook reference: this section (§8).
+
+### 8.5 Disable affected writes if a gate fails / rollback
+
+- If any gate fails (release gate, rerun proof, oracle
+  regression), **freeze the affected writes first**: stop the
+  payout approvals and the refund-reconciliation job for the
+  affected stores, then investigate with the report numbers.
+  Never apply a repair batch to "make the gate pass".
+- Rollback for FIN-014 is forward-repair, never history rewrite:
+  a bad repair is corrected by a new compensating event (a new
+  batch proposed from a fresh report), never by editing or
+  deleting posted ledger entries, receipts, obligations, or
+  snapshots. The repair-batch tables are append-only once applied
+  (`fin014_repair_batches` / `fin014_repair_operations` are
+  immutable after `applied`; only a `failed` operation may be
+  re-proposed with fresh predicates).
+- Migration failure (W9 rehearsal): the W4 migration is additive
+  (EXPAND, compatible); a failure before commit leaves nothing
+  behind, a failure after commit is repaired by a forward
+  migration, never by editing the applied file.
+
+### 8.6 Snapshot spec (Q1 — producer question recorded)
+
+The snapshot itself cannot be produced by the agent (no production
+data is read). The producer (whoever holds the backup) follows
+this procedure; the script is `scripts/fin014-snapshot-scrub.sh`
+(dry-run mode reports what it would scrub on synthetic data first):
+backup → restore to a disposable database → scrub via named column
+transforms → verify row counts per table, no PII patterns remain,
+and the oracle runs as expected → hash + manifest. The scrub
+transforms are named per column in the script; the producer must
+confirm the column list covers every PII-bearing column before
+running it on a real backup. Open producer question (Q1): who runs
+this, and where does the scrubbed snapshot live?
+
+### 8.7 FIN-013 bounds — proposals, not decisions (Q5)
+
+The FIN-013 open bounds are recorded here as PROPOSALS, never as
+decisions: 1-hour unknown-staleness, Q2 lock/queue/pool bounds, Q5
+foreground-debit budget. They become decisions only when the
+finance reviewer confirms numbers; until then the proposals are
+the working values and are labelled as such in every report.
+
+### 8.8 What is still gated (owner input owed)
+
+- Q1 snapshot producer (who runs §8.6, where the snapshot lives).
+- Q3 which writers switch and when (relative to FIN-010).
+- Q4 canonical settlement writer (settlement repairs stay
+  report-only until answered).
+- Q5 release-gate threshold + FIN-013 bounds (§8.7).
+- Q6 FIN-011 follow-up: keep pinned (do not land a fix here).
+- Q7 staging host + REL-02 unblock (gates the staging half of
+  the W9 rehearsal only).
+- Q8 repair-batch approval authority (approver + granularity).
+- Q2 resolved in this change: FIN-004/005/007 are DONE per the
+  audit (not TODO); the progress ledger was fixed (FIN-013
+  TODO → DONE f4937f4).

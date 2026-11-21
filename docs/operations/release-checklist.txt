@@ -167,4 +167,4 @@ No credential values anywhere in this file — key NAMES only (§8).
 
 13. RELEASE STATUS LINE
 ------------------------
-Status: GO-01 acceptance: NOT MET — staging-rehearsal clause failed (see §10); release deployed and verified healthy on 2026-11-21 (commit 89079c1).
+Status: GO-01 CLOSED BY OWNER ACCEPTANCE OF THE STATED GAP (2026-11-21). The staging-rehearsal clause was NOT MET (see §10) and remains unmet; the owner explicitly accepted the gap below in writing and ordered the task closed. Accepted gap (exact): staging rehearsal not performed; no staging host; graceful drain unproven; smoke checks were post-deploy prod checks, not staging; no prod backup restore-verified; recovery without lost orders unproven (~24h RPO window measured); D-1 and D-6 unanswered; accepted by owner on 2026-11-21. Release deployed and verified healthy on 2026-11-21 (commit 89079c1). This is NOT a pass of the staging clause — it is a close with a named, owner-accepted gap.

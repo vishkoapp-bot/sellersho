@@ -58,7 +58,10 @@ export const SellerWalletTab: React.FC = () => {
 
   // Derive actual balances based on real released vs pending orders
   // Live kn: server orders when fetched, otherwise context orders.
-  const storeOrders = serverOrders ?? orders.filter((o) => o.storeId === currentStore.id);
+  // Defence in depth (C1): getStoreOrders unwraps the envelope, but never
+  // let a non-array server payload reach .filter again — fall back to the
+  // context orders instead of crashing the whole tab.
+  const storeOrders = (Array.isArray(serverOrders) ? serverOrders : null) ?? orders.filter((o) => o.storeId === currentStore.id);
   const storePayouts = payoutRequests.filter((p) => p.storeId === currentStore.id);
 
   const releasedOrders = storeOrders.filter((o) => o.profitReleased);

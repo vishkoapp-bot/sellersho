@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 import './utils/webVitals'; // OBS-01 (D-08): browser-local web-vitals measurement, no network send.
 
@@ -15,7 +16,7 @@ async function bootstrap() {
       if (path === '/' || path.startsWith('/product/')) window.history.replaceState(null, '', `${base}${path === '/' ? '' : path}${window.location.search}${window.location.hash}`);
       else if (path.startsWith('/store/') && path !== base && !path.startsWith(`${base}/`)) window.history.replaceState(null, '', base);
     } else if (response.status !== 404) throw new Error('فروشگاه در حال حاضر در دسترس نیست.');
-    root.render(<React.StrictMode><App /></React.StrictMode>);
+    root.render(<React.StrictMode><ErrorBoundary><App /></ErrorBoundary></React.StrictMode>);
   } catch {
     root.render(<main dir="rtl" className="mx-auto max-w-md space-y-4 p-8 text-center"><p>ارتباط با فروشگاه برقرار نشد.</p><button onClick={() => window.location.reload()} className="rounded-xl bg-teal-700 px-4 py-2 text-white">تلاش مجدد</button></main>);
   }

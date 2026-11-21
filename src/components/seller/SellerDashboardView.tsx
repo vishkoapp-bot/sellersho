@@ -52,6 +52,7 @@ import { SellerSearchInsightTab } from './SellerSearchInsightTab';
 import { SellerDiscountCampaignsTab } from './SellerDiscountCampaignsTab';
 import { SellerDiscountTab } from './SellerDiscountTab';
 import { SellerSubscribersTab } from './SellerSubscribersTab';
+import { ErrorBoundary } from '../ErrorBoundary';
 import { isSellerDashboardTab } from '../../utils/routing';
 import { Users, ShieldCheck } from 'lucide-react';
 
@@ -542,6 +543,10 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         {/* Main Tab Content */}
         <main className="flex-1 min-w-0">
           <div className="p-3.5 lg:p-0">
+          {/* Batch 1 (C1/C6): a tab that throws must render an inline error
+              card with retry, never a blank app. key={activeTab} resets the
+              boundary on tab switch; retry also returns to the overview. */}
+          <ErrorBoundary key={activeTab} title={activeTabLabel} onReset={() => setActiveTab('overview')}>
         {activeTab === 'overview' && (
         <section className="mb-4 space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -578,6 +583,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         {activeTab === 'discount-campaigns' && <SellerDiscountCampaignsTab />}
         {activeTab === 'discount-codes' && <SellerDiscountTab />}
         {activeTab === 'subscribers' && <SellerSubscribersTab onOpenStorefront={onOpenStorefront} />}
+          </ErrorBoundary>
           </div>
         </main>
       </div>

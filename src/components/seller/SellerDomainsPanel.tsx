@@ -1,11 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { apiRequest } from '../../services/apiClient';
 interface Domain { domain: string; storeId: string; verificationToken: string; status: string; approved: boolean; }
+
+// Batch 1 (C6, H1): the live /seller/domains endpoint returns a bare
+// array, but the panel fed the response straight into setDomains and
+// then called domains.filter(...) on render. A single non-array payload
+// (envelope change, null body, error page parsed as JSON) would throw
+// on first mount and — with no error boundary — blank the whole app.
+// Normalise defensively: bare array wins, {domains: [...]} is accepted,
+// anything else becomes [] (empty state, never a throw).
+export const normalizeDomainRows = (data: unknown): Domain[] => {
+  if (Array.isArray(data)) return data as Domain[];
+  if (data && typeof data === 'object' && Array.isArray((data as { domains?: unknown }).domains)) {
+    return (data as { domains: Domain[] }).domains;
+  }
+  return [];
+};
 export const SellerDomainsPanel: React.FC<{ slug: string; storeId: string }> = ({ slug, storeId }) => {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [name, setName] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
-  const load = async () => setDomains(await apiRequest<Domain[]>('/seller/domains', { auth: true }));
-  useEffect(() => { let active = true; apiRequest<Domain[]>('/seller/domains', { auth: true }).then((rows) => { if (active) setDomains(rows); }).catch((e) => { if (active) setError(e.message); }); return () => { active = false; }; }, [slug]);
+  const load = async () => setDomains(normalizeDomainRows(await apiRequest<Domain[]>('/seller/domains', { auth: true })));
+  useEffect(() => { let active = true; apiRequest<Domain[]>('/seller/domains', { auth: true }).then((rows) => { if (active) setDomains(normalizeDomainRows(rows)); }).catch((e) => { if (active) setError(e.message); }); return () => { active = false; }; }, [slug]);
   const run = async (action: () => Promise<unknown>, message: string) => { setBusy(true); setError(''); setNotice(''); try { await action(); await load(); setNotice(message); } catch (e) { setError(e instanceof Error ? e.message : 'درخواست انجام نشد.'); } finally { setBusy(false); } };
   return <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-xs">
     <h3 className="font-bold text-slate-900">دامنهٔ اختصاصی و HTTPS</h3>

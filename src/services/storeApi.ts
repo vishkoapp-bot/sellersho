@@ -292,11 +292,19 @@ export const storeApi = {
     });
   },
 
+  // PERF-02: GET /stores/{slug}/orders returns a paginated envelope
+  // {orders, nextCursor, hasMore, limit}, not a bare array. Unwrap it
+  // here (exactly like getPayouts) so callers always receive an array.
+  // The bare envelope object has no .filter, which crashed the wallet
+  // tab on every mount (C1) and emptied the orders tab (C4).
   getStoreOrders: async (slug: string): Promise<Order[]> => {
-    return apiRequest<Order[]>(`/stores/${encodeURIComponent(slug)}/orders`, {
+    const data: any = await apiRequest(`/stores/${encodeURIComponent(slug)}/orders`, {
       method: 'GET',
       auth: true,
     });
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.orders)) return data.orders;
+    return [];
   },
 
   saveStoreSettings: async (slug: string, config: Record<string, unknown>): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/settings`, { method: 'PUT', auth: true, body: JSON.stringify(config) }),

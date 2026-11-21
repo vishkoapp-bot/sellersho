@@ -3,6 +3,13 @@
 The copied real script runs in an owned directory with fail-closed PowerShell
 command shims. Only its emitted remote scripts reach Bash, with -n (parse only).
 Run: python scripts/test_deploy_server_build.py -v
+
+Docker prerequisite: the frontend-build tests (exercise_frontend_build_phase —
+test_successful_frontend_build_discards_only_generated_dependencies and the
+test_failed_or_incomplete_frontend_build_blocks_the_next_phase subtests) run a
+REAL `docker run ... node:24-alpine` container. Start Docker Desktop before
+running this file, or those tests fail with docker API connection errors
+because the daemon is not reachable. The other tests do not need Docker.
 """
 import json
 import os
@@ -123,7 +130,19 @@ function global:docker { throw 'Local Docker forbidden' }
         delivery = f'python3 "$release/scripts/deploy_remote.py" \'/opt/drup\' \'{COMMIT}\' \'0\' \'0\''
         self.assertIn(delivery, self.release)
         self.assertGreater(self.release.index(delivery), self.release.index('golang:'))
+        # REL-02 R-1: the literal 'release.json' below is the fail-fast guard
+        # deploy.ps1 emits after make_manifest.py (test -f "$release/release.json").
+        # History: the assertion was true when the remote script hand-wrote the
+        # manifest inline (c270fcc); MIG-02 (92fe711) replaced that with the
+        # make_manifest.py invocation and dropped the reference, so the filename
+        # lived only inside make_manifest.py and the assertion could never pass.
+        # The guard must sit after the make_manifest.py invocation and before
+        # deploy_remote.py consumes the manifest.
         self.assertIn('release.json', self.release)
+        self.assertGreater(self.release.index('test -f "$release/release.json"'),
+                           self.release.index('python3 "$release/scripts/release/make_manifest.py"'))
+        self.assertLess(self.release.index('test -f "$release/release.json"'),
+                        self.release.index('python3 "$release/scripts/deploy_remote.py"'))
 
     def test_node_image_supports_actual_locked_puppeteer_engine(self):
         engine = self.lock['packages']['node_modules/puppeteer']['engines']['node']

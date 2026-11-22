@@ -4,14 +4,16 @@ import { storeApi } from './storeApi';
 import { tokenStore } from './apiClient';
 import { financeApi } from './financeApi';
 import { supplierApi } from './supplierApi';
+import { financeOperation } from './financeOperation';
 
-test('real seller finance calls retain operation keys after lost responses and rearm after acknowledged success', async () => {
+async function assertFinanceRetryKeys() {
   for (const [submit,result] of [
     [() => storeApi.purchaseService('finance-retry', 'standard', 'store-one'),{id:'store-one',activePlanId:'standard',amount:890000,durationDays:90,planExpiresAt:'2027-02-01T00:00:00Z'}],
     [() => storeApi.requestPayout('finance-retry', 2000000, 'IR-destination', 'store-one'),{id:'payout-one',storeId:'store-one',amount:2000000,status:'pending'}],
     [() => storeApi.requestEarlyWithdrawal('finance-retry', 2000000, 'IR-destination', 'store-one'),{id:'early-one',storeId:'store-one',grossAmount:2000000,netAmount:1800000,feeAmount:200000,status:'pending'}],
     [() => financeApi.createAdjustment({ targetKind: 'seller', targetId: 'store-one', direction: 'credit', amount: 3000000, reason: 'test' }), { success: true, docId: 'adjust-one' }],
     [() => supplierApi.requestSettlement(2000000, 'IR-destination', '', 'Supplier holder'), { success: true, id: 'supplier-payout', payout_request_id: 'supplier-payout' }],
+    [() => financeOperation('/admin/payments/refund-one/refund', { reason: 'test', amount: 2000000 }, 'admin-refund:refund-one', value => value.success === true && value.status === 'unknown'), { success: true, status: 'unknown', requestedAmountToman: 2000000 }],
   ] as const) {
     const keys: string[] = [];
     let lose = true;
@@ -23,12 +25,19 @@ test('real seller finance calls retain operation keys after lost responses and r
     try {
       await assert.rejects(submit());
       await submit();
-      assert.ok(keys[0], 'actual finance API request needs a durable operation identity');
+      assert.match(keys[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
       assert.equal(keys[0], keys[1]);
       await submit();
       assert.notEqual(keys[1], keys[2], 'acknowledged completion starts a new operation');
     } finally { fetch.mock.restore(); }
   }
+}
+
+test('finance calls retain operation keys after lost responses and rearm after acknowledged success', assertFinanceRetryKeys);
+
+test('finance calls retain canonical UUID keys across retries without secure-context APIs', async t => {
+  t.mock.getter(globalThis, 'crypto', () => ({ randomUUID: undefined, subtle: undefined }) as unknown as Crypto);
+  await assertFinanceRetryKeys();
 });
 
 test('finance retries preserve keys on uncertain HTTP errors; changed payload and session rotate them', async () => {

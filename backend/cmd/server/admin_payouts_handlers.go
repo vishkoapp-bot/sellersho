@@ -133,6 +133,16 @@ func wr69AdminPayments(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/payments/")
 	rest = strings.TrimSuffix(rest, "/")
+	if id, ok := strings.CutSuffix(rest, "/confirm-manual"); ok {
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if t01MethodOnly(w, r, http.MethodPost) {
+			handleAdminConfirmManualPayment(w, r)
+		}
+		return
+	}
 	if !strings.HasSuffix(rest, "/refund") {
 		http.NotFound(w, r)
 		return

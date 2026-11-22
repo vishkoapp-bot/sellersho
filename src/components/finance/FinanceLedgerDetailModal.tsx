@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { financeApi, LedgerEntryDto } from '../../services/financeApi';
+import { financeApi, recentLedgerWindow, LedgerEntryDto } from '../../services/financeApi';
 import { X, Receipt, Printer, AlertCircle, FileText } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -9,26 +9,52 @@ interface Props {
   onClose: () => void;
 }
 
-// Live spec (AdminDashboardView-MERGED.js, Nov 2 18:38 build): fetches
-// GET /finance/ledger when opened and renders the returned rows (bare
-// array). The previous version rendered four hard-coded entries and
-// never called the server.
-export const FinanceLedgerDetailModal: React.FC<Props> = ({ isOpen, onClose }) => {
+type LedgerRequest = { offset: number; cursor?: string };
+
+export const FinanceLedgerDetailModal: React.FC<Props> = ({ isOpen, onClose }) =>
+  isOpen ? <LedgerWindow onClose={onClose} /> : null;
+
+const LedgerWindow: React.FC<Pick<Props, 'onClose'>> = ({ onClose }) => {
   const { formatPrice, toPersianDigits } = useStore();
+  const [openedAt] = useState(() => new Date());
+  const [request, setRequest] = useState<LedgerRequest>({ offset: 0 });
   const [entries, setEntries] = useState<LedgerEntryDto[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string>();
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const requestedPage = useRef(request);
+  const { offset } = request;
+  const { dateFrom, dateTo, limit } = recentLedgerWindow(openedAt, offset);
 
   useEffect(() => {
-    if (!isOpen) return;
-    setLoaded(false);
-    setError(false);
-    financeApi.getLedger()
-      .then((data) => { setEntries(Array.isArray(data) ? data : []); setLoaded(true); })
-      .catch(() => { setError(true); setLoaded(true); });
-  }, [isOpen]);
+    let cancelled = false;
+    financeApi.getLedger({ dateFrom, dateTo, limit, cursor: request.cursor })
+      .then((page) => {
+        if (cancelled || requestedPage.current !== request) return;
+        setEntries(current => request.cursor ? [...current, ...page.entries] : page.entries);
+        setNextCursor(page.hasMore ? page.nextCursor : undefined);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled || requestedPage.current !== request) return;
+        setError(true);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, limit, request]);
 
-  if (!isOpen) return null;
+  const load = (page: LedgerRequest) => {
+    requestedPage.current = page;
+    setLoading(true);
+    setError(false);
+    if (!page.cursor) {
+      setEntries([]);
+      setNextCursor(undefined);
+    }
+    setRequest(page);
+  };
+
+  const displayDate = (date: string) => new Date(date).toLocaleDateString('fa-IR', { timeZone: 'UTC' });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
@@ -44,29 +70,33 @@ export const FinanceLedgerDetailModal: React.FC<Props> = ({ isOpen, onClose }) =
             </div>
             <div>
               <h3 className="text-xs font-bold text-slate-900">دفتر روزنامه و اسناد حسابداری دوبل</h3>
-              <span className="text-[10px] text-slate-400 block">{loaded && !error ? `${toPersianDigits(entries.length)} سند ثبت‌شده` : 'تراز کل اسناد و ثبت‌های تفکیک‌شده مالی'}</span>
+              <span className="text-[10px] text-slate-500 block">
+                {offset === 0 ? 'اسناد ۳۱ روز اخیر' : 'اسناد بازهٔ ۳۱ روزه'} · {displayDate(dateFrom)} تا {displayDate(dateTo)}
+              </span>
+              {entries.length > 0 && <span className="text-[10px] text-slate-500 block">{toPersianDigits(entries.length)} سند نمایش داده شده</span>}
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
+          <button type="button" aria-label="بستن دفتر کل" onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
             <X className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
         <div className="overflow-y-auto no-scrollbar space-y-2 text-xs flex-1">
-          {!loaded && (
+          {loading && entries.length === 0 && (
             <div className="p-4 text-center text-[11px] text-slate-400">در حال بارگذاری اسناد…</div>
           )}
-          {loaded && error && (
+          {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-700 text-[11px]">
               <AlertCircle className="w-4 h-4 shrink-0" strokeWidth={1.5} />
               <span>اسناد دفتر کل بارگذاری نشد.</span>
+              <button type="button" onClick={() => load({ ...request })} className="mr-auto underline">تلاش دوباره</button>
             </div>
           )}
-          {loaded && !error && entries.length === 0 && (
+          {!loading && !error && entries.length === 0 && (
             <div className="p-6 text-center space-y-2">
               <FileText className="w-8 h-8 text-slate-300 mx-auto" strokeWidth={1.5} />
               <p className="text-xs font-bold text-slate-600">داده‌ای ثبت نشده</p>
-              <p className="text-[10px] text-slate-400 leading-relaxed">تاکنون هیچ سند حسابداری در دفتر کل ثبت نشده است.</p>
+              <p className="text-[10px] text-slate-400 leading-relaxed">در این بازه هیچ سند حسابداری ثبت نشده است.</p>
             </div>
           )}
           {entries.map((entry) => (
@@ -85,6 +115,18 @@ export const FinanceLedgerDetailModal: React.FC<Props> = ({ isOpen, onClose }) =
               </div>
             </div>
           ))}
+          {!error && nextCursor && (
+            <button type="button" disabled={loading} onClick={() => load({ offset, cursor: nextCursor })} className="w-full py-2 bg-slate-100 rounded-lg disabled:opacity-50">
+              {loading ? 'در حال بارگذاری…' : 'بارگذاری اسناد بیشتر'}
+            </button>
+          )}
+        </div>
+
+        <div className="flex justify-between border-t border-slate-100 pt-2">
+          <button type="button" onClick={() => load({ offset: offset + 1 })} className="text-xs text-teal-700">بازهٔ قدیمی‌تر</button>
+          {offset > 0 && (
+            <button type="button" onClick={() => load({ offset: offset - 1 })} className="text-xs text-teal-700">بازهٔ جدیدتر</button>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
@@ -93,7 +135,7 @@ export const FinanceLedgerDetailModal: React.FC<Props> = ({ isOpen, onClose }) =
             className="py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl flex items-center justify-center gap-1"
           >
             <Printer className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>چاپ تراز</span>
+            <span>چاپ اسناد نمایش‌داده‌شده</span>
           </button>
           <button
             onClick={onClose}

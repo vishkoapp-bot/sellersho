@@ -173,7 +173,7 @@ func TestPerf02SellerReportStartOnlyWindowReturns400(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/api/v1/stores/"+store.Slug+"/report"+query, nil)
 		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: owner, Role: "seller"}))
 		w := httptest.NewRecorder()
-		handleSellerStore(w, r, repo, fin, store.Slug, "report")
+		handleSellerStore(w, r, repo, fin, store.Slug, "report", "")
 		return w
 	}
 	daysAgo := func(n int) string { return time.Now().UTC().AddDate(0, 0, -n).Format("2006-01-02") }

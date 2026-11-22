@@ -208,6 +208,7 @@ export const SellerWalletTab: React.FC = () => {
                 {formatPrice(availableBalance)}
                 <span className="text-xs font-normal text-slate-300 mr-1">تومان</span>
               </span>
+              <span className="block text-[10px] text-slate-300">سود آزادشده پس از پایان مهلت ۷ روزهٔ مرجوعی</span>
             </div>
           </div>
           <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold">
@@ -223,7 +224,7 @@ export const SellerWalletTab: React.FC = () => {
             title="بزن تا سفارش‌هایش را ببینی"
           >
             <div className="flex items-center justify-between text-slate-400">
-              <span>سود سفارش‌های در راه:</span>
+              <span>سود سفارش‌های در راه (برآورد محلی):</span>
               <Eye className="w-3 h-3 text-amber-300"  strokeWidth={1.5}/>
             </div>
             <span className="font-bold text-amber-300 block text-xs mt-0.5">{formatPrice(pendingBalance)} ت</span>

@@ -52,7 +52,7 @@ func TestSellerFinanceCommandReplay(t *testing.T) {
 		r.Header.Set("Idempotency-Key", key)
 		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: owner, Role: "seller"}))
 		w := httptest.NewRecorder()
-		handleSellerStore(w, r, stores, fin, storeID, action)
+		handleSellerStore(w, r, stores, fin, storeID, action, "")
 		return w
 	}
 	for _, tc := range []struct{ action, body, changed, table string }{

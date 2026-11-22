@@ -64,7 +64,7 @@ func sellerError(w http.ResponseWriter, err error) {
 	}
 }
 
-func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository, fin *repository.FinanceRepository, slug, action string) {
+func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository, fin *repository.FinanceRepository, slug, action, idOverride string) {
 	w.Header().Set("Content-Type", "application/json")
 	claims := r.Context().Value(userClaimsKey).(*auth.UserClaims)
 	store, err := repo.OwnedStore(r.Context(), claims.UserID, slug)
@@ -294,19 +294,18 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 			return
 		}
 		if r.Method == http.MethodDelete {
-			// G8: DELETE on the collection with {id} in the body
-			// (same shape as the PUT toggle above — the handler
-			// receives no id path part). The 0-use guard lives in
-			// DeleteDiscountCode, server-side; a used code is 409
-			// and the row survives.
-			var payload struct {
-				ID string `json:"id"`
+			id := idOverride
+			if id == "" {
+				var payload struct {
+					ID string `json:"id"`
+				}
+				if decodeMoneyJSON(r.Body, &payload) != nil || payload.ID == "" {
+					http.Error(w, `{"error":"Invalid request"}`, http.StatusBadRequest)
+					return
+				}
+				id = payload.ID
 			}
-			if decodeMoneyJSON(r.Body, &payload) != nil || payload.ID == "" {
-				http.Error(w, `{"error":"Invalid request"}`, 400)
-				return
-			}
-			if err := repo.DeleteDiscountCode(r.Context(), store.ID, payload.ID); err != nil {
+			if err := repo.DeleteDiscountCode(r.Context(), store.ID, id); err != nil {
 				if errors.Is(err, repository.ErrDiscountCodeUsed) {
 					http.Error(w, `{"error":"Discount code has been used and cannot be deleted"}`, http.StatusConflict)
 					return

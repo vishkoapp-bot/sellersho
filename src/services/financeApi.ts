@@ -14,6 +14,40 @@ export interface LedgerEntryDto {
   createdAt: string;
 }
 
+export interface LedgerPage {
+  entries: LedgerEntryDto[];
+  nextCursor?: string;
+  hasMore: boolean;
+  limit: number;
+}
+
+export function recentLedgerWindow(now = new Date(), offset = 0) {
+  const end = new Date(now);
+  end.setUTCDate(end.getUTCDate() - offset * 31);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 30);
+  return { dateFrom: start.toISOString().slice(0, 10), dateTo: end.toISOString().slice(0, 10), limit: 100 };
+}
+
+export interface PendingPaymentOrder {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  amountToman: number;
+  paymentStatus: string;
+  status: string;
+  createdAt: string;
+  ageHours: number;
+}
+
+export interface PendingPaymentsPage {
+  success: boolean;
+  orders: PendingPaymentOrder[];
+  nextCursor?: string;
+  hasMore: boolean;
+  limit: number;
+}
+
 export interface DisputeOutcome {
  disputeId: string; orderId: string; action: string; responsibleParty: string;
  claimAmount: number; decisionTime?: string; replay: boolean; orderStatus: string;
@@ -73,20 +107,20 @@ export interface ResolveDisputePayload {
 export const financeApi = {
   // PERF-02 Step 9: the ledger endpoint now pages (envelope with
   // `entries`); callers that need more than the first page pass a cursor.
-  getLedger: async (params?: { limit?: number; cursor?: string; dateFrom?: string; dateTo?: string }): Promise<LedgerEntryDto[]> => {
+  getLedger: async (params?: { limit?: number; cursor?: string; dateFrom?: string; dateTo?: string }): Promise<LedgerPage> => {
     const query = new URLSearchParams();
     if (params?.limit) query.set('limit', String(params.limit));
     if (params?.cursor) query.set('cursor', params.cursor);
     if (params?.dateFrom) query.set('dateFrom', params.dateFrom);
     if (params?.dateTo) query.set('dateTo', params.dateTo);
     const suffix = query.toString() ? `?${query}` : '';
-    const res = await apiRequest<any>(`/finance/ledger${suffix}`, {
+    const res = await apiRequest<LedgerPage | LedgerEntryDto[]>(`/finance/ledger${suffix}`, {
       method: 'GET',
       auth: true,
     });
-    if (Array.isArray(res)) return res;
-    if (Array.isArray(res?.entries)) return res.entries;
-    return [];
+    if (Array.isArray(res)) return { entries: res, hasMore: false, limit: params?.limit ?? 50 };
+    if (Array.isArray(res?.entries)) return res;
+    throw new Error('اسناد دفتر کل بارگذاری نشد.');
   },
 
   getDisputes: async (): Promise<DisputeDto[]> => {
@@ -139,6 +173,19 @@ export const financeApi = {
       method: 'GET',
       auth: true,
     });
+  },
+
+  getPendingPayments: async (cursor?: string): Promise<PendingPaymentsPage> => {
+    const limit = 50;
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set('cursor', cursor);
+    const page = await apiRequest<PendingPaymentsPage | PendingPaymentOrder[]>(`/admin/orders/pending-payment?${query}`, {
+      method: 'GET',
+      auth: true,
+    });
+    if (Array.isArray(page)) return { success: true, orders: page, hasMore: false, limit };
+    if (page?.success === true && Array.isArray(page.orders)) return page;
+    throw new Error('سفارش‌های پرداخت‌نشده بارگذاری نشد.');
   },
 
   getPendingSettlements: async (): Promise<PendingSettlementDto[]> => {

@@ -1,4 +1,5 @@
 import type { CreateOrderPayload } from './orderApi';
+import { fingerprintHash, newUuid } from './uuid';
 
 export interface CheckoutAttempt {
   scope: string;
@@ -59,15 +60,16 @@ export const readCheckoutAttempt = (scope: string, isCurrent: () => boolean) => 
 
 export async function claimCheckoutAttempt(scope: string, payload: CreateOrderPayload, isCurrent: () => boolean): Promise<CheckoutAttempt> {
   requireCurrent(isCurrent);
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(normalizeCheckoutPayload(payload))));
-  const fingerprint = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+  // This fingerprint stays in IndexedDB. The server independently hashes
+  // the order payload and rejects mismatched replays of the same attempt ID.
+  const fingerprint = await fingerprintHash(JSON.stringify(normalizeCheckoutPayload(payload)));
   requireCurrent(isCurrent);
   return operate(scope, isCurrent, (current, store) => {
     if (current) {
       if (current.fingerprint !== fingerprint) throw new Error(CHECKOUT_FINGERPRINT_CONFLICT_MESSAGE);
       return current;
     }
-    const attempt: CheckoutAttempt = { scope, id: crypto.randomUUID(), fingerprint, state: 'open' };
+    const attempt: CheckoutAttempt = { scope, id: newUuid(), fingerprint, state: 'open' };
     store.add(attempt); return attempt;
   });
 }

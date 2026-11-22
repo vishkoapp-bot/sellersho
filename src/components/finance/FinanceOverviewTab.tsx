@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { FinanceLedgerDetailModal } from './FinanceLedgerDetailModal';
 import { Sparkline } from './Sparkline';
-import { financeApi, LedgerEntryDto, CashPositionDto, ProfitLocksDto, PendingSettlementDto } from '../../services/financeApi';
+import { ApiError } from '../../services/apiClient';
+import { financeApi, recentLedgerWindow, LedgerEntryDto, CashPositionDto, ProfitLocksDto, PendingSettlementDto } from '../../services/financeApi';
 import { BadgePercent, DollarSign, ArrowDownToLine, ShieldCheck, CheckCircle2, FileText, AlertCircle } from 'lucide-react';
 
 interface Props {
@@ -10,7 +11,7 @@ interface Props {
 }
 
 // Live spec (AdminDashboardView-MERGED.js, Nov 2 18:38 build): this tab
-// renders ONLY from server data — GET /finance/ledger (bare array),
+// renders ONLY from server data — GET /finance/ledger (paged),
 // GET /finance/treasury/cash-position?days= (success-wrapped),
 // GET /finance/settlements/pending ({settlements}) and
 // GET /finance/treasury/profit-locks (success-wrapped). The previous
@@ -26,10 +27,30 @@ interface Props {
 // never silent zero-fill. Trend days with available:false render as a
 // gap ("—"), never as 0.
 
+type TreasuryCashError = 'paid-500' | 'principal-409' | 'generic';
+
+export function classifyTreasuryCashError(error: unknown): TreasuryCashError {
+  if (error instanceof ApiError) {
+    if (error.status === 409) return 'principal-409';
+    const { error: message, reconciliationRequired } = error.body ?? {};
+    if (error.status === 500 && reconciliationRequired === true &&
+        typeof message === 'string' && message.includes("undefined status 'paid'")) {
+      return 'paid-500';
+    }
+  }
+  return 'generic';
+}
+
+const cashErrorMessages: Record<TreasuryCashError, string> = {
+  'principal-409': 'تطبیق مالی لازم است: مبدأ مالی یک یا چند سفارش مشخص نیست. مبلغی نمایش داده نمی‌شود.',
+  'paid-500': 'سفارش‌های پرداخت قدیمی با وضعیت نامشخص («paid») نیازمند بازطبقه‌بندی‌اند؛ تا تصمیم مالک، هیچ عددی نمایش داده نمی‌شود.',
+  generic: 'خطا در بارگذاری موقعیت نقدینگی.',
+};
+
 export interface TreasuryCashCardProps {
   cash: CashPositionDto | null;
   cashLoaded: boolean;
-  cashError: boolean;
+  cashError: TreasuryCashError | null;
   cashDays: number;
   onCashDaysChange: (days: number) => void;
   formatPrice: (n: number) => string;
@@ -106,7 +127,12 @@ export const TreasuryCashCard: React.FC<TreasuryCashCardProps> = ({ cash, cashLo
 
   let body: React.ReactNode;
   if (cashError) {
-    body = <div className="p-3.5 text-[11px] text-rose-600">خطا در بارگذاری موقعیت نقدینگی.</div>;
+    body = (
+      <div role="alert" className="p-3.5 text-[11px] text-rose-600">
+        {cashError === 'principal-409' && <AlertCircle aria-hidden="true" className="inline w-3.5 h-3.5 ml-1" />}
+        {cashErrorMessages[cashError]}
+      </div>
+    );
   } else if (!cashLoaded) {
     body = <div className="p-3.5 text-[11px] text-slate-400">در حال محاسبه از داده‌های واقعی…</div>;
   } else if (!cash) {
@@ -289,9 +315,12 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const [ledgerError, setLedgerError] = useState(false);
 
   const [cashDays, setCashDays] = useState(30);
-  const [cash, setCash] = useState<CashPositionDto | null>(null);
-  const [cashLoaded, setCashLoaded] = useState(false);
-  const [cashError, setCashError] = useState(false);
+  const [cashResponse, setCashResponse] = useState<{
+    days: number;
+    cash: CashPositionDto | null;
+    error: TreasuryCashError | null;
+  } | null>(null);
+  const currentCash = cashResponse?.days === cashDays ? cashResponse : null;
 
   const [pending, setPending] = useState<PendingSettlementDto[]>([]);
   const [pendingLoaded, setPendingLoaded] = useState(false);
@@ -300,20 +329,23 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const [locksError, setLocksError] = useState(false);
 
   useEffect(() => {
-    setCashLoaded(false);
-    setCashError(false);
+    let cancelled = false;
     financeApi.getCashPosition(cashDays)
       .then((res) => {
-        if (res && res.success) { setCash(res); }
-        else { setCash(null); setCashError(true); }
-        setCashLoaded(true);
+        if (cancelled) return;
+        setCashResponse(res?.success === true
+          ? { days: cashDays, cash: res, error: null }
+          : { days: cashDays, cash: null, error: 'generic' });
       })
-      .catch(() => { setCashError(true); setCashLoaded(true); });
+      .catch((error: unknown) => {
+        if (!cancelled) setCashResponse({ days: cashDays, cash: null, error: classifyTreasuryCashError(error) });
+      });
+    return () => { cancelled = true; };
   }, [cashDays]);
 
   useEffect(() => {
-    financeApi.getLedger()
-      .then((data) => { setLedger(Array.isArray(data) ? data : []); setLedgerLoaded(true); })
+    financeApi.getLedger(recentLedgerWindow())
+      .then(({ entries }) => { setLedger(entries); setLedgerLoaded(true); })
       .catch(() => { setLedgerError(true); setLedgerLoaded(true); });
     financeApi.getPendingSettlements()
       .then((data) => { setPending(data); setPendingLoaded(true); })
@@ -346,9 +378,8 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
       {/* Live help explainer */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-3.5 space-y-1">
         <h3 className="text-xs font-bold text-slate-800">تراز دفتر کل یعنی چه؟</h3>
-        <p className="text-[11px] text-slate-600 leading-relaxed">اینجا تصویر کلی پول پلتفرم را می‌بینی: چقدر پول وارد شده، چقدر به فروشنده‌ها و تأمین‌کننده‌ها بدهکاریم و چقدر از پول را می‌توانیم با خیال راحت خرج کنیم. حواست بیشتر به «مبلغ قابل خرج‌کرد امن» باشد و اگر تراز دفتر کل صفر نبود، اول همان مغایرت را بررسی کن.</p>
-        <p className="text-[10px] text-slate-500 leading-relaxed">در حسابداری دوبل، جمع بدهکارها و بستانکارها باید دقیقاً برابر باشد. اگر عدد «مغایرت باز» صفر نباشد یعنی یک سند ناقص یا اشتباه ثبت شده و تا اصلاحش نباید به عددهای این صفحه اعتماد کامل کرد.</p>
-        <p className="text-[10px] text-slate-400 leading-relaxed">مثال: اگر ورودی شاپرک ۱۰ میلیون است ولی فقط ۹ میلیون سند خروجی داری، ۱ میلیون مغایرت داری و باید سندی که جا افتاده را پیدا کنی.</p>
+        <p className="text-[11px] text-slate-600 leading-relaxed">اینجا تصویر کلی پول پلتفرم را می‌بینی: چقدر پول وارد شده، چقدر به فروشنده‌ها و تأمین‌کننده‌ها بدهکاریم و چقدر از پول را می‌توانیم با خیال راحت خرج کنیم. حواست بیشتر به «مبلغ قابل خرج‌کرد امن» باشد.</p>
+        <p className="text-[10px] text-slate-500 leading-relaxed">در حسابداری دوبل، جمع بدهکارها و بستانکارها باید دقیقاً برابر باشد. اختلاف نمایش‌داده‌شده فقط بر اساس اسناد همین صفحه محاسبه می‌شود.</p>
       </div>
 
       {/* 1. Header Card */}
@@ -363,12 +394,12 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
                 <span>دفتر مالی کل و تطبیق اسناد</span>
                 {balanced && (
                   <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.2 rounded-full font-bold">
-                    تراز متوازن
+                    تراز این صفحه متوازن است
                   </span>
                 )}
               </h2>
               <span className="text-[10px] text-slate-400 block mt-0.5">
-                حسابداری دوبل، تطبیق درگاه شاپرک و تسویه‌های شبا
+                بر اساس حداکثر ۱۰۰ سند از ۳۱ روز اخیر
               </span>
             </div>
           </div>
@@ -383,8 +414,8 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
             <span>داده‌ای ثبت نشده</span>
           ) : (
             <>
-              <span>وضعیت تطبیق بانکی: <strong className="text-emerald-400">{toPersianDigits(ledger.length)} سند</strong></span>
-              <span>مغایرت باز: <strong className="text-white">{formatPrice(imbalance)} تومان</strong></span>
+              <span>اسناد این صفحه: <strong className="text-emerald-400">{toPersianDigits(ledger.length)} سند</strong></span>
+              <span>اختلاف بدهکار و بستانکار این صفحه: <strong className="text-white">{formatPrice(imbalance)} تومان</strong></span>
             </>
           )}
         </div>
@@ -399,11 +430,15 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
 
       {/* 2. Treasury cash position */}
       <TreasuryCashCard
-        cash={cash}
-        cashLoaded={cashLoaded}
-        cashError={cashError}
+        cash={currentCash?.cash ?? null}
+        cashLoaded={currentCash !== null}
+        cashError={currentCash?.error ?? null}
         cashDays={cashDays}
-        onCashDaysChange={setCashDays}
+        onCashDaysChange={(days) => {
+          if (days === cashDays) return;
+          setCashResponse(null);
+          setCashDays(days);
+        }}
         formatPrice={formatPrice}
         toPersianDigits={toPersianDigits}
       />
@@ -427,7 +462,7 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           <div className="text-sm font-extrabold text-slate-900">
             {ledgerValue(shaparakIn)} <span className="text-[9px] font-normal text-slate-500">تومان</span>
           </div>
-          <span className="text-[9px] text-blue-600 font-bold block mt-1">تراکنش‌های تأییدشده در دفتر کل</span>
+          <span className="text-[9px] text-blue-600 font-bold block mt-1">بر اساس حداکثر ۱۰۰ سند از ۳۱ روز اخیر</span>
         </div>
 
         <PendingSettlementsCard
@@ -446,7 +481,7 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           <div className="text-sm font-extrabold text-slate-900">
             {ledgerLoaded && !ledgerError ? <>{toPersianDigits(ledger.length)} <span className="text-[9px] font-normal text-slate-500">سند</span></> : <span className="text-[11px] font-medium text-slate-400">—</span>}
           </div>
-          <span className="text-[9px] text-purple-600 font-medium block mt-1">ثبت‌های دوبل حسابداری</span>
+          <span className="text-[9px] text-purple-600 font-medium block mt-1">حداکثر ۱۰۰ سند از ۳۱ روز اخیر</span>
         </div>
 
         <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs">
@@ -457,7 +492,7 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           <div className="text-sm font-extrabold text-emerald-600">
             {ledgerValue(shaparakOut)} <span className="text-[9px] font-normal text-slate-500">تومان</span>
           </div>
-          <span className="text-[9px] text-emerald-600 font-bold block mt-1">حواله‌های قطعی پایا</span>
+          <span className="text-[9px] text-emerald-600 font-bold block mt-1">بر اساس حداکثر ۱۰۰ سند از ۳۱ روز اخیر</span>
         </div>
       </div>
 
@@ -492,7 +527,7 @@ export const FinanceOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
         className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5"
       >
         <FileText className="w-4 h-4 text-teal-400" strokeWidth={1.5} />
-        <span>مشاهده تراز کامل دفتر کل و اسناد روزنامه</span>
+        <span>مشاهده اسناد روزنامه و دفتر کل</span>
       </button>
 
       <FinanceLedgerDetailModal

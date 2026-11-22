@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Merge-phase backend: seller analytics and search insight reshaped
@@ -108,7 +110,14 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 
 	// Paid orders only; paid-then-cancelled rows (refund_pending)
 	// are not sales.
-	paid := `payment_status = 'paid' AND status != 'cancelled'`
+	const paid = `o.payment_status = 'paid' AND o.status != 'cancelled'`
+	today := t01TehranDay(time.Now())
+	start, end := today.AddDate(0, 0, -29), today.AddDate(0, 0, 1)
+	previousStart := start.AddDate(0, 0, -30)
+	loc := today.Location().String()
+	window := func(column, cast string, offset int) string {
+		return fmt.Sprintf(" AND %s >= $%d::%s AND %s < $%d::%s", column, offset+1, cast, column, offset+2, cast)
+	}
 	type periodVals struct {
 		revenue int64
 		orders  int64
@@ -120,28 +129,32 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 		}
 		return v.revenue / v.orders
 	}
-	period := func(window string) (periodVals, error) {
+	period := func(bounds ...time.Time) (periodVals, error) {
 		var v periodVals
 		if len(storeIDs) == 0 {
 			return v, nil
 		}
 		ph, args := t01MergeInClause(storeIDs)
 		q := `SELECT COUNT(*), COALESCE(SUM(payable_amount), 0), COALESCE(SUM(dropshipper_profit), 0)
-			FROM orders WHERE store_id IN (` + ph + `) AND ` + paid + window
+			FROM orders o WHERE o.store_id IN (` + ph + `) AND ` + paid
+		if len(bounds) > 0 {
+			q += window("o.created_at", "timestamptz", len(args))
+			args = append(args, bounds[0], bounds[1])
+		}
 		err := db.QueryRowContext(ctx, q, args...).Scan(&v.orders, &v.revenue, &v.profit)
 		return v, err
 	}
-	total, err := period("")
+	total, err := period()
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	current, err := period(` AND created_at >= NOW() - INTERVAL '30 days'`)
+	current, err := period(start, end)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	previous, err := period(` AND created_at >= NOW() - INTERVAL '60 days' AND created_at < NOW() - INTERVAL '30 days'`)
+	previous, err := period(previousStart, start)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -151,8 +164,8 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 	if t01TableExists(ctx, db, "store_view_daily") && len(slugs) > 0 {
 		ph, args := t01MergeInClause(slugs)
 		_ = db.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(views), 0) FROM store_view_daily WHERE store_slug IN (`+ph+`) AND day >= CURRENT_DATE - 29`,
-			args...).Scan(&views30)
+			`SELECT COALESCE(SUM(views), 0) FROM store_view_daily WHERE store_slug IN (`+ph+`)`+window("day", "date", len(args)),
+			append(args, start.Format(time.DateOnly), end.Format(time.DateOnly))...).Scan(&views30)
 	}
 	conversion := 0.0
 	if views30 > 0 {
@@ -163,7 +176,7 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 	if len(storeIDs) > 0 {
 		ph, args := t01MergeInClause(storeIDs)
 		rows, err := db.QueryContext(ctx,
-			`SELECT status, COUNT(*) FROM orders WHERE store_id IN (`+ph+`) GROUP BY status ORDER BY COUNT(*) DESC, status ASC`, args...)
+			`SELECT status, COUNT(*) FROM orders o WHERE o.store_id IN (`+ph+`) AND `+paid+` GROUP BY status ORDER BY COUNT(*) DESC, status ASC`, args...)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -189,11 +202,16 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 	daily := []map[string]interface{}{}
 	if len(storeIDs) > 0 {
 		ph, args := t01MergeInClause(storeIDs)
+		firstDay := fmt.Sprintf("$%d", len(args)+1)
+		lastDay := fmt.Sprintf("$%d", len(args)+2)
+		zone := fmt.Sprintf("$%d", len(args)+3)
 		rows, err := db.QueryContext(ctx,
 			`SELECT TO_CHAR(d::date, 'YYYY-MM-DD') AS day, COALESCE(SUM(o.payable_amount), 0), COUNT(o.id)
-			FROM generate_series(CURRENT_DATE - 29, CURRENT_DATE, '1 day'::interval) d
-			LEFT JOIN orders o ON o.created_at::date = d::date AND o.store_id IN (`+ph+`) AND o.`+paid+`
-			GROUP BY d::date ORDER BY d::date`, args...)
+			FROM generate_series(`+firstDay+`::date::timestamp, `+lastDay+`::date::timestamp, '1 day'::interval) d
+			LEFT JOIN orders o ON o.created_at >= (d AT TIME ZONE `+zone+`::text)
+				AND o.created_at < ((d + '1 day'::interval) AT TIME ZONE `+zone+`::text)
+				AND o.store_id IN (`+ph+`) AND `+paid+`
+			GROUP BY d::date ORDER BY d::date`, append(args, start.Format(time.DateOnly), today.Format(time.DateOnly), loc)...)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -222,7 +240,7 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 		rows, err := db.QueryContext(ctx,
 			`SELECT oi.product_id, p.title, COALESCE(SUM(oi.quantity), 0), COALESCE(SUM(oi.final_unit_price * oi.quantity), 0)
 			FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
-			WHERE o.store_id IN (`+ph+`) AND o.`+paid+`
+			WHERE o.store_id IN (`+ph+`) AND `+paid+`
 			GROUP BY oi.product_id, p.title ORDER BY SUM(oi.quantity) DESC LIMIT 10`, args...)
 		if err != nil {
 			writeInternalError(w, err)
@@ -283,7 +301,7 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 			rows, err := db.QueryContext(ctx,
 				`SELECT oi.product_id, COALESCE(SUM(oi.quantity), 0), COALESCE(SUM(oi.final_unit_price * oi.quantity), 0), COALESCE(SUM(oi.seller_margin * oi.quantity), 0)
 				FROM order_items oi JOIN orders o ON o.id = oi.order_id
-				WHERE o.store_id IN (`+ph+`) AND o.`+paid+`
+				WHERE o.store_id IN (`+ph+`) AND `+paid+`
 				GROUP BY oi.product_id`, args...)
 			if err != nil {
 				writeInternalError(w, err)
@@ -309,8 +327,8 @@ func handleT01SellerAnalytics(w http.ResponseWriter, r *http.Request, db *sql.DB
 			rows, err = db.QueryContext(ctx,
 				`SELECT oi.product_id, COALESCE(SUM(oi.quantity), 0)
 				FROM order_items oi JOIN orders o ON o.id = oi.order_id
-				WHERE o.store_id IN (`+ph+`) AND o.`+paid+` AND o.created_at >= NOW() - INTERVAL '30 days'
-				GROUP BY oi.product_id`, args...)
+				WHERE o.store_id IN (`+ph+`) AND `+paid+window("o.created_at", "timestamptz", len(args))+`
+				GROUP BY oi.product_id`, append(args, start, end)...)
 			if err != nil {
 				writeInternalError(w, err)
 				return

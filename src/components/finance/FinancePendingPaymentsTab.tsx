@@ -1,19 +1,112 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { financeOperation } from '../../services/financeOperation';
 
-// Live parity: the refund form inside live's finance-pending-payments tab
-// (AdminDashboardView-MERGED.js, Md component). Only the refund form is
-// wired here: live's pending-payment list and manual-confirm button use
-// GET /admin/orders/pending-payment and POST
-// /admin/payments/<id>/confirm-manual, neither of which exists in this
-// candidate backend, so they are NOT rebuilt or invented here (see report).
-// The refund call itself matches live exactly: POST
-// /admin/payments/<id>/refund with {reason, amount?} (amount omitted for
-// a full refund), the same validation order and messages, the same
-// confirm dialog, the same success toast, and the same field clearing.
+import { ApiError } from '../../services/apiClient';
+import { financeApi, type PendingPaymentOrder } from '../../services/financeApi';
+import { toPersianDigits } from '../../utils/formatters';
+
+const PendingPaymentsList: React.FC = () => {
+  const { adminSession, formatPrice } = useStore();
+  const canConfirm = adminSession?.role === 'admin' || adminSession?.role === 'super_admin';
+  const [orders, setOrders] = useState<PendingPaymentOrder[]>([]);
+  const [request, setRequest] = useState<{ cursor?: string }>({});
+  const [nextCursor, setNextCursor] = useState<string>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<'unavailable' | 'failed'>();
+
+  useEffect(() => {
+    let cancelled = false;
+    financeApi.getPendingPayments(request.cursor)
+      .then((page) => {
+        if (cancelled) return;
+        setOrders(current => request.cursor ? [...current, ...page.orders] : page.orders);
+        setNextCursor(page.hasMore ? page.nextCursor : undefined);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof ApiError && err.status === 404 ? 'unavailable' : 'failed');
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [request]);
+
+  const load = (cursor?: string) => {
+    setError(undefined);
+    setLoading(true);
+    setRequest({ cursor });
+  };
+
+  return (
+    <section aria-labelledby="unpaid-order-heading" className="bg-white border border-slate-200/90 rounded-2xl shadow-2xs p-4 space-y-3">
+      <h3 id="unpaid-order-heading" className="text-sm font-bold text-slate-900">سفارش‌های پرداخت‌نشده</h3>
+      {loading && <p role="status" className="text-xs text-slate-500">در حال بارگذاری سفارش‌ها…</p>}
+      {error === 'unavailable' && <p role="status" className="text-xs text-slate-500">فهرست سفارش‌های پرداخت‌نشده هنوز در دسترس نیست.</p>}
+      {error === 'failed' && (
+        <p role="alert" className="text-xs text-rose-700">
+          سفارش‌های پرداخت‌نشده بارگذاری نشد.
+          <button type="button" className="mr-2 underline" onClick={() => load(request.cursor)}>تلاش دوباره</button>
+        </p>
+      )}
+      {!loading && !error && orders.length === 0 && <p className="text-xs text-slate-500">سفارش پرداخت‌نشده‌ای نیست.</p>}
+      {orders.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-right text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-slate-500">
+                <th scope="col" className="p-2">شماره سفارش</th>
+                <th scope="col" className="p-2">نام مشتری</th>
+                <th scope="col" className="p-2">مبلغ (تومان)</th>
+                <th scope="col" className="p-2">زمان انتظار</th>
+                {canConfirm && <th scope="col" className="p-2">تأیید پرداخت</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map(order => (
+                <tr key={order.id} className="border-b border-slate-100 align-top">
+                  <td className="p-2"><bdi>{order.orderNumber || order.id}</bdi></td>
+                  <td className="p-2">{order.customerName || '—'}</td>
+                  <td className="p-2">{formatPrice(order.amountToman)}</td>
+                  <td className="p-2">{toPersianDigits(order.ageHours)} ساعت</td>
+                  {canConfirm && (
+                    <td className="p-2">
+                      <details>
+                        <summary className="cursor-pointer text-teal-700">تأیید دستی پرداخت</summary>
+                        <form data-operation-id={`admin-confirm-manual:${order.id}`} onSubmit={event => event.preventDefault()} className="mt-2 space-y-2">
+                          <p className="text-slate-500">نوع مدرک موردنیاز هنوز از طرف مالک مشخص نشده است.</p>
+                          <fieldset disabled className="space-y-2">
+                            <label className="block">
+                              نوع مدرک
+                              <input type="text" className="block w-full rounded border border-slate-200 bg-slate-50" />
+                            </label>
+                            <label className="block">
+                              مرجع مدرک
+                              <input type="text" className="block w-full rounded border border-slate-200 bg-slate-50" />
+                            </label>
+                            <button type="submit" disabled className="rounded px-2 py-1 bg-slate-100 text-slate-500">تأیید پرداخت</button>
+                          </fieldset>
+                        </form>
+                      </details>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {nextCursor && !error && (
+        <button type="button" disabled={loading} onClick={() => load(nextCursor)} className="text-xs font-bold text-teal-700 disabled:opacity-50">
+          بارگذاری سفارش‌های بیشتر
+        </button>
+      )}
+    </section>
+  );
+};
+
 export const FinancePendingPaymentsTab: React.FC = () => {
   const { formatPrice } = useStore();
   const { success, error } = useToast();
@@ -67,6 +160,7 @@ export const FinancePendingPaymentsTab: React.FC = () => {
 
   return (
     <div className="space-y-4 pb-6" dir="rtl">
+      <PendingPaymentsList />
       <form onSubmit={handleSubmit} className="bg-white border border-slate-200/90 rounded-2xl shadow-2xs p-4 space-y-3">
         <div className="flex items-center gap-2 text-rose-700">
           <h3 className="text-sm font-bold">استرداد وجه سفارش پرداخت‌شده (بازگشت وجه)</h3>

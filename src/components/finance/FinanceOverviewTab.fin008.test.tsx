@@ -2,7 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { TreasuryCashCard, ProfitLocksCard, PendingSettlementsCard } from './FinanceOverviewTab';
+import { ApiError } from '../../services/apiClient';
+import { classifyTreasuryCashError, TreasuryCashCard, ProfitLocksCard, PendingSettlementsCard } from './FinanceOverviewTab';
 import type { CashPositionDto, ProfitLocksDto, PendingSettlementDto } from '../../services/financeApi';
 import { formatPrice, toPersianDigits } from '../../utils/formatters';
 
@@ -54,11 +55,11 @@ const baseCash = (patch: Partial<CashPositionDto> = {}): CashPositionDto => ({
   ...patch,
 });
 
-const cashCard = (cash: CashPositionDto | null, extra: { cashLoaded?: boolean; cashError?: boolean } = {}) => renderToStaticMarkup(
+const cashCard = (cash: CashPositionDto | null, extra: { cashLoaded?: boolean; cashError?: ReturnType<typeof classifyTreasuryCashError> } = {}) => renderToStaticMarkup(
   <TreasuryCashCard
     cash={cash}
     cashLoaded={extra.cashLoaded ?? true}
-    cashError={extra.cashError ?? false}
+    cashError={extra.cashError ?? null}
     cashDays={30}
     onCashDaysChange={() => {}}
     formatPrice={formatPrice}
@@ -222,4 +223,22 @@ it('TestFinanceOverviewRefundLiabilityLabelCoversGatewayAndWallet', () => {
   const html = cashCard(baseCash({ refundLiability: 3000000 }));
   assert.match(html, /بازپرداخت‌های در انتظار \(درگاه و کیف پول\)/);
   assert.ok(html.includes(formatPrice(3000000)), 'refund liability 3,000,000 Toman must be shown');
+});
+
+it('distinguishes a principal conflict, legacy paid reconciliation and generic failures without figures', () => {
+  const cases = [
+    [new ApiError(409, 'unresolved', { reconciliationRequired: true }), 'مبدأ مالی یک یا چند سفارش مشخص نیست'],
+    [new ApiError(500, 'failed', { error: "treasury: 2 payout_requests row(s) with undefined status 'paid'; reconciliation required", reconciliationRequired: true }), 'نیازمند بازطبقه‌بندی‌اند'],
+    [new ApiError(500, 'failed', { error: 'خطای داخلی سرور' }), 'خطا در بارگذاری موقعیت نقدینگی.'],
+    [new Error('network'), 'خطا در بارگذاری موقعیت نقدینگی.'],
+  ] as const;
+  const messages = new Set(cases.map(([, message]) => message));
+  for (const [error, expected] of cases) {
+    const markup = cashCard(baseCash(), { cashError: classifyTreasuryCashError(error) });
+    assert.ok(markup.includes(expected));
+    for (const message of messages) {
+      if (message !== expected) assert.ok(!markup.includes(message));
+    }
+    assert.ok(!markup.includes('نقدینگی تأییدشده (بانک/درگاه)'));
+  }
 });

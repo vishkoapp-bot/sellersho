@@ -1,10 +1,7 @@
 import { apiRequest, tokenStore } from './apiClient';
+import { fingerprintHash, newUuid } from './uuid';
 
 const pending = new Map<string, string>();
-
-const digest = async (value: string) => Array.from(new Uint8Array(
-  await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)),
-), byte => byte.toString(16).padStart(2, '0')).join('');
 
 // Store only an opaque identity and hashes in session storage, never account
 // destinations, money payloads or credentials. An uncertain response retains its
@@ -22,12 +19,14 @@ export async function financeOperation<T>(endpoint: string, payload: object, acc
       if (typeof claims.userId === 'string' && claims.userId) principal = claims.userId;
     }
   } catch { /* unauthenticated requests fail server-side */ }
-  const identity = `sellersho.finance.pending.${await digest(JSON.stringify([
+  // The FNV fallback stays in the client-side storage identity. A collision
+  // reuses a UUID, and the server rejects a different payload for that account.
+  const identity = `sellersho.finance.pending.${await fingerprintHash(JSON.stringify([
     principal, accountOperation, payload,
   ]))}`;
   let key = pending.get(identity);
   try { key ??= sessionStorage.getItem(identity) ?? undefined; } catch { /* memory fallback */ }
-  key ??= crypto.randomUUID();
+  key ??= newUuid();
   pending.set(identity, key);
   try { sessionStorage.setItem(identity, key); } catch { /* memory fallback */ }
   if (tokenStore.getGeneration() !== generation) throw new Error('Session changed during financial request');

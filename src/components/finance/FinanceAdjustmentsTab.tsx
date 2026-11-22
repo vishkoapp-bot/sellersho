@@ -42,8 +42,8 @@ export const FinanceAdjustmentsTab: React.FC = () => {
 
   const loadLedger = useCallback(async () => {
     try {
-      const data = await financeApi.getLedger();
-      if (Array.isArray(data)) setServerLedger(data);
+      const { entries } = await financeApi.getLedger();
+      setServerLedger(entries);
     } catch (err) {
       console.warn('Failed to load ledger:', err);
     }

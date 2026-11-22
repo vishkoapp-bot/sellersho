@@ -215,7 +215,7 @@ func TestDiscountCodeDeleteG8(t *testing.T) {
 		r := httptest.NewRequest(method, "/api/v1/stores/"+slug+"/discount-codes", bytes.NewBufferString(body))
 		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: user, Role: "seller"}))
 		w := httptest.NewRecorder()
-		handleSellerStore(w, r, repo, fin, slug, "discount-codes")
+		handleSellerStore(w, r, repo, fin, slug, "discount-codes", "")
 		return w
 	}
 	create := func(code string) string {
@@ -397,4 +397,139 @@ func releaseCoupon(t *testing.T, db *sql.DB, orderID, couponID string) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDiscountCodeDeleteG8Routing(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	stores := repository.NewStoreRepository(db)
+	jwt := auth.NewJWTService(strings.Repeat("s", 32))
+	owner, stranger := uuid.NewString(), uuid.NewString()
+	tokenFor := func(id string) string {
+		t.Helper()
+		mobile := "09" + id[:13]
+		if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role,is_active) VALUES($1,$2,'G8 routing test','seller',true)`, id, mobile); err != nil {
+			t.Fatal(err)
+		}
+		token, err := jwt.GenerateToken(id, mobile, "G8 routing test", "seller", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	ownerToken, strangerToken := tokenFor(owner), tokenFor(stranger)
+	store := domain.Store{
+		ID: "s-" + uuid.NewString(), Slug: "s-" + uuid.NewString()[:20],
+		Name: "G8 routing test", OwnerType: "dropshipper", OwnerUserID: &owner,
+		ActivePlanID: "trial", ReferralCode: uuid.NewString()[:8],
+	}
+	if err := stores.CreateStore(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/stores/", handleStoresBlock(jwt, stores, repository.NewFinanceRepository(db), repository.NewCatalogRepository(db), repository.NewPricingRepository(db), repository.NewOrderRepository(db)))
+	request := func(method, path, token, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/api/v1/stores/"+store.Slug+path, nil)
+		if body != "" {
+			r = httptest.NewRequest(method, r.URL.Path, strings.NewReader(body))
+		}
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	assertStatus := func(t *testing.T, w *httptest.ResponseRecorder, want int) {
+		t.Helper()
+		if w.Code != want {
+			t.Fatalf("HTTP %d, want %d: %s", w.Code, want, w.Body.String())
+		}
+	}
+	create := func(code string) string {
+		t.Helper()
+		c, err := stores.CreateDiscountCode(ctx, store.ID, repository.DiscountCode{
+			Code: code, Mode: "fixed", Value: 1000, StartsAt: time.Now().Add(-time.Hour), EndsAt: time.Now().Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.ID
+	}
+	assertPresent := func(t *testing.T, id string, want bool) {
+		t.Helper()
+		var exists bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM seller_discount_codes WHERE id=$1)`, id).Scan(&exists); err != nil || exists != want {
+			t.Fatalf("code %s exists=%v, want %v (err %v)", id, exists, want, err)
+		}
+	}
+	const codes = "/discount-codes"
+	free := create("G8ROUTEFREE")
+	used := create("G8ROUTEUSED")
+	admitCoupon(t, db, "g8-"+uuid.NewString()[:8], used, store.ID, "G8ROUTEUSED", owner)
+	ref := create("G8ROUTEREF")
+	orderID := "g8-" + uuid.NewString()[:8]
+	admitCoupon(t, db, orderID, ref, store.ID, "G8ROUTEREF", owner)
+	releaseCoupon(t, db, orderID, ref)
+	t.Run("authorization", func(t *testing.T) {
+		assertStatus(t, request(http.MethodDelete, codes+"/"+free, "", ""), http.StatusUnauthorized)
+		assertStatus(t, request(http.MethodDelete, codes+"/"+free, strangerToken, ""), http.StatusForbidden)
+		assertPresent(t, free, true)
+	})
+	t.Run("bodyless delete", func(t *testing.T) {
+		w := request(http.MethodDelete, codes+"/"+free, ownerToken, "")
+		assertStatus(t, w, http.StatusOK)
+		var body struct{ Success bool }
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || !body.Success {
+			t.Fatalf("missing success response: %s (%v)", w.Body.String(), err)
+		}
+		assertPresent(t, free, false)
+	})
+	t.Run("path overrides body", func(t *testing.T) {
+		pathID, bodyID := create("G8ROUTEPATH"), create("G8ROUTEBODY")
+		assertStatus(t, request(http.MethodDelete, codes+"/"+pathID+"/", ownerToken, fmt.Sprintf(`{"id":%q}`, bodyID)), http.StatusOK)
+		assertPresent(t, pathID, false)
+		assertPresent(t, bodyID, true)
+		assertStatus(t, request(http.MethodDelete, codes+"/", ownerToken, fmt.Sprintf(`{"id":%q}`, bodyID)), http.StatusOK)
+		assertPresent(t, bodyID, false)
+	})
+	t.Run("used and order-referenced codes", func(t *testing.T) {
+		for _, id := range []string{used, ref} {
+			assertStatus(t, request(http.MethodDelete, codes+"/"+id, ownerToken, ""), http.StatusConflict)
+			assertPresent(t, id, true)
+		}
+	})
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodPatch, http.MethodHead} {
+		t.Run("three-part "+method, func(t *testing.T) {
+			assertStatus(t, request(method, codes+"/"+used, "", ""), http.StatusUnauthorized)
+			assertStatus(t, request(method, codes+"/"+used, ownerToken, ""), http.StatusNotFound)
+		})
+	}
+	for _, action := range []string{"settings", "products", "report", "balance", "wallet", "payouts", "early-withdrawals", "discount-codes", "change-requests", "services", "subscribers"} {
+		t.Run("two-part unauthorized "+action, func(t *testing.T) {
+			assertStatus(t, request(http.MethodGet, "/"+action, "", ""), http.StatusUnauthorized)
+		})
+	}
+	t.Run("two-part unauthorized ad-widget", func(t *testing.T) {
+		assertStatus(t, request(http.MethodPut, "/ad-widget", "", ""), http.StatusUnauthorized)
+	})
+	t.Run("unmatched does not use public dispatch", func(t *testing.T) {
+		for _, path := range []string{"/payouts/id", "/report/id"} {
+			assertStatus(t, request(http.MethodDelete, path, "", ""), http.StatusNotFound)
+		}
+		assertStatus(t, request(http.MethodGet, "/bogus", "", ""), http.StatusNotFound)
+		assertStatus(t, request(http.MethodGet, "/bogus", ownerToken, ""), http.StatusNotFound)
+		w := request(http.MethodGet, "", "", "")
+		assertStatus(t, w, http.StatusOK)
+		var public struct{ Slug string }
+		if err := json.Unmarshal(w.Body.Bytes(), &public); err != nil || public.Slug != store.Slug {
+			t.Fatalf("expected public store response: %s (%v)", w.Body.String(), err)
+		}
+		// The existing quote action is POST-only and still validates its body.
+		assertStatus(t, request(http.MethodGet, "/discount-quote", "", ""), http.StatusMethodNotAllowed)
+		assertStatus(t, request(http.MethodPost, "/discount-quote", "", "{}"), http.StatusBadRequest)
+	})
 }

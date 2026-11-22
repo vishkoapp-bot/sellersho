@@ -66,7 +66,7 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 		r := httptest.NewRequest(method, "/api/v1/stores/"+store.Slug+"/"+action, bytes.NewBufferString(body))
 		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: user, Role: "seller"}))
 		w := httptest.NewRecorder()
-		handleSellerStore(w, r, repo, fin, store.Slug, action)
+		handleSellerStore(w, r, repo, fin, store.Slug, action, "")
 		return w
 	}
 	for _, action := range []string{"settings", "products", "report", "balance", "payouts", "services", "change-requests"} {

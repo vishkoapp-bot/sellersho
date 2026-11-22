@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi } from '../../services/storeApi';
 import { TrendingUp, TrendingDown, Minus, ShoppingBag, DollarSign, Wallet, BarChart3, Package, Star, AlertCircle, RefreshCw } from 'lucide-react';
@@ -148,37 +148,52 @@ const SalesChart: React.FC<{
 };
 
 export const SellerAnalyticsTab: React.FC = () => {
-  const { currentStore, orders, formatPrice, toPersianDigits } = useStore();
-  const [data, setData] = useState<LiveSellerAnalytics | null>(null);
+  const { currentStore, formatPrice, toPersianDigits } = useStore();
+  const [result, setResult] = useState<{ storeId: string; data: LiveSellerAnalytics | null }>();
+  const sequence = useRef(0);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const storeId = currentStore?.id;
+  const data = result?.storeId === storeId ? result?.data : undefined;
 
   useEffect(() => {
+    if (!storeId) return;
+    const controller = new AbortController();
+    const request = ++sequence.current;
     let cancelled = false;
+    const isCurrent = () => !cancelled && request === sequence.current;
     setLoading(true);
     setFailed(false);
-    // storeApi's declared type is still the old shape (not this file's
-    // scope); the live response is cast here, never reshaped or faked.
-    (storeApi.getSellerAnalytics(storeId) as unknown as Promise<LiveSellerAnalytics>)
-      .then((res) => { if (!cancelled) setData(res || null); if (!cancelled && !res) setFailed(true); })
-      .catch(() => { if (!cancelled) setFailed(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [storeId, orders]);
+    (storeApi.getSellerAnalytics(storeId, { signal: controller.signal }) as unknown as Promise<LiveSellerAnalytics>)
+      .then((data) => {
+        if (!isCurrent()) return;
+        setResult({ storeId, data: data || null });
+        setFailed(!data);
+      })
+      .catch(() => {
+        if (!isCurrent()) return;
+        setResult({ storeId, data: null });
+        setFailed(true);
+      })
+      .finally(() => { if (isCurrent()) setLoading(false); });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [storeId]);
 
   const cards = useMemo(() => {
     if (!data) return [];
     const period = data.periodComparison;
     return [
-      { icon: TrendingUp, label: 'مجموع فروش', value: formatPrice(data.totalRevenue), unit: 'تومان', period: period ? { current: period.current.revenue, previous: period.previous.revenue, format: formatPrice, unit: 'تومان' } : undefined },
-      { icon: ShoppingBag, label: 'تعداد سفارش‌ها', value: toPersianDigits(data.orderCount), unit: '', period: period ? { current: period.current.orders, previous: period.previous.orders, format: (v: number) => toPersianDigits(v), unit: '' } : undefined },
-      { icon: DollarSign, label: 'میانگین ارزش سفارش', value: formatPrice(data.avgOrderValue), unit: 'تومان', period: period ? { current: period.current.avgOrderValue, previous: period.previous.avgOrderValue, format: formatPrice, unit: 'تومان' } : undefined },
-      { icon: Wallet, label: 'سود شما', value: formatPrice(data.sellerProfit), unit: 'تومان', period: period ? { current: period.current.profit, previous: period.previous.profit, format: formatPrice, unit: 'تومان' } : undefined },
+      { icon: TrendingUp, label: 'مجموع فروش (همهٔ زمان)', value: formatPrice(data.totalRevenue), unit: 'تومان', period: period ? { current: period.current.revenue, previous: period.previous.revenue, format: formatPrice, unit: 'تومان' } : undefined },
+      { icon: ShoppingBag, label: 'تعداد سفارش‌ها (همهٔ زمان)', value: toPersianDigits(data.orderCount), unit: '', period: period ? { current: period.current.orders, previous: period.previous.orders, format: (v: number) => toPersianDigits(v), unit: '' } : undefined },
+      { icon: DollarSign, label: 'میانگین ارزش سفارش (همهٔ زمان)', value: formatPrice(data.avgOrderValue), unit: 'تومان', period: period ? { current: period.current.avgOrderValue, previous: period.previous.avgOrderValue, format: formatPrice, unit: 'تومان' } : undefined },
+      { icon: Wallet, label: 'سود شما (همهٔ زمان)', value: formatPrice(data.sellerProfit), unit: 'تومان', period: period ? { current: period.current.profit, previous: period.previous.profit, format: formatPrice, unit: 'تومان' } : undefined },
     ];
   }, [data, formatPrice, toPersianDigits]);
 
-  if (loading) {
+  if (loading || result?.storeId !== storeId) {
     return (
       <div className="space-y-3 pb-6 animate-pulse" aria-label="در حال بارگذاری تحلیل">
         <div className="grid grid-cols-2 gap-2.5">
@@ -271,7 +286,7 @@ export const SellerAnalyticsTab: React.FC = () => {
 
       <section className="bg-white rounded-2xl border border-slate-100 p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-extrabold text-slate-800">فروش ۳۰ روز گذشته</h3>
+          <h3 className="text-xs font-extrabold text-slate-800">فروش ۳۰ روز اخیر</h3>
           <span className="text-[10px] text-slate-400">به تومان</span>
         </div>
         {daily.length > 0 && <SalesChart daily={daily} formatPrice={formatPrice} toPersianDigits={toPersianDigits} />}
@@ -280,7 +295,7 @@ export const SellerAnalyticsTab: React.FC = () => {
 
       {statusRows.length > 0 && (
         <section className="bg-white rounded-2xl border border-slate-100 p-4">
-          <h3 className="text-xs font-extrabold text-slate-800 mb-3">وضعیت سفارش‌ها</h3>
+          <h3 className="text-xs font-extrabold text-slate-800 mb-3">وضعیت سفارش‌های پرداخت‌شده (همهٔ زمان)</h3>
           <ul className="divide-y divide-slate-50">
             {statusRows.map((row) => (
               <li key={row.status} className="py-2 flex items-center gap-3">
@@ -298,7 +313,7 @@ export const SellerAnalyticsTab: React.FC = () => {
       )}
 
       <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-3">پرفروش‌ترین محصولات</h3>
+        <h3 className="text-xs font-extrabold text-slate-800 mb-3">پرفروش‌ترین محصولات (همهٔ زمان)</h3>
         {topProducts.length === 0 ? (
           <p className="text-[11px] text-slate-400 text-center py-4">اطلاعات جزئی محصولات هنوز ثبت نشده است.</p>
         ) : (

@@ -310,7 +310,7 @@ export const storeApi = {
   saveStoreSettings: async (slug: string, config: Record<string, unknown>): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/settings`, { method: 'PUT', auth: true, body: JSON.stringify(config) }),
   saveStoreProducts: async (slug: string, productIds: string[]): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/products`, { method: 'PUT', auth: true, body: JSON.stringify({ productIds }) }),
   purchaseService: async (slug: string, service: string, storeId: string): Promise<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}> => financeOperation<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}>(`/stores/${encodeURIComponent(slug)}/services`, { service }, `seller:${storeId}:service`, value => typeof value.id === 'string' && !!value.id && value.id === storeId && typeof value.activePlanId === 'string' && !!value.activePlanId && Number.isSafeInteger(value.amount) && value.amount > 0 && Number.isSafeInteger(value.durationDays) && value.durationDays > 0 && typeof value.planExpiresAt === 'string' && Number.isFinite(Date.parse(value.planExpiresAt))),
-  getOwnedBalance: async (slug: string): Promise<StoreBalanceResponse> => apiRequest<StoreBalanceResponse>(`/stores/${encodeURIComponent(slug)}/balance`, { auth: true }),
+  getOwnedBalance: async (slug: string, { signal }: { signal?: AbortSignal } = {}): Promise<StoreBalanceResponse> => apiRequest<StoreBalanceResponse>(`/stores/${encodeURIComponent(slug)}/balance`, { auth: true, signal }),
   // PERF-02 Step 9: payouts now page (envelope with `payouts`).
   getPayouts: async (slug: string): Promise<import('../types').PayoutRequest[]> => {
     const res = await apiRequest<any>(`/stores/${encodeURIComponent(slug)}/payouts`, { auth: true });
@@ -323,7 +323,7 @@ export const storeApi = {
   // released profit) and early-withdrawal request/list. The seller
   // wallet tab UI for early withdrawal is still to be wired to
   // these calls; the API itself is live in this branch.
-  getWalletBreakdown: async (slug: string): Promise<WalletBreakdownResponse> => apiRequest<WalletBreakdownResponse>(`/stores/${encodeURIComponent(slug)}/wallet`, { auth: true }),
+  getWalletBreakdown: async (slug: string, { signal }: { signal?: AbortSignal } = {}): Promise<WalletBreakdownResponse> => apiRequest<WalletBreakdownResponse>(`/stores/${encodeURIComponent(slug)}/wallet`, { auth: true, signal }),
   getEarlyWithdrawals: async (slug: string): Promise<EarlyWithdrawalResponse[]> => apiRequest<EarlyWithdrawalResponse[]>(`/stores/${encodeURIComponent(slug)}/early-withdrawals`, { auth: true }),
   requestEarlyWithdrawal: async (slug: string, amount: number, shaba: string, storeId: string): Promise<EarlyWithdrawalResponse> => financeOperation<EarlyWithdrawalResponse>(`/stores/${encodeURIComponent(slug)}/early-withdrawals`, { amount, shaba }, `seller:${storeId}:early-withdrawal`, value => typeof value.id === 'string' && !!value.id && typeof value.storeId === 'string' && value.storeId === storeId && value.grossAmount === amount && Number.isSafeInteger(value.netAmount) && Number.isSafeInteger(value.feeAmount) && value.netAmount + value.feeAmount === amount && value.status === 'pending'),
   // FIX 17: seller returns tab. Backend serves GET
@@ -333,9 +333,9 @@ export const storeApi = {
     const data = await apiRequest<any>(`/stores/${encodeURIComponent(slug)}/returns`, { auth: true });
     return Array.isArray(data) ? data : (data?.returns ?? data?.data ?? []);
   },
-  getSellerReport: async (slug: string, start?: string, end?: string): Promise<SellerReportResponse> => {
+  getSellerReport: async (slug: string, start?: string, end?: string, { signal }: { signal?: AbortSignal } = {}): Promise<SellerReportResponse> => {
     const params = new URLSearchParams(); if (start) params.set('start', start); if (end) params.set('end', end);
-    return apiRequest<SellerReportResponse>(`/stores/${encodeURIComponent(slug)}/report?${params}`, { method: 'GET', auth: true });
+    return apiRequest<SellerReportResponse>(`/stores/${encodeURIComponent(slug)}/report?${params}`, { method: 'GET', auth: true, signal });
   },
   // PERF-02 Step 9: tickets now page (envelope with `tickets`).
   getSellerTickets: async (): Promise<SellerTicket[]> => {
@@ -405,9 +405,9 @@ export const storeApi = {
     return apiRequest<SellerStoreTemplate>('/seller/store/template/publish', { method: 'POST', auth: true, body: JSON.stringify(payload) });
   },
   // Seller analytics + search insight (D47, Team 01 backend).
-  getSellerAnalytics: async (storeId?: string): Promise<SellerAnalytics> => {
+  getSellerAnalytics: async (storeId?: string, { signal }: { signal?: AbortSignal } = {}): Promise<SellerAnalytics> => {
     const qs = storeId ? `?storeId=${encodeURIComponent(storeId)}` : '';
-    return apiRequest<SellerAnalytics>(`/seller/analytics${qs}`, { method: 'GET', auth: true });
+    return apiRequest<SellerAnalytics>(`/seller/analytics${qs}`, { method: 'GET', auth: true, signal });
   },
   getSellerSearchInsight: async (): Promise<SellerSearchInsight> => {
     return apiRequest<SellerSearchInsight>('/seller/search-insight', { method: 'GET', auth: true });

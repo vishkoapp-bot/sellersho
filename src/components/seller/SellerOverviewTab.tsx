@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { TrendingUp, DollarSign, ShoppingBag, Clock, ArrowUpRight, Package, ExternalLink, Flame, Layers, Award, ChevronDown, Check, ChevronLeft, Rocket } from 'lucide-react';
-import { storeApi } from '../../services/storeApi';
-import { isMockMode } from '../../services/apiClient';
+import { storeApi, type SellerReportResponse } from '../../services/storeApi';
 
 interface Props {
   onNavigateTab: (tab: string) => void;
@@ -14,10 +13,7 @@ interface Props {
 // SellerDashboardView-MERGED.js, component Ol, rendered inside the
 // overview between the header card and the KPI cards). Live shows the
 // "ready" row once every step is done, otherwise a progress card with
-// one button per unfinished step. Revenue/profit math below is NOT
-// touched: live's client fallback sums all store orders (no status
-// filter), exactly like this file already does, and live's server
-// report aggregation is not visible in the bundle (unproven).
+// one button per unfinished step.
 interface SetupStep {
   id: string;
   title: string;
@@ -148,32 +144,48 @@ const SellerSetupChecklist: React.FC<{ onNavigateTab: (tab: string) => void }> =
   );
 };
 
+type OverviewRead<T> = { slug: string; value?: T | null };
+
+function overviewValue<T>(reading: OverviewRead<T> | undefined, slug: string) {
+  return reading?.slug === slug ? reading.value : undefined;
+}
+
+function SellerOverviewAmount({ value, formatPrice }: { value?: number | null; formatPrice: (value: number) => string }) {
+  if (value === undefined) return <div className="h-5 w-20 rounded bg-slate-100 animate-pulse" aria-label="در حال بارگذاری مبلغ" />;
+  if (value === null) return <p className="text-[11px] text-rose-600">بارگذاری مبلغ انجام نشد.</p>;
+  return <div className="text-sm font-extrabold text-slate-900">{formatPrice(value)} <span className="text-[10px] font-normal text-slate-500">تومان</span></div>;
+}
+
 export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStorefront }) => {
-  const { currentStore, orders, payoutRequests, formatPrice, toPersianDigits } = useStore();
-  const [report, setReport] = useState<{ revenue: number; profit: number; orders: number; units: number; pendingProfit?: number } | null>(null);
+  const { currentStore, formatPrice, toPersianDigits } = useStore();
+  const slug = currentStore.slug;
+  const [report, setReport] = useState<OverviewRead<SellerReportResponse>>();
+  const [balance, setBalance] = useState<OverviewRead<number>>();
+  const [pending, setPending] = useState<OverviewRead<number>>();
   const [rewardOpen, setRewardOpen] = useState(false);
-  useEffect(() => { if (!isMockMode() && currentStore.slug) storeApi.getSellerReport(currentStore.slug).then(setReport).catch(() => setReport(null)); }, [currentStore.slug]);
+  useEffect(() => {
+    if (!slug) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    const read = <T,>(request: Promise<T>, publish: (reading: OverviewRead<T>) => void) => {
+      publish({ slug });
+      request.then(
+        (value) => { if (!signal.aborted) publish({ slug, value }); },
+        () => { if (!signal.aborted) publish({ slug, value: null }); },
+      );
+    };
+    read(storeApi.getSellerReport(slug, undefined, undefined, { signal }), setReport);
+    read(storeApi.getOwnedBalance(slug, { signal }).then(result => result.availableAmount), setBalance);
+    read(storeApi.getWalletBreakdown(slug, { signal }).then(result => result.pendingProfit), setPending);
+    return () => controller.abort();
+  }, [slug]);
 
-  const storeOrders = orders.filter(o => o.storeId === currentStore.id || currentStore.ownerType === 'central');
-  const totalSales = report?.revenue ?? storeOrders.reduce((s, o) => s + o.totalAmount, 0);
-  const deliveredProfit = storeOrders
-    .filter((o) => o.status === 'delivered')
-    .reduce((sum, o) => sum + (o.dropshipperProfit || 0), 0);
-  const activePendingProfit = storeOrders
-    .filter((o) => o.status === 'processing' || o.status === 'shipped')
-    .reduce((sum, o) => sum + (o.dropshipperProfit || 0), 0);
-
-  const storePayouts = payoutRequests.filter(
-    (r) => r.storeId === currentStore.id || (!r.storeId && currentStore.id === 'store-bibi')
-  );
-  const reservedAmount = storePayouts
-    .filter((r) => r.status === 'pending')
-    .reduce((sum, r) => sum + r.amount, 0);
-
-  const finalized = report?.profit ?? Math.max(0, deliveredProfit - reservedAmount);
-  const pending = report?.pendingProfit ?? activePendingProfit;
-  const orderCount = report?.orders ?? storeOrders.length;
-  const avgOrder = orderCount > 0 ? Math.round(totalSales / orderCount) : 0;
+  const currentReport = overviewValue(report, slug);
+  const totalSales = currentReport === null ? null : currentReport?.revenue;
+  const orderCount = currentReport?.orders;
+  const units = currentReport?.units;
+  const avgOrder = currentReport == null ? currentReport
+    : currentReport.orders > 0 ? Math.round(currentReport.revenue / currentReport.orders) : 0;
 
   return (
     <div className="space-y-3 pb-6">
@@ -209,8 +221,8 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
             <span className="text-[11px] font-bold text-slate-700">سود آماده برداشت</span>
             <DollarSign className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
           </div>
-          <div className="text-sm font-extrabold text-slate-900">{formatPrice(finalized)} <span className="text-[10px] font-normal text-slate-500">تومان</span></div>
-          <span className="text-[10px] text-emerald-600 font-medium block mt-1">همین حالا در کیف پولت قابل برداشت است</span>
+          <SellerOverviewAmount value={overviewValue(balance, slug)} formatPrice={formatPrice} />
+          <span className="text-[10px] text-emerald-600 font-medium block mt-1">موجودی قابل برداشت کیف پول</span>
         </div>
 
         <div className="bg-white rounded-2xl p-3.5 border border-slate-200">
@@ -218,8 +230,9 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
             <span className="text-[11px] font-bold text-slate-700">سود در راه</span>
             <Clock className="w-3.5 h-3.5 text-amber-600"  strokeWidth={1.5}/>
           </div>
-          <div className="text-sm font-extrabold text-slate-900">{formatPrice(pending)} <span className="text-[10px] font-normal text-slate-500">تومان</span></div>
+          <SellerOverviewAmount value={overviewValue(pending, slug)} formatPrice={formatPrice} />
           <span className="text-[10px] text-amber-600 font-medium block mt-1">بعد از تمام‌شدن مهلت مرجوعی آزاد می‌شود</span>
+          <span className="text-[10px] text-slate-500 block">بر اساس تفکیک موجودی کیف پول</span>
         </div>
 
         <div className="bg-white rounded-2xl p-3.5 border border-slate-200">
@@ -227,8 +240,9 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
             <span className="text-[11px] font-bold text-slate-700">مبلغ کل فروش‌ها</span>
             <ShoppingBag className="w-3.5 h-3.5 text-brand-deep"  strokeWidth={1.5}/>
           </div>
-          <div className="text-sm font-extrabold text-slate-900">{formatPrice(totalSales)} <span className="text-[10px] font-normal text-slate-500">تومان</span></div>
-           <span className="text-[10px] text-slate-400 block mt-1">{toPersianDigits(orderCount)} سفارش</span>
+          <SellerOverviewAmount value={totalSales} formatPrice={formatPrice} />
+          <span className="text-[10px] text-slate-400 block mt-1">۳۱ روز اخیر</span>
+          {orderCount != null && units != null && <span className="text-[10px] text-slate-400 block">{toPersianDigits(orderCount)} سفارش · {toPersianDigits(units)} کالا</span>}
         </div>
 
         <div className="bg-white rounded-2xl p-3.5 border border-slate-200">
@@ -236,8 +250,8 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
             <span className="text-[11px] font-bold text-slate-700">میانگین مبلغ هر سفارش</span>
             <TrendingUp className="w-3.5 h-3.5 text-brand-deep"  strokeWidth={1.5}/>
           </div>
-          <div className="text-sm font-extrabold text-slate-900">{formatPrice(avgOrder)} <span className="text-[10px] font-normal text-slate-500">تومان</span></div>
-          <span className="text-[10px] text-slate-400 block mt-1">{orderCount > 0 ? `از روی ${toPersianDigits(orderCount)} سفارش` : 'هنوز سفارشی ثبت نشده'}</span>
+          <SellerOverviewAmount value={avgOrder} formatPrice={formatPrice} />
+          <span className="text-[10px] text-slate-400 block mt-1">۳۱ روز اخیر</span>
         </div>
       </div>
 

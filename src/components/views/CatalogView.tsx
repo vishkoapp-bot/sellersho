@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { catalogApi } from '../../services/catalogApi';
 import { isMockMode } from '../../services/apiClient';
 import { useStore, activeStoreSlugOf } from '../../context/StoreContext';
 import { ProductCard } from '../ProductCard';
-import { PriceRangeSlider } from '../PriceRangeSlider';
+import { PriceRangeSlider, PRICE_RANGE_ERROR_MESSAGE } from '../PriceRangeSlider';
 import {
   ArrowRight, Search, RotateCcw, ArrowUpDown,
   PackageX, ChevronDown, Check
@@ -21,6 +21,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     categories,
     catalogLoading,
     catalogError,
+    catalogPriceRangeError,
     loadMoreCatalog,
     hasMoreCatalog,
     catalogTotal,
@@ -45,6 +46,23 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     if (storeSlug) openCatalogCategory(slug);
     else setSelectedCategory(slug);
   };
+
+  // A4: the ONE reset handler for the header reset and both empty-state
+  // resets. The header reset used to omit price + brands + attrs; the
+  // empty-state resets omitted brands + attrs (and clearCatalogBrand).
+  // All three are now identical by construction.
+  const resetAllFilters = useCallback(() => {
+    setSelectedCategory('all');
+    setSearchQuery('');
+    clearCatalogBrand();
+    setOnlyInStock(false);
+    setOnlyOriginal(false);
+    setPriceMin('');
+    setPriceMax('');
+    setSelectedBrands([]);
+    setSelectedAttrs({});
+    setSortBy('featured');
+  }, [clearCatalogBrand, setSelectedCategory, setSearchQuery]);
 
   // Self-guard: this view is the CENTRAL catalogue. If it mounts
   // while a store context is active (a history/URL leftover —
@@ -97,12 +115,19 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   // guarded, so pushing identical values never refetches.
   useEffect(() => {
     if (!liveMode) return;
+    const min = priceMin === '' ? null : Number(priceMin);
+    const max = priceMax === '' ? null : Number(priceMax);
+    // A4: never fire a fetch with an inverted range. The slider never
+    // commits one, so this is defence-in-depth for any other writer
+    // (incl. the setPriceMin/setPriceMax race): the previous valid
+    // filter stays live and the grid keeps its results.
+    if (min !== null && max !== null && min > max) return;
     setCatalogFilter({
       sort: sortBy,
       inStockOnly: onlyInStock,
       onlyOriginal,
-      minPrice: priceMin === '' ? null : Number(priceMin),
-      maxPrice: priceMax === '' ? null : Number(priceMax),
+      minPrice: min,
+      maxPrice: max,
       brands: selectedBrands,
       attributes: selectedAttrs,
     });
@@ -286,14 +311,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </div>
           {(onlyInStock || onlyOriginal || priceMin !== '' || priceMax !== '' || selectedCategory !== 'all' || searchQuery || selectedBrands.length > 0 || Object.keys(selectedAttrs).length > 0) && (
             <button
-              onClick={() => {
-                setSelectedCategory('all');
-                setSearchQuery('');
-                clearCatalogBrand();
-                setOnlyInStock(false);
-                setOnlyOriginal(false);
-                setSortBy('featured');
-              }}
+              onClick={resetAllFilters}
               className="text-[10px] lg:text-xs text-rose-500 font-bold bg-rose-50 px-2 py-0.5 min-h-[36px] rounded-lg flex items-center gap-1"
             >
               <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
@@ -362,6 +380,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                     boundMax={dataMax}
                     value={[effMin, effMax]}
                     showHeader={false}
+                    serverRangeError={catalogPriceRangeError}
                     onChange={([nextMin, nextMax]) => {
                       if (nextMin === dataMin && nextMax === dataMax) {
                         setPriceMin('');
@@ -431,41 +450,40 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </aside>
         <div className="p-3 lg:p-0">
         {filtered.length === 0 ? (
+          catalogPriceRangeError ? (
+            <div className="bg-white rounded-2xl p-6 text-center border border-slate-100 space-y-2">
+              <p role="alert" className="text-[11px] text-rose-600 font-bold">{PRICE_RANGE_ERROR_MESSAGE}</p>
+              <div className="flex items-center justify-center gap-2 pt-1">
+                <button
+                  onClick={resetAllFilters}
+                  className="py-1.5 px-3 bg-[#5d44f8] text-white font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
+                  <span>حذف فیلترها</span>
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="bg-white rounded-2xl p-6 text-center border border-slate-100 space-y-2">
             <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto"><PackageX className="w-8 h-8 text-slate-400"  strokeWidth={1.5}/></div>
             <h3 className="text-xs font-bold text-slate-800">کالایی یافت نشد</h3>
             <div className="flex items-center justify-center gap-2 pt-1">
               <button
-                onClick={() => {
-                  setSelectedCategory('all');
-                  setSearchQuery('');
-                  setOnlyInStock(false);
-                  setOnlyOriginal(false);
-                    setPriceMin('');
-                  setPriceMax('');
-                  setSortBy('featured');
-                }}
+                onClick={resetAllFilters}
                 className="py-1.5 px-3 bg-[#5d44f8] text-white font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
               >
                 <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
                 <span>حذف فیلترها</span>
               </button>
               <button
-                onClick={() => {
-                  setSelectedCategory('all');
-                  setSearchQuery('');
-                  setOnlyInStock(false);
-                  setOnlyOriginal(false);
-                    setPriceMin('');
-                  setPriceMax('');
-                  setSortBy('featured');
-                }}
+                onClick={resetAllFilters}
                 className="py-1.5 px-3 bg-slate-100 text-slate-700 font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
               >
                 <span>مشاهده همه محصولات</span>
               </button>
             </div>
           </div>
+          )
         ) : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">

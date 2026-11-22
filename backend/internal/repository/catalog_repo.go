@@ -50,8 +50,10 @@ type ProductFilter struct {
 // join, so the GROUP BY p.id row multiplicity is unchanged, and it
 // fails OPEN for legacy products whose supplier_id has no suppliers
 // row (no row -> no 'suspended' match -> product stays visible). The
-// price-bounds surface reads through GetProducts, so it inherits the
-// same gate.
+// price-bounds surface does NOT read through GetProducts —
+// GetCatalogPriceBoundsTx builds its own query (priceFilterParts)
+// and applies this same clause directly, so it inherits the gate
+// via the shared clause, not via the GetProducts path.
 const notSuspendedSupplierClause = "NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id AND s.approval_status = 'suspended')"
 
 // suppliersTableExists probes for the suppliers table the way the
@@ -143,11 +145,21 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 		argIdx++
 	}
 
+	// Batch 2, A1: same normalised title/description/brand/category
+	// match and rank as the paged paths (buildSearchCondition), kept
+	// for parity even though no live handler calls GetProducts.
+	var searchRank string
 	if filter.Search != "" {
-		searchTerm := "%" + strings.ToLower(filter.Search) + "%"
-		whereClauses = append(whereClauses, fmt.Sprintf("(LOWER(p.title) LIKE $%d OR LOWER(p.description) LIKE $%d)", argIdx, argIdx))
-		args = append(args, searchTerm)
-		argIdx++
+		arg := func(value any) string {
+			args = append(args, value)
+			placeholder := fmt.Sprintf("$%d", argIdx)
+			argIdx++
+			return placeholder
+		}
+		hasCategories := r.categoriesTableExists(ctx)
+		searchWhere, rank := buildSearchCondition(filter.Search, arg, hasCategories)
+		whereClauses = append(whereClauses, searchWhere)
+		searchRank = rank
 	}
 
 	if filter.NicheSlug != "" && filter.NicheSlug != "all" {
@@ -175,6 +187,11 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 		orderBySQL = " ORDER BY p.supplier_base_cost DESC"
 	case "discount":
 		orderBySQL = " ORDER BY (p.original_price - p.supplier_base_cost) DESC"
+	}
+	// Batch 2, A1: rank leads on search pages (title above
+	// brand/category above description-only).
+	if filter.Search != "" {
+		orderBySQL = " ORDER BY " + searchRank + " ASC," + strings.TrimPrefix(orderBySQL, " ORDER BY ")
 	}
 
 	query := fmt.Sprintf(`

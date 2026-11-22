@@ -1459,6 +1459,7 @@ export const useStore = (): StoreContextType => {
     niches: prod.niches,
     catalogLoading: prod.catalogLoading,
     catalogError: prod.catalogError,
+    catalogPriceRangeError: prod.catalogPriceRangeError,
     // PERF-01: paged catalog passthrough (page 1 + show-more).
     catalogFilter: prod.catalogFilter,
     setCatalogFilter: prod.setCatalogFilter,

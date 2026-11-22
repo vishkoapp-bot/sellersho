@@ -130,6 +130,10 @@ export interface ProductContextType {
   niches: Niche[];
   catalogLoading: boolean;
   catalogError: string | null;
+  // A4: true while the last catalog page fetch 400d on an inverted
+  // price range. Renders as the inline slider message, never the
+  // generic catalog error banner.
+  catalogPriceRangeError: boolean;
   selectedCategory: string;
   setSelectedCategory: (catId: string) => void;
   searchQuery: string;
@@ -203,6 +207,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   const [niches, setNiches] = useState<Niche[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(!isMockMode());
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogPriceRangeError, setCatalogPriceRangeError] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>(() => {
     if (typeof window === 'undefined') return 'all';
     return new URLSearchParams(window.location.search).get('category') || 'all';
@@ -454,6 +459,10 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // in-flight page is aborted when the filter changes (AbortController)
   // or a newer request wins (request id); stale responses never land.
   const [catalogFilter, setCatalogFilterState] = useState<CatalogFilter>(DEFAULT_CATALOG_FILTER);
+  // A4: latest-filter mirror so setCatalogFilter can decide (outside its
+  // updater, which must stay pure) whether the merged filter is valid.
+  const catalogFilterRef = useRef(catalogFilter);
+  catalogFilterRef.current = catalogFilter;
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [hasMoreCatalog, setHasMoreCatalog] = useState(false);
   const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
@@ -477,9 +486,16 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   const catalogFilterKey = JSON.stringify(catalogServerFilter);
 
   const setCatalogFilter = useCallback((patch: Partial<CatalogFilter>) => {
+    // A4: a valid merged range clears a stale 400 flag immediately,
+    // without waiting for the network (the fetch clears it again on
+    // success). An inverted merged range leaves the flag untouched.
+    const next = { ...catalogFilterRef.current, ...patch };
+    if (next.minPrice == null || next.maxPrice == null || next.minPrice <= next.maxPrice) {
+      setCatalogPriceRangeError(false);
+    }
     setCatalogFilterState((prev) => {
-      const next = { ...prev, ...patch };
-      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+      const merged = { ...prev, ...patch };
+      return JSON.stringify(merged) === JSON.stringify(prev) ? prev : merged;
     });
   }, []);
 
@@ -517,9 +533,20 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
       setHasMoreCatalog(page.hasMore);
       setCatalogTotal(page.total);
       setBackendCatalogProducts(page.items.map(mapBackendProduct));
+      setCatalogPriceRangeError(false);
     } catch (err: any) {
       if (err?.name === 'AbortError' || controller.signal.aborted) return;
       if (catalogRequestIdRef.current !== requestId) return;
+      // A4: the backend 400s an inverted range (same-deploy backend
+      // half). It is a filter error, not a catalog outage: surface it
+      // as the inline price-range message, never the generic catalog
+      // error, and keep the previously loaded products on screen.
+      // Detection is by status only — the body is the raw http.Error
+      // string and must never be message-matched.
+      if (err?.status === 400) {
+        setCatalogPriceRangeError(true);
+        return;
+      }
       setCatalogError(err.message || 'خطا در برقراری ارتباط با کاتالوگ');
     } finally {
       if (catalogRequestIdRef.current === requestId) setCatalogLoading(false);
@@ -561,6 +588,9 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
       // A failed show-more leaves the loaded pages in place; the user
       // retries with the same button. AbortError here means nothing
       // was aborted (load-more has no signal); ignore it the same way.
+      // A4: a 400 here implies the stored filter was inverted (the
+      // CatalogView guard prevents it) — map it like page 1.
+      if (err?.status === 400) setCatalogPriceRangeError(true);
       if (err?.name !== 'AbortError') console.warn('Failed to load more catalog products:', err?.message);
     } finally {
       catalogLoadingMoreRef.current = false;
@@ -673,6 +703,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     niches,
     catalogLoading,
     catalogError,
+    catalogPriceRangeError,
     selectedCategory,
     setSelectedCategory,
     searchQuery,

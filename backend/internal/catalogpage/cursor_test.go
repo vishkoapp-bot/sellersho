@@ -180,7 +180,7 @@ func TestCursorRejectsCaseFoldedJSONAliases(t *testing.T) {
 	}
 	raw, _ := base64.RawURLEncoding.DecodeString(valid)
 	for _, mutated := range []string{
-		strings.Replace(string(raw), `"v":1`, `"v":1,"V":1`, 1),
+		strings.Replace(string(raw), `"v":2`, `"v":2,"V":2`, 1),
 		strings.Replace(string(raw), `"price":10`, `"price":10,"Price":11`, 1),
 	} {
 		if _, err := Decode(base64.RawURLEncoding.EncodeToString([]byte(mutated)), scope, filter); !errors.Is(err, ErrInvalid) {
@@ -189,8 +189,7 @@ func TestCursorRejectsCaseFoldedJSONAliases(t *testing.T) {
 	}
 }
 
-func TestCursorSupportsSignedDatabaseStorePositions(t *testing.T) {
-	scope := Scope{ID: "store-A", OwnerType: "dropshipper", Revision: 1}
+func TestCursorSupportsSignedDatabaseStorePositions(t *testing.T) {	scope := Scope{ID: "store-A", OwnerType: "dropshipper", Revision: 1}
 	filter := Filter{StorePosition: true}
 	for _, position := range []int64{-2147483648, -1, 0, 2147483647} {
 		key := Key{ID: "p-1", Position: position}
@@ -207,5 +206,80 @@ func TestCursorSupportsSignedDatabaseStorePositions(t *testing.T) {
 		if _, err := Encode(scope, filter, Key{ID: "p-1", Position: position}); !errors.Is(err, ErrInvalid) {
 			t.Fatal("out-of-range position accepted")
 		}
+	}
+}
+
+// Batch 2, A1: a pre-change (v1) search cursor fails closed after the
+// version bump, and Rank validates as 0..2, search-only.
+func TestCursorV1TokenRejectedAfterVersionBump(t *testing.T) {
+	scope := Scope{ID: "central", OwnerType: "central", Revision: 1}
+	filter := Filter{Sort: "featured", Search: "ساعت"}
+	key := Key{ID: "p-1", Featured: true, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Rank: 2}
+	token, err := Encode(scope, filter, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(token)
+	if !strings.Contains(string(raw), `"v":2`) {
+		t.Fatalf("v2 cursor does not stamp version 2: %s", raw)
+	}
+	// Downgrade the stamped version to 1: the token must fail closed.
+	v1 := base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(string(raw), `"v":2`, `"v":1`, 1)))
+	if _, err := Decode(v1, scope, filter); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("v1 cursor decoded: %v, want ErrInvalid", err)
+	}
+	// The v2 token itself round-trips, rank included.
+	got, err := Decode(token, scope, filter)
+	if err != nil || got != key {
+		t.Fatalf("v2 round trip %+v: %v", got, err)
+	}
+}
+
+func TestCursorRankValidation(t *testing.T) {
+	scope := Scope{ID: "central", OwnerType: "central", Revision: 1}
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	search := Filter{Sort: "featured", Search: "ساعت"}
+	plain := Filter{Sort: "featured"}
+	for _, rank := range []int{0, 1, 2} {
+		if _, err := Encode(scope, search, Key{ID: "p-1", CreatedAt: created, Rank: rank}); err != nil {
+			t.Fatalf("search rank %d rejected: %v", rank, err)
+		}
+	}
+	for _, rank := range []int{-1, 3} {
+		if _, err := Encode(scope, search, Key{ID: "p-1", CreatedAt: created, Rank: rank}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("search rank %d accepted", rank)
+		}
+	}
+	// Non-search keys must carry Rank 0.
+	if _, err := Encode(scope, plain, Key{ID: "p-1", CreatedAt: created, Rank: 1}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("non-search key with Rank != 0 accepted")
+	}
+	if _, err := Encode(scope, plain, Key{ID: "p-1", CreatedAt: created}); err != nil {
+		t.Fatalf("non-search key with Rank 0 rejected: %v", err)
+	}
+}
+
+func TestNormalizeSearchForMatch(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"طلا", "طلا"},
+		{"  سلام  كتاب ي ", "سلام کتاب ی"},
+		{"هندز\u200cفری", "هندزفری"},
+		{"هندزفر\u064a", "هندزفری"},
+		{"هندز فری", "هندز فری"},
+		{"ساعت  هوشمند", "ساعت هوشمند"},
+	} {
+		if got := NormalizeSearchForMatch(tc.in); got != tc.want {
+			t.Errorf("NormalizeSearchForMatch(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	spaced, stripped := SearchMatchForms("هندز فری")
+	if spaced != "هندز فری" || stripped != "هندزفری" {
+		t.Fatalf("SearchMatchForms = (%q, %q), want (\"هندز فری\", \"هندزفری\")", spaced, stripped)
+	}
+	spaced, stripped = SearchMatchForms("هندز\u200cفری")
+	if spaced != "هندزفری" || stripped != "هندزفری" {
+		t.Fatalf("SearchMatchForms ZWNJ = (%q, %q)", spaced, stripped)
 	}
 }

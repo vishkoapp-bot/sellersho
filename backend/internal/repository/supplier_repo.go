@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/domain"
 	phoneutil "github.com/drup/platform/internal/phone"
@@ -6569,6 +6570,49 @@ const supplierSearchInsightMinSearches = 3
 const supplierSearchInsightCandidateLimit = 300
 const supplierSearchInsightSectionLimit = 20
 
+// supplierSearchInsightMinTermRunes is the minimum length (in runes) of
+// a term worth showing in search insight (Batch 2, E2). It mirrors the
+// logging guard's minSearchLogTermRunes (cmd/server handlers.go); the
+// two must stay equal at 2 — a 1-rune term carries no demand signal,
+// while 2-rune terms (e.g. «گل») are legitimate signal and are kept.
+const supplierSearchInsightMinTermRunes = 2
+
+// filterSupplierInsightCandidates drops keystroke fragments from the
+// candidate list (Batch 2, E2): (1) terms shorter than
+// supplierSearchInsightMinTermRunes runes; (2) a term that is a strict
+// prefix of another candidate with an equal-or-higher count in the same
+// window. Comparisons use normalizeInsightTerm forms. The full
+// candidate list (up to 300) is compared, not just the displayed 20,
+// so a fragment is dropped even when its full term sits outside the
+// displayed section.
+func filterSupplierInsightCandidates(in []supplierInsightCandidate) []supplierInsightCandidate {
+	normalized := make([]string, len(in))
+	for i, c := range in {
+		normalized[i] = normalizeInsightTerm(c.term)
+	}
+	out := make([]supplierInsightCandidate, 0, len(in))
+	for i, c := range in {
+		if utf8.RuneCountInString(normalized[i]) < supplierSearchInsightMinTermRunes {
+			continue
+		}
+		fragment := false
+		for j, other := range in {
+			if i == j || normalized[i] == normalized[j] {
+				continue
+			}
+			if strings.HasPrefix(normalized[j], normalized[i]) && other.searches >= c.searches {
+				fragment = true
+				break
+			}
+		}
+		if fragment {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 type SupplierSearchInsightMatchedProduct struct {
 	ProductID string `json:"productId"`
 	Title     string `json:"title"`
@@ -6801,6 +6845,13 @@ func (r *SupplierRepository) GetSupplierSearchInsight(ctx context.Context, suppl
 			return nil, err
 		}
 		rows.Close()
+
+		// Batch 2, E2: fragment hardening, in Go after the candidate
+		// scan so the SQL query and its HAVING COUNT(*) >= 3 stay
+		// untouched and both downstream sections benefit. Single
+		// letters and strict prefixes of a longer term with an
+		// equal-or-higher count are keystroke fragments, not demand.
+		candidates = filterSupplierInsightCandidates(candidates)
 
 		// Top demand: terms matching the caller's own products (by
 		// title) or their brand/category footprint, in rank order.

@@ -8,8 +8,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/drup/platform/internal/catalogpage"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 )
@@ -208,5 +212,63 @@ func TestTeam04DetailResponseKeys(t *testing.T) {
 		if got[forbidden] {
 			t.Errorf("detail response must not contain %q (D21)", forbidden)
 		}
+	}
+}
+
+// Batch 2, A4: parseCatalogPageFilter rejects an inverted price range
+// with ErrInvalid (400), accepts a valid range, equal bounds (a
+// single-price point), and a one-sided bound.
+func TestParseCatalogPageFilterPriceRange(t *testing.T) {
+	parse := func(query string) (catalogpage.Filter, error) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products?"+query, nil)
+		return parseCatalogPageFilter(req)
+	}
+	if _, err := parse("min_price=50000000&max_price=1000000"); !errors.Is(err, catalogpage.ErrInvalid) {
+		t.Fatalf("inverted range err = %v, want ErrInvalid", err)
+	}
+	f, err := parse("min_price=1000000&max_price=50000000")
+	if err != nil {
+		t.Fatalf("valid range err = %v", err)
+	}
+	if f.MinPrice == nil || *f.MinPrice != 1000000 || f.MaxPrice == nil || *f.MaxPrice != 50000000 {
+		t.Fatalf("valid range parsed = %+v", f)
+	}
+	if _, err := parse("min_price=1000000&max_price=1000000"); err != nil {
+		t.Fatalf("equal bounds err = %v, want nil", err)
+	}
+	if _, err := parse("min_price=-1&max_price=1000000"); !errors.Is(err, catalogpage.ErrInvalid) {
+		t.Fatalf("negative min err = %v, want ErrInvalid", err)
+	}
+	if _, err := parse("min_price=1000000"); err != nil {
+		t.Fatalf("min-only err = %v, want nil", err)
+	}
+	if _, err := parse("max_price=1000000"); err != nil {
+		t.Fatalf("max-only err = %v, want nil", err)
+	}
+}
+
+// Batch 2, A1/E2: the match-time normaliser strips ZWNJ on top of the
+// logging normalisation, agrees exactly with the repository-side helper
+// (catalogpage.NormalizeSearchForMatch), and never changes the logging
+// normaliser itself (E2-5: a 1-char query still matches; only logging
+// is suppressed).
+func TestNormalizeSearchTermForMatch(t *testing.T) {
+	for _, term := range []string{"\u0637\u0644\u0627", "  \u0633\u0644\u0627\u0645  \u0643\u062a\u0627\u0628 \u064a ", "هندز\u200cفری", "هندزفر\u064a", "هندز فری", "ساعت  هوشمند", "\u200c"} {
+		if got, want := normalizeSearchTermForMatch(term), catalogpage.NormalizeSearchForMatch(term); got != want {
+			t.Errorf("normalizeSearchTermForMatch(%q) = %q, catalogpage = %q", term, got, want)
+		}
+	}
+	if got := normalizeSearchTermForMatch("هندز\u200cفری"); got != "هندزفری" {
+		t.Errorf("normalizeSearchTermForMatch(ZWNJ) = %q, want \u0647\u0646\u062f\u0632\u0641\u0631\u06cc", got)
+	}
+	// The logging normaliser keeps the ZWNJ: its behaviour is unchanged.
+	if got := normalizeSearchTerm("هندز\u200cفری"); got != "هندز\u200cفری" {
+		t.Errorf("normalizeSearchTerm must keep ZWNJ, got %q", got)
+	}
+	// E2 threshold lockstep: the logging guard (here) and the insight
+	// hardening (supplierSearchInsightMinTermRunes, asserted == 2 in the
+	// repository tests) must both stay at 2.
+	if minSearchLogTermRunes != 2 {
+		t.Fatalf("minSearchLogTermRunes = %d, want 2", minSearchLogTermRunes)
 	}
 }

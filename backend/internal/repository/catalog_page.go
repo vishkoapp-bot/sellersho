@@ -48,6 +48,14 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 	arg := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
 	// This SQL gate independently checks ID/type; a supplied Scope cannot promote
 	// a dropshipper to central. Authoritative price revision checks remain a gate.
+	searching := filter.Search != ""
+	if searching {
+		setSearchJITOff(ctx, tx)
+	}
+	hasCategories := false
+	if searching {
+		hasCategories = categoriesTableExistsTx(ctx, tx)
+	}
 	from := ` FROM products p JOIN stores scope_store ON scope_store.id=` + arg(scope.ID) + ` AND scope_store.owner_type=` + arg(scope.OwnerType)
 	position := `0`
 	if scoped {
@@ -74,9 +82,11 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 	if filter.InStockOnly {
 		where = append(where, `p.stock>0`)
 	}
-	if filter.Search != "" {
-		search := arg("%" + strings.ToLower(filter.Search) + "%")
-		where = append(where, `(LOWER(p.title) LIKE `+search+` OR LOWER(p.description) LIKE `+search+`)`)
+	rankExpr := ""
+	if searching {
+		searchWhere, searchRank := buildSearchCondition(filter.Search, arg, hasCategories)
+		where = append(where, searchWhere)
+		rankExpr = searchRank
 	}
 	attributeIDs := make([]int, 0, len(filter.Attributes))
 	for id := range filter.Attributes {
@@ -100,17 +110,30 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 	} else if filter.Sort == "newest" {
 		order = `p.created_at DESC,p.id DESC`
 	}
+	// Batch 2, A1: rank leads on search pages (see GetPricedProductPageTx).
+	selectRank := ""
+	if searching {
+		order = rankExpr + ` ASC,` + order
+		selectRank = `,` + rankExpr
+	}
 	if after != nil {
+		var afterPred string
 		switch {
 		case filter.StorePosition:
-			where = append(where, `(`+position+`,p.id)>(`+arg(after.Position)+`,`+arg(after.ID)+`)`)
+			afterPred = `(` + position + `,p.id)>(` + arg(after.Position) + `,` + arg(after.ID) + `)`
 		case filter.Sort == "newest":
-			where = append(where, `(p.created_at,p.id)<(`+arg(after.CreatedAt)+`,`+arg(after.ID)+`)`)
+			afterPred = `(p.created_at,p.id)<(` + arg(after.CreatedAt) + `,` + arg(after.ID) + `)`
 		default:
-			where = append(where, `(COALESCE(p.is_featured,FALSE),p.created_at,p.id)<(`+arg(after.Featured)+`,`+arg(after.CreatedAt)+`,`+arg(after.ID)+`)`)
+			afterPred = `(COALESCE(p.is_featured,FALSE),p.created_at,p.id)<(` + arg(after.Featured) + `,` + arg(after.CreatedAt) + `,` + arg(after.ID) + `)`
+		}
+		if searching {
+			rankArg := arg(after.Rank)
+			where = append(where, `(`+rankExpr+` > `+rankArg+` OR (`+rankExpr+` = `+rankArg+` AND `+afterPred+`))`)
+		} else {
+			where = append(where, afterPred)
 		}
 	}
-	query := `SELECT p.id,COALESCE(p.is_featured,FALSE),p.created_at,` + position + from + ` WHERE ` + strings.Join(where, ` AND `) + ` ORDER BY ` + order + ` LIMIT ` + arg(size+1)
+	query := `SELECT p.id,COALESCE(p.is_featured,FALSE),p.created_at,` + position + selectRank + from + ` WHERE ` + strings.Join(where, ` AND `) + ` ORDER BY ` + order + ` LIMIT ` + arg(size+1)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return page, err
@@ -121,7 +144,8 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 		var featured bool
 		var created time.Time
 		var pos int64
-		if err := rows.Scan(&key.ID, &featured, &created, &pos); err != nil {
+		var rank int
+		if err := scanRow(rows, searching, &key.ID, &featured, &created, &pos, &rank); err != nil {
 			return page, err
 		}
 		if filter.StorePosition {
@@ -132,6 +156,7 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 				key.Featured = featured
 			}
 		}
+		key.Rank = rank
 		page.Keys = append(page.Keys, key)
 	}
 	if err := rows.Err(); err != nil {

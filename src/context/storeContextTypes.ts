@@ -123,6 +123,7 @@ export interface StoreContextType {
   niches: Niche[];
   catalogLoading: boolean;
   catalogError: string | null;
+  catalogPriceRangeError: boolean;
   // PERF-01: paged catalog (ProductContext passthrough).
   catalogFilter: import('./ProductContext').CatalogFilter;
   setCatalogFilter: (patch: Partial<import('./ProductContext').CatalogFilter>) => void;

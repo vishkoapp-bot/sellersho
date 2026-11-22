@@ -406,3 +406,66 @@ func TestSupplierSearchInsightMissingSearchTable(t *testing.T) {
 		t.Fatalf("trend must still be computed without the table: %+v", a.OwnProductTrend)
 	}
 }
+
+// Batch 2, E2: fragment hardening. Fixture: س (5), سا (6), ساعت (14),
+// گل (3) and گ (20) in the window, with sup-a footprint products whose
+// titles contain ساعت and گل. The insight must return ساعت and گل and
+// neither س nor سا — س drops by length, سا as a strict prefix of ساعت
+// with a lower count, and گ by length even though its count (20) is
+// higher than its full term گل (3).
+func TestSupplierSearchInsightFragmentHardening(t *testing.T) {
+	db := team04TestDB(t)
+	searchInsightSeed(t, db)
+	repo := NewSupplierRepository(db)
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO products (id,title,slug,category_slug,supplier_id,image_url,brand,is_active) VALUES ('pa3','ساعت هوشمند الف','pa3','sportswear','sup-a','','برند الف',TRUE)`,
+		`INSERT INTO products (id,title,slug,category_slug,supplier_id,image_url,brand,is_active) VALUES ('pa4','گلدان الف','pa4','sportswear','sup-a','','برند الف',TRUE)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("fragment seed failed: %v", err)
+		}
+	}
+	logSearch := func(term string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			if _, err := db.Exec(`INSERT INTO search_queries (term_normalized, store_slug, result_count, catalog_result_count, created_at)
+				VALUES ($1, 'central', 5, 5, NOW() - INTERVAL '1 day')`, term); err != nil {
+				t.Fatalf("fragment log seed (%q): %v", term, err)
+			}
+		}
+	}
+	logSearch("س", 5)
+	logSearch("سا", 6)
+	logSearch("ساعت", 14)
+	logSearch("گل", 3)
+	logSearch("گ", 20)
+
+	a, err := repo.GetSupplierSearchInsight(ctx, "sup-a", 30)
+	if err != nil {
+		t.Fatalf("GetSupplierSearchInsight(sup-a): %v", err)
+	}
+	demand := demandTerms(a)
+	unmet := unmetTerms(a)
+	if d, ok := demand["ساعت"]; !ok || d.Searches != 14 {
+		t.Fatalf("topDemand missing ساعت (14): %+v", a.TopDemand)
+	}
+	if d, ok := demand["گل"]; !ok || d.Searches != 3 {
+		t.Fatalf("topDemand missing گل (3): %+v", a.TopDemand)
+	}
+	for _, frag := range []string{"س", "سا", "گ"} {
+		if _, ok := demand[frag]; ok {
+			t.Fatalf("fragment %q must not appear in topDemand: %+v", frag, a.TopDemand)
+		}
+		if _, ok := unmet[frag]; ok {
+			t.Fatalf("fragment %q must not appear in unmetInScope: %+v", frag, a.UnmetInScope)
+		}
+	}
+	// The insight threshold is 2, matching the handler logging guard
+	// (minSearchLogTermRunes, cmd/server — asserted == 2 in
+	// TestNormalizeSearchTermForMatch's package); the two must not
+	// drift silently.
+	if supplierSearchInsightMinTermRunes != 2 {
+		t.Fatalf("insight threshold = %d, want 2", supplierSearchInsightMinTermRunes)
+	}
+}

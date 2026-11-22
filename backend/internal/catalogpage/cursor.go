@@ -90,6 +90,8 @@ type Filter struct {
 
 // Key carries public ordering values only. In particular, supplier base costs
 // are never an ordering key or a cursor field. ID breaks every sort tie.
+// Rank (Batch 2, A1) is the search match rank — 0 title, 1 brand/category,
+// 2 description-only — and is 0 whenever the page is not a search page.
 type Key struct {
 	ID        string    `json:"id"`
 	Featured  bool      `json:"featured,omitempty"`
@@ -97,7 +99,13 @@ type Key struct {
 	Position  int64     `json:"position,omitempty"`
 	Price     int64     `json:"price,omitempty"`
 	Discount  int       `json:"discount,omitempty"`
+	Rank      int       `json:"rank,omitempty"`
 }
+
+// CursorVersion is the cursor wire version. v2 (Batch 2, A1) added Key.Rank:
+// v1 cursors carry no rank and would mis-page a search that continues
+// across the deploy, so v1 tokens fail closed with ErrInvalid.
+const CursorVersion = 2
 
 type cursor struct {
 	Version int    `json:"v"`
@@ -204,6 +212,12 @@ func validateKey(filter Filter, key Key) error {
 	if key.ID == "" || !validText(key.ID, 50) || key.Price < 0 || key.Price > pricing.MaxTransportMoney || key.Discount < 0 || key.Discount > 100 {
 		return ErrInvalid
 	}
+	// Batch 2, A1: Rank is 0..2, and a non-zero rank is only meaningful
+	// on a search page — a key with Rank != 0 and an empty search term
+	// is invalid.
+	if key.Rank < 0 || key.Rank > 2 || (filter.Search == "" && key.Rank != 0) {
+		return ErrInvalid
+	}
 	if filter.StorePosition {
 		// store_products.position is a signed PostgreSQL integer, with no
 		// nonnegative constraint. Existing negative positions remain pageable.
@@ -256,7 +270,7 @@ func Encode(scope Scope, filter Filter, key Key) (string, error) {
 	if !key.CreatedAt.IsZero() {
 		key.CreatedAt = key.CreatedAt.UTC()
 	}
-	data, err := json.Marshal(cursor{Version: 1, Binding: binding, Key: key})
+	data, err := json.Marshal(cursor{Version: CursorVersion, Binding: binding, Key: key})
 	if err != nil {
 		return "", ErrInvalid
 	}
@@ -281,7 +295,7 @@ func Decode(token string, scope Scope, filter Filter) (Key, error) {
 	var parsed cursor
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&parsed) != nil || parsed.Version != 1 || len(parsed.Binding) != 64 {
+	if decoder.Decode(&parsed) != nil || parsed.Version != CursorVersion || len(parsed.Binding) != 64 {
 		return Key{}, ErrInvalid
 	}
 	if _, err = hex.DecodeString(parsed.Binding); err != nil {

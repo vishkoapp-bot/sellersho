@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/catalogpage"
@@ -205,6 +206,27 @@ func normalizeSearchTerm(term string) string {
 	}
 	return b.String()
 }
+
+// normalizeSearchTermForMatch is the match-time twin of
+// normalizeSearchTerm (Batch 2, A1): the logging normalisation above,
+// plus deleting every U+200C ZERO WIDTH NON-JOINER, so «هندز‌فری»,
+// «هندز فری» and «هندزفری» all match. normalizeSearchTerm itself is
+// deliberately NOT changed — it stays the logging normaliser. The
+// repository layer uses catalogpage.NormalizeSearchForMatch, which
+// implements the identical pipeline; the two are asserted equal in
+// TestNormalizeSearchTermForMatch.
+func normalizeSearchTermForMatch(term string) string {
+	return strings.ReplaceAll(normalizeSearchTerm(term), "\u200c", "")
+}
+
+// minSearchLogTermRunes is the minimum length (in runes) of a search
+// term worth logging (Batch 2, E2). Single letters carry no demand
+// signal and are almost always keystroke prefixes of a longer term.
+// 2-char terms (e.g. «گل») are legitimate signal and are kept.
+// Owner-tunable: raise to 3 only if the owner confirms no 2-char term
+// matters. This guards LOGGING only, at the log call site — a 1-char
+// query still searches normally.
+const minSearchLogTermRunes = 2
 
 // normalizePersianDigits converts Persian and Arabic-Indic digits to
 // Latin digits. Used only for parsing spn- numbers (D46), never to
@@ -586,6 +608,14 @@ func parseCatalogPageFilter(r *http.Request) (catalogpage.Filter, error) {
 		}
 		filter.MaxPrice = &n
 	}
+	// Batch 2, A4: an inverted price range is a 400, never an empty
+	// 200. bind() already rejects min > max, but this is the earliest
+	// validation point and the contract lock-in — it protects any
+	// future caller that parses without Validate. Equal bounds are a
+	// valid single-price point.
+	if filter.MinPrice != nil && filter.MaxPrice != nil && *filter.MinPrice > *filter.MaxPrice {
+		return filter, catalogpage.ErrInvalid
+	}
 	for key, values := range q {
 		if !strings.HasPrefix(key, "attr_") {
 			continue
@@ -821,12 +851,21 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// store-assortment split for seller search-insight is a separate
 	// concern and is not conflated with a guessed number. The count
 	// logged is the TOTAL matched count, not the page size.
+	// Batch 2, E2: log only terms of >= minSearchLogTermRunes runes
+	// (single letters are keystroke prefixes, not demand signal), and
+	// never log a suggestion call (suggest=1 — the sender lands in
+	// Batch 3; until then no request carries the flag). The guard is
+	// at this call site ONLY: matching is unaffected, and
+	// LogSearchEvent itself stays a plain insert.
 	if filter.Search != "" {
 		effectiveSlug := storeSlug
 		if effectiveSlug == "" {
 			effectiveSlug = "central"
 		}
-		_ = catalogRepo.LogSearchEvent(ctx, normalizeSearchTerm(filter.Search), effectiveSlug, page.Total, page.Total)
+		normalized := normalizeSearchTerm(filter.Search)
+		if utf8.RuneCountInString(normalized) >= minSearchLogTermRunes && r.URL.Query().Get("suggest") != "1" {
+			_ = catalogRepo.LogSearchEvent(ctx, normalized, effectiveSlug, page.Total, page.Total)
+		}
 	}
 
 	// Load ONLY the selected page (PERF-01) and restore its order:

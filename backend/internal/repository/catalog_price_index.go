@@ -202,10 +202,15 @@ func priceFingerprintExpr(storePlaceholder, productAlias string, scoped bool) st
 // price predicates, price ordering and bounds); the suspended-supplier
 // clause is guarded inline with to_regclass so partial fixture databases
 // without a suppliers table keep the pre-suspension shape, exactly as
-// GetProducts degrades in Go.
-func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIndex bool) (from string, where []string, args []any, err error) {
+// GetProducts degrades in Go. hasCategories gates the category-title
+// search match (see buildSearchCondition). It also returns the search
+// rank expression ("" when the filter has no search). The search
+// predicate carries the pre-filter inline (see buildSearchCondition);
+// there is no CTE: the MATERIALIZED-CTE fence was measured slower
+// than the flat shape (see catalog_search.go) and was removed.
+func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIndex bool, hasCategories bool) (from string, where []string, args []any, rankExpr string, err error) {
 	if err := catalogpage.Validate(scope, filter, nil); err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, "", err
 	}
 	arg := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
 	scoped := scope.OwnerType == "dropshipper"
@@ -237,8 +242,9 @@ func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIn
 		where = append(where, `p.stock>0`)
 	}
 	if filter.Search != "" {
-		search := arg("%" + strings.ToLower(filter.Search) + "%")
-		where = append(where, `(LOWER(p.title) LIKE `+search+` OR LOWER(p.description) LIKE `+search+`)`)
+		searchWhere, searchRank := buildSearchCondition(filter.Search, arg, hasCategories)
+		where = append(where, searchWhere)
+		rankExpr = searchRank
 	}
 	attributeIDs := make([]int, 0, len(filter.Attributes))
 	for id := range filter.Attributes {
@@ -264,7 +270,7 @@ func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIn
 			where = append(where, `idx.main_price<=`+arg(*filter.MaxPrice))
 		}
 	}
-	return from, where, args, nil
+	return from, where, args, rankExpr, nil
 }
 
 // ProbeCatalogPricesTx returns the filtered total and the IDs whose index
@@ -276,7 +282,10 @@ func (r *CatalogRepository) ProbeCatalogPricesTx(ctx context.Context, tx *sql.Tx
 	if filter.Sort == "" {
 		filter.Sort = "featured"
 	}
-	from, where, args, err := priceFilterParts(scope, filter, false)
+	if filter.Search != "" {
+		setSearchJITOff(ctx, tx)
+	}
+	from, where, args, _, err := priceFilterParts(scope, filter, false, categoriesTableExistsTx(ctx, tx))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -725,7 +734,11 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 	}
 	pricedSort := filter.Sort == "cheapest" || filter.Sort == "expensive" || filter.Sort == "discount"
 	withIndex := pricedSort || filter.MinPrice != nil || filter.MaxPrice != nil
-	from, where, args, err := priceFilterParts(scope, filter, withIndex)
+	searching := filter.Search != ""
+	if searching {
+		setSearchJITOff(ctx, tx)
+	}
+	from, where, args, rankExpr, err := priceFilterParts(scope, filter, withIndex, categoriesTableExistsTx(ctx, tx))
 	if err != nil {
 		return page, err
 	}
@@ -753,6 +766,17 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 		order = `COALESCE(p.is_featured,FALSE) DESC,p.created_at DESC,p.id DESC`
 		selectCols = `p.id,COALESCE(p.is_featured,FALSE),p.created_at`
 	}
+	// Batch 2, A1: on a search page the match rank leads the order
+	// (title above brand/category above description-only), then the
+	// existing order decides ties. Without a search the rank term is
+	// omitted entirely, keeping non-search paging byte-identical.
+	// Search pages run single-statement (total via COUNT(*) OVER()
+	// on the pre-cursor set, after-key on the projected columns
+	// outside the window) so the pre-filtered CTE + predicate run
+	// once per page call instead of twice (COUNT + SELECT).
+	if searching {
+		return r.getPricedProductPageSearchTx(ctx, tx, scope, filter, size, after, from, where, args, rankExpr, position, pricedSort)
+	}
 	// The total is the FULL filtered count (stable across pages), so it
 	// is computed BEFORE the after-key predicate is appended below.
 	// Products whose pricing errors have no index row are not listable,
@@ -763,22 +787,35 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 	if after != nil {
 		priceArg := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
 		idArg := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
+		var afterPred string
 		switch {
 		case filter.StorePosition:
-			where = append(where, `(`+position+`,p.id)>(`+priceArg(after.Position)+`,`+idArg(after.ID)+`)`)
+			afterPred = `(` + position + `,p.id)>(` + priceArg(after.Position) + `,` + idArg(after.ID) + `)`
 		case filter.Sort == "newest":
-			where = append(where, `(p.created_at,p.id)<(`+priceArg(after.CreatedAt)+`,`+idArg(after.ID)+`)`)
+			afterPred = `(p.created_at,p.id)<(` + priceArg(after.CreatedAt) + `,` + idArg(after.ID) + `)`
 		case filter.Sort == "cheapest":
 			col := `idx.main_price`
-			where = append(where, `(`+col+` > `+priceArg(after.Price)+` OR (`+col+` = `+priceArg(after.Price)+` AND p.id > `+idArg(after.ID)+`))`)
+			afterPred = `(` + col + ` > ` + priceArg(after.Price) + ` OR (` + col + ` = ` + priceArg(after.Price) + ` AND p.id > ` + idArg(after.ID) + `))`
 		case filter.Sort == "expensive":
 			col := `idx.main_price`
-			where = append(where, `(`+col+` < `+priceArg(after.Price)+` OR (`+col+` = `+priceArg(after.Price)+` AND p.id > `+idArg(after.ID)+`))`)
+			afterPred = `(` + col + ` < ` + priceArg(after.Price) + ` OR (` + col + ` = ` + priceArg(after.Price) + ` AND p.id > ` + idArg(after.ID) + `))`
 		case filter.Sort == "discount":
 			col := `idx.discount_pct`
-			where = append(where, `(`+col+` < `+priceArg(after.Discount)+` OR (`+col+` = `+priceArg(after.Discount)+` AND p.id > `+idArg(after.ID)+`))`)
+			afterPred = `(` + col + ` < ` + priceArg(after.Discount) + ` OR (` + col + ` = ` + priceArg(after.Discount) + ` AND p.id > ` + idArg(after.ID) + `))`
 		default: // featured
-			where = append(where, `(COALESCE(p.is_featured,FALSE),p.created_at,p.id)<(`+priceArg(after.Featured)+`,`+priceArg(after.CreatedAt)+`,`+idArg(after.ID)+`)`)
+			afterPred = `(COALESCE(p.is_featured,FALSE),p.created_at,p.id)<(` + priceArg(after.Featured) + `,` + priceArg(after.CreatedAt) + `,` + idArg(after.ID) + `)`
+		}
+		if searching {
+			// Rank leads ASC while the rest of the tuple keeps its
+			// own directions, so a single tuple comparison cannot
+			// express the after-key: rank strictly greater, or equal
+			// rank with the existing tuple predicate. Without this,
+			// page 2+ of a search could repeat or skip rows across
+			// a rank boundary.
+			rankArg := priceArg(after.Rank)
+			where = append(where, `(`+rankExpr+` > `+rankArg+` OR (`+rankExpr+` = `+rankArg+` AND `+afterPred+`))`)
+		} else {
+			where = append(where, afterPred)
 		}
 	}
 	args = append(args, size+1)
@@ -790,21 +827,22 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 	defer rows.Close()
 	for rows.Next() {
 		var key catalogpage.Key
+		var rank int
 		switch {
 		case filter.StorePosition:
 			var pos int64
-			if err := rows.Scan(&key.ID, &pos); err != nil {
+			if err := scanRow(rows, searching, &key.ID, &pos, &rank); err != nil {
 				return page, err
 			}
 			key.Position = pos
 		case filter.Sort == "newest":
 			var created time.Time
-			if err := rows.Scan(&key.ID, &created); err != nil {
+			if err := scanRow(rows, searching, &key.ID, &created, &rank); err != nil {
 				return page, err
 			}
 			key.CreatedAt = created.UTC()
 		case pricedSort:
-			if err := rows.Scan(&key.ID, &key.Price, &key.Discount); err != nil {
+			if err := scanRow(rows, searching, &key.ID, &key.Price, &key.Discount, &rank); err != nil {
 				return page, err
 			}
 			if filter.Sort == "discount" {
@@ -815,12 +853,134 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 		default: // featured
 			var featured bool
 			var created time.Time
-			if err := rows.Scan(&key.ID, &featured, &created); err != nil {
+			if err := scanRow(rows, searching, &key.ID, &featured, &created, &rank); err != nil {
 				return page, err
 			}
 			key.Featured = featured
 			key.CreatedAt = created.UTC()
 		}
+		key.Rank = rank
+		page.Keys = append(page.Keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	page.HasMore = len(page.Keys) > size
+	if page.HasMore {
+		page.Keys = page.Keys[:size]
+	}
+	return page, nil
+}
+
+// getPricedProductPageSearchTx is the single-statement search page for
+// GetPricedProductPageTx (prefilter-soundness.md §3.2). The inner query
+// (MATERIALIZED filtered CTE) selects the page keys, the rank
+// (projected as a column — NOT computed once: rankExpr re-evaluates
+// the title/brand/category chains, so WHERE + rank CASE = 2× per
+// surviving row; there is no _n match-boolean CTE in this tree —
+// see buildSearchCondition) and COUNT(*) OVER() as the total,
+// over the filtered set BEFORE any after-key predicate. The outer query
+// then applies the after-key predicate to the PROJECTED rank + sort
+// columns and orders by rank + the existing sort. Because the window is
+// evaluated inside the CTE and the after-key lives outside it, the total
+// is the full filtered count, stable across pages (page 2 does not
+// report a shrinking total). Empty result: the outer query returns zero
+// rows and page.Total stays 0 (the window has no row to carry a total).
+func (r *CatalogRepository) getPricedProductPageSearchTx(ctx context.Context, tx *sql.Tx, scope catalogpage.Scope, filter catalogpage.Filter, size int, after *catalogpage.Key, from string, where []string, args []any, rankExpr, position string, pricedSort bool) (CatalogPricedPage, error) {
+	page := CatalogPricedPage{Keys: []catalogpage.Key{}}
+	var aliasedSelect, aliasedOrder, outerCols string
+	switch {
+	case filter.StorePosition:
+		aliasedSelect = `p.id AS id, ` + position + ` AS position`
+		aliasedOrder = `position ASC, id ASC`
+		outerCols = `id, position`
+	case filter.Sort == "newest":
+		aliasedSelect = `p.id AS id, p.created_at AS created_at`
+		aliasedOrder = `created_at DESC, id DESC`
+		outerCols = `id, created_at`
+	case pricedSort:
+		aliasedSelect = `p.id AS id, idx.main_price AS main_price, idx.discount_pct AS discount_pct`
+		switch filter.Sort {
+		case "cheapest":
+			aliasedOrder = `main_price ASC, id ASC`
+		case "expensive":
+			aliasedOrder = `main_price DESC, id ASC`
+		default: // discount
+			aliasedOrder = `discount_pct DESC, id ASC`
+		}
+		outerCols = `id, main_price, discount_pct`
+	default: // featured
+		aliasedSelect = `p.id AS id, COALESCE(p.is_featured,FALSE) AS featured, p.created_at AS created_at`
+		aliasedOrder = `featured DESC, created_at DESC, id DESC`
+		outerCols = `id, featured, created_at`
+	}
+	inner := `WITH filtered AS MATERIALIZED (SELECT ` + aliasedSelect + `, ` + rankExpr + ` AS rank, COUNT(*) OVER() AS total` + from + ` WHERE ` + strings.Join(where, ` AND `) + `)`
+	outerWhere := ""
+	if after != nil {
+		arg := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
+		var tuplePred string
+		switch {
+		case filter.StorePosition:
+			tuplePred = `(position,id)>(` + arg(after.Position) + `,` + arg(after.ID) + `)`
+		case filter.Sort == "newest":
+			tuplePred = `(created_at,id)<(` + arg(after.CreatedAt) + `,` + arg(after.ID) + `)`
+		case filter.Sort == "cheapest":
+			tuplePred = `(main_price > ` + arg(after.Price) + ` OR (main_price = ` + arg(after.Price) + ` AND id > ` + arg(after.ID) + `))`
+		case filter.Sort == "expensive":
+			tuplePred = `(main_price < ` + arg(after.Price) + ` OR (main_price = ` + arg(after.Price) + ` AND id > ` + arg(after.ID) + `))`
+		case filter.Sort == "discount":
+			tuplePred = `(discount_pct < ` + arg(after.Discount) + ` OR (discount_pct = ` + arg(after.Discount) + ` AND id > ` + arg(after.ID) + `))`
+		default: // featured
+			tuplePred = `(featured,created_at,id)<(` + arg(after.Featured) + `,` + arg(after.CreatedAt) + `,` + arg(after.ID) + `)`
+		}
+		// Rank leads ASC while the rest of the tuple keeps its own
+		// directions: rank strictly greater, or equal rank with the
+		// existing tuple predicate.
+		outerWhere = ` WHERE (rank > ` + arg(after.Rank) + ` OR (rank = ` + arg(after.Rank) + ` AND ` + tuplePred + `))`
+	}
+	args = append(args, size+1)
+	limitArg := fmt.Sprintf("$%d", len(args))
+	rows, err := tx.QueryContext(ctx, inner+` SELECT `+outerCols+`, rank, total FROM filtered`+outerWhere+` ORDER BY rank ASC, `+aliasedOrder+` LIMIT `+limitArg, args...)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key catalogpage.Key
+		var rank, total int
+		switch {
+		case filter.StorePosition:
+			var pos int64
+			if err := rows.Scan(&key.ID, &pos, &rank, &total); err != nil {
+				return page, err
+			}
+			key.Position = pos
+		case filter.Sort == "newest":
+			var created time.Time
+			if err := rows.Scan(&key.ID, &created, &rank, &total); err != nil {
+				return page, err
+			}
+			key.CreatedAt = created.UTC()
+		case pricedSort:
+			if err := rows.Scan(&key.ID, &key.Price, &key.Discount, &rank, &total); err != nil {
+				return page, err
+			}
+			if filter.Sort == "discount" {
+				key.Price = 0
+			} else {
+				key.Discount = 0
+			}
+		default: // featured
+			var featured bool
+			var created time.Time
+			if err := rows.Scan(&key.ID, &featured, &created, &rank, &total); err != nil {
+				return page, err
+			}
+			key.Featured = featured
+			key.CreatedAt = created.UTC()
+		}
+		key.Rank = rank
+		page.Total = total
 		page.Keys = append(page.Keys, key)
 	}
 	if err := rows.Err(); err != nil {
@@ -835,9 +995,14 @@ func (r *CatalogRepository) GetPricedProductPageTx(ctx context.Context, tx *sql.
 
 // CountCatalogCandidatesTx counts the filtered set for non-price sorts
 // (same predicates as GetProductCandidatePageTx, no fingerprint, no
-// index). Used for the envelope total and the search-event count.
+// index). It has NO live callers (test-only): the live envelope total
+// comes from the window COUNT(*) OVER() in the single-statement page
+// (getPricedProductPageSearchTx), not from this function.
 func (r *CatalogRepository) CountCatalogCandidatesTx(ctx context.Context, tx *sql.Tx, scope catalogpage.Scope, filter catalogpage.Filter) (int, error) {
-	from, where, args, err := priceFilterParts(scope, filter, false)
+	if filter.Search != "" {
+		setSearchJITOff(ctx, tx)
+	}
+	from, where, args, _, err := priceFilterParts(scope, filter, false, categoriesTableExistsTx(ctx, tx))
 	if err != nil {
 		return 0, err
 	}
@@ -854,7 +1019,10 @@ func (r *CatalogRepository) CountCatalogCandidatesTx(ctx context.Context, tx *sq
 // from all three numbers, exactly as computePriceBounds excludes them.
 func (r *CatalogRepository) GetCatalogPriceBoundsTx(ctx context.Context, tx *sql.Tx, scope catalogpage.Scope, filter catalogpage.Filter) (CatalogPriceBounds, error) {
 	var bounds CatalogPriceBounds
-	from, where, args, err := priceFilterParts(scope, filter, true)
+	if filter.Search != "" {
+		setSearchJITOff(ctx, tx)
+	}
+	from, where, args, _, err := priceFilterParts(scope, filter, true, categoriesTableExistsTx(ctx, tx))
 	if err != nil {
 		return bounds, err
 	}

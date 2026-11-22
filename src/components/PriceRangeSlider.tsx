@@ -11,9 +11,17 @@ interface PriceRangeSliderProps {
   value: [number, number];
   onChange: (value: [number, number]) => void;
   showHeader?: boolean;
+  /** A4: server-side 400 (inverted range) — renders the same inline message. */
+  serverRangeError?: boolean;
 }
 
+// A4: single source of truth for the price-range error message — text
+// validation, thumb/keyboard crossing and the server 400 all render this
+// constant verbatim.
+export const PRICE_RANGE_ERROR_MESSAGE = 'حداقل قیمت نمی‌تواند بیشتر از حداکثر قیمت باشد';
+
 const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
+const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
 
 const toFa = (n: number): string => {
   const grouped = Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '٬');
@@ -28,6 +36,26 @@ const parseFa = (raw: string): number => {
   return digits === '' ? NaN : Number(digits);
 };
 
+// A4: digit characters only (Latin/Persian/Arabic), mapped to Latin — the
+// live-formatting handler works on this; parseFa stays the commit side.
+const digitsOnly = (raw: string): string => raw
+  .replace(/[۰-۹]/g, (d) => String(FA_DIGITS.indexOf(d)))
+  .replace(/[٠-٩]/g, (d) => String(AR_DIGITS.indexOf(d)))
+  .replace(/[^0-9]/g, '');
+
+// A4: position in `formatted` just after its `count`-th digit character,
+// for caret restoration after live formatting inserts separators.
+const caretAfterDigits = (formatted: string, count: number): number => {
+  let seen = 0;
+  for (let i = 0; i < formatted.length; i++) {
+    if (/[۰-۹]/.test(formatted[i])) {
+      seen++;
+      if (seen === count) return i + 1;
+    }
+  }
+  return formatted.length;
+};
+
 const round1000 = (v: number) => Math.round(v / 1000) * 1000;
 
 export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
@@ -36,12 +64,20 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
   value,
   onChange,
   showHeader = true,
+  serverRangeError = false,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragThumb = useRef<'min' | 'max' | null>(null);
+  const minInputRef = useRef<HTMLInputElement>(null);
+  const maxInputRef = useRef<HTMLInputElement>(null);
   const [activeThumb, setActiveThumb] = useState<'min' | 'max' | null>(null);
   const [draftMin, setDraftMin] = useState<string | null>(null);
   const [draftMax, setDraftMax] = useState<string | null>(null);
+  // A4: which field the inline message is about ('min' | 'max'), or null.
+  const [rangeError, setRangeError] = useState<'min' | 'max' | null>(null);
+  // A4: last rejected draft, so a repeat rejection of the exact same
+  // draft does not refocus the field a second time (focus-trap guard).
+  const lastRejectedRef = useRef<{ which: 'min' | 'max'; draft: string } | null>(null);
 
   const [lo, hi] = value;
   const span = boundMax - boundMin;
@@ -77,13 +113,29 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
     return 1 - Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
   }, []);
 
+  // A4: the single funnel for thumb/pointer/keyboard commits. The value
+  // is clamped to the server bounds only; crossing the other bound stops
+  // the thumb exactly at it ([hi, hi] / [lo, lo]) and sets the inline
+  // message instead of silently rewriting the pair.
+  const commitThumbValue = useCallback(
+    (thumb: 'min' | 'max', v: number) => {
+      const clamped = Math.min(boundMax, Math.max(boundMin, round1000(v)));
+      if (thumb === 'min') {
+        if (clamped > hi) { onChange([hi, hi]); setRangeError('min'); }
+        else { onChange([clamped, hi]); setRangeError(null); }
+      } else {
+        if (clamped < lo) { onChange([lo, lo]); setRangeError('max'); }
+        else { onChange([lo, clamped]); setRangeError(null); }
+      }
+    },
+    [boundMin, boundMax, hi, lo, onChange],
+  );
+
   const applyFrac = useCallback(
     (thumb: 'min' | 'max', f: number) => {
-      const v = valueFromFrac(f);
-      if (thumb === 'min') onChange([Math.min(v, hi), hi]);
-      else onChange([lo, Math.max(v, lo)]);
+      commitThumbValue(thumb, valueFromFrac(f));
     },
-    [hi, lo, onChange, valueFromFrac],
+    [commitThumbValue, valueFromFrac],
   );
 
   const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -118,28 +170,75 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
     else if (e.key === 'End') next = boundMax;
     if (next === null) return;
     e.preventDefault();
-    const v = Math.min(boundMax, Math.max(boundMin, round1000(next)));
-    if (thumb === 'min') onChange([Math.min(v, hi), hi]);
-    else onChange([lo, Math.max(v, lo)]);
+    commitThumbValue(thumb, next);
+  };
+
+  // A4: live formatting while typing (replaces format-on-blur). Only digit
+  // characters survive; the draft is always the grouped Persian-digit
+  // rendering, so raw Latin digits never flash. The caret is restored to
+  // just after the same number of digits it preceded, once React commits.
+  const handleDraftInput = (which: 'min' | 'max') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const raw = input.value;
+    const sel = input.selectionStart ?? raw.length;
+    const digitsBefore = digitsOnly(raw.slice(0, sel)).length;
+    const digits = digitsOnly(raw);
+    const setDraft = which === 'min' ? setDraftMin : setDraftMax;
+    if (digits === '') { setDraft(''); return; }
+    setDraft(toFa(Number(digits)));
+    const ref = which === 'min' ? minInputRef : maxInputRef;
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      const pos = caretAfterDigits(el.value, digitsBefore);
+      el.setSelectionRange(pos, pos);
+    });
+  };
+
+  // A4: invalid text commit — reject, don't rewrite. The draft stays
+  // visible, the committed pair is unchanged (so no fetch fires), the
+  // offending field is refocused once; a repeat rejection of the exact
+  // same draft does not refocus again (the user Tabbed away deliberately).
+  const rejectDraft = (which: 'min' | 'max', draft: string) => {
+    setRangeError(which);
+    const last = lastRejectedRef.current;
+    if (last && last.which === which && last.draft === draft) return;
+    lastRejectedRef.current = { which, draft };
+    (which === 'min' ? minInputRef.current : maxInputRef.current)?.focus();
   };
 
   const commitDraft = (which: 'min' | 'max') => {
     const draft = which === 'min' ? draftMin : draftMax;
     if (draft === null) return;
-    if (which === 'min') setDraftMin(null);
-    else setDraftMax(null);
+    const clearDraft = () => { if (which === 'min') setDraftMin(null); else setDraftMax(null); };
+    // Empty means "abandon edit": revert to the committed value, no
+    // onChange, no error (unchanged behaviour).
+    if (draft.trim() === '') { clearDraft(); return; }
     const parsed = parseFa(draft);
-    if (Number.isNaN(parsed)) return;
+    if (Number.isNaN(parsed)) { clearDraft(); return; }
     const v = Math.min(boundMax, Math.max(boundMin, round1000(parsed)));
-    if (which === 'min') onChange([Math.min(v, hi), hi]);
-    else onChange([lo, Math.max(v, lo)]);
+    if (which === 'min' && v > hi) { rejectDraft('min', draft); return; }
+    if (which === 'max' && v < lo) { rejectDraft('max', draft); return; }
+    clearDraft();
+    setRangeError(null);
+    lastRejectedRef.current = null;
+    if (which === 'min') onChange([v, hi]);
+    else onChange([lo, v]);
   };
 
   // Keep drafts in sync when the value changes from outside (e.g. slider drag).
+  // A4: the local error clears only when the incoming value is the full
+  // bounds (an external reset). A crossing drag commits [hi, hi] / [lo, lo]
+  // and must NOT clear the message it just set, so never clear here
+  // unconditionally.
   useEffect(() => {
     setDraftMin(null);
     setDraftMax(null);
-  }, [lo, hi]);
+    if (lo === boundMin && hi === boundMax) {
+      setRangeError(null);
+      lastRejectedRef.current = null;
+    }
+  }, [lo, hi, boundMin, boundMax]);
 
   const thumbClass = (thumb: 'min' | 'max') =>
     `absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white border-2 shadow cursor-grab touch-none focus:outline-hidden focus:ring-2 focus:ring-brand/40 z-10 ${
@@ -202,9 +301,12 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
             inputMode="numeric"
             dir="ltr"
             aria-label="حداقل قیمت (تومان)"
+            ref={minInputRef}
+            aria-invalid={rangeError === 'min' || undefined}
+            aria-describedby={rangeError === 'min' || serverRangeError ? 'price-range-error' : undefined}
             className="w-full min-w-0 px-2 py-1.5 min-h-[36px] rounded-lg bg-white border border-slate-200 text-slate-700 text-[11px] lg:text-xs font-bold text-center outline-hidden focus:border-brand focus:ring-2 focus:ring-brand/20"
             value={draftMin ?? toFa(lo)}
-            onChange={(e) => setDraftMin(e.target.value)}
+            onChange={handleDraftInput('min')}
             onBlur={() => commitDraft('min')}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -218,9 +320,12 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
             inputMode="numeric"
             dir="ltr"
             aria-label="حداکثر قیمت (تومان)"
+            ref={maxInputRef}
+            aria-invalid={rangeError === 'max' || undefined}
+            aria-describedby={rangeError === 'max' || serverRangeError ? 'price-range-error' : undefined}
             className="w-full min-w-0 px-2 py-1.5 min-h-[36px] rounded-lg bg-white border border-slate-200 text-slate-700 text-[11px] lg:text-xs font-bold text-center outline-hidden focus:border-brand focus:ring-2 focus:ring-brand/20"
             value={draftMax ?? toFa(hi)}
-            onChange={(e) => setDraftMax(e.target.value)}
+            onChange={handleDraftInput('max')}
             onBlur={() => commitDraft('max')}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -228,6 +333,11 @@ export const PriceRangeSlider: React.FC<PriceRangeSliderProps> = ({
           />
         </label>
       </div>
+      {(rangeError !== null || serverRangeError) && (
+        <p data-testid="price-range-error" role="alert" id="price-range-error" className="text-[11px] text-rose-600 font-bold">
+          {PRICE_RANGE_ERROR_MESSAGE}
+        </p>
+      )}
     </div>
   );
 };

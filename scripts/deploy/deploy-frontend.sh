@@ -165,6 +165,15 @@ rollback() {
 # G8: extract OVER the live dist first (no dir removal, no rename),
 # then delete stale files last.
 if ! cp -rp --no-preserve=ownership "$WORK/." "$ROOT/dist/"; then rollback; exit 1; fi
+# Attempt-4 root cause: staged dist files are mode 660 (no world-read),
+# and the swap's cp -rp preserves source modes, so live dist became
+# 660 and nginx (www-data) got EACCES (403) on every request. Normalize
+# live dist to world-readable after the swap, before the health check.
+# The backup (above) is NOT touched here, so rollback still restores
+# the pre-deploy files with their original modes exactly.
+if ! chmod -R a+rX "$ROOT/dist"; then
+  echo "FAIL: could not normalize modes on live dist" >&2; rollback; exit 1
+fi
 (cd "$WORK" && find . -type f | sort > /tmp/rel01-new-files.txt)
 (cd "$ROOT/dist" && find . -type f | sort > /tmp/rel01-live-files.txt)
 STALE="$(comm -23 /tmp/rel01-live-files.txt /tmp/rel01-new-files.txt || true)"

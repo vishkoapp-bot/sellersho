@@ -197,6 +197,13 @@ echo "building frontend in stage (scrubbed env: no VITE_*, no inherited shell)..
 (cd "$OUT_DIR" && env -i HOME="$HOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" PUPPETEER_SKIP_DOWNLOAD=true "$NPM_BIN" run build)
 [ -f "$OUT_DIR/dist/index.html" ] || { echo "FAIL: frontend build produced no dist/index.html" >&2; exit 1; }
 echo "frontend build OK: $(find "$OUT_DIR/dist" -type f | wc -l) dist files"
+# Attempt-4 root cause: the vite build can leave dist files mode 660
+# (no world-read), and the deploy swap's cp -rp preserves source modes,
+# so live dist became 660 and nginx got EACCES (403). Normalize the
+# staged dist now so future stages are world-readable in the first
+# place. Content-only: the manifest (G3, below) records sha256 of file
+# contents, not modes, so this cannot change any manifest hash.
+chmod -R a+rX "$OUT_DIR/dist"
 
 # N1: node_modules served its purpose (the frontend build) and must
 # not ship in the staged release — it was 231 MB of retained

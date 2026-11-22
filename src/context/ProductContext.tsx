@@ -464,6 +464,8 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   const catalogFilterRef = useRef(catalogFilter);
   catalogFilterRef.current = catalogFilter;
   const [catalogTotal, setCatalogTotal] = useState(0);
+  // Keep the last complete page set across superseding fetches and terminal errors.
+  const lastLoadedCatalog = useRef<{ products: Product[]; total: number }>({ products: [], total: 0 });
   const [hasMoreCatalog, setHasMoreCatalog] = useState(false);
   const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
   const catalogCursorRef = useRef<string | null>(null);
@@ -513,7 +515,9 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     catalogAbortRef.current = controller;
     const requestId = ++catalogRequestIdRef.current;
     const key = catalogFilterKey;
-    catalogFilterKeyRef.current = key;
+    const previous = lastLoadedCatalog.current;
+    setBackendCatalogProducts([]);
+    setCatalogTotal(0);
     setCatalogLoading(true);
     setCatalogError(null);
     try {
@@ -529,14 +533,19 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
         attributes: catalogServerFilter.attributes,
       }, { signal: controller.signal });
       if (catalogRequestIdRef.current !== requestId || controller.signal.aborted) return;
+      const products = page.items.map(mapBackendProduct);
+      catalogFilterKeyRef.current = key;
       catalogCursorRef.current = page.nextCursor;
+      lastLoadedCatalog.current = { products, total: page.total };
       setHasMoreCatalog(page.hasMore);
       setCatalogTotal(page.total);
-      setBackendCatalogProducts(page.items.map(mapBackendProduct));
+      setBackendCatalogProducts(products);
       setCatalogPriceRangeError(false);
     } catch (err: any) {
       if (err?.name === 'AbortError' || controller.signal.aborted) return;
       if (catalogRequestIdRef.current !== requestId) return;
+      setBackendCatalogProducts(previous.products);
+      setCatalogTotal(previous.total);
       // A4: the backend 400s an inverted range (same-deploy backend
       // half). It is a filter error, not a catalog outage: surface it
       // as the inline price-range message, never the generic catalog
@@ -554,7 +563,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   }, [catalogFilterKey, catalogServerFilter]);
 
   const loadMoreCatalog = useCallback(async () => {
-    if (isMockMode() || catalogLoadingMoreRef.current) return;
+    if (isMockMode() || catalogLoading || catalogLoadingMoreRef.current) return;
     if (!hasMoreCatalog || !catalogCursorRef.current) return;
     // The filter must not have changed since these pages were loaded;
     // if it did, the page-1 fetch above owns the list now.
@@ -579,12 +588,14 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
       catalogCursorRef.current = page.nextCursor;
       setHasMoreCatalog(page.hasMore);
       setCatalogTotal(page.total);
-      setBackendCatalogProducts((prev) => {
-        const seen = new Set(prev.map((p) => p.id));
-        const fresh = page.items.map(mapBackendProduct).filter((p) => !seen.has(p.id));
-        return fresh.length === 0 ? prev : [...prev, ...fresh];
-      });
+      const previous = lastLoadedCatalog.current.products;
+      const seen = new Set(previous.map((product) => product.id));
+      const fresh = page.items.map(mapBackendProduct).filter((product) => !seen.has(product.id));
+      const products = fresh.length === 0 ? previous : [...previous, ...fresh];
+      lastLoadedCatalog.current = { products, total: page.total };
+      setBackendCatalogProducts(products);
     } catch (err: any) {
+      if (catalogRequestIdRef.current !== requestId) return;
       // A failed show-more leaves the loaded pages in place; the user
       // retries with the same button. AbortError here means nothing
       // was aborted (load-more has no signal); ignore it the same way.
@@ -596,7 +607,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
       catalogLoadingMoreRef.current = false;
       setCatalogLoadingMore(false);
     }
-  }, [catalogFilterKey, catalogServerFilter, hasMoreCatalog]);
+  }, [catalogFilterKey, catalogServerFilter, hasMoreCatalog, catalogLoading]);
 
   useEffect(() => {
     if (!isMockMode()) {
@@ -608,7 +619,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // Page 1 reloads whenever the server filter changes (category,
   // search, sort, facets, price). The filter key is a JSON string,
   // so an identical filter never triggers a second fetch.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (isMockMode()) return;
     fetchProducts();
   }, [fetchProducts]);

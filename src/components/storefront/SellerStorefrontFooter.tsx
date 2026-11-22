@@ -253,7 +253,7 @@ export const StorefrontBottomNav: React.FC = () => {
 
   return (
     <nav
-      className="fixed bottom-0 z-30 border-t border-x lg:hidden"
+      className="fixed bottom-0 z-30 h-16 border-t border-x lg:hidden"
       style={{
         left: 0,
         right: 0,

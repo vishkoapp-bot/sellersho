@@ -234,17 +234,14 @@ export const ProductGridSection: React.FC = () => {
           {/* PERF-01: the floor renders the loaded pages; when more
               pages remain, this loads the next one (the local
               filter/sort above then applies to the larger set). */}
-          {/* A5: server paging — labelled with the server total
-              (mirrors CatalogView's «نمایش بیشتر (M کالا)»). Also
-              rendered in carousel mode: one click both expands the
-              grid and fetches the next server page. */}
+          {/* Show how many products remain on the server across all loaded pages. */}
           {hasMoreCatalog && (
             <button
               onClick={() => { if (carouselMode) setShowAll(true); void loadMoreCatalog(); }}
               disabled={catalogLoadingMore}
               className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
             >
-              {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(catalogTotal > 0 ? catalogTotal : filtered.length)} کالا)`}
+              {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(catalogTotal - products.length)} کالای دیگر)`}
             </button>
           )}
         </>

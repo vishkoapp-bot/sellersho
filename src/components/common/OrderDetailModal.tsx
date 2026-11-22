@@ -124,7 +124,7 @@ export const OrderDetailModal: React.FC<Props> = ({ order, isOpen, onClose, hide
                 {breakdown.addonsTotal > 0 && (
                   <div className="flex justify-between"><span>محصولات مکمل:</span><strong>{formatPrice(breakdown.addonsTotal)} تومان</strong></div>
                 )}
-                <div className="flex justify-between"><span>هزینه ارسال:</span><strong>{(order.shippingCost || 0) > 0 ? `${formatPrice(order.shippingCost || 0)} تومان` : 'رایگان'}</strong></div>
+                <div className="flex justify-between"><span>هزینه ارسال:</span><strong>{`${formatPrice(order.shippingCost || 0)} تومان`}</strong></div>
               </>
             )}
             <div className="flex justify-between"><span>مبلغ فاکتور:</span><strong>{formatPrice(order.payableAmount)} تومان</strong></div>

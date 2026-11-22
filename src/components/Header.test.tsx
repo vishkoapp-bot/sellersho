@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
+import { fillInput } from '../../scripts/fixtures/catalog/batch8-browser';
 
 let server: ViteDevServer;
 let browser: Browser;
@@ -71,7 +72,7 @@ test('Enter after the suggestion fetch starts aborts it in flight and never open
   const context = await browser.createBrowserContext();
   try {
     const page = await context.newPage(); await ready(page);
-    await page.type('header input[type="text"]', 'تیشرت');
+    await fillInput(page, 'header input[type="text"]', 'تیشرت');
     await page.waitForFunction(() => (window as any).headerHarness.suggestCalls().length === 1, { timeout: 5000 });
     const before = await page.evaluate(() => (window as any).headerHarness.suggestCalls()[0]);
     assert.equal(before.aborted, false, 'the fetch is in flight, not yet aborted');
@@ -93,7 +94,7 @@ test('control: a resolving suggestion fetch opens the dropdown while the input s
   const context = await browser.createBrowserContext();
   try {
     const page = await context.newPage(); await ready(page);
-    await page.type('header input[type="text"]', 'تیشرت');
+    await fillInput(page, 'header input[type="text"]', 'تیشرت');
     await page.waitForFunction(() => (window as any).headerHarness.suggestCalls().length === 1, { timeout: 5000 });
     await page.evaluate(() => (window as any).headerHarness.resolveSuggestion([
       { id: 'prod-1cc63eae', title: 'تیشرت زنانه', price: 850000, originalPrice: 1000000, discountPercent: 15, image: '/templates/fashion/knitwear.webp' },

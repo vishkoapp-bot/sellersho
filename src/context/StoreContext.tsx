@@ -1,3 +1,4 @@
+import { useSellerOnboardingDraft } from './SellerOnboardingContext';
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { SearchX, ArrowRight } from 'lucide-react';
 import { 
@@ -179,6 +180,7 @@ const StoreContext = createContext<StoreState | undefined>(undefined);
 export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChildren?: boolean }> = ({ children, allowUnselectedChildren = false }) => {
   const { products, openProductDetail, currentProductDetail, setSearchQuery, setSelectedCategory, clearCatalogBrand, setWishlistScope } = useProducts();
   const { sellerSession } = useAuth();
+  const onboardingDraft = useSellerOnboardingDraft();
   const [stores, setStores] = useState<Store[]>([]);
   const [currentStore, setCurrentStore] = useState<Store | null>(null);
   const cart = useCart();
@@ -227,6 +229,9 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   const initialRoute = () => {
     if (typeof window === 'undefined') return { view: 'customer' as ActiveView, slug: null as string | null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined as string | undefined, spnNumber: undefined as number | undefined, spnc: undefined as string | undefined, storeSlug: null as string | null };
     const parsed = parsePathname(window.location.pathname, window.location.search);
+    if (onboardingDraft?.isOpen && parsed.view === 'customer' && window.history.state?.activeView === 'dropshipper_landing') {
+      return { view: 'dropshipper_landing' as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
+    }
     if (parsed.view === 'seller_storefront') return { view: parsed.view as ActiveView, slug: parsed.slug, unsubscribe: parsed.unsubscribe, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'product_detail') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc, storeSlug: parsed.storeSlug ?? null };
     if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
@@ -372,6 +377,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey });
       } else if (view === 'seller_dashboard') {
         path = pathForView(view, { sellerTab: navigation.sellerTab || sellerDashboardTab });
+      } else if (view === 'supplier_dashboard') {
+        path = pathForView(view);
       } else if (view === 'admin_panel') {
         path = '/admin';
       } else if (view === 'catalog') {
@@ -444,8 +451,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         setActiveViewState('seller_dashboard');
         return;
       }
-      if (parsed.view === 'catalog') {
-        setActiveViewState('catalog');
+      if (parsed.view === 'supplier_dashboard' || parsed.view === 'catalog') {
+        setActiveViewState(parsed.view);
         return;
       }
       const navigation = event.state as NavigationState | null;
@@ -461,7 +468,9 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   }, [products, openProductDetail]);
 
 const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteState.staticKey);
-  const [isSellerModalOpen, setIsSellerModalOpen] = useState(false);
+  const [localSellerModalOpen, setLocalSellerModalOpen] = useState(false);
+  const isSellerModalOpen = onboardingDraft?.isOpen ?? localSellerModalOpen;
+  const setIsSellerModalOpen = onboardingDraft?.setIsOpen ?? setLocalSellerModalOpen;
   // Worker A (buy-now): live direct-buy state; cleared as a pair.
   const [directBuy, setDirectBuy] = useState<DirectBuy | null>(null);
   const [directBuyAddress, setDirectBuyAddress] = useState<DirectBuyAddress | null>(null);

@@ -17,6 +17,7 @@ import { HomeFeedSections } from './components/HomeFeedSections';
 import { Footer } from './components/Footer';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartDrawer } from './components/CartDrawer';
+import { SellerOnboardingProvider } from './context/SellerOnboardingContext';
 import { SellerOnboardingModal } from './components/SellerOnboardingModal';
 import { OrderTrackingModal } from './components/OrderTrackingModal';
 import { BottomNav } from './components/BottomNav';
@@ -65,23 +66,26 @@ export const AppContent: React.FC = () => {
     routeProductInvalid,
     routeStoreSlug,
     openStorefront,
+    isSellerModalOpen,
   } = useStore();
 
+  const isProtectedView = ['seller_dashboard', 'supplier_dashboard', 'warehouse_panel', 'admin_panel'].includes(activeView);
+  const isOnboardingActive = isSellerModalOpen && !isProtectedView;
   const routedIdentity = useRef<string | null>(null);
   useEffect(() => {
     if (!isSessionReady || !currentUser) return;
     const requiredView = panelForRole(currentUser.role);
     const authorizedViews = panelsForCapabilities(currentUser.capabilities?.length ? currentUser.capabilities : [currentUser.role]);
     const identity = `${currentUser.id}:${currentUser.role}:${(currentUser.capabilities || []).join(',')}`;
-    const protectedViews = ['seller_dashboard', 'supplier_dashboard', 'warehouse_panel', 'admin_panel'];
-    const identityChanged = routedIdentity.current !== identity;
+    // An onboarding login resumes the draft before routing the new identity.
+    const identityChanged = !isOnboardingActive && routedIdentity.current !== identity;
     const activeViewAuthorized = authorizedViews.includes(activeView as any);
-    if (identityChanged || (protectedViews.includes(activeView) && !activeViewAuthorized)) {
+    if (identityChanged || (isProtectedView && !activeViewAuthorized)) {
       routedIdentity.current = identity;
       if (identityChanged && activeViewAuthorized) return;
       setActiveView(identityChanged ? requiredView : (authorizedViews[0] || requiredView));
     }
-  }, [activeView, currentUser, isSessionReady, panelForRole, setActiveView]);
+  }, [activeView, currentUser, isSessionReady, isOnboardingActive, isProtectedView, panelForRole, setActiveView]);
 
   // ISO-A (model a, picked-only showcase): central-home/under-own-store
   // frame guard. The central `customer` view must never render under a
@@ -103,6 +107,7 @@ export const AppContent: React.FC = () => {
   useEffect(() => {
     const ownStoreId = sellerSession?.storeId;
     if (
+      isOnboardingActive ||
       activeView !== 'customer' ||
       sellerSession?.status !== 'active' ||
       !ownStoreId ||
@@ -116,7 +121,7 @@ export const AppContent: React.FC = () => {
     if (ownStorefrontRedirectRef.current === ownStoreId) return;
     ownStorefrontRedirectRef.current = ownStoreId;
     openStorefront(currentStore.slug);
-  }, [activeView, sellerSession, currentStore, openStorefront]);
+  }, [activeView, sellerSession, currentStore, isOnboardingActive, openStorefront]);
 
   const adProductOpened = useRef(false);
   useEffect(() => {
@@ -141,8 +146,9 @@ export const AppContent: React.FC = () => {
     });
   }, [products, openProductDetail, setActiveView, storefrontSlug, currentStore]);
 
-  if (!isSessionReady) return <div role="status">در حال بررسی نشست…</div>;
-  if (currentUser) {
+  // OTP login revalidates the session while an open wizard still owns its draft.
+  if (!isSessionReady && !isOnboardingActive) return <div role="status">در حال بررسی نشست…</div>;
+  if (currentUser && !isOnboardingActive) {
     const panel = panelForRole(currentUser.role);
     const ready = panel === 'customer' ||
       (panel === 'supplier_dashboard' && supplierSession) ||
@@ -156,7 +162,7 @@ export const AppContent: React.FC = () => {
     }
   }
   const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
-  if (currentUser && ['seller_dashboard', 'supplier_dashboard', 'warehouse_panel', 'admin_panel'].includes(activeView) && !authorizedPanels.includes(activeView as any)) {
+  if (currentUser && isProtectedView && !authorizedPanels.includes(activeView as any)) {
     return <div role="status">در حال انتقال به پنل مجاز…</div>;
   }
 
@@ -211,7 +217,7 @@ export const AppContent: React.FC = () => {
           was lg:max-w-7xl, leaving pale side voids on wide desktops — the
           owner rejected the framed column; storefronts now render
           full-width on desktop like the homepage/static views. */}
-      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-20 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-20 ${isStorefront ? 'max-w-[504px] md:max-w-none md:shadow-none md:border-x-0 md:pb-0 lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
+      <div className={(isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-24 ${isStorefront ? 'max-w-[504px] md:max-w-none md:shadow-none md:border-x-0 lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
         {currentUser && authorizedPanels.length > 1 && (
           <nav aria-label="Workspace switcher" className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 no-scrollbar">
             {authorizedPanels.map((panel) => {
@@ -304,7 +310,7 @@ export const AppContent: React.FC = () => {
           )
         ) : activeView === 'catalog' ? (
           <>
-            <Header sticky={false} />
+            <Header />
             <CatalogView onBack={() => setActiveView('customer')} />
             <Footer />
           </>
@@ -420,7 +426,7 @@ export const AppContent: React.FC = () => {
         <CartDrawer />
         <SellerOnboardingModal />
         <OrderTrackingModal />
-        {activeView === 'seller_storefront' || (activeView === 'product_detail' && (routeStoreSlug || currentStore?.ownerType === 'dropshipper')) ? <StorefrontBottomNav /> : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
+        {activeView === 'seller_storefront' ? <StorefrontBottomNav /> : activeView === 'product_detail' && (routeStoreSlug || currentStore?.ownerType === 'dropshipper') ? null : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
       </div>
     </div>
   );
@@ -435,17 +441,19 @@ export const App: React.FC = () => {
     <AuthProvider>
       <ProductProvider>
         <CartProvider>
-          <OrderProvider>
-            <FinanceProvider>
-              <WarehouseProvider>
-                <StoreProvider>
-                  <ToastProvider>
-                    <AppContent />
-                  </ToastProvider>
-                </StoreProvider>
-              </WarehouseProvider>
-            </FinanceProvider>
-          </OrderProvider>
+          <SellerOnboardingProvider>
+            <OrderProvider>
+              <FinanceProvider>
+                <WarehouseProvider>
+                  <StoreProvider>
+                    <ToastProvider>
+                      <AppContent />
+                    </ToastProvider>
+                  </StoreProvider>
+                </WarehouseProvider>
+              </FinanceProvider>
+            </OrderProvider>
+          </SellerOnboardingProvider>
         </CartProvider>
       </ProductProvider>
     </AuthProvider>

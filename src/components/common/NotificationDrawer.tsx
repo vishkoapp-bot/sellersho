@@ -91,8 +91,8 @@ export type NotificationTab = 'all' | 'unread' | 'read';
 
 export const NOTIFICATION_TAB_LABELS: Record<NotificationTab, string> = {
   all: 'همه',
-  unread: 'خوانده‌نشده',
-  read: 'خوانده‌شده',
+  unread: 'خوانده نشده',
+  read: 'خوانده شده',
 };
 
 export const countNotificationsByTab = (items: NotificationItem[]): Record<NotificationTab, number> => ({

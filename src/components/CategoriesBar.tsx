@@ -165,7 +165,7 @@ export const CategoriesBar: React.FC = () => {
                     {/* Live count: current-store products, all viewports. */}
                     {count > 0 && (
                       <p className="text-[10px] lg:text-xs font-bold text-slate-400 text-center mt-0.5 leading-tight">
-                        {toPersianDigits(count)} کالا
+                        <span className="inline-flex gap-0.5"><span>{toPersianDigits(count)}</span><span>{' کالا'}</span></span>
                       </p>
                     )}
                   </div>

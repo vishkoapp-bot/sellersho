@@ -52,12 +52,15 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const lastScrolledTab = useRef(activeTab);
   // FIX 15: live syncs the active tab when the route's staticPageKey
   // changes (bundle z3) and scrolls the active tab into view; the
   // candidate kept the first tab forever across /about -> /license
   // navigation inside the same view instance.
   useEffect(() => { setActiveTab(staticPageKey || 'about'); setOpenFaq(0); }, [staticPageKey]);
   useEffect(() => {
+    if (lastScrolledTab.current === activeTab) return;
+    lastScrolledTab.current = activeTab;
     const el = tabRefs.current[activeTab];
     if (el) el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
   }, [activeTab]);
@@ -129,7 +132,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
 
       {/* Tabs (labels from CMS titles, CMS order) */}
       {pages && (
-        <div className="flex bg-white border-b border-slate-200 p-2 gap-1 overflow-x-auto no-scrollbar text-xs">
+        <div className="flex bg-white border-b border-slate-200 p-2 gap-1 overflow-x-auto no-scrollbar text-xs [mask-image:linear-gradient(to_left,black_92%,transparent)] sm:[mask-image:none]">
           {pages.map((p) => {
             const Icon = TAB_ICONS[p.key] || Info;
             return (

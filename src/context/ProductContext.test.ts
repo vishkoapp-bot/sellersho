@@ -1,6 +1,7 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeCatalogLists } from './ProductContext';
+import { batch8Browser } from '../../scripts/fixtures/catalog/batch8-browser';
 
 const product = (id: string) => ({ id, title: id } as any);
 
@@ -23,4 +24,24 @@ it('dedupes by id in both modes', () => {
   const customs = [product('x')];
   assert.equal(mergeCatalogLists(base, customs, false).length, 1);
   assert.equal(mergeCatalogLists(base, customs, true).length, 1);
+});
+
+const visit = batch8Browser();
+it('invalidates the previous page before a category fetch resolves and restores it on a terminal error', async () => {
+  await visit('/', 390, async page => {
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state?.().catalogTotal === 41);
+    await page.evaluate(() => {
+      history.pushState(null, '', '/?category=digital');
+      dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await page.waitForFunction(() => (window as any).batch8Fixture?.pending);
+    const catalog = () => page.evaluate(() => {
+      const { catalogTotal, productCount } = (window as any).batch8Fixture.state();
+      return [catalogTotal, productCount];
+    });
+    assert.deepEqual(await catalog(), [0, 0]);
+    await page.evaluate(() => (window as any).batch8Fixture.finish('error'));
+    await page.waitForFunction(() => (window as any).batch8Fixture.state().catalogTotal === 41);
+    assert.deepEqual(await catalog(), [41, 24]);
+  });
 });

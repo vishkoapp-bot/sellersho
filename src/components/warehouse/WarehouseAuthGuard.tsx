@@ -16,7 +16,6 @@ const OFFICIAL_WAREHOUSES = [
     warehouseId: 'WH-TEH-CENTRAL',
     warehouseName: 'انبار مکانیزه مرکزی تهران (مجتمع غرب)',
     staffName: 'علی کارگر (سرپرست شیفت A)',
-    mobile: '09000000071',
     code: 'WMS-1010',
     role: 'supervisor' as const,
   },
@@ -24,7 +23,6 @@ const OFFICIAL_WAREHOUSES = [
     warehouseId: 'WH-TEH-DOCK',
     warehouseName: 'انبار بارانداز و ترخیص شورش',
     staffName: 'مهدی صادقی (متصدی بارانداز و QC)',
-    mobile: '09000000007',
     code: 'WMS-2020',
     role: 'qc_inspector' as const,
   },
@@ -32,7 +30,6 @@ const OFFICIAL_WAREHOUSES = [
     warehouseId: 'WH-MHD-HUB',
     warehouseName: 'هاب توزیع منطقه‌ای مشهد',
     staffName: 'علیرضا حسینی (اپراتور چیدمان و Pick)',
-    mobile: '09000000071',
     code: 'WMS-3030',
     role: 'warehouse_staff' as const,
   },
@@ -175,17 +172,12 @@ export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
             <label className="text-xs font-bold text-slate-700 block mb-1.5">ایستگاه کاری و سالن انبار:</label>
             <select
               value={selectedWarehouseId}
-              onChange={(e) => {
-                const id = e.target.value;
-                setSelectedWarehouseId(id);
-                const w = OFFICIAL_WAREHOUSES.find((x) => x.warehouseId === id);
-                if (w) setMobile(w.mobile);
-              }}
+              onChange={(e) => setSelectedWarehouseId(e.target.value)}
               className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden"
             >
               {OFFICIAL_WAREHOUSES.map((w) => (
                 <option key={w.warehouseId} value={w.warehouseId}>
-                  {w.warehouseName} — {w.staffName} ({w.mobile})
+                  {w.warehouseName} — {w.staffName}
                 </option>
               ))}
             </select>
@@ -199,7 +191,7 @@ export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
                   type="tel"
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
-                  placeholder="۰۹۰۰۰۰۰۰۰۷۱"
+                  placeholder="۰۹xxxxxxxxx"
                   className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 font-mono font-bold focus:bg-white focus:outline-hidden"
                   dir="ltr"
                   required

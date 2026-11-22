@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
 import { useToast } from '../../context/ToastContext';
@@ -43,6 +43,38 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     stores,
   } = useStore();
   const { success, info, error } = useToast();
+  const buyBarRef = useRef<HTMLDivElement>(null);
+  const [showFloatingBuyBar, setShowFloatingBuyBar] = useState(false);
+  useEffect(() => {
+    let previousY = window.scrollY;
+    let observedBar: HTMLDivElement | null = null;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(entry => entry.isIntersecting)) setShowFloatingBuyBar(false);
+    });
+    setShowFloatingBuyBar(false);
+    const updateBuyBar = () => {
+      const currentY = window.scrollY;
+      const bar = buyBarRef.current;
+      if (bar !== observedBar) {
+        observer.disconnect();
+        if (bar) observer.observe(bar);
+        observedBar = bar;
+      }
+      const hasPassedBuyBar = Boolean(bar && bar.getBoundingClientRect().bottom <= 0);
+      if (currentY !== previousY || !hasPassedBuyBar) {
+        setShowFloatingBuyBar(hasPassedBuyBar && currentY > previousY);
+      }
+      previousY = currentY;
+    };
+    window.addEventListener('scroll', updateBuyBar, { passive: true });
+    window.addEventListener('resize', updateBuyBar);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('scroll', updateBuyBar);
+      window.removeEventListener('resize', updateBuyBar);
+    };
+  }, [product.id, routeStoreSlug]);
+
   const [qty, setQty] = useState(1);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   // FIX 14b: live PDP addon cards (variant -> addon cards -> buy bar).
@@ -309,6 +341,62 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     return <NotFoundView variant="store" onBack={onBack} />;
   }
 
+  const buyBarClasses = `border-t p-2.5 flex items-center justify-between gap-2 lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3 ${fashion ? 'bg-[#faf8f5] border-[#e5e0d8]' : 'bg-white border-slate-200'}`;
+  const buyBarControls = (
+    <>
+      <div className={fashion ? 'flex items-center bg-white rounded-none border border-[#e5e0d8] shrink-0 lg:justify-between' : 'flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between'}>
+        <button
+          onClick={() => setQty(Math.max(minQty, qty - 1))}
+          disabled={outOfStock}
+          aria-label="کاهش تعداد"
+          className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors'}
+        >
+          -
+        </button>
+        <span className="px-2.5 font-bold text-xs">{toPersianDigits(qty)}</span>
+        <button
+          onClick={() => setQty(maxQty > 0 ? Math.min(maxQty, qty + 1) : qty + 1)}
+          disabled={outOfStock || (maxQty > 0 && qty >= maxQty)}
+          aria-label="افزایش تعداد"
+          className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors'}
+        >
+          +
+        </button>
+      </div>
+      {outOfStock ? (
+        <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
+          {scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
+        </div>
+      ) : !publishedInCurrentStore ? (
+        <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
+          این کالا در فروشگاه «{currentStore?.name}» عرضه نمی‌شود
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center gap-1.5">
+          <button
+            onClick={handleAddToCart}
+            title="افزودن کالا به سبد خرید"
+            className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-white hover:bg-[#f2f2f2] text-[#1c1c1a] border border-[#1c1c1a] font-bold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
+          >
+            <ShoppingCart className="w-4 h-4"  strokeWidth={1.5}/>
+            <span>افزودن به سبد</span>
+          </button>
+          <button
+            onClick={handleBuyNow}
+            title="خرید فوری بدون سبد خرید"
+            className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-[#3a4441] hover:bg-[#1c1c1a] text-[#faf8f5] font-extrabold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
+          >
+            <span>خرید فوری</span>
+            <span className="text-[10px] lg:text-xs opacity-90">
+              {/* FIX 22: live buy button uses full «تومان», not abbreviated «ت». */}
+              ({formatPrice(buyNowUnit * qty)} تومان)
+            </span>
+          </button>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div
       className={fashion ? 'flex-1 flex flex-col bg-[#faf8f5] text-[#1c1c1a] select-none pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
@@ -415,58 +503,6 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
             })}
           </div>
         )}
-        <div className={fashion ? 'fixed bottom-16 inset-x-0 max-w-[504px] mx-auto bg-[#faf8f5] border-t border-[#e5e0d8] p-2.5 flex items-center justify-between gap-2 z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:max-w-none lg:shadow-none lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3' : 'fixed bottom-16 inset-x-0 max-w-[504px] mx-auto bg-white border-t border-slate-200 p-2.5 flex items-center justify-between gap-2 z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:max-w-none lg:shadow-none lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3'}>
-          <div className={fashion ? 'flex items-center bg-white rounded-none border border-[#e5e0d8] shrink-0 lg:justify-between' : 'flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between'}>
-            <button
-              onClick={() => setQty(Math.max(minQty, qty - 1))}
-              disabled={outOfStock}
-              aria-label="کاهش تعداد"
-              className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors'}
-            >
-              -
-            </button>
-            <span className="px-2.5 font-bold text-xs">{toPersianDigits(qty)}</span>
-            <button
-              onClick={() => setQty(maxQty > 0 ? Math.min(maxQty, qty + 1) : qty + 1)}
-              disabled={outOfStock || (maxQty > 0 && qty >= maxQty)}
-              aria-label="افزایش تعداد"
-              className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors'}
-            >
-              +
-            </button>
-          </div>
-          {outOfStock ? (
-            <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
-              {scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
-            </div>
-          ) : !publishedInCurrentStore ? (
-            <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
-              این کالا در فروشگاه «{currentStore?.name}» عرضه نمی‌شود
-            </div>
-          ) : (
-            <div className="flex-1 flex items-center gap-1.5">
-              <button
-                onClick={handleAddToCart}
-                title="افزودن کالا به سبد خرید"
-                className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-white hover:bg-[#f2f2f2] text-[#1c1c1a] border border-[#1c1c1a] font-bold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
-              >
-                <ShoppingCart className="w-4 h-4"  strokeWidth={1.5}/>
-                <span>افزودن به سبد</span>
-              </button>
-              <button
-                onClick={handleBuyNow}
-                title="خرید فوری بدون سبد خرید"
-                className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-[#3a4441] hover:bg-[#1c1c1a] text-[#faf8f5] font-extrabold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
-              >
-                <span>خرید فوری</span>
-                <span className="text-[10px] lg:text-xs opacity-90">
-                  {/* FIX 22: live buy button uses full «تومان», not abbreviated «ت». */}
-                  ({formatPrice(buyNowUnit * qty)} تومان)
-                </span>
-              </button>
-            </div>
-          )}
-        </div>
         <BuyNowAddressModal
           fashion={fashion}
           open={buyNowModalOpen}
@@ -479,6 +515,14 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         {product.returnWindowEndsAt !== undefined && (
           <div>
             <ReturnWindowBadge returnWindowEndsAt={product.returnWindowEndsAt} />
+          </div>
+        )}
+        <div ref={buyBarRef} className={buyBarClasses}>
+          {buyBarControls}
+        </div>
+        {showFloatingBuyBar && (
+          <div className={`fixed ${scopedStoreSlug ? 'bottom-0' : 'bottom-16'} inset-x-0 max-w-[504px] mx-auto z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:hidden ${buyBarClasses}`}>
+            {buyBarControls}
           </div>
         )}
 

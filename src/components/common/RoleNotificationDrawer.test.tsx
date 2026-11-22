@@ -85,8 +85,8 @@ it('shows tab counts for all / unread / read with Persian digits', () => {
   assert.deepEqual(filterOutboxNotificationsByTab(items, 'all').map((n) => n.id), ['1', '2', '3']);
   const html = render(items);
   assert.match(html, /همه ۳/);
-  assert.match(html, /خوانده‌نشده ۲/);
-  assert.match(html, /خوانده‌شده ۱/);
+  assert.match(html, /خوانده نشده ۲/);
+  assert.match(html, /خوانده شده ۱/);
 });
 
 it('filters rows by tab and shows a tab-specific empty state', () => {

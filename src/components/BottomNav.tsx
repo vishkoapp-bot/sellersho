@@ -16,7 +16,7 @@ export const BottomNav: React.FC = () => {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   // Enforce Chapter 5 Storefront Isolation:
-  // Do not render Central Bottom Nav inside isolated seller storefronts, portal dashboards, or product detail view
+  // Do not render Central Bottom Nav inside isolated seller storefronts or portal dashboards.
   if (
     activeView === 'seller_storefront' ||
     activeView === 'seller_dashboard' ||

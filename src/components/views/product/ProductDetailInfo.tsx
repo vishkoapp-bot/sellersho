@@ -72,9 +72,7 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className={`${fashion ? 'text-[#737373]' : 'text-slate-500'} text-[11px]`}>مشخصاتی برای این کالا ثبت نشده است.</p>
-            )}
+            ) : null}
           </div>
         ) : (
           <ReviewsTab productId={product.id} fashion={fashion} />

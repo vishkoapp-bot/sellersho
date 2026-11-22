@@ -112,7 +112,7 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
         )}
         <div className="flex justify-between items-center text-xs">
           <span className="text-slate-500">هزینه ارسال:</span>
-          <span className="font-bold text-slate-800">{(order.shippingCost || 0) > 0 ? `${formatPrice(order.shippingCost || 0)} تومان` : 'رایگان'}</span>
+          <span className="font-bold text-slate-800">{`${formatPrice(order.shippingCost || 0)} تومان`}</span>
         </div>
         <div className="flex justify-between items-center text-xs">
           <span className="text-slate-500">روش پرداخت:</span>

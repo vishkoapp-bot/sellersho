@@ -311,7 +311,7 @@ export const CartDrawer: React.FC = () => {
                       <span className="mr-1.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 ring-1 ring-amber-200">برآوردی</span>
                     )}
                   </span>
-                  <span className="whitespace-nowrap font-medium text-slate-600">{leg.fare > 0 ? `${formatPrice(leg.fare)} تومان` : 'رایگان'}</span>
+                  <span className="whitespace-nowrap font-medium text-slate-600">{`${formatPrice(leg.fare)} تومان`}</span>
                 </div>
                 <p className="text-[12px] text-slate-500">{toPersianDigits(leg.weightGrams)} گرم، {leg.boxLabel}</p>
                 <ul className="mt-1.5 space-y-1">
@@ -384,7 +384,7 @@ export const CartDrawer: React.FC = () => {
           {effectiveStep === 'cart' && 'محاسبه در مرحله بعد'}
           {effectiveStep === 'checkout' && shippingQuoteState === 'loading' && (shippingQuote ? `${formatPrice(shippingQuote.totalShipping)} تومان (به‌روز نیست)` : 'در حال محاسبه…')}
           {effectiveStep === 'checkout' && shippingQuoteState === 'quoted' && `${formatPrice(shippingQuote?.totalShipping ?? 0)} تومان`}
-          {effectiveStep === 'checkout' && shippingQuoteState === 'free' && 'رایگان'}
+          {effectiveStep === 'checkout' && shippingQuoteState === 'free' && `${formatPrice(shippingQuote?.totalShipping ?? 0)} تومان`}
           {effectiveStep === 'checkout' && shippingQuoteState === 'warning' && 'تکمیل نشانی لازم است'}
           {effectiveStep === 'checkout' && shippingQuoteState === 'idle' && 'در حال محاسبه…'}
           {effectiveStep === 'checkout' && shippingQuoteState === 'error' && (shippingQuote ? `${formatPrice(shippingQuote.totalShipping)} تومان (به‌روز نیست)` : 'محاسبه نشد — ثبت سفارش ممکن نیست')}

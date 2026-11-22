@@ -5,7 +5,7 @@ import { useStore, activeStoreSlugOf } from '../../context/StoreContext';
 import { ProductCard } from '../ProductCard';
 import { PriceRangeSlider, PRICE_RANGE_ERROR_MESSAGE } from '../PriceRangeSlider';
 import {
-  ArrowRight, Search, RotateCcw, ArrowUpDown,
+  ArrowRight, RotateCcw, ArrowUpDown,
   PackageX, ChevronDown, Check
 } from 'lucide-react';
 
@@ -246,7 +246,9 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       return (b.salesCount || 0) - (a.salesCount || 0);
     });
   }
-  const filtered = liveMode ? products : mockFiltered;
+  const filtered = liveMode ? (catalogLoading ? [] : products) : mockFiltered;
+  const showSkeleton = catalogLoading && filtered.length === 0;
+  const hideFilters = !catalogLoading && filtered.length === 0 && !catalogPriceRangeError;
   const shownTotal = liveMode ? catalogTotal : filtered.length;
 
   const activeCategoryObj = categories.find(c => c.slug === selectedCategory);
@@ -272,25 +274,10 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
   return (
     <div className="flex-1 flex flex-col bg-white select-none pb-20 lg:pb-8">
-      <header className="sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 lg:px-8 xl:px-10 2xl:px-12 py-2 lg:py-3 flex items-center gap-2">
+      <header className="lg:static bg-white border-b border-slate-200 px-3 lg:px-8 xl:px-10 2xl:px-12 py-2 lg:py-3 flex items-center gap-2">
         <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
           <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
         </button>
-        <div className="relative flex-1 flex items-center bg-slate-100 rounded-xl px-2.5 py-1.5 border border-slate-200 focus-within:border-brand focus-within:ring-2 focus-within:ring-brand/20 lg:hidden">
-          <Search className="w-3.5 h-3.5 text-slate-400 shrink-0 ml-1.5"  strokeWidth={1.5}/>
-          <input
-            type="text"
-            placeholder="جستجوی کالا یا برند…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            // FIX 12 item 12: submitting from this box used to update
-            // only the filter state, leaving the address bar on the
-            // previous /?q= URL. Route through openCatalogCategory so
-            // the URL is pushed (staying inside /preview/).
-            onKeyDown={(e) => { if (e.key === 'Enter') openCatalogCategory('all', searchQuery); }}
-            className="w-full bg-transparent text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden"
-          />
-        </div>
         <span className="hidden lg:block lg:text-lg xl:text-xl font-bold text-slate-900 truncate">{titleText}</span>
       </header>
 
@@ -307,7 +294,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1 text-xs lg:text-lg xl:text-xl text-slate-500">
             <span className="font-bold text-slate-900">{titleText}</span>
-            <span className="text-[10px] lg:text-xs text-slate-400">({toPersianDigits(shownTotal)})</span>
+            {!showSkeleton && <span className="text-[10px] lg:text-xs text-slate-400">({toPersianDigits(shownTotal)})</span>}
           </div>
           {(onlyInStock || onlyOriginal || priceMin !== '' || priceMax !== '' || selectedCategory !== 'all' || searchQuery || selectedBrands.length > 0 || Object.keys(selectedAttrs).length > 0) && (
             <button
@@ -330,7 +317,8 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             toggles + price box + sort in one flow row, facets plain.
             Grid column (240px) comes from the parent grid, not the
             aside -- do not add a width class to the aside. */}
-        <aside className="pt-2 lg:pt-0 lg:sticky lg:top-32 lg:self-start lg:space-y-5">
+        <aside className="pt-2 lg:pt-0 lg:sticky lg:top-32 lg:self-start">
+          <div hidden={hideFilters} className="lg:space-y-5">
           <h2 className="hidden lg:block text-sm font-extrabold text-slate-900">فیلترها</h2>
           <div>
             <h3 className="hidden lg:block text-xs font-bold text-slate-500 mb-2">دسته‌بندی</h3>
@@ -447,9 +435,16 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               ))}
             </div>
           )}
+          </div>
         </aside>
         <div className="p-3 lg:p-0">
-        {filtered.length === 0 ? (
+        {showSkeleton ? (
+          <div aria-hidden="true" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="aspect-[3/4] animate-pulse rounded-2xl bg-slate-100" />
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
           catalogPriceRangeError ? (
             <div className="bg-white rounded-2xl p-6 text-center border border-slate-100 space-y-2">
               <p role="alert" className="text-[11px] text-rose-600 font-bold">{PRICE_RANGE_ERROR_MESSAGE}</p>

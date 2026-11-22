@@ -128,6 +128,7 @@ export type ParsedRoute =
   | { view: 'admin_panel' }
   | { view: 'catalog'; query?: string; category?: string }
   | { view: 'customer' }
+  | { view: 'supplier_dashboard' }
   | { view: 'seller_dashboard'; sellerTab: SellerDashboardTab }
   | { view: 'seller_storefront'; slug: string; unsubscribe: boolean }
   | { view: 'product_detail'; id?: string; spnNumber?: number; spnc?: string; storeSlug?: string }
@@ -157,6 +158,9 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
   if (path === '/admin' || path.startsWith('/admin/')) {
     return { view: 'admin_panel' };
   }
+
+  if (path === '/seller') return { view: 'seller_dashboard', sellerTab: 'overview' };
+  if (path === '/supplier') return { view: 'supplier_dashboard' };
 
   // Seller dashboard tab URLs (live Wf): ?panel=seller&tab=<tab>.
   if (params.get('panel') === 'seller') {
@@ -264,7 +268,11 @@ export function pathForView(
     case 'static_page':
       return options.staticPageKey ? STATIC_PAGE_PATHS[options.staticPageKey] : '/';
     case 'seller_dashboard':
-      return `/?panel=seller&tab=${options.sellerTab || 'overview'}`;
+      return options.sellerTab && options.sellerTab !== 'overview'
+        ? `/?panel=seller&tab=${options.sellerTab}`
+        : '/seller';
+    case 'supplier_dashboard':
+      return '/supplier';
     case 'not_found':
       return '/';
     default:

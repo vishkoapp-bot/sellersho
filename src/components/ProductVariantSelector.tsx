@@ -21,6 +21,12 @@ interface ProductVariantSelectorProps {
 // Selecting a variant overrides the displayed price/originalPrice/
 // discountPercent/stock from variantPrices[variant.id] (live bundle
 // behaviour), exactly like the candidate's detail modal now does.
+const LEGACY_ATTRIBUTE_LABELS = new Map([
+  ['style', 'سبک'],
+  ['color', 'رنگ'],
+  ['size', 'سایز'],
+]);
+
 export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   product,
   variants,
@@ -99,17 +105,18 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
     const keys = visibleVariants.flatMap((v) => Object.keys(v.attributes || {}));
     return keys.find((k) => k) || null;
   })();
+  const attrLabel = attrKey ? LEGACY_ATTRIBUTE_LABELS.get(attrKey) ?? attrKey : null;
   const attrValue = selectedVariant && attrKey
     ? (selectedVariant.attributes as Record<string, unknown>)[attrKey]
     : null;
   const label = attrKey && attrValue != null
-    ? `${attrKey}: ${String(attrValue)}`
+    ? `${attrLabel}: ${String(attrValue)}`
     : labelOf(selectedVariant);
   return (
     <div data-testid="variant-selector" className="space-y-3">
       {attrKey && attrValue != null ? (
         <p className="flex items-center gap-1.5 text-[11px]">
-          <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-700'}>{attrKey}</span>
+          <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-700'}>{attrLabel}</span>
           <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>: {String(attrValue)}</span>
         </p>
       ) : (

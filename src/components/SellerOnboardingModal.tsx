@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
 import { useToast } from '../context/ToastContext';
 import { Store as StoreType } from '../types';
 import { storeApi } from '../services/storeApi';
-import { isMockMode } from '../services/apiClient';
+import { ApiError, isMockMode } from '../services/apiClient';
 import { validateStoreSlug, isValidIranianMobile } from '../utils/validators';
 import { SellerStep1 } from './SellerStep1';
 import { SellerStep2 } from './SellerStep2';
@@ -11,12 +11,23 @@ import { SellerStep3 } from './SellerStep3';
 import { X, Store, ArrowLeft, ArrowRight, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
+import { emptySellerOnboardingForm, makeSellerSignatureCode, useSellerOnboardingDraft } from '../context/SellerOnboardingContext';
+import { AuthModal } from './auth/AuthModal';
 
 export const SellerOnboardingModal: React.FC = () => {
   const { isSellerModalOpen, setIsSellerModalOpen, setCurrentStore, addStore, platformSettings, toPersianDigits } = useStore();
-  const { refreshToken } = useAuth();
+  const { refreshToken, isAuthenticated } = useAuth();
   const { error: toastError, success: toastSuccess } = useToast();
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const draft = useSellerOnboardingDraft();
+  const [localStep, setLocalStep] = useState<1 | 2 | 3 | 4>(1);
+  const [localFormData, setLocalFormData] = useState(emptySellerOnboardingForm);
+  const [localContractAccepted, setLocalContractAccepted] = useState(false);
+  const step = draft?.step ?? localStep;
+  const setStep = draft?.setStep ?? setLocalStep;
+  const formData = draft?.formData ?? localFormData;
+  const setFormData = draft?.setFormData ?? setLocalFormData;
+  const contractAccepted = draft?.contractAccepted ?? localContractAccepted;
+  const setContractAccepted = draft?.setContractAccepted ?? setLocalContractAccepted;
 
   // Extract referral code from URL query (?ref=DRUP-XXXX) if present
   useEffect(() => {
@@ -27,21 +38,40 @@ export const SellerOnboardingModal: React.FC = () => {
         setFormData((prev) => ({ ...prev, referralCode: refParam.trim().toUpperCase() }));
       }
     }
-  }, []);
-
-  const [formData, setFormData] = useState({
-    storeName: '',
-    slug: '',
-    ownerName: '',
-    phone: '',
-    referralCode: '',
-    categories: ['digital', 'fashion'],
-  });
-
-  const [contractAccepted, setContractAccepted] = useState(false);
+  }, [setFormData]);
   const [createdStore, setCreatedStore] = useState<StoreType | null>(null);
 
+  const [localSignatureCode, setLocalSignatureCode] = useState('');
+  const signatureCode = draft?.signatureCode ?? localSignatureCode;
+  useEffect(() => {
+    if (isSellerModalOpen && !draft) setLocalSignatureCode(makeSellerSignatureCode());
+  }, [isSellerModalOpen, draft]);
+
+  const authSucceeded = useRef(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  useEffect(() => {
+    if (isSellerModalOpen && !isMockMode() && !isAuthenticated) setIsAuthModalOpen(true);
+  }, [isSellerModalOpen, isAuthenticated]);
+
   if (!isSellerModalOpen) return null;
+  if (!isMockMode() && (!isAuthenticated || isAuthModalOpen)) {
+    return (
+      <AuthModal
+        isOpen
+        roleTitle="برای افتتاح فروشگاه ابتدا وارد حساب کاربری شوید"
+        disableAutoNavigate
+        onClose={() => {
+          setIsAuthModalOpen(false);
+          if (!authSucceeded.current) setIsSellerModalOpen(false);
+          authSucceeded.current = false;
+        }}
+        onSuccess={() => {
+          authSucceeded.current = true;
+          setIsAuthModalOpen(false);
+        }}
+      />
+    );
+  }
 
   const handleNext = async () => {
     if (step === 1) {
@@ -96,17 +126,17 @@ export const SellerOnboardingModal: React.FC = () => {
           });
           await refreshToken();
         } catch (err: any) {
-          toastError(err?.message || 'افتتاح فروشگاه انجام نشد. لطفاً دوباره تلاش کنید.');
+          toastError(err instanceof ApiError && err.status === 401
+            ? 'برای افتتاح فروشگاه ابتدا وارد شوید'
+            : err?.message || 'افتتاح فروشگاه انجام نشد. لطفاً دوباره تلاش کنید.');
           return;
         }
       }
       addStore(createdStore);
       setCurrentStore(createdStore);
       setCreatedStore(createdStore);
-      addStore(newStore);
       toastSuccess(`فروشگاه «${createdStore.name}» با موفقیت افتتاح گردید.`);
       setStep(4);
-      toastSuccess(`قرارداد همکاری تایید و فروشگاه «${newStore.name}» با موفقیت افتتاح گردید.`);
     }
   };
 
@@ -169,7 +199,7 @@ export const SellerOnboardingModal: React.FC = () => {
 
               <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl flex items-center justify-between text-[10px] text-blue-900">
                 <span>مهر زمانی امضا: {new Date().toLocaleDateString('fa-IR')}</span>
-                <span className="font-mono">کد رهگیری امضا: SIG-DRP-{Math.floor(1000 + Math.random() * 9000)}</span>
+                <span className="font-mono">کد رهگیری امضا: SIG-DRP-{signatureCode}</span>
               </div>
 
               <label className="flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 cursor-pointer text-xs">

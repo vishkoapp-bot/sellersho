@@ -37,3 +37,19 @@ it('keeps a normal selectable legacy default SKU and omits inactive SKU chips', 
   assert.match(html, /choice/);
   assert.doesNotMatch(html, /retired/);
 });
+
+it('localizes legacy attribute labels and keeps unknown keys and default names selectable', () => {
+  for (const [key, value, label] of [
+    ['style', 'نگیندار', 'سبک'],
+    ['color', 'قرمز', 'رنگ'],
+    ['size', 'بزرگ', 'سایز'],
+    ['material', 'طلا', 'material'],
+  ]) {
+    const entry = { ...variant('default', {}), name: 'پیش‌فرض', variantName: 'پیش‌فرض', isDefault: true, attributes: { [key]: value } };
+    const html = renderToStaticMarkup(<ProductVariantSelector variants={[entry, variant("alternate", {})]} selectedId="default" onSelect={() => {}} />);
+    assert.match(html, new RegExp(`>${label}</span>.*: ${value}`));
+    if (key === 'style') assert.doesNotMatch(html.replace(/<[^>]+>/g, ""), /style/);
+    assert.match(html, /<button[^>]*>(?:(?!<\/button>).)*پیش‌فرض/);
+    assert.doesNotMatch(html, /<button[^>]*disabled/);
+  }
+});

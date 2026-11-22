@@ -40,6 +40,15 @@ export const resolveProposalFocus = (
   return { kind: 'focus', focusId: focusProposalId, targetId: target ? String(target.id) : null };
 };
 
+// G6: status counts for the proposals tab label. The list is an
+// all-status history; only `pending` is "awaiting review".
+export const proposalStatusCounts = (offers: { status: string }[]) => ({
+  total: offers.length,
+  pending: offers.filter((prop) => prop.status === 'pending').length,
+  approved: offers.filter((prop) => prop.status === 'approved').length,
+  rejected: offers.filter((prop) => prop.status === 'rejected').length,
+});
+
 export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void }> = ({ focusProposalId, onFocusConsumed }) => {
   const {
     supplierSession,
@@ -102,6 +111,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const supplierProducts = productsResource.error ? [] : productsResource.data || [];
   const supplierProposedOffers = proposalsResource.error ? [] : proposalsResource.data || [];
   const rejectedProposals = supplierProposedOffers.filter((prop) => prop.status === 'rejected');
+  // G6: the tab label counts PENDING proposals only — the list is an
+  // all-status history (approved/rejected rows carry their own badges
+  // and resubmit actions), so labelling its length as "awaiting
+  // review" overstated the queue (46 vs the 3 actually pending).
+  const proposalCounts = proposalStatusCounts(supplierProposedOffers);
   useEffect(() => {
     const outcome = resolveProposalFocus(focusProposalId, supplierProposedOffers, handledFocusRef.current, proposalsResource.loading);
     if (outcome.kind === 'reset') { handledFocusRef.current = null; return; }
@@ -196,7 +210,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             subTab === 'proposed_offers' ? 'bg-white text-brand-deep shadow-2xs' : 'text-slate-600'
           }`}
         >
-        پیشنهادهای در انتظار بررسی ({toPersianDigits(supplierProposedOffers.length)})
+        پیشنهادهای در انتظار بررسی ({toPersianDigits(proposalCounts.pending)}) · همه پیشنهادها ({toPersianDigits(proposalCounts.total)})
         </button>
         <button
           type="button"

@@ -419,9 +419,10 @@ func TestCatalogPricedPagesEnumerateExactlyOnce(t *testing.T) {
 			t.Fatalf("discount not descending at %d", i)
 		}
 	}
-	// Store A: 4 eligible (039 inactive-but-assorted, 005, 001, 002;
-	// 040 suspended out).
-	enumerate(t, storeA, catalogpage.Filter{Sort: "cheapest"}, 4)
+	// Store A: 3 eligible (005, 001, 002). B1(a) D42 reversal:
+	// 039 is inactive-but-assorted and is now excluded from the
+	// public list; 040 is suspended out.
+	enumerate(t, storeA, catalogpage.Filter{Sort: "cheapest"}, 3)
 	// Non-price sorts through the same unified selection.
 	featured := enumerate(t, central, catalogpage.Filter{Sort: "featured"}, 38)
 	if len(featured) == 0 || !featured[0].Featured {
@@ -447,7 +448,8 @@ func TestCatalogPricedPagesEnumerateExactlyOnce(t *testing.T) {
 	if total != 38 {
 		t.Fatalf("candidate count %d, want 38", total)
 	}
-	// Store-position order for store A: -1, 1, 2, 3 -> 039, 005, 001, 002.
+	// Store-position order for store A: 1, 2, 3 -> 005, 001, 002.
+	// (039 held position -1 but is inactive, so B1(a) excludes it.)
 	seen := map[string]bool{}
 	var after *catalogpage.Key
 	var order []string
@@ -472,7 +474,7 @@ func TestCatalogPricedPagesEnumerateExactlyOnce(t *testing.T) {
 		last := page.Keys[len(page.Keys)-1]
 		after = &last
 	}
-	want := []string{perf01ProdID(39), perf01ProdID(5), perf01ProdID(1), perf01ProdID(2)}
+	want := []string{perf01ProdID(5), perf01ProdID(1), perf01ProdID(2)}
 	if fmt.Sprint(order) != fmt.Sprint(want) {
 		t.Fatalf("store-position order %v, want %v", order, want)
 	}

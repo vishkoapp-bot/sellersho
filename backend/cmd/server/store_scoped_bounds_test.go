@@ -79,13 +79,13 @@ func listBounds(t *testing.T, catalogRepo *repository.CatalogRepository, storeRe
 func TestStoreScopedPriceBoundsMatchStorefront(t *testing.T) {
 	catalogRepo, storeRepo := storeScopedRepos(t)
 
-	// Scoped bounds: exactly the store's own assortment at store
-	// prices (fallback settings: reference = cost; p-old-1 35%
-	// max-default = 13,500,000; p-old-2 20% override = 24,000,000;
-	// p-old-3 35% = 6,750,000). The old code answered
+	// Scoped bounds: B1(a) — only the store's ACTIVE assortment
+	// product. p-old-1 (13,500,000) and p-old-2 (24,000,000) are
+	// globally inactive, so the bounds are p-old-3 alone
+	// {6,750,000, 6,750,000, 1}. The old code answered
 	// {1,350,000, 6,750,000, 46} here — foreign noise prices.
 	scoped := storeScopedBounds(t, catalogRepo, storeRepo, "/api/v1/products/price-bounds?storeSlug=shopx&category=beauty")
-	if want := (boundsDTO{MinPrice: 6750000, MaxPrice: 24000000, Count: 3}); scoped != want {
+	if want := (boundsDTO{MinPrice: 6750000, MaxPrice: 6750000, Count: 1}); scoped != want {
 		t.Fatalf("scoped bounds = %+v, want %+v", scoped, want)
 	}
 
@@ -118,7 +118,9 @@ func TestStoreScopedPriceBoundsMatchStorefront(t *testing.T) {
 
 	// With a live deals-widget campaign (5 points off p-old-2's 20%
 	// override margin -> 15% -> 23,000,000), the scoped bounds must
-	// track the discounted card price, exactly as the list shows it.
+	// still be p-old-3 alone: p-old-2 is inactive, so B1(a) excludes
+	// it from the priced set and its campaign cannot move the facets.
+	// The bounds still track the list's card prices exactly.
 	dsn := os.Getenv("TEAM04_TEST_DATABASE_URL")
 	db, err := testdb.Open(t, dsn)
 	if err != nil {
@@ -130,7 +132,7 @@ func TestStoreScopedPriceBoundsMatchStorefront(t *testing.T) {
 		t.Fatalf("seed widget config: %v", err)
 	}
 	discounted := storeScopedBounds(t, catalogRepo, storeRepo, "/api/v1/products/price-bounds?storeSlug=shopx&category=beauty")
-	if want := (boundsDTO{MinPrice: 6750000, MaxPrice: 23000000, Count: 3}); discounted != want {
+	if want := (boundsDTO{MinPrice: 6750000, MaxPrice: 6750000, Count: 1}); discounted != want {
 		t.Fatalf("discounted scoped bounds = %+v, want %+v", discounted, want)
 	}
 	if lb := listBounds(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=shopx"); lb != discounted {

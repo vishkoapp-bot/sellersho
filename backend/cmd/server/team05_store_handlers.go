@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -189,11 +190,141 @@ var team05PublicTemplateCustomAllowlist = map[string]bool{
 	"newsletterTitle": true, "newsletterSubtitle": true,
 }
 
+// team05TemplateBlueprintSections is the backend-owned mirror of the
+// frontend TEMPLATE_BLUEPRINTS section orders
+// (src/components/storefront/templates/templateTypes.ts:309-386 —
+// that file is the source of truth). A stored dict-form
+// template_config has no order to preserve: PostgreSQL jsonb
+// normalises key order at write time, and Go re-marshals maps
+// alphabetically. The backend therefore re-derives the order from
+// this table at emission time (B3, Batch 3). DRIFT RISK: if the
+// frontend blueprint order changes, this table MUST change in the
+// same commit; TestTeam05PublicTemplateConfigSectionsBlueprintOrder
+// pins all five template orders (M-4, Batch 3 fix). Blueprint
+// duplication is the accepted Batch 3 trade-off — a single
+// cross-language source of truth would need a codegen step, out of
+// scope here. Note the asymmetry the duplication creates: for a
+// known template the backend emits an array, and the frontend
+// treats arrays as authoritative saved order — so a frontend-only
+// blueprint edit is silently a no-op for dict-form stores on that
+// template until this table is edited too.
+var team05TemplateBlueprintSections = map[string][]string{
+	"tpl-modern-1":     {"announcement", "hero", "trustStrip", "categoryRail", "featured", "banners", "bestsellers", "about", "testimonials", "newsletter", "faq", "products"},
+	"tpl-electronic-1": {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "bestsellers", "brands", "discounted", "testimonials", "faq", "products"},
+	"tpl-fashion-1":    {"announcement", "hero", "categoryRail", "products", "lookbook", "about"},
+	"tpl-digikala-1":   {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "brands", "bestsellers", "discounted", "topRated", "campaign", "faq", "products"},
+	"tpl-tech-1":       {"announcement", "hero", "trustStrip", "categoryRail", "featured", "brands", "topRated", "about", "faq", "products"},
+}
+
+// team05SectionAliases mirrors the frontend canonicalSectionKey alias
+// map (templateTypes.ts:44-51): several stored spellings denote the
+// same section. Canonicalisation happens over the dict keys sorted
+// alphabetically (the jsonb wire order the frontend also sees),
+// first occurrence wins, so the result never depends on Go map
+// iteration order.
+var team05SectionAliases = map[string][]string{
+	"categoryRail": {"categoryRails", "categories", "categoryTiles"},
+}
+
+func team05CanonicalSectionKey(key string) string {
+	for canonical, aliases := range team05SectionAliases {
+		for _, a := range aliases {
+			if key == a {
+				return canonical
+			}
+		}
+	}
+	return key
+}
+
+// team05TemplateSectionEntry is one emitted section in the array
+// form: the same {key, enabled} shape normalizeTemplateSections
+// already accepts on the frontend, so no frontend shape change is
+// needed.
+type team05TemplateSectionEntry struct {
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+}
+
+// team05NormalizeTemplateSectionsDict converts a dict-form sections
+// value to a blueprint-ordered array for a known template. Blueprint
+// keys present in the dict (after canonicalisation) are emitted in
+// blueprint order; an explicit false is preserved — a disabled
+// section stays disabled, it is not dropped. Dict keys not in the
+// blueprint are appended after, in alphabetical order — their
+// stored order is unrecoverable, so alphabetical is the honest
+// deterministic choice. Blueprint keys absent from the dict are NOT
+// invented: the frontend appends missing blueprint sections itself
+// with blueprint defaults. ok=false means the caller must pass the
+// original sections value through unchanged (unknown template, or
+// a sections value that is not a dict).
+func team05NormalizeTemplateSectionsDict(dict map[string]json.RawMessage, templateID string) (json.RawMessage, bool) {
+	blueprint, ok := team05TemplateBlueprintSections[templateID]
+	if !ok {
+		return nil, false
+	}
+	keys := make([]string, 0, len(dict))
+	for k := range dict {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	canonical := map[string]json.RawMessage{}
+	for _, k := range keys {
+		c := team05CanonicalSectionKey(k)
+		if _, exists := canonical[c]; !exists {
+			canonical[c] = dict[k]
+		}
+	}
+	enabledOf := func(v json.RawMessage) bool {
+		var b bool
+		if json.Unmarshal(v, &b) != nil {
+			// Non-boolean values: the frontend treats anything
+			// !== false as enabled; match it.
+			return true
+		}
+		return b
+	}
+	used := map[string]bool{}
+	entries := []team05TemplateSectionEntry{}
+	for _, key := range blueprint {
+		v, ok := canonical[key]
+		if !ok {
+			continue
+		}
+		used[key] = true
+		entries = append(entries, team05TemplateSectionEntry{Key: key, Enabled: enabledOf(v)})
+	}
+	unknown := []string{}
+	for k := range canonical {
+		if !used[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	for _, k := range unknown {
+		entries = append(entries, team05TemplateSectionEntry{Key: k, Enabled: enabledOf(canonical[k])})
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
 // team05PublicTemplateConfig returns the public-safe subset of a raw
 // template_config document: {accentColor, sections, custom?} with
 // custom filtered through the allowlist above. Invalid or empty input
 // yields {} (never null), so the storefront can render defaults.
-func team05PublicTemplateConfig(raw json.RawMessage) json.RawMessage {
+//
+// B3: a dict-form sections value is normalised to a blueprint-ordered
+// array (see team05NormalizeTemplateSectionsDict) — a dict carries
+// no order, and the stored jsonb has already lost the seller's
+// insertion order, so the order is re-derived from the blueprint,
+// never recovered from the dict. An array-form sections value is the
+// seller's drag-to-reorder order and passes through byte-identical;
+// a dict for an unknown template passes through unchanged and the
+// frontend's own blueprint fallback owns it.
+func team05PublicTemplateConfig(raw json.RawMessage, templateID string) json.RawMessage {
 	var doc map[string]json.RawMessage
 	if len(raw) == 0 || json.Unmarshal(raw, &doc) != nil {
 		return json.RawMessage(`{}`)
@@ -203,7 +334,11 @@ func team05PublicTemplateConfig(raw json.RawMessage) json.RawMessage {
 		out["accentColor"] = v
 	}
 	if v, ok := doc["sections"]; ok {
-		out["sections"] = v
+		if sections, ok := team05NormalizeTemplateSections(v, templateID); ok {
+			out["sections"] = sections
+		} else {
+			out["sections"] = v
+		}
 	}
 	if customRaw, ok := doc["custom"]; ok {
 		var custom map[string]json.RawMessage
@@ -224,6 +359,23 @@ func team05PublicTemplateConfig(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return b
+}
+
+// team05NormalizeTemplateSections normalises a raw sections value for
+// emission. Only a dict (first non-space byte '{') is normalised, and
+// only for a known template; every other form — array (seller
+// reorder, authoritative), null, or any other JSON value — passes
+// through byte-identical. ok=false means "pass the original through".
+func team05NormalizeTemplateSections(v json.RawMessage, templateID string) (json.RawMessage, bool) {
+	trimmed := strings.TrimSpace(string(v))
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil, false
+	}
+	var dict map[string]json.RawMessage
+	if json.Unmarshal(v, &dict) != nil || dict == nil {
+		return nil, false
+	}
+	return team05NormalizeTemplateSectionsDict(dict, templateID)
 }
 
 // team05PublicStoreView converts a loaded store to the public shape.
@@ -255,7 +407,7 @@ func team05PublicStoreView(s *domain.Store) team05PublicStore {
 		Slug:                    s.Slug,
 		Status:                  s.Status,
 		Tagline:                 s.Tagline,
-		TemplateConfig:          team05PublicTemplateConfig(s.TemplateConfig),
+		TemplateConfig:          team05PublicTemplateConfig(s.TemplateConfig, s.TemplateID),
 		TemplateID:              s.TemplateID,
 	}
 	if out.ActiveCategories == nil {

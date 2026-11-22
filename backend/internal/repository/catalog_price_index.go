@@ -222,7 +222,11 @@ func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIn
 		from += ` JOIN catalog_public_prices idx ON idx.store_id=` + arg(scope.ID) + ` AND idx.product_id=p.id`
 	}
 	where = []string{`(to_regclass('public.suppliers') IS NULL OR ` + notSuspendedSupplierClause + `)`}
-	if !scoped {
+	// B1(a) D42 reversal: the is_active gate applies to every scope,
+	// dropshipper assortments included — assortment membership no
+	// longer resurrects a deactivated product on the public list.
+	// Only the owner-gated IncludeInactive carve-out lifts it.
+	if !filter.IncludeInactive {
 		where = append(where, `p.is_active=TRUE`)
 	}
 	if filter.Category != "" && filter.Category != "all" {
@@ -1071,9 +1075,12 @@ func (r *CatalogRepository) listStoreCategorySlugsQ(ctx context.Context, q catal
 	if scoped {
 		args = []any{storeID}
 	}
-	if !scoped {
-		where = append(where, `p.is_active=TRUE`)
-	}
+	// B1(a) D42 reversal: the category slugs of a scope are the
+	// categories of its listable products — deactivated assortment
+	// products contribute no category. (This query has no filter, so
+	// there is no IncludeInactive carve-out here; seller management
+	// reads categories through the list endpoint.)
+	where = append(where, `p.is_active=TRUE`)
 	rows, err := q.QueryContext(ctx, `SELECT DISTINCT p.category_slug`+from+` WHERE `+strings.Join(where, ` AND `)+` AND p.category_slug <> '' ORDER BY p.category_slug`, args...)
 	if err != nil {
 		return nil, err

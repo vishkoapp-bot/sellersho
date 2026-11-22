@@ -243,6 +243,24 @@ const CategoryThumb: React.FC<{ group: CategoryGroup }> = ({ group }) => (
   </div>
 );
 
+// A7: shared category-tile selection for CategoryRail, CategoryCards
+// and ModernTemplate's CategoryMosaic. Clicking a tile filters the
+// products floor in place (the grid already honours selectedCategory);
+// clicking the selected tile again restores all products, matching
+// the legacy SellerStorefrontCategories behaviour. If the owner wants
+// tile-click to navigate to a dedicated category page instead, that is
+// a different behaviour — in-place filtering is what the grid and the
+// legacy tiles implement.
+export const useStoreCategorySelect = () => {
+  const { selectedCategory, setSelectedCategory } = useStore();
+  const selectCategory = (slug: string) => {
+    setSelectedCategory(selectedCategory === slug ? 'all' : slug);
+    const floor = document.querySelector('[data-testid="store-products"]');
+    floor?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  return { selectedCategory, selectCategory };
+};
+
 // --- Category rail (live categoryRails: most-product categories) ---
 export const CategoryRail: React.FC<{
   products: Product[];
@@ -250,6 +268,7 @@ export const CategoryRail: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
+  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = useMemo(
     () => groupProductsByCategory(products, categories, custom.categoryOverrides),
@@ -265,7 +284,14 @@ export const CategoryRail: React.FC<{
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       {rails.map((group) => (
         <div key={group.slug} className="group space-y-3">
-          <div className="flex items-center gap-3 px-1">
+          <div
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedCategory === group.slug}
+            onClick={() => selectCategory(group.slug)}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(group.slug); } }}
+            className="flex cursor-pointer items-center gap-3 px-1"
+          >
             <CategoryThumb group={group} />
             <div>
               <p className="text-sm font-black text-slate-900">{group.title}</p>
@@ -292,6 +318,7 @@ export const CategoryCards: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
+  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = useMemo(
     () => groupProductsByCategory(products, categories, custom.categoryOverrides),
@@ -305,7 +332,15 @@ export const CategoryCards: React.FC<{
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       <div className="grid grid-cols-4 gap-3 lg:grid-cols-8">
         {groups.slice(0, limit).map((group) => (
-          <div key={group.slug} className="group flex flex-col items-center gap-2 text-center">
+          <div
+            key={group.slug}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedCategory === group.slug}
+            onClick={() => selectCategory(group.slug)}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(group.slug); } }}
+            className="group flex cursor-pointer flex-col items-center gap-2 text-center"
+          >
             <CategoryThumb group={group} />
             <span className="w-full truncate text-xs font-extrabold text-slate-800">{group.title}</span>
             <span className="text-[11px] text-slate-400">{toPersianDigits(group.count)} کالا</span>
@@ -806,6 +841,9 @@ export const ProductsGridSection: React.FC<{
   // grid's empty state when nothing in the store matches. 'all'
   // (the default) renders exactly as before.
   const { selectedCategory, setSelectedCategory, categories, searchQuery, setSearchQuery, catalogBrandRequest, clearCatalogBrand } = useStore();
+  // A7: sort control for the template-path floor. Local state, applied
+  // to the visible (loaded) list before render.
+  const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
   if (!sectionEnabled(config, 'products') && !sectionEnabled(config, 'allProducts')) return null;
   if (products.length === 0) return null;
   const filtered = selectedCategory !== 'all';
@@ -832,6 +870,15 @@ export const ProductsGridSection: React.FC<{
       ? products.filter((prod) => prod.category === selectedCategory)
       : products
   ).filter(matchesSearch);
+  // A7: client-side sort over the loaded assortment (same labels and
+  // same limitation as the legacy grid: stores with >24 products sort
+  // the loaded set only, not the full catalog).
+  const sortedVisible = [...visible].sort((a, b) => {
+    if (sortBy === 'cheapest') return a.price - b.price;
+    if (sortBy === 'expensive') return b.price - a.price;
+    if (sortBy === 'discount') return b.discountPercent - a.discountPercent;
+    return (b.salesCount || 0) - (a.salesCount || 0);
+  });
   const anyFilter = filtered || !!brandFilter || searching;
   const title = searching
     ? `جستجو: «${searchQuery}»`
@@ -848,6 +895,29 @@ export const ProductsGridSection: React.FC<{
   return (
     <section data-testid="store-products" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
+      {/* A7: sort pills for the template-path floor. */}
+      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+        {[
+          { id: 'featured', label: 'محبوب‌ترین' },
+          { id: 'cheapest', label: 'ارزان‌ترین' },
+          { id: 'expensive', label: 'گران‌ترین' },
+          { id: 'discount', label: 'بیشترین تخفیف' },
+        ].map((sort) => (
+          <button
+            key={sort.id}
+            type="button"
+            aria-pressed={sortBy === sort.id}
+            onClick={() => setSortBy(sort.id as typeof sortBy)}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap transition-colors ${
+              sortBy === sort.id
+                ? 'bg-slate-900 text-white shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {sort.label}
+          </button>
+        ))}
+      </div>
       {anyFilter && (
         <div className="flex items-center justify-end">
           <button
@@ -862,7 +932,7 @@ export const ProductsGridSection: React.FC<{
       {visible.length === 0 ? (
         <p className="text-xs font-bold text-slate-600 py-6 text-center">کالایی با این مشخصات یافت نشد.</p>
       ) : (
-        <TemplateProductGrid products={visible} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
+        <TemplateProductGrid products={sortedVisible} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
       )}
     </section>
   );

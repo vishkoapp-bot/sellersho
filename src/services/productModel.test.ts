@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProductMatrix, selectionKey, serializeProductDraft, newUuid, isCanonicalUuid, ensureCanonicalUuid } from './productModel';
+import { buildProductMatrix, selectionKey, serializeProductDraft, newUuid, isCanonicalUuid, ensureCanonicalUuid, fingerprintHash } from './productModel';
 import type { ProductSchema } from '../types/productSchema';
 const schema: ProductSchema = { version: 2, type: 'variable', attributes: [{ id: 'color', name: 'Color', source: 'color', role: 'axis', values: [{ id: 'r', label: 'Red' }, { id: 'b', label: 'Blue' }] }, { id: 'size', name: 'Size', source: 'local', role: 'axis', values: [{ id: 's', label: 'S' }, { id: 'm', label: 'M' }, { id: 'l', label: 'L' }] }] };
 test('two axes form six independent combinations and preserve UUID/prices/stock/exclusions', () => { let i = 0; const rows = buildProductMatrix(schema, [], () => `id-${++i}`); assert.equal(rows.length, 6); assert.equal(new Set(rows.map(r => selectionKey(r.selection))).size, 6); rows[0] = { ...rows[0], cost: '100', stock: '7', active: false }; const reordered = { ...schema, attributes: [...schema.attributes].reverse() }; const next = buildProductMatrix(reordered, rows, () => `id-${++i}`); const kept = next.find(r => r.id === rows[0].id)!; assert.equal(kept.cost, '100'); assert.equal(kept.stock, '7'); assert.equal(kept.active, false); });
@@ -35,6 +35,23 @@ test('non-secure context (live plain HTTP): default id factory falls back instea
     (c as { randomUUID?: unknown }).randomUUID = orig;
   }
 });
+test('fingerprintHash falls back to a stable non-cryptographic hash without crypto.subtle', async () => {
+  assert.match(await fingerprintHash('abc'), /^[0-9a-f]{64}$/);
+  // crypto.subtle is a getter-only property on the Crypto prototype,
+  // so shadow it on the instance instead of assigning to it.
+  const c = globalThis.crypto as unknown as { subtle?: unknown };
+  Object.defineProperty(c, 'subtle', { value: undefined, configurable: true });
+  try {
+    const a = await fingerprintHash('abc');
+    const b = await fingerprintHash('abc');
+    assert.match(a, /^[0-9a-f]{16}$/);
+    assert.equal(a, b, 'same input hashes the same');
+    assert.notEqual(a, await fingerprintHash('abd'), 'different input hashes differently');
+  } finally {
+    delete (c as { subtle?: unknown }).subtle;
+  }
+});
+
 test('newUuid fallback is a canonical v4 UUID; ensureCanonicalUuid keeps valid ids and repairs the rest', () => {
   const c = globalThis.crypto as unknown as { randomUUID?: unknown };
   const orig = c.randomUUID;

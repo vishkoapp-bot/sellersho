@@ -377,7 +377,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       {/* Info column — live order: info (with tabs at its end) ->
           variant box -> buy bar. No sticky bottom bar on desktop. */}
       <div className="p-3.5 space-y-4 lg:p-0">
-        <ProductDetailInfo product={displayProduct} fashion={fashion} />
+        <ProductDetailInfo product={displayProduct} fashion={fashion} selectedVariantId={selectedVariant?.id ?? null} />
         <ProductDetailTabs product={displayProduct} fashion={fashion} />
         {showVariantSelector && selectedVariant && (
           <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>

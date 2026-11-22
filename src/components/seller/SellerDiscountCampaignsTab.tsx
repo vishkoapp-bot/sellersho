@@ -19,6 +19,7 @@ import {
   ToggleRight,
 } from 'lucide-react';
 import { Product, ProductVariant } from '../../types';
+import { cardPriceRangeOf, cardPriceVariantOf } from '../../utils/cardPrice';
 
 const toLocalInput = (d: Date) => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -563,6 +564,10 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
                   const isSelected = selectedProductIds.includes(product.id);
                   const variants = product.variants || [];
                   const hasVariants = variants.length > 0;
+                  // B7: price shown is the card price (default variant) —
+                  // name that variant; the range line covers the rest.
+                  const priced = cardPriceVariantOf(product);
+                  const priceRange = cardPriceRangeOf(product);
                   const isExpanded = !!expandedProductIds[product.id];
                   const config = productConfigs[product.id] || {
                     productId: product.id,
@@ -596,7 +601,10 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
                           <div className="min-w-0">
                             <h5 className="text-xs font-bold text-slate-900 truncate">{product.title}</h5>
                             <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500">
-                              <span>قیمت: {formatPrice(product.price)} تومان</span>
+                              <span>قیمت: {priced.variant?.label ? `${priced.variant.label} · ` : ''}{formatPrice(priced.triple.price)} تومان</span>
+                              {priceRange.hasRange && (
+                                <span className="text-slate-400">بازه قیمت: {formatPrice(priceRange.min)} تا {formatPrice(priceRange.max)} تومان</span>
+                              )}
                               {hasVariants && (
                                 <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.2 rounded font-semibold">
                                   {toPersianDigits(variants.length)} واریانت

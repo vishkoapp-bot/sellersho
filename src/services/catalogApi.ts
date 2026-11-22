@@ -178,6 +178,15 @@ export interface ProductFilterParams {
   minPrice?: number;
   maxPrice?: number;
   limit?: number;
+  // E2 (Batch 3): set ONLY by the header's debounced suggestion fetch;
+  // the backend skips search logging when suggest=1. The submitted
+  // search (Enter) and every other list read must NOT set it.
+  suggest?: boolean;
+  // B1(a) carve-out (Batch 3): honoured ONLY for an authenticated
+  // request whose caller owns the store (OwnedStore); anonymous and
+  // public callers get the filtered list. The seller management tab
+  // passes it; the storefront never does.
+  includeInactive?: boolean;
 }
 
 // PERF-01: the paged list envelope. items is always an array (never
@@ -188,6 +197,25 @@ export interface ProductListPage {
   nextCursor: string | null;
   hasMore: boolean;
   total: number;
+  // M-2 (Batch 3 fix): echoes whether the includeInactive carve-out
+  // was actually honoured for this request (owner-gated server-side).
+  // False means the flag was ignored (anonymous / non-owner / expired
+  // token) — the caller must NOT render the filtered list as the
+  // whole assortment in that case.
+  includeInactiveApplied?: boolean;
+}
+
+// M-1 (Batch 3 fix): the result of a whole-list walk. items is
+// the pages loaded so far; complete is false when the walk
+// stopped early (a page failed, or maxPages ran out with more
+// pages left) — in that case items is PARTIAL and must never be
+// presented as the whole assortment. includeInactiveApplied is
+// the first page's echo of the M-2 signal (defined only when
+// the walk asked for inactive and at least one page answered).
+export interface ProductWalkResult {
+  items: ProductDto[];
+  complete: boolean;
+  includeInactiveApplied?: boolean;
 }
 
 export const catalogApi = {
@@ -224,6 +252,8 @@ export const catalogApi = {
     if (params.minPrice != null) searchParams.set('min_price', String(params.minPrice));
     if (params.maxPrice != null) searchParams.set('max_price', String(params.maxPrice));
     if (params.limit != null) searchParams.set('limit', String(params.limit));
+    if (params.suggest) searchParams.set('suggest', '1');
+    if (params.includeInactive) searchParams.set('includeInactive', '1');
     if (opts.cursor) searchParams.set('cursor', opts.cursor);
 
     const qs = searchParams.toString();
@@ -247,19 +277,34 @@ export const catalogApi = {
   // Stops early when stopWhen returns true, and never walks more than
   // maxPages pages (default 50 x limit 100) — a runaway walk returns
   // what it loaded instead of looping forever.
-  fetchAllProductPages: async (params: ProductFilterParams = {}, opts: { maxPages?: number; stopWhen?: (items: ProductDto[]) => boolean } = {}): Promise<ProductDto[]> => {
+  // M-1 (Batch 3 fix): a mid-walk page failure returns the pages
+  // already loaded with complete: false — it never throws everything
+  // away, and a caller must never present a partial list as the
+  // whole assortment. maxPages exhausted with pages left is likewise
+  // incomplete. stopWhen is the caller's own early stop, so it
+  // counts as complete for that caller's purpose.
+  fetchAllProductPages: async (params: ProductFilterParams = {}, opts: { maxPages?: number; stopWhen?: (items: ProductDto[]) => boolean } = {}): Promise<ProductWalkResult> => {
     const maxPages = opts.maxPages ?? 50;
     const limit = params.limit ?? 100;
     const items: ProductDto[] = [];
     let cursor: string | undefined;
+    let includeInactiveApplied: boolean | undefined;
+    const done = (complete: boolean): ProductWalkResult =>
+      includeInactiveApplied === undefined ? { items, complete } : { items, complete, includeInactiveApplied };
     for (let page = 0; page < maxPages; page++) {
-      const res = await catalogApi.getProductsPage({ ...params, limit }, { cursor });
+      let res: ProductListPage;
+      try {
+        res = await catalogApi.getProductsPage({ ...params, limit }, { cursor });
+      } catch {
+        return done(false);
+      }
+      if (includeInactiveApplied === undefined) includeInactiveApplied = res.includeInactiveApplied;
       items.push(...res.items);
-      if (opts.stopWhen?.(items)) break;
-      if (!res.hasMore || !res.nextCursor) break;
+      if (opts.stopWhen?.(items)) return done(true);
+      if (!res.hasMore || !res.nextCursor) return done(true);
       cursor = res.nextCursor;
     }
-    return items;
+    return done(false);
   },
 
   getProductById: async (id: string, storeSlug?: string): Promise<ProductDto> => {

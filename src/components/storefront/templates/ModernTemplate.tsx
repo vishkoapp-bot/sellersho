@@ -30,6 +30,7 @@ import {
   LookbookSection,
   ProductsGridSection,
   groupProductsByCategory,
+  useStoreCategorySelect,
 } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
 import { TemplateProductGrid } from './TemplateProductGrid';
@@ -83,6 +84,7 @@ const CategoryMosaic: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
+  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = groupProductsByCategory(products, categories, custom.categoryOverrides);
   if (groups.length === 0) return null;
@@ -111,7 +113,12 @@ const CategoryMosaic: React.FC<{
           return (
             <div
               key={g.slug}
-              className={`group relative overflow-hidden rounded-[1.75rem] bg-slate-100 ring-1 ring-slate-900/5 transition duration-300 hover:-translate-y-0.5 hover:shadow-lg ${
+              role="button"
+              tabIndex={0}
+              aria-pressed={selectedCategory === g.slug}
+              onClick={() => selectCategory(g.slug)}
+              onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(g.slug); } }}
+              className={`group relative cursor-pointer overflow-hidden rounded-[1.75rem] bg-slate-100 ring-1 ring-slate-900/5 transition duration-300 hover:-translate-y-0.5 hover:shadow-lg ${
                 lead ? 'col-span-2 h-48 lg:h-auto lg:row-span-2' : 'h-36 lg:h-auto'
               }`}
             >

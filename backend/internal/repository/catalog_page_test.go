@@ -141,20 +141,37 @@ func TestCatalogCandidateScopeFiltersPrecedeLimit(t *testing.T) {
 	}
 	storeA := catalogpage.Scope{ID: "page-A", OwnerType: "dropshipper", Revision: 1}
 	filter := catalogpage.Filter{StorePosition: true}
+	// B1(a) D42 reversal: store A's assortment is page-prod-249
+	// (is_active=false, position -1), page-prod-240 (active, 1) and
+	// page-prod-250 (suspended supplier, 2). The public list excludes
+	// the inactive assortment row AND the suspended-supplier row, so
+	// the first page is 240 and there is no second page.
 	first, err := r.GetProductCandidatePageTx(context.Background(), tx, storeA, filter, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(first.Keys) != 1 || first.Keys[0].ID != "page-prod-240" || first.HasMore {
+		t.Fatalf("inactive/suspended assortment rows leaked into the scoped page: %+v", first)
+	}
+	// Owner-gated carve-out: with IncludeInactive the inactive
+	// assortment row returns (position order -1 first), but the
+	// suspended-supplier row still does not — the flag lifts only
+	// the is_active gate, never the suspension gate.
+	carveOut := catalogpage.Filter{StorePosition: true, IncludeInactive: true}
+	first, err = r.GetProductCandidatePageTx(context.Background(), tx, storeA, carveOut, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(first.Keys) != 1 || first.Keys[0].ID != "page-prod-249" || !first.HasMore {
-		t.Fatalf("assortment/inactive/suspension mismatch: %+v", first)
+		t.Fatalf("carve-out first page mismatch: %+v", first)
 	}
 	key := first.Keys[0]
-	second, err := r.GetProductCandidatePageTx(context.Background(), tx, storeA, filter, 1, &key)
+	second, err := r.GetProductCandidatePageTx(context.Background(), tx, storeA, carveOut, 1, &key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Keys) != 1 || second.Keys[0].ID != "page-prod-240" || second.HasMore {
-		t.Fatalf("position cursor mismatch: %+v", second)
+		t.Fatalf("carve-out position cursor mismatch (suspended row must stay out): %+v", second)
 	}
 	// A cursor scope cannot turn an existing dropshipper into the central catalog.
 	storeA.OwnerType = "central"

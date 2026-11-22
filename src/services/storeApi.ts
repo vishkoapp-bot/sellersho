@@ -452,6 +452,9 @@ export const storeApi = {
   setDiscountCodeActive: async (slug: string, id: string, isActive: boolean): Promise<unknown> => {
     return apiRequest(`/stores/${encodeURIComponent(slug)}/discount-codes`, { method: 'PUT', auth: true, body: JSON.stringify({ id, isActive }) });
   },
+  deleteDiscountCode: async (slug: string, id: string): Promise<unknown> => {
+    return apiRequest(`/stores/${encodeURIComponent(slug)}/discount-codes`, { method: 'DELETE', auth: true, body: JSON.stringify({ id }) });
+  },
   quoteDiscount: async (slug: string, payload: { items: { productId: string; variantId?: string; quantity: number }[]; discountCode?: string }): Promise<{ payableAmount: number; originalPayable: number; sellerDiscount: number; discountCode?: string; discountCodeValid: boolean }> => {
     return apiRequest(`/stores/${encodeURIComponent(slug)}/discount-quote`, { method: 'POST', body: JSON.stringify(payload) });
   },

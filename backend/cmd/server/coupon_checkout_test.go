@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/testdb"
 	"github.com/google/uuid"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -158,5 +162,239 @@ func TestFIN007HTTPCheckoutAdmissionRace(t *testing.T) {
 		if err = db.QueryRow(`SELECT used_count FROM seller_discount_codes WHERE id=$1`, code).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("handler count %d %v", count, err)
 		}
+	}
+}
+
+// TestDiscountCodeDeleteG8 pins the G8 (Batch 3) delete endpoint:
+// POST create -> DELETE -> GET list no longer contains the code (200);
+// a code with used_count > 0, and a 0-use code referenced by an order,
+// both refuse with 409 and the row survives; another store's code, an
+// unknown id, or a stranger's slug all refuse with 403, never delete.
+// The 0-use guard is server-side (DeleteDiscountCode): deleting a
+// 0-use code cannot change any placed order's total.
+func TestDiscountCodeDeleteG8(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	repo := repository.NewStoreRepository(db)
+	fin := repository.NewFinanceRepository(db)
+	owner := uuid.NewString()
+	stranger := uuid.NewString()
+	for _, id := range []string{owner, stranger} {
+		if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role,is_active) VALUES($1,$2,'Seller panel test','seller',true)`, id, "09"+id[:13]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := domain.Store{ID: "s-" + uuid.NewString(), Name: "G8 test", Slug: "s-" + uuid.NewString()[:20], OwnerType: "dropshipper", OwnerUserID: &owner, ActivePlanID: "trial", ReferralCode: uuid.NewString()[:8]}
+	other := domain.Store{ID: "s-" + uuid.NewString(), Name: "G8 other", Slug: "s-" + uuid.NewString()[:20], OwnerType: "dropshipper", OwnerUserID: &stranger, ActivePlanID: "trial", ReferralCode: uuid.NewString()[:8]}
+	for _, s := range []domain.Store{store, other} {
+		if err := repo.CreateStore(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		// The FIN007 writer fence (migration 202611170001) requires
+		// the session flag for any orders write carrying a
+		// discount_code; the flag is transaction-local, set the same
+		// way coupon_reservations.go does for lifecycle writes.
+		tx, err := db.Begin()
+		if err != nil {
+			return
+		}
+		defer tx.Rollback()
+		tx.Exec(`SELECT set_config('sellersho.fin007_writer','v1',true)`)
+		tx.Exec(`DELETE FROM orders WHERE store_id IN ($1,$2)`, store.ID, other.ID)
+		tx.Exec(`DELETE FROM seller_discount_codes WHERE store_id IN ($1,$2)`, store.ID, other.ID)
+		tx.Exec(`DELETE FROM stores WHERE id IN ($1,$2)`, store.ID, other.ID)
+		tx.Exec(`DELETE FROM users WHERE id IN ($1,$2)`, owner, stranger)
+		tx.Commit()
+	})
+	request := func(user, slug, method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/api/v1/stores/"+slug+"/discount-codes", bytes.NewBufferString(body))
+		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: user, Role: "seller"}))
+		w := httptest.NewRecorder()
+		handleSellerStore(w, r, repo, fin, slug, "discount-codes")
+		return w
+	}
+	create := func(code string) string {
+		start := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		end := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+		body := fmt.Sprintf(`{"code":%q,"mode":"fixed","value":1000,"startsAt":%q,"endsAt":%q}`, code, start, end)
+		w := request(owner, store.Slug, http.MethodPost, body)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", code, w.Code, w.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == "" {
+			t.Fatalf("create %s: bad response %s (%v)", code, w.Body.String(), err)
+		}
+		return created.ID
+	}
+	listIDs := func() []string {
+		w := request(owner, store.Slug, http.MethodGet, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var items []repository.DiscountCode
+		if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+			t.Fatalf("list: bad response %s (%v)", w.Body.String(), err)
+		}
+		ids := make([]string, len(items))
+		for i, c := range items {
+			ids[i] = c.ID
+		}
+		return ids
+	}
+	contains := func(ids []string, id string) bool {
+		for _, v := range ids {
+			if v == id {
+				return true
+			}
+		}
+		return false
+	}
+	deleteCode := func(user, slug, id string) *httptest.ResponseRecorder {
+		return request(user, slug, http.MethodDelete, fmt.Sprintf(`{"id":%q}`, id))
+	}
+
+	// 0-use code: create -> delete (200) -> list no longer contains it.
+	freeID := create("G8FREE")
+	if w := deleteCode(owner, store.Slug, freeID); w.Code != http.StatusOK {
+		t.Fatalf("delete 0-use: %d %s", w.Code, w.Body.String())
+	}
+	if ids := listIDs(); contains(ids, freeID) {
+		t.Fatalf("deleted code still listed: %v", ids)
+	}
+
+	// Used code: admit it through the order-owned reservation
+	// lifecycle (a 'reserved' reservation + used_count 1) -> DELETE
+	// is 409, row survives.
+	usedID := create("G8USED")
+	admitCoupon(t, db, "g8-"+uuid.NewString()[:8], usedID, store.ID, "G8USED", owner)
+	if w := deleteCode(owner, store.Slug, usedID); w.Code != http.StatusConflict {
+		t.Fatalf("delete used code: %d %s, want 409", w.Code, w.Body.String())
+	}
+	if ids := listIDs(); !contains(ids, usedID) {
+		t.Fatalf("used code vanished after refused delete: %v", ids)
+	}
+
+	// 0-use code referenced by an order: admit the code, then cancel
+	// the order, which releases the reservation and returns used_count
+	// to 0 while the order still carries the code string. The
+	// belt-and-braces audit check must still refuse with 409.
+	refID := create("G8REF")
+	refOrderID := "g8-" + uuid.NewString()[:8]
+	admitCoupon(t, db, refOrderID, refID, store.ID, "G8REF", owner)
+	releaseCoupon(t, db, refOrderID, refID)
+	var refUsed int
+	if err := db.QueryRow(`SELECT used_count FROM seller_discount_codes WHERE id=$1`, refID).Scan(&refUsed); err != nil || refUsed != 0 {
+		t.Fatalf("released fixture used_count=%d err=%v, want 0", refUsed, err)
+	}
+	if w := deleteCode(owner, store.Slug, refID); w.Code != http.StatusConflict {
+		t.Fatalf("delete order-referenced code: %d %s, want 409", w.Code, w.Body.String())
+	}
+	if ids := listIDs(); !contains(ids, refID) {
+		t.Fatalf("order-referenced code vanished after refused delete: %v", ids)
+	}
+
+	// Another store's code, deleted as the owner: 403, row survives.
+	otherCode, err := repo.CreateDiscountCode(ctx, other.ID, repository.DiscountCode{Code: "G8OTHER", Mode: "fixed", Value: 1000, StartsAt: time.Now().Add(-time.Hour), EndsAt: time.Now().Add(24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := deleteCode(owner, store.Slug, otherCode.ID); w.Code != http.StatusForbidden {
+		t.Fatalf("delete foreign code: %d %s, want 403", w.Code, w.Body.String())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM seller_discount_codes WHERE id=$1`, otherCode.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("foreign code deleted or lost: count=%d err=%v", n, err)
+	}
+	// Stranger calling the owner's slug: 403 (OwnedStore at entry).
+	if w := deleteCode(stranger, store.Slug, usedID); w.Code != http.StatusForbidden {
+		t.Fatalf("delete as stranger: %d %s, want 403", w.Code, w.Body.String())
+	}
+	// Unknown id and empty id: 403 / 400, never a delete.
+	if w := deleteCode(owner, store.Slug, "dcode-does-not-exist"); w.Code != http.StatusForbidden {
+		t.Fatalf("delete unknown id: %d %s, want 403", w.Code, w.Body.String())
+	}
+	if w := request(owner, store.Slug, http.MethodDelete, `{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("delete empty id: %d %s, want 400", w.Code, w.Body.String())
+	}
+}
+
+// admitCoupon replicates the order-owned reservation lifecycle for
+// one code: an order carrying the code, a 'reserved' admission
+// reservation, the 'reserved' event, and used_count bumped to 1 —
+// the same three writes coupon_reservations.go performs at checkout,
+// in one writer-flagged tx so the FIN007 fences pass. used_count may
+// NOT be bumped by a bare UPDATE: the deferred consistency trigger
+// requires it to equal the count of non-released reservations.
+func admitCoupon(t *testing.T, db *sql.DB, orderID, couponID, storeID, code, customerUserID string) {
+	t.Helper()
+	var revision int64
+	if err := db.QueryRow(`SELECT revision FROM seller_discount_codes WHERE id=$1`, couponID).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT set_config('sellersho.fin007_writer','v1',true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,customer_user_id,payment_status,status,inventory_captured,seller_discount_amount,coupon_discount_amount,discount_code,payment_expires_at) VALUES($1,$1,$2,'G8 test',2000,1000,'G8 customer','09123456789','x','x','x','1234512345',$3,$4,'pending','processing',false,1000,1000,$5,NOW()+INTERVAL '1 hour')`, orderID, storeID, "TRK-"+uuid.NewString()[:8], customerUserID, code); err != nil {
+		t.Fatal(err)
+	}
+	var admitted bool
+	err = tx.QueryRow(`WITH instant AS MATERIALIZED(SELECT clock_timestamp() at),
+	 added AS(INSERT INTO order_coupon_reservations(order_id,coupon_id,store_id,code,seller_discount_amount,coupon_discount_amount,coupon_revision,state,evidence_kind,reason,created_at)
+	 SELECT $1,$2,$3,$4,$5,$6,$7,'reserved','admission','checkout',instant.at FROM instant,seller_discount_codes c WHERE c.id=$2 AND c.starts_at<=instant.at AND c.ends_at>instant.at RETURNING order_id),
+	 counter AS(UPDATE seller_discount_codes SET used_count=used_count+1 WHERE id=$2 AND EXISTS(SELECT 1 FROM added) RETURNING id),
+	 event AS(INSERT INTO order_coupon_events(order_id,event_kind,new_state,reason) SELECT order_id,'reserved','reserved','checkout' FROM added RETURNING order_id)
+	 SELECT EXISTS(SELECT 1 FROM event)`, orderID, couponID, storeID, code, 1000, 1000, revision).Scan(&admitted)
+	if err != nil || !admitted {
+		t.Fatalf("admit coupon %s: admitted=%v err=%v", code, admitted, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// releaseCoupon replicates the cancellation path for an admitted
+// order: the order is cancelled, the reservation moves to
+// 'released', used_count returns to 0, and the 'released' event is
+// recorded. The order still carries the code string afterwards —
+// the exact state the delete guard's order-reference check exists
+// for. One writer-flagged tx; the FIN007 deferred consistency
+// triggers validate the final state at commit.
+func releaseCoupon(t *testing.T, db *sql.DB, orderID, couponID string) {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT set_config('sellersho.fin007_writer','v1',true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE orders SET status='cancelled' WHERE id=$1`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE order_coupon_reservations SET state='released',reason='cancelled',updated_at=clock_timestamp() WHERE order_id=$1`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE seller_discount_codes SET used_count=used_count-1 WHERE id=$1 AND used_count>0`, couponID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO order_coupon_events(order_id,event_kind,new_state,reason) VALUES($1,'released','released','cancelled')`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }

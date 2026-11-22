@@ -34,6 +34,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
     customerUser,
     setCustomerUser,
     setActiveView,
+    activeView,
     openProductDetail,
     formatPrice,
     toPersianDigits 
@@ -59,6 +60,25 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   const [isSearchDropOpen, setIsSearchDropOpen] = useState(false);
   const searchWrapDesktopRef = useRef<HTMLDivElement>(null);
   const searchWrapMobileRef = useRef<HTMLDivElement>(null);
+  // A2: the pending debounce timer and the in-flight suggestion fetch
+  // live in refs so Enter / a suggestion click can cancel them before
+  // navigating — otherwise the timer/fetch resolves after navigation
+  // and re-opens the dropdown over the results grid.
+  const searchTimerRef = useRef<number | undefined>(undefined);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const cancelledTermRef = useRef<string | null>(null);
+  const latestTermRef = useRef('');
+  const cancelPendingSearch = () => {
+    // Mark the term as submitted, so a timer for it that has not been
+    // installed yet never starts (see the effect below).
+    cancelledTermRef.current = latestTermRef.current.trim();
+    if (searchTimerRef.current !== undefined) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = undefined;
+    }
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+  };
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -84,20 +104,50 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   // for ten suggestions.
   useEffect(() => {
     const term = searchQuery.trim();
-    if (!term) { setSearchResults([]); setIsSearchDropOpen(false); return; }
+    if (!term) { setSearchResults([]); setIsSearchDropOpen(false); cancelledTermRef.current = null; return; }
+    // A2 race (see cancelPendingSearch): a term already submitted by
+    // Enter / a suggestion click gets no timer, even if this effect
+    // runs after the submit. A stale mark for a different term is
+    // cleared, so editing the query suggests again.
+    if (cancelledTermRef.current === term) return;
+    cancelledTermRef.current = null;
     let dead = false;
-    const timer = setTimeout(async () => {
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    searchTimerRef.current = window.setTimeout(async () => {
       try {
-        const res = await catalogApi.getProductsPage({ search: term, limit: 10, ...(searchStoreSlug ? { storeSlug: searchStoreSlug } : {}) });
+        // E2: a debounced suggestion fetch carries suggest=1 so the
+        // server does not log it as a submitted search; the submitted
+        // search (Enter -> openCatalogCategory) never carries it.
+        const res = await catalogApi.getProductsPage({ search: term, limit: 10, suggest: true, ...(searchStoreSlug ? { storeSlug: searchStoreSlug } : {}) }, { signal: controller.signal });
         if (dead) return;
         setSearchResults(res.items);
-        setIsSearchDropOpen(true);
+        // A2 hardening: only re-open while the search input still
+        // holds focus — a fetch resolving after the user moved on
+        // must not pop the dropdown open over the new view.
+        const stillFocused =
+          searchWrapDesktopRef.current?.contains(document.activeElement) ||
+          searchWrapMobileRef.current?.contains(document.activeElement);
+        if (stillFocused) setIsSearchDropOpen(true);
       } catch {
         if (!dead) { setSearchResults([]); setIsSearchDropOpen(false); }
       }
     }, 320);
-    return () => { dead = true; clearTimeout(timer); };
+    return () => {
+      dead = true;
+      if (searchTimerRef.current !== undefined) {
+        window.clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = undefined;
+      }
+      controller.abort();
+      if (searchAbortRef.current === controller) searchAbortRef.current = null;
+    };
   }, [searchQuery, searchStoreSlug]);
+
+  // A2 backstop: any navigation closes the suggestion dropdown, so no
+  // future navigation path can leave it open over the new view. It
+  // only fires on a view *change*, never while typing on the same view.
+  useEffect(() => { setIsSearchDropOpen(false); }, [activeView]);
 
   // Live dismissal (bundle): while open, document mousedown
   // outside the search wrapper and Escape both close. No blur
@@ -126,6 +176,10 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
 
   const handleSearchKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
+      // A2: cancel the pending debounce timer and abort the in-flight
+      // suggestion fetch BEFORE navigating, or either one resolving
+      // after navigation re-opens the dropdown over the results grid.
+      cancelPendingSearch();
       setIsSearchDropOpen(false);
       openCatalogCategory('all', searchQuery);
     }
@@ -136,6 +190,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   // itself. The candidate row is already a full DTO, so the
   // fallback maps the row DTO.
   const handleSuggestionClick = (row: ProductDto) => {
+    cancelPendingSearch();
     setIsSearchDropOpen(false);
     catalogApi.getProductById(row.id, searchStoreSlug ?? undefined).then(
       (full) => { try { openProductDetail(mapBackendProduct(full)); } catch { openProductDetail(mapBackendProduct(row)); } },
@@ -243,7 +298,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => { latestTermRef.current = e.target.value; setSearchQuery(e.target.value); }}
             onKeyDown={handleSearchKeyDown}
             onFocus={() => { if (searchResults.length > 0) setIsSearchDropOpen(true); }}
             placeholder={searchPlaceholders[placeholderIndex]}
@@ -376,7 +431,7 @@ export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => { latestTermRef.current = e.target.value; setSearchQuery(e.target.value); }}
             onKeyDown={handleSearchKeyDown}
             onFocus={() => { if (searchResults.length > 0) setIsSearchDropOpen(true); }}
             placeholder={searchPlaceholders[placeholderIndex]}

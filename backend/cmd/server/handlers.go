@@ -560,6 +560,13 @@ type ProductListPageResponse struct {
 	NextCursor *string           `json:"nextCursor"`
 	HasMore    bool              `json:"hasMore"`
 	Total      int               `json:"total"`
+	// M-2 (Batch 3 fix): echoes whether ?includeInactive=1 was actually
+	// honoured for this request (owner-gated in handleProductsList).
+	// False means the flag was ignored — anonymous, non-owner, or an
+	// expired token — so a management caller must NOT render the
+	// filtered list as the whole assortment. Additive: existing
+	// consumers ignore the field.
+	IncludeInactiveApplied bool `json:"includeInactiveApplied"`
 }
 
 // parseCatalogPageFilter reads the list query parameters into a
@@ -745,6 +752,13 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		scope.OwnerType = "central"
 	}
 	filter.StorePosition = scope.OwnerType == "dropshipper" && filter.Sort == "featured"
+	if r.URL.Query().Get("includeInactive") == "1" && storeSlug != "" {
+		if claims, ok := ctx.Value(userClaimsKey).(*auth.UserClaims); ok && claims != nil {
+			if _, err := storeRepo.OwnedStore(ctx, claims.UserID, storeSlug); err == nil {
+				filter.IncludeInactive = true
+			}
+		}
+	}
 
 	var supplierRepo *repository.SupplierRepository
 	if len(supplierRepos) > 0 {
@@ -1004,7 +1018,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 		nextCursor = &token
 	}
-	json.NewEncoder(w).Encode(ProductListPageResponse{Items: resp, NextCursor: nextCursor, HasMore: page.HasMore, Total: page.Total})
+	json.NewEncoder(w).Encode(ProductListPageResponse{Items: resp, NextCursor: nextCursor, HasMore: page.HasMore, Total: page.Total, IncludeInactiveApplied: filter.IncludeInactive})
 }
 
 // assembleProductDetail builds the 20-key live detail shape (the

@@ -1,15 +1,15 @@
 import { apiRequest } from './apiClient';
+import { fingerprintHash, newUuid } from './productModel';
 let fingerprint: Promise<string> | undefined;
 const browserProof = () => {
   const automated = navigator.webdriver || /Headless|Puppeteer|PhantomJS/i.test(navigator.userAgent)
     || ['__playwright__binding__', '__nightmare', 'callPhantom'].some((key) => key in window);
   fingerprint ??= (async () => {
     let visitor: string;
-    try { visitor = localStorage.getItem('sellersho_ad_visitor') || crypto.randomUUID(); localStorage.setItem('sellersho_ad_visitor', visitor); }
-    catch { visitor = crypto.randomUUID(); }
+    try { visitor = localStorage.getItem('sellersho_ad_visitor') || newUuid(); localStorage.setItem('sellersho_ad_visitor', visitor); }
+    catch { visitor = newUuid(); }
     const traits = [visitor, navigator.userAgent, navigator.language, screen.width, screen.height, screen.colorDepth, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.hardwareConcurrency];
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(traits)));
-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return fingerprintHash(JSON.stringify(traits));
   })();
   return { automated, fingerprint };
 };
@@ -23,7 +23,7 @@ export async function recordVerifiedAdEvent(campaignId: string, type: 'impressio
     proof = await apiRequest<{ challenge: string }>('/ads/challenge', { method: 'POST', body: JSON.stringify({ campaignId, ...signals }) });
     try { sessionStorage.setItem(cacheKey, JSON.stringify({ ...proof, issuedAt: Date.now() })); } catch { /* Tracking works without persistent storage. */ }
   }
-  const result = await apiRequest<{ accepted: boolean; reason?: string }>('/ads/events', { method: 'POST', body: JSON.stringify({ campaignId, type, token: token || crypto.randomUUID(), productId, challenge: proof.challenge, ...signals }) });
+  const result = await apiRequest<{ accepted: boolean; reason?: string }>('/ads/events', { method: 'POST', body: JSON.stringify({ campaignId, type, token: token || newUuid(), productId, challenge: proof.challenge, ...signals }) });
   if (result.reason === 'invalid_challenge' || result.reason === 'expired_challenge') { try { sessionStorage.removeItem(cacheKey); } catch { /* Optional cache. */ } }
   return result;
 }

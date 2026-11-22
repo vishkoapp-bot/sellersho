@@ -257,12 +257,14 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 		return
 	case "discount-codes":
 		// Team Discounts (Phase 3): seller discount-code CRUD for the
-		// owned store (GET/POST/PUT on the collection). Campaign CRUD
-		// lives in the live-parity Team 05 handler and is NOT
+		// owned store (GET/POST/PUT/DELETE on the collection). Campaign
+		// CRUD lives in the live-parity Team 05 handler and is NOT
 		// duplicated here. The toggle uses PUT on the collection with
 		// {id, isActive} (old-branch shape), unlike the Team 05
 		// campaign PATCH /:id shape, because handleSellerStore
-		// receives no id path part.
+		// receives no id path part. DELETE follows the same shape
+		// ({id} in the body, G8) and is 0-use-only server-side:
+		// DeleteDiscountCode returns 409 for a used code.
 		if r.Method == http.MethodGet {
 			items, err := repo.ListDiscountCodes(r.Context(), store.ID)
 			if err != nil {
@@ -285,6 +287,30 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 				return
 			}
 			if err := repo.SetDiscountCodeActive(r.Context(), store.ID, payload.ID, payload.IsActive); err != nil {
+				sellerError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			// G8: DELETE on the collection with {id} in the body
+			// (same shape as the PUT toggle above — the handler
+			// receives no id path part). The 0-use guard lives in
+			// DeleteDiscountCode, server-side; a used code is 409
+			// and the row survives.
+			var payload struct {
+				ID string `json:"id"`
+			}
+			if decodeMoneyJSON(r.Body, &payload) != nil || payload.ID == "" {
+				http.Error(w, `{"error":"Invalid request"}`, 400)
+				return
+			}
+			if err := repo.DeleteDiscountCode(r.Context(), store.ID, payload.ID); err != nil {
+				if errors.Is(err, repository.ErrDiscountCodeUsed) {
+					http.Error(w, `{"error":"Discount code has been used and cannot be deleted"}`, http.StatusConflict)
+					return
+				}
 				sellerError(w, err)
 				return
 			}

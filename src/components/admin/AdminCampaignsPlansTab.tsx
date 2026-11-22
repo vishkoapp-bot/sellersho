@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SubscriptionPlan } from '../../types';
+import { resolveSubscriptionPlans, resolveTrialQuota } from '../seller/SellerSubscriptionTab';
 import { Crown, Plus, Edit2, Trash2, X, Sparkles, Check, Sliders } from 'lucide-react';
 
 export const AdminCampaignsPlansTab: React.FC = () => {
@@ -11,8 +12,12 @@ export const AdminCampaignsPlansTab: React.FC = () => {
   const [savedBudget, setSavedBudget] = useState(false);
   const [editingPlan, setEditingPlan] = useState<SubscriptionPlan | null>(null);
   const [isNew, setIsNew] = useState(false);
-  const plans = platformSettings.subscriptionPlans;
-  const [trialQuotaInput, setTrialQuotaInput] = useState(String(platformSettings.subscriptionPlanLimits.trial));
+  // M-3: plans through the shared resolver (non-array -> []), and the
+  // trial-quota initialiser through resolveTrialQuota — the bare
+  // subscriptionPlanLimits.trial read sat one line above the ?? []
+  // guard, so it would have thrown first if limits were missing.
+  const plans = resolveSubscriptionPlans(platformSettings);
+  const [trialQuotaInput, setTrialQuotaInput] = useState(String(resolveTrialQuota(platformSettings)));
   const handleSaveTrialQuota = (event: React.FormEvent) => {
     event.preventDefault();
     const quota = Number(trialQuotaInput);

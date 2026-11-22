@@ -408,13 +408,13 @@ func TestTeam05PublicStoreListExcludesSuspendedAndPreservesDetail(t *testing.T) 
 // TestTeam05PublicTemplateConfigSanitizer pins the FIX3 allowlist:
 // invalid input yields {}, and unknown top-level/custom keys drop.
 func TestTeam05PublicTemplateConfigSanitizer(t *testing.T) {
-	if got := string(team05PublicTemplateConfig(nil)); got != `{}` {
+	if got := string(team05PublicTemplateConfig(nil, "")); got != `{}` {
 		t.Fatalf("nil config: got %s, want {}", got)
 	}
-	if got := string(team05PublicTemplateConfig(json.RawMessage(`not json`))); got != `{}` {
+	if got := string(team05PublicTemplateConfig(json.RawMessage(`not json`), "")); got != `{}` {
 		t.Fatalf("invalid config: got %s, want {}", got)
 	}
-	got := team05PublicTemplateConfig(json.RawMessage(`{"accentColor":"#123456","evil":1,"custom":{"banners":[],"ownerNote":"x"}}`))
+	got := team05PublicTemplateConfig(json.RawMessage(`{"accentColor":"#123456","evil":1,"custom":{"banners":[],"ownerNote":"x"}}`), "")
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(got, &doc); err != nil {
 		t.Fatalf("sanitized config is not JSON: %v", err)
@@ -431,5 +431,131 @@ func TestTeam05PublicTemplateConfigSanitizer(t *testing.T) {
 	}
 	if _, ok := custom["ownerNote"]; ok {
 		t.Fatalf("non-allowlisted custom key leaked: %s", got)
+	}
+}
+
+// TestTeam05PublicTemplateConfigSectionsBlueprintOrder pins the B3
+// (Batch 3) backend defence: a dict-form sections value is emitted as
+// a blueprint-ordered array, never in alphabetical dict order. The
+// stored jsonb has already lost the seller's insertion order, so the
+// order is re-derived from the backend blueprint table (the mirror of
+// frontend TEMPLATE_BLUEPRINTS); the frontend's own dict-ordering
+// fallback is the second defence, not the only one.
+func TestTeam05PublicTemplateConfigSectionsBlueprintOrder(t *testing.T) {
+	type section struct {
+		Key     string `json:"key"`
+		Enabled bool   `json:"enabled"`
+	}
+	sectionsOf := func(t *testing.T, raw json.RawMessage) []section {
+		t.Helper()
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("sanitized config is not JSON: %v", err)
+		}
+		var out []section
+		if err := json.Unmarshal(doc["sections"], &out); err != nil {
+			t.Fatalf("sections is not an array of {key,enabled}: %s (%v)", doc["sections"], err)
+		}
+		return out
+	}
+	keysOf := func(sections []section) []string {
+		keys := make([]string, len(sections))
+		for i, s := range sections {
+			keys[i] = s.Key
+		}
+		return keys
+	}
+
+	// Dict-form, vishkostor shape: keys arrive alphabetically (the Go
+	// map / jsonb order) and must come out in tpl-modern-1 blueprint
+	// order, with the categories alias canonicalised into its
+	// blueprint slot, the explicit false preserved, and the unknown
+	// key appended last.
+	got := team05PublicTemplateConfig(json.RawMessage(`{"accentColor":"#123456","sections":{"faq":true,"about":true,"hero":true,"products":true,"categories":true,"newsletter":false,"deals":true}}`), "tpl-modern-1")
+	sections := sectionsOf(t, got)
+	wantKeys := []string{"hero", "categoryRail", "about", "newsletter", "faq", "products", "deals"}
+	if gotKeys := keysOf(sections); strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
+		t.Fatalf("dict-form order: got %v, want %v", gotKeys, wantKeys)
+	}
+	for _, s := range sections {
+		if s.Key == "newsletter" && s.Enabled {
+			t.Fatalf("explicit false was flipped or dropped: %s", got)
+		}
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if string(doc["accentColor"]) != `"#123456"` {
+		t.Fatalf("accentColor lost in dict normalisation: %s", got)
+	}
+
+	// Alias spellings canonicalise before ordering: categoryTiles is
+	// the same section as categoryRail and lands in its slot.
+	got = team05PublicTemplateConfig(json.RawMessage(`{"sections":{"categoryTiles":true,"hero":true}}`), "tpl-modern-1")
+	if gotKeys := keysOf(sectionsOf(t, got)); strings.Join(gotKeys, ",") != "hero,categoryRail" {
+		t.Fatalf("alias canonicalisation: got %v, want [hero categoryRail]", gotKeys)
+	}
+
+	// Array-form input is the seller's drag-to-reorder order: it must
+	// pass through byte-identical, never re-sorted.
+	arrayIn := `[{"key":"faq","enabled":true},{"key":"hero","enabled":true}]`
+	got = team05PublicTemplateConfig(json.RawMessage(`{"sections":`+arrayIn+`}`), "tpl-modern-1")
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if string(doc["sections"]) != arrayIn {
+		t.Fatalf("array-form sections re-sorted or rewritten: got %s, want %s", doc["sections"], arrayIn)
+	}
+
+	// Unknown template: the dict passes through unchanged (no crash,
+	// no {}), and the frontend's blueprint fallback owns it.
+	got = team05PublicTemplateConfig(json.RawMessage(`{"sections":{"faq":true,"hero":true}}`), "tpl-nope-9")
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var dictForm map[string]bool
+	if err := json.Unmarshal(doc["sections"], &dictForm); err != nil || !dictForm["faq"] || !dictForm["hero"] {
+		t.Fatalf("unknown template dict must pass through unchanged: got %s", doc["sections"])
+	}
+
+	// Same rule at the view level: the public store view carries the
+	// template id through, so a dict-form store renders blueprint-
+	// ordered on GET /api/v1/stores/<slug>.
+	view := team05PublicStoreView(&domain.Store{
+		ID: "s-b3", Slug: "b3-store", Name: "B3", OwnerType: "dropshipper",
+		TemplateID:     "tpl-modern-1",
+		TemplateConfig: json.RawMessage(`{"sections":{"faq":true,"hero":true,"products":true}}`),
+	})
+	if gotKeys := keysOf(sectionsOf(t, view.TemplateConfig)); strings.Join(gotKeys, ",") != "hero,faq,products" {
+		t.Fatalf("public view dict-form order: got %v, want [hero faq products]", gotKeys)
+	}
+
+	// M-4 (Batch 3 fix): pin ALL FIVE blueprint orders, not just
+	// tpl-modern-1 — a typo in any other table row used to ship
+	// silently. Each dict carries every blueprint key (Go marshals map
+	// keys alphabetically — the same scrambled order jsonb delivers)
+	// and must come out in exactly blueprint order.
+	blueprints := map[string][]string{
+		"tpl-modern-1":     {"announcement", "hero", "trustStrip", "categoryRail", "featured", "banners", "bestsellers", "about", "testimonials", "newsletter", "faq", "products"},
+		"tpl-electronic-1": {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "bestsellers", "brands", "discounted", "testimonials", "faq", "products"},
+		"tpl-fashion-1":    {"announcement", "hero", "categoryRail", "products", "lookbook", "about"},
+		"tpl-digikala-1":   {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "brands", "bestsellers", "discounted", "topRated", "campaign", "faq", "products"},
+		"tpl-tech-1":       {"announcement", "hero", "trustStrip", "categoryRail", "featured", "brands", "topRated", "about", "faq", "products"},
+	}
+	for _, templateID := range []string{"tpl-modern-1", "tpl-electronic-1", "tpl-fashion-1", "tpl-digikala-1", "tpl-tech-1"} {
+		want := blueprints[templateID]
+		sections := make(map[string]bool, len(want))
+		for _, k := range want {
+			sections[k] = true
+		}
+		raw, err := json.Marshal(map[string]any{"sections": sections})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = team05PublicTemplateConfig(raw, templateID)
+		if gotKeys := keysOf(sectionsOf(t, got)); strings.Join(gotKeys, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s dict-form order: got %v, want %v", templateID, gotKeys, want)
+		}
 	}
 }

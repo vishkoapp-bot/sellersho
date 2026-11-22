@@ -1,4 +1,5 @@
 import { supplierApi } from './supplierApi';
+import { newUuid } from './productModel';
 import { tokenStore } from './apiClient';
 
 export type CartonDraft = { warehouse_id: string; source?: {source_kind: string; supplier_warehouse_id?: string; external_reference?: string; reason?: string}; items: { variant_id: string; expected_qty: number }[] };
@@ -17,7 +18,7 @@ export const createCartonDraftOperation = () => {
       const generation = tokenStore.getGeneration();
       const canonical = JSON.stringify({ warehouse_id: payload.warehouse_id, source: payload.source, items });
       if (!operation || operation.canonical !== canonical || operation.generation !== generation) {
-        operation = { canonical, generation, key: crypto.randomUUID() };
+        operation = { canonical, generation, key: newUuid() };
       }
       const result = await supplierApi.createShipment({ warehouse_id: payload.warehouse_id, source: payload.source, items, creation_key: operation.key });
       if (tokenStore.getGeneration() !== generation) throw new Error('Session changed during shipment creation');

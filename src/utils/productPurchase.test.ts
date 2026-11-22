@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Product, ProductVariant } from '../types';
-import { axisOptionVariant, initialPurchaseVariant, resolvePurchase, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
+import { axisOptionVariant, initialPurchaseVariant, resolvePurchase, resolveStockBadge, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
 
 const sku = (id: string, selection: Record<string, string>, stock = 5): ProductVariant => ({
   id, selection, stock, spnc: id, name: id, variantName: id, attributes: {}, isDefault: false,
@@ -34,6 +34,22 @@ describe('canonical customer SKU resolution', () => {
     assert.equal(resolvePurchase(product, 'blue-m')?.product.price, 2200);
     delete product.variantPrices!['blue-m'];
     assert.equal(resolvePurchase(product, 'blue-m'), undefined);
+  });
+  // B1(b): an inactive product with stock 500 and active in-stock
+  // variants must not show «۵۰۰ عدد موجود» — resolvePurchase is
+  // undefined for it, so the badge resolves to 'inactive', and the
+  // same product active shows its real (maxQty) count.
+  it('stock badge never shows a count for a product the buy bar cannot sell', () => {
+    const product = fixture();
+    product.stock = 500;
+    product.isActive = false;
+    assert.equal(resolvePurchase(product, 'red-s'), undefined);
+    assert.deepEqual(resolveStockBadge(product, 'red-s'), { kind: 'inactive' });
+    assert.deepEqual(resolveStockBadge(product), { kind: 'inactive' });
+    product.isActive = true;
+    assert.deepEqual(resolveStockBadge(product, 'red-s'), { kind: 'in-stock', stock: 5 });
+    assert.deepEqual(resolveStockBadge(product, 'red-m'), { kind: 'out-of-stock' });
+    assert.deepEqual(resolveStockBadge(product), { kind: 'out-of-stock' });
   });
   it('preserves a valid sold-out SPNC deep link while ordinary initial selection picks stock', () => {
     const product = fixture();

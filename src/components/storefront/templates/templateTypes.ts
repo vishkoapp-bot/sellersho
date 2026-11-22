@@ -1,4 +1,5 @@
 import type { Store, Product, Category } from '../../../types';
+import type { CategoryGroup } from './StoreSections';
 import { filterStoreProducts } from '../../../utils/storeAssortment';
 
 // FIX3 — store template section model, rebuilt from live behaviour
@@ -220,21 +221,49 @@ export function storefrontProducts(store: Store, products: Product[]): Product[]
 // (non-object entries dropped); anything else means 'no override' and
 // the caller falls back to defaults. Unknown dict keys pass through
 // unchanged; templates only ever query keys they know.
-export function normalizeTemplateSections(sections: unknown): TemplateSection[] | undefined {
+// B3 (Batch 3): a dict carries NO order — Object.entries order is
+// whatever the wire/jsonb emitted (alphabetical from Go maps), never
+// the seller's order. When a blueprint order is supplied, dict keys
+// are canonicalised (aliases first, e.g. categories -> categoryRail)
+// and emitted in blueprint order, unknown keys appended after in
+// alphabetical order (their stored order is unrecoverable, so
+// alphabetical is the honest deterministic choice). Without a
+// blueprint order the entries keep wire order (callers that only
+// query enabled/disabled do not care about order).
+export function normalizeTemplateSections(sections: unknown, blueprintOrder?: string[]): TemplateSection[] | undefined {
   if (sections === undefined || sections === null) return undefined;
   if (Array.isArray(sections)) {
     return sections.filter((entry) => entry && typeof entry === 'object') as TemplateSection[];
   }
   if (typeof sections === 'object') {
-    return Object.entries(sections as Record<string, unknown>).map(([key, value]) => ({
-      key,
-      label: key,
-      toggleable: true,
-      orderable: true,
-      defaultEnabled: true,
-      selfHidesWhenEmpty: true,
-      enabled: value !== false,
-    }));
+    const entries: TemplateSection[] = [];
+    const seen = new Set<string>();
+    for (const [rawKey, value] of Object.entries(sections as Record<string, unknown>)) {
+      const key = canonicalSectionKey(rawKey);
+      if (!key || seen.has(key)) continue; // dedup after canonicalisation; first occurrence wins
+      seen.add(key);
+      entries.push({
+        key,
+        label: key,
+        toggleable: true,
+        orderable: true,
+        defaultEnabled: true,
+        selfHidesWhenEmpty: true,
+        enabled: value !== false,
+      });
+    }
+    if (blueprintOrder) {
+      const rank = new Map(blueprintOrder.map((k, i) => [k, i] as const));
+      entries.sort((a, b) => {
+        const ra = rank.get(sectionKey(a));
+        const rb = rank.get(sectionKey(b));
+        if (ra !== undefined && rb !== undefined) return ra - rb;
+        if (ra !== undefined) return -1;
+        if (rb !== undefined) return 1;
+        return sectionKey(a).localeCompare(sectionKey(b));
+      });
+    }
+    return entries;
   }
   return undefined;
 }
@@ -394,15 +423,19 @@ function sectionLabel(key: string): string {
 }
 
 // Merge a saved config over a template blueprint. Sections: the saved
-// order wins when present; blueprint sections missing from the saved
-// list are appended in blueprint order so new sections never vanish.
-// Enabled flags come from the saved config when present, else from the
-// blueprint lineup (in lineup = enabled, absent = disabled).
+// order wins when present AND the saved form is an array (the seller's
+// drag-to-reorder); a saved DICT has no order, so its keys are ordered
+// by the blueprint instead (B3 — a dict's wire order is alphabetical
+// from Go maps / jsonb, never the seller's order). Blueprint sections
+// missing from the saved list are appended in blueprint order so new
+// sections never vanish. Enabled flags come from the saved config when
+// present, else from the blueprint lineup (in lineup = enabled, absent
+// = disabled).
 export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig | null): TemplateConfig {
   const blueprint = blueprintFor(templateId);
   const base: TemplateConfig = saved && typeof saved === 'object' ? saved : {};
   if (!blueprint) return base;
-  const savedSections = normalizeTemplateSections(base.sections) || [];
+  const savedSections = normalizeTemplateSections(base.sections, blueprint.sections) || [];
   const savedByKey = new Map(savedSections.map((sec) => [canonicalSectionKey(sectionKey(sec)), sec] as const));
   const orderedKeys: string[] = [];
   for (const sec of savedSections) {
@@ -434,8 +467,12 @@ export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig
 }
 
 // Ordered, enabled, canonical section keys for a resolved config.
-export function orderedEnabledSections(config: TemplateConfig): string[] {
-  const normalized = normalizeTemplateSections(config.sections);
+// A dict-form config with a blueprint order is ordered by that
+// blueprint (same rule as resolveTemplateConfig); without one, dict
+// keys keep wire order. Resolved configs are arrays and pass through
+// in their saved order.
+export function orderedEnabledSections(config: TemplateConfig, blueprintOrder?: string[]): string[] {
+  const normalized = normalizeTemplateSections(config.sections, blueprintOrder);
   if (!normalized || normalized.length === 0) {
     return DEFAULT_TEMPLATE_SECTIONS.filter((d) => d.defaultEnabled).map((d) => canonicalSectionKey(sectionKey(d)));
   }
@@ -444,3 +481,34 @@ export function orderedEnabledSections(config: TemplateConfig): string[] {
     .map((sec) => canonicalSectionKey(sectionKey(sec)))
     .filter((k, i, arr) => k !== '' && arr.indexOf(k) === i);
 }
+
+export interface FashionMacroEntry {
+  title: string;
+  image: string | undefined;
+  link: string;
+  slug: string;
+}
+
+// B4: fashion macro tile images. Lives here (CSS-free) instead of
+// FashionTemplate.tsx so the node:test harness can pin it — the
+// template file imports fashion.css, which tsx cannot load.
+export const resolveFashionMacroEntries = (
+  groups: CategoryGroup[],
+  banners: TemplateBanner[],
+  limit: number,
+): FashionMacroEntry[] => {
+  if (groups.length) {
+    return groups.slice(0, limit).map((group) => ({
+      title: group.title,
+      image: group.image || group.products[0]?.image,
+      link: '#products',
+      slug: group.slug,
+    }));
+  }
+  return banners.slice(0, limit).map((b) => ({
+    title: b.title || 'مشاهده مجموعه',
+    image: b.image,
+    link: b.link || '#products',
+    slug: '',
+  }));
+};

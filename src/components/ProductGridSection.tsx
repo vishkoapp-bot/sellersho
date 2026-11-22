@@ -7,7 +7,7 @@ import { ProductCarousel } from './ProductCarousel';
 import { SlidersHorizontal, ShoppingBag, RotateCcw, PackageX, Check } from 'lucide-react';
 
 export const ProductGridSection: React.FC = () => {
-  const { products, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, toPersianDigits, loadMoreCatalog, hasMoreCatalog, catalogLoadingMore } = useStore();
+  const { products, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, toPersianDigits, loadMoreCatalog, hasMoreCatalog, catalogLoadingMore, catalogTotal } = useStore();
   const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
   const [onlyInStock, setOnlyInStock] = useState(false);
   const [onlyOriginal, setOnlyOriginal] = useState(false);
@@ -92,7 +92,16 @@ export const ProductGridSection: React.FC = () => {
               <ShoppingBag className="w-4 h-4 lg:w-5 lg:h-5 text-brand-deep"  strokeWidth={1.5}/>
               <span>منتخب محصولات</span>
               <span className="text-[10px] lg:text-xs font-bold text-slate-400">
-                ({toPersianDigits(filtered.length)} کالا)
+                {/* A5: the header shows the SERVER total (catalogTotal),
+                    stable across pages — never the loaded-page count.
+                    With a local-only filter active, "N of M": N counts
+                    matches among the loaded pages only, M is the server
+                    total for the current server filter. While the total
+                    has not loaded yet (0), fall back to the loaded count
+                    so the header never flashes 0. */}
+                {hasFilter && catalogTotal > 0
+                  ? `(${toPersianDigits(filtered.length)} از ${toPersianDigits(catalogTotal)} کالا)`
+                  : `(${toPersianDigits(catalogTotal > 0 ? catalogTotal : filtered.length)} کالا)`}
               </span>
             </h2>
             <p className="text-[10px] lg:text-sm text-slate-400 mt-0.5">کالاها پیش از ارسال کنترل کیفیت می‌شوند؛ ارسال به سراسر کشور</p>
@@ -217,19 +226,25 @@ export const ProductGridSection: React.FC = () => {
               onClick={() => setShowAll(true)}
               className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors"
             >
-              مشاهده همه {toPersianDigits(filtered.length)} کالا
+              {/* A5: local expand only — the already-loaded items, not
+                  the whole catalog. */}
+              مشاهده همه کالاهای بارگذاری‌شده ({toPersianDigits(filtered.length)} کالا)
             </button>
           )}
           {/* PERF-01: the floor renders the loaded pages; when more
               pages remain, this loads the next one (the local
               filter/sort above then applies to the larger set). */}
-          {!carouselMode && hasMoreCatalog && (
+          {/* A5: server paging — labelled with the server total
+              (mirrors CatalogView's «نمایش بیشتر (M کالا)»). Also
+              rendered in carousel mode: one click both expands the
+              grid and fetches the next server page. */}
+          {hasMoreCatalog && (
             <button
-              onClick={() => { void loadMoreCatalog(); }}
+              onClick={() => { if (carouselMode) setShowAll(true); void loadMoreCatalog(); }}
               disabled={catalogLoadingMore}
               className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
             >
-              {catalogLoadingMore ? 'در حال بارگذاری…' : 'نمایش بیشتر'}
+              {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(catalogTotal > 0 ? catalogTotal : filtered.length)} کالا)`}
             </button>
           )}
         </>

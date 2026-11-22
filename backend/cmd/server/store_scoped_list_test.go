@@ -138,7 +138,7 @@ func storeScopedRepos(t *testing.T) (*repository.CatalogRepository, *repository.
 		}
 	}
 	seed := []string{
-		`INSERT INTO stores (id,name,slug,owner_type,panel_config,seller_deals_widget_config) VALUES ('store-shopx','فروشگاه ایکس','shopx','dropshipper','{}'::jsonb,'null'::jsonb)`,
+		`INSERT INTO stores (id,name,slug,owner_type,owner_user_id,panel_config,seller_deals_widget_config) VALUES ('store-shopx','فروشگاه ایکس','shopx','dropshipper','owner-shopx','{}'::jsonb,'null'::jsonb)`,
 		`INSERT INTO stores (id,name,slug,owner_type,panel_config,seller_deals_widget_config) VALUES ('store-central','مرکزی','central','central','{}'::jsonb,'null'::jsonb)`,
 		`INSERT INTO store_products VALUES ('store-shopx','p-old-1',0)`,
 		`INSERT INTO store_products VALUES ('store-shopx','p-old-2',1)`,
@@ -156,7 +156,27 @@ func storeScopedRepos(t *testing.T) (*repository.CatalogRepository, *repository.
 
 func storeScopedList(t *testing.T, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, path string) []map[string]json.RawMessage {
 	t.Helper()
-	ctx := context.Background()
+	return storeScopedListCtx(t, catalogRepo, storeRepo, context.Background(), path)
+}
+
+// storeScopedListCtx is storeScopedList with caller-controlled auth
+// claims in ctx (B1(a) carve-out tests pass an owner / non-owner
+// UserClaims here; anonymous callers pass context.Background()).
+func storeScopedListCtx(t *testing.T, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, ctx context.Context, path string) []map[string]json.RawMessage {
+	t.Helper()
+	return storeScopedPageCtx(t, catalogRepo, storeRepo, ctx, path).items
+}
+
+type storeScopedPage struct {
+	items                  []map[string]json.RawMessage
+	nextCursor             *string
+	hasMore                bool
+	total                  int
+	includeInactiveApplied bool
+}
+
+func storeScopedPageCtx(t *testing.T, catalogRepo *repository.CatalogRepository, storeRepo *repository.StoreRepository, ctx context.Context, path string) storeScopedPage {
+	t.Helper()
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		handleProductsList(w, r, ctx, catalogRepo, storeRepo, nil)
 	}
@@ -166,12 +186,16 @@ func storeScopedList(t *testing.T, catalogRepo *repository.CatalogRepository, st
 	}
 	// PERF-01: paged envelope; the bare-array shape is retired.
 	var envelope struct {
-		Items []map[string]json.RawMessage `json:"items"`
+		Items                  []map[string]json.RawMessage `json:"items"`
+		NextCursor             *string                      `json:"nextCursor"`
+		HasMore                bool                         `json:"hasMore"`
+		Total                  int                          `json:"total"`
+		IncludeInactiveApplied bool                         `json:"includeInactiveApplied"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("GET %s decode: %v", path, err)
 	}
-	return envelope.Items
+	return storeScopedPage{items: envelope.Items, nextCursor: envelope.NextCursor, hasMore: envelope.HasMore, total: envelope.Total, includeInactiveApplied: envelope.IncludeInactiveApplied}
 }
 
 func listIDs(list []map[string]json.RawMessage) []string {
@@ -196,14 +220,18 @@ func listPrice(t *testing.T, item map[string]json.RawMessage) int64 {
 func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 	catalogRepo, storeRepo := storeScopedRepos(t)
 
-	// Store view: exactly the store's 3 products, in assortment
-	// (position) order, at store-scoped prices. Default pricing
-	// settings: platform pct 0, so reference = supplier cost;
-	// dropshipper fallback margin is the max allowed (35), and
-	// p-old-2's 20% product override wins for that product.
+	// Store view: B1(a) — only the store's ACTIVE product. p-old-1
+	// and p-old-2 are globally inactive, so the public list hides
+	// them even though they are in the assortment; the owner-gated
+	// ?includeInactive=1 carve-out (see
+	// TestStoreScopedListIncludeInactiveOwnerGated in
+	// b1a_include_inactive_test.go) is the only way they come back.
+	// Default pricing settings: platform pct 0, so reference =
+	// supplier cost; dropshipper fallback margin is the max allowed
+	// (35), so p-old-3 prices at 6,750,000.
 	list := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=shopx")
 	ids := listIDs(list)
-	wantIDs := []string{"p-old-1", "p-old-2", "p-old-3"}
+	wantIDs := []string{"p-old-3"}
 	if len(ids) != len(wantIDs) {
 		t.Fatalf("store list ids = %v, want exactly %v", ids, wantIDs)
 	}
@@ -212,7 +240,7 @@ func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 			t.Fatalf("store list order = %v, want %v", ids, wantIDs)
 		}
 	}
-	wantPrices := map[string]int64{"p-old-1": 13500000, "p-old-2": 24000000, "p-old-3": 6750000}
+	wantPrices := map[string]int64{"p-old-3": 6750000}
 	for _, item := range list {
 		var id string
 		_ = json.Unmarshal(item["id"], &id)
@@ -228,10 +256,11 @@ func TestStoreScopedListReturnsOwnAssortment(t *testing.T) {
 		}
 	}
 
-	// The explicit ?limit= still truncates the store list.
+	// The explicit ?limit= still truncates the store list (1 item
+	// here, so limit=2 returns the same single row).
 	limited := storeScopedList(t, catalogRepo, storeRepo, "/api/v1/products/?storeSlug=shopx&limit=2")
-	if got := listIDs(limited); len(got) != 2 || got[0] != "p-old-1" || got[1] != "p-old-2" {
-		t.Fatalf("limited store list = %v, want [p-old-1 p-old-2]", got)
+	if got := listIDs(limited); len(got) != 1 || got[0] != "p-old-3" {
+		t.Fatalf("limited store list = %v, want [p-old-3]", got)
 	}
 
 	// Unscoped: previous behaviour untouched — globally active only

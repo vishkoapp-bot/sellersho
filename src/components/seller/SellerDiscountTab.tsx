@@ -12,6 +12,10 @@ import { Tag } from 'lucide-react';
 // live-parity did not have. Every discount is margin-only by server
 // rule: it never touches wholesale cost or platform fee, and the
 // discounted margin is what settlement pays.
+// G8: the delete rule, exported so the unit test pins it — the row
+// renders the «حذف» button only when this is true.
+export const canDeleteDiscountCode = (code: DiscountCode): boolean => (code.usedCount ?? 0) === 0;
+
 export const SellerDiscountTab: React.FC = () => {
   const { currentStore, formatPrice } = useStore();
   const { success, error } = useToast();
@@ -69,7 +73,17 @@ export const SellerDiscountTab: React.FC = () => {
           {codes.map((c) => (
             <div key={c.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-2 text-xs">
               <span><strong>{c.code}</strong> · {c.mode === 'percent' ? `${c.value}٪` : `${formatPrice(c.value)} تومان`} · استفاده‌شده: {c.usedCount}{c.maxUses ? `/${c.maxUses}` : ''} · {c.isActive ? 'فعال' : 'غیرفعال'}</span>
-              <button className="rounded-lg bg-slate-200 px-2 py-1 text-[10px]" onClick={() => storeApi.setDiscountCodeActive(currentStore.slug, c.id, !c.isActive).then(load).catch((e: any) => error(e?.message || 'خطا'))}>{c.isActive ? 'غیرفعال' : 'فعال'}</button>
+              <span className="flex items-center gap-1">
+                <button className="rounded-lg bg-slate-200 px-2 py-1 text-[10px]" onClick={() => storeApi.setDiscountCodeActive(currentStore.slug, c.id, !c.isActive).then(load).catch((e: any) => error(e?.message || 'خطا'))}>{c.isActive ? 'غیرفعال' : 'فعال'}</button>
+                {canDeleteDiscountCode(c) && (
+                  <button className="rounded-lg bg-rose-100 text-rose-700 px-2 py-1 text-[10px] font-bold" onClick={() => {
+                    if (!window.confirm(`کد ${c.code} حذف شود؟ این عمل قابل بازگشت نیست.`)) return;
+                    storeApi.deleteDiscountCode(currentStore.slug, c.id)
+                      .then(() => { success('کد تخفیف حذف شد.'); load(); })
+                      .catch((e: any) => error(e?.message || 'حذف کد تخفیف انجام نشد.'));
+                  }}>حذف</button>
+                )}
+              </span>
             </div>
           ))}
         </div>

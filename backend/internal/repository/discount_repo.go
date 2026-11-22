@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/drup/platform/internal/pricing"
 	"strings"
@@ -111,6 +112,61 @@ func (r *StoreRepository) SetDiscountCodeActive(ctx context.Context, storeID, co
 		return ErrStoreForbidden
 	}
 	return nil
+}
+
+// ErrDiscountCodeUsed is returned by DeleteDiscountCode when the code
+// has been used (used_count > 0) or any order references its code
+// string for the store. Deleting a used code would orphan the order
+// audit trail (orders carry the code as free text), so the handler
+// maps this to HTTP 409. Only a 0-use, unreferenced code can be
+// deleted — deleting one cannot change any placed order's total.
+var ErrDiscountCodeUsed = errors.New("discount code has been used and cannot be deleted")
+
+// DeleteDiscountCode hard-deletes a seller discount code, 0-use-only.
+// The guard is enforced here, server-side, never trusted from the
+// client: the row is locked FOR UPDATE (which serialises against a
+// checkout reserving the code), used_count must be 0, and no order
+// for the store may reference the code string. A missing id — or a
+// code belonging to another store — returns ErrStoreForbidden, the
+// same answer as the toggle path, so ownership is never leaked.
+func (r *StoreRepository) DeleteDiscountCode(ctx context.Context, storeID, codeID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var code string
+	var used int
+	err = tx.QueryRowContext(ctx, `SELECT code, used_count FROM seller_discount_codes WHERE id=$1 AND store_id=$2 FOR UPDATE`, codeID, storeID).Scan(&code, &used)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ErrStoreForbidden
+		}
+		return err
+	}
+	if used > 0 {
+		return ErrDiscountCodeUsed
+	}
+	// Belt-and-braces audit check: orders.discount_code is free text,
+	// so a 0 used_count with a live order reference must still refuse.
+	var referenced int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM orders WHERE store_id=$1 AND UPPER(discount_code)=$2`, storeID, normalizeDiscountCode(code)).Scan(&referenced); err != nil {
+		return err
+	}
+	if referenced > 0 {
+		return ErrDiscountCodeUsed
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM seller_discount_codes WHERE id=$1 AND store_id=$2 AND used_count=0`, codeID, storeID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// used_count moved under us (the FOR UPDATE lock makes this
+		// near-impossible, but never delete on a stale read).
+		return ErrDiscountCodeUsed
+	}
+	return tx.Commit()
 }
 
 // ValidateDiscountCode returns the code if it is active, in window and

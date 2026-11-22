@@ -1,5 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { mapBackendProduct } from '../../context/ProductContext';
+import { catalogApi } from '../../services/catalogApi';
+import type { Product } from '../../types';
 import { Store, Phone, Instagram, Home, LayoutGrid, User, MessageCircle, X } from 'lucide-react';
 import { storefrontProducts } from './templates/templateTypes';
 import { ProductCard } from '../ProductCard';
@@ -15,16 +18,50 @@ const ACCENT = '#0D7377';
 
 interface SellerStorefrontFooterProps {
   variant?: 'modern' | 'fashion';
+  // B2: the store-scoped list the grid already renders (the view's
+  // templateProducts). The modal must never again read the central
+  // paged catalogue: its page 1 does not contain a dropshipper's
+  // assortment. Central stores pass their context list here.
+  storeProducts?: Product[];
 }
 
-export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ variant = 'modern' }) => {
+export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ variant = 'modern', storeProducts }) => {
   const { currentStore, openStaticPage, toPersianDigits, products } = useStore();
   // FIX 22: live storefront footer «محصولات» opens an in-page
   // «همه محصولات» modal (no navigation); empty stores show 0 items
-  // + «هنوز محصولی در این فروشگاه ثبت نشده است.». Non-empty list
-  // content is UNPROVEN (no non-empty store modal was observed).
-  const [allProductsOpen, setAllProductsOpen] = React.useState(false);
-  const storeItems = storefrontProducts(currentStore, products);
+  // + «هنوز محصولی در این فروشگاه ثبت نشده است.».
+  const [allProductsOpen, setAllProductsOpen] = useState(false);
+  const [modalProducts, setModalProducts] = useState<Product[] | null>(null);
+  const storeItems = storefrontProducts(currentStore, modalProducts ?? storeProducts ?? products);
+  // B2: the view's scoped list is page 1 only (default 24). When the
+  // modal opens on a dropshipper store, walk the remaining scoped
+  // pages so the modal lists the whole assortment (modal list ≡ grid
+  // list, never a truncated page 1). The walk is bounded
+  // (fetchAllProductPages, 50 x 100) and runs only on modal open.
+  // M-1: walk status — 'failed' means the modal list may be partial
+  // (or the page-1 prop list) and must NOT be presented as «همه
+  // محصولات»; 'loading' is shown while the walk runs so a failed
+  // walk is distinguishable from a finished one.
+  const [walkStatus, setWalkStatus] = useState<'idle' | 'loading' | 'complete' | 'failed'>('idle');
+  const [walkAttempt, setWalkAttempt] = useState(0);
+  useEffect(() => {
+    if (!allProductsOpen) { setModalProducts(null); setWalkStatus('idle'); return; }
+    if (currentStore.ownerType !== 'dropshipper' || !currentStore.slug) return;
+    setWalkStatus('loading');
+    let cancelled = false;
+    catalogApi.fetchAllProductPages({ storeSlug: currentStore.slug })
+      .then(({ items, complete }) => {
+        if (cancelled) return;
+        // A partial walk still beats the page-1 prop list when it
+        // loaded something; an empty failed walk keeps the prop list
+        // (modalProducts stays null) instead of an empty state.
+        if (items.length > 0) setModalProducts(items.map(mapBackendProduct));
+        else if (complete) setModalProducts([]);
+        setWalkStatus(complete ? 'complete' : 'failed');
+      })
+      .catch(() => { if (!cancelled) setWalkStatus('failed'); });
+    return () => { cancelled = true; };
+  }, [allProductsOpen, currentStore.ownerType, currentStore.slug, walkAttempt]);
   const cfg = (currentStore.templateConfig || {}) as Record<string, unknown>;
   const custom = (cfg.custom || {}) as Record<string, unknown>;
   const phone = (cfg.contactPhone as string | undefined) || (custom.contactPhone as string | undefined) || '';
@@ -152,12 +189,19 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
         <div className="bg-white rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
             <h3 className="text-sm font-extrabold text-slate-900">
-              همه محصولات <span className="text-xs font-bold text-slate-400">({toPersianDigits(storeItems.length)} کالا)</span>
+              {walkStatus === 'failed' ? 'محصولات' : 'همه محصولات'} <span className="text-xs font-bold text-slate-400">({toPersianDigits(storeItems.length)} کالا)</span>
+              {walkStatus === 'loading' && <span className="text-[11px] font-bold text-slate-400"> — در حال بارگذاری…</span>}
             </h3>
             <button onClick={() => setAllProductsOpen(false)} aria-label="بستن" className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors">
               <X className="w-5 h-5"  strokeWidth={1.5}/>
             </button>
           </div>
+          {walkStatus === 'failed' && (
+            <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[11px] leading-5 text-amber-800 flex items-center justify-between gap-2">
+              <span>فهرست کامل بارگذاری نشد؛ ممکن است همه کالاها نشان داده نشده باشند.</span>
+              <button type="button" onClick={() => setWalkAttempt((n) => n + 1)} className="shrink-0 font-bold text-amber-900 underline">تلاش دوباره</button>
+            </div>
+          )}
           <div className="overflow-y-auto p-3">
             {storeItems.length === 0 ? (
               <p className="text-sm text-slate-500 text-center py-8">هنوز محصولی در این فروشگاه ثبت نشده است.</p>

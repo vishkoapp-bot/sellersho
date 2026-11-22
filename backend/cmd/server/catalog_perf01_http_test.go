@@ -364,9 +364,11 @@ func TestPerf01HTTPBounds(t *testing.T) {
 	if b.MinPrice != prices[0] || b.MaxPrice != prices[len(prices)-1] || b.Count != 28 {
 		t.Fatalf("bounds = %+v, want min=%d max=%d count=28", b, prices[0], prices[len(prices)-1])
 	}
+	// B1(a): store-a's assortment is http-029 (inactive), http-001
+	// and http-002 — the bounds cover the 2 active rows only.
 	storeA := getBounds("/api/v1/products/price-bounds?storeSlug=store-a&category=perf01-cat")
-	if storeA.Count != 3 {
-		t.Fatalf("store-a bounds count = %d, want 3", storeA.Count)
+	if storeA.Count != 2 {
+		t.Fatalf("store-a bounds count = %d, want 2", storeA.Count)
 	}
 }
 
@@ -411,13 +413,14 @@ func TestPerf01HTTPStoreCategoriesAndScope(t *testing.T) {
 		t.Fatalf("unknown slug must fall back to central, got %v", unknown)
 	}
 
-	// Store A scopes to its assortment (inactive http-029 included,
-	// suspended http-030 excluded) in store position order.
+	// Store A scopes to its assortment in store position order —
+	// B1(a): the inactive http-029 is excluded (suspended http-030
+	// was never in the assortment), so the page is http-001, http-002.
 	page := perf01DecodeList(t, perf01HTTPGet(t, listHandler, "/api/v1/products?storeSlug=store-a&category=perf01-cat"))
-	if page.Total != 3 || len(page.Items) != 3 {
-		t.Fatalf("store-a page total=%d items=%d (want 3/3)", page.Total, len(page.Items))
+	if page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("store-a page total=%d items=%d (want 2/2)", page.Total, len(page.Items))
 	}
-	want := []string{"http-029", "http-001", "http-002"}
+	want := []string{"http-001", "http-002"}
 	for i, id := range want {
 		if page.Items[i].ID != id {
 			t.Fatalf("store-a position %d = %s, want %s", i, page.Items[i].ID, id)

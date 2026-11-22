@@ -3,6 +3,38 @@ import { Crown, Check, Store, Plus, HelpCircle } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
+import type { PlatformSettings, SubscriptionPlan } from '../../types';
+
+// G7 hardening as exported pure helpers (Batch 3 fix, M-3), pinned
+// by SellerSubscriptionTab.test.ts on the Batch 1 pattern (cf.
+// SellerDomainsPanel.test.tsx). The tab itself cannot be rendered
+// in this harness — useStore() throws 'A store must be selected…'
+// (StoreContext.tsx:1343-1345) before the tab body runs — so a
+// render test with currentStore = null is untestable at tab level;
+// these helpers pin the reachable part of the hardening instead.
+// In-repo, platformSettings always comes from
+// INITIAL_PLATFORM_SETTINGS (FinanceContext.tsx:236,103,105) and
+// every write is a spread-merge, so the undefined cases below are
+// defensive only — but they are now proven, not assumed.
+export const resolveSubscriptionPlans = (settings: PlatformSettings | null | undefined): SubscriptionPlan[] => {
+  const plans = (settings as { subscriptionPlans?: unknown } | null | undefined)?.subscriptionPlans;
+  return Array.isArray(plans) ? (plans as SubscriptionPlan[]) : [];
+};
+
+export const resolvePlanFeatures = (plan: SubscriptionPlan | null | undefined): string[] => {
+  const features = (plan as { features?: unknown } | null | undefined)?.features;
+  return Array.isArray(features) ? (features as string[]) : [];
+};
+
+// AdminCampaignsPlansTab trial-quota guard (M-3): that tab's input
+// initialiser read subscriptionPlanLimits.trial unguarded, one line
+// above the ?? [] guard — if limits were ever missing it threw
+// first. INITIAL_PLATFORM_SETTINGS sets trial: 25
+// (FinanceContext.tsx:105).
+export const resolveTrialQuota = (settings: PlatformSettings | null | undefined): number => {
+  const trial = (settings as { subscriptionPlanLimits?: { trial?: unknown } } | null | undefined)?.subscriptionPlanLimits?.trial;
+  return typeof trial === 'number' && Number.isFinite(trial) ? trial : 25;
+};
 
 // Live parity (SellerDashboardView-MERGED.js, component Sn, ~bytes 215300-219700):
 // informal second-person copy verbatim. Live has no mock-mode purchase
@@ -34,8 +66,16 @@ const Explainer: React.FC<{ text: string }> = ({ text }) => {
 export const SellerSubscriptionTab: React.FC<{ onManageStores: () => void }> = ({ onManageStores }) => {
   const { currentStore, stores, platformSettings, toPersianDigits, formatPrice } = useStore();
   const { success, error } = useToast();
+  // G7 hardening (reachable part only): plans/features fall back to [].
+  // NOTE — no null-store guard here on purpose: useStore() throws
+  // 'A store must be selected…' (StoreContext.tsx:1344) before this
+  // body runs, and StoreContextType types currentStore non-null
+  // (storeContextTypes.ts:115), so a tab-level null check could never
+  // fire. If the live repro stack (window.__sellershoLastError)
+  // implicates the transient-null window, the targeted fix belongs in
+  // useStore/StoreProvider, not in this tab.
   const activePlanId = currentStore.activePlanId || 'trial';
-  const plans = platformSettings.subscriptionPlans;
+  const plans = resolveSubscriptionPlans(platformSettings);
   const activePlan = plans.find((plan) => plan.id === activePlanId);
   const ownedStores = stores.filter((store) => store.ownerType === 'dropshipper').map((store) => store.id === currentStore.id ? currentStore : store);
   const maxStores = ownedStores.some((store) => store.activePlanId === 'vip') ? 10 : 1;
@@ -70,7 +110,7 @@ export const SellerSubscriptionTab: React.FC<{ onManageStores: () => void }> = (
               {plan.id === activePlanId ? <span className="text-xs font-bold text-brand-deep">اشتراک فعلی تو</span> : <button type="button" onClick={() => handlePurchase(plan.id)} className="rounded-xl bg-brand-deep px-3 py-2.5 min-h-[44px] text-xs font-bold text-white">خرید با پول کیف پول</button>}
             </div>
             <p className="rounded-xl bg-slate-100 p-2 text-xs font-bold">{plan.id === 'vip' ? 'ساخت و مدیریت تا ۱۰ فروشگاه مستقل با یک حساب' : 'ساخت و مدیریت ۱ فروشگاه با یک حساب'}</p>
-            {plan.features.map((feature) => <p key={feature} className="flex items-start gap-2 text-xs leading-5 text-slate-600"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" strokeWidth={1.5} />{feature}</p>)}
+            {resolvePlanFeatures(plan).map((feature) => <p key={feature} className="flex items-start gap-2 text-xs leading-5 text-slate-600"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" strokeWidth={1.5} />{feature}</p>)}
           </section>
         ))}
       </div>

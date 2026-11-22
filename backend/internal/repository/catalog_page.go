@@ -63,7 +63,10 @@ func (r *CatalogRepository) GetProductCandidatePageTx(ctx context.Context, tx *s
 		position = `sp.position`
 	}
 	where := []string{notSuspendedSupplierClause}
-	if !scoped {
+	// B1(a) D42 reversal: the is_active gate applies to every scope,
+	// dropshipper assortments included (see priceFilterParts). Only
+	// the owner-gated IncludeInactive carve-out lifts it.
+	if !filter.IncludeInactive {
 		where = append(where, `p.is_active=TRUE`)
 	}
 	if filter.Category != "" && filter.Category != "all" {

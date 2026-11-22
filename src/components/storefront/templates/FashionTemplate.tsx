@@ -5,6 +5,7 @@ import type { StorefrontTemplateProps } from './templateTypes';
 import {
   resolveTemplateConfig,
   orderedEnabledSections,
+  resolveFashionMacroEntries,
   heroSlidesOf,
   bannersOf,
   templateCustom,
@@ -133,20 +134,16 @@ const FashionMacroCategories: React.FC<{
   limit: number;
   onSelect: (slug: string) => void;
 }> = ({ groups, ledger, banners, limit, onSelect }) => {
-  const entries = groups.length ? groups.slice(0, limit).map((group, i) => ({
-    title: group.title, image: banners[i]?.image || group.image || group.products[0]?.image,
-    link: banners[i]?.link || '#products', slug: !banners[i]?.link || banners[i]?.link === '#products' ? group.slug : '',
-  })) : banners.slice(0, limit).map(b => ({ title: b.title || 'مشاهده مجموعه', image: b.image, link: b.link || '#products', slug: '' }));
+  const entries = resolveFashionMacroEntries(groups, banners, limit);
   groups.slice(0, limit).forEach(g => ledger.macroTaken.add(g.slug));
+  entries.forEach((entry) => { if (entry.image) claimImage(ledger, entry.image); });
   if (!entries.length) return null;
   return <section id="fashion-categories" data-testid="store-category-macro" aria-label="دسته‌بندی‌ها" className="fashion-category-section">
     <div className="fashion-category-grid" style={{ gridTemplateColumns: `repeat(${entries.length}, minmax(0, 1fr))` }}>
       {entries.map((entry, i) => <a key={entry.slug || i} href={entry.link} {...externalLinkProps(entry.link)}
         onClick={() => { if (entry.slug) onSelect(entry.slug); }} className={`fashion-category ${FOCUS_RING}`}>
         <div className="fashion-category-image">
-          {entry.image && (entry.image === '/templates/fashion/categories.webp'
-            ? <div role="img" aria-label={entry.title} className="fashion-category-contact" style={{ backgroundImage: `url(${entry.image})`, backgroundPosition: `${i * 50}% center` }} />
-            : <img src={entry.image} alt={entry.title} loading="lazy" />)}
+          {entry.image ? <img src={entry.image} alt={entry.title} loading="lazy" /> : null}
         </div>
         <span>{entry.title}<ArrowLeft size={16} strokeWidth={1.5} /></span>
       </a>)}
@@ -606,6 +603,10 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
     searchQuery,
     setSearchQuery,
   } = useStore();
+  // A7: sort control for the Fashion floor. Local state, applied to the
+  // loaded assortment only (same labels and limitation as the legacy
+  // grid — not a full-catalog sort past the loaded pages).
+  const [floorSort, setFloorSort] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
   const seen = new Set<string>();
   const once = (group: string): boolean => {
     if (seen.has(group)) return false;
@@ -648,6 +649,12 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
   const floorItems = searching
     ? categoryItems.filter((p) => p.title.toLocaleLowerCase('fa-IR').includes(query) || (p.description || '').toLocaleLowerCase('fa-IR').includes(query))
     : categoryItems;
+  const sortedFloorItems = [...floorItems].sort((a, b) => {
+    if (floorSort === 'cheapest') return a.price - b.price;
+    if (floorSort === 'expensive') return b.price - a.price;
+    if (floorSort === 'discount') return b.discountPercent - a.discountPercent;
+    return (b.salesCount || 0) - (a.salesCount || 0);
+  });
   const floorTitle = searching ? `جستجو: «${searchQuery}»` : brandFilter || (selectedGroup ? selectedGroup.title : productsTitle);
   const selectCategory = (slug: string): void => {
     clearCatalogBrand();
@@ -804,6 +811,19 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
                   </button>
                 ) : null}
               </div>
+              <div className="flex items-center gap-3 overflow-x-auto no-scrollbar py-0.5" role="group" aria-label="مرتب‌سازی محصولات">
+                {[
+                  { id: 'featured', label: 'محبوب‌ترین' },
+                  { id: 'cheapest', label: 'ارزان‌ترین' },
+                  { id: 'expensive', label: 'گران‌ترین' },
+                  { id: 'discount', label: 'بیشترین تخفیف' },
+                ].map((sort) => (
+                  <button key={sort.id} type="button" aria-pressed={floorSort === sort.id} onClick={() => setFloorSort(sort.id as typeof floorSort)}
+                    className={`shrink-0 text-xs font-bold transition hover:text-[#1c1c1a] ${floorSort === sort.id ? 'text-[#1c1c1a] underline decoration-2 underline-offset-8' : 'text-[#737373]'}`}>
+                    {sort.label}
+                  </button>
+                ))}
+              </div>
               {categoryGroups.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
                 <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
                 {categoryGroups.map(group => <button key={group.slug} type="button" aria-pressed={selectedGroup?.slug === group.slug && !brandFilter}
@@ -814,7 +834,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
               ) : (
                 <div className={wrapCls}>
                   <div className={`grid gap-x-3 gap-y-8 lg:gap-x-7 lg:gap-y-12 ${gridCls}`}>
-                    {floorItems.map((p) => (
+                    {sortedFloorItems.map((p) => (
                       <FashionProductCard key={p.id} product={p} onOpen={openProductDetail} />
                     ))}
                   </div>

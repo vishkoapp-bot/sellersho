@@ -285,7 +285,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
             <h3 className="text-lg font-black text-[#1C1917]">به‌زودی محصولات جدید می‌رسند</h3>
             <p className="text-sm text-stone-500 mt-2 leading-6 max-w-[280px]">صاحب فروشگاه به‌زودی کالاهای تازه را به این ویترین اضافه می‌کند. کمی بعد دوباره سر بزنید.</p>
           </div>
-          <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+          <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} storeProducts={templateProducts} />
         </div>
       );
     }
@@ -314,7 +314,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
         ) : (
           <TemplateFallback templateId={resolvedTemplateId} />
         )}
-        <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+        <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} storeProducts={templateProducts} />
       </div>
     );
   }
@@ -430,7 +430,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
       </main>
 
       {/* 4. Branded Footer */}
-      <SellerStorefrontFooter />
+      <SellerStorefrontFooter storeProducts={fallbackProducts} />
     </div>
   );
 };

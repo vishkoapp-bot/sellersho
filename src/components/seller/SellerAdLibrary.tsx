@@ -5,6 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
 import { buildAdBannerLink } from '../../utils/attributionTokens';
 import { CATEGORY_TO_OFFICIAL_NICHES_MAP, getProductNicheIds, OFFICIAL_NICHES } from '../../data/niches';
+import { cardPriceVariantOf } from '../../utils/cardPrice';
 
 const sizes = [
   { id: 'square', title: 'مربعی', width: 300, height: 300 },
@@ -62,7 +63,10 @@ export const SellerAdLibrary: React.FC = () => {
     if (activeBannerCampaignId) target += `&campaignId=${encodeURIComponent(activeBannerCampaignId)}`;
     const image = new URL(product.image, window.location.origin);
     if (!['http:', 'https:'].includes(image.protocol)) { error('نشانی تصویر کالا معتبر نیست.'); return; }
-    const code = `<a href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer" dir="rtl" aria-label="${escapeHtml(product.title)}" style="display:flex;flex-direction:${size.id === 'leaderboard' ? 'row' : 'column'};align-items:center;justify-content:center;gap:12px;width:${size.width}px;max-width:100%;height:${size.height}px;box-sizing:border-box;padding:12px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:16px;text-decoration:none;color:#0f172a;font-family:Tahoma,sans-serif;overflow:hidden"><img src="${escapeHtml(image.href)}" alt="${escapeHtml(product.title)}" style="width:${size.id === 'leaderboard' ? '64px' : '60%'};height:${size.id === 'leaderboard' ? '64px' : '55%'};object-fit:contain"/><span style="font-weight:bold;font-size:14px">${escapeHtml(product.title)}</span><span style="color:#047857;font-size:13px">${escapeHtml(formatPrice(product.price))} تومان</span><span style="background:#2563eb;color:white;padding:8px 12px;border-radius:8px;font-size:12px">مشاهده کالا</span></a>`;
+    // B7: the embed price is the card price (default variant) — label
+    // the variant it came from, escaped like every other embed value.
+    const priced = cardPriceVariantOf(product);
+    const code = `<a href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer" dir="rtl" aria-label="${escapeHtml(product.title)}" style="display:flex;flex-direction:${size.id === 'leaderboard' ? 'row' : 'column'};align-items:center;justify-content:center;gap:12px;width:${size.width}px;max-width:100%;height:${size.height}px;box-sizing:border-box;padding:12px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:16px;text-decoration:none;color:#0f172a;font-family:Tahoma,sans-serif;overflow:hidden"><img src="${escapeHtml(image.href)}" alt="${escapeHtml(product.title)}" style="width:${size.id === 'leaderboard' ? '64px' : '60%'};height:${size.id === 'leaderboard' ? '64px' : '55%'};object-fit:contain"/><span style="font-weight:bold;font-size:14px">${escapeHtml(product.title)}</span>${priced.variant?.label ? `<span style="color:#475569;font-size:12px">${escapeHtml(priced.variant.label)}</span>` : ''}<span style="color:#047857;font-size:13px">${escapeHtml(formatPrice(priced.triple.price))} تومان</span><span style="background:#2563eb;color:white;padding:8px 12px;border-radius:8px;font-size:12px">مشاهده کالا</span></a>`;
     try { await navigator.clipboard.writeText(code); setCopiedId(id); success('کد بنر همین کالا و اندازه کپی شد.'); } catch { error('کپی کد بنر انجام نشد؛ دسترسی مرورگر به حافظه موقت (کلیپ‌بورد) را بررسی کنید.'); }
   };
 
@@ -78,11 +82,11 @@ export const SellerAdLibrary: React.FC = () => {
     </div>
     <div className="flex justify-between text-xs text-slate-500"><span>{toPersianDigits(banners.length)} بنر</span><button type="button" onClick={() => { setNicheFilter('all'); setSizeFilter('all'); setProductFilter('all'); setSearch(''); setLimit(12); }} className="text-brand-deep">پاک‌کردن فیلترها</button></div>
     {banners.length === 0 && <p className="rounded-xl bg-slate-50 p-6 text-center text-xs">بنری با این فیلترها پیدا نشد.</p>}
-    <div className="grid gap-3 sm:grid-cols-2">{banners.slice(0, limit).map(({ product, size, id }) => <article key={id} className="space-y-2 rounded-xl border border-slate-200 p-3">
+    <div className="grid gap-3 sm:grid-cols-2">{banners.slice(0, limit).map(({ product, size, id }) => { const priced = cardPriceVariantOf(product); return (<article key={id} className="space-y-2 rounded-xl border border-slate-200 p-3">
       <div className="flex flex-wrap justify-between gap-1 text-[10px]"><span>{size.title} · {size.width}×{size.height}</span>{getProductNicheIds(product).some((niche) => ownNiches.includes(niche)) && <span className="rounded-full bg-emerald-50 px-2 text-emerald-700">مناسب نیچ شما</span>}</div>
-      <div className="flex justify-center rounded-xl bg-slate-100 p-2"><div style={{ aspectRatio: `${size.width}/${size.height}`, width: size.id === 'story' ? '50%' : '100%' }} className={`flex overflow-hidden items-center justify-center gap-1 rounded-lg bg-white p-2 ${size.id === 'leaderboard' ? 'flex-row' : 'flex-col'}`}><img loading="lazy" src={product.image} alt={product.title} className={`${size.id === 'leaderboard' ? 'h-full w-12' : 'h-1/2 w-2/3'} object-contain`} /><span className="line-clamp-2 text-center text-[10px] font-bold">{product.title}</span><span className="text-[9px] text-emerald-700">{formatPrice(product.price)} تومان</span></div></div>
+      <div className="flex justify-center rounded-xl bg-slate-100 p-2"><div style={{ aspectRatio: `${size.width}/${size.height}`, width: size.id === 'story' ? '50%' : '100%' }} className={`flex overflow-hidden items-center justify-center gap-1 rounded-lg bg-white p-2 ${size.id === 'leaderboard' ? 'flex-row' : 'flex-col'}`}><img loading="lazy" src={product.image} alt={product.title} className={`${size.id === 'leaderboard' ? 'h-full w-12' : 'h-1/2 w-2/3'} object-contain`} /><span className="line-clamp-2 text-center text-[10px] font-bold">{product.title}</span><span className="text-[9px] text-emerald-700">{priced.variant?.label ? `${priced.variant.label} · ` : ''}{formatPrice(priced.triple.price)} تومان</span></div></div>
       <button type="button" onClick={() => copy(product, size, id)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-deep p-2 text-xs font-bold text-white">{copiedId === id ? <Check className="h-4 w-4" strokeWidth={1.5} /> : <Copy className="h-4 w-4" strokeWidth={1.5} />} کپی کد بنر</button>
-    </article>)}</div>
+    </article>); })}</div>
     {limit < banners.length && <button type="button" onClick={() => setLimit(limit + 12)} className="w-full rounded-xl bg-slate-100 p-2 text-xs font-bold">نمایش بنرهای بیشتر</button>}
   </section>;
 };

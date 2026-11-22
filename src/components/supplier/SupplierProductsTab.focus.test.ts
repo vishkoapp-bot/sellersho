@@ -1,6 +1,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveProposalFocus } from './SupplierProductsTab';
+import { proposalStatusCounts, resolveProposalFocus } from './SupplierProductsTab';
 
 // Deep-link decision tests (DESIGN.md §4.3-4.4): the bell badge → drawer
 // click → Products / proposed_offers → SupplierFeedbackModal chain.
@@ -43,6 +43,19 @@ it('consumes the focus exactly once: a handled id is skipped on re-render', () =
     focusId: 'prop-2',
     targetId: 'prop-2',
   });
+});
+
+// G6: the probe result for sup-supplier_test_0933 — 42 approved +
+// 3 pending + 1 rejected = 46. The tab label must read pending 3
+// with total 46 alongside it, never 46 as "awaiting review".
+it('proposalStatusCounts splits the 46-row history into pending 3 / total 46', () => {
+  const offers = [
+    ...Array.from({ length: 42 }, (_, i) => ({ id: `approved-${i}`, status: 'approved' })),
+    ...Array.from({ length: 3 }, (_, i) => ({ id: `pending-${i}`, status: 'pending' })),
+    { id: 'rejected-0', status: 'rejected' },
+  ];
+  assert.deepEqual(proposalStatusCounts(offers), { total: 46, pending: 3, approved: 42, rejected: 1 });
+  assert.deepEqual(proposalStatusCounts([]), { total: 0, pending: 0, approved: 0, rejected: 0 });
 });
 
 it('skips while proposals are still loading without consuming the id', () => {

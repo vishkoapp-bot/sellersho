@@ -72,6 +72,32 @@ test('an ambiguous HTTP 200 carton response rejects and retains its creation key
   }
 });
 
+// G1: on a plain-HTTP origin crypto.randomUUID does not exist — the
+// draft submit must still succeed, with a canonical UUID creation_key
+// stable across retries of the unchanged draft.
+test('non-secure context (live plain HTTP): draft submit still succeeds without crypto.randomUUID', async () => {
+  const c = globalThis.crypto as unknown as { randomUUID?: unknown };
+  const orig = c.randomUUID;
+  (c as { randomUUID?: unknown }).randomUUID = undefined;
+  const calls: any[] = [];
+  const fetch = mock.method(globalThis, 'fetch', async (_url: any, init: RequestInit) => {
+    calls.push(JSON.parse(String(init.body)));
+    return new Response(JSON.stringify({ shipment: { id: 'one', shipment_code: 'CARTON12' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const draft = createCartonDraftOperation();
+    const payload = { warehouse_id: 'w1', items: [{ variant_id: 'sku', expected_qty: 1 }] };
+    assert.deepEqual(await draft.submit(payload), { id: 'one', shipment_code: 'CARTON12' });
+    const canonicalV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.match(calls[0].creation_key, canonicalV4);
+    await draft.submit(payload);
+    assert.equal(calls[1].creation_key, calls[0].creation_key);
+  } finally {
+    (c as { randomUUID?: unknown }).randomUUID = orig;
+    fetch.mock.restore();
+  }
+});
+
 test('carton source evidence is sent exactly and changing its business reference rotates the retry key', async () => {
   const calls: any[] = [];
   const fetch = mock.method(globalThis, 'fetch', async (_url: any, init: RequestInit) => {

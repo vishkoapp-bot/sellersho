@@ -212,8 +212,11 @@
    .cv-card and Skeleton.tsx used animate-pulse while live skeletons use
    .skeleton-shimmer (42x in live *-MERGED.js vs 7x animate-pulse). */
 .cv-auto { content-visibility: auto; contain-intrinsic-size: auto 600px; }
-.cv-card { content-visibility: auto; contain-intrinsic-size: auto 360px; }
-@media (min-width: 1536px) { .cv-card { contain-intrinsic-size: auto 400px; } }
+/* A3 (Batch 3): content-visibility REMOVED from .cv-card — see above:
+   reordered cards painted blank after a sort change (Chromium skips
+   re-observing moved content-visibility:auto nodes). The class is
+   kept as a no-op hook so ProductCard needs no change. */
+.cv-card { }
 .cv-list { content-visibility: auto; contain-intrinsic-size: auto 120px; }
 @keyframes skeleton-shimmer { 0% { background-position: -400px 0; } to { background-position: 400px 0; } }
 .skeleton-shimmer { background: linear-gradient(90deg, #e2e8f0bf 25%, #f1f5f9f2, #e2e8f0bf 75%) 0 0 / 800px 100%; animation: 1.6s ease-in-out infinite skeleton-shimmer; }

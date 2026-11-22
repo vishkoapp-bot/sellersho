@@ -41,6 +41,14 @@ export const SellerCatalogTab: React.FC = () => {
   // baseCostB (= C); fetch it for this tab's rows, falling back to the
   // context list while it loads or on failure.
   const [scopedProducts, setScopedProducts] = useState<Product[] | null>(null);
+  // M-1/M-2: the scoped walk can fail mid-way, or answer without the
+  // inactive carve-out applied. scopedError records which: 'walk'
+  // (incomplete walk) or 'inactive' (asked for inactive, server did
+  // not apply it — expired token / lost ownership). While it is set
+  // the tab keeps the PREVIOUS scoped list (or an empty error state
+  // when there is none) and never falls back to the central list.
+  const [scopedError, setScopedError] = useState<'walk' | 'inactive' | null>(null);
+  const [walkRetry, setWalkRetry] = useState(0);
   const storeSlug = currentStore?.ownerType === 'dropshipper' ? currentStore?.slug : undefined;
   // Refetch when the pricing modal closes too: visibility/default changes
   // saved there must show in the list immediately (same staleness trap
@@ -52,21 +60,32 @@ export const SellerCatalogTab: React.FC = () => {
     if (pricingProduct) return;
     const slugChanged = prevSlugRef.current !== storeSlug;
     prevSlugRef.current = storeSlug;
-    if (slugChanged) setScopedProducts(null);
+    if (slugChanged) { setScopedProducts(null); setScopedError(null); }
     let cancelled = false;
     // PERF-01: the seller manages the WHOLE assortment here, so this
     // admin surface walks all pages (bounded requests, cursor-driven)
     // instead of one unbounded fetch. Public surfaces never do this.
-    catalogApi.fetchAllProductPages({ storeSlug })
-      .then((data) => {
-        if (!cancelled && Array.isArray(data) && data.length > 0) {
-          setScopedProducts(data.map(mapBackendProduct));
-        }
+    catalogApi.fetchAllProductPages({ storeSlug, includeInactive: true })
+      .then(({ items, complete, includeInactiveApplied }) => {
+        if (cancelled) return;
+        // M-1: an incomplete walk leaves the previous scoped list in
+        // place (or the error state below when there is none) — the
+        // central catalogue is never shown as the store's assortment.
+        if (!complete) { setScopedError('walk'); return; }
+        // M-2: the walk asked for inactive products. If the server
+        // did not apply the carve-out (expired token / lost
+        // ownership), the filtered list is NOT the assortment: keep
+        // the previous list and show the re-login error instead.
+        if (includeInactiveApplied !== true) { setScopedError('inactive'); return; }
+        setScopedError(null);
+        setScopedProducts(items.map(mapBackendProduct));
       })
-      .catch(() => { /* keep the context list as fallback */ });
+      .catch(() => { if (!cancelled) setScopedError('walk'); });
     return () => { cancelled = true; };
-  }, [storeSlug, pricingProduct]);
-  const displayProducts = scopedProducts ?? products;
+  }, [storeSlug, pricingProduct, walkRetry]);
+  // M-1: while the walk has errored and no scoped list was ever
+  // loaded, show an empty error state — never the central list.
+  const displayProducts = scopedProducts ?? (scopedError ? [] : products);
 
   const savedProductIds = currentStore.activeProductIds || [];
   const savedNicheIds = currentStore.selectedNicheIds || [];
@@ -131,8 +150,13 @@ export const SellerCatalogTab: React.FC = () => {
   });
 
   // 2. Extra (Outside Niches) Products
+  // G10: derive niches exactly like §1 above (raw nicheIds || [] let a
+  // product with empty nicheIds and a category-derived niche appear in
+  // BOTH sections). Belt-and-braces: also exclude ids already in §1.
+  const nicheProductIds = new Set(nicheProducts.map((p) => p.id));
   const outsideNicheProducts = displayProducts.filter((p) => {
-    const pNiches = p.nicheIds || [];
+    if (nicheProductIds.has(p.id)) return false;
+    const pNiches = p.nicheIds && p.nicheIds.length > 0 ? p.nicheIds : getProductNicheIds(p);
     const isOutside = !pNiches.some((nId) => pendingNicheIds.includes(nId));
     const matchesSearch = !extraSearch || p.title.includes(extraSearch);
     return isOutside && matchesSearch;
@@ -338,6 +362,18 @@ export const SellerCatalogTab: React.FC = () => {
           </div>
         )}
       </div>
+
+      {scopedError && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-[11px] leading-6 text-amber-800 space-y-2">
+          <p className="font-bold">فهرست کالاهای فروشگاه کامل بارگذاری نشد.</p>
+          <p>{scopedError === 'inactive'
+            ? 'دسترسی مدیریتی به کالاهای غیرفعال برقرار نشد — ممکن است نشست شما منقضی شده باشد. دوباره وارد شوید؛ تا آن زمان فهرست قبلی (یا هیچ کالایی) نمایش داده می‌شود، نه فهرست مرکزی.'
+            : scopedProducts
+              ? 'فهرست قبلی نمایش داده شده است؛ ممکن است تازه‌ترین تغییرات در آن نباشد.'
+              : 'کالاها نمایش داده نمی‌شوند تا فهرست فروشگاه دوباره خوانده شود.'}</p>
+          <button type="button" onClick={() => { setScopedError(null); setWalkRetry((n) => n + 1); }} className="font-bold underline">تلاش دوباره</button>
+        </div>
+      )}
 
       {/* 1. Header & Active Products Count */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">

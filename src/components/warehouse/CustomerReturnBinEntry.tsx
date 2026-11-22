@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { ReturnBinSourceDto, wmsApi } from '../../services/wmsApi';
+import { newUuid } from '../../services/productModel';
 
 const fa = (n: number) => n.toLocaleString('fa-IR');
 const message = (e: unknown) => e instanceof Error ? e.message : 'دریافت یا ثبت اطلاعات انجام نشد.';
@@ -23,7 +24,7 @@ const ReturnItemForm: React.FC<{ returnID: string; source: ReturnBinSourceDto; r
   };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); if (!valid || busy) return;
-    if (command.current?.payload !== fingerprint) command.current = { payload: fingerprint, key: crypto.randomUUID() };
+    if (command.current?.payload !== fingerprint) command.current = { payload: fingerprint, key: newUuid() };
     await send(payload, command.current.key);
   };
   const measure = async () => {

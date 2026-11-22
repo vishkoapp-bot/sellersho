@@ -42,9 +42,23 @@ interface CardPriceSource {
   priceMin?: number;
   priceMax?: number;
   storeDefaultVariantId?: string | null;
-  variants?: { id: string; isDefault?: boolean; isActive?: boolean }[];
+  variants?: { id: string; isDefault?: boolean; isActive?: boolean; variantName?: string; name?: string }[];
   variantPrices?: Record<string, { price: number; originalPrice: number; discountPercent: number; salePrice?: number; saleFrom?: string | null; saleTo?: string | null; onSale?: boolean }>;
 }
+
+// Shared pick: P2(c) order — store default → product isDefault →
+ // first active priced variant. A candidate only counts when it has a
+ // priced entry. cardPriceOf and cardPriceVariantOf both use this.
+const pickCardPriceVariant = (product: CardPriceSource) => {
+  const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
+  const priced = (v: { id: string }) => {
+    const vp = product.variantPrices?.[v.id];
+    return vp != null && vp.price != null && Number.isFinite(vp.price);
+  };
+  return (product.storeDefaultVariantId ? active.find((v) => v.id === product.storeDefaultVariantId && priced(v)) : undefined)
+    ?? active.find((v) => v.isDefault && priced(v))
+    ?? active.find(priced);
+};
 
 export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
   const fallback: CardPriceTriple = {
@@ -52,17 +66,7 @@ export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
     originalPrice: product.originalPrice,
     discountPercent: product.discountPercent ?? 0,
   };
-  const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
-  // P2(c) pick order: store default → product isDefault → first active
-  // priced variant. A candidate only counts when it has a priced entry.
-  const priced = (v: { id: string }) => {
-    const vp = product.variantPrices?.[v.id];
-    return vp != null && vp.price != null && Number.isFinite(vp.price);
-  };
-  const defaultVariant =
-    (product.storeDefaultVariantId ? active.find((v) => v.id === product.storeDefaultVariantId && priced(v)) : undefined)
-    ?? active.find((v) => v.isDefault && priced(v))
-    ?? active.find(priced);
+  const defaultVariant = pickCardPriceVariant(product);
   if (!defaultVariant) return fallback;
   const variantPrice = product.variantPrices![defaultVariant.id];
   // P1(c): a valid sale replaces the resolved price (never stacks).
@@ -74,6 +78,17 @@ export const cardPriceOf = (product: CardPriceSource): CardPriceTriple => {
     discountPercent = Math.round((1 - price / originalPrice) * 100);
   }
   return { price, originalPrice, discountPercent };
+};
+
+// B7: the variant the card price came from, with its display label
+// (variantName || name, the pattern SellerCatalogTab uses). variant is
+// null when the triple is the product-level fallback — the label must
+// then show no variant name at all, never a guessed one.
+export const cardPriceVariantOf = (product: CardPriceSource): { triple: CardPriceTriple; variant: { id: string; label: string } | null } => {
+  const triple = cardPriceOf(product);
+  const picked = pickCardPriceVariant(product);
+  if (!picked) return { triple, variant: null };
+  return { triple, variant: { id: picked.id, label: picked.variantName || picked.name || '' } };
 };
 
 // P1(a) price range: a SECONDARY line under the card's main price, never

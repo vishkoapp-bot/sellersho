@@ -4,7 +4,7 @@ import { Product } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
 import { Truck, ShieldCheck, RotateCcw, Star, Package } from 'lucide-react';
 import { CampaignDiscountBadge } from '../../../components/common/CampaignDiscountBadge';
-import { productWeightLabel } from '../../../utils/productPurchase';
+import { productWeightLabel, resolveStockBadge } from '../../../utils/productPurchase';
 import { toPersianDigits as toPersianDigitsFmt } from '../../../utils/formatters';
 
 // FIX 13: tabs live INSIDE the info column, directly after the info
@@ -132,7 +132,7 @@ const ReviewsTab: React.FC<{ productId: string; fashion?: boolean }> = ({ produc
   );
 };
 
-export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }> = ({ product, fashion = false }) => {
+export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; selectedVariantId?: string | null }> = ({ product, fashion = false, selectedVariantId = null }) => {
   const { formatPrice, toPersianDigits, currentStore, categories, openCatalogCategory, openCatalogBrand, setActiveView, routeStoreSlug } = useStore();
   // Live parity (bundle t3): the return window comes from
   // GET /public/return-window-days (valid 1..365, else null);
@@ -271,15 +271,24 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean }
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {(product.stock || 0) <= 0 ? (
-            <span className={fashion ? 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-none border border-rose-200' : 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-lg border border-rose-200'}>
-              ناموجود در انبار
-            </span>
-          ) : (
-            <span className={fashion ? 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-none font-bold border border-emerald-200' : 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200'}>
-              {toPersianDigits(product.stock)} عدد موجود در انبار
-            </span>
-          )}
+          {(() => {
+            // B1(b): badge from resolveStockBadge, never the raw stock
+            // field — an inactive product with stock must not show a
+            // count the buy bar cannot sell.
+            const badge = resolveStockBadge(product, selectedVariantId ?? undefined);
+            if (badge.kind === 'in-stock') {
+              return (
+                <span className={fashion ? 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-none font-bold border border-emerald-200' : 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200'}>
+                  {toPersianDigits(badge.stock)} عدد موجود در انبار
+                </span>
+              );
+            }
+            return (
+              <span className={fashion ? 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-none border border-rose-200' : 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-lg border border-rose-200'}>
+                {badge.kind === 'inactive' ? 'غیرفعال' : 'ناموجود در انبار'}
+              </span>
+            );
+          })()}
           {product.discountPercent > 0 && (
             <span className={fashion ? 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-none' : 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-lg'}>
               {product.campaignName || '٪' + toPersianDigits(product.discountPercent) + ' تخفیف'}

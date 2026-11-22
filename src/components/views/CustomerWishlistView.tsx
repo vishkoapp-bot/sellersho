@@ -57,8 +57,10 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
     // product beyond page 1. Personal surface, small wanted set.
     catalogApi
       .fetchAllProductPages({ storeSlug: entryStore.slug }, { stopWhen: (items) => entryIds.every((id) => items.some((p) => p.id === id)) })
-      .then((dtos) => {
-        if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct));
+      .then(({ items }) => {
+        // M-1: a partial walk still shows the wishlisted products
+        // it did find, instead of throwing them away.
+        if (!cancelled) setScopedProducts(items.map(mapBackendProduct));
       })
       .catch(() => {
         if (!cancelled) setScopedProducts([]);

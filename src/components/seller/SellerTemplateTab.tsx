@@ -246,7 +246,16 @@ export const SellerTemplateTab: React.FC = () => {
     // Public surfaces never do this.
     catalogApi
       .fetchAllProductPages({ storeSlug: slug })
-      .then((dtos) => { if (!cancelled) setScopedProducts(dtos.map(mapBackendProduct)); })
+      .then(({ items, complete }) => {
+        if (cancelled) return;
+        // M-1: a partial walk still previews the pages it loaded;
+        // a failed walk leaves the emulator empty (null), never
+        // central-priced stand-ins.
+        if (items.length > 0) setScopedProducts(items.map(mapBackendProduct));
+        else if (complete) setScopedProducts([]);
+        else setScopedProducts(null);
+        if (!complete) console.warn('Failed to walk all store-scoped product pages.');
+      })
       .catch((err) => { if (!cancelled) { console.warn('Failed to fetch store-scoped products:', err); setScopedProducts(null); } });
     return () => { cancelled = true; };
   }, [currentStore?.ownerType, slug]);

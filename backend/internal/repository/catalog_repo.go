@@ -36,11 +36,13 @@ type ProductFilter struct {
 	// StoreScoped restricts the listing to one dropshipper store's own
 	// assortment: StoreProductIDs is the store's store_products set in
 	// panel (position) order, exactly as exposed on the store DTO as
-	// activeProductIds. In this mode assortment membership replaces the
-	// global D42 is_active gate — a product the seller picked for the
-	// store is listable for that store even when its global catalog row
-	// is inactive — and the default ordering is the assortment order.
-	// An empty StoreProductIDs yields an empty list, never the catalog.
+	// activeProductIds. B1(a) D42 REVERSAL: in this mode assortment
+	// membership NO LONGER replaces the global is_active gate — a
+	// product the seller picked for the store is listable for that
+	// store only while its global catalog row is active; a deactivated
+	// assortment product is hidden from every public list. The
+	// default ordering is the assortment order. An empty
+	// StoreProductIDs yields an empty list, never the catalog.
 	StoreScoped     bool
 	StoreProductIDs []string
 }
@@ -115,18 +117,19 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	// D42 list-only: the public list returns active products only.
 	// Detail (GetProductByID/GetProductBySpn) deliberately has no
 	// such condition: live returns 200 for inactive detail.
-	// Store-scoped exception: for a dropshipper store's own listing,
-	// membership in the store's store_products assortment is the
-	// listing gate instead (the seller's pick IS the activation for
-	// that store), so the global flag must not drop store products.
+	// B1(a) D42 REVERSAL: the is_active gate applies in BOTH modes —
+	// the old store-scoped exception (assortment membership as the
+	// listing gate instead of the global flag) is removed, so a
+	// deactivated assortment product is hidden here too. (This
+	// legacy path has no live caller; it mirrors the priced and
+	// candidate paths for consistency.)
+	whereClauses = append(whereClauses, "p.is_active = TRUE")
 	assortmentArg := 0
 	if filter.StoreScoped {
 		whereClauses = append(whereClauses, fmt.Sprintf("p.id = ANY($%d)", argIdx))
 		args = append(args, pq.Array(filter.StoreProductIDs))
 		assortmentArg = argIdx
 		argIdx++
-	} else {
-		whereClauses = append(whereClauses, "p.is_active = TRUE")
 	}
 
 	// Gap 12: a suspended supplier's products stop selling everywhere

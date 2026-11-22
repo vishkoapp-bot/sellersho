@@ -86,6 +86,11 @@ type Filter struct {
 	MaxPrice      *int64
 	Attributes    map[int][]int
 	StorePosition bool
+	// IncludeInactive is the B1(a) carve-out: the public list never
+	// sets it. handleProductsList sets it only for an authenticated
+	// caller who owns the requested dropshipper store, so seller
+	// management still sees inactive assortment products.
+	IncludeInactive bool
 }
 
 // Key carries public ordering values only. In particular, supplier base costs
@@ -125,6 +130,7 @@ type canonical struct {
 	MinPrice, MaxPrice            *int64
 	Attributes                    []attribute
 	StorePosition                 bool
+	IncludeInactive               bool
 }
 
 func validText(value string, max int) bool {
@@ -190,7 +196,7 @@ func bind(scope Scope, filter Filter) (string, Filter, error) {
 	if filter.StorePosition && filter.Sort != "featured" {
 		return "", filter, ErrInvalid
 	}
-	data, err := json.Marshal(canonical{scope, filter.Category, filter.Niche, filter.Search, filter.Sort, brands, filter.IsOriginal, filter.InStockOnly, filter.MinPrice, filter.MaxPrice, attrs, filter.StorePosition})
+	data, err := json.Marshal(canonical{scope, filter.Category, filter.Niche, filter.Search, filter.Sort, brands, filter.IsOriginal, filter.InStockOnly, filter.MinPrice, filter.MaxPrice, attrs, filter.StorePosition, filter.IncludeInactive})
 	if err != nil {
 		return "", filter, ErrInvalid
 	}

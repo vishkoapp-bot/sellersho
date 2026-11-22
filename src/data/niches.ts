@@ -86,6 +86,7 @@ export const CATEGORY_TO_OFFICIAL_NICHES_MAP: Record<string, string[]> = {
   fashion: ['niche-leather'],
   apparel: ['niche-leather'],
   gold: ['niche-gold'],
+  'gold-silver': ['niche-gold'],
   jewelry: ['niche-gold'],
   appliances: ['niche-appliances'],
   home: ['niche-appliances'],

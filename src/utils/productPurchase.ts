@@ -172,6 +172,26 @@ export const resolvePurchase = (product: Product, variantId?: string): PurchaseR
   return { product: productForVariant(product, variant), variant, ...limits };
 };
 
+// B1(b): the PDP stock badge must agree with the buy bar. The badge
+// used to read the raw stock field, so an inactive product with stock
+// 500 showed «۵۰۰ عدد موجود در انبار» while the buy bar (which
+// resolves through resolvePurchase) showed it as unbuyable. The badge
+// is now derived from the SAME resolvePurchase call: it shows a count
+// only when the purchase resolves, «ناموجود» when it does not, and the
+// helper keeps 'inactive' distinct so the UI can name it («غیرفعال»)
+// instead of pretending the stock ran out.
+export type StockBadgeState =
+  | { kind: 'in-stock'; stock: number }
+  | { kind: 'out-of-stock' }
+  | { kind: 'inactive' };
+
+export const resolveStockBadge = (product: Product, variantId?: string): StockBadgeState => {
+  if (product.isActive === false) return { kind: 'inactive' };
+  const resolution = resolvePurchase(product, variantId);
+  if (!resolution) return { kind: 'out-of-stock' };
+  return { kind: 'in-stock', stock: resolution.product.stock };
+};
+
 // P2(c) fallback chain (single source of truth, shared with cardPriceOf):
 // ?spnc= → store default → product isDefault → first purchasable → first.
 // A store default that is hidden/inactive/unpriced falls through silently.

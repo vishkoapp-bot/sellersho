@@ -130,17 +130,16 @@ func TestBatch2SearchRankingHTTP(t *testing.T) {
 			t.Fatalf("(b) search %q = %v total=%d, want both normalised rows", q, ids, total)
 		}
 	}
-	// (c)+(f) ساعت: title first, brand/category in the middle (either
-	// order), description-only last — and all four still present.
+	// (c)+(f) ساعت: title first, then brand/category; description-only is excluded.
 	ids, total = search("ساعت")
-	if total != 4 {
-		t.Fatalf("(c) search ساعت total=%d, want 4 (%v)", total, ids)
-	}
-	if len(ids) != 4 || ids[0] != "prod-title-1" || ids[3] != "prod-desc-1" {
-		t.Fatalf("(c) search ساعت order = %v, want title first, description-only last", ids)
+	if total != 3 || len(ids) != 3 || ids[0] != "prod-title-1" || batch2Has(ids, "prod-desc-1") {
+		t.Fatalf("(c) search ساعت = %v total=%d, want 3 with title first and no description-only match", ids, total)
 	}
 	if !batch2Has(ids[1:3], "prod-brand-1") || !batch2Has(ids[1:3], "prod-cat-1") {
-		t.Fatalf("(f) brand/category matches must sit between title and description: %v", ids)
+		t.Fatalf("(f) brand/category must follow the title match: %v", ids)
+	}
+	if ids, total := search("پشتیبانی"); total != 0 || len(ids) != 0 {
+		t.Fatalf("description-only search = %v total=%d, want 0", ids, total)
 	}
 	// (d) pinned: طلا still returns exactly the one active gold product.
 	ids, total = search("طلا")
@@ -177,8 +176,14 @@ func TestBatch2SearchRankingHTTP(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 			t.Fatalf("(g) decode: %v", err)
 		}
-		if env.Total != 4 {
-			t.Fatalf("(g) total=%d, want 4", env.Total)
+		if env.Total != 3 {
+			t.Fatalf("(g) total=%d, want 3", env.Total)
+		}
+		if cursor == "" && (len(env.Items) != 2 || !env.HasMore) {
+			t.Fatalf("(g) first page has %d items, hasMore=%t", len(env.Items), env.HasMore)
+		}
+		if cursor != "" && (len(env.Items) != 1 || env.HasMore) {
+			t.Fatalf("(g) second page has %d items, hasMore=%t", len(env.Items), env.HasMore)
 		}
 		for _, it := range env.Items {
 			if seen[it.ID] {
@@ -195,8 +200,8 @@ func TestBatch2SearchRankingHTTP(t *testing.T) {
 		}
 		cursor = *env.NextCursor
 	}
-	if len(order) != 4 || order[0] != "prod-title-1" || order[3] != "prod-desc-1" {
-		t.Fatalf("(g) paged order = %v, want title first, description-only last", order)
+	if len(order) != 3 || order[0] != "prod-title-1" || !seen["prod-brand-1"] || !seen["prod-cat-1"] || seen["prod-desc-1"] {
+		t.Fatalf("(g) paged order = %v, want title first followed by brand and category", order)
 	}
 }
 

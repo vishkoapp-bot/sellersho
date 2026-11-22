@@ -420,7 +420,7 @@ func publishProductModelV2Tx(ctx context.Context, tx *sql.Tx, productID, categor
 	}
 	var category string
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM categories WHERE slug=$1 OR id=$1 LIMIT 1`, categorySlug).Scan(&category); err != nil {
-		return err
+		return fmt.Errorf("invalid product category: %w", err)
 	}
 	for _, a := range schema.Attributes {
 		if a.Source != "requested" {

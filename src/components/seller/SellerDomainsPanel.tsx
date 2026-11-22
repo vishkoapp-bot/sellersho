@@ -10,11 +10,24 @@ interface Domain { domain: string; storeId: string; verificationToken: string; s
 // Normalise defensively: bare array wins, {domains: [...]} is accepted,
 // anything else becomes [] (empty state, never a throw).
 export const normalizeDomainRows = (data: unknown): Domain[] => {
-  if (Array.isArray(data)) return data as Domain[];
-  if (data && typeof data === 'object' && Array.isArray((data as { domains?: unknown }).domains)) {
-    return (data as { domains: Domain[] }).domains;
+  const rows: unknown = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && 'domains' in data ? data.domains : undefined;
+  if (!Array.isArray(rows)) return [];
+  const domains: Domain[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const { domain, storeId, verificationToken, status, approved } = row as Partial<Record<keyof Domain, unknown>>;
+    if (typeof domain !== 'string' || domain.trim() === '') continue;
+    domains.push({
+      domain,
+      storeId: typeof storeId === 'string' ? storeId : '',
+      verificationToken: typeof verificationToken === 'string' ? verificationToken : '',
+      status: typeof status === 'string' ? status : '',
+      approved: approved === true,
+    });
   }
-  return [];
+  return domains;
 };
 export const SellerDomainsPanel: React.FC<{ slug: string; storeId: string }> = ({ slug, storeId }) => {
   const [domains, setDomains] = useState<Domain[]>([]);

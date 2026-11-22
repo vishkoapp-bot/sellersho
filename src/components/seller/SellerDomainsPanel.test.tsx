@@ -27,3 +27,13 @@ test('normalizeDomainRows returns [] for null, an object, or a non-array domains
   assert.deepEqual(normalizeDomainRows('error-page'), []);
   assert.deepEqual(normalizeDomainRows(undefined), []);
 });
+
+test('normalizeDomainRows drops null and non-object elements — never a throw', () => {
+  const defaults = { domain: 'second.ir', storeId: '', verificationToken: '', status: '', approved: false };
+  const rows = [row, null, 'x', 42, { domain: 'second.ir' }, undefined, { domain: 42 }, { domain: '' }];
+  assert.deepEqual(normalizeDomainRows(rows), [row, defaults]);
+  assert.deepEqual(normalizeDomainRows({ domains: rows }).filter((d) => d.storeId === 's-1'), [row]);
+  for (const invalid of [42, [null], [null, null], [{ domain: '' }], [{ domain: 42 }]]) {
+    assert.deepEqual(normalizeDomainRows(invalid), []);
+  }
+});

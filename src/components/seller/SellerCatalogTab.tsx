@@ -61,6 +61,13 @@ export function catalogRowCostMissing(
   return !variants.some((v) => presence.variants[v.id]);
 }
 
+export function shouldRefetchCatalogAfterConfirm(
+  productDiffCount: number,
+  putResult: { ok: boolean } | null,
+): boolean {
+  return productDiffCount > 0 && putResult !== null && putResult.ok === true;
+}
+
 // Scoped-fetch outcome -> the tab-level error state. A rejected walk,
 // an incomplete walk, and a non-array resolve are all the same visible
 // failure state ('walk'); a walk the server answered without the
@@ -208,7 +215,13 @@ export const SellerCatalogTab: React.FC = () => {
   const handleConfirm = () => {
     setSaving(true);
     if (nicheDiff) updateStoreSelectedNiches(pendingNicheIds);
-    if (productDiffCount > 0) updateStoreActiveProducts(pendingProductIds);
+    if (productDiffCount > 0) {
+      void updateStoreActiveProducts(pendingProductIds).then((result) => {
+        if (shouldRefetchCatalogAfterConfirm(productDiffCount, result)) {
+          setWalkRetry((n) => n + 1);
+        }
+      });
+    }
   };
 
   const handleCancel = () => {

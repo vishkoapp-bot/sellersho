@@ -22,7 +22,7 @@ func approveRequestedAttributes(ctx context.Context, tx *sql.Tx, data map[string
 	}
 	var categoryID string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM categories WHERE slug=$1 OR id=$1 LIMIT 1`, slug).Scan(&categoryID); err != nil {
-		return err
+		return fmt.Errorf("invalid product category: %w", err)
 	}
 	for name, raw := range requests {
 		value, ok := raw.(string)

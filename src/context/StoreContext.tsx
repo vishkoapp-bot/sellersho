@@ -100,7 +100,7 @@ export interface StoreState {
   addStore: (store: Store) => void;
   storeStatuses: { [storeId: string]: 'active' | 'suspended' };
   toggleStoreStatus: (storeId: string) => 'active' | 'suspended';
-  updateStoreActiveProducts: (productIds: string[]) => void;
+  updateStoreActiveProducts: (productIds: string[]) => Promise<{ ok: boolean; status?: number }>;
   toggleCategoryActiveProducts: (categorySlug: string, enable: boolean) => void;
   updateStoreProductPriceOverride: (productId: string, profitD: number) => void;
   updateStoreProductPriceOverrideWithMode: (productId: string, profitD: number) => Promise<{ ok: boolean; status?: number }>;
@@ -901,12 +901,18 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     setStores((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   };
 
-  const updateStoreActiveProducts = (productIds: string[]) => {
-    if (!currentStore) return;
+  const updateStoreActiveProducts = (productIds: string[]): Promise<{ ok: boolean; status?: number }> => {
+    if (!currentStore) return Promise.resolve({ ok: false });
     updateCurrentStoreObject({ ...currentStore, activeProductIds: productIds });
-    if (!isMockMode() && currentStore.slug) {
-      storeApi.saveStoreProducts(currentStore.slug, productIds).catch((err) => console.warn('Failed to persist active products:', err));
-    }
+    if (isMockMode()) return Promise.resolve({ ok: true });
+    if (!currentStore.slug) return Promise.resolve({ ok: false });
+
+    return storeApi.saveStoreProducts(currentStore.slug, productIds)
+      .then(() => ({ ok: true }))
+      .catch((err) => {
+        console.warn('Failed to persist active products:', err);
+        return { ok: false, status: typeof err?.status === 'number' ? err.status : undefined };
+      });
   };
 
   const toggleCategoryActiveProducts = (categorySlug: string, enable: boolean) => {

@@ -5,6 +5,7 @@ import {
   catalogRowCostMissing,
   catalogVariantCost,
   resolveScopedCatalogOutcome,
+  shouldRefetchCatalogAfterConfirm,
 } from './SellerCatalogTab';
 import type { ProductDto } from '../../services/catalogApi';
 
@@ -138,4 +139,13 @@ test('resolveScopedCatalogOutcome: an empty + complete walk is ok (genuinely emp
   assert.equal(resolveScopedCatalogOutcome({ items: [], complete: false, includeInactiveApplied: true }), 'walk');
   assert.equal(resolveScopedCatalogOutcome({ items: [], complete: true, includeInactiveApplied: false }), 'inactive');
   assert.equal(resolveScopedCatalogOutcome({ items: [], complete: true }), 'inactive');
+});
+
+test('shouldRefetchCatalogAfterConfirm: refetch only after a resolved product PUT, never for niche-only or failed confirms', () => {
+  assert.equal(shouldRefetchCatalogAfterConfirm(1, { ok: true }), true);
+  assert.equal(shouldRefetchCatalogAfterConfirm(3, { ok: true }), true);
+  assert.equal(shouldRefetchCatalogAfterConfirm(1, { ok: false }), false);
+  assert.equal(shouldRefetchCatalogAfterConfirm(1, null), false);
+  assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: true }), false);
+  assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: false }), false);
 });

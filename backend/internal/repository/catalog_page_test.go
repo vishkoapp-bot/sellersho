@@ -127,7 +127,7 @@ func TestCatalogCandidateScopeFiltersPrecedeLimit(t *testing.T) {
 		filter catalogpage.Filter
 		want   string
 	}{
-		{catalogpage.Filter{Category: "page-even", Niche: "page-niche", Brands: []string{"Beta"}, Search: "bLuE"}, "page-prod-240"},
+		{catalogpage.Filter{Category: "page-even", Niche: "page-niche", Brands: []string{"Beta"}, Search: "Product 240"}, "page-prod-240"},
 		{catalogpage.Filter{Attributes: map[int][]int{10: {1, 2}, 11: {3}}}, "page-prod-102"},
 		{catalogpage.Filter{IsOriginal: &falseValue}, "page-prod-237"},
 	} {

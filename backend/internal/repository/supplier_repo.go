@@ -1532,7 +1532,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		var owner string
 		var version int
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,''),COALESCE((to_jsonb(p)->>'schema_version')::int,0),stock FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&owner, &version, &stock); err != nil {
-			return "", err
+			return "", fmt.Errorf("re-approval product lookup: %w", err)
 		}
 		if owner != requestedBy {
 			return "", fmt.Errorf("product belongs to another supplier")

@@ -251,7 +251,7 @@ export interface StoreContextType {
   logAuditEvent: (action: string, category: AuditLogEntry['category'], details: string) => void;
 
   // Centralized Dropshipper Store State Mutators (Root State Injection)
-  updateStoreActiveProducts: (productIds: string[]) => void;
+  updateStoreActiveProducts: (productIds: string[]) => Promise<{ ok: boolean; status?: number }>;
   toggleCategoryActiveProducts: (categorySlug: string, enable: boolean) => void;
   updateStoreProductPriceOverride: (productId: string, profitD: number) => void;
   updateStoreCategoryPriceOverride: (categorySlug: string, marginPercent: number) => void;

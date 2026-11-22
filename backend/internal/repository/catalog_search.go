@@ -14,8 +14,8 @@ import (
 // implement the same normalisation pipeline: the Go side derives the two
 // match forms from catalogpage.SearchMatchForms, the SQL side applies
 // LOWER + Arabic Yeh/Kaf mapping + U+200C deletion per column, in both
-// the spaced form and the space-stripped form. Description search is
-// kept: description-only matches stay in the result set, ranked last.
+// the spaced form and the space-stripped form. A title, brand, or category
+// title match is required. Description-only matches are excluded.
 //
 // Pre-filter design (Batch 2 pre-filter work, per prefilter-soundness.md):
 // a row can only match if one of its RAW fields contains a rune from the
@@ -205,7 +205,8 @@ func searchPrefilterSQL(search string, arg func(any) string) (sql string, ok boo
 // for one search term, appending the LIKE patterns through arg (the
 // caller's positional-arg allocator) and the pre-filter POSITION args
 // through the same allocator. Rank: 0 title match, 1 brand or
-// category-title match, 2 description-only match. Brand is a plain
+// category-title match. Only ranks 0 and 1 qualify; the fallback rank 2
+// remains in the rank expression. Brand is a plain
 // column; category title is matched through an EXISTS over the real
 // categories table, included only when hasCategories is true — the
 // categories table is absent from the private-schema fixtures
@@ -214,7 +215,7 @@ func searchPrefilterSQL(search string, arg func(any) string) (sql string, ok boo
 // (search_path-aware) first.
 // Grouped shape (prefilter-soundness.md §3.1):
 //
-//	((prefilter AND (title OR description OR brand)) OR categoryMatch)
+//	((prefilter AND (title OR brand)) OR categoryMatch)
 //
 // The pre-filter is a necessary condition for the field matches only;
 // the category match is ORed inside the same group, and the whole
@@ -237,14 +238,13 @@ func buildSearchCondition(search string, arg func(any) string, hasCategories boo
 		return "(" + searchNormSpacedExpr(col) + " LIKE " + spacedArg + " OR " + searchNormStrippedExpr(col) + " LIKE " + strippedArg + ")"
 	}
 	title := field("p.title")
-	description := field("p.description")
 	brand := field("p.brand")
 	category := "FALSE"
 	if hasCategories {
 		category = "EXISTS(SELECT 1 FROM categories c WHERE c.slug = p.category_slug AND " + field("c.title") + ")"
 	}
 	prefilter, hasPrefilter := searchPrefilterSQL(search, arg)
-	fieldMatches := "(" + title + " OR " + description + " OR " + brand + ")"
+	fieldMatches := "(" + title + " OR " + brand + ")"
 	if hasPrefilter {
 		fieldMatches = "(" + prefilter + " AND " + fieldMatches + ")"
 	}

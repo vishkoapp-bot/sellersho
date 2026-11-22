@@ -101,10 +101,6 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
 					return
 				}
-				if errors.Is(err, sql.ErrNoRows) {
-					http.Error(w, `{"error":"Approval not found"}`, http.StatusNotFound)
-					return
-				}
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}

@@ -180,30 +180,24 @@ func TestPrefilterDBBehaviour(t *testing.T) {
 	if n := count("‌"); n != 0 {
 		t.Errorf("count(ZWNJ-only) = %d, want 0", n)
 	}
-	// ساعت: description-only row + category-only row (its own fields
-	// contain no 'س'), both returned and counted.
-	if n := count("ساعت"); n != 2 {
-		t.Errorf("count(ساعت) = %d, want 2 (desc-only + category-only)", n)
+	// ساعت: only the category match is returned and counted; pf-desc is excluded.
+	if n := count("ساعت"); n != 1 {
+		t.Errorf("count(ساعت) = %d, want 1 (category-only)", n)
 	}
-	page, err := fx.repo.GetPricedProductPageTx(ctx, fx.tx, scope, catalogpage.Filter{Search: "ساعت", Sort: "featured"}, 24, nil)
+	filter := catalogpage.Filter{Search: "ساعت", Sort: "featured"}
+	page, err := fx.repo.GetPricedProductPageTx(ctx, fx.tx, scope, filter, 24, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 2 || len(page.Keys) != 2 {
-		t.Errorf("page(ساعت): total=%d keys=%d, want 2/2", page.Total, len(page.Keys))
+	if page.Total != 1 || len(page.Keys) != 1 || page.Keys[0].ID != "pf-cat-only" {
+		t.Fatalf("page(ساعت): total=%d keys=%v, want pf-cat-only", page.Total, page.Keys)
 	}
-	// Page 2 of the same search (after-key outside the window) must
-	// report the same total and no duplicates.
-	if len(page.Keys) == 2 {
-		second, err := fx.repo.GetPricedProductPageTx(ctx, fx.tx, scope, catalogpage.Filter{Search: "ساعت", Sort: "featured"}, 1, &page.Keys[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if second.Total != 2 {
-			t.Errorf("page 2 total = %d, want 2 (stable across pages)", second.Total)
-		}
-		if len(second.Keys) != 1 || second.Keys[0].ID == page.Keys[0].ID {
-			t.Errorf("page 2 keys = %v, want the other row", second.Keys)
-		}
+	second, err := fx.repo.GetPricedProductPageTx(ctx, fx.tx, scope, filter, 1, &page.Keys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An empty page has no row to carry the window total (catalog_price_index.go:891).
+	if second.Total != 0 || len(second.Keys) != 0 {
+		t.Errorf("page 2: total=%d keys=%v, want total 0 (window total has no row to carry it) and no rows", second.Total, second.Keys)
 	}
 }

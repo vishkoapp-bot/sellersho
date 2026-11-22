@@ -565,7 +565,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
             onOpenStorefront={onOpenStorefront} 
           />
         )}
-        {activeTab === 'store-setup' && <SellerStoreSetupTab key={currentStore.id} />}
+        {activeTab === 'store-setup' && currentStore && <SellerStoreSetupTab key={currentStore.id} />}
         {activeTab === 'catalog' && <SellerCatalogTab />}
         {activeTab === 'pricing' && <SellerPricingTab />}
         {activeTab === 'builder' && <SellerBuilderTab onOpenStorefront={onOpenStorefront} onNavigateTab={setActiveTab} />}
@@ -575,7 +575,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         {activeTab === 'wallet' && <SellerWalletTab />}
         {activeTab === 'referral' && <SellerReferralTab />}
         {activeTab === 'subscription' && <SellerSubscriptionTab onManageStores={() => { setActiveTab('overview'); if (canCreateStore) setShowStoreForm(true); }} />}
-        {activeTab === 'ads' && <SellerAdsWidgetTab key={currentStore.id} />}
+        {activeTab === 'ads' && currentStore && <SellerAdsWidgetTab key={currentStore.id} />}
         {activeTab === 'support' && <SellerSupportTab />}
         {activeTab === 'template' && <SellerTemplateTab />}
         {activeTab === 'analytics' && <SellerAnalyticsTab />}

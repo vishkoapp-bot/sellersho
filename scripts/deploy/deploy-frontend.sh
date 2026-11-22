@@ -126,7 +126,12 @@ cp "$RELEASE/release.json" "$BACKUP-release.json"
 echo "backup: $BACKUP-dist"
 
 # Stage the release record (D3: copy deployed alongside the release).
-cp "$RELEASE/release.json" "$ROOT/releases/$COMMIT/release.json"
+# In remote mode RELEASE is already $ROOT/releases/$COMMIT, so source
+# and destination are the same file — skip the copy then (GNU cp
+# refuses same-file copies and set -e would abort the deploy).
+if [ ! "$RELEASE/release.json" -ef "$ROOT/releases/$COMMIT/release.json" ]; then
+  cp "$RELEASE/release.json" "$ROOT/releases/$COMMIT/release.json"
+fi
 cp "$RELEASE/release.json" "$ROOT/.deployed-release.json"
 
 # G6: retain old hashed assets for already-open client pages.

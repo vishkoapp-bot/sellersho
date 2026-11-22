@@ -140,6 +140,14 @@ const EmptyState: React.FC<{ title: string; description: string }> = ({ title, d
   </div>
 );
 
+const ErrorCard: React.FC<{ title: string; description: string; onRetry: () => void }> = ({ title, description, onRetry }) => (
+  <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-7 text-rose-800">
+    <p className="font-bold">{title}</p>
+    <p>{description}</p>
+    <button type="button" onClick={onRetry} className="min-h-11 rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white">تلاش مجدد</button>
+  </div>
+);
+
 export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const { orders, stores, storeStatuses, products, formatPrice, toPersianDigits } = useStore();
   const [showFullReport, setShowFullReport] = useState(false);
@@ -151,6 +159,28 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const [jobs, setJobs] = useState<ServerJob[] | null>(null);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
 
+  // D5: per-endpoint retry loaders (trends / leaders only). A retry clears
+  // just that endpoint's error so the section shows its loading state
+  // again, then refetches that endpoint alone — the other five fetches
+  // are not repeated.
+  const loadTrends = () => {
+    setErrors((prev) => ({ ...prev, trends: false }));
+    apiRequest<{ data: TrendPoint[] }>('/admin/overview/trends?days=30', { method: 'GET', auth: true })
+      .then((res) => setTrends(res.data || []))
+      .catch(() => setErrors((prev) => ({ ...prev, trends: true })));
+  };
+  const loadLeaders = () => {
+    setErrors((prev) => ({ ...prev, leaders: false }));
+    apiRequest<{ data: LeadersData }>('/admin/overview/leaders', { method: 'GET', auth: true })
+      .then((res) => {
+        setLeaders({
+          suppliers: res.data?.suppliers || [],
+          stores: res.data?.stores || [],
+        });
+      })
+      .catch(() => setErrors((prev) => ({ ...prev, leaders: true })));
+  };
+
   useEffect(() => {
     let cancelled = false;
     const markError = (key: string) => {
@@ -159,21 +189,11 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
     apiRequest<{ data: OverviewSummary }>('/admin/overview/summary', { method: 'GET', auth: true })
       .then((res) => { if (!cancelled) setSummary(res.data); })
       .catch(() => markError('summary'));
-    apiRequest<{ data: TrendPoint[] }>('/admin/overview/trends?days=30', { method: 'GET', auth: true })
-      .then((res) => { if (!cancelled) setTrends(res.data || []); })
-      .catch(() => markError('trends'));
+    loadTrends();
     apiRequest<{ data: OverviewFunnel }>('/admin/overview/funnel', { method: 'GET', auth: true })
       .then((res) => { if (!cancelled) setFunnel(res.data); })
       .catch(() => markError('funnel'));
-    apiRequest<{ data: LeadersData }>('/admin/overview/leaders', { method: 'GET', auth: true })
-      .then((res) => {
-        if (cancelled) return;
-        setLeaders({
-          suppliers: res.data?.suppliers || [],
-          stores: res.data?.stores || [],
-        });
-      })
-      .catch(() => markError('leaders'));
+    loadLeaders();
     apiRequest<{ data: OverviewAlert[] }>('/admin/overview/alerts', { method: 'GET', auth: true })
       .then((res) => { if (!cancelled) setAlerts(res.data || []); })
       .catch(() => markError('alerts'));
@@ -214,6 +234,9 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
   const totalSuppliers = summary ? summary.activeSuppliers : clientActiveSuppliers;
 
   const hasAnyError = Object.values(errors).some(Boolean);
+  // D5: name WHICH endpoint(s) failed in the header badge tooltip, so the
+  // next triage does not need a code hunt. The badge copy itself is unchanged.
+  const failedKeys = Object.keys(errors).filter((k) => errors[k]);
 
   const jobsStatus = (): string => {
     if (jobs === null) return '—';
@@ -295,7 +318,7 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
               <h2 className="text-xs font-bold flex items-center gap-1.5">
                 <span>نمای کلی سلرشو</span>
                 {hasAnyError ? (
-                  <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">خطا در دریافت برخی داده‌ها</span>
+                  <span title={`خطا در دریافت: ${failedKeys.join('، ')}`} className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">خطا در دریافت برخی داده‌ها</span>
                 ) : showFigure ? (
                   <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold">سایت در حال کار است</span>
                 ) : (
@@ -436,7 +459,11 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
           فروش هر روز در ۳۰ روز گذشته <ErrorBadge errorKey="trends" />
         </h3>
-        {hasTrendData ? (
+        {errors['trends'] ? (
+          <ErrorCard title="دریافت نمودار فروش ناموفق بود" description="نمودار ۳۰ روز گذشته بارگذاری نشد؛ فروش‌ها ثبت شده‌اند، فقط نمایش نمودار به‌روز نیست." onRetry={loadTrends} />
+        ) : trends === null ? (
+          <p className="text-[11px] text-slate-400 py-2 text-center">در حال دریافت…</p>
+        ) : hasTrendData ? (
           <>
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -495,9 +522,11 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4">
           <h3 className="text-xs font-extrabold text-slate-800 mb-1 flex items-center gap-1.5">
             <Building2 className="w-4 h-4 text-purple-600" strokeWidth={1.5} />
-            تأمین‌کنندگانی که بیشتر فروخته‌اند <span className="text-[10px] font-normal text-slate-400">(به ترتیب مبلغ فروش)</span> <ErrorBadge errorKey="leaders" />
+            تأمین‌کنندگانی که بیشتر فروخته‌اند <span className="text-[10px] font-normal text-slate-400">(به ترتیب مبلغ فروش)</span>
           </h3>
-          {leaders === null ? (
+          {errors['leaders'] ? (
+            <ErrorCard title="دریافت برترین‌ها ناموفق بود" description="فهرست تأمین‌کنندگان و فروشگاه‌های پرفروش بارگذاری نشد." onRetry={loadLeaders} />
+          ) : leaders === null ? (
             <p className="text-[11px] text-slate-400 py-2 text-center">— در حال دریافت…</p>
           ) : leaders.suppliers.length === 0 ? (
             <EmptyState title="هنوز فروشی ثبت نشده است" description="وقتی کالای یک تأمین‌کننده فروخته شود، نامش با تعداد سفارش و مبلغ فروش همین‌جا می‌آید." />
@@ -511,7 +540,9 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
             <Store className="w-4 h-4 text-brand-deep" strokeWidth={1.5} />
             فروشگاه‌هایی که بیشتر فروخته‌اند <span className="text-[10px] font-normal text-slate-400">(به ترتیب مبلغ فروش)</span>
           </h3>
-          {leaders === null ? (
+          {errors['leaders'] ? (
+            <ErrorCard title="دریافت برترین‌ها ناموفق بود" description="فهرست تأمین‌کنندگان و فروشگاه‌های پرفروش بارگذاری نشد." onRetry={loadLeaders} />
+          ) : leaders === null ? (
             <p className="text-[11px] text-slate-400 py-2 text-center">— در حال دریافت…</p>
           ) : leaders.stores.length === 0 ? (
             <EmptyState title="هنوز فروشی ثبت نشده است" description="وقتی فروشگاهی اولین فروشش را بکند، نامش با تعداد سفارش و مبلغ فروش همین‌جا می‌آید." />

@@ -991,6 +991,80 @@ func handleT01AdminNewsletterSubscribers(w http.ResponseWriter, r *http.Request,
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"subscribers": out})
 }
 
+// D1 (Batch 4a): read-only admin list of failed PSP callback retries.
+// Reads payment_callback_retries joined to payment_callback_events on
+// psp_reference (the events table holds no retry foreign key) for the
+// newest linked event's error/status. Read-only: no manual "retry now"
+// action -- replaying a gateway callback can double-post a payment
+// outcome, so that needs an explicit owner decision (and idempotency
+// proof) in a separate change.
+// No gateway-kind column exists in either table, so none is invented:
+// pspReference is the payment reference and eventStatus is the linked
+// event's status (received/captured/failed/rejected).
+func handleT01AdminCallbackRetries(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
+		return
+	}
+	rows, err := db.QueryContext(r.Context(),
+		`SELECT r.id, r.psp_reference, r.order_id, r.order_number, r.attempt_count,
+			r.max_attempts, r.status, r.last_error, r.next_retry_at, r.created_at,
+			r.updated_at, r.resolved_at, e.status, e.error, e.retry_count, e.received_at
+		FROM payment_callback_retries r
+		LEFT JOIN LATERAL (
+			SELECT status, error, retry_count, received_at
+			FROM payment_callback_events e
+			WHERE e.psp_reference = r.psp_reference
+			ORDER BY e.received_at DESC LIMIT 1
+		) e ON TRUE
+		ORDER BY r.created_at DESC LIMIT `+strconv.Itoa(t01Limit(r)))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]interface{}{}
+	for rows.Next() {
+		var id, pspRef, status string
+		var orderID, orderNumber sql.NullString
+		var attemptCount, maxAttempts int
+		var lastErr sql.NullString
+		var nextRetry, created, updated time.Time
+		var resolved sql.NullTime
+		var eventStatus, eventErr sql.NullString
+		var eventRetryCount sql.NullInt32
+		var eventReceived sql.NullTime
+		if err := rows.Scan(&id, &pspRef, &orderID, &orderNumber, &attemptCount,
+			&maxAttempts, &status, &lastErr, &nextRetry, &created,
+			&updated, &resolved, &eventStatus, &eventErr, &eventRetryCount, &eventReceived); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// The retry row's own last_error is the last error of the retry
+		// loop; fall back to the linked event's error when it is empty.
+		lastError := lastErr.String
+		if lastError == "" {
+			lastError = eventErr.String
+		}
+		out = append(out, map[string]interface{}{
+			"id": id, "pspReference": pspRef, "orderId": orderID.String,
+			"orderNumber": orderNumber.String, "attemptCount": attemptCount,
+			"maxAttempts": maxAttempts, "status": status, "lastError": lastError,
+			"nextRetryAt": nextRetry.Format(time.RFC3339),
+			"createdAt": created.Format(time.RFC3339),
+			"updatedAt": updated.Format(time.RFC3339),
+			"resolvedAt": t01NullTime(resolved),
+			"eventStatus": eventStatus.String, "eventError": eventErr.String,
+			"eventRetryCount": eventRetryCount.Int32,
+			"eventReceivedAt": t01NullTime(eventReceived),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"retries": out})
+}
+
 func handleT01AdminSupplierPromotions(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if t01DBNil(w, db) {
 		return

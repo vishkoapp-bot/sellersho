@@ -11,6 +11,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/google/uuid"
@@ -61,7 +62,7 @@ func (r *StoreRepository) loadPanelConfig(ctx context.Context, store *domain.Sto
 	// turns every GetStoreBySlug into a 500 (the widget 403-vs-500).
 	// NULL here means the same as a missing column (already treated as
 	// an empty config by the 42703 branch below): an empty config.
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(panel_config, '{}'::jsonb), COALESCE(tagline,''), COALESCE(description,''), COALESCE(status,'active'), active_categories FROM stores WHERE id=$1`, store.ID).Scan(&raw, &store.Tagline, &store.Description, &store.Status, pq.Array(&store.ActiveCategories)); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(panel_config, '{}'::jsonb), COALESCE(tagline,''), COALESCE(description,''), COALESCE(status,'active'), active_categories, COALESCE(addon_section_title,'') FROM stores WHERE id=$1`, store.ID).Scan(&raw, &store.Tagline, &store.Description, &store.Status, pq.Array(&store.ActiveCategories), &store.AddonSectionTitle); err != nil {
 		if pgErr, ok := err.(*pq.Error); ok && (pgErr.Code == "42703" || pgErr.Code == "42P01") {
 			store.SelectedNicheIDs = []string{}
 			store.ActiveProductIDs = []string{}
@@ -218,7 +219,7 @@ func (r *StoreRepository) SaveStoreSettings(ctx context.Context, ownerID, slug s
 	if err != nil {
 		return err
 	}
-	allowed := map[string]bool{"tagline": true, "shortDescription": true, "selectedNicheIds": true, "builderConfig": true, "centralDealsFilter": true, "centralDealsProductIds": true, "signedContractVersion": true}
+	allowed := map[string]bool{"tagline": true, "shortDescription": true, "addonSectionTitle": true, "selectedNicheIds": true, "builderConfig": true, "centralDealsFilter": true, "centralDealsProductIds": true, "signedContractVersion": true}
 	for key := range config {
 		if !allowed[key] {
 			return ErrStoreInput
@@ -230,6 +231,18 @@ func (r *StoreRepository) SaveStoreSettings(ctx context.Context, ownerID, slug s
 			if !ok || len(text) > 3000 {
 				return ErrStoreInput
 			}
+		}
+	}
+	// G2 (Batch 4b): addonSectionTitle lives in the dedicated
+	// stores.addon_section_title VARCHAR(200) column (migration
+	// 202610250403) — the same column the PDP reads
+	// (GetPDPAddons), so the bound is the column's: 200 characters.
+	// Rune count, not bytes: PostgreSQL VARCHAR(n) counts
+	// characters, and a Persian title is multi-byte.
+	if title, exists := config["addonSectionTitle"]; exists {
+		text, ok := title.(string)
+		if !ok || utf8.RuneCountInString(text) > 200 {
+			return ErrStoreInput
 		}
 	}
 	if ids, exists := config["selectedNicheIds"]; exists {
@@ -285,10 +298,10 @@ func (r *StoreRepository) SaveStoreSettings(ctx context.Context, ownerID, slug s
 	if err != nil {
 		return err
 	}
-	updateQuery := `UPDATE stores SET panel_config=panel_config || $1::jsonb, tagline=COALESCE($1::jsonb->>'tagline',tagline), description=COALESCE($1::jsonb->>'shortDescription',description), updated_at=NOW() WHERE id=$2 AND owner_user_id=$3`
+	updateQuery := `UPDATE stores SET panel_config=panel_config || $1::jsonb, tagline=COALESCE($1::jsonb->>'tagline',tagline), description=COALESCE($1::jsonb->>'shortDescription',description), addon_section_title=COALESCE($1::jsonb->>'addonSectionTitle',addon_section_title), updated_at=NOW() WHERE id=$2 AND owner_user_id=$3`
 	updateArgs := []interface{}{string(raw), store.ID, ownerID}
 	if hasSignedVersion {
-		updateQuery = `UPDATE stores SET panel_config=panel_config || $1::jsonb, tagline=COALESCE($1::jsonb->>'tagline',tagline), description=COALESCE($1::jsonb->>'shortDescription',description), signed_contract_version=$4, updated_at=NOW() WHERE id=$2 AND owner_user_id=$3`
+		updateQuery = `UPDATE stores SET panel_config=panel_config || $1::jsonb, tagline=COALESCE($1::jsonb->>'tagline',tagline), description=COALESCE($1::jsonb->>'shortDescription',description), addon_section_title=COALESCE($1::jsonb->>'addonSectionTitle',addon_section_title), signed_contract_version=$4, updated_at=NOW() WHERE id=$2 AND owner_user_id=$3`
 		updateArgs = append(updateArgs, signedVersion)
 	}
 	result, err := r.db.ExecContext(ctx, updateQuery, updateArgs...)
@@ -819,9 +832,27 @@ func (r *StoreRepository) DeleteStoreDiscountCampaign(ctx context.Context, store
 // column is never selected. A missing table on an older schema
 // yields an empty list rather than an error, so the seller
 // dashboard does not break before the migration lands.
-func (r *StoreRepository) ListStoreSubscribers(ctx context.Context, storeID, status string, limit int) ([]domain.StoreSubscriber, error) {
+// CountStoreSubscribers returns the store-wide subscriber totals for
+// the subscribers tab header: total regardless of any ?status= filter,
+// plus the per-status counts. A missing table on an older schema
+// yields zeros rather than an error, mirroring ListStoreSubscribers.
+func (r *StoreRepository) CountStoreSubscribers(ctx context.Context, storeID string) (total, active, unsubscribed int, err error) {
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'active'), COUNT(*) FILTER (WHERE status = 'unsubscribed') FROM newsletter_subscribers WHERE store_id = $1`, storeID).Scan(&total, &active, &unsubscribed)
+	if err != nil {
+		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "42P01" {
+			return 0, 0, 0, nil
+		}
+		return 0, 0, 0, err
+	}
+	return total, active, unsubscribed, nil
+}
+
+func (r *StoreRepository) ListStoreSubscribers(ctx context.Context, storeID, status string, limit, offset int) ([]domain.StoreSubscriber, error) {
 	if limit <= 0 {
 		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	q := `SELECT id, store_id, mobile, COALESCE(email, ''), status, source, created_at, unsubscribed_at FROM newsletter_subscribers WHERE store_id = $1`
 	args := []interface{}{storeID}
@@ -829,7 +860,7 @@ func (r *StoreRepository) ListStoreSubscribers(ctx context.Context, storeID, sta
 		q += ` AND status = $2`
 		args = append(args, strings.TrimSpace(status))
 	}
-	q += ` ORDER BY created_at DESC LIMIT ` + fmt.Sprintf("%d", limit)
+	q += ` ORDER BY created_at DESC LIMIT ` + fmt.Sprintf("%d", limit) + ` OFFSET ` + fmt.Sprintf("%d", offset)
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "42P01" {

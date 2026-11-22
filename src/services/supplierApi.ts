@@ -21,6 +21,7 @@ export interface SupplierProductDto {
   supplierBaseCost: number;
   platformMargin: number;
   isOriginal: boolean;
+  isActive?: boolean;
   stock: number;
   imageUrl: string;
   description: string;
@@ -35,6 +36,11 @@ export interface SupplierProductDto {
   rating?: number;
   reviewsCount?: number;
 }
+
+// E1 — ONE shared definition of "active product": active = isActive !== false.
+// The backend list carries is_active for every row (domain.Product.IsActive);
+// a missing isActive stays active, only an explicit false is inactive.
+export const isSupplierProductActive = (p: { isActive?: boolean | null }): boolean => p.isActive !== false;
 export interface SupplierReturnRequestDto extends SupplierSKUIdentity { id:string; supplierId?:string; productId:string; productTitle:string; warehouseName:string; requestedQuantity:number; eligibleQuantity:number; collectionMethod:'supplier_collect'|'postal'; postalCharge:number; status:string; reason:string; createdAt:string; reviewedAt?:string; handoverAt?:string; receivedAt?:string; inspectedAt?:string; inspectionStatus?:string; acceptedQuantity?:number; failedQuantity?:number; }
 export interface ReturnParcelInput { quantity:number; carrierCode:string; paymentMethod:'sender_pays'|'receiver_pays'; origin:string; destination:string; lengthMm:number; widthMm:number; heightMm:number; weightGrams:number; estimatedCharge?:number; estimateSource?:'tariff'|'api'|'manual'; estimateReference?:string; finalCharge?:number; finalChargeSource?:'tariff'|'api'|'manual'; finalChargeReference?:string; trackingNumber?:string; notes?:string; }
 export interface ReturnParcelDto extends ReturnParcelInput { id:string; returnRequestId:string; parcelNumber:number; status:string; createdBy:string; confirmedBy?:string; }
@@ -459,7 +465,8 @@ export const supplierApi = {
   getTapinSettings: () => apiRequest<{ supplierId: string; tapinShopId: string | null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'GET', auth: true }),
   updateTapinSettings: (payload: { shopId: string; token?: string }) => apiRequest<{ supplierId: string; tapinShopId: string | null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'PUT', auth: true, body: JSON.stringify(payload) }),
   deleteTapinSettings: () => apiRequest<{ supplierId: string; tapinShopId: null; tapinConnected: boolean }>('/supplier/tapin/settings', { method: 'DELETE', auth: true }),
-  testTapinConnection: () => apiRequest<{ ok: boolean; serviceActive?: boolean; message: string; error?: string }>('/supplier/tapin/test', { method: 'POST', auth: true, body: JSON.stringify({}) }),
+  // E6: optional signal lets the Tapin card cancel/time out the manual test; apiRequest still applies its own 15 s bound.
+  testTapinConnection: (signal?: AbortSignal) => apiRequest<{ ok: boolean; serviceActive?: boolean; message: string; error?: string }>('/supplier/tapin/test', { method: 'POST', auth: true, body: JSON.stringify({}), signal }),
   getTapinBoxes: () => apiRequest<{ success: boolean; boxes: TapinBoxDto[]; defaultBoxId: string }>('/supplier/tapin/boxes', { method: 'GET', auth: true }),
   getTapinLabel: async (shipmentId: string): Promise<Blob> => {
     const token = tokenStore.getToken();
@@ -511,6 +518,10 @@ export const supplierApi = {
   getProfile: () => apiRequest<any>('/supplier/profile', { method: 'GET', auth: true }),
   acceptContract: (version: number) => apiRequest('/supplier/contract/accept', { method: 'POST', auth: true, body: JSON.stringify({ version }) }),
   updateProductOrigin: (id: string, warehouseId: string) => apiRequest(`/supplier/products/${encodeURIComponent(id)}/origin`, { method: 'PUT', auth: true, body: JSON.stringify({ supplierWarehouseId: warehouseId }) }),
+  // G4 — bulk origin assign: omitted productIds assigns ALL NULL-origin
+  // supplier_direct products of the caller; JSON drops undefined, so an
+  // omitted productIds stays omitted on the wire.
+  bulkAssignProductOrigin: (warehouseId: string, productIds?: string[]) => apiRequest<{ assigned: number; warehouseId: string }>('/supplier/products/origin/bulk', { method: 'POST', auth: true, body: JSON.stringify({ warehouseId, productIds }) }),
   getMyExclusivityChallenges: async (): Promise<any[]> => { const data = await apiRequest<any>('/supplier/exclusivity-challenges', { method: 'GET', auth: true }); return Array.isArray(data) ? data : (data?.challenges ?? []); },
   // FIX 52 — live challenge-create (Jl challenge box).
   createExclusivityChallenge: (payload: Record<string, unknown>) => apiRequest<{ id: string; status: string }>('/supplier/exclusivity-challenges', { method: 'POST', auth: true, body: JSON.stringify(payload) }),

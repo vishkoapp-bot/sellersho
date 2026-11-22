@@ -40,6 +40,19 @@ const Explainer: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
+// G2 (Batch 4b): map a save failure to Persian copy. A 400 validation
+// failure (e.g. an over-long addon-section title) must never surface
+// the backend's raw English text; anything else keeps the generic
+// retry copy.
+export function storeSettingsSaveErrorMessage(err: unknown): string {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  const message = (err as { message?: unknown } | null | undefined)?.message;
+  if (status === 400 || message === 'Invalid input') {
+    return 'ذخیره انجام نشد؛ مقدار نامعتبر است.';
+  }
+  return 'ذخیره انجام نشد. دوباره تلاش کن.';
+}
+
 export const SellerStoreSetupTab: React.FC = () => {
   const {
     currentStore,
@@ -137,7 +150,7 @@ export const SellerStoreSetupTab: React.FC = () => {
       try {
         await storeApi.saveStoreSettings(currentStore.slug, { tagline, shortDescription, addonSectionTitle: addonSectionTitle.trim() });
       } catch (err: any) {
-        error(err?.message || 'ذخیره انجام نشد. دوباره تلاش کن.');
+        error(storeSettingsSaveErrorMessage(err));
         return;
       }
     }

@@ -20,8 +20,22 @@ const formatSep = (raw: string): string => {
   return digits.replace(/\B(?=(\d{3})+(?!\d))/g, '٬').replace(/\d/g, (ch) => '۰۱۲۳۴۵۶۷۸۹'[parseInt(ch, 10)]);
 };
 
+const toLatinDigits = (raw: string): string =>
+  raw.replace(/[۰-۹٠-٩]/g, (ch) => String(ch.charCodeAt(0) - (ch >= '۰' ? 0x06f0 : 0x0660)));
+
+const hasInvalidNumericChars = (raw: string): boolean =>
+  !/^[\d\s,٬]*$/u.test(toLatinDigits(raw.trim()).replace(/\p{L}+$/u, ''));
+
 const parseSep = (raw: string): string =>
-  raw.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
+  hasInvalidNumericChars(raw) ? '' : toLatinDigits(raw).replace(/[^0-9]/g, '');
+
+const formatPositiveIntegerInput = (raw: string): string =>
+  hasInvalidNumericChars(raw) ? raw : formatSep(parseSep(raw));
+
+export const parsePosInt = (raw: string): number | undefined => {
+  const n = Number(parseSep(raw));
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+};
 
 // Niche picking is data-driven, not hardcoded: each niche carries its own
 // categorySlug in the DB (e.g. fashion → women-style, men-essentials,
@@ -124,13 +138,34 @@ const normalizeDraftRow = (v: Partial<DraftProductSKU>): DraftProductSKU => ({
   images: v.images ?? [],
 });
 
+// G5 half B: the numeric draft fields that share the formatSep display
+// pattern. A value that strips to empty falls back to '' (the existing
+// empty state), never to 0 — genuinely non-numeric legacy values are not
+// mangled into a number.
+const DRAFT_NUMERIC_FIELDS = ['cost', 'stock', 'prepDays', 'weightGrams', 'lengthCm', 'widthCm', 'heightCm', 'packLengthCm', 'packWidthCm', 'packHeightCm'] as const;
+
+export function normalizeRestoredDraftNumerics(draft: ProposeDraftV1): ProposeDraftV1 {
+  const next = { ...draft };
+  const source = draft as unknown as Record<string, unknown>;
+  const target = next as unknown as Record<string, unknown>;
+  for (const field of DRAFT_NUMERIC_FIELDS) {
+    const value = source[field];
+    if (typeof value === 'string' || typeof value === 'number') {
+      target[field] = parseSep(String(value));
+    }
+  }
+  return next;
+}
+
 function readDraftFromStorage(): ProposeDraftV1 | null {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || (parsed as { version?: unknown }).version !== DRAFT_VERSION) return null;
-    return parsed as ProposeDraftV1;
+    // G5 half B: a draft saved by pre-parseSep code restores formatted
+    // strings — normalise them here so they can never re-enter the form.
+    return normalizeRestoredDraftNumerics(parsed as ProposeDraftV1);
   } catch {
     return null;
   }
@@ -168,10 +203,10 @@ export function validateProposeStep3(input: {
   packHeightCm: string;
 }): ProposeStepError[] {
   const errors: ProposeStepError[] = [];
-  const posInt = (raw: string): number | undefined => {
-    const n = Number(raw);
-    return raw.trim() !== '' && Number.isSafeInteger(n) && n > 0 ? n : undefined;
-  };
+  // G5 half B: shared parsePosInt — the local bare-Number copy used to
+  // reject exactly what the inputs display (Persian digits, separators,
+  // unit suffixes).
+  const posInt = parsePosInt;
   if (posInt(input.weightGrams) === undefined || posInt(input.lengthCm) === undefined || posInt(input.widthCm) === undefined || posInt(input.heightCm) === undefined) {
     errors.push({ field: 'weightDims', message: 'وزن (گرم) و هر سه بُعد کالا (سانتی‌متر) الزامی است؛ بدون آن‌ها پیشنهاد تأیید نمی‌شود.' });
   }
@@ -241,6 +276,10 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   // counts as a manual pick (autoAppliedSlug starts null), so it is never
   // auto-overridden.
   const [pickerCategories, setPickerCategories] = useState<CategoryDto[]>([]);
+  // G5 half A: re-attempt signal for the picker, bumped once per
+  // empty-tree episode by the suggestion effect below — never per keystroke.
+  const [categoryReloadSignal, setCategoryReloadSignal] = useState(0);
+  const categoriesReattemptedRef = useRef(false);
   const [suggestions, setSuggestions] = useState<SuggestResult | null>(null);
   const [autoAppliedSlug, setAutoAppliedSlug] = useState<string | null>(null);
   // Refs mirror the state above so the debounced suggestion effect (which
@@ -418,7 +457,21 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   // stale auto-applied pick is dropped when the new title no longer has
   // a clear winner (see decideAutoApply in services/categorySuggest).
   useEffect(() => {
-    if (pickerCategories.length === 0) { setSuggestions(null); return; }
+    if (pickerCategories.length === 0) {
+      setSuggestions(null);
+      // G5 half A: when the form first needs categories (a real title is
+      // typed while the tree is still empty), re-attempt the picker fetch —
+      // once per empty-tree episode, gated by the ref below, not on every
+      // keystroke. The picker's own auto-retries cover the mount failure;
+      // this turns the tester's observed sequence (type a name → list
+      // appears) into real, coded behaviour.
+      if (title.trim() !== '' && !categoriesReattemptedRef.current) {
+        categoriesReattemptedRef.current = true;
+        setCategoryReloadSignal((n) => n + 1);
+      }
+      return;
+    }
+    categoriesReattemptedRef.current = false;
     const timer = setTimeout(() => {
       const result = suggestCategories(title, pickerCategories);
       const decision = decideAutoApply(
@@ -597,10 +650,9 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     try{productDraft=serializeProductDraft(productSchema,variants)}catch(cause){error(cause instanceof Error?cause.message:'ساختار محصول را کامل کنید.');return;}
     const costNum=productDraft.supplierBaseCost;
     if (selectedNicheIds.length !== 1) { error('حداقل یک موضوع (نیچ) برای این کالا انتخاب کن.'); return; }
-    const posInt = (raw: string): number | undefined => {
-      const n = Number(raw);
-      return raw.trim() !== '' && Number.isSafeInteger(n) && n > 0 ? n : undefined;
-    };
+    // G5 half B: shared parsePosInt (see validateProposeStep3) — submit
+    // must accept exactly what step-3 validation accepts.
+    const posInt = parsePosInt;
     const weight = posInt(weightGrams);
     const lenMm = posInt(lengthCm);
     const widMm = posInt(widthCm);
@@ -906,7 +958,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
             <div>
               <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
               <div ref={refFor('category')} tabIndex={-1} className="outline-none">
-                <SupplierCategoryPicker value={category} onCategoriesLoaded={setPickerCategories} onSelect={(cat) => { categoryRef.current = cat; autoSlugRef.current = null; setAutoAppliedSlug(null); setCategory(cat); setBrand(''); clearFieldError('category'); clearFieldError('brand'); }} />
+                <SupplierCategoryPicker value={category} reloadSignal={categoryReloadSignal} onCategoriesLoaded={setPickerCategories} onSelect={(cat) => { categoryRef.current = cat; autoSlugRef.current = null; setAutoAppliedSlug(null); setCategory(cat); setBrand(''); clearFieldError('category'); clearFieldError('brand'); }} />
               </div>
               {autoHintVisible && category && (
                 <p className="text-[11px] leading-5 text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-2.5 py-1.5 mt-1.5 flex items-center justify-between gap-2">
@@ -1028,19 +1080,19 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">وزن (گرم) — الزامی</label>
-                <input ref={refFor('weightDims')} type="text" inputMode="numeric" value={formatSep(weightGrams)} onChange={(e) => { setWeightGrams(parseSep(e.target.value)); clearFieldError('weightDims'); }} placeholder="۱٬۲۰۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <input ref={refFor('weightDims')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(weightGrams)} onChange={(e) => { setWeightGrams(e.target.value); clearFieldError('weightDims'); }} placeholder="۱٬۲۰۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">طول (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatSep(lengthCm)} onChange={(e) => { setLengthCm(parseSep(e.target.value)); clearFieldError('weightDims'); }} placeholder="۴۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(lengthCm)} onChange={(e) => { setLengthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۴۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">عرض (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatSep(widthCm)} onChange={(e) => { setWidthCm(parseSep(e.target.value)); clearFieldError('weightDims'); }} placeholder="۳۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(widthCm)} onChange={(e) => { setWidthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۳۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">ارتفاع (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatSep(heightCm)} onChange={(e) => { setHeightCm(parseSep(e.target.value)); clearFieldError('weightDims'); }} placeholder="۲۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(heightCm)} onChange={(e) => { setHeightCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۲۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
             </div>
             {fieldError('weightDims')}
@@ -1049,15 +1101,15 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">طول بسته (سانتی‌متر)</label>
-                <input ref={refFor('packaging')} type="text" inputMode="numeric" value={formatSep(packLengthCm)} onChange={(e) => { setPackLengthCm(parseSep(e.target.value)); clearFieldError('packaging'); }} placeholder="۴۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <input ref={refFor('packaging')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(packLengthCm)} onChange={(e) => { setPackLengthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۴۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">عرض بسته (سانتی‌متر)</label>
-                <input type="text" inputMode="numeric" value={formatSep(packWidthCm)} onChange={(e) => { setPackWidthCm(parseSep(e.target.value)); clearFieldError('packaging'); }} placeholder="۳۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(packWidthCm)} onChange={(e) => { setPackWidthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۳۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
               <div>
                 <label className="text-[10px] text-slate-600 block mb-1">ارتفاع بسته (سانتی‌متر)</label>
-                <input type="text" inputMode="numeric" value={formatSep(packHeightCm)} onChange={(e) => { setPackHeightCm(parseSep(e.target.value)); clearFieldError('packaging'); }} placeholder="۲۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(packHeightCm)} onChange={(e) => { setPackHeightCm(e.target.value); clearFieldError('packaging'); }} placeholder="۲۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
             </div>
             {fieldError('packaging')}

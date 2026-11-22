@@ -1,6 +1,14 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { proposalStatusCounts, resolveProposalFocus } from './SupplierProductsTab';
+import {
+  proposalStatusCounts,
+  resolveProposalFocus,
+  supplierProductStatusLabel,
+  supplierStockNeedsOrigin,
+  resolveSupplierOriginDisplay,
+  isStockOriginRequiredError,
+} from './SupplierProductsTab';
+import { isSupplierProductActive } from '../../services/supplierApi';
 
 // Deep-link decision tests (DESIGN.md §4.3-4.4): the bell badge → drawer
 // click → Products / proposed_offers → SupplierFeedbackModal chain.
@@ -86,4 +94,77 @@ it('still switches tab and consumes the focus when the id is not in the list', (
     focusId: 'prop-9',
     targetId: null,
   });
+});
+
+// E1: ONE shared definition — active = isActive !== false. Only an explicit
+// false is inactive; a missing isActive stays active (the backend always
+// sends it, domain.Product.IsActive, but older rows must not flip).
+it('isSupplierProductActive: only an explicit false is inactive', () => {
+  assert.equal(isSupplierProductActive({ isActive: true }), true);
+  assert.equal(isSupplierProductActive({ isActive: false }), false);
+  assert.equal(isSupplierProductActive({}), true);
+  assert.equal(isSupplierProductActive({ isActive: undefined }), true);
+  assert.equal(isSupplierProductActive({ isActive: null }), true);
+});
+
+// E1: the probe fixture — 43 products, 2 inactive. Both headers must show
+// ۴۱ (the shared predicate, not two different counts), and the 2 inactive
+// rows carry a «غیرفعال» badge, never «تأییدشده».
+it('E1 fixture 43 products / 2 inactive → 41 active, inactive rows labelled غیرفعال', () => {
+  const products = [
+    ...Array.from({ length: 41 }, (_, i) => ({ id: `active-${i}`, isActive: true })),
+    { id: 'prod-tapin-test-20261028', isActive: false },
+    { id: 'prod-1793281034601', isActive: false },
+  ];
+  assert.equal(products.filter(isSupplierProductActive).length, 41);
+  assert.deepEqual(
+    products.filter((p) => !isSupplierProductActive(p)).map((p) => supplierProductStatusLabel(p as any)),
+    ['غیرفعال', 'غیرفعال'],
+  );
+  assert.equal(
+    products.filter(isSupplierProductActive).every((p) => supplierProductStatusLabel(p as any) === 'تأییدشده'),
+    true,
+  );
+});
+
+// G4: the stock-edit pre-check keys off the product's own origin, and only
+// for supplier_direct rows — warehouse-fulfilment stock is not declared
+// through this path.
+it('supplierStockNeedsOrigin: only supplier_direct rows without an origin', () => {
+  assert.equal(supplierStockNeedsOrigin({ fulfillmentMethod: 'supplier_direct' }), true);
+  assert.equal(supplierStockNeedsOrigin({ fulfillmentMethod: 'supplier_direct', originSupplierWarehouseId: '' }), true);
+  assert.equal(supplierStockNeedsOrigin({ fulfillmentMethod: 'supplier_direct', originSupplierWarehouseId: 'wh-1' }), false);
+  assert.equal(supplierStockNeedsOrigin({ fulfillmentMethod: 'warehouse' }), false);
+  assert.equal(supplierStockNeedsOrigin({ fulfillmentMethod: 'warehouse', originSupplierWarehouseId: 'wh-1' }), false);
+  assert.equal(supplierStockNeedsOrigin({}), false);
+});
+
+// G4: honest origin display — a NULL origin reads «مبدأ مشخص نشده» even
+// when a profile city exists; the profile city is not an origin.
+it('resolveSupplierOriginDisplay: NULL origin is مبدأ مشخص نشده, never the profile city', () => {
+  assert.equal(resolveSupplierOriginDisplay({ originSupplierWarehouseId: undefined }, undefined), 'مبدأ مشخص نشده');
+  assert.equal(resolveSupplierOriginDisplay({}, undefined), 'مبدأ مشخص نشده');
+  assert.equal(resolveSupplierOriginDisplay({ originSupplierWarehouseId: 'wh-1' }, undefined), 'انبار غیرفعال‌شده');
+  assert.equal(
+    resolveSupplierOriginDisplay({ originSupplierWarehouseId: 'wh-1' }, { name: 'انبار اصفهان', cityName: 'اصفهان' }),
+    'انبار اصفهان — اصفهان',
+  );
+});
+
+// G4: the 409 detector matches only the origin-required failure — the
+// inline guidance must not swallow other stock errors (below-held,
+// invalid input) into the origin flow.
+it('isStockOriginRequiredError: matches only the 409 origin message', () => {
+  const origin409: any = new Error('برای اعلام موجودی جدید، انبار فعال متعلق به تأمین‌کننده را مشخص کنید');
+  origin409.status = 409;
+  assert.equal(isStockOriginRequiredError(origin409), true);
+  const origin400: any = new Error('برای اعلام موجودی جدید، انبار فعال متعلق به تأمین‌کننده را مشخص کنید');
+  origin400.status = 400;
+  assert.equal(isStockOriginRequiredError(origin400), false);
+  const other409: any = new Error('موجودی کل نباید از موجودی نگهداری‌شده در محل‌های دیگر کمتر باشد');
+  other409.status = 409;
+  assert.equal(isStockOriginRequiredError(other409), false);
+  assert.equal(isStockOriginRequiredError(new Error('ذخیره موجودی انجام نشد.')), false);
+  assert.equal(isStockOriginRequiredError(null), false);
+  assert.equal(isStockOriginRequiredError('not an error'), false);
 });

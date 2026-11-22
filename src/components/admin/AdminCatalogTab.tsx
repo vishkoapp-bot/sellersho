@@ -28,12 +28,47 @@ export const AdminCatalogTab: React.FC = () => {
   const [loading,setLoading] = useState(false);
   const [loadError,setLoadError] = useState('');
   const [reviewing,setReviewing] = useState(false);
-  const refreshProposals = async () => {
+  // D2 (Batch 4a): dedupe semantics — skip-first, abort-only-background.
+  // inFlightRef holds the one in-flight proposals fetch (kind + controller).
+  // A background (focus/interval) refresh skips while any fetch is in
+  // flight, so it can never re-trigger the spinner over a settled state.
+  // A user-initiated refresh aborts a stale *background* fetch only — it
+  // never aborts the initial load or another user refresh. The in-flight
+  // guard is primary; abort is only the supersede path. A generation id
+  // keeps a superseded request from clearing the new request's loading.
+  const inFlightRef = useRef<{ kind: 'background' | 'foreground'; controller: AbortController; id: number } | null>(null);
+  const requestSeqRef = useRef(0);
+  const lastFetchAtRef = useRef(0);
+  const [hasLoaded,setHasLoaded] = useState(false);
+  const refreshProposals = async (opts?: { background?: boolean }) => {
     if (isMockMode() || !authToken) return;
+    const inFlight = inFlightRef.current;
+    if (inFlight) {
+      if (opts?.background) return;
+      if (inFlight.kind !== 'background') return;
+      inFlight.controller.abort();
+      inFlightRef.current = null;
+    }
+    const kind = opts?.background ? 'background' : 'foreground';
+    const controller = new AbortController();
+    const id = ++requestSeqRef.current;
+    inFlightRef.current = { kind, controller, id };
+    lastFetchAtRef.current = Date.now();
+    const startedAt = Date.now();
     setLoading(true);setLoadError('');
-    try { const rows = await apiRequest<Record<string,any>[]>('/admin/products/proposals',{method:'GET',auth:true});setServerProposals(rows.map(mapAdminProposal)); }
-    catch(e) {setLoadError(e instanceof Error ? e.message : 'Unable to load proposals');}
-    finally {setLoading(false);}
+    try {
+      const rows = await apiRequest<Record<string,any>[]>('/admin/products/proposals',{method:'GET',auth:true,signal: controller.signal});
+      if (inFlightRef.current?.id !== id) return;
+      setServerProposals(rows.map(mapAdminProposal));
+      setHasLoaded(true);
+    }
+    catch(e) {
+      if (controller.signal.aborted) return;
+      const elapsedSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      const msg = e instanceof Error ? e.message : 'Unable to load proposals';
+      setLoadError(`${msg} (پس از ${toPersianDigits(elapsedSec)} ثانیه)`);
+    }
+    finally { if (inFlightRef.current?.id === id) { inFlightRef.current = null; setLoading(false); } }
   };
   const [approvedIds, setApprovedIds] = useState<{ [key: string]: boolean }>({});
   const [rejectingItem, setRejectingItem] = useState<any | null>(null);
@@ -53,7 +88,10 @@ export const AdminCatalogTab: React.FC = () => {
   useEffect(() => { modalOpenRef.current = !!inspectingItem || !!rejectingItem; }, [inspectingItem, rejectingItem]);
   useEffect(()=>{
     void refreshProposals();
-    const onFocus=()=>{ if (!modalOpenRef.current) void refreshProposals(); };
+    // D2: the 30 s interval is the refresh cadence; window-focus only
+    // re-triggers when the last fetch started over 10 s ago, so refocus
+    // bursts during a live session cannot restart the spinner.
+    const onFocus=()=>{ if (modalOpenRef.current) return; if (Date.now() - lastFetchAtRef.current < 10000) return; void refreshProposals({background:true}); };
     window.addEventListener('focus',onFocus);
     const timer=window.setInterval(onFocus,30000);
     return ()=>{window.removeEventListener('focus',onFocus);window.clearInterval(timer);};
@@ -143,7 +181,8 @@ export const AdminCatalogTab: React.FC = () => {
   return (
     <div className="space-y-3.5 pb-6" aria-busy={loading || reviewing}>
       <button type="button" onClick={()=>void refreshProposals()} disabled={loading} className="min-h-11 rounded-xl border px-3 py-2 text-xs font-bold disabled:opacity-40">به‌روزرسانی صف بازبینی</button>
-      {loading && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs leading-7">در حال دریافت درخواست‌ها…</p>}
+      {loading && !hasLoaded && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs leading-7">در حال دریافت درخواست‌ها…</p>}
+      {loading && hasLoaded && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs leading-7">در حال به‌روزرسانی…</p>}
       {loadError && <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-7 text-rose-800"><p className="font-bold">بارگذاری صف بازبینی ناموفق بود.</p><p>{loadError}</p><button type="button" onClick={() => void refreshProposals()} className="min-h-11 rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white">تلاش مجدد</button></div>}
       {!loading && !loadError && pendingApprovals.length===0 && <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-center"><p className="text-xs leading-7 text-slate-500">درخواستی با این فیلترها وجود ندارد.</p>{filtersActive && <button type="button" onClick={clearFilters} className="min-h-11 rounded-lg border px-4 py-2 text-xs font-bold">پاک کردن فیلترها</button>}</div>}
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
-import { supplierApi, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
+import { supplierApi, isSupplierProductActive, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { Package, Plus, CheckCircle2, Clock, ShieldCheck, Edit3, XCircle, AlertCircle, Save, Upload, Trash2, Star, Layers, Image as ImageIcon } from 'lucide-react';
@@ -49,6 +49,34 @@ export const proposalStatusCounts = (offers: { status: string }[]) => ({
   rejected: offers.filter((prop) => prop.status === 'rejected').length,
 });
 
+// E1: row status label — an inactive row is «غیرفعال», never «تأییدشده».
+// The header count and this badge share isSupplierProductActive, so the
+// Products tab and the Overview tab can no longer disagree (41 vs 43).
+export const supplierProductStatusLabel = (product: SupplierProductDto): string =>
+  isSupplierProductActive(product) ? 'تأییدشده' : 'غیرفعال';
+
+// G4: a stock edit needs an origin for supplier_direct products only;
+// warehouse-fulfilment products ship from the central warehouse and their
+// stock is not declared through this path.
+export const supplierStockNeedsOrigin = (product: Pick<SupplierProductDto, 'fulfillmentMethod' | 'originSupplierWarehouseId'>): boolean =>
+  product.fulfillmentMethod === 'supplier_direct' && !product.originSupplierWarehouseId;
+
+// G4: honest origin display — a NULL origin is «مبدأ مشخص نشده» even when
+// a profile city exists; the profile city is not an origin (E5 owner gate
+// pending) and the backend stock gate rejects NULL origins.
+export const resolveSupplierOriginDisplay = (
+  product: Pick<SupplierProductDto, 'originSupplierWarehouseId'>,
+  originWarehouse: { name: string; cityName: string } | undefined,
+): string => originWarehouse ? `${originWarehouse.name} — ${originWarehouse.cityName}` : product.originSupplierWarehouseId ? 'انبار غیرفعال‌شده' : 'مبدأ مشخص نشده';
+
+// G4: the stock endpoint maps ErrStockOriginRequired to HTTP 409 and
+// returns its Persian message verbatim in the `error` field, which
+// apiRequest surfaces as the ApiError message.
+export const isStockOriginRequiredError = (cause: unknown): boolean => {
+  if (!(cause instanceof Error)) return false;
+  return (cause as { status?: number }).status === 409 && cause.message.includes('انبار فعال متعلق به تأمین‌کننده');
+};
+
 export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void }> = ({ focusProposalId, onFocusConsumed }) => {
   const {
     supplierSession,
@@ -86,6 +114,9 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
     window.setTimeout(() => setHighlightedProposalId((cur) => (cur === id ? null : cur)), 5000);
   };
   const [originWarehouseId, setOriginWarehouseId] = useState('');
+  const [bulkWarehouseId, setBulkWarehouseId] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
   useEffect(() => {
     supplierApi.getMyWarehouses().then(setMyWarehouses).catch(() => {});
     supplierApi.getProfile().then((pr: any) => { setProfileCity(pr.warehouse_city || pr.warehouseCity || ''); setProfileCityConfirmed(!!(pr.warehouse_city_confirmed || pr.warehouseCityConfirmed)); }).catch(() => {});
@@ -102,6 +133,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
   // state های جدید برای ویرایش موجودی و همگام‌سازی لحظه‌ای
   const [editingStockProduct, setEditingStockProduct] = useState<SupplierProductDto | null>(null);
+  const [stockOriginBlockedId, setStockOriginBlockedId] = useState<string | null>(null);
   const [editedStock, setEditedStock] = useState('');
   const [stockReason, setStockReason] = useState('');
   const [stockVariantId, setStockVariantId] = useState('');
@@ -109,6 +141,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const [editingSupplyProduct, setEditingSupplyProduct] = useState<SupplierProductDto | null>(null);
   const [editedSupplyOption, setEditedSupplyOption] = useState<'3hour_local' | '1day' | '3day'>('1day');
   const supplierProducts = productsResource.error ? [] : productsResource.data || [];
+  // E1: the header counts ACTIVE products only (same predicate as Overview).
+  const activeSupplierProducts = supplierProducts.filter(isSupplierProductActive);
+  const inactiveSupplierProductsCount = supplierProducts.length - activeSupplierProducts.length;
+  // G4: supplier_direct rows with no origin cannot take a stock edit.
+  const nullOriginDirectCount = supplierProducts.filter(supplierStockNeedsOrigin).length;
   const supplierProposedOffers = proposalsResource.error ? [] : proposalsResource.data || [];
   const rejectedProposals = supplierProposedOffers.filter((prop) => prop.status === 'rejected');
   // G6: the tab label counts PENDING proposals only — the list is an
@@ -201,7 +238,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             subTab === 'active_products' ? 'bg-white text-brand-deep shadow-2xs' : 'text-slate-600'
           }`}
         >
-          کالاهای تأییدشده ({toPersianDigits(supplierProducts.length)})
+          کالاهای تأییدشده ({toPersianDigits(activeSupplierProducts.length)}){inactiveSupplierProductsCount > 0 ? ` · ${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : ''}
         </button>
         <button
           type="button"
@@ -237,6 +274,37 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
       {subTab === 'active_products' && (
         <div className="space-y-2.5">
+          {myWarehouses.filter((w: any) => w.isActive).length > 0 && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2">
+              <p className="text-[11px] font-bold text-slate-700">مبدأ پیش‌فرض برای کالاهای بدون مبدأ</p>
+              <p className="text-[10px] leading-5 text-slate-500">{nullOriginDirectCount > 0 ? `${toPersianDigits(nullOriginDirectCount)} کالا مبدأ ندارند و ویرایش موجودی‌شان بسته است؛ یک انبار را انتخاب کن تا برای همه‌شان مبدأ بگیرد.` : 'همه کالاهای ارسال مستقیم مبدأ دارند.'}</p>
+              <div className="flex items-center gap-2">
+                <select value={bulkWarehouseId} onChange={(e) => setBulkWarehouseId(e.target.value)} className="flex-1 text-[10px] p-1.5 rounded-lg bg-slate-50 border border-slate-200 outline-none">
+                  <option value="">انتخاب انبار…</option>
+                  {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
+                </select>
+                <button
+                  type="button"
+                  disabled={bulkSaving || nullOriginDirectCount === 0 || !bulkWarehouseId}
+                  onClick={async () => {
+                    if (bulkSaving || !bulkWarehouseId) return;
+                    setBulkSaving(true);
+                    setBulkResult(null);
+                    try {
+                      const res = await supplierApi.bulkAssignProductOrigin(bulkWarehouseId);
+                      setBulkResult(res.assigned > 0 ? `${toPersianDigits(res.assigned)} کالا مبدأ گرفت.` : 'کالای جدیدی مبدأ نگرفت؛ همه مبدأ دارند.');
+                      success('مبدأ کالاها تعیین شد.');
+                      await productsResource.reload();
+                    } catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'تعیین مبدأ انجام نشد.'); } finally { setBulkSaving(false); }
+                  }}
+                  className="px-2.5 py-1.5 bg-brand-deep text-white font-bold text-[10px] rounded-lg disabled:opacity-50"
+                >
+                  تعیین مبدأ برای کالاهای بدون مبدأ
+                </button>
+              </div>
+              {bulkResult && <p className="text-[10px] text-emerald-700">{bulkResult}</p>}
+            </div>
+          )}
           {!productsResource.loading && !productsResource.error && supplierProducts.length === 0 && <div className="rounded-2xl border bg-white p-6 text-center space-y-2">
             <Package className="w-10 h-10 text-slate-300 mx-auto"  strokeWidth={1.5}/>
             <p className="text-xs font-bold text-slate-700">هنوز کالای تأییدشده‌ای نداری.</p>
@@ -247,13 +315,14 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             const effectiveCost = product.supplierBaseCost;
             const effectiveStock = product.stock;
       const effectiveSupplyOption = product.supplyOption || '1day';
+      const productActive = isSupplierProductActive(product);
       const originWarehouse = myWarehouses.find((w: any) => w.id === product.originSupplierWarehouseId);
-      const originDisplay = originWarehouse ? `${originWarehouse.name} — ${originWarehouse.cityName}` : product.originSupplierWarehouseId ? 'انبار غیرفعال‌شده' : profileCityConfirmed && profileCity ? `شهر انبار پروفایل (${profileCity})` : 'انبار تأمین‌کننده';
+      const originDisplay = resolveSupplierOriginDisplay(product, originWarehouse);
 
             return (
               <div
                 key={product.id}
-                className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2"
+                className={`bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2${productActive ? '' : ' opacity-60'}`}
               >
                 <div className="flex items-center gap-2.5">
                   {product.imageUrl ? (
@@ -278,8 +347,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                             در حال بررسی
                           </span>
                         )}
-                        <span className="text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded-full border border-emerald-200">
-                          تأییدشده
+                        <span className={productActive ? "text-[9px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.2 rounded-full border border-emerald-200" : "text-[9px] bg-slate-100 text-slate-500 font-bold px-1.5 py-0.2 rounded-full border border-slate-200"}>
+                          {supplierProductStatusLabel(product)}
                         </span>
                       </span>
                     </div>
@@ -298,10 +367,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
               {product.fulfillmentMethod === 'supplier_direct' && (originEditingProduct?.id === product.id ? (
                 <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
                   <select value={originWarehouseId} onChange={(e) => setOriginWarehouseId(e.target.value)} className="flex-1 text-[10px] p-1.5 rounded-lg bg-slate-50 border border-slate-200 outline-none">
-                    {profileCityConfirmed ? (<option value="">شهر انبار پروفایل{profileCity ? ` (${profileCity})` : ''}</option>) : (<option value="">— بدون مبدأ مشخص —</option>)}
+                    <option value="">— بدون مبدأ (برای ویرایش موجودی اول انبار انتخاب کن) —</option>
                     {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
                   </select>
-                  <button type="button" disabled={saving} onClick={async () => { if (saving) return; setSaving(true); try { await supplierApi.updateProductOrigin(product.id, originWarehouseId); success('مبدأ کالا تغییر کرد.'); setOriginEditingProduct(null); await productsResource.reload(); } catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'تغییر مبدأ انجام نشد.'); } finally { setSaving(false); } }} className="px-2.5 py-1.5 bg-brand-deep text-white font-bold text-[10px] rounded-lg">ذخیره مبدأ</button>
+                  <button type="button" disabled={saving} onClick={async () => { if (saving) return; setSaving(true); try { await supplierApi.updateProductOrigin(product.id, originWarehouseId); success('مبدأ کالا تغییر کرد.'); setOriginEditingProduct(null); setStockOriginBlockedId(null); await productsResource.reload(); } catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'تغییر مبدأ انجام نشد.'); } finally { setSaving(false); } }} className="px-2.5 py-1.5 bg-brand-deep text-white font-bold text-[10px] rounded-lg">ذخیره مبدأ</button>
                   <button type="button" onClick={() => setOriginEditingProduct(null)} className="px-2 py-1.5 bg-slate-100 text-slate-600 font-bold text-[10px] rounded-lg">انصراف</button>
                 </div>
               ) : (
@@ -383,6 +452,12 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   {product.schemaVersion === 2 && <SupplierSKUSelect product={product} rows={stockVariants.rows} selectedId={stockVariantId}
                     label="تنوع برای اصلاح موجودی" loading={stockVariants.loading} error={stockVariants.error} retry={stockVariants.reload} disabled={saving}
                     onSelect={id => { setStockVariantId(id); const variant = stockVariants.rows.find(row => row.id === id); setEditedStock(variant ? String(variant.stock) : ''); }} />}
+                  {(supplierStockNeedsOrigin(product) || stockOriginBlockedId === product.id) && (
+                    <div className="w-full rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] leading-5 text-amber-800">
+                      <p>برای ویرایش موجودی، اول مبدأ ارسال این کالا را مشخص کن.</p>
+                      <button type="button" onClick={() => { setOriginEditingProduct(product); setOriginWarehouseId(product.originSupplierWarehouseId || ''); }} className="mt-1 font-bold text-brand-deep hover:underline">تعیین مبدأ ارسال</button>
+                    </div>
+                  )}
                   <input
                     aria-label="موجودی کل قابل فروش" type="text" inputMode="numeric"
                     value={editedStock}
@@ -404,10 +479,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                       }
                       if (!stockReason.trim()) { error('علت اصلاح موجودی را وارد کنید.'); return; }
 
+                      if (supplierStockNeedsOrigin(product)) { setStockOriginBlockedId(product.id); return; }
                       if (saving) return;
                       setSaving(true);
-                      try { await supplierApi.updateStock(product.id, newStock, stockReason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setEditedStock(''); setStockReason(''); await productsResource.reload(); }
-                      catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'ذخیره موجودی انجام نشد.'); }
+                      try { await supplierApi.updateStock(product.id, newStock, stockReason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setStockOriginBlockedId(null); setEditedStock(''); setStockReason(''); await productsResource.reload(); }
+                      catch (cause: unknown) { if (isStockOriginRequiredError(cause)) { setStockOriginBlockedId(product.id); } else { error(cause instanceof Error ? cause.message : 'ذخیره موجودی انجام نشد.'); } }
                       finally { setSaving(false); }
                     }}
                     className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-bold hover:bg-green-700"
@@ -418,6 +494,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     type="button"
                     onClick={() => {
                       setEditingStockProduct(null);
+                      setStockOriginBlockedId(null);
                       setEditedStock('');
                       setStockReason('');
                     }}
@@ -435,6 +512,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     type="button"
                     onClick={() => {
                       setEditingStockProduct(product);
+                      setStockOriginBlockedId(null);
                       setStockReason('');
                       setStockVariantId('');
                       setEditedStock(product.schemaVersion === 2 ? '' : effectiveStock.toString());

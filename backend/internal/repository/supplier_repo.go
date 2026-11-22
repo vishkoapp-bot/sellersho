@@ -5229,6 +5229,43 @@ func (r *SupplierRepository) UpdateProductOrigin(ctx context.Context, supplierID
 	return nil
 }
 
+// BulkAssignProductOrigin assigns warehouseID as the origin of the caller's
+// products that still have no origin and ship supplier-direct (G4). When
+// productIDs is non-nil, only those ids are assigned (and only if they
+// belong to the caller — the supplier_id predicate enforces that). It
+// reuses UpdateProductOrigin's ownership predicate: the warehouse must be
+// the supplier's own ACTIVE warehouse, otherwise sql.ErrNoRows is returned
+// and zero rows are touched. One UPDATE; idempotent — a re-run assigns 0.
+func (r *SupplierRepository) BulkAssignProductOrigin(ctx context.Context, supplierID, warehouseID string, productIDs []string) (int64, error) {
+	var ok bool
+	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM supplier_warehouses sw WHERE sw.id = $1 AND sw.supplier_id = $2 AND sw.is_active)`, warehouseID, supplierID).Scan(&ok); err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, sql.ErrNoRows
+	}
+	var res sql.Result
+	var err error
+	if productIDs != nil {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE products SET origin_supplier_warehouse_id = $1
+			WHERE supplier_id = $2 AND origin_supplier_warehouse_id IS NULL
+			  AND fulfillment_method = 'supplier_direct'
+			  AND id = ANY($3)`,
+			warehouseID, supplierID, pq.Array(productIDs))
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE products SET origin_supplier_warehouse_id = $1
+			WHERE supplier_id = $2 AND origin_supplier_warehouse_id IS NULL
+			  AND fulfillment_method = 'supplier_direct'`,
+			warehouseID, supplierID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // CentralWarehouse mirrors the platform warehouses table
 // (migration 202610240001), used by GET /supplier/warehouses/central.
 // TODO (U07): the live meaning of "central" on this route is unverified;

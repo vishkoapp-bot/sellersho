@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -574,7 +575,10 @@ func handleTeam05StoreDiscountCampaigns(w http.ResponseWriter, r *http.Request, 
 // handleTeam05StoreSubscribers serves the backend list for the
 // seller subscribers tab (MASTER-AUDIT D47, backend only).
 // Route: GET /stores/<slug>/subscribers, with an optional
-// ?status=active|unsubscribed filter.
+// ?status=active|unsubscribed filter and ?offset= paging.
+// The response is {subscribers, total, counts:{active, unsubscribed}}:
+// total/counts are store-wide regardless of ?status=; only the list
+// itself is filtered.
 // It reads the same newsletter_subscribers table Team 01 used for
 // the admin list, scoped to the seller's own store and ordered by
 // created_at DESC. The unsubscribe_token column is never returned:
@@ -596,7 +600,16 @@ func handleTeam05StoreSubscribers(w http.ResponseWriter, r *http.Request, repo *
 		return
 	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	subscribers, err := repo.ListStoreSubscribers(r.Context(), store.ID, status, t01Limit(r))
+	offset := 0
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset"))); err == nil && n > 0 {
+		offset = n
+	}
+	subscribers, err := repo.ListStoreSubscribers(r.Context(), store.ID, status, t01Limit(r), offset)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	total, active, unsubscribed, err := repo.CountStoreSubscribers(r.Context(), store.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -604,5 +617,5 @@ func handleTeam05StoreSubscribers(w http.ResponseWriter, r *http.Request, repo *
 	if subscribers == nil {
 		subscribers = []domain.StoreSubscriber{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"subscribers": subscribers})
+	json.NewEncoder(w).Encode(map[string]interface{}{"subscribers": subscribers, "total": total, "counts": map[string]interface{}{"active": active, "unsubscribed": unsubscribed}})
 }

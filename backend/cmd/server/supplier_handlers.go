@@ -687,6 +687,53 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// POST /api/v1/supplier/products/origin/bulk (G4, Batch 4b).
+// Assigns one of the caller's own ACTIVE warehouses as the origin of the
+// caller's NULL-origin supplier_direct products. Body:
+// {warehouseId, productIds?: [...]} — omitted productIds assigns ALL such
+// products; given ids assign only those (and only if they belong to the
+// caller). Returns {assigned, warehouseId}; idempotent (a re-run assigns
+// 0). A warehouse that is not the supplier's own active warehouse is
+// refused with 404 and zero rows touched — the stock gate itself is not
+// weakened and the profile city is never treated as an origin.
+func (h *SupplierHandlers) HandleBulkAssignProductOrigin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	var req struct {
+		WarehouseID string   `json:"warehouseId"`
+		ProductIDs  []string `json:"productIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	warehouseID := strings.TrimSpace(req.WarehouseID)
+	if warehouseID == "" {
+		http.Error(w, `{"error":"warehouseId is required"}`, http.StatusBadRequest)
+		return
+	}
+	assigned, err := h.supplierRepo.BulkAssignProductOrigin(r.Context(), supplierID, warehouseID, req.ProductIDs)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Supplier warehouse not found"}`, http.StatusNotFound)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"assigned":    assigned,
+		"warehouseId": warehouseID,
+	})
+}
+
 // 9. PUT /api/v1/supplier/products/:id/pricing
 // Gap 11: price DECREASES (and unchanged prices) take the direct path
 // exactly as before. An INCREASE is governed by the recorded policy

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminRole } from '../../context/storeContextTypes';
@@ -67,7 +67,17 @@ import { HistoricalReconciliationReviewTab } from './HistoricalReconciliationRev
 import { AdminSmsTab } from './AdminSmsTab';
 import { AdminSettlementSettingsTab } from './AdminSettlementSettingsTab';
 import { AdminStorageFeeSettingsTab } from './AdminStorageFeeSettingsTab';
-import { AdminPlaceholderTab, AdminSupportReturnsTab } from './AdminNewTabs';
+import {
+  AdminStoresListTab,
+  AdminHomepageTab,
+  AdminBannersTab,
+  AdminSiteContentTab,
+  AdminCallbackRetriesTab,
+  AdminNewsletterTab,
+  AdminReviewsTab,
+  AdminStaffTab,
+  AdminSupportReturnsTab,
+} from './AdminNewTabs';
 import { AdminAuditLogTab } from './AdminAuditLogTab';
 import { AdminOperationsTab } from './AdminOperationsTab';
 
@@ -225,6 +235,19 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
       const groupKey = group.heading ?? group.items[0].id;
       setExpandedGroups((prev) => (prev.has(groupKey) ? prev : new Set(prev).add(groupKey)));
     }
+  }, [activeTab]);
+
+  // D6 (Batch 4a): changing admin menu items resets the main scroll
+  // position. Instant (behavior 'auto', the default) so the new tab
+  // never visibly glides from the old position. Every entry point
+  // funnels through setActiveTab, so this one effect covers
+  // handleNavigate, overview shortcuts and the role-change default tab.
+  // Keyboard focus moves to <main> as well (tabIndex={-1} + focus with
+  // preventScroll so it cannot fight the reset).
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+    mainRef.current?.focus({ preventScroll: true });
   }, [activeTab]);
 
   // 1. SESSION GUARD: Block all /admin routes if no valid session token exists
@@ -406,7 +429,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
         </aside>
 
         {/* Main Content Area with Real Route Guard */}
-        <main className="flex-1 min-w-0">
+        <main ref={mainRef} tabIndex={-1} className="flex-1 min-w-0 outline-none">
           {!isAuthorizedForCurrentTab ? (
             <div className="bg-white rounded-3xl p-8 border border-rose-200 shadow-xs text-center max-w-lg mx-auto my-8 space-y-4">
               <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
@@ -444,17 +467,17 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'finance-adjustments' && <FinanceAdjustmentsTab />}
               {activeTab === 'support-disputes' && <SupportDisputesTab />}
               {activeTab === 'support-tickets' && <SupportTicketsTab />}
-              {activeTab === 'stores-list' && <AdminPlaceholderTab title="لیست فروشگاه‌ها" description="فهرست فروشگاه‌های پلتفرم؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
-              {activeTab === 'homepage' && <AdminPlaceholderTab title="صفحه اصلی" description="مدیریت بخش‌های صفحه اصلی؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
-              {activeTab === 'banners' && <AdminPlaceholderTab title="بنرها" description="مدیریت بنرهای صفحه اصلی؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
-              {activeTab === 'site-content' && <AdminPlaceholderTab title="محتوای سایت و صفحات" description="مدیریت محتوای سایت و صفحات ثابت؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
+              {activeTab === 'stores-list' && <AdminStoresListTab />}
+              {activeTab === 'homepage' && <AdminHomepageTab />}
+              {activeTab === 'banners' && <AdminBannersTab />}
+              {activeTab === 'site-content' && <AdminSiteContentTab />}
               {activeTab === 'finance-pending-payments' && <FinancePendingPaymentsTab />}
               {activeTab === 'operations' && <AdminOperationsTab />}
-              {activeTab === 'finance-callback-retries' && <AdminPlaceholderTab title="پرداخت‌های ناموفق" description="تلاش‌های مجدد بازگشت از درگاه؛ محتوای آن پس از ورود به حساب نمایش داده می‌شود." />}
-              {activeTab === 'newsletter' && <AdminPlaceholderTab title="مشترکان خبرنامه" description="فهرست مشترکان خبرنامه؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
-              {activeTab === 'reviews' && <AdminPlaceholderTab title="نظرات مشتریان" description="نظرات ثبت‌شده مشتریان؛ محتوای آن پس از ورود به حساب نمایش داده می‌شود." />}
+              {activeTab === 'finance-callback-retries' && <AdminCallbackRetriesTab />}
+              {activeTab === 'newsletter' && <AdminNewsletterTab />}
+              {activeTab === 'reviews' && <AdminReviewsTab />}
               {activeTab === 'support-returns' && <AdminSupportReturnsTab />}
-              {activeTab === 'staff' && <AdminPlaceholderTab title="کارکنان انبار" description="فهرست کارکنان انبار؛ محتوای آن پس از ورود به حساب سوپرادمین نمایش داده می‌شود." />}
+              {activeTab === 'staff' && <AdminStaffTab />}
               {activeTab === 'audit-logs' && <AdminAuditLogTab />}
             </div>
           )}

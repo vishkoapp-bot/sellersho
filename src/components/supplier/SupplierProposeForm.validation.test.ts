@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateProposeStep1, validateProposeStep3, isProposeMatrixStale, pickNicheForCategory } from './SupplierProposeForm';
+import { validateProposeStep1, validateProposeStep3, isProposeMatrixStale, pickNicheForCategory, parsePosInt, normalizeRestoredDraftNumerics } from './SupplierProposeForm';
 import type { NicheDto } from '../../services/catalogApi';
 import { buildProductMatrix } from '../../services/productModel';
 import type { ProductSchema } from '../../types/productSchema';
@@ -51,6 +51,70 @@ test('step 3: weight/dims all required; packaging must be all-or-none and positi
   assert.equal(validateProposeStep3({ ...valid, packLengthCm: '45' })[0].message, 'ابعاد بسته‌بندی را کامل وارد کنید: طول، عرض و ارتفاع (سانتی‌متر).');
   assert.equal(validateProposeStep3({ ...valid, packLengthCm: '45', packWidthCm: '35', packHeightCm: '0' })[0].message, 'ابعاد بسته‌بندی باید عددهای صحیح مثبت باشند (سانتی‌متر).');
   assert.deepEqual(validateProposeStep3({ ...valid, packLengthCm: '45', packWidthCm: '35', packHeightCm: '25' }), []);
+});
+
+test('step 3: formatted inputs pass — Persian digits, separators, unit suffixes (G5 half B)', () => {
+  const persian = { weightGrams: '۱٬۲۰۰', lengthCm: '۴۰', widthCm: '۳۰', heightCm: '۲۰', packLengthCm: '', packWidthCm: '', packHeightCm: '' };
+  assert.deepEqual(validateProposeStep3(persian), []);
+  const latinSep = { ...persian, weightGrams: '1,200', lengthCm: '40', widthCm: '30', heightCm: '20' };
+  assert.deepEqual(validateProposeStep3(latinSep), []);
+  const withUnit = { ...persian, weightGrams: '1200 گرم', lengthCm: '40', widthCm: '30', heightCm: '20' };
+  assert.deepEqual(validateProposeStep3(withUnit), []);
+  const packFormatted = { ...persian, packLengthCm: '۴۵', packWidthCm: '۳۵', packHeightCm: '۲۵' };
+  assert.deepEqual(validateProposeStep3(packFormatted), []);
+  // The guards still fire: empty, zero and non-numeric stay invalid.
+  assert.equal(validateProposeStep3({ ...persian, weightGrams: '' })[0].field, 'weightDims');
+  assert.equal(validateProposeStep3({ ...persian, weightGrams: '۰' })[0].field, 'weightDims');
+  assert.equal(validateProposeStep3({ ...persian, weightGrams: 'abc' })[0].field, 'weightDims');
+  assert.equal(validateProposeStep3({ ...packFormatted, packHeightCm: '۰' })[0].message, 'ابعاد بسته‌بندی باید عددهای صحیح مثبت باشند (سانتی‌متر).');
+});
+
+test('parsePosInt is the one shared helper: normalises digits, rejects empty/zero/non-numeric', () => {
+  assert.equal(parsePosInt('۱٬۲۰۰'), 1200);
+  assert.equal(parsePosInt('1,200'), 1200);
+  assert.equal(parsePosInt('1200 گرم'), 1200);
+  assert.equal(parsePosInt('1200'), 1200);
+  assert.equal(parsePosInt('۴۰'), 40);
+  assert.equal(parsePosInt(''), undefined);
+  assert.equal(parsePosInt('  '), undefined);
+  assert.equal(parsePosInt('۰'), undefined);
+  assert.equal(parsePosInt('0'), undefined);
+  assert.equal(parsePosInt('abc'), undefined);
+  assert.equal(parsePosInt('12.5'), undefined);
+  assert.equal(parsePosInt('-5'), undefined);
+});
+
+test('draft restore normalises formatted numerics and never mangles a non-numeric value to 0 (G5 half B)', () => {
+  const restored = normalizeRestoredDraftNumerics({
+    weightGrams: '۱٬۲۰۰',
+    lengthCm: '۴۰',
+    widthCm: '30',
+    heightCm: '20',
+    packLengthCm: '۴۵',
+    packWidthCm: '',
+    packHeightCm: '۲۵',
+    cost: '۱٬۵۰۰',
+    stock: 'abc',
+    prepDays: '',
+    title: 'ساعت هوشمند',
+  } as never);
+  assert.equal(restored.weightGrams, '1200');
+  assert.equal(restored.lengthCm, '40');
+  assert.equal(restored.widthCm, '30');
+  assert.equal(restored.heightCm, '20');
+  assert.equal(restored.packLengthCm, '45');
+  assert.equal(restored.packWidthCm, '');
+  assert.equal(restored.packHeightCm, '25');
+  assert.equal(restored.cost, '1500');
+  // A genuinely non-numeric legacy value falls back to '' (empty state),
+  // never to 0; unrelated fields pass through untouched.
+  assert.equal(restored.stock, '');
+  assert.equal(restored.prepDays, '');
+  assert.equal(restored.title, 'ساعت هوشمند');
+  assert.equal(normalizeRestoredDraftNumerics({ lengthCm: '1.5' } as never).lengthCm, '');
+  assert.equal(normalizeRestoredDraftNumerics({ lengthCm: '-5' } as never).lengthCm, '');
+  // Plain digits survive the round-trip unchanged (regression).
+  assert.equal(normalizeRestoredDraftNumerics({ weightGrams: '1200', lengthCm: '40' } as never).weightGrams, '1200');
 });
 
 test('matrix staleness: unchanged rows are current; a schema change without rebuild is stale', () => {

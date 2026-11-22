@@ -9,19 +9,42 @@ export interface CategorySelection {
 }
 
 
-export const SupplierCategoryPicker: React.FC<{ value: CategorySelection | null; onSelect: (cat: CategorySelection | null) => void; onCategoriesLoaded?: (categories: CategoryDto[]) => void }> = ({ value, onSelect, onCategoriesLoaded }) => {
+export const SupplierCategoryPicker: React.FC<{ value: CategorySelection | null; onSelect: (cat: CategorySelection | null) => void; onCategoriesLoaded?: (categories: CategoryDto[]) => void; reloadSignal?: number }> = ({ value, onSelect, onCategoriesLoaded, reloadSignal = 0 }) => {
   const [categories, setCategories] = useState<CategoryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    let active = true; setLoading(true); setError(false);
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    setLoading(true); setError(false);
     // onCategoriesLoaded shares the tree this picker already fetched with the propose form's
     // category suggester, so categories are never fetched twice. Optional: existing callers
     // are unaffected.
-    catalogApi.getCategories().then(data => { if (active) { setCategories(data); onCategoriesLoaded?.(data); } }).catch(() => { if (active) setError(true); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [retry]);
+    // G5 half A: self-healing — up to 2 auto-retries with a short backoff
+    // before settling into the error state. A healthy endpoint still issues
+    // exactly one GET /categories. The failure is logged (status/message)
+    // instead of swallowed, and the manual «تلاش مجدد» button stays the
+    // final fallback. reloadSignal lets the propose form re-attempt the
+    // fetch once when it first needs categories (title typed, tree empty).
+    const attempt = () => {
+      catalogApi.getCategories().then(data => {
+        if (active) { setCategories(data); onCategoriesLoaded?.(data); setLoading(false); }
+      }).catch((err: any) => {
+        if (!active) return;
+        console.error('[SupplierCategoryPicker] categories load failed', { status: err?.status, message: err?.message || String(err) });
+        if (attempts < 2) {
+          attempts += 1;
+          timer = setTimeout(attempt, 500 * attempts);
+        } else {
+          setError(true); setLoading(false);
+        }
+      });
+    };
+    attempt();
+    return () => { active = false; if (timer !== undefined) clearTimeout(timer); };
+  }, [retry, reloadSignal]);
   const selectedPath = value?.path ?? [];
   const levels: CategoryDto[][] = [];
   let parent: string | null = null;

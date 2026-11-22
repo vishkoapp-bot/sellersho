@@ -559,3 +559,91 @@ func TestTeam05PublicTemplateConfigSectionsBlueprintOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestTeam05SellerSubscribersTotalCounts (Batch 4b, C8): the subscribers
+// endpoint returns store-wide {total, counts} alongside the page, wires
+// ?offset= through, and never leaks unsubscribe_token. Seed: 2 active +
+// 1 unsubscribed, with distinct created_at so page order is deterministic.
+func TestTeam05SellerSubscribersTotalCounts(t *testing.T) {
+	db := team05TestDB(t)
+	repo := repository.NewStoreRepository(db)
+	owner := uuid.NewString()
+	slug := "t05-" + uuid.NewString()[:20]
+	storeID := team05TestStore(t, db, owner, slug, "active")
+	ctx := context.Background()
+	sub := func(id, mobile, status, created string) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO newsletter_subscribers (id, store_id, mobile, email, status, source, unsubscribe_token, created_at) VALUES ($1, $2, $3, $4, $5, 'footer', $6, $7)`, id, storeID, mobile, mobile+"@example.test", status, "tok-"+id, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sub("sub-c8-active-new", "09120000001", "active", "2026-01-03T00:00:00Z")
+	sub("sub-c8-active-old", "09120000002", "active", "2026-01-02T00:00:00Z")
+	sub("sub-c8-unsub", "09120000003", "unsubscribed", "2026-01-01T00:00:00Z")
+	type page struct {
+		Subscribers []domain.StoreSubscriber `json:"subscribers"`
+		Total       int                      `json:"total"`
+		Counts      struct {
+			Active       int `json:"active"`
+			Unsubscribed int `json:"unsubscribed"`
+		} `json:"counts"`
+	}
+	call := func(path string) page {
+		w := team05Call(t, func(w http.ResponseWriter, r *http.Request) {
+			handleTeam05StoreSubscribers(w, r, repo, slug)
+		}, http.MethodGet, path, "", owner)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "unsubscribe_token") || strings.Contains(w.Body.String(), "tok-sub-") {
+			t.Fatalf("GET %s leaks unsubscribe tokens: %s", path, w.Body.String())
+		}
+		var out page
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	mobiles := func(p page) []string {
+		out := []string{}
+		for _, s := range p.Subscribers {
+			out = append(out, s.Mobile)
+		}
+		return out
+	}
+	// Page 1: total 3, counts store-wide, all 3 rows, newest first.
+	p1 := call("/x?limit=20&offset=0")
+	if p1.Total != 3 || p1.Counts.Active != 2 || p1.Counts.Unsubscribed != 1 {
+		t.Fatalf("page 1 totals: total=%d counts=%+v, want total 3 {active 2, unsubscribed 1}", p1.Total, p1.Counts)
+	}
+	if got := mobiles(p1); len(got) != 3 || got[0] != "09120000001" || got[1] != "09120000002" || got[2] != "09120000003" {
+		t.Fatalf("page 1 rows: %v, want newest-first 09120000001/2/3", got)
+	}
+	// Page 2 (offset=20): same store-wide totals, different (empty) items —
+	// the offset must actually move the window, not re-serve page 1.
+	p2 := call("/x?limit=20&offset=20")
+	if p2.Total != 3 || p2.Counts.Active != 2 || p2.Counts.Unsubscribed != 1 {
+		t.Fatalf("page 2 totals: total=%d counts=%+v, want total 3 {active 2, unsubscribed 1}", p2.Total, p2.Counts)
+	}
+	if len(p2.Subscribers) != 0 {
+		t.Fatalf("page 2 items: %v, want none (offset past the 3 rows)", mobiles(p2))
+	}
+	// Small pages prove OFFSET moves the window: limit=2 offset=2 returns
+	// only the oldest row, disjoint from page 1's two rows.
+	pSmall1 := call("/x?limit=2&offset=0")
+	pSmall2 := call("/x?limit=2&offset=2")
+	if got := mobiles(pSmall2); len(got) != 1 || got[0] != "09120000003" {
+		t.Fatalf("limit=2 offset=2 rows: %v, want [09120000003]", got)
+	}
+	if got := mobiles(pSmall1); len(got) != 2 || got[0] != "09120000001" || got[1] != "09120000002" {
+		t.Fatalf("limit=2 offset=0 rows: %v, want [09120000001 09120000002]", got)
+	}
+	// Filtered list: ?status=active lists only the 2 active rows, but
+	// total/counts stay store-wide.
+	f := call("/x?status=active")
+	if f.Total != 3 || f.Counts.Active != 2 || f.Counts.Unsubscribed != 1 {
+		t.Fatalf("filtered totals: total=%d counts=%+v, want total 3 {active 2, unsubscribed 1}", f.Total, f.Counts)
+	}
+	if got := mobiles(f); len(got) != 2 || got[0] != "09120000001" || got[1] != "09120000002" {
+		t.Fatalf("filtered rows: %v, want the 2 active rows only", got)
+	}
+}

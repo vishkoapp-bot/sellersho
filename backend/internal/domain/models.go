@@ -122,6 +122,13 @@ type Store struct {
 	Tagline                   string          `json:"tagline"`
 	Description               string          `json:"description"`
 	ShortDescription          string          `json:"shortDescription"`
+	// G2 (Batch 4b): the complementary-section title. Storage home is
+	// the dedicated stores.addon_section_title column (read in
+	// loadPanelConfig's SELECT, written by SaveStoreSettings) — NOT
+	// panel_config: the PDP reads the column (GetPDPAddons), so a
+	// panel_config-only value would never render. The panel_config
+	// merge in SaveStoreSettings still carries a copy; the column wins.
+	AddonSectionTitle         string          `json:"addonSectionTitle,omitempty" db:"addon_section_title"`
 	ActiveProductIDs          []string        `json:"activeProductIds"`
 	SelectedNicheIDs          []string        `json:"selectedNicheIds"`
 	ActiveCategories          []string        `json:"activeCategories"`

@@ -403,7 +403,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           {/* Section 3.1: Single unified base price (R) */}
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
             <span className="text-slate-600 font-bold text-[11px]">قیمت پایه:</span>
-            <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{formatPrice(baseCostR)} تومان</span>
+            <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{baseUnknown ? 'اعلام نشده' : `${formatPrice(baseCostR)} تومان`}</span>
           </div>
 
           {variantCount > 0 && (

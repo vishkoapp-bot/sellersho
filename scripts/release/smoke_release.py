@@ -23,7 +23,7 @@ over real HTTP — and gates on /api/ready before any of them:
               one orders row; GET /api/v1/checkout-attempts/<key>
               recovers the order; changed payload + same key -> 409
   payment     the created order's payment_status/payment_method match
-              the manifest's declared payment mode (mock in smoke env);
+              the manifest's declared payment mode (real in smoke env);
               demo-gateway status reports testOnly:true
 
 A failed check fails the whole run (exit non-zero) and must block
@@ -470,8 +470,8 @@ class Smoke:
         self.check("payment: demo-gateway status reports testOnly:true",
                    code == 200 and demo.get("testOnly") is True
                    and demo.get("gateway") == "demo", f"HTTP {code}")
-        self.check("payment: manifest mode is mock in the smoke env",
-                   manifest.get("config", {}).get("payment", {}).get("mode") == "mock",
+        self.check("payment: manifest mode is real in the smoke env",
+                   manifest.get("config", {}).get("payment", {}).get("mode") == "real",
                    f"mode={manifest.get('config', {}).get('payment', {}).get('mode')}")
         return True
 

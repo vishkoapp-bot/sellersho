@@ -5,7 +5,7 @@ import { ProvinceCityPicker } from '../ProvinceCityPicker';
 import { SupplierSLACard } from './SupplierSLACard';
 
 import { useToast } from "../../context/ToastContext";import { authApi } from '../../services/authApi';
-import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Warehouse, Truck, User, Info, Plus, Pencil, CheckCircle2, Clock, XCircle, Send, FileText } from 'lucide-react';
+import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Warehouse, Truck, User, Info, Plus, Pencil, CheckCircle2, Clock, XCircle, Send, FileText, Loader2 } from 'lucide-react';
 
 // FIX 17: supplier tabs added to reach live's 17-tab structure.
 // Analytics / customer-returns / my-warehouses / shipping-methods /
@@ -19,7 +19,7 @@ export const SupplierPlaceholderTab: React.FC<{ title: string; description?: str
     <div className="bg-white rounded-2xl border border-slate-200 p-4">
       <h3 className="text-xs font-bold text-slate-800">{title}</h3>
       <p className="text-[11px] text-slate-500 mt-1">
-        {description || 'محتوای این بخش پس از ورود به حساب کاربری و دریافت داده از سرور نمایش داده می‌شود.'}
+        {description || 'این بخش هنوز پیاده‌سازی نشده است.'}
       </p>
     </div>
   </div>
@@ -612,6 +612,10 @@ export const SupplierTapinCard: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [testResult, setTestResult] = useState<TapinTestResult | null>(null);
+  // E6: passive freshness signal — the last manual test, not an auto-test.
+  const [lastTestedAt, setLastTestedAt] = useState<Date | null>(null);
+  const testAbortRef = useRef<AbortController | null>(null);
+  const testTimedOutRef = useRef(false);
 
   const load = () => {
     setLoading(true);
@@ -647,11 +651,22 @@ export const SupplierTapinCard: React.FC = () => {
     }
   };
 
+  // E6: testing is an explicit user action, bounded and cancellable.
+  // The button stays enabled while testing — clicking it again aborts
+  // the in-flight call. The 15 s client timer aborts the request itself
+  // (not just the spinner); the server-side Tapin client is already
+  // bounded (dial 1 s, header 3 s, total 6 s — backend/internal/tapin/
+  // client.go), so no backend change was needed.
   const test = async () => {
+    if (testing) { testAbortRef.current?.abort(); return; }
+    const controller = new AbortController();
+    testAbortRef.current = controller;
+    testTimedOutRef.current = false;
     setTesting(true);
     setTestResult(null);
+    const timer = setTimeout(() => { testTimedOutRef.current = true; controller.abort(); }, 15000);
     try {
-      const res = await supplierApi.testTapinConnection();
+      const res = await supplierApi.testTapinConnection(controller.signal);
       if (res.ok && res.serviceActive) {
         setTestResult({ kind: "active", message: res.message });
       } else if (res.ok) {
@@ -660,20 +675,23 @@ export const SupplierTapinCard: React.FC = () => {
         setTestResult({ kind: "invalid", message: res.message || res.error || "اتصال برقرار نیست." });
       }
     } catch (err: any) {
-      setTestResult({ kind: "error", message: err?.message || "برقراری ارتباط با تاپین ممکن نشد." });
+      if (testTimedOutRef.current) {
+        setTestResult({ kind: "error", message: "تست طول کشید، دوباره تلاش کن." });
+      } else if (controller.signal.aborted) {
+        setTestResult({ kind: "error", message: "تست لغو شد." });
+      } else {
+        setTestResult({ kind: "error", message: err?.message || "برقراری ارتباط با تاپین ممکن نشد." });
+      }
     } finally {
+      clearTimeout(timer);
+      testAbortRef.current = null;
       setTesting(false);
+      setLastTestedAt(new Date());
     }
   };
 
-  // The service state is part of the card, not a button's secret:
-  // once the saved connection has loaded, test it once automatically.
-  const autoTestedRef = useRef(false);
-  useEffect(() => {
-    if (loading || !connected || autoTestedRef.current) return;
-    autoTestedRef.current = true;
-    void test();
-  }, [loading, connected]);
+  // E6: no auto-test on mount — the connection status comes from the
+  // stored tapinConnected flag; testing is an explicit user action.
 
   const disconnect = async () => {
     setDisconnecting(true);
@@ -782,8 +800,13 @@ export const SupplierTapinCard: React.FC = () => {
             </button>
             {connected && (
               <>
-                <button type="button" disabled={testing} onClick={() => void test()} className="flex-1 rounded-xl border border-slate-200 py-2.5 min-h-[44px] text-xs font-bold text-slate-700 disabled:opacity-50">
-                  {testing ? "در حال تست…" : "تست اتصال"}
+                <button type="button" onClick={() => void test()} title={testing ? "برای لغو تست، دوباره بزن" : undefined} className="flex-1 rounded-xl border border-slate-200 py-2.5 min-h-[44px] text-xs font-bold text-slate-700">
+                  {testing ? (
+                    <span className="inline-flex items-center justify-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      در حال تست اتصال…
+                    </span>
+                  ) : "تست اتصال"}
                 </button>
                 <button type="button" disabled={disconnecting} onClick={() => void disconnect()} className="rounded-xl border border-rose-200 py-2.5 px-3 min-h-[44px] text-xs font-bold text-rose-600 disabled:opacity-50">
                   {disconnecting ? "…" : "قطع اتصال"}
@@ -791,6 +814,9 @@ export const SupplierTapinCard: React.FC = () => {
               </>
             )}
           </div>
+          {connected && lastTestedAt && (
+            <p className="text-[10px] text-slate-400">آخرین تست: {lastTestedAt.toLocaleString('fa-IR')}</p>
+          )}
           {connected && (
             <p className="flex items-start gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 font-bold text-amber-700">
               <Clock className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />

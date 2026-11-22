@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { supplierApi } from '../../services/supplierApi';
+import { supplierApi, isSupplierProductActive } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { Check, ChevronLeft, Flag } from 'lucide-react';
@@ -33,7 +33,7 @@ const GettingStarted: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ on
   useEffect(() => {
     let cancelled = false;
     supplierApi.getProposals().then((d) => { if (!cancelled) setProposalCount((d || []).length); }).catch(() => {});
-    supplierApi.getProducts().then((d) => { if (!cancelled) setProductCount((d || []).length); }).catch(() => {});
+    supplierApi.getProducts().then((d) => { if (!cancelled) setProductCount((d || []).filter(isSupplierProductActive).length); }).catch(() => {});
     supplierApi.getShippingMethods().then((d: any) => { if (!cancelled) setShippingReady(((d.methods || d) || []).some((m: any) => m.status === 'enabled' || m.status === 'requested')); }).catch(() => {});
     supplierApi.getInbounds().then((d) => { if (!cancelled) setShipmentCount((d || []).length); }).catch(() => {});
     return () => { cancelled = true; };
@@ -124,7 +124,7 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: (tab: string) => voi
       {!loading && !error && (<>
         <div className="grid grid-cols-2 gap-2">
           {[
-            ['کالاهای فعال', toPersianDigits((products.data || []).filter((x) => (x as any).isActive !== false).length)],
+            ['کالاهای فعال', toPersianDigits((products.data || []).filter(isSupplierProductActive).length)],
             ['فروش پرداخت‌شده (مبلغ پایه)', `${formatPrice(totalRevenue)} تومان`],
             ['واحد فروخته‌شده (پرداخت‌شده)', toPersianDigits(report.data?.items_sold || 0)],
             ['سفارش پرداخت‌شده', toPersianDigits(ordersCount)],

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto, SupplierProductVariantDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
@@ -316,11 +316,15 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               onClick={() => onStatusFilterChange(filter)}
               className={`rounded-full border px-3 py-1.5 min-h-[32px] text-[11px] font-bold ${statusFilter === filter ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
             >
-              {filter === 'all' ? 'همه' : STOCK_STATUS_LABEL[filter]} ({toPersianDigits(statusCounts[filter])})
+              {filter === 'all' ? 'همه' : STOCK_STATUS_LABEL[filter]} ({loading ? '—' : toPersianDigits(statusCounts[filter])})
             </button>
           ))}
         </div>
-        <p className="text-[10px] text-slate-400">نمایش {toPersianDigits(items.length)} از {toPersianDigits(totalCount)} کالا</p>
+        {loading ? (
+          <p className="text-[10px] text-slate-400">در حال دریافت…</p>
+        ) : (
+          <p className="text-[10px] text-slate-400">نمایش {toPersianDigits(items.length)} از {toPersianDigits(totalCount)} کالا</p>
+        )}
       </div>
       <SupplierResourceState loading={loading} error={error} retry={retry} />
       {returns.length > 0 && (
@@ -356,7 +360,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
           </p>
         </div>
       )}
-      {items.map(item => {
+      {!loading && items.map(item => {
         const itemLocations = grouped[item.id] || [];
         const sums = itemLocations.reduce<Record<string, number>>((result, location) => {
           result[location.status] = (result[location.status] || 0) + location.quantity;
@@ -561,6 +565,11 @@ export const SupplierInventoryTab: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [returns, setReturns] = useState<SupplierReturnRequestDto[]>([]);
   const [locations, setLocations] = useState<SupplierInventoryLocationDto[]>([]);
+  // E7: the locations fetch is a second, independent load — track it
+  // explicitly so the view never renders data-looking zeros while either
+  // fetch is still in flight.
+  const [locationsLoading, setLocationsLoading] = useState(true);
+  const [locationsError, setLocationsError] = useState('');
   const [returning, setReturning] = useState<SupplierProductDto | null>(null);
   const [returnQuantity, setReturnQuantity] = useState('');
   const [returnVariantId, setReturnVariantId] = useState('');
@@ -573,18 +582,32 @@ export const SupplierInventoryTab: React.FC = () => {
   const [shareData, setShareData] = useState<{ centralStockShare: number | null; centralUnits: number; supplierUnits: number } | null>(null);
   const [shareLoaded, setShareLoaded] = useState(false);
 
-  useEffect(() => {
+  // E7: one loader for the returns+locations pair, so retry re-triggers
+  // both fetches. Settlement (success or error) always clears the loading
+  // flag — a locations failure must surface as an error with retry, never
+  // as silent all-zero stock.
+  const loadLocations = useCallback(() => {
+    setLocationsLoading(true);
+    setLocationsError('');
     Promise.all([supplierApi.getReturns(), supplierApi.getInventoryLocations()]).then(([returnItems, inventory]) => {
       setReturns(returnItems);
       setLocations(inventory.inventory || []);
-    }).catch(() => undefined);
+    }).catch((err: any) => {
+      setLocationsError(err?.message || 'دریافت موجودی انبار انجام نشد.');
+    }).finally(() => {
+      setLocationsLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    loadLocations();
     supplierApi.getStockShare().then((data: any) => {
       setShareData(data);
       setShareLoaded(true);
     }).catch(() => {
       setShareLoaded(true);
     });
-  }, []);
+  }, [loadLocations]);
 
   // Variant pre-fill: opening "تغییر" on a variant row pre-selects the
   // variant, but its stock only arrives with the variant rows — fill the
@@ -672,6 +695,14 @@ const newUuid = (): string => {
     } finally { setReturnSaving(false); }
   };
 
+  // E7 retry semantics: exactly one products reload (resource.reload) and
+  // exactly one locations reload (loadLocations) per retry — the two
+  // loaders are independent, so neither double-fires.
+  const retryAll = () => {
+    void resource.reload();
+    loadLocations();
+  };
+
   const allProducts = resource.data || [];
   const variantLabels: Record<string, string[]> = {};
   if (editing && stockVariants.rows.length) variantLabels[editing.id] = stockVariants.rows.flatMap(row => [row.variant_name, row.spnc]);
@@ -690,9 +721,9 @@ const newUuid = (): string => {
       productsById={productsById}
       shareData={shareData}
       shareLoaded={shareLoaded}
-      loading={resource.loading}
-      error={resource.error}
-      retry={resource.reload}
+      loading={resource.loading || locationsLoading}
+      error={resource.error || locationsError}
+      retry={retryAll}
       query={query}
       onQueryChange={setQuery}
       statusFilter={statusFilter}

@@ -7,9 +7,75 @@ import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { resolvePricing, resolvePlatformPct, roundTo100 } from '../../utils/pricingEngine';
 import { storeApi } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
-import { catalogApi } from '../../services/catalogApi';
+import { catalogApi, type ProductDto } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { Search, Check, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 'lucide-react';
+
+// C5 (Batch 4b): cost-presence helpers. mapBackendProduct zeroes a
+// missing baseCostB (ProductContext: supplierBaseCost is 0 when
+// baseCostB is null), so post-mapping a missing cost is indistinguishable
+// from a genuine 0. Presence is therefore captured from the raw scoped
+// DTOs BEFORE mapping: the cost is missing iff for EVERY variant
+// v.supplierBaseCost == null AND the product baseCostB == null
+// (null/undefined only — NOT !cost, so a genuine 0 is a number and
+// still renders computed 0/0/0).
+export interface CatalogCostPresence {
+  product: boolean;
+  variants: Record<string, boolean>;
+}
+
+export function buildCatalogCostPresence(items: ProductDto[]): Record<string, CatalogCostPresence> {
+  const out: Record<string, CatalogCostPresence> = {};
+  for (const d of items || []) {
+    const variants: Record<string, boolean> = {};
+    for (const v of d.variants || []) variants[v.id] = v.supplierBaseCost != null;
+    out[d.id] = { product: d.baseCostB != null, variants };
+  }
+  return out;
+}
+
+// Effective cost of one variant row: the variant's own cost when the
+// scoped DTO carried it, else the product's cost when the DTO carried
+// that, else null (missing). No trailing `?? 0`: a missing cost must
+// surface as «قیمت تأمین‌کننده در دسترس نیست», never as 0.
+export function catalogVariantCost(
+  variant: { supplierBaseCost?: number | null },
+  productCost: number | null,
+  variantKnown: boolean,
+): number | null {
+  if (variantKnown && variant.supplierBaseCost != null) return variant.supplierBaseCost;
+  return productCost;
+}
+
+// Missing-only predicate for a row: the cost is missing iff NO cost is
+// known for it — neither the product's nor any variant's. A missing
+// presence entry (e.g. a row from the central fallback list, which by
+// design carries no baseCostB) counts as missing, never as 0.
+export function catalogRowCostMissing(
+  product: { variants?: Array<{ id: string; supplierBaseCost?: number | null }> },
+  presence?: CatalogCostPresence,
+): boolean {
+  if (!presence) return true;
+  if (presence.product) return false;
+  const variants = product.variants || [];
+  return !variants.some((v) => presence.variants[v.id]);
+}
+
+// Scoped-fetch outcome -> the tab-level error state. A rejected walk,
+// an incomplete walk, and a non-array resolve are all the same visible
+// failure state ('walk'); a walk the server answered without the
+// inactive carve-out is the re-login state ('inactive'). A COMPLETE
+// walk is a success even when the assortment is genuinely empty —
+// an empty + complete walk proceeds to setScopedProducts([]) and the
+// empty state (pre-Batch 4 behavior), never the retry error card.
+export function resolveScopedCatalogOutcome(
+  result: { items?: unknown; complete?: boolean; includeInactiveApplied?: boolean } | null | undefined,
+): 'ok' | 'walk' | 'inactive' {
+  if (!result || !Array.isArray(result.items)) return 'walk';
+  if (!result.complete) return 'walk';
+  if (result.includeInactiveApplied !== true) return 'inactive';
+  return 'ok';
+}
 
 // Live parity ("انتخاب کالا"): picking is a DRAFT. Tapping a product or a
 // niche only changes pending state; nothing is applied to the storefront
@@ -41,6 +107,10 @@ export const SellerCatalogTab: React.FC = () => {
   // baseCostB (= C); fetch it for this tab's rows, falling back to the
   // context list while it loads or on failure.
   const [scopedProducts, setScopedProducts] = useState<Product[] | null>(null);
+  // C5: cost presence captured from the raw scoped DTOs before mapping
+  // (see buildCatalogCostPresence) — keyed by product id, so a missing
+  // cost renders «قیمت تأمین‌کننده در دسترس نیست» instead of 0/0/0.
+  const [costPresence, setCostPresence] = useState<Record<string, CatalogCostPresence>>({});
   // M-1/M-2: the scoped walk can fail mid-way, or answer without the
   // inactive carve-out applied. scopedError records which: 'walk'
   // (incomplete walk) or 'inactive' (asked for inactive, server did
@@ -60,7 +130,7 @@ export const SellerCatalogTab: React.FC = () => {
     if (pricingProduct) return;
     const slugChanged = prevSlugRef.current !== storeSlug;
     prevSlugRef.current = storeSlug;
-    if (slugChanged) { setScopedProducts(null); setScopedError(null); }
+    if (slugChanged) { setScopedProducts(null); setScopedError(null); setCostPresence({}); }
     let cancelled = false;
     // PERF-01: the seller manages the WHOLE assortment here, so this
     // admin surface walks all pages (bounded requests, cursor-driven)
@@ -68,16 +138,17 @@ export const SellerCatalogTab: React.FC = () => {
     catalogApi.fetchAllProductPages({ storeSlug, includeInactive: true })
       .then(({ items, complete, includeInactiveApplied }) => {
         if (cancelled) return;
-        // M-1: an incomplete walk leaves the previous scoped list in
+        // C5: a non-array resolve is the same failure state as a
+        // rejected or incomplete walk (resolveScopedCatalogOutcome).
+        // An empty + complete walk is NOT an error — it is a genuinely
+        // empty assortment and proceeds to setScopedProducts([]).
+        // M-1/M-2: a failed walk leaves the previous scoped list in
         // place (or the error state below when there is none) — the
         // central catalogue is never shown as the store's assortment.
-        if (!complete) { setScopedError('walk'); return; }
-        // M-2: the walk asked for inactive products. If the server
-        // did not apply the carve-out (expired token / lost
-        // ownership), the filtered list is NOT the assortment: keep
-        // the previous list and show the re-login error instead.
-        if (includeInactiveApplied !== true) { setScopedError('inactive'); return; }
+        const outcome = resolveScopedCatalogOutcome({ items, complete, includeInactiveApplied });
+        if (outcome !== 'ok') { setScopedError(outcome); return; }
         setScopedError(null);
+        setCostPresence(buildCatalogCostPresence(items));
         setScopedProducts(items.map(mapBackendProduct));
       })
       .catch(() => { if (!cancelled) setScopedError('walk'); });
@@ -86,6 +157,11 @@ export const SellerCatalogTab: React.FC = () => {
   // M-1: while the walk has errored and no scoped list was ever
   // loaded, show an empty error state — never the central list.
   const displayProducts = scopedProducts ?? (scopedError ? [] : products);
+  // C5: while the scoped fetch is still pending, the tab is loading —
+  // the central list (which carries no baseCostB by design) must not
+  // flash as rows of 0/0/0. A previous scoped list stays visible on
+  // refetch; only the first load, with nothing yet, shows loading.
+  const scopedLoading = !!storeSlug && scopedProducts === null && !scopedError;
 
   const savedProductIds = currentStore.activeProductIds || [];
   const savedNicheIds = currentStore.selectedNicheIds || [];
@@ -204,16 +280,24 @@ export const SellerCatalogTab: React.FC = () => {
     let displayPctText = `${pricing.marginPercent.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪`;
     let fromPrefix = '';
     const rowVariants: Array<{ id: string; supplierBaseCost?: number }> = (product as any).variants || [];
+    // C5: the row's cost is missing iff no cost is known for it (see
+    // catalogRowCostMissing). The effective product cost is the mapped
+    // number ONLY when the scoped DTO carried baseCostB; otherwise it
+    // is null — never the mapper's 0.
+    const presence = costPresence[product.id];
+    const effProductCost: number | null = presence?.product ? product.supplierBaseCost : null;
+    const costMissing = catalogRowCostMissing(product, presence);
     if (rowVariants.length > 0) {
       const ovMap = variantPctByProduct[product.id] || {};
       const pctR = resolvePlatformPct(product, platformSettings);
       const rowsV = rowVariants.map((v) => {
-        const costV = v.supplierBaseCost ?? product.supplierBaseCost ?? 0;
+        const costV = catalogVariantCost(v, effProductCost, presence?.variants[v.id] ?? false);
+        if (costV == null) return null;
         const baseV = markedUpPrice(costV, pctR);
         const pct = ovMap[v.id] ?? pricing.marginPercent;
         const finV = markedUpPrice(baseV, pct);
         return { pct, finV, profitV: finV - baseV, baseV };
-      }).filter((r) => r.baseV > 0);
+      }).filter((r): r is { pct: number; finV: number; profitV: number; baseV: number } => r !== null && r.baseV > 0);
       if (rowsV.length > 0) {
         const pcts = rowsV.map((r) => r.pct);
         const fins = rowsV.map((r) => r.finV);
@@ -250,6 +334,11 @@ export const SellerCatalogTab: React.FC = () => {
             <h4 className="text-xs font-bold text-slate-800 truncate mb-1">
               {product.title}
             </h4>
+            {costMissing ? (
+              <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                <span>قیمت تأمین‌کننده در دسترس نیست</span>
+              </div>
+            ) : (
             <div className="flex items-center gap-2 text-[10px] text-slate-500">
               <span>خرید: <strong className="text-slate-800">{formatPrice(baseCostR)}</strong></span>
               <span>•</span>
@@ -260,6 +349,7 @@ export const SellerCatalogTab: React.FC = () => {
                 <span className="text-emerald-700"> ({displayPctText})</span>
               </span>
             </div>
+            )}
             {(() => {
               // P2(a)/P2(c) summary only (no controls here): the scoped
               // list omits hidden variants, the central list carries all
@@ -365,13 +455,13 @@ export const SellerCatalogTab: React.FC = () => {
 
       {scopedError && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-[11px] leading-6 text-amber-800 space-y-2">
-          <p className="font-bold">فهرست کالاهای فروشگاه کامل بارگذاری نشد.</p>
+          <p className="font-bold">{scopedError === 'inactive' ? 'فهرست کالاهای فروشگاه کامل بارگذاری نشد.' : 'دریافت قیمت‌های تأمین‌کننده ناموفق بود — تلاش مجدد'}</p>
           <p>{scopedError === 'inactive'
             ? 'دسترسی مدیریتی به کالاهای غیرفعال برقرار نشد — ممکن است نشست شما منقضی شده باشد. دوباره وارد شوید؛ تا آن زمان فهرست قبلی (یا هیچ کالایی) نمایش داده می‌شود، نه فهرست مرکزی.'
             : scopedProducts
               ? 'فهرست قبلی نمایش داده شده است؛ ممکن است تازه‌ترین تغییرات در آن نباشد.'
               : 'کالاها نمایش داده نمی‌شوند تا فهرست فروشگاه دوباره خوانده شود.'}</p>
-          <button type="button" onClick={() => { setScopedError(null); setWalkRetry((n) => n + 1); }} className="font-bold underline">تلاش دوباره</button>
+          <button type="button" onClick={() => { setScopedError(null); setWalkRetry((n) => n + 1); }} className="font-bold underline">تلاش مجدد</button>
         </div>
       )}
 
@@ -427,6 +517,13 @@ export const SellerCatalogTab: React.FC = () => {
         </div>
       </div>
 
+      {scopedLoading ? (
+        <div className="bg-white rounded-2xl p-8 text-center space-y-2">
+          <p className="text-xs font-bold text-slate-700">در حال دریافت قیمت‌های تأمین‌کننده…</p>
+          <p className="text-[11px] text-slate-500 leading-5">فهرست کالاهای فروشگاهت با قیمت‌های تأمین‌کننده در حال خوانده‌شدن است.</p>
+        </div>
+      ) : (
+        <>
       {/* 2. Products of Selected Niches */}
       <div className="space-y-2">
         <div className="flex items-center justify-between px-1 text-[11px]">
@@ -505,6 +602,8 @@ export const SellerCatalogTab: React.FC = () => {
           </div>
         )}
       </div>
+        </>
+      )}
 
       {/* Live's fixed bottom confirm bar, only while the draft differs. */}
       {hasChanges && (

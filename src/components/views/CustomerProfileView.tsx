@@ -1,8 +1,40 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { isMockMode } from '../../services/apiClient';
-import { ArrowRight, User, Package, Heart, ShieldCheck, LogOut, ChevronLeft, Wallet } from 'lucide-react';
+import { ArrowRight, User, Package, Heart, ShieldCheck, LogOut, ChevronLeft, Wallet, RotateCcw } from 'lucide-react';
+import { orderApi, CustomerReturnDto } from '../../services/orderApi';
+import { toPersianDigits } from '../../utils/formatters';
+
+// F1: «مرجوعی‌های من» menu row — same pattern as the Orders row. The
+// count comes from orderApi.getMyReturns() (one extra GET /returns on
+// profile open); null = still loading. The window note is part of the row
+// so it never implies returns are possible outside the 7-day window.
+export const CustomerReturnsMenuRow: React.FC<{
+  returnsCount: number | null;
+  onOpen: () => void;
+}> = ({ returnsCount, onOpen }) => (
+  <button
+    onClick={onOpen}
+    className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
+  >
+    <div className="flex items-center gap-2.5">
+      <RotateCcw className="w-4 h-4 text-amber-600" strokeWidth={1.5}/>
+      <div>
+        <span className="font-bold text-slate-800 block">مرجوعی‌های من</span>
+        <span className="text-[10px] text-slate-400 block">
+          {returnsCount === null
+            ? 'در حال دریافت…'
+            : returnsCount === 0
+              ? 'هنوز مرجوعی‌ای ثبت نکرده‌اید'
+              : `${toPersianDigits(returnsCount)} مرجوعی ثبت شده`}
+        </span>
+        <span className="text-[10px] text-slate-400 block">۷ روز مهلت تست و عودت کالا پس از تحویل</span>
+      </div>
+    </div>
+    <ChevronLeft className="w-4 h-4 text-slate-400" strokeWidth={1.5}/>
+  </button>
+);
 
 export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const { 
@@ -19,6 +51,32 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
 
   // OrderContext contains only this authenticated account's backend-owned list.
   const myOrders = orders;
+
+  // F1: one extra GET /returns on profile open for the returns count.
+  // (CustomerOrdersView fetches the same list again on mount — the store
+  // context does not hold it, so sharing would need a lift; the spec
+  // allows the single extra fetch.)
+  const [myReturns, setMyReturns] = useState<CustomerReturnDto[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    orderApi.getMyReturns()
+      .then((list) => { if (active) setMyReturns(list); })
+      .catch(() => { if (active) setMyReturns([]); });
+    return () => { active = false; };
+  }, []);
+
+  // F1 destination: the existing «مرجوعی‌های من» section inside the
+  // Orders view — zero new backend, reuses the tested flow. Scroll to the
+  // section once the view has mounted.
+  const goToReturns = () => {
+    setActiveView('customer_orders');
+    setTimeout(() => {
+      if (typeof document === 'undefined') return;
+      const heading = Array.from(document.querySelectorAll('h2'))
+        .find((h) => h.textContent?.includes('مرجوعی‌های من'));
+      heading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 250);
+  };
 
   return (
     <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20">
@@ -96,6 +154,11 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
             </div>
             <ChevronLeft className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/>
           </button>
+
+          <CustomerReturnsMenuRow
+            returnsCount={myReturns === null ? null : myReturns.length}
+            onOpen={goToReturns}
+          />
 
           <button
             onClick={() => setActiveView('customer_wishlist')}

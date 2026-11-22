@@ -34,12 +34,53 @@ interface SubscribersPage {
 
 const PAGE_SIZE = 20;
 
+// C8 (Batch 4b): derive the header totals from the page actually
+// received when the server omits total/counts — mirroring the
+// bare-array branch exactly (active = status 'active', unsubscribed
+// = the rest). Server values win whenever they are present. A full
+// page with no server total is a LOWER BOUND on the total, never the
+// total: totalIsMinimum flags the honest «حداقل» wording.
+export interface DerivedSubscribersPage {
+  items: LiveSubscriber[];
+  total: number;
+  counts: { active: number; unsubscribed: number };
+  totalIsMinimum: boolean;
+}
+
+export function deriveSubscribersPage(data: LiveSubscriber[] | SubscribersPage): DerivedSubscribersPage {
+  if (Array.isArray(data)) {
+    return {
+      items: data,
+      total: data.length,
+      counts: {
+        active: data.filter((s) => s.status === 'active').length,
+        unsubscribed: data.filter((s) => s.status !== 'active').length,
+      },
+      totalIsMinimum: false,
+    };
+  }
+  const items = data.items || data.subscribers || [];
+  const counts = data.counts
+    ? { active: data.counts.active ?? 0, unsubscribed: data.counts.unsubscribed ?? 0 }
+    : {
+        active: items.filter((s) => s.status === 'active').length,
+        unsubscribed: items.filter((s) => s.status !== 'active').length,
+      };
+  return {
+    items,
+    total: data.total ?? items.length,
+    counts,
+    totalIsMinimum: data.total == null && items.length === PAGE_SIZE,
+  };
+}
+
 export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> = ({ onOpenStorefront }) => {
   const { currentStore, toPersianDigits } = useStore();
   const { success, error } = useToast();
   const [subscribers, setSubscribers] = useState<LiveSubscriber[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<{ active?: number; unsubscribed?: number } | null>(null);
+  const [totalIsMinimum, setTotalIsMinimum] = useState(false);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -59,20 +100,17 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
         `/stores/${encodeURIComponent(slug)}/subscribers?limit=${PAGE_SIZE}&offset=${pageIndex * PAGE_SIZE}`,
         { method: 'GET', auth: true },
       );
+      const derived = deriveSubscribersPage(data);
       if (Array.isArray(data)) {
         setAllItems(data);
         setSubscribers(data.slice(pageIndex * PAGE_SIZE, (pageIndex + 1) * PAGE_SIZE));
-        setTotal(data.length);
-        setCounts({
-          active: data.filter((s) => s.status === 'active').length,
-          unsubscribed: data.filter((s) => s.status !== 'active').length,
-        });
       } else {
         setAllItems(null);
-        setSubscribers(data.items || data.subscribers || []);
-        setTotal(data.total || 0);
-        if (data.counts) setCounts(data.counts);
+        setSubscribers(derived.items);
       }
+      setTotal(derived.total);
+      setCounts(derived.counts);
+      setTotalIsMinimum(derived.totalIsMinimum);
       setFailed(false);
     } catch {
       setFailed(true);
@@ -164,14 +202,14 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
           <button
             type="button"
             onClick={handleExport}
-            disabled={exporting || total === 0}
+            disabled={exporting || subscribers.length === 0}
             className="flex items-center gap-1.5 px-3 py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-[11px] font-bold disabled:opacity-50 shrink-0"
           >
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
             <span>دانلود فهرست</span>
           </button>
         </div>
-        <div className="flex items-center gap-2 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
             {counts ? toPersianDigits(counts.active ?? 0) : '…'} مشترک فعال
           </span>
@@ -180,7 +218,7 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
               {toPersianDigits(counts.unsubscribed ?? 0)} لغو عضویت‌کرده
             </span>
           )}
-          <span className="text-slate-400">در مجموع {toPersianDigits(total)} شماره</span>
+          <span className="text-slate-400 min-w-0">{totalIsMinimum ? `در مجموع حداقل ${toPersianDigits(total)} شماره` : `در مجموع ${toPersianDigits(total)} شماره`}</span>
         </div>
       </div>
 

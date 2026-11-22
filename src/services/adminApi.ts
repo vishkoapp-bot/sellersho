@@ -86,6 +86,73 @@ export interface AdminPriceIncreaseDto {
 
 export interface TapinBoxAdminDto { id: string; title: string; lengthCm: number; widthCm: number; heightCm: number; maxWeightGrams?: number | null; isActive: boolean; sort: number }
 
+// D1 (Batch 4a): read-only list DTOs. Field names match the backend
+// envelopes (camelCase, except reviews: the generic list handler returns
+// raw product_reviews columns, snake_case, via t01ListRows).
+export interface HomepageSectionDto {
+  id: string;
+  sectionType: string;
+  title?: string | null;
+  config?: Record<string, any> | null;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export interface AdminBannerDto {
+  id: string;
+  title: string;
+  subtitle?: string;
+  imageUrl: string;
+  linkUrl?: string;
+  position: string;
+  sortOrder: number;
+  isActive: boolean;
+  startsAt?: string | null;
+  endsAt?: string | null;
+}
+
+export interface NewsletterSubscriberDto {
+  id: string;
+  storeId: string;
+  mobile: string;
+  email?: string;
+  status: string;
+  source?: string;
+  createdAt: string;
+  unsubscribedAt?: string | null;
+}
+
+export type AdminReviewRow = Record<string, any>;
+
+export interface AdminStaffDto {
+  id: string;
+  mobile: string;
+  fullName: string;
+  role: string;
+  username?: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface CallbackRetryDto {
+  id: string;
+  pspReference: string;
+  orderId?: string;
+  orderNumber?: string;
+  attemptCount: number;
+  maxAttempts: number;
+  status: string;
+  lastError?: string;
+  nextRetryAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string | null;
+  eventStatus?: string;
+  eventError?: string;
+  eventRetryCount?: number;
+  eventReceivedAt?: string | null;
+}
+
 export const adminApi = {
   getApprovals: async (status?: string): Promise<PendingApprovalDto[]> => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -197,6 +264,45 @@ export const adminApi = {
   getAdminReturns: async (): Promise<any[]> => {
     const data = await apiRequest<any>('/admin/returns', { method: 'GET', auth: true });
     return Array.isArray(data) ? data : (data?.returns ?? data?.data ?? []);
+  },
+
+  // D1 (Batch 4a): read-only v1 lists for the eight former stub tabs.
+  // One method per endpoint, same { method: 'GET', auth: true } shape
+  // as getAdminReturns; each normalises its envelope to a plain array
+  // (or, for site-content, to the content map).
+  getAdminHomepageSections: async (): Promise<HomepageSectionDto[]> => {
+    const data = await apiRequest<any>('/admin/homepage-sections', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.sections ?? []);
+  },
+
+  getAdminBanners: async (): Promise<AdminBannerDto[]> => {
+    const data = await apiRequest<any>('/admin/banners', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.banners ?? []);
+  },
+
+  getAdminSiteContent: async (): Promise<Record<string, any>> => {
+    const data = await apiRequest<any>('/admin/site-content', { method: 'GET', auth: true });
+    return data?.content ?? {};
+  },
+
+  getAdminNewsletterSubscribers: async (): Promise<NewsletterSubscriberDto[]> => {
+    const data = await apiRequest<any>('/admin/newsletter/subscribers', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.subscribers ?? []);
+  },
+
+  getAdminReviews: async (): Promise<AdminReviewRow[]> => {
+    const data = await apiRequest<any>('/admin/reviews', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.reviews ?? []);
+  },
+
+  getAdminStaff: async (): Promise<AdminStaffDto[]> => {
+    const data = await apiRequest<any>('/admin/staff', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.staff ?? []);
+  },
+
+  getAdminCallbackRetries: async (): Promise<CallbackRetryDto[]> => {
+    const data = await apiRequest<any>('/admin/callback-retries', { method: 'GET', auth: true });
+    return Array.isArray(data) ? data : (data?.retries ?? []);
   },
 
   saveSettlementSettings: async (payload: SettlementSettingsPayload): Promise<SettlementSettingsDto> => {

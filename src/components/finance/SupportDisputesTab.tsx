@@ -8,7 +8,7 @@ import { ShieldAlert, CheckCircle2, RotateCcw, Truck, Warehouse, Check, UserX, A
 export const SupportDisputesTab: React.FC = () => {
   const { disputes, resolveDisputeAndAdjust, adjustmentRecords, formatPrice, toPersianDigits } = useStore();
   const { success, warning, error } = useToast();
-  const [filterType, setFilterType] = useState<'all' | 'delivery_undelivered' | 'return_7day'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'delivery_undelivered' | 'return_7day' | 'resolved'>('all');
   const [serverDisputes, setServerDisputes] = useState<DisputeDto[]>([]);
 
   const [loadError, setLoadError] = useState(false);
@@ -53,8 +53,13 @@ export const SupportDisputesTab: React.FC = () => {
 
   const filteredDisputes = activeDisputesList.filter((d) => {
     if (filterType === 'all') return true;
+    if (filterType === 'resolved') return d.status === 'resolved';
     return d.type === filterType;
   });
+  // D7: "open" is any status that is not resolved (future-proof if a third
+  // status ever appears); the resolved count is shown alongside, never hidden.
+  const openDisputesCount = activeDisputesList.filter((d) => d.status !== 'resolved').length;
+  const resolvedDisputesCount = activeDisputesList.filter((d) => d.status === 'resolved').length;
 
   const handleResolveAction = async (
     disputeId: string,
@@ -92,7 +97,7 @@ export const SupportDisputesTab: React.FC = () => {
             <h3 className="text-xs font-bold text-slate-800">مرکز یکپارچه داوری اختلافات و دعاوی (عدم تحویل / مرجوعی)</h3>
           </div>
           <span className="text-[10px] bg-rose-50 text-rose-700 font-bold px-2 py-0.5 rounded-full border border-rose-200">
-            {toPersianDigits(activeDisputesList.filter((d) => d.status === 'pending').length)} پرونده در جریان
+            {toPersianDigits(openDisputesCount)} پرونده در انتظار رسیدگی · {toPersianDigits(resolvedDisputesCount)} پرونده مختومه
           </span>
         </div>
         <p className="text-[10px] text-slate-500 leading-relaxed">
@@ -121,6 +126,13 @@ export const SupportDisputesTab: React.FC = () => {
             className={`flex-1 py-1 rounded-lg transition-all ${filterType === 'return_7day' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600'}`}
           >
             مرجوعی ۷ روزه ({toPersianDigits(activeDisputesList.filter((d) => d.type === 'return_7day').length)})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilterType('resolved')}
+            className={`flex-1 py-1 rounded-lg transition-all ${filterType === 'resolved' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600'}`}
+          >
+            مختومه ({toPersianDigits(resolvedDisputesCount)})
           </button>
         </div>
       </div>

@@ -20,7 +20,7 @@ test('FIN005 live empty/error states, authoritative outcomes, double-click and l
  else if(req.url?.startsWith('/assets/')){try{res.end(await readFile('dist'+req.url));}catch{res.statusCode=404;res.end();}}
  else{res.setHeader('Content-Type','text/html');res.end('<style>'+css+'</style><div id="notice"></div><div id="root"></div><script>'+bundle.outputFiles[0].text+'</script>');}});
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const address=server.address();assert.ok(address&&typeof address==='object');
- const browser=await puppeteer.launch({headless:true,...(process.platform==='win32'?{channel:'chrome' as const}:{})}).catch(async e=>{await new Promise<void>(r=>server.close(()=>r()));throw e;});
+ const browser=await puppeteer.launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox'],...(process.platform==='win32'?{channel:'chrome' as const}:{})}).catch(async e=>{await new Promise<void>(r=>server.close(()=>r()));throw e;});
  try{const page=await browser.newPage();await page.goto(`http://127.0.0.1:${address.port}`);await page.waitForNetworkIdle();let text=await page.$eval('#root',e=>e.textContent||'');assert.ok(!text.includes('MOCK-CLAIM'));assert.ok(!text.includes('MOCK-ADJUSTMENT'));assert.match(text,/0 پرونده/);
  fail=true;await page.reload();await page.waitForNetworkIdle();text=await page.$eval('#root',e=>e.textContent||'');assert.match(text,/تلاش مجدد/);assert.ok(!text.includes('MOCK-CLAIM'));
  fail=false;
@@ -32,4 +32,38 @@ test('FIN005 live empty/error states, authoritative outcomes, double-click and l
  await mkdir('.superpowers/sdd/2026-11-16-dispute-eligibility/screens',{recursive:true});
  for(const width of [390,1440]){await page.setViewport({width,height:900});await page.screenshot({path:'.superpowers/sdd/2026-11-16-dispute-eligibility/screens/disputes-'+width+'.png',fullPage:true});}
  }finally{unblock();await browser.close();await new Promise<void>(r=>server.close(()=>r()));}
+});
+
+test('D7 header counts open vs resolved and the مختومه tab filters by status',{timeout:90000},async()=>{
+ const bundle=await build({write:false,bundle:true,platform:'browser',format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"','import.meta.env':'{}'},plugins:[{name:'fixtures',setup(b){
+ b.onResolve({filter:/(?:^|\/)StoreContext$/},()=>({path:'store',namespace:'fixture'}));b.onResolve({filter:/(?:^|\/)ToastContext$/},()=>({path:'toast',namespace:'fixture'}));
+ b.onLoad({filter:/.*/,namespace:'fixture'},a=>({loader:'js',contents:a.path==='store'?`export const useStore=()=>({disputes:[],adjustmentRecords:[],formatPrice:String,toPersianDigits:String,resolveDisputeAndAdjust:()=>{}});`:`export const useToast=()=>({success:()=>{},warning:()=>{},error:()=>{}});`}));
+ }}],stdin:{loader:'tsx',resolveDir:process.cwd(),contents:`import React from'react';import{createRoot}from'react-dom/client';import{SupportDisputesTab}from'./src/components/finance/SupportDisputesTab';createRoot(document.getElementById('root')).render(<SupportDisputesTab/>);`}});
+ const pending={id:'d-open',orderNumber:'ORDER-1',type:'delivery_undelivered',customerName:'مشتری',productTitle:'کالای باز',claimAmount:100000,reason:'نرسیده',storeId:'store',status:'pending'};
+ const resolved={id:'d-closed',orderNumber:'ORDER-2',type:'return_7day',customerName:'مشتری',productTitle:'کالای مختومه',claimAmount:200000,reason:'مرجوعی',storeId:'store',status:'resolved'};
+ let list:any[]=[pending,resolved];
+ const server=createServer(async(req,res)=>{
+ if(req.url==='/api/v1/disputes'){res.setHeader('Content-Type','application/json');res.statusCode=200;res.end(JSON.stringify(list));}
+ else{res.setHeader('Content-Type','text/html');res.end('<div id="root"></div><script>'+bundle.outputFiles[0].text+'</script>');}});
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const address=server.address();assert.ok(address&&typeof address==='object');
+ const browser=await puppeteer.launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox']});
+ try{const page=await browser.newPage();await page.goto(`http://127.0.0.1:${address.port}`);await page.waitForNetworkIdle();
+ let text=await page.$eval('#root',e=>e.textContent||'');
+ // Header counts open as status !== 'resolved' and shows resolved alongside.
+ assert.match(text,/1 پرونده در انتظار رسیدگی/);assert.match(text,/1 پرونده مختومه/);
+ assert.match(text,/همه پرونده‌ها \(2\)/);assert.match(text,/مختومه \(1\)/);
+ assert.match(text,/کالای باز/);assert.match(text,/کالای مختومه/);
+ // The مختومه tab filters by d.status, not by d.type — exactly the resolved case.
+ await page.evaluate(()=>{[...document.querySelectorAll('button')].find(b=>b.textContent?.includes('مختومه'))!.click();});
+ await page.waitForFunction(()=>!(document.getElementById('root')?.textContent?.includes('کالای باز')));
+ text=await page.$eval('#root',e=>e.textContent||'');assert.match(text,/کالای مختومه/);assert.doesNotMatch(text,/کالای باز/);
+ // همه stays the default all-status tab.
+ await page.evaluate(()=>{[...document.querySelectorAll('button')].find(b=>b.textContent?.includes('همه پرونده‌ها'))!.click();});
+ await page.waitForFunction(()=>document.getElementById('root')?.textContent?.includes('کالای باز'));
+ text=await page.$eval('#root',e=>e.textContent||'');assert.match(text,/کالای باز/);assert.match(text,/کالای مختومه/);
+ // Resolved-only list: 0 open, 1 resolved — the original D7 report shape.
+ list=[resolved];await page.reload();await page.waitForNetworkIdle();
+ text=await page.$eval('#root',e=>e.textContent||'');
+ assert.match(text,/0 پرونده در انتظار رسیدگی/);assert.match(text,/1 پرونده مختومه/);assert.match(text,/همه پرونده‌ها \(1\)/);
+ }finally{await browser.close();await new Promise<void>(r=>server.close(()=>r()));}
 });

@@ -1673,6 +1673,12 @@ func run(signalCtx context.Context) (result error) {
 		writeMethodNotAllowed(w)
 	}))
 
+	// G4 (Batch 4b): bulk origin assign. Exact pattern, more specific than
+	// the "/api/v1/supplier/products/" subtree below, so the mux routes it
+	// here and never into the suffix dispatcher (which would 404 "origin/bulk").
+	mux.HandleFunc("/api/v1/supplier/products/origin/bulk", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
+		supplierHandlers.HandleBulkAssignProductOrigin(w, r)
+	}))
 	mux.HandleFunc("/api/v1/supplier/products/", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/supplier/products/")
 		if strings.HasSuffix(sub, "/supply-option") && r.Method == http.MethodPut {
@@ -2425,6 +2431,8 @@ func run(signalCtx context.Context) (result error) {
 		http.NotFound(w, r)
 	}))
 	mux.HandleFunc("/api/v1/admin/newsletter/subscribers", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminNewsletterSubscribers(w, r, db.DB) }))
+	// D1 (Batch 4a): read-only list of failed PSP callback retries.
+	mux.HandleFunc("/api/v1/admin/callback-retries", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminCallbackRetries(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/addons", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT01AdminGenericList(w, r, db.DB, "product_addons", "addons", "")
 	}))

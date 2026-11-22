@@ -149,6 +149,11 @@ fi
 
 rollback() {
   echo "ROLLBACK: restoring $BACKUP-dist" >&2
+  # The deployed record is written before the swap/health check, so a
+  # failed deploy must not leave a file claiming the release is
+  # deployed (attempt 3 left /opt/drup/.deployed-release.json claiming
+  # 755011b4 after rollback). Remove it on every rollback path.
+  rm -f "$ROOT/.deployed-release.json"
   cp -rp --no-preserve=ownership "$BACKUP-dist/." "$ROOT/dist/"
   (cd "$BACKUP-dist" && find . -type f | sort > /tmp/rel01-rollback-keep.txt)
   (cd "$ROOT/dist" && find . -type f | sort > /tmp/rel01-rollback-live.txt)
@@ -185,8 +190,24 @@ else
   if ! curl -sf --max-time 10 "http://127.0.0.1:8080/api/ready" >/dev/null; then
     echo "FAIL: /api/ready did not answer after frontend swap" >&2; rollback; exit 1
   fi
-  if ! curl -sf --max-time 10 "http://127.0.0.1:8080/" -o /dev/null; then
-    echo "FAIL: site root did not answer after frontend swap" >&2; rollback; exit 1
+  # Site-root check: the SPA is served by the frontend container's
+  # nginx on its internal port 80 (root /usr/share/nginx/html, the
+  # /opt/drup/dist bind mount). Port 80 is NOT published on the host,
+  # so reach it via docker exec. Do NOT point this at 127.0.0.1:8080
+  # (backend — 404s / by design) or 127.0.0.1:8081 (frontend
+  # stub_status server — location / returns 404 by design; only
+  # /status answers 200). Bounded retry: a single attempt is brittle
+  # even on the right target.
+  SITE_ROOT_OK=0
+  for attempt in 1 2 3; do
+    if docker exec drup_frontend curl -sf --max-time 10 "http://127.0.0.1:80/" -o /dev/null; then
+      SITE_ROOT_OK=1
+      break
+    fi
+    [ "$attempt" -lt 3 ] && sleep 2
+  done
+  if [ "$SITE_ROOT_OK" -eq 0 ]; then
+    echo "FAIL: site root (frontend container http://127.0.0.1:80/) did not answer after frontend swap" >&2; rollback; exit 1
   fi
   echo "health: /api/ready + site root OK"
 fi

@@ -38,6 +38,27 @@ func team04TestDB(t *testing.T) *sql.DB {
 
 func team04Seed(t *testing.T, db *sql.DB) {
 	t.Helper()
+
+	// Retain any migrated catalog trigram indexes when rebuilding products.
+	rows, err := db.Query(`SELECT pg_get_indexdef(indexrelid) FROM pg_index
+		WHERE indrelid = to_regclass('products')
+		  AND indexrelid IN (to_regclass('idx_products_title_trgm'), to_regclass('idx_products_description_trgm'))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var trigramIndexes []string
+	for rows.Next() {
+		var definition string
+		if err := rows.Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		trigramIndexes = append(trigramIndexes, definition)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
 	ddl := []string{
 		`DROP TABLE IF EXISTS dk_category_attribute_values, dk_category_attributes, dk_attribute_values, dk_attributes, dk_category_brands, dk_category_colors, search_queries, store_products, product_images, product_variant_images, product_variants, product_niches, pending_approvals, products, categories, suppliers CASCADE`,
 		`CREATE TABLE categories (id VARCHAR(50) PRIMARY KEY, title TEXT NOT NULL, slug VARCHAR(100) NOT NULL, icon_name TEXT, gradient TEXT, image_url TEXT, parent_id VARCHAR(50), is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -143,9 +164,9 @@ func team04Seed(t *testing.T, db *sql.DB) {
 		// unaffected.
 		`INSERT INTO suppliers (id, name) VALUES ('sup-ali',''),('sup-filimo',''),('sup-khanoumi',''),('sup-technolife','') ON CONFLICT (id) DO NOTHING`,
 	}
-	for _, q := range ddl {
+	for _, q := range append(ddl, trigramIndexes...) {
 		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("DDL failed (%q): %v", q[:60], err)
+			t.Fatalf("DDL failed (%q): %v", q, err)
 		}
 	}
 	seed := []string{

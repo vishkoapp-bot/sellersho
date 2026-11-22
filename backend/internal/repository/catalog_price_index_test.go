@@ -68,11 +68,16 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 			t.Fatal(err)
 		}
 	}
-	asOf := time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
+	// Use the transaction clock for both refreshes and the fixture's pricing windows.
+	var asOf time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&asOf); err != nil {
+		t.Fatal(err)
+	}
+	asOf = asOf.UTC()
 	widgetJSON, _ := json.Marshal(map[string]any{
 		"title": "deals", "productIds": []string{"perf01-prod-001"},
 		"discounts": map[string]float64{"perf01-prod-001": 5},
-		"endsAt":    "2030-01-01T00:00:00Z",
+		"endsAt":    asOf.Add(48 * time.Hour).Format(time.RFC3339),
 	})
 	seed := []string{
 		`SET LOCAL search_path = ` + schema,
@@ -113,7 +118,7 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 			('11111111-1111-1111-1111-111111111005','perf01-prod-003','P003AAAA','Sale','{}',TRUE,0,20000,'tracked',TRUE),
 			('11111111-1111-1111-1111-111111111006','perf01-prod-004','P004AAAA','Off','{}',TRUE,0,20000,'tracked',FALSE),
 			('11111111-1111-1111-1111-111111111007','perf01-prod-004','P004AAAB','On','{}',FALSE,0,15000,'tracked',TRUE)`,
-		`UPDATE product_variants SET sale_price=23000, sale_from='2026-11-18T00:00:00Z'::timestamptz, sale_to='2026-11-20T00:00:00Z'::timestamptz WHERE id='11111111-1111-1111-1111-111111111005'`,
+		`UPDATE product_variants SET sale_price=23000, sale_from=CURRENT_TIMESTAMP - INTERVAL '24 hours', sale_to=CURRENT_TIMESTAMP + INTERVAL '24 hours' WHERE id='11111111-1111-1111-1111-111111111005'`,
 		`UPDATE products SET stock=CASE WHEN id='perf01-prod-038' THEN 0 ELSE 5 END`,
 		`INSERT INTO store_variant_defaults(store_id,product_id,variant_id) VALUES
 			('perf01-A','perf01-prod-002','11111111-1111-1111-1111-111111111004')`,
@@ -122,7 +127,7 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 		`INSERT INTO store_margin_locks(store_id,scope,scope_id,lock_mode,lock_value) VALUES
 			('perf01-A','product','perf01-prod-003','admin_set',15)`,
 		`INSERT INTO seller_discount_campaigns(id,store_id,name,scope,target_id,mode,value,starts_at,ends_at,is_active) VALUES
-			('perf01-camp-1','perf01-A','Ten','store','', 'percent',10,'2026-11-18T00:00:00Z'::timestamptz,'2026-11-20T00:00:00Z'::timestamptz,TRUE)`,
+			('perf01-camp-1','perf01-A','Ten','store','', 'percent',10,CURRENT_TIMESTAMP - INTERVAL '24 hours',CURRENT_TIMESTAMP + INTERVAL '24 hours',TRUE)`,
 	}
 	for _, query := range seed {
 		if _, err := tx.ExecContext(ctx, query); err != nil {
@@ -149,8 +154,8 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 	fx.campaign = domain.SellerDiscountCampaign{
 		ID: "perf01-camp-1", StoreID: "perf01-A", Name: "Ten", Scope: "store",
 		Mode: "percent", Value: 10,
-		StartsAt: time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC),
-		EndsAt:   time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC), IsActive: true,
+		StartsAt: asOf.Add(-24 * time.Hour),
+		EndsAt:   asOf.Add(24 * time.Hour), IsActive: true,
 	}
 	fx.widget = pricing.ParseDealsWidgetConfig(widgetJSON)
 	return fx
@@ -179,11 +184,11 @@ func perf01OracleProduct(i int) domain.Product {
 	}
 }
 
-func perf01OracleVariants(i int) []domain.ProductVariant {
+func perf01OracleVariants(i int, asOf time.Time) []domain.ProductVariant {
 	cost := func(v int64) *int64 { return &v }
 	salePrice := int64(23000)
-	saleFrom := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
-	saleTo := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	saleFrom := asOf.Add(-24 * time.Hour)
+	saleTo := asOf.Add(24 * time.Hour)
 	switch i {
 	case 1:
 		return []domain.ProductVariant{
@@ -227,7 +232,7 @@ func (fx *perf01Fixture) oracleMainPrice(t *testing.T, store domain.Store, i int
 		}
 	}
 	main, err := catalogpricing.ResolveMainPrice(catalogpricing.MainPriceInput{
-		Product: product, Variants: perf01OracleVariants(i), Store: store,
+		Product: product, Variants: perf01OracleVariants(i, fx.asOf), Store: store,
 		Settings: fx.settings, Locks: locks, Overrides: fx.overrides,
 		ActiveCampaigns: activeCampaigns, AllCampaigns: allCampaigns,
 		Widget: widget, StoreDefaultVariantID: storeDefault, AsOf: fx.asOf,

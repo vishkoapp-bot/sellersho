@@ -123,6 +123,12 @@ BACKUP="$ROOT/backups/frontend-$COMMIT-$TS"
 mkdir -p "$ROOT/backups" "$ROOT/releases/$COMMIT"
 cp -rp --no-preserve=ownership "$ROOT/dist" "$BACKUP-dist"
 cp "$RELEASE/release.json" "$BACKUP-release.json"
+# Retention (below) sorts backups by mtime and keeps the newest 5, but
+# cp -rp preserves the old live dist dir's mtime, so without this the
+# just-created backup would rank oldest and be pruned by its own deploy
+# (attempt 5b: the new -dist was deleted, only its -release.json kept).
+# Reset both backup mtimes to now so this run's backup is never pruned.
+touch "$BACKUP-dist" "$BACKUP-release.json"
 echo "backup: $BACKUP-dist"
 
 # Stage the release record (D3: copy deployed alongside the release).

@@ -20,7 +20,7 @@ for (const fare of [0, 15000]) {
 
       await page.evaluate(() => (window as any).batch8Fixture.showCheckoutError());
       await waitText(page, 'خطای آزمایشی ثبت سفارش');
-      assert.ok(await page.$eval('.fixed.top-4.z-50', node => node.textContent?.includes('خطای آزمایشی ثبت سفارش')));
+      assert.ok(await page.$eval('.fixed.top-4.z-\\[10000\\]', node => node.textContent?.includes('خطای آزمایشی ثبت سفارش')));
     });
     for (const detail of [false, true]) {
       await visit('/', 390, async page => {

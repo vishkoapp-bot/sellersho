@@ -1150,8 +1150,8 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
                       {i === 0 && (
                         <span className="absolute top-1 right-1 bg-amber-400 text-amber-950 text-[8px] font-bold px-1.5 py-0.5 rounded-full">شاخص</span>
                       )}
-                      <button type="button" onClick={() => removeImage(i)} className="absolute top-1 left-1 p-1 rounded-lg bg-rose-500 text-white opacity-0 group-hover:opacity-100 transition-opacity" title="حذف">
-                        <Trash2 className="w-3 h-3"  strokeWidth={1.5}/>
+                      <button type="button" onClick={() => removeImage(i)} className="absolute top-1 left-1 p-2 min-h-[32px] min-w-[32px] rounded-lg bg-rose-500 text-white" title="حذف" aria-label={`حذف تصویر ${toPersianDigits(i + 1)}`}>
+                        <Trash2 className="w-4 h-4"  strokeWidth={1.5}/>
                       </button>
                     </div>
                   ))}

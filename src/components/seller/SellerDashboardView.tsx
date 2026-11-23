@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { 
@@ -92,6 +92,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   // Team 08 (D47): tab state lives in the router context so tab URLs
   // (?panel=seller&tab=<tab>) survive back/forward and deep links.
   const activeTab = sellerDashboardTab;
+  const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const setActiveTab = (tab: string) => {
     if (!isSellerDashboardTab(tab)) return;
     setSellerDashboardTab(tab);
@@ -99,6 +100,9 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
       window.history.replaceState(null, '', `/?panel=seller&tab=${tab}`);
     }
   };
+  useEffect(() => {
+    tabButtonRefs.current.get(activeTab)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  }, [activeTab]);
   const [showStoreForm, setShowStoreForm] = useState(false);
   const [newStoreName, setNewStoreName] = useState('');
   const [newStoreSlug, setNewStoreSlug] = useState('');
@@ -395,13 +399,14 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
           </div>
         )}
       {/* Horizontal Scrollable Tabs (below lg only; desktop uses the sidebar) */}
-      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar lg:hidden">
+      <div aria-label="زبانه‌های پنل فروشنده" className="bg-white border-b border-slate-200/80 px-2 pe-4 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar lg:hidden [mask-image:linear-gradient(to_left,black_92%,transparent)]">
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
           return (
             <button
               key={item.id}
+              ref={(el) => { if (el) tabButtonRefs.current.set(item.id, el); else tabButtonRefs.current.delete(item.id); }}
               onClick={() => setActiveTab(item.id)}
               className={`flex items-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
                 isActive

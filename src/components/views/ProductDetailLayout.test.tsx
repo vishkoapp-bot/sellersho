@@ -59,7 +59,7 @@ test('add-to-cart toast stays above the open drawer totals', async () => {
       buttons.find(node => node.title.includes('سبد خرید') && !node.title.includes('افزودن'))?.click();
     });
     await waitText(page, 'مبلغ قابل پرداخت');
-    const toast = await page.waitForSelector('.fixed.top-4.z-50', { visible: true });
+    const toast = await page.waitForSelector('.fixed.top-4.z-\\[10000\\]', { visible: true });
     assert.ok(toast);
     assert.ok(await toast.evaluate(node => !node.className.includes('bottom-')));
   });

@@ -54,8 +54,8 @@ const SecondaryBannerSlider: React.FC<{ banners: ApiBanner[] }> = ({ banners }) 
               <img src={banner.imageUrl} alt={title} loading={i === 0 ? 'eager' : 'lazy'} decoding="async" className="w-full h-full object-cover rounded-2xl" />
               {(title || banner.subtitle) && (
                 <div className="absolute inset-0 z-10 flex flex-col justify-center pl-6 pr-14 lg:pr-16 bg-gradient-to-l from-black/45 via-black/10 to-transparent rounded-2xl pointer-events-none">
-                  {title && <h3 className="text-white text-lg lg:text-2xl xl:text-3xl font-extrabold tracking-tight drop-shadow-md leading-snug max-w-[70%]">{title}</h3>}
-                  {banner.subtitle && <p className="text-white/90 text-xs lg:text-sm xl:text-base font-medium mt-1.5 drop-shadow max-w-[65%]">{banner.subtitle}</p>}
+                  {title && <h3 className="text-white text-lg lg:text-2xl xl:text-3xl font-extrabold tracking-tight drop-shadow-md leading-snug max-w-[70%] line-clamp-2">{title}</h3>}
+                  {banner.subtitle && <p className="text-white/90 text-xs lg:text-sm xl:text-base font-medium mt-1.5 drop-shadow max-w-[65%] line-clamp-2">{banner.subtitle}</p>}
                   {banner.linkUrl && (
                     <button type="button" onClick={(e) => { e.stopPropagation(); handleClick(banner); }} className="pointer-events-auto self-start mt-2.5 px-4 py-2 rounded-xl bg-[#5d44f8] hover:bg-[#4a33d8] text-white text-[11px] lg:text-sm lg:px-6 lg:py-3 font-bold shadow-md transition-colors">مشاهده</button>
                   )}

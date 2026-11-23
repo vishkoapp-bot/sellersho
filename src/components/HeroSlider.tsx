@@ -80,8 +80,8 @@ export const HeroSlider: React.FC = () => {
               />
               {(title || banner.subtitle || banner.linkUrl) && (
                 <div className="absolute inset-y-0 right-0 z-10 flex flex-col justify-center text-right pr-14 pl-2 lg:pr-16 bg-gradient-to-l from-black/60 via-black/25 to-transparent pointer-events-none w-[52%] lg:w-[40%] xl:w-[32%] 2xl:w-[28%]">
-                  {title && <h3 className="text-white text-[15px] lg:text-2xl xl:text-3xl font-extrabold tracking-tight drop-shadow-md leading-snug">{title}</h3>}
-                  {banner.subtitle && <p className="text-white/90 text-[9px] lg:text-sm xl:text-base font-medium mt-1 drop-shadow leading-relaxed">{banner.subtitle}</p>}
+                  {title && <h3 className="text-white text-[15px] lg:text-2xl xl:text-3xl font-extrabold tracking-tight drop-shadow-md leading-snug line-clamp-2">{title}</h3>}
+                  {banner.subtitle && <p className="text-white/90 text-[11px] lg:text-sm xl:text-base font-medium mt-1 drop-shadow leading-relaxed line-clamp-2">{banner.subtitle}</p>}
                   {banner.linkUrl && (
                     <button
                       type="button"

@@ -55,7 +55,7 @@ const CategoryChips: React.FC<{ groups: CategoryGroup[]; accentColor: string }> 
   const top = groups.slice(0, 10);
   if (top.length < 2) return null;
   return (
-    <div className="sticky top-2 z-30 lg:top-3">
+    <div className="sticky top-[69px] z-20">
       <div className="flex snap-x gap-2 overflow-x-auto rounded-2xl border border-slate-200/70 bg-white/85 p-2 shadow-sm backdrop-blur no-scrollbar">
         {top.map((g) => (
           <a

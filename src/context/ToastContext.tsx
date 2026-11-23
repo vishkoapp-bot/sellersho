@@ -46,7 +46,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       {children}
 
       {/* Floating Toast Notification Container pinned inside viewport */}
-      <div className="fixed top-4 inset-x-0 max-w-[480px] mx-auto z-50 pointer-events-none px-3 flex flex-col gap-2">
+      <div className="fixed top-4 inset-x-0 max-w-[480px] mx-auto z-[10000] pointer-events-none px-3 flex flex-col gap-2">
         <AnimatePresence>
           {toasts.map((toast) => {
             const styles = {

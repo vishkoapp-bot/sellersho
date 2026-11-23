@@ -16,6 +16,13 @@ interface AdminLoginPageProps {
 }
 
 
+export const normalizeOtpInput = (value: string): string =>
+  value
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776))
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+    .replace(/\D/g, '')
+    .slice(0, 4);
+
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomerSite }) => {
   const { setAdminSession, toPersianDigits } = useStore();
   const { authenticate } = useAuth();
@@ -233,7 +240,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
                   type="text"
                   maxLength={4}
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onChange={(e) => setOtp(normalizeOtpInput(e.target.value))}
                   placeholder="• • • •"
                   className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-2.5 text-center text-base tracking-widest font-mono font-bold text-white focus:outline-hidden"
                   dir="ltr"

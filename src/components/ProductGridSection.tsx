@@ -1,3 +1,4 @@
+import { HelpExplainer } from './common/HelpExplainer';
 import { remainingCatalogCount } from '../utils/catalogRemaining';
 import React, { useState, useEffect } from 'react';
 import { catalogApi } from '../services/catalogApi';
@@ -93,6 +94,7 @@ export const ProductGridSection: React.FC = () => {
             <h2 className="text-xs lg:text-lg xl:text-xl font-black text-slate-800 flex items-center gap-1.5">
               <ShoppingBag className="w-4 h-4 lg:w-5 lg:h-5 text-brand-deep"  strokeWidth={1.5}/>
               <span>منتخب محصولات</span>
+              <HelpExplainer text="کالاها پیش از ارسال کنترل کیفیت می‌شوند؛ ارسال به سراسر کشور" />
               <span className="text-[10px] lg:text-xs font-bold text-slate-400">
                 {/* A5: the header shows the SERVER total (catalogTotal),
                     stable across pages — never the loaded-page count.
@@ -106,7 +108,6 @@ export const ProductGridSection: React.FC = () => {
                   : `(${toPersianDigits(catalogTotal > 0 ? catalogTotal : filtered.length)} کالا)`}
               </span>
             </h2>
-            <p className="text-[10px] lg:text-sm text-slate-400 mt-0.5">کالاها پیش از ارسال کنترل کیفیت می‌شوند؛ ارسال به سراسر کشور</p>
           </div>
 
           {(onlyInStock || priceMin !== '' || priceMax !== '' || selectedCategory !== 'all' || searchQuery) && (

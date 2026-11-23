@@ -1,3 +1,5 @@
+import { shippingExplainer } from './common/helpTexts';
+import { HelpExplainer } from './common/HelpExplainer';
 import React, { ReactNode } from 'react';
 import { Truck } from 'lucide-react';
 
@@ -35,10 +37,8 @@ export const CheckoutSummaryColumn: React.FC<{
               <div className="flex items-center gap-1.5 text-brand-deep font-bold">
                 <Truck className="w-4 h-4" strokeWidth={1.5} />
                 <span>{fallbackCopy}</span>
+                <HelpExplainer text={shippingExplainer} />
               </div>
-              <p className="text-[10px] text-slate-500 mt-1 leading-5">
-                مبلغ دقیق ارسال هنگام ثبت سفارش، بر اساس وزن مرسوله و مقصد محاسبه و به فاکتور اضافه می‌شود.
-              </p>
             </>
           )}
         </div>

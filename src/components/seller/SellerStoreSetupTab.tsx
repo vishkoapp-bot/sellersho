@@ -1,3 +1,4 @@
+import { HelpExplainer } from '../common/HelpExplainer';
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -5,7 +6,7 @@ import { validateStoreSlug } from '../../utils/validators';
 import { storeApi } from '../../services/storeApi';
 import { SellerDomainsPanel } from './SellerDomainsPanel';
 import { isMockMode } from '../../services/apiClient';
-import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, Server, HelpCircle, ChevronDown } from 'lucide-react';
+import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, Server, ChevronDown } from 'lucide-react';
 
 // Live parity (SellerDashboardView-MERGED.js, component Ml, ~bytes 33800-48000):
 // informal second-person copy verbatim; tagline/shortDescription save at once
@@ -18,28 +19,6 @@ import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, 
 // Live's Store carries addonSectionTitle; the candidate Store type does not
 // yet, so the field is read/written through a narrow cast (types owned
 // elsewhere) while the server save carries it for real.
-const Explainer: React.FC<{ text: string }> = ({ text }) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-label="توضیح ساده"
-        className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-soft border border-brand-border text-brand-deep mr-1"
-      >
-        <HelpCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
-      </button>
-      {open && (
-        <span className="absolute z-20 top-7 right-0 w-60 rounded-xl bg-white border border-slate-200 shadow-lg p-2.5 text-right">
-          <span className="block text-[11px] leading-5 text-slate-600 font-normal">{text}</span>
-        </span>
-      )}
-    </div>
-  );
-};
-
 // G2 (Batch 4b): map a save failure to Persian copy. A 400 validation
 // failure (e.g. an over-long addon-section title) must never surface
 // the backend's raw English text; anything else keeps the generic
@@ -191,7 +170,7 @@ export const SellerStoreSetupTab: React.FC = () => {
   return (
     <form onSubmit={handleSave} className="space-y-3.5 pb-24">
       {!isMockMode() && <SellerDomainsPanel slug={currentStore.slug} storeId={currentStore.id} />}
-      <Explainer text="این‌جا اسم، آدرس و توضیح فروشگاهت را عوض می‌کنی. شعار و توضیح همان لحظه ذخیره می‌شوند؛ عوض‌کردن اسم و آدرس اول باید به تأیید مدیر پلتفرم برسد." />
+      <HelpExplainer text="این‌جا اسم، آدرس و توضیح فروشگاهت را عوض می‌کنی. شعار و توضیح همان لحظه ذخیره می‌شوند؛ عوض‌کردن اسم و آدرس اول باید به تأیید مدیر پلتفرم برسد." />
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <h3 className="text-xs font-bold text-slate-800">اسم و آدرس فروشگاهت</h3>
 

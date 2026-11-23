@@ -1,3 +1,4 @@
+import { HelpExplainer } from '../common/HelpExplainer';
 import React, { useState, useEffect, useRef } from 'react';
 import { useOrders } from '../../context/OrderContext';
 import { useStore } from '../../context/StoreContext';
@@ -316,10 +317,12 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
 
               {ord.refund && ord.refund.status !== 'none' && (
                 <div role="status" data-refund-status={ord.refund.status} className="p-2 border border-amber-200 bg-amber-50 rounded-xl text-[11px] space-y-1">
+                  <div className="flex items-center gap-1">
                   <strong>{({pending:'بازپرداخت در انتظار انجام',succeeded:'بازپرداخت انجام شد',failed:'بازپرداخت ناموفق؛ نیازمند پیگیری',unknown:'بازپرداخت نیازمند بررسی'} as const)[ord.refund.status]}</strong>
+                    {ord.refund.status !== 'succeeded' && <HelpExplainer text="بازگشت وجه هنوز تأیید نشده است؛ وضعیت نهایی پس از بررسی یا تأیید پرداخت نمایش داده می‌شود." />}
+                  </div>
                   <p>مبلغ ثبت‌شده: {formatPrice(ord.refund.amountToman)} تومان؛ مقصد: {({original_payment:'روش پرداخت اولیه',wallet:'کیف پول',review:'نیازمند بررسی',mixed:'چند روش پرداخت',none:'در دست بررسی'} as const)[ord.refund.destination]}</p>
                   {ord.refund.succeededToman > 0 && <p>مبلغ انجام‌شده: {formatPrice(ord.refund.succeededToman)} تومان</p>}
-                  {ord.refund.status !== 'succeeded' && <p>بازگشت وجه هنوز تأیید نشده است؛ وضعیت نهایی پس از بررسی یا تأیید پرداخت نمایش داده می‌شود.</p>}
                 </div>
               )}
 

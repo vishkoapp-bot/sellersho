@@ -1,3 +1,5 @@
+import { shippingExplainer, onlinePaymentComingSoon } from './common/helpTexts';
+import { HelpExplainer } from './common/HelpExplainer';
 import React, { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useStore } from '../context/StoreContext';
@@ -127,31 +129,37 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
           <div className="flex items-center gap-1.5 text-brand-deep font-bold">
             <Truck className="w-4 h-4" strokeWidth={1.5} />
             <span>هزینه بسته‌بندی و ارسال: محاسبه در مرحله بعد</span>
+                <HelpExplainer text={shippingExplainer} />
           </div>
-          <p className="text-[10px] text-slate-500 mt-1 leading-5">مبلغ دقیق ارسال هنگام ثبت سفارش، بر اساس وزن مرسوله و مقصد محاسبه و به فاکتور اضافه می‌شود.</p>
         </div>
       )}
       {/* Payment Method Selector */}
       <div>
         <label className="block text-xs lg:text-sm font-bold text-slate-700 mb-2">روش پرداخت:</label>
         <div className={`grid gap-2 ${walletSlot ? "grid-cols-1" : "grid-cols-2"}`}>
-          <button
-            type="button"
-            onClick={() => setPaymentMethod('cash')}
-            className={`p-3 rounded-2xl border text-right transition-all flex flex-col justify-between ${
+          <div
+            role="button" tabIndex={0} aria-label="پرداخت آنلاین"
+            onKeyDown={(event) => {
+              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                setPaymentMethod('cash');
+              }
+            }}
+            className={`relative p-3 rounded-2xl border text-right transition-all flex flex-col justify-between ${
               paymentMethod === 'cash'
                 ? 'bg-brand-soft border-brand-deep text-brand-deep ring-2 ring-brand-border'
                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
             }`}
           >
             <div className="flex items-center gap-1.5 font-bold text-xs">
+              <button type="button" onClick={() => setPaymentMethod('cash')} className="inline-flex items-center gap-1.5 after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-2 outline-brand-deep">
               <CreditCard className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/>
               <span>پرداخت آنلاین</span>
+              </button>
+              {/* Keep the selection button's ::after overlay below the (?) control. */}
+              <span className="relative z-10 inline-flex"><HelpExplainer text={onlinePaymentComingSoon} /></span>
             </div>
-            <span className="text-[10px] lg:text-xs text-brand-deep mt-1 block">
-              به‌زودی فعال می‌شود؛ پس از ثبت سفارش، نحوه پرداخت به شما اعلام می‌شود
-            </span>
-          </button>
+          </div>
 
           {!walletSlot && (
           <button

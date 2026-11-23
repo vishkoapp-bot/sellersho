@@ -1,3 +1,4 @@
+import { HelpExplainer } from './common/HelpExplainer';
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
 import { useToast } from '../context/ToastContext';
@@ -183,15 +184,12 @@ export const SellerOnboardingModal: React.FC = () => {
               <div className="flex items-center gap-2 text-indigo-700">
                 <ShieldCheck className="w-5 h-5"  strokeWidth={1.5}/>
                 <div className="flex items-center gap-2">
-                  <h4 className="font-bold text-xs">مطالعه و امضای دیجیتال قرارداد همکاری تجاری</h4>
+                  <h4 className="font-bold text-xs flex items-center gap-1">مطالعه و امضای دیجیتال قرارداد همکاری تجاری<HelpExplainer text="طبق الزامات تجارت الکترونیکی، افتتاح فروشگاه و بهره‌برداری از موجودی انبار مرکزی مستلزم تأیید و امضای الکترونیکی قرارداد زیر است:" /></h4>
                   <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded font-mono font-bold">
                     نسخه {toPersianDigits(platformSettings.contracts?.sellerContractVersion || 2)}.۰
                   </span>
                 </div>
               </div>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                طبق الزامات تجارت الکترونیکی، افتتاح فروشگاه و بهره‌برداری از موجودی انبار مرکزی مستلزم تأیید و امضای الکترونیکی قرارداد زیر است:
-              </p>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl max-h-40 overflow-y-auto text-[11px] text-slate-700 leading-relaxed font-mono whitespace-pre-line no-scrollbar">
                 {platformSettings.contracts.sellerContractText}

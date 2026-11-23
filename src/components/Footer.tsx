@@ -1,3 +1,4 @@
+import { HelpExplainer } from './common/HelpExplainer';
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { apiRequest, ApiError } from '../services/apiClient';
@@ -199,8 +200,7 @@ export const Footer: React.FC = () => {
         <div className="hidden lg:block lg:col-span-4 border-t border-slate-800 pt-6">
           <div className="flex items-start justify-between gap-10">
             <div className="max-w-md">
-              <h3 className="text-base lg:text-lg font-bold text-slate-100">از تخفیف‌ها و کالاهای جدید باخبر شوید</h3>
-              <p className="text-sm lg:text-base text-slate-400 leading-relaxed mt-1">شماره موبایل خود را ثبت کنید تا از جدیدترین کالاها و پیشنهادها مطلع شوید.</p>
+              <h3 className="text-base lg:text-lg font-bold text-slate-100 flex items-center gap-1">از تخفیف‌ها و کالاهای جدید باخبر شوید<HelpExplainer text="شماره موبایل خود را ثبت کنید تا از جدیدترین کالاها و پیشنهادها مطلع شوید." /></h3>
             </div>
             <div className="w-full max-w-md rounded-2xl bg-white p-4 shrink-0 text-slate-800">
               {newsDone ? (

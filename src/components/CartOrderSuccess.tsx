@@ -1,3 +1,4 @@
+import { HelpExplainer } from './common/HelpExplainer';
 import React from 'react';
 import { useStore } from '../context/StoreContext';
 import { useToast } from '../context/ToastContext';
@@ -49,16 +50,9 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-right space-y-2">
         <div className="flex items-center gap-1.5 text-amber-800">
           <span className="text-xs font-extrabold">برای تکمیل پرداخت چه کار کنید؟</span>
+          <HelpExplainer text={`- نحوه پرداخت این سفارش از طرف فروشگاه به شما اعلام می‌شود. هنگام پیگیری، شماره سفارش ${order.orderNumber} را اعلام کنید تا پرداخت شما دقیقاً برای همین سفارش ثبت شود.
+- وضعیت پرداخت را در بخش «سفارش‌های من» دنبال کنید؛ به‌محض این‌که تیم مالی دریافت وجه را ثبت کند، وضعیت سفارش به «پرداخت شد» تغییر می‌کند و سفارش وارد صف ارسال می‌شود. اگر منصرف شدید، سفارش پرداخت‌نشده را از همان بخش می‌توانید لغو کنید.`} />
         </div>
-        <ul className="text-[11px] leading-6 text-amber-900 space-y-1.5">
-          <li>پرداخت آنلاین هنوز فعال نیست و در حال حاضر هیچ شماره کارت یا حسابی برای واریز در سایت اعلام نشده است؛ لطفاً مبلغی را به هیچ حسابی واریز نکنید.</li>
-          <li>
-            نحوه پرداخت این سفارش از طرف فروشگاه به شما اعلام می‌شود. هنگام پیگیری، شماره سفارش{' '}
-            <span className="font-mono font-bold">{order.orderNumber}</span>
-            {' '}را اعلام کنید تا پرداخت شما دقیقاً برای همین سفارش ثبت شود.
-          </li>
-          <li>وضعیت پرداخت را در بخش «سفارش‌های من» دنبال کنید؛ به‌محض این‌که تیم مالی دریافت وجه را ثبت کند، وضعیت سفارش به «پرداخت شد» تغییر می‌کند و سفارش وارد صف ارسال می‌شود. اگر منصرف شدید، سفارش پرداخت‌نشده را از همان بخش می‌توانید لغو کنید.</li>
-        </ul>
         <button
           onClick={() => {
             onClose();

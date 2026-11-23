@@ -1,3 +1,4 @@
+import { HelpExplainer } from '../common/HelpExplainer';
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -131,12 +132,10 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
             <div className="flex items-center gap-2">
               <Wallet className="w-4 h-4 text-emerald-400"  strokeWidth={1.5}/>
               <span className="text-xs font-bold">کیف پول و پاداش خرید</span>
+              <HelpExplainer text="مبالغ کش‌بک و بازگشت وجه خریدهای قبلی شما به صورت خودکار در فاکتورهای بعدی اعمال می‌شود." />
             </div>
             <span className="text-sm font-black text-emerald-400">{formatPrice(isMockMode() ? 340000 : 0)} تومان</span>
           </div>
-          <p className="text-[10px] text-slate-400 leading-relaxed">
-            مبالغ کش‌بک و بازگشت وجه خریدهای قبلی شما به صورت خودکار در فاکتورهای بعدی اعمال می‌شود.
-          </p>
         </div>
 
         {/* Menu Items */}

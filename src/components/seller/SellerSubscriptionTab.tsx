@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Crown, Check, Store, Plus, HelpCircle } from 'lucide-react';
+import { HelpExplainer } from '../common/HelpExplainer';
+import React from 'react';
+import { Crown, Check, Store, Plus } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
@@ -41,28 +42,6 @@ export const resolveTrialQuota = (settings: PlatformSettings | null | undefined)
 // branch and no seller-session filter on owned stores: every dropshipper
 // store counts, VIP anywhere lifts the cap to 10. Purchase is
 // POST /stores/:slug/services (storeApi.purchaseService) then a reload.
-const Explainer: React.FC<{ text: string }> = ({ text }) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-label="توضیح ساده"
-        className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-soft border border-brand-border text-brand-deep mr-1"
-      >
-        <HelpCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
-      </button>
-      {open && (
-        <span className="absolute z-20 top-7 right-0 w-60 rounded-xl bg-white border border-slate-200 shadow-lg p-2.5 text-right">
-          <span className="block text-[11px] leading-5 text-slate-600 font-normal">{text}</span>
-        </span>
-      )}
-    </div>
-  );
-};
-
 export const SellerSubscriptionTab: React.FC<{ onManageStores: () => void }> = ({ onManageStores }) => {
   const { currentStore, stores, platformSettings, toPersianDigits, formatPrice } = useStore();
   const { success, error } = useToast();
@@ -89,7 +68,7 @@ export const SellerSubscriptionTab: React.FC<{ onManageStores: () => void }> = (
   };
   return (
     <div className="space-y-3.5 pb-6">
-      <Explainer text="اشتراک یعنی پولی که برای فعال‌ماندن فروشگاهت می‌دهی. این‌جا اشتراک فعلی‌ات را می‌بینی و اگر خواستی، آن را بهتر می‌کنی." />
+      <HelpExplainer text="اشتراک یعنی پولی که برای فعال‌ماندن فروشگاهت می‌دهی. این‌جا اشتراک فعلی‌ات را می‌بینی و اگر خواستی، آن را بهتر می‌کنی." />
       <div className="rounded-2xl bg-amber-500 p-3.5 text-white">
         <div className="flex items-center gap-2"><Crown className="h-5 w-5" strokeWidth={1.5} /><div>
           <h3 className="text-xs font-bold">اشتراک فعلی تو: {activePlan?.name || activePlanId}</h3>

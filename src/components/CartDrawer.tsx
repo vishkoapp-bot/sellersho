@@ -807,7 +807,6 @@ export const CartDrawer: React.FC = () => {
                   <span>{isSubmittingOrder ? 'در حال ثبت سفارش…' : 'ثبت سفارش'}</span>
                 </button>
               </div>
-              <p className="text-center text-[11px] text-slate-500 leading-relaxed">پرداخت آنلاین به‌زودی فعال می‌شود؛ پس از ثبت سفارش، نحوه پرداخت به شما اعلام خواهد شد.</p>
               </div>
             )}
           </div>

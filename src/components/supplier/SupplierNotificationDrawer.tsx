@@ -11,8 +11,8 @@ import { motion } from 'motion/react';
 // This drawer reads the supplier-scoped outbox via
 // supplierApi.getNotifications() and marks read via
 // supplierApi.markNotificationsRead() — server-side, not local-only.
-// v1 scope: rejection notifications only (kind `proposal_rejected`);
-// any other kind renders read-only, without the resubmit CTA.
+// The server filters the supplier inbox to supplier-addressed kinds
+// (see the backend spec §4.3 keep-list). The resubmit CTA is only for rejections.
 
 export const countUnreadNotifications = (items: SupplierNotification[]): number =>
   items.filter((n) => n.status !== 'read').length;
@@ -278,7 +278,7 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
           ) : notifications.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
               <p className="text-xs font-bold text-slate-600">اعلان جدیدی نیست.</p>
-              <p className="text-[11px] leading-5 text-slate-400">وقتی مدیر پیشنهادت را رد کند، علت ردشدن اینجا می‌آید تا ویرایش کنی و دوباره بفرستی.</p>
+              <p className="text-[11px] leading-5 text-slate-400">اعلان‌های مربوط به تأمین‌کننده — رد پیشنهاد، سفارش و ارسال — اینجا می‌آیند.</p>
             </div>
           ) : visibleNotifications.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">

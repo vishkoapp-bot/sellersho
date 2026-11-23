@@ -55,6 +55,11 @@ it('renders the empty state when there are no notifications', () => {
   assert.match(html, /اعلان جدیدی نیست\./);
 });
 
+it('renders the supplier-inbox empty state when there are no notifications', () => {
+  const html = render([]);
+  assert.match(html, /اعلان‌های مربوط به تأمین‌کننده — رد پیشنهاد، سفارش و ارسال — اینجا می‌آیند\./);
+});
+
 it('renders nothing when closed', () => {
   const html = renderToStaticMarkup(
     <SupplierNotificationDrawer isOpen={false} onClose={() => {}} onSelectProposal={() => {}} initialNotifications={[rejected('1', 'pending')]} />,

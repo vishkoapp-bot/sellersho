@@ -45,6 +45,16 @@ export interface SettlementSettingsPayload {
   earlyWithdrawalFeePct: number | null;
 }
 
+export interface ShippingSettingsDto {
+  supplierReturnPostalCharge: number | null;
+  defaultItemWeightGrams: number;
+}
+
+export interface ShippingSettingsPayload {
+  supplierReturnPostalCharge: number | null;
+  defaultItemWeightGrams: number;
+}
+
 // Storage-fee settings (gap 7): GET/PUT /admin/settings/storage-fees.
 // Amounts are integer Tomans. The flag ships OFF; activation is a
 // separate owner decision. POST /admin/storage-fees/run executes one
@@ -259,6 +269,13 @@ export const adminApi = {
     });
   },
 
+  getShippingSettings: async (): Promise<ShippingSettingsDto> => {
+    return apiRequest<ShippingSettingsDto>('/admin/settings/shipping', {
+      method: 'GET',
+      auth: true,
+    });
+  },
+
   // FIX 17: admin support-returns tab. Backend route GET
   // /admin/returns lists customer_returns for admins.
   getAdminReturns: async (): Promise<any[]> => {
@@ -307,6 +324,16 @@ export const adminApi = {
 
   saveSettlementSettings: async (payload: SettlementSettingsPayload): Promise<SettlementSettingsDto> => {
     return apiRequest<SettlementSettingsDto>('/admin/settings/settlement', {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  saveShippingSettings: async (
+    payload: ShippingSettingsPayload | { supplierReturnPostalCharge: null; defaultItemWeightGrams?: never },
+  ): Promise<ShippingSettingsDto> => {
+    return apiRequest<ShippingSettingsDto>('/admin/settings/shipping', {
       method: 'PUT',
       auth: true,
       body: JSON.stringify(payload),

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,19 @@ type t01SettingField struct {
 	Max       float64
 	HasMax    bool // int: inclusive max; float: exclusive max (fee < 100)
 	AllowNull bool
+	Nullable  bool // when true, GET renders JSON null for a NULL column instead of the fallback
+}
+
+func t01SettingsInt(ctx context.Context, db *sql.DB, f t01SettingField) any {
+	if !f.Nullable {
+		return t01PlatformInt(ctx, db, f.Column, 0)
+	}
+	var value sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		"SELECT "+f.Column+" FROM platform_settings WHERE id = 1").Scan(&value); err != nil || !value.Valid {
+		return nil
+	}
+	return value.Int64
 }
 
 func t01SettingsGet(w http.ResponseWriter, r *http.Request, db *sql.DB, fields []t01SettingField) {
@@ -47,7 +61,7 @@ func t01SettingsGet(w http.ResponseWriter, r *http.Request, db *sql.DB, fields [
 		}
 		switch f.Kind {
 		case "int":
-			out[f.JSONKey] = t01PlatformInt(ctx, db, f.Column, 0)
+			out[f.JSONKey] = t01SettingsInt(ctx, db, f)
 		case "float":
 			out[f.JSONKey] = t01PlatformFloat(ctx, db, f.Column, 0)
 		case "bool":
@@ -187,7 +201,7 @@ func t01SettingsGetRaw(w http.ResponseWriter, r *http.Request, db *sql.DB, field
 		}
 		switch f.Kind {
 		case "int":
-			out[f.JSONKey] = t01PlatformInt(ctx, db, f.Column, 0)
+			out[f.JSONKey] = t01SettingsInt(ctx, db, f)
 		case "float":
 			out[f.JSONKey] = t01PlatformFloat(ctx, db, f.Column, 0)
 		case "bool":
@@ -227,7 +241,7 @@ func handleT01AdminSettingsPlatform(w http.ResponseWriter, r *http.Request, db *
 
 func t01ShippingSettingsFields() []t01SettingField {
 	return []t01SettingField{
-		{JSONKey: "supplierReturnPostalCharge", Column: "supplier_return_postal_charge", Kind: "int", Min: 0, HasMin: true},
+		{JSONKey: "supplierReturnPostalCharge", Column: "supplier_return_postal_charge", Kind: "int", Min: 0, HasMin: true, AllowNull: true, Nullable: true},
 		{JSONKey: "defaultItemWeightGrams", Column: "default_item_weight_grams", Kind: "int", Min: 1, HasMin: true},
 	}
 }

@@ -67,6 +67,7 @@ import { HistoricalReconciliationReviewTab } from './HistoricalReconciliationRev
 import { AdminSmsTab } from './AdminSmsTab';
 import { AdminSettlementSettingsTab } from './AdminSettlementSettingsTab';
 import { AdminStorageFeeSettingsTab } from './AdminStorageFeeSettingsTab';
+import { AdminShippingSettingsTab } from './AdminShippingSettingsTab';
 import {
   AdminStoresListTab,
   AdminHomepageTab,
@@ -149,6 +150,7 @@ const ADMIN_NAV_SECTIONS: AdminNavSection[] = [
     { id: 'commission', label: 'سهم پلتفرم', icon: DollarSign, allowedRoles: ['super_admin', 'admin'] },
     { id: 'settlement-settings', label: 'تنظیمات تسویه ماهانه', icon: CalendarClock, allowedRoles: ['super_admin'] },
     { id: 'storage-fee-settings', label: 'هزینه انبارداری', icon: Warehouse, allowedRoles: ['super_admin'] },
+    { id: 'shipping-settings', label: 'تنظیمات حمل‌ونقل', icon: Package, allowedRoles: ['super_admin'] },
   ] },
   { heading: 'بازاریابی', variant: 'slate', items: [
     { id: 'campaigns', label: 'کمپین‌ها و بودجه', icon: Crown, allowedRoles: ['super_admin', 'admin'] },
@@ -464,6 +466,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'finance-payouts' && <FinancePayoutsTab />}
               {activeTab === 'settlement-settings' && <AdminSettlementSettingsTab />}
               {activeTab === 'storage-fee-settings' && <AdminStorageFeeSettingsTab />}
+              {activeTab === 'shipping-settings' && <AdminShippingSettingsTab />}
               {activeTab === 'finance-adjustments' && <FinanceAdjustmentsTab />}
               {activeTab === 'support-disputes' && <SupportDisputesTab />}
               {activeTab === 'support-tickets' && <SupportTicketsTab />}

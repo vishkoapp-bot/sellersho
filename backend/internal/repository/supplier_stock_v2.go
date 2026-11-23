@@ -14,12 +14,19 @@ func (r *SupplierRepository) UpdateProductStockForVariant(ctx context.Context, s
 }
 
 type StockAdjustmentResult struct {
-	Stock        int `json:"stock"`
-	ProductStock int `json:"productStock"`
+	ProductID           string           `json:"product_id"`
+	VariantID           string           `json:"variant_id"`
+	PreviousStock       int              `json:"previous_stock"`
+	Stock               int              `json:"stock"`
+	Delta               int              `json:"delta"`
+	RetiredCodes        []string         `json:"retired_codes"`
+	RetiredPrintedCodes []string         `json:"retired_printed_codes"`
+	CoverageGap         *UnitCoverageGap `json:"coverage_gap"`
+	ProductStock        int              `json:"-"`
 }
 
 func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, product, variant string, total int, reason, actor string) (StockAdjustmentResult, error) {
-	var result StockAdjustmentResult
+	result := StockAdjustmentResult{ProductID: product, RetiredCodes: []string{}, RetiredPrintedCodes: []string{}}
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return result, ErrStockAdjustmentInput
 	}
@@ -46,21 +53,53 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 		return result, err
 	}
 	var owned bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM products WHERE id=$1 AND supplier_id=$2)`, product, supplier).Scan(&owned); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id=$2,FALSE),stock FROM products WHERE id=$1`, product, supplier).Scan(&owned, &result.PreviousStock); err != nil {
 		return result, err
 	}
 	if !owned {
 		return result, ErrStockOwnership
 	}
 	action := "supplier_stock_update"
+	mode := "legacy"
 	if variant == "" {
+		resolved, resolveErr := ResolveLegacyPurchaseVariant(ctx, tx, product, "")
+		if resolveErr != nil {
+			return result, resolveErr
+		}
+		variant = resolved
+	}
+	result.VariantID = variant
+	if variant != "" {
+		if err = tx.QueryRowContext(ctx, `SELECT inventory_mode FROM product_variants WHERE id=$1 AND product_id=$2 FOR UPDATE`, variant, product).Scan(&mode); err != nil {
+			return result, err
+		}
+		if err = lockExistingUnitCounterTx(ctx, tx, variant); err != nil {
+			return result, err
+		}
+	}
+	if mode != "tracked" {
 		result.Stock, err = setSupplierSellableTotalTx(ctx, tx, product, supplier, total, reason, actor)
 		if err != nil {
 			return result, err
 		}
 		result.ProductStock = result.Stock
+		result.Delta = result.Stock - result.PreviousStock
+		if result.Delta > 0 {
+			result.CoverageGap = &UnitCoverageGap{Shortfall: result.Delta, Reason: "legacy_pre_backfill"}
+			if err = auditUnitGapTx(ctx, tx, product, variant, "inbound", "", result.Delta, 0); err != nil {
+				return result, err
+			}
+		} else if result.Delta < 0 {
+			if spncxStrict {
+				return result, ErrUnitCoverageGap
+			}
+			result.CoverageGap = &UnitCoverageGap{Shortfall: -result.Delta, Reason: "legacy_pre_backfill"}
+			if err = auditUnitGapTx(ctx, tx, product, variant, "adjust_decrease", "", -result.Delta, 0); err != nil {
+				return result, err
+			}
+		}
 	} else {
-		if err = SetTrackedSKUStockTx(ctx, tx, product, supplier, variant, total, reason, actor); err != nil {
+		if err = setTrackedSKUStockTx(ctx, tx, product, supplier, variant, total, reason, actor, r.inventoryHolds, &result); err != nil {
 			return result, err
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT pv.stock,p.stock FROM product_variants pv JOIN products p ON p.id=pv.product_id WHERE pv.id=$1 AND p.id=$2`, variant, product).Scan(&result.Stock, &result.ProductStock); err != nil {

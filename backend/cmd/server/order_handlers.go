@@ -379,6 +379,15 @@ func handleCreateOrder(
 	}
 	directSupplierIDs := make(map[string]struct{})
 	hasWarehouseItems := false
+	for i := range req.Items {
+		item := &req.Items[i]
+		resolved, err := repository.ResolveLegacyPurchaseVariant(ctx, db, item.ProductID, item.VariantID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		item.VariantID = resolved
+	}
 	productQuantities, skuQuantities, quantityErr := aggregateOrderQuantities(req.Items)
 	if quantityErr != nil {
 		http.Error(w, `{"error":"Invalid order quantities"}`, http.StatusBadRequest)

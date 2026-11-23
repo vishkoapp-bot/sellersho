@@ -26,7 +26,8 @@ import (
 )
 
 type SupplierRepository struct {
-	db *sql.DB
+	db             *sql.DB
+	inventoryHolds *RedisClient
 	// tokenCipher encrypts/decrypts suppliers.tapin_token (SEC-01).
 	// Nil means encryption is not configured: UpdateTapinToken then
 	// fails closed (it must never silently store plaintext) while
@@ -249,6 +250,12 @@ func (r *SupplierRepository) UpdateMemberRole(ctx context.Context, supplierID, m
 
 func NewSupplierRepository(db *sql.DB) *SupplierRepository {
 	return &SupplierRepository{db: db}
+}
+
+// WithInventoryHolds supplies the checkout hold store for stock adjustments.
+func (r *SupplierRepository) WithInventoryHolds(holds *RedisClient) *SupplierRepository {
+	r.inventoryHolds = holds
+	return r
 }
 
 // WithTapinCipher attaches the Tapin token cipher (SEC-01). It returns
@@ -1699,7 +1706,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		if err := publishProductModelV2Tx(ctx, tx, productID, categorySlug, proposalID, data); err != nil {
 			return "", err
 		}
-		if err := insertProductV2VariantsTx(ctx, tx, productID, requestedBy, data, true); err != nil {
+		if err := insertProductV2VariantsTx(ctx, tx, productID, requestedBy, data, true, proposalID); err != nil {
 			return "", err
 		}
 	}
@@ -1770,11 +1777,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	// variant for non-variable products so the SKU engine can see it.
 	// Re-approvals are idempotent
 	// (upsert + EXISTS guard).
-	if !existedBefore && requestedBy != "" && !IsProductV2(data) {
-		if err := seedSupplierInitialStockTx(ctx, tx, productID, requestedBy, stock); err != nil {
-			return "", fmt.Errorf("failed to seed supplier inventory for %s: %w", productID, err)
-		}
-	}
+
 	var hasVariant bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM product_variants WHERE product_id = $1)`,
@@ -1794,6 +1797,11 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		}
 	}
 
+	if !existedBefore && requestedBy != "" && !IsProductV2(data) {
+		if err := seedSupplierInitialStockTx(ctx, tx, productID, requestedBy, stock, proposalID); err != nil {
+			return "", fmt.Errorf("failed to seed supplier inventory for %s: %w", productID, err)
+		}
+	}
 	if isVariable && !hasVariant && !IsProductV2(data) && requestedBy != "" {
 		// A failed PostgreSQL insert aborts the transaction until the savepoint is rolled back.
 		if _, err := tx.ExecContext(ctx, `SAVEPOINT zero_variant_approval_audit`); err == nil {
@@ -2006,30 +2014,15 @@ func (r *SupplierRepository) GetSupplierProducts(ctx context.Context, supplierID
 }
 
 // First publication seeds a declared lot independently from later aggregate edits.
-func seedSupplierInitialStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int) error {
+func seedSupplierInitialStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, total int, proposalID string) error {
 	if total < 0 || int64(total) > 2147483647 {
 		return ErrStockAdjustmentInput
 	}
-	var version int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 FOR UPDATE`, productID).Scan(&version); err != nil {
+	// Brand-new legacy approvals already have exact variant stock.
+	if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET inventory_mode='tracked' WHERE product_id=$1`, productID); err != nil {
 		return err
 	}
-	if version >= 2 {
-		return fmt.Errorf("tracked product stock must be changed for the selected SKU")
-	}
-	location, err := supplierDeclaredLocationTx(ctx, tx, productID, supplierID)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO inventory_balances (id, product_id, supplier_id, owner_type, location_type, location_key, status, quantity, reconciled)
-		VALUES ($1, $2, $3, 'supplier', 'supplier', $4, 'sellable', $5, FALSE)
-		ON CONFLICT (product_id, owner_type, location_type, location_key, status) WHERE variant_id IS NULL
-		DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()`,
-		"INV-"+uuid.NewString(), productID, supplierID, location, total); err != nil {
-		return err
-	}
-	return syncProductStockTx(ctx, tx, productID)
+	return SeedTrackedSKUInventoryTx(ctx, tx, productID, supplierID, proposalID)
 }
 
 // UpdateProductStock retains the legacy aggregate API; HTTP uses AdjustProductStock
@@ -2070,183 +2063,7 @@ func (r *SupplierRepository) CreateReturnRequest(ctx context.Context, supplierID
 }
 
 func (r *SupplierRepository) CreateReturnRequestWithIdempotency(ctx context.Context, supplierID, productID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if quantity <= 0 || (method != "supplier_collect" && method != "postal") || strings.TrimSpace(reason) == "" {
-		return nil, fmt.Errorf("invalid return request")
-	}
-	if strings.TrimSpace(idempotencyKey) == "" {
-		// Preserve the pre-idempotency API contract for legacy callers. New HTTP
-		// callers should always send Idempotency-Key to make retries replay-safe.
-		idempotencyKey = "legacy-" + uuid.NewString()
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var prefix TransactionLockSet
-	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "suppliers", ID: supplierID}); err != nil {
-		return nil, err
-	}
-	var replayProduct string
-	replayErr := tx.QueryRowContext(ctx, `SELECT product_id FROM supplier_return_requests WHERE idempotency_key=$1 AND supplier_id=$2`, idempotencyKey, supplierID).Scan(&replayProduct)
-	if replayErr != nil && replayErr != sql.ErrNoRows {
-		return nil, replayErr
-	}
-	if replayErr == nil && replayProduct != productID {
-		return nil, fmt.Errorf("idempotency key already used for a different return request")
-	}
-	if err = LockTransactionRowsTx(ctx, tx, &prefix, TransactionRowLock{Table: "products", ID: productID}); err != nil {
-		return nil, err
-	}
-	var existing SupplierReturnRequest
-	var existingCreated time.Time
-	err = tx.QueryRowContext(ctx, `
-		SELECT rr.id, rr.supplier_id, rr.product_id, p.title, COALESCE(p.warehouse_name,''),
-		       rr.requested_quantity, p.stock, rr.collection_method, rr.postal_charge,
-		       rr.status, rr.reason, rr.created_at, rr.reviewed_at, rr.handover_at,
-		       rr.received_at, rr.inspected_at, COALESCE(rr.inspection_status,''),
-		       rr.accepted_quantity, rr.failed_quantity, COALESCE(to_jsonb(rr)->>'variant_id','')
-		FROM supplier_return_requests rr
-		JOIN products p ON p.id = rr.product_id
-		WHERE rr.idempotency_key = $1 AND rr.supplier_id = $2
-		FOR UPDATE`, idempotencyKey, supplierID).Scan(
-		&existing.ID, &existing.SupplierID, &existing.ProductID, &existing.ProductTitle,
-		&existing.WarehouseName, &existing.RequestedQuantity, &existing.EligibleQuantity,
-		&existing.CollectionMethod, &existing.PostalCharge, &existing.Status, &existing.Reason,
-		&existingCreated, &existing.ReviewedAt, &existing.HandoverAt, &existing.ReceivedAt,
-		&existing.InspectedAt, &existing.InspectionStatus, &existing.AcceptedQuantity, &existing.FailedQuantity, &existing.VariantID,
-	)
-	if err == nil {
-		if err = validateSupplierReturnReplay(existing, productID, "", quantity, method, reason); err != nil {
-			return nil, err
-		}
-		existing.CreatedAt = existingCreated
-		return &existing, tx.Commit()
-	}
-	if err != sql.ErrNoRows {
-		return nil, err
-	}
-	var title, warehouse string
-	var version int
-	if err := tx.QueryRowContext(ctx, `SELECT title, COALESCE(warehouse_name,''),COALESCE((to_jsonb(products)->>'schema_version')::int,0) FROM products WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, productID, supplierID).Scan(&title, &warehouse, &version); err != nil {
-		return nil, err
-	}
-	if version >= 2 {
-		return nil, fmt.Errorf("select a SKU for tracked product return")
-	}
-	// Canonical sellable balances are the only source of returnable quantity.
-	// products.stock is a legacy projection and may legitimately lag behind it.
-	type allocation struct {
-		balanceID   string
-		locationKey string
-		quantity    int
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, location_key, quantity
-		FROM inventory_balances
-		WHERE variant_id IS NULL AND product_id=$1 AND supplier_id=$2 AND owner_type='supplier' AND status='sellable' AND quantity > 0
-		ORDER BY reconciled DESC, updated_at, id
-		FOR UPDATE`, productID, supplierID)
-	if err != nil {
-		return nil, err
-	}
-	allocations := make([]allocation, 0)
-	eligible := 0
-	for rows.Next() {
-		var item allocation
-		if err := rows.Scan(&item.balanceID, &item.locationKey, &item.quantity); err != nil {
-			return nil, err
-		}
-		allocations = append(allocations, item)
-		eligible += item.quantity
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if quantity > eligible {
-		return nil, fmt.Errorf("return quantity exceeds canonical eligible quantity")
-	}
-	var charge *int64
-	if err := tx.QueryRowContext(ctx, `SELECT supplier_return_postal_charge FROM platform_settings WHERE id=1`).Scan(&charge); err != nil {
-		return nil, err
-	}
-	postalCharge := int64(0)
-	if method == "postal" {
-		if charge == nil {
-			return nil, fmt.Errorf("postal return charge policy is not configured")
-		}
-		postalCharge = *charge
-	}
-	id := "RET-" + uuid.NewString()
-	remaining := quantity
-	firstBalanceID := ""
-	allocationIndex := 0
-	for _, item := range allocations {
-		if remaining == 0 {
-			break
-		}
-		reserved := item.quantity
-		if reserved > remaining {
-			reserved = remaining
-		}
-		if firstBalanceID == "" {
-			firstBalanceID = item.balanceID
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE variant_id IS NULL AND id=$2 AND status='sellable' AND quantity >= $1`, reserved, item.balanceID); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled)
-			SELECT $1,product_id,supplier_id,owner_type,location_type,location_key,'return_requested',$2,reconciled
-			FROM inventory_balances WHERE variant_id IS NULL AND id=$3
-			ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL
-			DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`,
-			"INV-"+uuid.NewString(), reserved, item.balanceID); err != nil {
-			return nil, err
-		}
-		reservationID := "RES-" + uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_reservations (id,product_id,supplier_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES ($1,$2,$3,$4,$5,'supplier_return',$6,'active',$7)`, reservationID, productID, supplierID, item.locationKey, reserved, id, fmt.Sprintf("%s:reservation:%d", idempotencyKey, allocationIndex)); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES ($1,$2,$3,$4,'sellable','return_requested',$5,$5,'supplier_return',$6,$7,NULLIF($8,''),'{}'::jsonb)`, "IM-"+uuid.NewString(), productID, supplierID, reserved, item.locationKey, id, fmt.Sprintf("%s:movement:%d", idempotencyKey, allocationIndex), actorUserID); err != nil {
-			return nil, err
-		}
-		remaining -= reserved
-		allocationIndex++
-	}
-	if remaining != 0 || firstBalanceID == "" {
-		return nil, fmt.Errorf("return reservation allocation is inconsistent")
-	}
-	// Fix P3-14: the canonical source of truth is inventory_balances. Recompute
-	// the products.stock projection from ALL sellable rows (supplier +
-	// warehouse), never a supplier-only partial SUM, and never overwrite the
-	// trigger-maintained projection with a partial sum. syncProductStockTx is a
-	// no-op for products with no balance rows (legacy path keeps products.stock
-	// authoritative).
-	if err := syncProductStockTx(ctx, tx, productID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO supplier_return_requests
-		  (id,supplier_id,product_id,requested_quantity,collection_method,postal_charge,status,reason,idempotency_key,inventory_reference_id)
-		VALUES ($1,$2,$3,$4,$5,$6,'awaiting_return_test',$7,$8,$9)`, id, supplierID, productID, quantity, method, postalCharge, reason, idempotencyKey, firstBalanceID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO supplier_return_events (id,return_request_id,to_status,reason,actor_user_id,idempotency_key)
-		VALUES ($1,$2,'awaiting_return_test',$3,NULLIF($4,''),$5)`,
-		"RET-EVT-"+uuid.NewString(), id, reason, actorUserID, idempotencyKey+":event"); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &SupplierReturnRequest{ID: id, SupplierID: supplierID, ProductID: productID, ProductTitle: title, WarehouseName: warehouse, RequestedQuantity: quantity, EligibleQuantity: eligible - quantity, CollectionMethod: method, PostalCharge: postalCharge, Status: "awaiting_return_test", Reason: reason}, nil
+	return r.createSupplierReturnTx(ctx, supplierID, productID, "", quantity, method, reason, idempotencyKey, actorUserID)
 }
 
 func (r *SupplierRepository) GetReturnRequests(ctx context.Context, supplierID string) ([]SupplierReturnRequest, error) {
@@ -2330,154 +2147,15 @@ func (r *SupplierRepository) ReviewReturn(ctx context.Context, returnID, status,
 }
 
 func (r *SupplierRepository) releaseReturnReservations(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actorUserID string) error {
-	if handled, err := moveSupplierReturnReservationsSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, false); handled || err != nil {
-		return err
-	}
-
-	rows, err := tx.QueryContext(ctx, `SELECT location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND status='active' FOR UPDATE`, returnID)
-	if err != nil {
-		return err
-	}
-	type reservation struct {
-		locationKey string
-		quantity    int
-	}
-	reservations := make([]reservation, 0)
-	for rows.Next() {
-		var item reservation
-		if err := rows.Scan(&item.locationKey, &item.quantity); err != nil {
-			return err
-		}
-		reservations = append(reservations, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	count := 0
-	for _, item := range reservations {
-		result, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE variant_id IS NULL AND product_id=$2 AND supplier_id=$3 AND location_key=$4 AND status='return_requested' AND quantity >= $1`, item.quantity, productID, supplierID, item.locationKey)
-		if err != nil {
-			return err
-		}
-		affected, err := result.RowsAffected()
-		if err != nil || affected != 1 {
-			return fmt.Errorf("return reservation was already released or is inconsistent")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) SELECT $1,product_id,supplier_id,owner_type,location_type,location_key,'sellable',$2,reconciled FROM inventory_balances WHERE variant_id IS NULL AND product_id=$3 AND supplier_id=$4 AND location_key=$5 AND status='return_requested' ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), item.quantity, productID, supplierID, item.locationKey); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES ($1,$2,$3,$4,'return_requested','sellable',$5,$5,'supplier_return',$6,$7,NULLIF($8,''),'{}'::jsonb) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, item.quantity, item.locationKey, returnID, returnID+":release:"+item.locationKey, actorUserID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inventory_reservations SET status='released',released_at=NOW() WHERE reference_id=$1 AND reference_type='supplier_return' AND location_key=$2 AND status='active'`, returnID, item.locationKey); err != nil {
-			return err
-		}
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if count == 0 {
-		return fmt.Errorf("return reservation was already released or is inconsistent")
-	}
-	// Fix P3-14: the canonical source of truth is inventory_balances. Recompute
-	// the products.stock projection from ALL sellable rows (supplier +
-	// warehouse), never a supplier-only partial SUM, and never overwrite the
-	// trigger-maintained projection with a partial sum. syncProductStockTx is a
-	// no-op for products with no balance rows (legacy path keeps products.stock
-	// authoritative).
-	if err := syncProductStockTx(ctx, tx, productID); err != nil {
-		return err
-	}
-	return nil
+	_, err := moveSupplierReturnReservationsSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, false)
+	return err
 }
 
 func (r *SupplierRepository) consumeReturnReservations(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actorUserID string) error {
-	if handled, err := moveSupplierReturnReservationsSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, true); handled || err != nil {
-		return err
-	}
-
-	rows, err := tx.QueryContext(ctx, `SELECT location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND status='active' FOR UPDATE`, returnID)
-	if err != nil {
-		return err
-	}
-	type reservation struct {
-		locationKey string
-		quantity    int
-	}
-	reservations := make([]reservation, 0)
-	for rows.Next() {
-		var item reservation
-		if err := rows.Scan(&item.locationKey, &item.quantity); err != nil {
-			return err
-		}
-		reservations = append(reservations, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	count := 0
-	for _, item := range reservations {
-		result, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE variant_id IS NULL AND product_id=$2 AND supplier_id=$3 AND location_key=$4 AND status='return_requested' AND quantity >= $1`, item.quantity, productID, supplierID, item.locationKey)
-		if err != nil {
-			return err
-		}
-		affected, err := result.RowsAffected()
-		if err != nil || affected != 1 {
-			return fmt.Errorf("return reservation is inconsistent")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','in_transit',$4,'in_transit',$5,FALSE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, "return:"+returnID, item.quantity); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id) VALUES ($1,$2,$3,$4,'return_requested','in_transit',$5,$6,'supplier_return',$7,$8,NULLIF($9,'')) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, item.quantity, item.locationKey, "return:"+returnID, returnID, "handover:"+returnID+":"+item.locationKey, actorUserID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inventory_reservations SET status='consumed' WHERE reference_id=$1 AND reference_type='supplier_return' AND location_key=$2 AND status='active'`, returnID, item.locationKey); err != nil {
-			return err
-		}
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if count == 0 {
-		return fmt.Errorf("return reservation is inconsistent")
-	}
-	// Storage-fee positions (gap 7 lifecycle): handover is the
-	// physical warehouse exit for the reserved supplier stock, so
-	// the consumed quantity leaves the position ledger (FIFO) in
-	// the same transaction. Reservations carry no warehouse id
-	// (bin lots predate the warehouses table), so the FIFO runs
-	// over this supplier's positions for the product un-narrowed.
-	totalConsumed := 0
-	for _, item := range reservations {
-		totalConsumed += item.quantity
-	}
-	if err := releaseSupplierReturnOccupancyTx(ctx, tx, returnID, actorUserID); err != nil {
-		return err
-	}
-	known, err := hasKnownStorageProductTx(ctx, tx, productID)
-	if err != nil {
-		return err
-	}
-	if known {
-		err = consumeStorageBusinessEventTx(ctx, tx, "supplier_return", returnID, actorUserID)
-	} else {
-		err = decrementStoragePositionsFIFO(ctx, tx, productID, supplierID, "", totalConsumed)
-	}
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err := moveSupplierReturnReservationsSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, true)
+	return err
 }
 
-// CancelReturn releases a pre-handover reservation exactly once.
 func (r *SupplierRepository) CancelReturn(ctx context.Context, supplierID, returnID, reason, actorUserID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2616,24 +2294,9 @@ func (r *SupplierRepository) ReceiveReturn(ctx context.Context, returnID, actorU
 	if current != "in_transit" {
 		return fmt.Errorf("return is not in transit")
 	}
-	handled, err := receiveSupplierReturnSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, quantity)
+	_, err = receiveSupplierReturnSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, quantity)
 	if err != nil {
 		return err
-	}
-	if !handled {
-		result, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE variant_id IS NULL AND product_id=$2 AND supplier_id=$3 AND location_key=$4 AND status='in_transit' AND quantity >= $1`, quantity, productID, supplierID, "return:"+returnID)
-		if err != nil {
-			return err
-		}
-		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-			return fmt.Errorf("in-transit inventory is inconsistent")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse','return:' || $4,'quarantine',$5,FALSE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, returnID, quantity); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id) VALUES ($1,$2,$3,$4,'in_transit','quarantine',$5,$6,'supplier_return',$7,$8,NULLIF($9,'')) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, quantity, "return:"+returnID, "return:"+returnID, returnID, "receive:"+returnID, actorUserID); err != nil {
-			return err
-		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_return_parcels SET status='received',updated_at=NOW() WHERE return_request_id=$1 AND status='handed_over'`, returnID); err != nil {
 		return err
@@ -2682,34 +2345,9 @@ func (r *SupplierRepository) InspectReturn(ctx context.Context, returnID, actorU
 			inspection = "failed"
 		}
 	}
-	handled, err := inspectSupplierReturnSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, accepted, failed)
+	_, err = inspectSupplierReturnSKUTx(ctx, tx, returnID, productID, supplierID, actorUserID, accepted, failed)
 	if err != nil {
 		return err
-	}
-	if !handled {
-		result, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$1,updated_at=NOW() WHERE variant_id IS NULL AND product_id=$2 AND supplier_id=$3 AND location_key=$4 AND status='quarantine' AND quantity >= $1`, accepted+failed, productID, supplierID, "return:"+returnID)
-		if err != nil {
-			return err
-		}
-		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-			return fmt.Errorf("quarantine inventory is inconsistent")
-		}
-		if accepted > 0 {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,'sellable',$5,FALSE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, "return:"+returnID, accepted); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id) VALUES ($1,$2,$3,$4,'quarantine','sellable',$5,$6,'supplier_return',$7,$8,NULLIF($9,'')) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, accepted, "return:"+returnID, "return:"+returnID, returnID, fmt.Sprintf("inspect:%s:accepted", returnID), actorUserID); err != nil {
-				return err
-			}
-		}
-		if failed > 0 {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','warehouse',$4,'damaged',$5,FALSE) ON CONFLICT (product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), productID, supplierID, "return:"+returnID, failed); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements (id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id) VALUES ($1,$2,$3,$4,'quarantine','damaged',$5,$6,'supplier_return',$7,$8,NULLIF($9,'')) ON CONFLICT (idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), productID, supplierID, failed, "return:"+returnID, "return:"+returnID, returnID, fmt.Sprintf("inspect:%s:failed", returnID), actorUserID); err != nil {
-				return err
-			}
-		}
 	}
 	// Fix P3-14: the canonical source of truth is inventory_balances. Recompute
 	// the products.stock projection from ALL sellable rows (supplier +

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var ErrInboundProvenance = errors.New("inbound provenance conflict or reconciliation required")
@@ -84,6 +85,18 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 	if undisposed != l.Received-priorTotal {
 		return ErrInboundProvenance
 	}
+	sourceLocation := "inbound-line:" + l.ID
+	var sourceLot string
+	if deltaPassed > 0 || deltaFailed > 0 {
+		sourceLot, err = inventoryLotIDTx(ctx, tx, l.Product, l.Variant, sourceLocation, "quarantine")
+		if err != nil {
+			return err
+		}
+	}
+	resolved, err := ResolveLegacyPurchaseVariant(ctx, tx, l.Product, l.Variant)
+	if err != nil {
+		return err
+	}
 	qcID := "QC-" + uuid.NewString()
 	for _, move := range []struct {
 		status   string
@@ -100,16 +113,53 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 		if n != 1 {
 			return ErrInboundProvenance
 		}
-		destination := "inbound-line:" + l.ID
+		destination := sourceLocation
+		targetLine := l
+		targetLine.Variant = resolved
+		legacyMint := l.Variant == "" && resolved != ""
+		targetQty := move.quantity
+		if legacyMint {
+			targetQty = 0
+		}
 		if move.status == "qc_accepted" {
-			if err := createInboundPutawayTx(ctx, tx, l, qcID, move.quantity); err != nil {
+			if err := createInboundPutawayTx(ctx, tx, targetLine, qcID, targetQty, move.quantity); err != nil {
 				return err
 			}
 			destination = "qc-accepted:" + qcID
+		} else if legacyMint {
+			if _, err = creditReturnLotTx(ctx, tx, l.Product, l.Supplier, resolved, "damaged", destination, "warehouse:"+l.Warehouse, 0); err != nil {
+				return err
+			}
 		} else if err := inboundCreditTx(ctx, tx, l.ID, l.Supplier, l.Warehouse, l.Product, l.Variant, move.status, move.quantity); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$11,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, move.quantity, move.status, "inbound-line:"+l.ID, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor, destination); err != nil {
+		target, err := inventoryLotIDTx(ctx, tx, l.Product, resolved, destination, move.status)
+		if err != nil {
+			return err
+		}
+		if legacyMint && move.status == "damaged" {
+			stage, err := creditReturnLotTx(ctx, tx, l.Product, l.Supplier, resolved, "quarantine", "inbound-qc-mint:"+qcID, "warehouse:"+l.Warehouse, 0)
+			if err != nil {
+				return err
+			}
+			if _, err = mintUnitsTx(ctx, tx, resolved, l.Product, stage, move.quantity, "quarantined", "inbound_qc_disposition", qcID, actor); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=CASE WHEN id=$1 THEN quantity-$3 ELSE quantity+$3 END WHERE id IN ($1,$2)`, stage, target, move.quantity); err != nil {
+				return err
+			}
+			if _, err = moveLotUnitsTx(ctx, tx, l.Product, resolved, stage, target, "quarantined", "damaged", move.quantity, "inbound", "inbound_qc_disposition", qcID, actor); err != nil {
+				return err
+			}
+		} else if legacyMint {
+			if _, err = mintUnitsTx(ctx, tx, resolved, l.Product, target, move.quantity, "defined", "inbound_qc_disposition", qcID, actor); err != nil {
+				return err
+			}
+		} else if _, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, sourceLot, target, "quarantined", unitStatusForLot(move.status, destination), move.quantity, "inbound", "inbound_qc_disposition", qcID, actor); err != nil {
+			return err
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$11,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, resolved, move.quantity, move.status, sourceLocation, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor, destination); err != nil {
 			return err
 		}
 	}
@@ -226,14 +276,7 @@ func reserveInboundTransferTx(ctx context.Context, tx *sql.Tx, shipmentID, suppl
 			}
 		}
 		id := "IL-" + uuid.NewString()
-		raw, _ := json.Marshal(allocations)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO inbound_inventory_lines(id,shipment_id,supplier_id,warehouse_id,product_id,variant_id,source_kind,source_warehouse_id,external_reference,reason,quantity,allocations) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, id, shipmentID, supplierID, warehouseID, l.ProductID, l.VariantID, l.SourceKind, l.Source.SupplierWarehouseID, l.ExternalReference, l.Reason, l.Quantity, raw); err != nil {
-			var state interface{ SQLState() string }
-			if errors.As(err, &state) && state.SQLState() == "23505" {
-				return fmt.Errorf("%w: business reference already claimed", ErrInboundProvenance)
-			}
-			return err
-		}
+		var raw []byte
 		for _, a := range allocations {
 			res, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$2,updated_at=NOW() WHERE id=$1 AND quantity >=$2`, a.BalanceID, a.Quantity)
 			if err != nil {
@@ -248,10 +291,38 @@ func reserveInboundTransferTx(ctx context.Context, tx *sql.Tx, shipmentID, suppl
 			if err := inboundCreditTx(ctx, tx, id, supplierID, warehouseID, l.ProductID, l.VariantID, "inbound_reserved", l.Quantity); err != nil {
 				return err
 			}
+			target, err := inventoryLotIDTx(ctx, tx, l.ProductID, l.VariantID, "inbound-line:"+id, "inbound_reserved")
+			if err != nil {
+				return err
+			}
+			for i := range allocations {
+				a := &allocations[i]
+				a.UnitCodes, err = moveLotUnitsTx(ctx, tx, l.ProductID, l.VariantID, a.BalanceID, target, "in_stock", "reserved", a.Quantity, "inbound", "inbound_booking", id, "")
+				if err != nil {
+					return err
+				}
+			}
+			raw, err = json.Marshal(allocations)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'sellable','inbound_reserved',$6,$7,'inbound_booking',$8,$9,$10)`, "IM-"+uuid.NewString(), l.ProductID, supplierID, l.VariantID, l.Quantity, "supplier-warehouse:"+l.Source.SupplierWarehouseID, "inbound-line:"+id, id, "inbound-booking:"+id, raw); err != nil {
 				return err
 			}
 
+		}
+		// Persist the complete provenance once, including the reserved unit codes.
+		// The identity trigger intentionally forbids updating allocations later.
+		raw, err = json.Marshal(allocations)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inbound_inventory_lines(id,shipment_id,supplier_id,warehouse_id,product_id,variant_id,source_kind,source_warehouse_id,external_reference,reason,quantity,allocations) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, id, shipmentID, supplierID, warehouseID, l.ProductID, l.VariantID, l.SourceKind, l.Source.SupplierWarehouseID, l.ExternalReference, l.Reason, l.Quantity, raw); err != nil {
+			var state interface{ SQLState() string }
+			if errors.As(err, &state) && state.SQLState() == "23505" {
+				return fmt.Errorf("%w: business reference already claimed", ErrInboundProvenance)
+			}
+			return err
 		}
 	}
 	return nil
@@ -292,22 +363,41 @@ func inboundMoveTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, from
 	if n == 0 {
 		return nil
 	}
-	if from != "external" {
-		res, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$4,updated_at=NOW() WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND location_key=$3 AND status=$5 AND quantity >=$4`, l.Product, l.Variant, "inbound-line:"+l.ID, n, from)
+	location := "inbound-line:" + l.ID
+	key := fmt.Sprintf("inbound:%s:%s:%d", l.ID, to, l.Received+n)
+	if from == "external" && l.Variant != "" {
+		target, err := creditReturnLotTx(ctx, tx, l.Product, l.Supplier, l.Variant, to, location, "warehouse:"+l.Warehouse, 0)
 		if err != nil {
 			return err
 		}
-		count, _ := res.RowsAffected()
-		if count != 1 {
+		return mintSKUStockTx(ctx, tx, l.Product, l.Supplier, l.Variant, target, n, to, location, "inbound_receive", l.ID, key, actor)
+	}
+	var source string
+	if from != "external" {
+		err := tx.QueryRowContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$4,updated_at=NOW() WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND location_key=$3 AND quantity >=$4 AND status=$5 RETURNING id`, l.Product, l.Variant, location, n, from).Scan(&source)
+		if err == sql.ErrNoRows {
 			return ErrInboundProvenance
+		}
+		if err != nil {
+			return err
 		}
 	}
 	if err := inboundCreditTx(ctx, tx, l.ID, l.Supplier, l.Warehouse, l.Product, l.Variant, to, n); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,$7,$8,$8,'inbound_transfer',$9,$10,NULLIF($11,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, n, from, to, "inbound-line:"+l.ID, l.ID, fmt.Sprintf("inbound:%s:%s:%d", l.ID, to, l.Received+n), actor)
+	if source != "" {
+		target, err := inventoryLotIDTx(ctx, tx, l.Product, l.Variant, location, to)
+		if err != nil {
+			return err
+		}
+		if _, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, source, target, unitStatusForLot(from, location), unitStatusForLot(to, location), n, "inbound", "inbound_transfer", l.ID, actor); err != nil {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,$7,$8,$8,'inbound_transfer',$9,$10,NULLIF($11,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, n, from, to, location, l.ID, key, actor)
 	return err
 }
+
 func dispatchInboundTransferTx(ctx context.Context, tx *sql.Tx, shipment string) error {
 	lines, err := inboundLinesTx(ctx, tx, shipment)
 	if err != nil {
@@ -392,6 +482,10 @@ func cancelInboundTransferTx(ctx context.Context, tx *sql.Tx, shipment string) e
 			if count != 1 {
 				return ErrInboundProvenance
 			}
+			reserved, err := inventoryLotIDTx(ctx, tx, l.Product, l.Variant, "inbound-line:"+l.ID, "inbound_reserved")
+			if err != nil {
+				return err
+			}
 			remaining := n
 			for i := len(l.Allocations) - 1; i >= 0 && remaining > 0; i-- {
 				a := l.Allocations[i]
@@ -406,6 +500,9 @@ func cancelInboundTransferTx(ctx context.Context, tx *sql.Tx, shipment string) e
 				count, _ := res.RowsAffected()
 				if count != 1 {
 					return ErrInboundProvenance
+				}
+				if err = restoreInboundReservationUnitsTx(ctx, tx, l, reserved, a); err != nil {
+					return err
 				}
 			}
 		}
@@ -463,9 +560,14 @@ func lockInboundShipmentTx(ctx context.Context, tx *sql.Tx, shipment string) err
 	if err := LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, locks...); err != nil {
 		return err
 	}
+	parents := make([]inventoryCaptureItem, 0, len(lines))
 	products := make([]string, 0, len(lines))
 	for _, line := range lines {
 		products = append(products, line.Product)
+		parents = append(parents, inventoryCaptureItem{ProductID: line.Product, VariantID: line.Variant})
+	}
+	if err := lockInventoryParentsTx(ctx, tx, parents, true); err != nil {
+		return err
 	}
 	return lockInboundBalancesTx(ctx, tx, products)
 }
@@ -565,4 +667,32 @@ func lockInboundBalancesTx(ctx context.Context, tx *sql.Tx, products []string) e
 		}
 	}
 	return rows.Err()
+}
+
+func restoreInboundReservationUnitsTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, reserved string, a skuAllocation) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,code,status,balance_id,printed_at IS NOT NULL FROM product_units
+		WHERE balance_id=$1 AND status='reserved' AND code=ANY($2) ORDER BY sequence DESC LIMIT $3 FOR UPDATE`, reserved, pq.Array(a.UnitCodes), a.Quantity)
+	if err != nil {
+		return err
+	}
+	units, err := scanLockedUnits(rows)
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if len(units) < a.Quantity {
+		if spncxStrict {
+			return ErrUnitCoverageGap
+		}
+		if err = auditUnitGapTx(ctx, tx, l.Product, l.Variant, "inbound", "", a.Quantity, len(units)); err != nil {
+			return err
+		}
+	}
+	if err = transitionUnitsTx(ctx, tx, units, "in_stock", a.BalanceID, "released", "inbound_cancel", l.ID, ""); err != nil {
+		return err
+	}
+	if err = refreshUnitTrackedLotTx(ctx, tx, reserved); err != nil {
+		return err
+	}
+	return refreshUnitTrackedLotTx(ctx, tx, a.BalanceID)
 }

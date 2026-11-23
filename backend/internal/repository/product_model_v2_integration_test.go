@@ -39,6 +39,20 @@ func productModelV2Fixture(t *testing.T) *sql.DB {
 			t.Fatalf("clone %s: %v", table, err)
 		}
 	}
+	// Publication now creates serialized units. Install the real unit schema in
+	// this isolated fixture so its constraints are exercised with the SKU writes.
+	if _, err = tx.Exec(`CREATE TABLE orders(id VARCHAR(50) PRIMARY KEY);
+		CREATE TABLE order_items(id UUID PRIMARY KEY);
+		ALTER TABLE inventory_balances DROP COLUMN unit_tracked`); err != nil {
+		t.Fatal(err)
+	}
+	unitMigration, err := os.ReadFile("../../migrations/202611230002_spncx_product_units.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(string(unitMigration)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(`CREATE TABLE supplier_warehouses (LIKE public.supplier_warehouses INCLUDING ALL);
 		INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES('model-source','supplier-test','Model source','Test','Test')`); err != nil {
 		t.Fatal(err)

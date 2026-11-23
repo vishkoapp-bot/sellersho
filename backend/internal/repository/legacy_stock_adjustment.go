@@ -101,7 +101,7 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, product, suppli
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE products SET stock=0 WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1)`, product); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) SELECT $2::varchar,$1::varchar,$3::varchar,'supplier','warehouse','warehouse:legacy_migration','sellable',0,TRUE WHERE NOT EXISTS(SELECT 1 FROM inventory_balances WHERE product_id=$1::varchar)`, product, "INV-"+uuid.NewString(), supplier); err != nil {
 		return 0, err
 	}
 	if err = syncProductStockTx(ctx, tx, product); err != nil {

@@ -550,6 +550,14 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 }
 
 func resolveQuoteOrigins(ctx context.Context, db *sql.DB, lines []shippingQuoteLine) ([]shippingQuoteLine, error) {
+	lines = append([]shippingQuoteLine(nil), lines...)
+	for i := range lines {
+		resolved, err := repository.ResolveLegacyPurchaseVariant(ctx, db, lines[i].ProductID, lines[i].VariantID)
+		if err != nil {
+			return nil, err
+		}
+		lines[i].VariantID = resolved
+	}
 	totals := map[string]int{}
 	for _, line := range lines {
 		key := line.ProductID + "/" + line.VariantID

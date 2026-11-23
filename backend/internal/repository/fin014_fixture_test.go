@@ -233,7 +233,7 @@ func seedFIN014StorageLots(t *testing.T, db *sql.DB, prefix string) (unresolvedL
 				t.Fatalf("fin014 storage chain %s: %v", suffix, err)
 			}
 		}
-		if err = createInboundPutawayTx(ctx, tx, inboundPersistedLine{ID: line, Shipment: inbound, Supplier: supplier, Warehouse: warehouse, Product: product, Kind: "external_replenishment", Quantity: qty, Dispatched: qty, Received: qty}, disposition, qty); err != nil {
+		if err = createInboundPutawayTx(ctx, tx, inboundPersistedLine{ID: line, Shipment: inbound, Supplier: supplier, Warehouse: warehouse, Product: product, Kind: "external_replenishment", Quantity: qty, Dispatched: qty, Received: qty}, disposition, qty, qty); err != nil {
 			t.Fatalf("fin014 storage putaway %s: %v", suffix, err)
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,created_at) VALUES($1,$2,$3,$4,'quarantine','qc_accepted',$5,$6,'inbound_qc_disposition',$7,$1,$8,$9)`, movAccept, product, supplier, qty, "inbound-line:"+line, "qc-accepted:"+disposition, disposition, actor, billing); err != nil {

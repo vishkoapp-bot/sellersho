@@ -8,6 +8,35 @@ import (
 
 func TestBatch9VariantRenameMigration(t *testing.T) {
 	db := fin014FixtureDB(t)
+	// Batch 9 is no longer the newest migration. Rewind the later additive
+	// migration on this disposable, empty serialization schema before replaying
+	// the CLI; deleting only Batch 9 history correctly fails the ordering guard.
+	var units int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units`).Scan(&units); err != nil || units != 0 {
+		t.Fatalf("migration rehearsal requires empty units: count=%d err=%v", units, err)
+	}
+	down, err := os.ReadFile("../../migrations/202611230002_spncx_product_units.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(string(down)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM schema_migrations WHERE version='202611230002_spncx_product_units.up.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	if err := tx.QueryRow(`SELECT to_regclass('product_units') IS NULL AND NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='inventory_balances' AND column_name='unit_tracked')`).Scan(&removed); err != nil || !removed {
+		t.Fatalf("SPNCX down schema: %t %v", removed, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`
 		-- Allow a historical NULL only in this disposable fixture.
 		ALTER TABLE product_variants ALTER COLUMN attributes DROP NOT NULL;
@@ -41,13 +70,18 @@ func TestBatch9VariantRenameMigration(t *testing.T) {
 
 	// The disposable provisioner already migrated the empty database. Replay
 	// the data-only migration with the same CLI after seeding historical rows.
-	cmd := exec.Command("go", "run", "./cmd/migrate", "-dir", "migrations")
+	// This migration test also runs in source archives without VCS metadata.
+	cmd := exec.Command("go", "run", "-buildvcs=false", "./cmd/migrate", "-dir", "migrations")
 	cmd.Dir = "../.."
 	cmd.Env = append(os.Environ(), "DATABASE_URL="+os.Getenv("OPERATIONS_TEST_DATABASE_URL"))
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("replay Batch 9 with migration CLI: %v", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("replay Batch 9 with migration CLI: %v\n%s", err, output)
 	}
 
+	var restored bool
+	if err := db.QueryRow(`SELECT to_regclass('product_units') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='inventory_balances' AND column_name='unit_tracked')`).Scan(&restored); err != nil || !restored {
+		t.Fatalf("SPNCX up schema: %t %v", restored, err)
+	}
 	for spnc, want := range map[string]string{
 		"BATCH9ATTR": "زرد / بزرگ", "BATCH9EMPTY": "پیش‌فرض", "BATCH9SIMPLE": "پیش‌فرض",
 		"BATCH9LEGACY": "زرد", "BATCH9NAMED": "نگین‌دار",

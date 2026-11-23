@@ -121,6 +121,10 @@ func TestLegacyAggregateBoundsAndUnrelatedQuantities(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var gapOperations int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT metadata->>'operation') FROM inventory_movements WHERE product_id=$1 AND reference_type='unit_coverage_gap' AND metadata->>'operation' IN ('inbound','adjust_decrease') AND (metadata->>'shortfall')::int=6`, f.product).Scan(&gapOperations); err != nil || gapOperations != 2 {
+		t.Fatalf("increase/decrease gap operations=%d err=%v", gapOperations, err)
+	}
 	for _, input := range []struct {
 		quantity int
 		reason   string
@@ -206,7 +210,22 @@ func TestLegacyAggregateReadOnlyReconciliationReport(t *testing.T) {
 		if err = json.Unmarshal(audits, &history); err != nil {
 			t.Fatal(err)
 		}
-		if projection != 8 || sellable != 8 || len(physical) != 2 || len(events) != 1 || len(history) != 1 || next != "counted_reconciliation_required" {
+		// The physical adjustment remains exactly one event; serialization adds
+		// exactly one quantity-only coverage audit, which the report must expose.
+		adjustments, gaps := 0, 0
+		for _, event := range events {
+			if event["reference_type"] == "legacy_stock_adjustment" {
+				adjustments++
+			}
+			if event["reference_type"] == "unit_coverage_gap" {
+				metadata, ok := event["metadata"].(map[string]interface{})
+				if !ok || metadata["operation"] != "adjust_decrease" || metadata["requested"] != float64(2) || metadata["allocated"] != float64(0) || metadata["shortfall"] != float64(2) {
+					t.Fatalf("invalid gap evidence: %+v", event)
+				}
+				gaps++
+			}
+		}
+		if projection != 8 || sellable != 8 || len(physical) != 2 || len(events) != 2 || adjustments != 1 || gaps != 1 || len(history) != 1 || next != "counted_reconciliation_required" {
 			t.Fatalf("incomplete counted reconciliation report projection=%d sellable=%d lots=%d events=%d audits=%d", projection, sellable, len(physical), len(events), len(history))
 		}
 	}

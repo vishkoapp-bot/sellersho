@@ -119,9 +119,9 @@ type Niche struct {
 
 // Store represents dropshipper storefront or central marketplace
 type Store struct {
-	Tagline                   string          `json:"tagline"`
-	Description               string          `json:"description"`
-	ShortDescription          string          `json:"shortDescription"`
+	Tagline          string `json:"tagline"`
+	Description      string `json:"description"`
+	ShortDescription string `json:"shortDescription"`
 	// G2 (Batch 4b): the complementary-section title. Storage home is
 	// the dedicated stores.addon_section_title column (read in
 	// loadPanelConfig's SELECT, written by SaveStoreSettings) — NOT
@@ -671,4 +671,47 @@ type SearchDailyAggregate struct {
 	Day                time.Time `json:"day"`
 	Searches           int       `json:"searches"`
 	ZeroResultSearches int       `json:"zeroResultSearches"`
+}
+
+// ProductUnit identifies a physical unit independently of its lot.
+type ProductUnit struct {
+	ID            string     `json:"id"`
+	Code          string     `json:"code"`
+	VariantID     string     `json:"variant_id"`
+	ProductID     string     `json:"product_id"`
+	Sequence      int        `json:"sequence"`
+	Status        string     `json:"status"`
+	BalanceID     *string    `json:"balance_id"`
+	PrintedAt     *time.Time `json:"printed_at"`
+	LastPrintedAt *time.Time `json:"last_printed_at"`
+	PrintCount    int        `json:"print_count"`
+	PrintedBy     *string    `json:"printed_by"`
+	IssuedAt      time.Time  `json:"issued_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+// ProductUnitEvent records an issuance, transition, or print event.
+type ProductUnitEvent struct {
+	ID            string          `json:"id"`
+	UnitID        string          `json:"unit_id"`
+	Code          string          `json:"code"`
+	EventType     string          `json:"event_type"`
+	FromStatus    *string         `json:"from_status"`
+	ToStatus      *string         `json:"to_status"`
+	ReferenceType string          `json:"reference_type"`
+	ReferenceID   *string         `json:"reference_id"`
+	ActorUserID   *string         `json:"actor_user_id"`
+	Metadata      json.RawMessage `json:"metadata"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+// OrderItemUnit records which unit an order captured and when it was restored.
+type OrderItemUnit struct {
+	OrderItemID string     `json:"order_item_id"`
+	UnitID      string     `json:"unit_id"`
+	Code        string     `json:"code"`
+	OrderID     string     `json:"order_id"`
+	CapturedAt  time.Time  `json:"captured_at"`
+	RestoredAt  *time.Time `json:"restored_at"`
 }

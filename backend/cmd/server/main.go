@@ -230,7 +230,7 @@ func run(signalCtx context.Context) (result error) {
 			return errors.New("capability ownership bootstrap failed; check database availability")
 		}
 		adminRepo = repository.NewAdminRepository(db.DB)
-		supplierRepo = repository.NewSupplierRepository(db.DB).WithTapinCipher(tapinCipher)
+		supplierRepo = repository.NewSupplierRepository(db.DB).WithTapinCipher(tapinCipher).WithInventoryHolds(redisClient)
 		tapinRepo = repository.NewTapinRepository(db.DB).WithTokenCipher(tapinCipher)
 		warehouseRepo = repository.NewWarehouseRepository(db.DB)
 		shipmentRepo = repository.NewSupplierShipmentRepository(db.DB)

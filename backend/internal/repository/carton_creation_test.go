@@ -49,12 +49,14 @@ func cartonFixture(t *testing.T) (*sql.DB, *SupplierRepository, string, string) 
 
 func assertCartonCounts(t *testing.T, db *sql.DB, headers, lines int) {
 	t.Helper()
+	// The fixture mints two SKUs, each with one approval movement. Count all
+	// movements so an unintended approval write cannot evade this assertion.
 	var h, l, res, movements int
 	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM shipments),(SELECT COUNT(*) FROM shipment_items),(SELECT COUNT(*) FROM inventory_reservations),(SELECT COUNT(*) FROM inventory_movements)`).Scan(&h, &l, &res, &movements); err != nil {
 		t.Fatal(err)
 	}
-	if h != headers || l != lines || res != 0 || movements != lines {
-		t.Fatalf("writes: headers=%d lines=%d reservations=%d movements=%d; want %d/%d/0/booking-lines", h, l, res, movements, headers, lines)
+	if h != headers || l != lines || res != 0 || movements != lines+2 {
+		t.Fatalf("writes: headers=%d lines=%d reservations=%d movements=%d; want %d/%d/0/(2 seed movements + booking-lines)", h, l, res, movements, headers, lines)
 	}
 }
 
@@ -135,6 +137,16 @@ func TestCartonCreationReplayConcurrentAndResponseLoss(t *testing.T) {
 		t.Fatal("changed destination accepted")
 	}
 	assertCartonCounts(t, db, 1, 2)
+	var recorded, reserved int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM inbound_inventory_lines l,
+		 jsonb_array_elements(l.allocations) a, jsonb_array_elements_text(a->'unit_codes') code
+		 WHERE l.shipment_id=$1),
+		(SELECT COUNT(*) FROM product_units u JOIN inventory_balances b ON b.id=u.balance_id
+		 JOIN inbound_inventory_lines l ON b.location_key='inbound-line:'||l.id
+		 WHERE l.shipment_id=$1 AND u.status='reserved')`, id).Scan(&recorded, &reserved); err != nil || recorded != 3 || reserved != 3 {
+		t.Fatalf("reservation provenance: recorded=%d reserved=%d want 3/3 err=%v", recorded, reserved, err)
+	}
 }
 
 func TestCartonCreationCodeCollisionRetriesAtomically(t *testing.T) {

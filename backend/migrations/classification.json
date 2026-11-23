@@ -3,14 +3,14 @@
  "generated_by": "scripts/release/build_classification.py (MIG-02 step 1). Regenerate: python3 scripts/release/build_classification.py, then python3 scripts/release/generate_classification_md.py.",
  "repo_commit": "92f9cca",
  "counts": {
-  "EXPAND": 97,
+  "EXPAND": 98,
   "BACKFILL": 54,
   "CONTRACT": 62,
   "DESTRUCTIVE": 1,
-  "total": 214
+  "total": 215
  },
  "verdicts": {
-  "compatible": 192,
+  "compatible": 193,
   "tightening": 18,
   "breaking": 4
  },
@@ -6106,6 +6106,46 @@
    "verdict": "compatible",
    "old_binary_write": "Existing writes use the same schema and constraints. This backfill changes display names only.",
    "notes": "Batch 9: irreversibly derives display names from non-empty attribute values on variable or multi-variant products. Rows with no non-empty values are left for supplier action.",
+   "moves_floor": false},
+  {
+   "name": "202611230002_spncx_product_units.up.sql",
+   "class": "EXPAND",
+   "sha256": "651c52d6819f63099f0b1bbbff047e47380f8a08bfe99dfffc69d9cb6eafbcf8",
+   "has_down_sql": true,
+   "tables": [
+    "product_units",
+    "product_variant_unit_counters",
+    "product_unit_events",
+    "order_item_units",
+    "spncx_backfill_state",
+    "spncx_backfill_snapshot",
+    "spncx_print_jobs",
+    "spncx_print_job_units",
+    "spncx_failed_captures",
+    "inventory_balances"
+   ],
+   "operations": [
+    "CREATE TABLE: product_units",
+    "CREATE TABLE: product_variant_unit_counters",
+    "CREATE TABLE: product_unit_events",
+    "CREATE TABLE: order_item_units",
+    "CREATE TABLE: spncx_backfill_state",
+    "CREATE TABLE: spncx_backfill_snapshot",
+    "CREATE TABLE: spncx_print_jobs",
+    "CREATE TABLE: spncx_print_job_units",
+    "CREATE TABLE: spncx_failed_captures",
+    "ALTER TABLE: inventory_balances.unit_tracked",
+    "EXPAND CHECK: inventory_balances.status permits sold"
+   ],
+   "runtime_ms_disposable": null,
+   "chunked": false,
+   "timeout_lock_seconds": null,
+   "timeout_statement_seconds": null,
+   "post_conditions": [],
+   "post_condition_status": "none",
+   "verdict": "compatible",
+   "old_binary_write": "The new tables are additive and unit_tracked defaults to false for existing writes.",
+   "notes": "SPNCX schema and manual failed-capture queue.",
    "moves_floor": false
   }
  ]

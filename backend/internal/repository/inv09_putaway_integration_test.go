@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -147,12 +148,23 @@ func inv09ReceiveTracked(t *testing.T, quantity int) (*sql.DB, opsFixture, strin
 	opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'p','c')`, warehouse)
 	opsExec(t, db, `INSERT INTO supplier_warehouses(id,supplier_id,name,province_name,city_name) VALUES($1,$2,$1,'p','c')`, source, f.supplier)
 	opsExec(t, db, `UPDATE products SET schema_version=2,product_type='variable',attribute_schema='{}',origin_supplier_warehouse_id=$1 WHERE id=$2`, source, f.product)
-	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode,stock) VALUES($1,$2,$3,'tracked',$6),($4,$2,$5,'tracked',3)`, red, f.product, "R"+red[:10], blue, "B"+blue[:10], quantity)
+	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode) VALUES($1,$2,$3,'tracked'),($4,$2,$5,'tracked')`, red, f.product, strings.ToUpper("R"+red[:8]), blue, strings.ToUpper("B"+blue[:8]))
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
 	for _, lot := range []struct {
 		id       string
 		quantity int
 	}{{red, quantity}, {blue, 3}} {
-		opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,supplier_warehouse_id) VALUES($1,$2,$3,$4,'supplier','supplier',$5,'sellable',$6,$7)`, uuid.NewString(), f.product, f.supplier, lot.id, "supplier-warehouse:"+source, lot.quantity, source)
+		location := "supplier-warehouse:" + source
+		if err := creditSKUInventoryTx(ctx, tx, f.product, f.supplier, lot.id, lot.quantity, "sellable", "supplier", location, "approval", f.product, "fixture-seed:"+lot.id, f.user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	sup := NewSupplierRepository(db)
 	shipment, err := sup.CreateCartonShipment(ctx, f.supplier, []CartonShipmentItem{{VariantID: red, ExpectedQty: quantity}}, warehouse, "inv09-tracked")
@@ -184,6 +196,12 @@ func TestINV09TrackedReceiptUsesSameExactPutaway(t *testing.T) {
 		t.Fatalf("unplaced SKU captured: %v", err)
 	}
 	inv09PlacePending(t, db, f, shipment, warehouse)
+	if _, err = orders.MarkPaymentPaid(ctx, token, "pre-tracked", "mask"); !errors.Is(err, ErrCapturePendingManualResolution) {
+		t.Fatalf("failed charged capture replayed after putaway: %v", err)
+	}
+	order, token = opsOrder(t, db, f, false)
+	opsExec(t, db, `UPDATE order_items SET variant_id=$2 WHERE order_id=$1`, order, red)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
 	if _, err = orders.MarkPaymentPaid(ctx, token, "R"+red[:20], "mask"); err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +337,11 @@ func TestINV09LegacyQCAwaitsExactPutaway(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if _, err = orders.MarkPaymentPaid(ctx, token, "before-putaway", "mask"); !errors.Is(err, ErrCapturePendingManualResolution) {
+				t.Fatalf("failed charged capture replayed after putaway: %v", err)
+			}
+			order, token = opsOrder(t, db, f, false)
+			seedCanonicalWarehouseOrderOrigins(t, db, order, wh)
 			if _, err = orders.MarkPaymentPaid(ctx, token, "putaway-"+uuid.NewString()[:20], "mask"); err != nil {
 				t.Fatal(err)
 			}

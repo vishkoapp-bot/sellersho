@@ -42,7 +42,7 @@ func consumeInventoryForOriginTx(ctx context.Context, tx *sql.Tx, it inventoryCa
 	if total != it.Quantity {
 		return nil, fmt.Errorf("%w: origin reconciliation required", ErrInsufficientInventory)
 	}
-	var result []skuAllocation
+	result := make([]skuAllocation, 0)
 	for _, o := range origins {
 		var valid bool
 		switch o.Kind {
@@ -81,7 +81,7 @@ func consumeInventoryForOriginTx(ctx context.Context, tx *sql.Tx, it inventoryCa
 
 // All product parents precede every SKU, including foreign-key/stock-trigger
 // parents. Callers prehold their order/payment/account prefix.
-func lockInventoryParentsTx(ctx context.Context, tx *sql.Tx, items []inventoryCaptureItem) error {
+func lockInventoryParentsTx(ctx context.Context, tx *sql.Tx, items []inventoryCaptureItem, resolve ...bool) error {
 	products := map[string]bool{}
 	variants := map[string]bool{}
 	for _, it := range items {
@@ -99,10 +99,35 @@ func lockInventoryParentsTx(ctx context.Context, tx *sql.Tx, items []inventoryCa
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
+		if group.table == "product_variants" && len(resolve) > 0 && resolve[0] {
+			for i := range items {
+				it := &items[i]
+				var err error
+				it.VariantID, err = ResolveLegacyPurchaseVariant(ctx, tx, it.ProductID, it.VariantID)
+				if err != nil {
+					return err
+				}
+				if it.VariantID != "" {
+					variants[it.VariantID] = true
+				}
+			}
+			ids = ids[:0]
+			for id := range variants {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+		}
 		for _, id := range ids {
 			var got string
 			if err := tx.QueryRowContext(ctx, `SELECT id::text FROM `+group.table+` WHERE id=$1 FOR UPDATE`, id).Scan(&got); err != nil {
 				return err
+			}
+		}
+		if group.table == "product_variants" {
+			for _, id := range ids {
+				if err := lockExistingUnitCounterTx(ctx, tx, id); err != nil {
+					return err
+				}
 			}
 		}
 	}

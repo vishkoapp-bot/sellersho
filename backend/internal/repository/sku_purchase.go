@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -33,4 +35,22 @@ func ValidateSKUQuantity(mode string, active bool, stock, minimum int, maximum *
 		return ErrInsufficientInventory
 	}
 	return nil
+}
+
+// ResolveLegacyPurchaseVariant resolves the only unambiguous legacy SKU.
+func ResolveLegacyPurchaseVariant(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, productID, variantID string) (string, error) {
+	if variantID != "" {
+		return variantID, nil
+	}
+	var resolved string
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((
+		SELECT MIN(v.id::text) FILTER (WHERE v.is_default)
+		FROM product_variants v WHERE v.product_id=p.id HAVING COUNT(*)=1
+	),'') FROM products p WHERE p.id=$1 AND p.schema_version<2 AND p.product_type<>'variable'`, productID).Scan(&resolved)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return resolved, err
 }

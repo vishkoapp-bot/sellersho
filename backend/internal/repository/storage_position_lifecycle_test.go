@@ -206,6 +206,7 @@ func storagePositionSeed(t *testing.T, db *sql.DB) {
 			created_at timestamp with time zone NOT NULL DEFAULT now(),
 			supplier_warehouse_id text,
 			variant_id uuid,
+			unit_tracked boolean NOT NULL DEFAULT false,
 			warehouse_name character varying(100))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_unallocated_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_sku_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
@@ -394,6 +395,17 @@ func storagePositionSeed(t *testing.T, db *sql.DB) {
 			t.Fatal(err)
 		}
 	}
+	// Restore origin inference as well: supplier-warehouse lots must carry the
+	// source ID used by tracked inbound transfers after this fixture runs.
+	if _, err := db.Exec(`CREATE TRIGGER inventory_assign_origin BEFORE INSERT ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.inventory_assign_origin()`); err != nil {
+		t.Fatalf("restore inventory origin trigger: %v", err)
+	}
+	// Recreating the ledger also drops its production projection trigger. Keep
+	// tracked stock derived from actual lots for this fixture and later tests.
+	if _, err := db.Exec(`CREATE TRIGGER trg_inventory_balances_sync_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`); err != nil {
+		t.Fatalf("restore inventory projection trigger: %v", err)
+	}
+
 }
 
 // seedInboundForQC inserts a 'received' inbound plus the physical
@@ -630,11 +642,13 @@ func TestStoragePositionHandoverReturnDecrement(t *testing.T) {
 	ctx := context.Background()
 	repo := NewSupplierRepository(db)
 
+	variant := seedSupplierReturnLegacyVariant(t, db, "prod-measured")
+
 	if _, err := db.Exec(`INSERT INTO warehouse_storage_positions (id, product_id, supplier_id, warehouse_id, qty, stocked_at, original_stocked_at)
 		VALUES ('WSP-RET', 'prod-measured', 'sup-1', 'wh-1', 5, NOW(), NOW())`); err != nil {
 		t.Fatalf("seed position: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO supplier_return_requests (id, supplier_id, product_id, requested_quantity, status) VALUES ('RET-1', 'sup-1', 'prod-measured', 3, 'packed')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO supplier_return_requests (id, supplier_id, product_id, variant_id, requested_quantity, status) VALUES ('RET-1', 'sup-1', 'prod-measured', $1, 3, 'packed')`, variant); err != nil {
 		t.Fatalf("seed return: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO supplier_return_parcels (id, return_request_id, status) VALUES ('PAR-1', 'RET-1', 'confirmed')`); err != nil {
@@ -687,4 +701,15 @@ func TestStoragePositionPutawayAgedPositionIsChargedByEngine(t *testing.T) {
 	if err := db.QueryRow(`SELECT p.stocked_at=l.billing_start_at AND p.original_stocked_at=l.billing_start_at AND l.physical_received_at<l.billing_start_at FROM warehouse_storage_positions p JOIN warehouse_storage_receipt_lots l ON l.id=p.id WHERE p.id=$1`, position).Scan(&identity); err != nil || !identity {
 		t.Fatalf("receipt dates lost: %v", err)
 	}
+}
+
+// seedSupplierReturnLegacyVariant supplies identity, not serialized coverage: these
+// fixtures model pre-backfill quantity-only lots and must not mint artificial units.
+func seedSupplierReturnLegacyVariant(t *testing.T, db *sql.DB, productID string) string {
+	t.Helper()
+	var variant string
+	if err := db.QueryRow(`INSERT INTO product_variants(product_id,spnc,inventory_mode,is_default) VALUES($1,UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text,'-','') FROM 1 FOR 8)),'legacy',TRUE) RETURNING id`, productID).Scan(&variant); err != nil {
+		t.Fatalf("seed legacy supplier-return variant: %v", err)
+	}
+	return variant
 }

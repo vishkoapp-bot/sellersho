@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -287,6 +288,12 @@ func TestINV06SupplierReturnHandoverReleasesOnlyDepartedUnits(t *testing.T) {
 	for _, tracked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "tracked"}[tracked], func(t *testing.T) {
 			db, f, warehouse, bin, sku := inv06Placed(t, tracked, 4)
+			if !tracked {
+				// Supply return identity without inventing units or rewriting the
+				// pre-backfill physical placement's NULL variant provenance.
+				seedSupplierReturnLegacyVariant(t, db, f.product)
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			sup := NewSupplierRepository(db)
@@ -317,12 +324,41 @@ func TestINV06SupplierReturnHandoverReleasesOnlyDepartedUnits(t *testing.T) {
 }
 
 func TestINV06HistoricalUnknownBinShipsWithoutInventingCapacity(t *testing.T) {
-	db, f, warehouse, _, sku := inv06Placed(t, true, 1)
+	db, f, warehouse, known, sku := inv06Placed(t, true, 1)
+	var knownLot, knownCode string
+	if err := db.QueryRow(`SELECT b.id,u.code FROM inventory_balances b
+		JOIN product_units u ON u.balance_id=b.id AND u.status='in_stock'
+		WHERE b.variant_id=$1 AND b.warehouse_id=$2 AND b.location_key=$3 AND b.status='sellable'`,
+		sku, warehouse, "bin:"+known).Scan(&knownLot, &knownCode); err != nil {
+		t.Fatal(err)
+	}
 	unknown := inv08Bin(t, db, warehouse, 10000, 10000)
 	opsExec(t, db, `UPDATE warehouse_bins SET quantity=1,occupied_volume_cm3=123,occupied_weight_grams=456 WHERE bin_code=$1`, unknown)
-	opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,$3,$4,'supplier','bin',$5,'sellable',1,$6)`, "000-legacy-"+uuid.NewString(), f.product, f.supplier, sku, "bin:"+unknown, warehouse)
+	unknownLot := "000-legacy-" + uuid.NewString()
+	opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id) VALUES($1,$2,$3,$4,'supplier','bin',$5,'sellable',1,$6)`, unknownLot, f.product, f.supplier, sku, "bin:"+unknown, warehouse)
 	opsExec(t, db, `INSERT INTO warehouse_storage_positions(id,product_id,supplier_id,warehouse_id,qty,stocked_at,original_stocked_at) VALUES($1,$2,$3,$4,1,NOW(),NOW())`, "old-unknown-"+uuid.NewString(), f.product, f.supplier, warehouse)
-	order := inv06PaidOrder(t, db, f, warehouse, sku)
+	// Unit FIFO consumes the known serialized unit first; request both units
+	// to exercise the pre-backfill quantity-only lot as well.
+	order := inv06PaidOrder(t, db, f, warehouse, sku, 2)
+	var rawAllocations []byte
+	if err := db.QueryRow(`SELECT allocations FROM order_inventory_captures WHERE order_id=$1`, order).Scan(&rawAllocations); err != nil {
+		t.Fatal(err)
+	}
+	var allocations []skuAllocation
+	if err := json.Unmarshal(rawAllocations, &allocations); err != nil {
+		t.Fatal(err)
+	}
+	expectedCodes := map[string][]string{knownLot: {knownCode}, unknownLot: nil}
+	for _, allocation := range allocations {
+		codes, expected := expectedCodes[allocation.BalanceID]
+		if !expected || allocation.Quantity != 1 || !slices.Equal(allocation.UnitCodes, codes) {
+			t.Fatalf("unexpected mixed-coverage allocation: %+v", allocation)
+		}
+		delete(expectedCodes, allocation.BalanceID)
+	}
+	if len(expectedCodes) != 0 {
+		t.Fatalf("missing mixed-coverage allocations: %v", expectedCodes)
+	}
 	opsExec(t, db, `UPDATE orders SET status='packed',fulfillment_method='warehouse' WHERE id=$1`, order)
 	if err := NewWarehouseRepository(db).ShipOrder(context.Background(), order, "post", "TRK-"+order); err != nil {
 		t.Fatal(err)
@@ -451,6 +487,12 @@ func TestINV06ReturnCreationWaitsForSupplierBeforeProduct(t *testing.T) {
 	for _, tracked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "tracked"}[tracked], func(t *testing.T) {
 			db, f, _, _, sku := inv06Placed(t, tracked, 4)
+			if !tracked {
+				// Supply return identity without inventing units or rewriting the
+				// pre-backfill physical placement's NULL variant provenance.
+				seedSupplierReturnLegacyVariant(t, db, f.product)
+			}
+
 			creator := operationsDB(t)
 			creator.SetMaxOpenConns(1)
 			creator.SetMaxIdleConns(1)
@@ -506,10 +548,11 @@ func TestINV06ReturnCreationWaitsForSupplierBeforeProduct(t *testing.T) {
 func TestINV06LegacyReturnWithoutOriginMetadataKeepsCustodyTransfer(t *testing.T) {
 	db := team04TestDB(t)
 	storagePositionSeed(t, db)
+	variant := seedSupplierReturnLegacyVariant(t, db, "prod-measured")
 	bin := "old-" + uuid.NewString()[:12]
 	opsExec(t, db, `INSERT INTO warehouse_bins(bin_code,hall_name,aisle,shelf,quantity,occupied_volume_cm3,occupied_weight_grams,capacity_status) VALUES($1,'old','1','1',5,5000,500,'verified')`, bin)
 	opsExec(t, db, `INSERT INTO warehouse_storage_positions(id,product_id,supplier_id,warehouse_id,qty,stocked_at,original_stocked_at) VALUES('old-position','prod-measured','sup-1','wh-1',5,NOW(),NOW())`)
-	opsExec(t, db, `INSERT INTO supplier_return_requests(id,supplier_id,product_id,requested_quantity,status) VALUES('old-return','sup-1','prod-measured',2,'packed')`)
+	opsExec(t, db, `INSERT INTO supplier_return_requests(id,supplier_id,product_id,variant_id,requested_quantity,status) VALUES('old-return','sup-1','prod-measured',$1,2,'packed')`, variant)
 	opsExec(t, db, `INSERT INTO supplier_return_parcels(id,return_request_id,status) VALUES('old-parcel','old-return','confirmed')`)
 	opsExec(t, db, `INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES('old-source','prod-measured','sup-1','supplier','bin',$1,'return_requested',2,TRUE)`, bin)
 	opsExec(t, db, `INSERT INTO inventory_reservations(id,product_id,supplier_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES('old-reservation','prod-measured','sup-1',$1,2,'supplier_return','old-return','active','old-return-reservation')`, bin)
@@ -524,6 +567,25 @@ func TestINV06LegacyReturnWithoutOriginMetadataKeepsCustodyTransfer(t *testing.T
 	if err := db.QueryRow(`SELECT capacity_status FROM warehouse_bins WHERE bin_code=$1`, bin).Scan(&status); err != nil || status != "disputed" {
 		t.Fatalf("unknown origin occupancy=%s err=%v", status, err)
 	}
+	var sourceQty, destinationQty, movements int
+	var sourceVariant, reservationVariant sql.NullString
+	if err := db.QueryRow(`SELECT quantity,variant_id FROM inventory_balances WHERE id='old-source'`).Scan(&sourceQty, &sourceVariant); err != nil || sourceQty != 0 || sourceVariant.Valid {
+		t.Fatalf("legacy source qty=%d variant=%v err=%v", sourceQty, sourceVariant, err)
+	}
+	if err := db.QueryRow(`SELECT quantity FROM inventory_balances WHERE product_id='prod-measured' AND variant_id=$1 AND location_key='supplier-return-transit:old-return' AND status='in_transit'`, variant).Scan(&destinationQty); err != nil || destinationQty != 2 {
+		t.Fatalf("resolved destination qty=%d err=%v", destinationQty, err)
+	}
+	if err := db.QueryRow(`SELECT variant_id,status FROM inventory_reservations WHERE id='old-reservation'`).Scan(&reservationVariant, &status); err != nil || reservationVariant.Valid || status != "consumed" {
+		t.Fatalf("source reservation variant=%v status=%s err=%v", reservationVariant, status, err)
+	}
+	if err := NewSupplierRepository(db).HandoverReturn(context.Background(), "old-return", "warehouse-1", "old-handover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM inventory_movements WHERE reference_id='old-return'`).Scan(&movements); err != nil || movements != 1 {
+		t.Fatalf("handover replay movements=%d err=%v", movements, err)
+	}
+	inv06AssertOccupancy(t, db, bin, 5, 5000, 500)
+
 }
 
 func TestINV06SharedBinUnknownProductKeepsWholeBinConservative(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -1116,6 +1117,12 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 		}
 	}
 
+	if err = guardFailedCaptureTx(ctx, dbTx, lockedOrderID); err != nil {
+		return nil, err
+	}
+	if _, err = dbTx.ExecContext(ctx, `SAVEPOINT spncx_payment_capture`); err != nil {
+		return nil, err
+	}
 	admissible, err := confirmOrderCouponTx(ctx, dbTx, lockedOrderID, false)
 	if err != nil {
 		return nil, err
@@ -1162,71 +1169,36 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	}
 
 	handledCapture, err := captureOrderInventoryTx(ctx, dbTx, payment.OrderID)
-	if err != nil {
-		return nil, err
+	if err == nil && !handledCapture {
+		err = errors.New("inventory capture schema unavailable")
 	}
-	if !handledCapture {
-		itemRows, err := dbTx.QueryContext(ctx, `
-		SELECT product_id, quantity, variant_id
-		FROM order_items
-		WHERE order_id = $1
-	`, payment.OrderID)
-		if err != nil {
-			return nil, err
+	if err != nil {
+		failure := captureFailureCode(err)
+		mode := "pre_strict"
+		if spncxStrict {
+			mode = "strict"
 		}
-		defer itemRows.Close()
-
-		type inventoryItem struct {
-			productID string
-			quantity  int
-			variantID sql.NullString
-		}
-		var items []inventoryItem
-		for itemRows.Next() {
-			var item inventoryItem
-			if err := itemRows.Scan(&item.productID, &item.quantity, &item.variantID); err != nil {
-				return nil, err
-			}
-			items = append(items, item)
-		}
-		if err := itemRows.Err(); err != nil {
-			return nil, err
-		}
-		if err := itemRows.Close(); err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			result, err := dbTx.ExecContext(ctx, `
-			UPDATE products
-			SET stock = stock - $2
-			WHERE id = $1 AND stock >= $2
-		`, item.productID, item.quantity)
-			if err != nil {
-				return nil, err
-			}
-			rows, err := result.RowsAffected()
-			if err != nil {
-				return nil, err
-			}
-			if rows != 1 {
-				return nil, ErrInsufficientInventory
-			}
-			// Fix69 O4: decrement the variant stock alongside the product
-			// stock. Guarded by stock >= qty and deliberately NOT fatal
-			// on zero rows: a 0-stock variant is untracked (see the
-			// create-time gate in handleCreateOrder), so it must not
-			// fail a payment whose product stock was sufficient.
-			// Product stock stays the authoritative accounting.
-			if item.variantID.Valid && item.variantID.String != "" {
-				if _, err := dbTx.ExecContext(ctx, `
-				UPDATE product_variants
-				SET stock = stock - $2
-				WHERE id = $1 AND stock >= $2
-			`, item.variantID.String, item.quantity); err != nil {
+		log.Printf("spncx_failed_capture order_id=%s failure=%s mode=%s", payment.OrderID, failure, mode)
+		const queueSQL = `INSERT INTO spncx_failed_captures(order_id,failure,mode) VALUES($1,$2,$3) ON CONFLICT(order_id) DO NOTHING`
+		// Undo the entire admission attempt. Publish the queue row while
+		// retaining the order guard so a simultaneous callback cannot retry it.
+		if _, rollbackErr := dbTx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT spncx_payment_capture`); rollbackErr == nil {
+			if _, queueErr := dbTx.ExecContext(ctx, queueSQL, payment.OrderID, failure, mode); queueErr == nil {
+				if commitErr := dbTx.Commit(); commitErr == nil {
 					return nil, err
 				}
 			}
 		}
+		_ = dbTx.Rollback()
+		// A cancelled request context can roll back the whole transaction
+		// before the savepoint is usable. Record the failure independently.
+		queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, queueErr := r.db.ExecContext(queueCtx, queueSQL, payment.OrderID, failure, mode)
+		if queueErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("record failed capture: %w", queueErr))
+		}
+		return nil, err
 	}
 
 	if _, err = dbTx.ExecContext(ctx, `
@@ -1557,6 +1529,9 @@ func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerU
 		return err
 	}
 	if admissionPaymentID != "" {
+		if err := guardFailedCaptureTx(ctx, tx, orderID); err != nil {
+			return err
+		}
 		var confirmed bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_payment_receipts WHERE payment_id=$1 AND order_id=$2)`, admissionPaymentID, orderID).Scan(&confirmed); err != nil {
 			return err
@@ -1592,69 +1567,12 @@ func (r *OrderRepository) cancelOrder(ctx context.Context, idOrNumber, customerU
 		return err
 	}
 	if captured {
-		handledRestore, err := restoreOrderInventoryTx(ctx, tx, orderID)
+		handled, err := restoreOrderInventoryTx(ctx, tx, orderID)
 		if err != nil {
 			return err
 		}
-		if !handledRestore {
-			skuAccounting, err := hasSKUInventoryTx(ctx, tx)
-			if err != nil {
-				return err
-			}
-			itemRows, err := tx.QueryContext(ctx, `SELECT id::text, product_id, quantity, variant_id FROM order_items WHERE order_id = $1`, orderID)
-			if err != nil {
-				return err
-			}
-			type stockItem struct {
-				itemID    string
-				productID string
-				qty       int
-				variantID sql.NullString
-			}
-			var items []stockItem
-			for itemRows.Next() {
-				var it stockItem
-				if err := itemRows.Scan(&it.itemID, &it.productID, &it.qty, &it.variantID); err != nil {
-					itemRows.Close()
-					return err
-				}
-				items = append(items, it)
-			}
-			itemRows.Close()
-			if err := itemRows.Err(); err != nil {
-				return err
-			}
-			for _, it := range items {
-				covered := false
-				if skuAccounting {
-					covered, err = canonicalCoveredTx(ctx, tx, it.productID)
-					if err != nil {
-						return err
-					}
-				}
-				if covered {
-					var supplierID string
-					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_id,'') FROM products WHERE id=$1 FOR UPDATE`, it.productID).Scan(&supplierID); err != nil {
-						return err
-					}
-					// Historical capture proved product quantity, not the SKU or
-					// original lot. Restore to an explicit unallocated holding lot.
-					if err := upsertInventoryMovementTx(ctx, tx, it.productID, supplierID, it.qty, "sold", "sellable", "customer", "legacy-cancel:"+orderID, "order_cancel", orderID, "legacy-cancel:"+it.itemID, customerUserID, `{}`); err != nil {
-						return err
-					}
-				} else if _, err := tx.ExecContext(ctx, `UPDATE products SET stock = stock + $2 WHERE id = $1`, it.productID, it.qty); err != nil {
-					return err
-				}
-				// Fix69 O4: restore the variant stock alongside the
-				// product stock, inside the same inventory_captured
-				// gate. See the create-time note: this mirrors the
-				// product restore exactly, including its gate.
-				if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
-					if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
-						return err
-					}
-				}
-			}
+		if !handled {
+			return errors.New("inventory capture schema unavailable")
 		}
 	}
 	if err := cancelOrderCouponTx(ctx, tx, orderID, "customer_cancel"); err != nil {
@@ -2920,28 +2838,12 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	return settlement, nil
 }
 
-// The result reports whether the canonical captured-inventory model can prove
-// new storage sources. Historical unallocated stock remains outside fee history.
-// restockReceivedReturnTx credits a just-received customer return's
-// items back into inventory inside the receive transaction (GAP 6).
-// QC 'ok' units become sellable again through the canonical ledger,
-// credited to the holding lot custreturn:<returnID> (the returns
-// precedent: supplier stock-returns credit return:<id> lots); the
-// products.stock projection and the variant stock follow. QC
-// 'defective' units are credited to quarantine instead: accounted,
-// physically at the destination and recoverable by the supplier
-// through the back-request flow, but never sellable and never in
-// products.stock. The credit is NOT aimed at the origin pool:
-// order_item_origins rows are almost never present in this tree and,
-// when present, carry warehouse ids rather than the per-inbound
-// location_key the balance rows are keyed by, so the exact origin
-// balance row is unidentifiable; per-item origin data goes into the
-// movement metadata only.
-//
-// Two guards keep the write honest: the parent order's
-// inventory_captured must be set (mirrors CancelOrder — never mint
-// stock that was never captured), and the whole block is a no-op on
-// a database without the canonical inventory tables.
+// restockReceivedReturnTx restores each received line through the captured
+// inventory model. Recorded captures follow QC into sellable/quarantine/damaged
+// lots; pre-cutover lines without a capture stay in the return holding lot.
+// No units are minted. A partially installed capture schema fails the receipt
+// transaction rather than claiming inventory or storage provenance was restored.
+// The result enables storage-source verification after a successful restore.
 func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) (bool, error) {
 	var hasInventory bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('inventory_movements') IS NOT NULL AND to_regclass('inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
@@ -2998,53 +2900,16 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 		return false, err
 	}
 	rows.Close()
-	skuAccounting, err := hasSKUInventoryTx(ctx, tx)
-	if err != nil {
-		return false, err
-	}
 	for _, it := range items {
 		handled, err := restoreCapturedReturnTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID)
 		if err != nil {
 			return false, err
 		}
-		if handled {
-			continue
-		}
-		toStatus, suffix := "sellable", "sellable"
-		if it.qcStatus == "defective" {
-			toStatus, suffix = "quarantine", "quarantine"
-		}
-		covered, err := canonicalCoveredTx(ctx, tx, it.productID)
-		if err != nil {
-			return false, err
-		}
-		if !covered {
-			// First canonical row for a legacy product: seed its
-			// existing products.stock into the ledger first, or the
-			// sellable projection would silently erase it.
-			if err := ensureCanonicalCoverageTx(ctx, tx, it.productID, it.supplierID); err != nil {
-				return false, err
-			}
-		}
-		metadata := fmt.Sprintf(`{"qc":%q,"destination":%q,"origin":%q}`, it.qcStatus, destination, it.originLabel)
-		if err := upsertInventoryMovementTx(ctx, tx, it.productID, it.supplierID, it.qty,
-			"customer_return", toStatus, "customer", "custreturn:"+returnID,
-			"customer_return", returnID,
-			"crstk:"+returnID+":"+it.id+":"+suffix, actorUserID, "%s", metadata); err != nil {
-			return false, err
-		}
-		if it.qcStatus == "ok" {
-			if err := syncProductStockTx(ctx, tx, it.productID); err != nil {
-				return false, err
-			}
-			if !skuAccounting && it.variantID.Valid && it.variantID.String != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE product_variants SET stock = stock + $2 WHERE id = $1`, it.variantID.String, it.qty); err != nil {
-					return false, err
-				}
-			}
+		if !handled {
+			return false, fmt.Errorf("customer return requires inventory capture schema")
 		}
 	}
-	return skuAccounting, nil
+	return true, nil
 }
 
 // recordReturnReversalsTx writes the GAP 6 money reversals for a

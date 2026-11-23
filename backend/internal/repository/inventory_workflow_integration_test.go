@@ -41,6 +41,9 @@ func TestINV12ReceiptVsCaptureSameLotExactlyOnce(t *testing.T) {
 	db, schema, red, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	itemID := uuid.NewString()
+	if _, err := tx.Exec(`INSERT INTO orders(id) VALUES('inv12-receipt-race')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'inv12-receipt-race','p',$2,1)`, itemID, red); err != nil {
 		t.Fatal(err)
 	}

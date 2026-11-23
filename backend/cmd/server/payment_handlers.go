@@ -265,6 +265,10 @@ func handleShaparakCallback(
 			if !held {
 				cancelled, compensationErr := orderRepo.RejectVerifiedPaymentAdmission(ctx, req.Token)
 				if compensationErr != nil {
+					if errors.Is(compensationErr, repository.ErrCapturePendingManualResolution) {
+						writePaymentError(w, http.StatusConflict, "capture_pending_manual_resolution", "تکمیل پرداخت نیاز به بررسی دارد")
+						return
+					}
 					writeInternalError(w, compensationErr)
 					return
 				}
@@ -282,19 +286,21 @@ func handleShaparakCallback(
 		if verifyRes.CardMask != "" {
 			cardMask = verifyRes.CardMask
 		}
-		paymentOrderID := existing.OrderID
 		existing, err = orderRepo.MarkPaymentPaid(ctx, req.Token, rrn, cardMask)
 		if err != nil {
+			if errors.Is(err, repository.ErrCapturePendingManualResolution) {
+				writePaymentError(w, http.StatusConflict, "capture_pending_manual_resolution", "تکمیل پرداخت نیاز به بررسی دارد")
+				return
+			}
 			if errors.Is(err, repository.ErrPaymentExpired) {
 				writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
 				return
 			}
+			if errors.Is(err, repository.ErrUnitCoverageGap) {
+				writePaymentError(w, http.StatusConflict, "unit_coverage_gap", "موجودی کالا نیاز به بررسی دارد")
+				return
+			}
 			if errors.Is(err, repository.ErrInsufficientInventory) {
-				if _, compensationErr := orderRepo.RejectVerifiedPaymentAdmission(ctx, req.Token); compensationErr != nil {
-					writeInternalError(w, compensationErr)
-					return
-				}
-				_ = redisClient.ReleaseOrderInventory(ctx, paymentOrderID, productIDs...)
 				writePaymentError(w, http.StatusConflict, "insufficient_stock", "موجودی کالا پیش از تکمیل پرداخت مصرف شده است")
 				return
 			}

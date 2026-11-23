@@ -586,6 +586,10 @@ func (h *SupplierHandlers) HandleCreateReturn(w http.ResponseWriter, r *http.Req
 	}
 	item, err := h.supplierRepo.CreateReturnRequestForVariantWithIdempotency(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), req.ProductID, req.VariantID, req.Quantity, req.CollectionMethod, req.Reason, r.Header.Get("Idempotency-Key"), callerUserID(r))
 	if err != nil {
+		if errors.Is(err, repository.ErrSupplierReturnVariantUnresolved) {
+			http.Error(w, `{"error":"supplier_return_variant_unresolved"}`, http.StatusConflict)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 		return
 	}
@@ -666,6 +670,9 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 
 	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, *req.NewStock, req.Reason, callerUserID(r))
 	if err != nil {
+		if writeSPNCXMintError(w, err) {
+			return
+		}
 		status := http.StatusInternalServerError
 		switch {
 		case errors.Is(err, repository.ErrStockAdjustmentInput), errors.Is(err, repository.ErrStockSKURequired):
@@ -676,15 +683,18 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		code := err.Error()
+		if errors.Is(err, repository.ErrStockBelowHeld) {
+			code = "stock_below_held"
+		}
+		if errors.Is(err, repository.ErrUnitCoverageGap) {
+			code = "unit_coverage_gap"
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": code})
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":      true,
-		"stock":        result.Stock,
-		"productStock": result.ProductStock,
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
 // POST /api/v1/supplier/products/origin/bulk (G4, Batch 4b).
@@ -1165,4 +1175,20 @@ func (h *SupplierHandlers) HandleGetSettlementHistory(w http.ResponseWriter, r *
 		return
 	}
 	json.NewEncoder(w).Encode(list)
+}
+
+func writeSPNCXMintError(w http.ResponseWriter, err error) bool {
+	var capErr *repository.UnitCapError
+	switch {
+	case errors.As(err, &capErr):
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"error": "unit_cap_exceeded", "variant_id": capErr.VariantID, "spnc": capErr.SPNC, "cap": 9999, "requested": capErr.Requested, "available": capErr.Available})
+	case errors.Is(err, repository.ErrUnitCodeCollision):
+		http.Error(w, `{"error":"unit_code_collision"}`, http.StatusConflict)
+	case errors.Is(err, repository.ErrInvalidUnitMint):
+		http.Error(w, `{"error":"invalid_unit_mint"}`, http.StatusUnprocessableEntity)
+	default:
+		return false
+	}
+	return true
 }

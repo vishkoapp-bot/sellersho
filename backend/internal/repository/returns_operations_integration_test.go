@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -220,7 +221,11 @@ func TestSupplierReturnInventoryFinancialAndTariffLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,'sup-technolife','supplier','bin','integration-bin','sellable',10,TRUE)`, "INV-"+suffix, productID); err != nil {
+	// The SKU-linked return lots retain their real source bin FK.
+	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_bins(bin_code,hall_name,aisle,shelf) VALUES('integration-bin','return-fixture','1','1') ON CONFLICT (bin_code) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,'sup-technolife','supplier','bin','bin:integration-bin','sellable',10,TRUE)`, "INV-"+suffix, productID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -238,9 +243,32 @@ func TestSupplierReturnInventoryFinancialAndTariffLifecycle(t *testing.T) {
 	})
 
 	repo := NewSupplierRepository(db)
+	// An unresolved legacy request must fail before changing quantity or creating
+	// reservations, movements, requests, or unit coverage (§4.2 row 27).
+	if _, err := repo.CreateReturnRequestWithIdempotency(ctx, "sup-technolife", productID, 3, "supplier_collect", "unresolved return", idem, "integration-user"); !errors.Is(err, ErrSupplierReturnVariantUnresolved) {
+		t.Fatalf("unresolved return error = %v, want supplier_return_variant_unresolved", err)
+	}
+	var beforeStock, beforeQuantity, effects int
+	if err := db.QueryRowContext(ctx, `SELECT p.stock,
+		(SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=p.id AND status='sellable'),
+		(SELECT COUNT(*) FROM supplier_return_requests WHERE product_id=p.id) +
+		(SELECT COUNT(*) FROM inventory_reservations WHERE product_id=p.id) +
+		(SELECT COUNT(*) FROM inventory_movements WHERE product_id=p.id) +
+		(SELECT COUNT(*) FROM product_units WHERE product_id=p.id)
+		FROM products p WHERE p.id=$1`, productID).Scan(&beforeStock, &beforeQuantity, &effects); err != nil {
+		t.Fatal(err)
+	}
+	if beforeStock != 10 || beforeQuantity != 10 || effects != 0 {
+		t.Fatalf("unresolved return changed state: stock=%d sellable=%d effects=%d", beforeStock, beforeQuantity, effects)
+	}
+	// Legacy requests may omit the SKU only when the sole default is resolvable.
+	variant := seedSupplierReturnLegacyVariant(t, db, productID)
 	first, err := repo.CreateReturnRequestWithIdempotency(ctx, "sup-technolife", productID, 3, "supplier_collect", "integration return", idem, "integration-user")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.VariantID != variant {
+		t.Fatalf("resolved variant=%q, want %q", first.VariantID, variant)
 	}
 	firstReturnID = first.ID
 	replay, err := repo.CreateReturnRequestWithIdempotency(ctx, "sup-technolife", productID, 3, "supplier_collect", "integration return", idem, "integration-user")
@@ -370,7 +398,13 @@ func TestSupplierReturnNegativeBalanceAndChargeIdempotency(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,fulfillment_method) VALUES ($1,$2,$3,'digital',$4,100000,50000,1000,TRUE,2,'warehouse')`, productID, "Negative balance product", productID, supplierID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','bin','negative-bin','sellable',2,TRUE)`, "INV-"+suffix, productID, supplierID); err != nil {
+	// Legacy requests may omit the SKU only when the sole default is resolvable.
+	seedSupplierReturnLegacyVariant(t, db, productID)
+	// The SKU-linked return lots retain their real source bin FK.
+	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_bins(bin_code,hall_name,aisle,shelf) VALUES('negative-bin','return-fixture','1','1') ON CONFLICT (bin_code) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO inventory_balances (id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES ($1,$2,$3,'supplier','bin','bin:negative-bin','sellable',2,TRUE)`, "INV-"+suffix, productID, supplierID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

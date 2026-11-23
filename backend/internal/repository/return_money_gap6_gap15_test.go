@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -274,7 +275,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			payment_expires_at timestamp with time zone DEFAULT (now() + '00:15:00'::interval))`,
 		`CREATE TABLE order_items (
-			id TEXT  DEFAULT gen_random_uuid() PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT DEFAULT 1 ,
+			id UUID DEFAULT gen_random_uuid() PRIMARY KEY, order_id TEXT, product_id TEXT, quantity INT DEFAULT 1 ,
 			wholesale_cost BIGINT, platform_fee BIGINT, seller_margin BIGINT, final_unit_price BIGINT, discount_amount BIGINT NOT NULL DEFAULT 0,
 			variant_id UUID, variant_name TEXT, variant_spnc TEXT
 		,
@@ -338,7 +339,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 			tapin_city_id integer,
 			tapin_province_id integer,
 			updated_at timestamp with time zone NOT NULL DEFAULT now())`,
-		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id TEXT, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT,
+		`CREATE TABLE order_item_origins (id TEXT PRIMARY KEY, order_id TEXT, order_item_id UUID, leg_index INT, origin_type TEXT, supplier_id TEXT, warehouse_id TEXT, supplier_warehouse_id TEXT, origin_label TEXT, quantity INT,
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			created_at timestamp with time zone NOT NULL DEFAULT now())`,
 		`CREATE TABLE customer_returns (
@@ -471,6 +472,7 @@ func openGapMoneyDB(t *testing.T) *sql.DB {
 	installRefundFixtureSchema(t, db)
 	// TEST-02 round 4: the CASCADE drop above also dropped the inventory_effective_measurements view; re-create it.
 	createEffectiveMeasurementsView(t, db)
+	gmInstallReturnInventorySchema(t, db)
 	return db
 }
 
@@ -632,6 +634,7 @@ func TestGap6RestockOkCoveredProduct(t *testing.T) {
 	gmOrder(t, db, "ord-t1", customerID, "", true, false, 0)
 	itemID := gmItem(t, db, "ord-t1", "p-t1", 2, 10000, 0, 20000, variantID)
 
+	gmRecordedQuantityCapture(t, db, "ord-t1")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t1", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 2}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "ok"})
 
@@ -646,8 +649,30 @@ func TestGap6RestockOkCoveredProduct(t *testing.T) {
 		t.Fatalf("products.stock = %d, want 7 (5 + 2 restocked)", got)
 	}
 	var variantStock int
-	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id = $1::uuid`, variantID).Scan(&variantStock); err != nil || variantStock != 5 {
-		t.Fatalf("variant stock = %d (err %v), want 5 (3 + 2)", variantStock, err)
+	if err := db.QueryRow(`SELECT stock FROM product_variants WHERE id = $1::uuid`, variantID).Scan(&variantStock); err != nil || variantStock != 3 {
+		t.Fatalf("variant stock = %d (err %v), want 3 (legacy display stock is not directly incremented)", variantStock, err)
+	}
+	// The legacy display is not a unit ledger (§4.2 #25). Restoration is
+	// instead proved by the capped capture and one exact quantity-only audit.
+	var restored, units, gaps int
+	if err := db.QueryRow(`SELECT restored_quantity FROM order_inventory_captures WHERE order_item_id=$1`, itemID).Scan(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units WHERE product_id='p-t1'`).Scan(&units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM inventory_movements WHERE product_id='p-t1' AND metadata->>'unit_coverage_gap'='true' AND metadata->>'operation'='restock' AND metadata->>'requested'='2' AND metadata->>'allocated'='0' AND metadata->>'shortfall'='2'`).Scan(&gaps); err != nil {
+		t.Fatal(err)
+	}
+	var receiptQuantity int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(initial_quantity),0) FROM warehouse_storage_receipt_lots WHERE source_kind='customer_return' AND source_event_id=$1`, ri[itemID]).Scan(&receiptQuantity); err != nil {
+		t.Fatal(err)
+	}
+	if receiptQuantity != 2 {
+		t.Fatalf("proved return receipt quantity=%d, want 2", receiptQuantity)
+	}
+	if restored != 2 || units != 0 || gaps != 1 {
+		t.Fatalf("restored=%d units=%d gaps=%d, want 2/0/1", restored, units, gaps)
 	}
 	// Replay: the status guard rejects a second receive.
 	if _, err := repo.ReceiveCustomerReturn(ctx, returnID, []CustomerReturnItemQC{{ReturnItemID: ri[itemID], QCStatus: "ok"}}, "keeper-gap"); !errors.Is(err, sql.ErrNoRows) {
@@ -688,6 +713,7 @@ func TestGap6DefectiveQuarantineAndClawback(t *testing.T) {
 	gmOrder(t, db, "ord-t2", customerID, "", true, false, 0)
 	itemID := gmItem(t, db, "ord-t2", "p-t2", 1, 8000, 0, 15000, "")
 
+	gmRecordedQuantityCapture(t, db, "ord-t2")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t2", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "defective"})
 
@@ -746,6 +772,7 @@ func TestGap6MixedPartialReturn(t *testing.T) {
 	itemA := gmItem(t, db, "ord-t3", "p-t3a", 2, 10000, 0, 20000, "")
 	itemB := gmItem(t, db, "ord-t3", "p-t3b", 1, 5000, 0, 30000, "")
 
+	gmRecordedQuantityCapture(t, db, "ord-t3")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t3", []CustomerReturnItemRequest{
 		{OrderItemID: itemA, Qty: 1},
 		{OrderItemID: itemB, Qty: 1},
@@ -801,6 +828,7 @@ func TestGap6SellerProfitReversal(t *testing.T) {
 	// release before refund. This represents an old recorded release, not a call
 	// asking the guarded current releaser to release an active return.
 	opsExec(t, db, `UPDATE orders SET confirmed_at=NOW()-INTERVAL '1 day',return_window_ends_at=NOW()+INTERVAL '6 days' WHERE id='ord-t4'`)
+	gmRecordedQuantityCapture(t, db, "ord-t4")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t4", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -866,6 +894,7 @@ func TestGap6RefundReplaySingleCredit(t *testing.T) {
 	gmOrder(t, db, "ord-t5", customerID, "", true, false, 0)
 	itemID := gmItem(t, db, "ord-t5", "p-t5", 1, 10000, 0, 20000, "")
 
+	gmRecordedQuantityCapture(t, db, "ord-t5")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t5", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "ok"})
 	if _, _, err := repo.RefundCustomerReturn(ctx, returnID, "finance-gap"); err != nil {
@@ -924,6 +953,7 @@ func TestGap6ClawbackDrivesNegativeAvailable(t *testing.T) {
 		t.Fatalf("available after full payout = %d, want 0", bal.Available)
 	}
 
+	gmRecordedQuantityCapture(t, db, "ord-t6b")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t6b", []CustomerReturnItemRequest{{OrderItemID: itemB, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemB]: "ok"})
 	if _, _, err := repo.RefundCustomerReturn(ctx, returnID, "finance-gap"); err != nil {
@@ -966,32 +996,66 @@ func TestGap6OverReturnGuard(t *testing.T) {
 	}
 }
 
-// G6-T8: a legacy product (no canonical rows) is coverage-seeded on
-// its first return receipt, so the legacy stock survives the
-// projection and the returned unit lands on top: 10 -> 11.
+// G6-T8: §4.3 forbids manufacturing sellable stock for an old order
+// without a recorded capture. Receipt retains the physical return in quarantine,
+// audits the missing unit coverage, and still refunds the customer in full.
 func TestGap6LegacyCoverageSeeding(t *testing.T) {
 	db := openGapMoneyDB(t)
 	defer db.Close()
 	repo := NewOrderRepository(db)
 	customerID := uuid.NewString()
-
 	gmProduct(t, db, "p-t8", "sup-t8", 10)
 	gmOrder(t, db, "ord-t8", customerID, "", true, false, 0)
 	itemID := gmItem(t, db, "ord-t8", "p-t8", 1, 10000, 0, 20000, "")
-
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t8", []CustomerReturnItemRequest{{OrderItemID: itemID, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemID]: "ok"})
+	if got := gmProductStock(t, db, "p-t8"); got != 10 {
+		t.Fatalf("stock=%d, want existing 10 only: historical return must not add sellable stock", got)
+	}
+	if got := gmBalanceQty(t, db, "p-t8", "return:"+returnID, "quarantine"); got != 1 {
+		t.Fatalf("historical quarantine=%d, want 1", got)
+	}
+	var sellable, units, gaps int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id='p-t8' AND status='sellable'`).Scan(&sellable); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units WHERE product_id='p-t8'`).Scan(&units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM inventory_movements WHERE product_id='p-t8' AND metadata->>'unit_coverage_gap'='true' AND metadata->>'operation'='restock' AND metadata->>'requested'='1' AND metadata->>'allocated'='0' AND metadata->>'shortfall'='1'`).Scan(&gaps); err != nil {
+		t.Fatal(err)
+	}
+	if sellable != 10 || units != 0 || gaps != 1 {
+		t.Fatalf("sellable=%d units=%d gaps=%d, want 10/0/1", sellable, units, gaps)
+	}
+	var certified int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM warehouse_storage_receipt_lots`).Scan(&certified); err != nil {
+		t.Fatal(err)
+	}
+	if certified != 0 {
+		t.Fatalf("historical no-capture return manufactured %d storage receipts", certified)
+	}
+	if got := gmBalanceQty(t, db, "p-t8", "custreturn:"+returnID, "sellable"); got != 0 {
+		t.Fatalf("historical return sellable credit=%d, want 0", got)
+	}
+	amount, _, err := repo.RefundCustomerReturn(context.Background(), returnID, "finance-gap")
+	if err != nil || amount != 20000 {
+		t.Fatalf("historical refund=%d err=%v, want full 20000", amount, err)
+	}
+	// Full principal is credited to the wallet before the separately recorded
+	// customer-borne return fare. Prove both so inventory holding cannot reduce
+	// the principal and shipping does not appear to be a short refund.
+	var reserved, shippingDebit int64
+	if err := db.QueryRow(`SELECT COALESCE(SUM(amount_toman),0) FROM order_refund_obligations o WHERE order_id='ord-t8' AND destination='wallet' AND EXISTS(SELECT 1 FROM order_refund_events e WHERE e.obligation_id=o.id AND e.status='succeeded') AND EXISTS(SELECT 1 FROM order_refund_wallet_credits c WHERE c.obligation_id=o.id AND c.amount_toman=o.amount_toman)`).Scan(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COALESCE(SUM(amount),0) FROM customer_return_shipping_charges WHERE return_id=$1 AND bearer='customer'`, returnID).Scan(&shippingDebit); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 20000 || gmWallet(t, db, customerID) != reserved-shippingDebit {
+		t.Fatalf("historical wallet principal=%d shipping debit=%d wallet=%d", reserved, shippingDebit, gmWallet(t, db, customerID))
+	}
 
-	if got := gmProductStock(t, db, "p-t8"); got != 11 {
-		t.Fatalf("products.stock = %d, want 11 (legacy 10 seeded + 1 returned)", got)
-	}
-	var sellable int
-	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity), 0) FROM inventory_balances WHERE product_id = 'p-t8' AND status = 'sellable'`).Scan(&sellable); err != nil {
-		t.Fatalf("sellable sum: %v", err)
-	}
-	if sellable != 11 {
-		t.Fatalf("sellable balances sum = %d, want 11", sellable)
-	}
 }
 
 // G6-T9: dispute-cancelling the order AFTER a clawback must not
@@ -1012,6 +1076,7 @@ func TestGap6DisputeCannotRefundAlreadyReturnedPrincipal(t *testing.T) {
 	gmOrder(t, db, "ord-t9b", customerID, "", true, false, 0)
 	gmItem(t, db, "ord-t9b", "p-t9", 1, 30000, 0, 60000, "")
 
+	gmRecordedQuantityCapture(t, db, "ord-t9a")
 	returnID, ri := gmFileReturn(t, repo, customerID, "ord-t9a", []CustomerReturnItemRequest{{OrderItemID: itemA, Qty: 1}})
 	gmReceive(t, repo, returnID, map[string]string{ri[itemA]: "ok"})
 	if _, _, err := repo.RefundCustomerReturn(ctx, returnID, "finance-gap"); err != nil {
@@ -1197,5 +1262,100 @@ func TestGap15PayoutGateSeesAdjustment(t *testing.T) {
 	}
 	if _, err := supplierRepo.RequestSettlement(ctx, "sup-g15t3", 50000, "IR1", "Bank", "Holder"); err != nil {
 		t.Fatalf("payout at the adjusted Available refused: %v", err)
+	}
+}
+
+// gmInstallReturnInventorySchema installs the real migration definitions needed
+// by current returns. The private finance schema has no public fallback. Keep
+// capture/unit constraints, stock projections and storage receipt source guards
+// active: missing tables must not turn a receive into an inventory no-op.
+func gmInstallReturnInventorySchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("return inventory fixture: %v", err)
+		}
+	}
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile("../../migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(b), "\r\n", "\n")
+	}
+	section := func(s, start, end string) string {
+		t.Helper()
+		a := strings.Index(s, start)
+		if a < 0 {
+			t.Fatalf("missing migration section %s", start)
+		}
+		b := strings.Index(s[a:], end)
+		if b < 0 {
+			t.Fatalf("missing migration terminator %s", end)
+		}
+		return s[a : a+b]
+	}
+	sku := read("202611110003_sku_inventory.up.sql")
+	exec(section(sku, "CREATE TABLE order_inventory_captures", "ALTER TABLE shipment_items"))
+	exec(section(sku, "CREATE OR REPLACE FUNCTION sync_product_stock_projection()", "CREATE FUNCTION sync_sku_availability_projection()"))
+	exec(`CREATE TRIGGER gm_stock_projection AFTER INSERT OR UPDATE OR DELETE ON inventory_balances FOR EACH ROW EXECUTE FUNCTION sync_product_stock_projection()`)
+	exec(`ALTER TABLE inventory_balances ADD CONSTRAINT inventory_balances_status_check CHECK(status IN ('physical','sellable','sales_reserved','return_requested','quarantine','in_transit','damaged','unreconciled','inbound_reserved','qc_accepted'))`)
+	exec(read("202611230002_spncx_product_units.up.sql"))
+	// Only identities are needed for these unrelated source tables; the tested
+	// return and storage tables below retain their exact migration constraints.
+	exec(`CREATE TABLE inbound_shipments(id TEXT PRIMARY KEY); CREATE TABLE warehouse_bins(bin_code TEXT PRIMARY KEY)`)
+	bins := read("202611150002_customer_return_bin_entry.up.sql")
+	exec(section(bins, "CREATE TABLE warehouse_return_bin_entries", "CREATE TRIGGER warehouse_return_bin_entry_identity"))
+	createReturnBinSourcesView(t, db)
+	exec(read("202610280005_storage_fee.up.sql"))
+	exec(`ALTER TABLE warehouse_storage_positions ADD COLUMN last_assessed_date DATE`)
+	storage := read("202611150003_storage_receipt_history.up.sql")
+	exec(section(storage, "CREATE TABLE warehouse_storage_history_policy", "CREATE TABLE warehouse_storage_lot_departures"))
+	exec(section(storage, "CREATE FUNCTION guard_storage_receipt_lot_insert()", "CREATE FUNCTION guard_storage_placement_lot()"))
+}
+
+// These tests start after payment, with the remaining physical stock explicitly
+// seeded by gmBalance. Record the historical quantity capture; absence of SPNCX
+// units is deliberate pre-backfill coverage, never permission to mint new units.
+func gmRecordedQuantityCapture(t *testing.T, db *sql.DB, orderID string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO order_inventory_captures(order_item_id,order_id,product_id,variant_id,quantity,inventory_mode)
+ SELECT id::text,order_id,product_id,variant_id,quantity,'legacy' FROM order_items WHERE order_id=$1`, orderID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGap6ReceiveRejectsMissingCaptureSchemaAtomically(t *testing.T) {
+	db := openGapMoneyDB(t)
+	defer db.Close()
+	repo := NewOrderRepository(db)
+	customer := uuid.NewString()
+	gmProduct(t, db, "p-schema", "sup-schema", 2)
+	gmBalance(t, db, "p-schema", "sup-schema", "warehouse:wh-1", 2)
+	gmOrder(t, db, "ord-schema", customer, "", true, false, 0)
+	item := gmItem(t, db, "ord-schema", "p-schema", 1, 10000, 0, 20000, "")
+	rid, items := gmFileReturn(t, repo, customer, "ord-schema", []CustomerReturnItemRequest{{OrderItemID: item, Qty: 1}})
+	if _, err := db.Exec(`DROP TABLE order_inventory_captures CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := repo.ReceiveCustomerReturn(context.Background(), rid, []CustomerReturnItemQC{{ReturnItemID: items[item], QCStatus: "ok"}}, "keeper-gap")
+	if err == nil || !strings.Contains(err.Error(), "requires inventory capture schema") {
+		t.Fatalf("missing schema receive=%v, want fail-closed restore", err)
+	}
+	var status string
+	var received, movements int
+	if err := db.QueryRow(`SELECT status FROM customer_returns WHERE id=$1`, rid).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM return_items WHERE return_id=$1 AND received_at IS NOT NULL`, rid).Scan(&received); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM inventory_movements WHERE product_id='p-schema'`).Scan(&movements); err != nil {
+		t.Fatal(err)
+	}
+	if status != "approved" || received != 0 || movements != 0 || gmProductStock(t, db, "p-schema") != 2 {
+		t.Fatalf("failed receive mutated state: status=%s received=%d movements=%d", status, received, movements)
 	}
 }

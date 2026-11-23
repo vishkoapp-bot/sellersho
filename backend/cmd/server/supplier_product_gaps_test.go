@@ -194,7 +194,7 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			created_at timestamp with time zone NOT NULL DEFAULT now(),
 			id uuid NOT NULL DEFAULT gen_random_uuid())`,
-		`CREATE TABLE product_variant_images (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, variant_id TEXT NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`,
+		`CREATE TABLE product_variant_images (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, variant_id UUID NOT NULL, image_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`,
 		`CREATE TABLE niches (id TEXT PRIMARY KEY, category_slug TEXT,
 			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 			title VARCHAR(255) NOT NULL DEFAULT '',
@@ -215,7 +215,7 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 			warehouse_name character varying(100))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_unallocated_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS inventory_balances_sku_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
-		`CREATE TABLE product_variants (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, product_id TEXT, spnc TEXT, spnc_number INT, variant_name TEXT DEFAULT 'پیش‌فرض'::text , attributes JSONB DEFAULT '{}'::jsonb , is_default BOOLEAN DEFAULT false, stock INT DEFAULT 0, min_cart_qty INT DEFAULT 1 , max_cart_qty INT, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ DEFAULT NOW(),
+		`CREATE TABLE product_variants (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), product_id TEXT, spnc TEXT, spnc_number INT, variant_name TEXT DEFAULT 'پیش‌فرض'::text , attributes JSONB DEFAULT '{}'::jsonb , is_default BOOLEAN DEFAULT false, stock INT DEFAULT 0, min_cart_qty INT DEFAULT 1 , max_cart_qty INT, supplier_base_cost BIGINT, weight_grams INT, length_mm INT, width_mm INT, height_mm INT, sale_price BIGINT, sale_from TIMESTAMPTZ, sale_to TIMESTAMPTZ, shipping_class TEXT, tax_class TEXT, created_at TIMESTAMPTZ DEFAULT NOW(),
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			combination_key text,
 			inventory_mode text NOT NULL DEFAULT 'legacy'::text,
@@ -244,11 +244,21 @@ func productGapsTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE proposal_review_history (LIKE public.proposal_review_history INCLUDING ALL)`,
 		`CREATE TABLE supplier_warehouses (LIKE public.supplier_warehouses INCLUDING ALL)`,
 		`ALTER TABLE products ADD COLUMN IF NOT EXISTS origin_supplier_warehouse_id TEXT, ADD COLUMN IF NOT EXISTS schema_version INT DEFAULT 0`,
-		`ALTER TABLE inventory_balances ADD COLUMN IF NOT EXISTS variant_id TEXT`,
+		`ALTER TABLE inventory_balances ADD CONSTRAINT inventory_balances_status_check CHECK (status IN ('physical','sellable','sales_reserved','return_requested','quarantine','in_transit','damaged','unreconciled','inbound_reserved','qc_accepted'))`,
+		`CREATE TABLE inventory_movements (LIKE public.inventory_movements INCLUDING ALL)`,
+		`CREATE TABLE orders (id VARCHAR(50) PRIMARY KEY)`,
+		`CREATE TABLE order_items (id UUID PRIMARY KEY)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
+	}
+	migration, err := os.ReadFile("../../migrations/202611230002_spncx_product_units.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(migration)); err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
@@ -429,13 +439,13 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost) VALUES ('prod-gap-1', 'کالا', 'kala', 'digital', 'sup-gap-a', 110000, 100000)`); err != nil {
 		t.Fatalf("seed product: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO product_variants (id, product_id, spnc, variant_name, attributes, is_default, stock) VALUES ('var-gap-1', 'prod-gap-1', 'GAPSPNC1', 'تنها', '{}'::jsonb, true, 5)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO product_variants (id, product_id, spnc, variant_name, attributes, is_default, stock) VALUES ('00000000-0000-4000-8000-000000000001', 'prod-gap-1', 'GAPSPNC1', 'تنها', '{}'::jsonb, true, 5)`); err != nil {
 		t.Fatalf("seed variant: %v", err)
 	}
 
 	// Owner sets the variant cost through the repo write path.
 	cost := int64(80000)
-	out, err := repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "var-gap-1", &cost, false, "تست")
+	out, err := repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "00000000-0000-4000-8000-000000000001", &cost, false, "تست")
 	if err != nil {
 		t.Fatalf("UpdateVariantPricing: %v", err)
 	}
@@ -445,19 +455,19 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 
 	// Non-positive cost is rejected (mirrors the product pricing rule).
 	zero := int64(0)
-	if _, err := repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "var-gap-1", &zero, false, ""); err == nil {
+	if _, err := repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "00000000-0000-4000-8000-000000000001", &zero, false, ""); err == nil {
 		t.Error("UpdateVariantPricing with cost 0: want error, got nil")
 	}
 
 	// A different supplier cannot touch the variant: repo says no rows,
 	// the handler surfaces 404.
-	if _, err := repo.UpdateVariantPricing(ctx, "sup-gap-b", "prod-gap-1", "var-gap-1", &cost, false, ""); err != sql.ErrNoRows {
+	if _, err := repo.UpdateVariantPricing(ctx, "sup-gap-b", "prod-gap-1", "00000000-0000-4000-8000-000000000001", &cost, false, ""); err != sql.ErrNoRows {
 		t.Errorf("foreign UpdateVariantPricing err = %v, want sql.ErrNoRows", err)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/supplier/products/prod-gap-1/variants/var-gap-1/pricing", strings.NewReader(`{"supplierBaseCost": 70000}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/supplier/products/prod-gap-1/variants/00000000-0000-4000-8000-000000000001/pricing", strings.NewReader(`{"supplierBaseCost": 70000}`))
 	req = req.WithContext(context.WithValue(req.Context(), supplierIDKey, "sup-gap-b"))
 	rec := httptest.NewRecorder()
-	h.HandleUpdateVariantPricing(rec, req, "prod-gap-1", "var-gap-1")
+	h.HandleUpdateVariantPricing(rec, req, "prod-gap-1", "00000000-0000-4000-8000-000000000001")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("foreign handler status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -481,13 +491,13 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 	}
 	settings := &pricing.PlatformPricingSettings{PlatformPct: 0, CentralProfitPct: 10, DefaultMargin: 20}
 	prices := priceVariantsForResponse(p, domainVariants, domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{}, nil)
-	if prices["var-gap-1"].Price != 88000 {
-		t.Errorf("variant price = %d, want 88000 (from variant cost 80000, not product cost 100000)", prices["var-gap-1"].Price)
+	if prices["00000000-0000-4000-8000-000000000001"].Price != 88000 {
+		t.Errorf("variant price = %d, want 88000 (from variant cost 80000, not product cost 100000)", prices["00000000-0000-4000-8000-000000000001"].Price)
 	}
 
 	// Clear restores inheritance: the column goes back to NULL and the
 	// variant prices from the product cost again.
-	out, err = repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "var-gap-1", nil, true, "بازگشت به ارث‌بری")
+	out, err = repo.UpdateVariantPricing(ctx, "sup-gap-a", "prod-gap-1", "00000000-0000-4000-8000-000000000001", nil, true, "بازگشت به ارث‌بری")
 	if err != nil {
 		t.Fatalf("UpdateVariantPricing clear: %v", err)
 	}
@@ -499,8 +509,8 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 		t.Fatalf("GetVariantsByProductIDs after clear: %v", err)
 	}
 	prices = priceVariantsForResponse(p, byProduct["prod-gap-1"], domain.Store{}, settings, nil, map[string]pricing.StoreVariantOverride{}, nil)
-	if prices["var-gap-1"].Price != 110000 {
-		t.Errorf("variant price after clear = %d, want 110000 (product cost inherited)", prices["var-gap-1"].Price)
+	if prices["00000000-0000-4000-8000-000000000001"].Price != 110000 {
+		t.Errorf("variant price after clear = %d, want 110000 (product cost inherited)", prices["00000000-0000-4000-8000-000000000001"].Price)
 	}
 
 	// Both writes were audited.

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -20,12 +21,15 @@ func validateSupplierReturnReplay(stored SupplierReturnRequest, productID, varia
 // Empty variant identity preserves the legacy API. A tracked product must never
 // reserve a sibling SKU or use its historical unallocated product balance.
 func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx context.Context, supplierID, productID, variantID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
+	return r.createSupplierReturnTx(ctx, supplierID, productID, variantID, quantity, method, reason, idempotencyKey, actorUserID)
+}
+
+var ErrSupplierReturnVariantUnresolved = errors.New("supplier_return_variant_unresolved")
+
+func (r *SupplierRepository) createSupplierReturnTx(ctx context.Context, supplierID, productID, variantID string, quantity int, method, reason, idempotencyKey, actorUserID string) (*SupplierReturnRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if variantID == "" {
-		return r.CreateReturnRequestWithIdempotency(ctx, supplierID, productID, quantity, method, reason, idempotencyKey, actorUserID)
-	}
-	if uuid.Validate(variantID) != nil || quantity <= 0 || (method != "supplier_collect" && method != "postal") || strings.TrimSpace(reason) == "" {
+	if (variantID != "" && uuid.Validate(variantID) != nil) || quantity <= 0 || (method != "supplier_collect" && method != "postal") || strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("invalid SKU return request")
 	}
 	if idempotencyKey == "" {
@@ -36,7 +40,7 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}, TransactionRowLock{Table: "products", ID: productID}, TransactionRowLock{Table: "product_variants", ID: variantID}); err != nil {
+	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplierID}, TransactionRowLock{Table: "products", ID: productID}); err != nil {
 		return nil, err
 	}
 	var version int
@@ -44,14 +48,24 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 	if err = tx.QueryRowContext(ctx, `SELECT schema_version,title,COALESCE(warehouse_name,'') FROM products WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, productID, supplierID).Scan(&version, &title, &warehouse); err != nil {
 		return nil, err
 	}
-	if version != 2 {
-		return nil, fmt.Errorf("SKU-specific return requires a tracked product")
+	if variantID == "" {
+		variantID, err = ResolveLegacyPurchaseVariant(ctx, tx, productID, "")
+		if err != nil {
+			return nil, err
+		}
+		if variantID == "" {
+			return nil, ErrSupplierReturnVariantUnresolved
+		}
 	}
+	if err = lockSKUProductTx(ctx, tx, productID, variantID); err != nil {
+		return nil, err
+	}
+
 	var mode, name, spnc string
 	if err = tx.QueryRowContext(ctx, `SELECT inventory_mode,variant_name,spnc FROM product_variants WHERE id=$1 AND product_id=$2 FOR UPDATE`, variantID, productID).Scan(&mode, &name, &spnc); err != nil {
 		return nil, err
 	}
-	if mode != "tracked" {
+	if version >= 2 && mode != "tracked" {
 		return nil, fmt.Errorf("SKU does not have tracked inventory")
 	}
 	var stored SupplierReturnRequest
@@ -74,7 +88,7 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 		id, location, kind string
 		quantity           int
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND variant_id=$3 AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY id COLLATE "C" FOR UPDATE`, productID, supplierID, variantID)
+	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND (variant_id=$3 OR ($4='legacy' AND variant_id IS NULL)) AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY id COLLATE "C" FOR UPDATE`, productID, supplierID, variantID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +137,7 @@ func (r *SupplierRepository) CreateReturnRequestForVariantWithIdempotency(ctx co
 			first = a.id
 		}
 		key := fmt.Sprintf("%s:%s:%d", idempotencyKey, variantID, i)
-		if err = moveSKUInventoryTx(ctx, tx, productID, supplierID, variantID, take, "sellable", "return_requested", a.location, a.kind, a.location, "supplier_return", id, key+":move", actorUserID); err != nil {
+		if err = moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variantID, a.id, take, "sellable", "return_requested", a.location, a.kind, a.location, "supplier_return", id, key+":move", actorUserID); err != nil {
 			return nil, err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_reservations(id,product_id,supplier_id,variant_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,'supplier_return',$7,'active',$8)`, "RES-"+uuid.NewString(), productID, supplierID, variantID, a.location, take, id, key+":reservation"); err != nil {
@@ -178,11 +192,23 @@ func lockSupplierReturnSKUTx(ctx context.Context, tx *sql.Tx, returnID string) e
 	if err != nil {
 		return err
 	}
-	plan := []TransactionRowLock{{Table: "suppliers", ID: supplier}, {Table: "products", ID: product}, {Table: "supplier_return_requests", ID: returnID}}
-	if variant != "" {
-		plan = append(plan, TransactionRowLock{Table: "product_variants", ID: variant})
+	if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, TransactionRowLock{Table: "suppliers", ID: supplier}, TransactionRowLock{Table: "products", ID: product}); err != nil {
+		return err
 	}
-	return LockTransactionRowsTx(ctx, tx, &TransactionLockSet{}, plan...)
+	if variant == "" {
+		variant, err = ResolveLegacyPurchaseVariant(ctx, tx, product, "")
+		if err != nil {
+			return err
+		}
+		if variant == "" {
+			return ErrSupplierReturnVariantUnresolved
+		}
+	}
+	if err = lockSKUProductTx(ctx, tx, product, variant); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE supplier_return_requests SET variant_id=$2 WHERE id=$1 AND variant_id IS NULL`, returnID, variant)
+	return err
 }
 
 func supplierReturnVariantTx(ctx context.Context, tx *sql.Tx, returnID string) (string, error) {
@@ -193,8 +219,11 @@ func supplierReturnVariantTx(ctx context.Context, tx *sql.Tx, returnID string) (
 
 func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actor string, consume bool) (bool, error) {
 	variant, err := supplierReturnVariantTx(ctx, tx, returnID)
-	if err != nil || variant == "" {
+	if err != nil {
 		return false, err
+	}
+	if variant == "" {
+		return false, ErrSupplierReturnVariantUnresolved
 	}
 	type reservation struct {
 		id, location string
@@ -213,7 +242,7 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 	if err != nil {
 		return true, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND variant_id=$2 AND status='active' ORDER BY id FOR UPDATE`, returnID, variant)
+	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND (variant_id=$2 OR variant_id IS NULL) AND status='active' ORDER BY id FOR UPDATE`, returnID, variant)
 	if err != nil {
 		return true, err
 	}
@@ -235,21 +264,24 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 	}
 	total := 0
 	for _, a := range reservations {
-		var kind string
-		if err = tx.QueryRowContext(ctx, `SELECT location_type FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_key=$3 AND status='return_requested' FOR UPDATE`, productID, variant, a.location).Scan(&kind); err != nil {
+		var kind, balanceID string
+		if err = tx.QueryRowContext(ctx, `SELECT location_type,id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$4 AND (variant_id=$2 OR variant_id IS NULL) AND location_key=$3 AND status='return_requested' AND quantity >=$5 ORDER BY (variant_id IS NULL),id LIMIT 1 FOR UPDATE`, productID, variant, a.location, supplierID, a.quantity).Scan(&kind, &balanceID); err != nil {
 			return true, err
 		}
 		status, destination, next, action := "sellable", a.location, "released", "release"
 		if consume {
 			status = "in_transit"
-			destination = "return:" + returnID
+			destination = "supplier-return-transit:" + returnID
 			kind = "in_transit"
 			next = "consumed"
 			action = "handover"
 		}
-		if err = moveSKUInventoryTx(ctx, tx, productID, supplierID, variant, a.quantity, "return_requested", status, a.location, kind, destination, "supplier_return", returnID, returnID+":"+action+":"+a.id, actor); err != nil {
+		if err = moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variant, balanceID, a.quantity, "return_requested", status, a.location, kind, destination, "supplier_return", returnID, returnID+":"+action+":"+a.id, actor); err != nil {
 			return true, err
 		}
+		// A reservation identifies its original physical lot. Keep a historical
+		// NULL SKU here: the moved destination is SKU-linked, but occupancy must
+		// still join the original unallocated source when recording departure.
 		if _, err = tx.ExecContext(ctx, `UPDATE inventory_reservations SET status=$2::text,released_at=CASE WHEN $2::text='released' THEN NOW() ELSE released_at END WHERE id=$1 AND status='active'`, a.id, next); err != nil {
 			return true, err
 		}
@@ -277,16 +309,33 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 
 func receiveSupplierReturnSKUTx(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actor string, quantity int) (bool, error) {
 	variant, err := supplierReturnVariantTx(ctx, tx, returnID)
-	if err != nil || variant == "" {
+	if err != nil {
 		return false, err
 	}
-	return true, moveSKUInventoryTx(ctx, tx, productID, supplierID, variant, quantity, "in_transit", "quarantine", "return:"+returnID, "warehouse", "return:"+returnID, "supplier_return", returnID, "receive:"+returnID, actor)
+	if variant == "" {
+		return false, ErrSupplierReturnVariantUnresolved
+	}
+	source := "supplier-return-transit:" + returnID
+	balance, err := resolveSupplierReturnLotTx(ctx, tx, productID, supplierID, variant, source, returnID, "in_transit")
+	if err != nil {
+		return true, err
+	}
+	return true, moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variant, balance, quantity, "in_transit", "quarantine", source, "warehouse", "supplier-return:"+returnID, "supplier_return", returnID, "receive:"+returnID, actor)
+
 }
 
 func inspectSupplierReturnSKUTx(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actor string, accepted, failed int) (bool, error) {
 	variant, err := supplierReturnVariantTx(ctx, tx, returnID)
-	if err != nil || variant == "" {
+	if err != nil {
 		return false, err
+	}
+	if variant == "" {
+		return false, ErrSupplierReturnVariantUnresolved
+	}
+	location := "supplier-return:" + returnID
+	balance, err := resolveSupplierReturnLotTx(ctx, tx, productID, supplierID, variant, location, returnID, "quarantine")
+	if err != nil {
+		return true, err
 	}
 	for _, part := range []struct {
 		quantity    int
@@ -295,9 +344,19 @@ func inspectSupplierReturnSKUTx(ctx context.Context, tx *sql.Tx, returnID, produ
 		if part.quantity == 0 {
 			continue
 		}
-		if err = moveSKUInventoryTx(ctx, tx, productID, supplierID, variant, part.quantity, "quarantine", part.status, "return:"+returnID, "warehouse", "return:"+returnID, "supplier_return", returnID, "inspect:"+returnID+":"+part.key, actor); err != nil {
+		if err = moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variant, balance, part.quantity, "quarantine", part.status, location, "warehouse", location, "supplier_return", returnID, "inspect:"+returnID+":"+part.key, actor); err != nil {
 			return true, err
 		}
 	}
 	return true, nil
+}
+
+func resolveSupplierReturnLotTx(ctx context.Context, tx *sql.Tx, product, supplier, variant, location, returnID, status string) (string, error) {
+	id, err := inventoryLotIDTx(ctx, tx, product, variant, location, status)
+	if err != sql.ErrNoRows {
+		return id, err
+	}
+	err = tx.QueryRowContext(ctx, `UPDATE inventory_balances SET variant_id=$3,location_key=$4,updated_at=NOW()
+		WHERE product_id=$1 AND supplier_id=$2 AND (variant_id IS NULL OR variant_id=$3) AND location_key=$5 AND status=$6 RETURNING id`, product, supplier, variant, location, "return:"+returnID, status).Scan(&id)
+	return id, err
 }

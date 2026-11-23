@@ -14,6 +14,10 @@ import (
 // and return lots retain their physical quantities; an aggregate edit cannot
 // silently remove units held elsewhere or change another SKU/legacy pool.
 func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, total int, reason, actor string) error {
+	return setTrackedSKUStockTx(ctx, tx, productID, supplierID, variantID, total, reason, actor, nil, nil)
+}
+
+func setTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, total int, reason, actor string, holds *RedisClient, result *StockAdjustmentResult) error {
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return ErrStockAdjustmentInput
 	}
@@ -61,6 +65,10 @@ func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 		return err
 	}
 	delta := target - previous
+	if result != nil {
+		result.PreviousStock = previous + int(held)
+		result.Delta = delta
+	}
 	if delta == 0 {
 		return nil
 	}
@@ -73,6 +81,24 @@ func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 		_, err = tx.ExecContext(ctx, `UPDATE inventory_movements SET metadata=$2::jsonb WHERE idempotency_key=$1`, key, string(metadata))
 		return err
 	}
+	var redisHeld int
+	if holds != nil {
+		redisHeld, err = holds.liveInventoryHeld(ctx, InventoryHoldRef{ProductID: productID, VariantID: variantID})
+		if err != nil {
+			return err
+		}
+	}
+	codes, printed, err := retireUnitsTx(ctx, tx, productID, variantID, balanceID, -delta, redisHeld, actor)
+	if err != nil {
+		return err
+	}
+	if result != nil {
+		result.RetiredCodes = codes
+		result.RetiredPrintedCodes = printed
+		if len(codes) < -delta {
+			result.CoverageGap = &UnitCoverageGap{Shortfall: -delta - len(codes), Reason: "legacy_pre_backfill"}
+		}
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=$2,updated_at=NOW() WHERE id=$1 AND quantity=$3`, balanceID, target, previous)
 	if err != nil {
 		return err
@@ -84,6 +110,24 @@ func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 	if n != 1 {
 		return ErrInsufficientInventory
 	}
+	if err = refreshUnitTrackedLotTx(ctx, tx, balanceID); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,$4::uuid,$5,'sellable','adjustment',$6,$6,'sku_stock_adjustment',$4::uuid::text,$7,NULLIF($8,''),$9::jsonb)`, "IM-"+uuid.NewString(), productID, supplierID, variantID, -delta, location, key, actor, string(metadata))
 	return err
+}
+
+// The hold index scores are expiry timestamps. Quantity keys outlive their
+// scores, so a read of the maintained aggregate alone can overcount.
+func (r *RedisClient) liveInventoryHeld(ctx context.Context, ref InventoryHoldRef) (int, error) {
+	holds, _, prefix := holdKeys(ref)
+	return r.Client.Eval(ctx, `
+		local now = redis.call('TIME')
+		local ms = now[1] * 1000 + math.floor(now[2] / 1000)
+		local total = 0
+		for _,order in ipairs(redis.call('ZRANGEBYSCORE', KEYS[1], '(' .. ms, '+inf')) do
+			total = total + (tonumber(redis.call('GET', ARGV[1] .. order)) or 0)
+		end
+		return total
+	`, []string{holds}, prefix).Int()
 }

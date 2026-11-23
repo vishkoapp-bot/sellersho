@@ -182,26 +182,66 @@ func (r *WarehouseRepository) PlaceCustomerReturnItemInBin(ctx context.Context, 
 	// immutable transfer/placement, bin counters and receipt-dated storage together.
 	insert := `INSERT INTO warehouse_return_bin_entries(id,return_id,return_item_id,bin_code,quantity,reason,actor_user_id,idempotency_key)`
 	args := []any{"RBP-" + uuid.NewString(), returnID, returnItemID, bin, quantity, reason, actor, key}
+	isolation := sql.LevelReadCommitted
 	if staffID == "" {
 		insert += ` VALUES($1,$2,$3,$4,$5,$6,$7,$8)`
-		_, err = r.db.ExecContext(ctx, insert, args...)
 	} else {
-		insert += ` SELECT $1,id,$3::uuid,$4,$5::integer,$6,$7,$8 FROM customer_returns WHERE id=$2` + customerReturnCentralStaffCityPredicate("$9") + ` RETURNING ` + resultColumns
+		insert += ` SELECT $1,id,$3::uuid,$4,$5::integer,$6,$7,$8 FROM customer_returns WHERE id=$2` + customerReturnCentralStaffCityPredicate("$9")
 		args = append(args, staffID)
-		// The trigger takes domain locks in its own order. Use a stable
-		// snapshot instead of locking the return ahead of those locks.
-		err = func() error {
-			tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-			if err := tx.QueryRowContext(ctx, insert, args...).Scan(resultFields...); err != nil {
-				return err
-			}
-			return tx.Commit()
-		}()
+		isolation = sql.LevelRepeatableRead
 	}
+	err = func() error {
+		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: isolation})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		// Reject an out-of-scope request before discovering or locking its
+		// inventory and financial parents. The INSERT rechecks the same scope.
+		if staffID != "" {
+			var authorized string
+			if err = tx.QueryRowContext(ctx, `SELECT id::text FROM customer_returns WHERE id=$1`+
+				customerReturnCentralStaffCityPredicate("$2"), returnID, staffID).Scan(&authorized); err != nil {
+				return err
+			}
+		}
+		var order, supplier, product, variant string
+		if err = tx.QueryRowContext(ctx, `SELECT cr.order_id,p.supplier_id,oi.product_id,COALESCE(c.variant_id::text,'')
+			FROM customer_returns cr JOIN return_items ri ON ri.return_id=cr.id
+			JOIN order_items oi ON oi.id::text=ri.order_item_id JOIN products p ON p.id=oi.product_id
+			LEFT JOIN order_inventory_captures c ON c.order_item_id=ri.order_item_id
+			WHERE cr.id=$1 AND ri.id=$2`, returnID, returnItemID).Scan(&order, &supplier, &product, &variant); err != nil {
+			return err
+		}
+		if err = LockTransactionRowsTx(ctx, tx, &TransactionLockSet{},
+			TransactionRowLock{Table: "orders", ID: order},
+			TransactionRowLock{Table: "suppliers", ID: supplier},
+			TransactionRowLock{Table: "products", ID: product}); err != nil {
+			return err
+		}
+		if variant != "" {
+			if err = lockSKUProductTx(ctx, tx, product, variant); err != nil {
+				return err
+			}
+		}
+		var source, placedVariant string
+		if err = tx.QueryRowContext(ctx, insert+` RETURNING `+resultColumns+`,source_balance_id,variant_id`, args...).
+			Scan(append(resultFields, &source, &placedVariant)...); err != nil {
+			return err
+		}
+		var target string
+		if err = tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2
+			AND variant_id IS NOT DISTINCT FROM NULLIF($3,'')::uuid AND location_key=$4
+			AND status='sellable' AND location_type='bin' AND owner_type='supplier'`,
+			product, supplier, placedVariant, "bin:"+bin).Scan(&target); err != nil {
+			return err
+		}
+		if _, err = moveLotUnitsTx(ctx, tx, product, placedVariant, source, target, "in_stock", "in_stock",
+			quantity, "restock", "customer_return_putaway", out.ID, actor); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}()
 	if err != nil {
 		var pg *pq.Error
 		if errors.As(err, &pg) {
@@ -218,9 +258,6 @@ func (r *WarehouseRepository) PlaceCustomerReturnItemInBin(ctx context.Context, 
 			}
 		}
 		return out, err
-	}
-	if staffID == "" {
-		_, err = replay()
 	}
 	return out, err
 }

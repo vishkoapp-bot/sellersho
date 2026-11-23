@@ -30,7 +30,23 @@ func TestQUAL01MixedRoleCustomerReturnScope(t *testing.T) {
 			reason text DEFAULT '', admin_note text DEFAULT '', prepaid bool, tracking_number text,
 			shipped_at timestamptz, return_code text DEFAULT '', return_shipping_amount bigint DEFAULT 0,
 			return_shipping_bearer text DEFAULT '', created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
-		CREATE TEMP TABLE return_items (id uuid, return_id uuid, order_item_id text, variant_id text, qty int, qc_status text, received_at timestamptz);
+		CREATE TEMP TABLE return_items (id uuid, return_id uuid, order_item_id text DEFAULT 'item', variant_id text, qty int, qc_status text, received_at timestamptz);
+		CREATE TEMP TABLE orders(id text PRIMARY KEY);
+		CREATE TEMP TABLE suppliers(id text PRIMARY KEY);
+		CREATE TEMP TABLE products(id text PRIMARY KEY, supplier_id text);
+		CREATE TEMP TABLE order_items(id text PRIMARY KEY, product_id text);
+		CREATE TEMP TABLE order_inventory_captures(order_item_id text, variant_id uuid);
+		CREATE TEMP TABLE product_units (LIKE public.product_units INCLUDING ALL);
+		CREATE TEMP TABLE inventory_movements (LIKE public.inventory_movements INCLUDING ALL);
+		CREATE TEMP TABLE inventory_balances(id text PRIMARY KEY, product_id text, supplier_id text,
+			variant_id uuid, location_key text, status text, location_type text, owner_type text,
+			quantity int, unit_tracked bool DEFAULT false);
+		INSERT INTO orders VALUES('order');
+		INSERT INTO suppliers VALUES('supplier');
+		INSERT INTO products VALUES('product','supplier');
+		INSERT INTO order_items VALUES('item','product');
+		INSERT INTO inventory_balances VALUES('source','product','supplier',NULL,'return:scope','sellable','warehouse','supplier',1,false),
+			('target','product','supplier',NULL,'bin:bin','sellable','bin','supplier',1,false);
 		CREATE TEMP TABLE warehouse_customer_return_bin_sources (return_id uuid, return_item_id uuid,
 			product_id text, variant_id text, product_title text, variant_name text, variant_spnc text,
 			warehouse_id text, qc_status text, qty int, source_proven bool, available_quantity int);
@@ -39,6 +55,7 @@ func TestQUAL01MixedRoleCustomerReturnScope(t *testing.T) {
 		CREATE TEMP TABLE warehouse_return_bin_entries (id text, return_id uuid, return_item_id uuid, bin_code text,
 			quantity int, reason text, actor_user_id text, idempotency_key text,
 			volume_cm3 bigint DEFAULT 10, weight_grams bigint DEFAULT 20, measurement_revision_id text DEFAULT 'revision',
+			source_balance_id text DEFAULT 'source', variant_id text DEFAULT '',
 			received_at timestamptz DEFAULT now(), UNIQUE(actor_user_id,idempotency_key));
 		INSERT INTO users VALUES ('staff',' Tehran ',true,true),('blank',' ',true,true),
 			('unconfirmed','Tehran',true,false),('inactive','Tehran',false,true);
@@ -72,8 +89,8 @@ func TestQUAL01MixedRoleCustomerReturnScope(t *testing.T) {
 			if _, err := db.ExecContext(ctx, `INSERT INTO customer_returns(id,warehouse_id,destination_supplier_warehouse_id) VALUES ($1,$2,$3)`, id, tc.site, tc.supplier); err != nil {
 				t.Fatal(err)
 			}
-			// No finance tables exist in this fixture. An out-of-scope receive must
-			// stop at the authorization filter, before it reaches finance locking.
+			// No money tables exist in this fixture. Out-of-scope requests must
+			// stop at authorization before inventory discovery or finance locking.
 			ret, err := orders.GetCustomerReturn(tc.scoped, id)
 			if err != nil || (ret != nil) != tc.want {
 				t.Fatalf("detail found=%t, err=%v, want found=%t", ret != nil, err, tc.want)
@@ -88,7 +105,17 @@ func TestQUAL01MixedRoleCustomerReturnScope(t *testing.T) {
 			place := func(scope context.Context) (ReturnBinPlacementResult, error) {
 				return warehouse.PlaceCustomerReturnItemInBin(scope, id, item, "bin", 1, "reason", "staff", key)
 			}
+			if !tc.want {
+				if _, err := db.ExecContext(ctx, `ALTER TABLE order_items RENAME TO hidden_order_items`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			first, err := place(tc.scoped)
+			if !tc.want {
+				if _, restoreErr := db.ExecContext(ctx, `ALTER TABLE hidden_order_items RENAME TO order_items`); restoreErr != nil {
+					t.Fatal(restoreErr)
+				}
+			}
 			if tc.want {
 				second, replayErr := place(tc.scoped)
 				if err != nil || replayErr != nil || first.ID == "" || first.ID != second.ID {

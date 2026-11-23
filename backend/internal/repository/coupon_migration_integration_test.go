@@ -327,6 +327,18 @@ func (f fin007HistoricalRefundProvider) LookupRefund(ctx context.Context, q paym
 
 func TestFIN007MigrationUnresolvedMoney(t *testing.T) {
 	db, schema := fin007PriorSchema(t)
+	// The fixture uses today's capture writer to prepare historical receipts.
+	// Supply its additive serialization tables temporarily, then remove them
+	// before the canonical historical-to-current migration below.
+	spncxUp, err := os.ReadFile("../../migrations/202611230002_spncx_product_units.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spncxDown, err := os.ReadFile("../../migrations/202611230002_spncx_product_units.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opsExec(t, db, string(spncxUp))
 	f := opsFixtureNew(t, db)
 	warehouse := seedCanonicalWarehouseStock(t, db, f.product, f.supplier, 100)
 	ctx := context.Background()
@@ -360,6 +372,11 @@ func TestFIN007MigrationUnresolvedMoney(t *testing.T) {
 			cases = append(cases, legacy{code, kind, id, token})
 		}
 	}
+	var minted int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units`).Scan(&minted); err != nil || minted != 0 {
+		t.Fatalf("historical fixture must remain quantity-only: units=%d err=%v", minted, err)
+	}
+	opsExec(t, db, string(spncxDown))
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := migrations.Run(bounded, fin007MigrationDB(t, schema), migrations.Options{Dir: "../../migrations", LockTimeout: time.Second, MigrationTimeout: 5 * time.Second}); err != nil {

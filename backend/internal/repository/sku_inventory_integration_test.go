@@ -147,7 +147,8 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 		`CREATE TABLE inventory_balances(id VARCHAR(80) PRIMARY KEY,product_id VARCHAR(50),supplier_id VARCHAR(50),variant_id UUID,owner_type VARCHAR(20),location_type VARCHAR(20),location_key VARCHAR(150),status VARCHAR(30),warehouse_id TEXT,supplier_warehouse_id TEXT,quantity INT  DEFAULT 0 NOT NULL CHECK(quantity>=0),reconciled BOOL DEFAULT false ,updated_at TIMESTAMPTZ DEFAULT NOW(),bin_code VARCHAR(30),
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			created_at timestamp with time zone NOT NULL DEFAULT now(),
-			warehouse_name character varying(100))`,
+			warehouse_name character varying(100),
+			CONSTRAINT inventory_balances_status_check CHECK (status IN ('physical','sellable','sales_reserved','return_requested','quarantine','in_transit','damaged','unreconciled','inbound_reserved','qc_accepted')))`,
 		`CREATE TRIGGER inventory_assign_origin BEFORE INSERT ON inventory_balances FOR EACH ROW EXECUTE FUNCTION public.inventory_assign_origin()`,
 		`CREATE UNIQUE INDEX legacy_balance_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL`,
 		`CREATE UNIQUE INDEX sku_balance_unique ON inventory_balances(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`,
@@ -410,7 +411,7 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 	if _, err := tx.Exec(`ALTER TABLE payment_transactions DROP COLUMN IF EXISTS compensation_capture`); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"202611140006_inventory_transfer_provenance.up.sql", "202610250007_refunds_table.up.sql", "202611150004_order_refund_principal.up.sql"} {
+	for _, name := range []string{"202611140006_inventory_transfer_provenance.up.sql", "202610250007_refunds_table.up.sql", "202611150004_order_refund_principal.up.sql", "202611230002_spncx_product_units.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -423,7 +424,7 @@ func skuInventoryFixture(t *testing.T) (*sql.DB, string, string, string) {
 	if _, err := tx.Exec(`INSERT INTO products VALUES('p','s',0,2,'variable','sw1',NOW())`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO product_variants(id,product_id,stock,inventory_mode) VALUES($1,'p',1,'tracked'),($2,'p',3,'tracked')`, red, blue); err != nil {
+	if _, err := tx.Exec(`INSERT INTO product_variants(id,product_id,stock,inventory_mode,spnc) VALUES($1,'p',1,'tracked','A0C00001'),($2,'p',3,'tracked','A0C00002')`, red, blue); err != nil {
 		t.Fatal(err)
 	}
 	if err := SeedTrackedSKUInventoryTx(context.Background(), tx, "p", "s"); err != nil {
@@ -576,6 +577,9 @@ func TestSKUInventoryExactCaptureCancelAndLegacyIsolation(t *testing.T) {
 	if _, err := tx.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled) VALUES('unallocated','p','s','supplier','supplier','legacy','sellable',7,TRUE)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := tx.Exec(`INSERT INTO orders(id) VALUES('o')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'o','p',$2,1)`, id, red); err != nil {
 		t.Fatal(err)
 	}
@@ -600,9 +604,16 @@ func TestSKUInventoryExactCaptureCancelAndLegacyIsolation(t *testing.T) {
 	if r != 1 {
 		t.Fatalf("replayed restore stock=%d", r)
 	}
+	var code, status string
+	var restored bool
+	if err := tx.QueryRow(`SELECT oiu.code,u.status,oiu.restored_at IS NOT NULL
+		FROM order_item_units oiu JOIN product_units u ON u.id=oiu.unit_id
+		WHERE oiu.order_item_id=$1`, id).Scan(&code, &status, &restored); err != nil || code != "A0C00001-X0001" || status != "in_stock" || !restored {
+		t.Fatalf("cancel did not restore the captured unit: code=%s status=%s restored=%t err=%v", code, status, restored, err)
+	}
 }
 
-func TestSKUInventoryLegacyUntrackedNeverGainsSKUUnits(t *testing.T) {
+func TestSKUInventoryLegacyUntrackedCapturesWithCoverageGap(t *testing.T) {
 	db, schema, _, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	defer tx.Rollback()
@@ -616,12 +627,21 @@ func TestSKUInventoryLegacyUntrackedNeverGainsSKUUnits(t *testing.T) {
 	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'legacy-order','legacy',$2,1)`, item, sku); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := captureOrderInventoryTx(context.Background(), tx, "legacy-order"); !errors.Is(err, ErrInsufficientInventory) {
-		t.Fatalf("legacy aggregate invented named-origin stock: %v", err)
+	if _, err := captureOrderInventoryTx(context.Background(), tx, "legacy-order"); err != nil {
+		t.Fatal(err)
+	}
+	assertSingleUnitCaptureGap(t, tx, "legacy", sku, "legacy-order")
+	var units int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM product_units WHERE product_id='legacy'`).Scan(&units); err != nil || units != 0 {
+		t.Fatalf("legacy product units=%d, want 0, err=%v", units, err)
 	}
 	var qty int
 	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, sku).Scan(&qty); err != nil || qty != 0 {
 		t.Fatalf("legacy SKU changed %d %v", qty, err)
+	}
+	if err := tx.QueryRow(`SELECT quantity FROM inventory_balances WHERE product_id='legacy' AND variant_id IS NULL
+		AND location_key='warehouse:legacy_migration' AND status='sellable'`).Scan(&qty); err != nil || qty != 4 {
+		t.Fatalf("legacy unallocated lot quantity=%d, want 4, err=%v", qty, err)
 	}
 }
 
@@ -725,6 +745,9 @@ func TestSKUInventoryConcurrentLastUnitOnlyOneCapture(t *testing.T) {
 	db, schema, red, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	for _, order := range []string{"one", "two"} {
+		if _, err := tx.Exec(`INSERT INTO orders(id) VALUES($1)`, order); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,$2,'p',$3,1)`, uuid.NewString(), order, red); err != nil {
 			t.Fatal(err)
 		}
@@ -774,6 +797,9 @@ func TestSKUInventoryDuplicateLinesAndInactiveReject(t *testing.T) {
 	db, schema, red, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO orders(id) VALUES('duplicate'),('inactive'); SAVEPOINT duplicate_capture`); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'duplicate','p',$2,1)`, uuid.NewString(), red); err != nil {
 			t.Fatal(err)
@@ -781,6 +807,11 @@ func TestSKUInventoryDuplicateLinesAndInactiveReject(t *testing.T) {
 	}
 	if _, err := captureOrderInventoryTx(context.Background(), tx, "duplicate"); !errors.Is(err, ErrInsufficientInventory) {
 		t.Fatalf("duplicate lines bypassed stock: %v", err)
+	}
+	// A failed payment rolls back its transaction; isolate the next scenario
+	// from any provisional lot/unit writes made by the rejected capture.
+	if _, err := tx.Exec(`ROLLBACK TO SAVEPOINT duplicate_capture`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`DELETE FROM order_items`); err != nil {
 		t.Fatal(err)
@@ -835,13 +866,17 @@ func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT id::text FROM order_items WHERE order_id=$1`, order).Scan(&orderItem); err != nil {
 		t.Fatal(err)
 	}
+	returnID, returnItem, secondReturnItem := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	opsExec(t, db, `INSERT INTO customer_returns(id,order_id,customer_id) VALUES($1,$2,$3)`, returnID, order, f.user)
+	opsExec(t, db, `INSERT INTO return_items(id,return_id,order_item_id,variant_id,qty)
+		VALUES($1,$3,$4,$5,1),($2,$3,$4,$5,1)`, returnItem, secondReturnItem, returnID, orderItem, red)
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	for i := 0; i < 2; i++ {
-		if handled, err := restoreCapturedReturnTx(ctx, tx, "return-item", orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err != nil || !handled {
+		if handled, err := restoreCapturedReturnTx(ctx, tx, returnItem, orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err != nil || !handled {
 			t.Fatalf("return handled=%v err=%v", handled, err)
 		}
 	}
@@ -851,7 +886,7 @@ func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
 	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, blue).Scan(&b); err != nil || b != 3 {
 		t.Fatalf("return touched sibling=%d err=%v", b, err)
 	}
-	if _, err := restoreCapturedReturnTx(ctx, tx, "second-return-item", orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err == nil {
+	if _, err := restoreCapturedReturnTx(ctx, tx, secondReturnItem, orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err == nil {
 		t.Fatal("returned more than captured")
 	}
 	var raw []byte
@@ -879,6 +914,12 @@ func TestSKUInventoryReceiptCannotSellBeforeExactPutaway(t *testing.T) {
 		t.Fatalf("staging purchased: %v", err)
 	}
 	inv09PlacePending(t, db, f, shipment, warehouse)
+	if _, err := orders.MarkPaymentPaid(ctx, token, "before-placement", "mask"); !errors.Is(err, ErrCapturePendingManualResolution) {
+		t.Fatalf("failed charged capture replayed after stock became available: %v", err)
+	}
+	order, token = opsOrder(t, db, f, false)
+	opsExec(t, db, `UPDATE order_items SET variant_id=$2 WHERE order_id=$1`, order, red)
+	seedCanonicalWarehouseOrderOrigins(t, db, order, warehouse)
 	if _, err := orders.MarkPaymentPaid(ctx, token, "R"+red[:20], "mask"); err != nil {
 		t.Fatal(err)
 	}

@@ -148,6 +148,10 @@ func openCancellationDB(t *testing.T) *sql.DB {
 		`CREATE TABLE order_inventory_captures(order_item_id text PRIMARY KEY,order_id text,product_id text,variant_id uuid,quantity int,variant_quantity int DEFAULT 0 ,restored_quantity int DEFAULT 0 ,inventory_mode text,allocations jsonb DEFAULT '[]'::jsonb ,
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			created_at timestamp with time zone NOT NULL DEFAULT now())`,
+		`CREATE TABLE inventory_balances (LIKE public.inventory_balances INCLUDING ALL)`,
+		`CREATE TABLE inventory_movements (LIKE public.inventory_movements INCLUDING ALL)`,
+		`CREATE TRIGGER sync_fixture_stock AFTER INSERT OR UPDATE OR DELETE ON inventory_balances
+			FOR EACH ROW EXECUTE FUNCTION public.sync_product_stock_projection()`,
 		`CREATE TABLE supplier_shipments(id text PRIMARY KEY,order_id text,supplier_id text,status text DEFAULT 'pending'::character varying ,shipped_at timestamptz,delivered_at timestamptz,carrier text,tracking_number text,supplier_notes text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now() ,
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			customer_name character varying(255),
@@ -188,10 +192,13 @@ func openCancellationDB(t *testing.T) *sql.DB {
 func seedCancellation(t *testing.T, db *sql.DB, id, method string) {
 	t.Helper()
 	for _, q := range []string{
-		`INSERT INTO orders(id,order_number,customer_user_id,status,payment_status,inventory_captured,shipped_at,updated_at,fulfillment_method,tracking_code,tracking_number,carrier,store_id) VALUES($1,$1,'00000000-0000-0000-0000-000000000001','packed','paid',true,NULL,now(),'` + method + `',NULL,NULL,NULL,NULL)`,
+		`INSERT INTO orders(id,order_number,customer_user_id,status,payment_status,inventory_captured,shipped_at,updated_at,fulfillment_method,tracking_code,tracking_number,carrier,store_id) VALUES($1::varchar,LEFT($1::varchar,30),'00000000-0000-0000-0000-000000000001','packed','paid',true,NULL,now(),'` + method + `',NULL,NULL,NULL,NULL)`,
 		`INSERT INTO products(id,stock) VALUES($1,7)`,
 		`INSERT INTO order_items VALUES($1,$1,$1,3,NULL)`,
-		`INSERT INTO order_inventory_captures VALUES($1,$1,$1,NULL,3,0,0,'legacy','[]')`,
+		`INSERT INTO inventory_balances(id,product_id,owner_type,location_type,location_key,status,quantity,reconciled)
+			VALUES($1,$1,'supplier','warehouse','warehouse:legacy_migration','sellable',7,TRUE)`,
+		`INSERT INTO order_inventory_captures VALUES($1,$1,$1,NULL,3,0,0,'legacy',
+			jsonb_build_array(jsonb_build_object('balanceId',$1::text,'quantity',3)))`,
 	} {
 		if _, err := db.Exec(q, id); err != nil {
 			t.Fatal(err)
@@ -264,7 +271,7 @@ func TestCancellationDispatchRaces(t *testing.T) {
 			// Prove dispatch can win in this fixture before testing contention.
 			// Otherwise a broken dispatch fixture could let cancellation win
 			// every iteration and falsely satisfy the exactly-one-winner check.
-			control := "dispatch-control-" + method
+			control := uuid.NewString()
 			seedCancellation(t, db, control, method)
 			if method == "warehouse" {
 				seedPosition(control)
@@ -283,7 +290,9 @@ func TestCancellationDispatchRaces(t *testing.T) {
 				t.Fatalf("dispatched control cancellation=%v", err)
 			}
 			for i := 0; i < 100; i++ {
-				id := fmt.Sprintf("race-%s-%d", method, i)
+				// The shared fixture uses this as the order-item ID as well.
+				// Unit provenance stores order-item IDs as UUIDs.
+				id := uuid.NewString()
 				seedCancellation(t, db, id, method)
 				if method == "warehouse" {
 					seedPosition(id)

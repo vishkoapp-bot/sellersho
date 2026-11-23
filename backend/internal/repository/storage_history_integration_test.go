@@ -82,7 +82,7 @@ func fin006KnownReceipt(t *testing.T, db *sql.DB, f opsFixture, warehouse string
 		}
 	}
 	persisted := inboundPersistedLine{ID: line, Shipment: inbound, Supplier: f.supplier, Warehouse: warehouse, Product: f.product, Kind: "external_replenishment", Quantity: quantity, Dispatched: quantity, Received: quantity}
-	if err = createInboundPutawayTx(ctx, tx, persisted, disposition, quantity); err != nil {
+	if err = createInboundPutawayTx(ctx, tx, persisted, disposition, quantity, quantity); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,created_at) VALUES($1,$2,$3,$4,'quarantine','qc_accepted',$5,$6,'inbound_qc_disposition',$7,$1,$8,$9)`, "IM-"+uuid.NewString(), f.product, f.supplier, quantity, "inbound-line:"+line, "qc-accepted:"+disposition, disposition, f.user, billing); err != nil {

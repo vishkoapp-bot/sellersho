@@ -160,12 +160,18 @@ func TestInboundTransferBookingPaymentRace(t *testing.T) {
 			if wins != 1 {
 				t.Fatalf("one unit allowed %d successful competing claims", wins)
 			}
-			var quantity int
-			if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0)+(SELECT COALESCE(SUM(quantity),0) FROM order_inventory_captures) FROM inventory_balances WHERE variant_id=$1`, red).Scan(&quantity); err != nil {
+			// Sold units now remain in a sold ledger lot. Preserve the original
+			// on-hand + captured conservation check and reconcile that sold lot.
+			var quantity, sold, captured, units int
+			if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER (WHERE status<>'sold'),0),
+			 COALESCE(SUM(quantity) FILTER (WHERE status='sold'),0),
+			 (SELECT COALESCE(SUM(quantity),0) FROM order_inventory_captures WHERE variant_id=$1),
+			 (SELECT COUNT(*) FROM product_units WHERE variant_id=$1)
+			 FROM inventory_balances WHERE variant_id=$1`, red).Scan(&quantity, &sold, &captured, &units); err != nil {
 				t.Fatal(err)
 			}
-			if quantity != 1 {
-				t.Fatalf("conserved quantity=%d", quantity)
+			if quantity+captured != 1 || sold != captured || units != 1 {
+				t.Fatalf("conserved on-hand=%d captured=%d sold=%d units=%d", quantity, captured, sold, units)
 			}
 		})
 	}

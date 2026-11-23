@@ -115,10 +115,22 @@ func TestInboundReviewGlobalBalanceOrder(t *testing.T) {
 			db := skuScopedDB(t, schema)
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
-			if _, err := db.Exec(`INSERT INTO products(id,supplier_id,stock,schema_version) VALUES('q','s',0,2);UPDATE inventory_balances SET id=CASE WHEN product_id='p' AND quantity=1 THEN 'z' ELSE 'a' END;`); err != nil {
+			// Keep immutable unit references intact. Assign the globally later lot
+			// to product p and the earlier lot to q instead of rewriting lot IDs.
+			var later, earlier string
+			if err := db.QueryRow(`SELECT id FROM inventory_balances WHERE variant_id=$1`, red).Scan(&later); err != nil {
 				t.Fatal(err)
 			}
-			for _, q := range []string{`UPDATE product_variants SET product_id='q' WHERE id=$1`, `UPDATE inventory_balances SET product_id='q' WHERE variant_id=$1`} {
+			if err := db.QueryRow(`SELECT id FROM inventory_balances WHERE variant_id=$1`, blue).Scan(&earlier); err != nil {
+				t.Fatal(err)
+			}
+			if later < earlier {
+				later, earlier, red, blue = earlier, later, blue, red
+			}
+			if _, err := db.Exec(`INSERT INTO products(id,supplier_id,stock,schema_version) VALUES('q','s',0,2)`); err != nil {
+				t.Fatal(err)
+			}
+			for _, q := range []string{`UPDATE product_variants SET product_id='q' WHERE id=$1`, `UPDATE inventory_balances SET product_id='q' WHERE variant_id=$1`, `UPDATE product_units SET product_id='q' WHERE variant_id=$1`} {
 				if _, err := db.Exec(q, blue); err != nil {
 					t.Fatal(err)
 				}
@@ -143,7 +155,7 @@ func TestInboundReviewGlobalBalanceOrder(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer blocker.Rollback()
-			if _, err := blocker.Exec(`SELECT id FROM inventory_balances WHERE id='a' FOR UPDATE`); err != nil {
+			if _, err := blocker.Exec(`SELECT id FROM inventory_balances WHERE id=$1 FOR UPDATE`, earlier); err != nil {
 				t.Fatal(err)
 			}
 			candidate, err := db.BeginTx(ctx, nil)
@@ -172,7 +184,7 @@ func TestInboundReviewGlobalBalanceOrder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, probeErr := probe.Exec(`SELECT id FROM inventory_balances WHERE id='z' FOR UPDATE NOWAIT`)
+			_, probeErr := probe.Exec(`SELECT id FROM inventory_balances WHERE id=$1 FOR UPDATE NOWAIT`, later)
 			probe.Rollback()
 			blocker.Rollback()
 			err = <-done
@@ -181,7 +193,7 @@ func TestInboundReviewGlobalBalanceOrder(t *testing.T) {
 				t.Fatal(err)
 			}
 			if probeErr != nil {
-				t.Fatalf("balance z acquired before globally earlier blocked a: %v", probeErr)
+				t.Fatalf("later balance acquired before globally earlier blocked balance: %v", probeErr)
 			}
 		})
 	}

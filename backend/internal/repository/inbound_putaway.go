@@ -11,9 +11,9 @@ import (
 // Caller preholds the receipt's supplier, product/SKU and complete balance plan.
 // One positive acceptance delta creates one immutable task and isolated source;
 // later receipts cannot resize that task or supply its missing units.
-func createInboundPutawayTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, disposition string, quantity int) error {
+func createInboundPutawayTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, disposition string, lotQuantity, quantity int) error {
 	task, source := "PUT-"+uuid.NewString(), "qc-accepted:"+disposition
-	if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id,reconciled) VALUES($1,$2,$3,NULLIF($4,'')::uuid,'supplier','warehouse',$5,'qc_accepted',$6,$7,TRUE)`, "INV-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, source, quantity, l.Warehouse); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id,reconciled) VALUES($1,$2,$3,NULLIF($4,'')::uuid,'supplier','warehouse',$5,'qc_accepted',$6,$7,TRUE)`, "INV-"+uuid.NewString(), l.Product, l.Supplier, l.Variant, source, lotQuantity, l.Warehouse); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO putaway_tasks(id,product_id,variant_id,inbound_id,warehouse_id,inventory_source_location_key,quantity,status,created_at) VALUES($1,$2,NULLIF($3,'')::uuid,$4,$5,$6,$7,'pending',NOW())`, task, l.Product, l.Variant, l.Shipment, l.Warehouse, source, quantity); err != nil {
@@ -144,6 +144,17 @@ func consumeExactPutawayTx(ctx context.Context, tx *sql.Tx, task, bin, actor str
 		conflict = `(product_id,owner_type,location_type,location_key,status,variant_id) WHERE variant_id IS NOT NULL`
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id,reconciled) VALUES($1,$2,$3,NULLIF($4,'')::uuid,'supplier','bin',$5,'sellable',$6,$7,TRUE) ON CONFLICT `+conflict+` DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()`, "INV-"+uuid.NewString(), a.product, a.supplier, a.variant, "bin:"+bin, a.quantity, a.warehouse); err != nil {
+		return err
+	}
+	source, err := inventoryLotIDTx(ctx, tx, a.product, a.variant, a.source, "qc_accepted")
+	if err != nil {
+		return err
+	}
+	target, err := inventoryLotIDTx(ctx, tx, a.product, a.variant, "bin:"+bin, "sellable")
+	if err != nil {
+		return err
+	}
+	if _, err = moveLotUnitsTx(ctx, tx, a.product, a.variant, source, target, "defined", "in_stock", a.quantity, "inbound", "putaway_confirmed", task, actor); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'qc_accepted','sellable',$6,$7,'putaway_confirmed',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), a.product, a.supplier, a.variant, a.quantity, a.source, "bin:"+bin, task, "putaway:"+task, actor); err != nil {

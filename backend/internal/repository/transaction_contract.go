@@ -17,6 +17,9 @@ var ErrTransactionLockOrder = errors.New("transaction lock contract violated")
 type TransactionRowLock struct {
 	Table string
 	ID    string
+	// SecondaryID is unit_id for order_item_units; ID is order_item_id.
+	// It must be empty for every single-column primary key.
+	SecondaryID string
 }
 
 // Every product precedes every SKU (including products with multiple SKUs).
@@ -28,25 +31,33 @@ var transactionLockTables = map[string]int{
 	"orders":               100,
 	"payment_transactions": 200,
 	"stores":               300, "suppliers": 301, "users": 302,
-	"seller_discount_codes": 350,
-	"products":              400,
-	"product_variants":      500,
-	"warehouses":            550, "supplier_warehouses": 551,
+	"seller_discount_codes":         350,
+	"products":                      400,
+	"product_variants":              500,
+	"product_variant_unit_counters": 510,
+	"inventory_balances":            560,
+	"product_units":                 561, "product_unit_events": 562, "order_item_units": 563,
+	"order_inventory_captures": 564,
+	"warehouses":               550, "supplier_warehouses": 551,
 	"supplier_shipments": 600, "inbound_shipments": 601, "shipments": 602,
 	"shipment_items": 603, "customer_returns": 604, "return_items": 605,
 	"supplier_return_requests": 606, "supplier_return_parcels": 607,
-	"putaway_tasks": 608, "order_inventory_captures": 609,
-	"disputes": 610, "payout_requests": 611, "seller_early_withdrawals": 612,
+	"putaway_tasks": 608,
+	"disputes":      610, "payout_requests": 611, "seller_early_withdrawals": 612,
 	"monthly_settlement_cycles": 613, "monthly_settlement_items": 614,
 	"pick_tasks": 615, "supplier_return_back_requests": 616,
-	"inventory_balances": 700, "inventory_reservations": 701,
-	"warehouse_bins": 702, "putaway_capacity_reservations": 703,
+	"inventory_reservations": 701,
+	"warehouse_bins":         702, "putaway_capacity_reservations": 703,
 	"warehouse_placements":        704,
 	"warehouse_storage_positions": 705,
 }
 
 func transactionLockColumn(table string) string {
 	switch table {
+	case "product_variant_unit_counters":
+		return "variant_id"
+	case "order_item_units":
+		return "order_item_id"
 	case "warehouse_bins":
 		return "bin_code"
 	case "order_inventory_captures":
@@ -62,7 +73,10 @@ func transactionLockLess(a, b TransactionRowLock) bool {
 	if transactionLockTables[a.Table] != transactionLockTables[b.Table] {
 		return transactionLockTables[a.Table] < transactionLockTables[b.Table]
 	}
-	return a.ID < b.ID
+	if a.ID != b.ID {
+		return a.ID < b.ID
+	}
+	return a.SecondaryID < b.SecondaryID
 }
 
 func normalizeTransactionLocks(locks []TransactionRowLock) ([]TransactionRowLock, error) {
@@ -70,6 +84,9 @@ func normalizeTransactionLocks(locks []TransactionRowLock) ([]TransactionRowLock
 	for _, lock := range result {
 		if _, ok := transactionLockTables[lock.Table]; !ok || lock.ID == "" {
 			return nil, fmt.Errorf("%w: unknown relation or empty identity", ErrTransactionLockOrder)
+		}
+		if (lock.Table == "order_item_units") != (lock.SecondaryID != "") {
+			return nil, fmt.Errorf("%w: invalid composite identity", ErrTransactionLockOrder)
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return transactionLockLess(result[i], result[j]) })
@@ -135,7 +152,13 @@ func LockTransactionRowsTx(ctx context.Context, tx *sql.Tx, set *TransactionLock
 		var id string
 		// Table comes exclusively from transactionLockTables, not user input.
 		column := transactionLockColumn(lock.Table)
-		if err := tx.QueryRowContext(ctx, `SELECT `+column+` FROM `+lock.Table+` WHERE `+column+`=$1 FOR UPDATE`, lock.ID).Scan(&id); err != nil {
+		query := `SELECT ` + column + ` FROM ` + lock.Table + ` WHERE ` + column + `=$1`
+		args := []any{lock.ID}
+		if lock.Table == "order_item_units" {
+			query += ` AND unit_id=$2`
+			args = append(args, lock.SecondaryID)
+		}
+		if err := tx.QueryRowContext(ctx, query+` FOR UPDATE`, args...).Scan(&id); err != nil {
 			set.poisoned = true
 			return fmt.Errorf("acquire transaction row guard: %w", err)
 		}

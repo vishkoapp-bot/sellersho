@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -38,6 +39,12 @@ func transactionContractConnections(t *testing.T) (*sql.Conn, *sql.Conn, string)
 		}
 	})
 	for table := range transactionLockTables {
+		if table == "order_item_units" {
+			if _, err := db.ExecContext(ctx, `CREATE TABLE `+schema+`.order_item_units (order_item_id text, unit_id text, quantity integer NOT NULL DEFAULT 100, PRIMARY KEY (order_item_id, unit_id)); INSERT INTO `+schema+`.order_item_units (order_item_id,unit_id) VALUES ('a','a'),('b','a'),('a','b')`); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		column := transactionLockColumn(table)
 		if _, err := db.ExecContext(ctx, `CREATE TABLE `+schema+`.`+table+` (`+column+` text PRIMARY KEY, quantity integer NOT NULL DEFAULT 100)`); err != nil {
 			t.Fatal(err)
@@ -98,17 +105,21 @@ func TestTransactionContractAllowlistMatchesMigratedSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for table := range transactionLockTables {
-		var valid bool
-		err := db.QueryRowContext(ctx, `SELECT EXISTS (
-			SELECT 1 FROM pg_catalog.pg_class c
-			JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-			JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
-			JOIN pg_catalog.pg_constraint k ON k.conrelid=c.oid
-			WHERE n.nspname='public' AND c.relname=$1 AND a.attname=$2
-			AND NOT a.attisdropped AND k.contype='p'
-			AND k.conkey=ARRAY[a.attnum])`, table, transactionLockColumn(table)).Scan(&valid)
-		if err != nil || !valid {
-			t.Errorf("allowlisted guard %s.%s is not an actual single-column primary key: %v", table, transactionLockColumn(table), err)
+		want := []string{transactionLockColumn(table)}
+		if table == "order_item_units" {
+			want = []string{"order_item_id", "unit_id"}
+		}
+		var actual pq.StringArray
+		err := db.QueryRowContext(ctx, `SELECT ARRAY(
+            SELECT a.attname::text FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_catalog.pg_constraint k ON k.conrelid=c.oid AND k.contype='p'
+            CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS key(attnum, ord)
+            JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=key.attnum
+            WHERE n.nspname='public' AND c.relname=$1 AND NOT a.attisdropped
+            ORDER BY key.ord)`, table).Scan(&actual)
+		if err != nil || !reflect.DeepEqual([]string(actual), want) {
+			t.Errorf("allowlisted guard %s primary key = %v, want exactly %v: %v", table, actual, want, err)
 		}
 	}
 }
@@ -264,5 +275,47 @@ func TestTransactionContractRejectsLateEarlierLocks(t *testing.T) {
 	}
 	if err := LockTransactionRowsTx(ctx, tx, set, contractPlan("products")...); !errors.Is(err, ErrTransactionLockOrder) {
 		t.Fatalf("failed acquisition state reused: %v", err)
+	}
+}
+
+func TestTransactionContractCompositeIdentityLocksExactRow(t *testing.T) {
+	a, b, schema := transactionContractConnections(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	owner := beginContractTx(t, ctx, a, schema)
+	lock := TransactionRowLock{Table: "order_item_units", ID: "a", SecondaryID: "a"}
+	if err := LockTransactionRowsTx(ctx, owner, &TransactionLockSet{}, lock); err != nil {
+		t.Fatal(err)
+	}
+	// Resale of the same unit and another unit on the same item are independent.
+	for _, independent := range []TransactionRowLock{
+		{Table: "order_item_units", ID: "b", SecondaryID: "a"},
+		{Table: "order_item_units", ID: "a", SecondaryID: "b"},
+	} {
+		other := beginContractTx(t, ctx, b, schema)
+		if _, err := other.ExecContext(ctx, `SET LOCAL lock_timeout='200ms'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := LockTransactionRowsTx(ctx, other, &TransactionLockSet{}, independent); err != nil {
+			t.Fatalf("independent composite row blocked: %v", err)
+		}
+		if err := other.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := beginContractTx(t, ctx, b, schema)
+	if _, err := other.ExecContext(ctx, `SET LOCAL lock_timeout='200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	var conflict *pq.Error
+	if err := LockTransactionRowsTx(ctx, other, &TransactionLockSet{}, lock); !errors.As(err, &conflict) || conflict.Code != "55P03" {
+		t.Fatalf("same pair must be locked: %v", err)
+	}
+	if err := other.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	missing := beginContractTx(t, ctx, b, schema)
+	if err := LockTransactionRowsTx(ctx, missing, &TransactionLockSet{}, TransactionRowLock{Table: "order_item_units", ID: "b", SecondaryID: "b"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("nonexistent pair must fail closed: %v", err)
 	}
 }

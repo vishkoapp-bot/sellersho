@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 func TestINV10QCCreatesExactReceiptLotBeforePutawayAndNeverCreditsTwice(t *testing.T) {
@@ -242,11 +244,30 @@ func TestFIN006SQLUnallocatedLegacyReturnCannotCertifyHistory(t *testing.T) {
 	}
 	defer tx.Rollback()
 	var source storageReceiptSource
-	if err = tx.QueryRow(`SELECT r.return_item_id::text,m.id,r.source_balance_id,r.product_id,r.variant_id,r.supplier_id,r.warehouse_id,r.qty,m.created_at,r.received_at FROM warehouse_customer_return_bin_sources r JOIN inventory_movements m ON m.idempotency_key='crstk:'||r.return_id::text||':'||r.return_item_id::text||':sellable' WHERE r.return_id=$1 AND r.source_proven`, ret.ID).Scan(&source.Event, &source.Movement, &source.Balance, &source.Product, &source.Variant, &source.Supplier, &source.Warehouse, &source.Quantity, &source.PhysicalAt, &source.BillingAt); err != nil {
+	// A pre-cutover return has no sellable source under §4.3. Use its actual
+	// quarantine receipt to attempt certification, so the database guard itself
+	// must reject it rather than the test relying on a missing sellable row.
+	if err = tx.QueryRow(`SELECT ri.id::text,m.id,b.id,oi.product_id,COALESCE(b.variant_id::text,''),b.supplier_id,cr.warehouse_id,ri.qty,m.created_at,ri.received_at
+		FROM return_items ri JOIN customer_returns cr ON cr.id=ri.return_id
+		JOIN order_items oi ON oi.id::text=ri.order_item_id
+		JOIN inventory_balances b ON b.product_id=oi.product_id AND b.location_key='return:'||cr.id::text AND b.status='quarantine'
+		JOIN inventory_movements m ON m.idempotency_key='spncx-return-receipt:'||ri.id::text
+			AND m.product_id=b.product_id AND m.to_status=b.status AND m.to_location_key=b.location_key
+		WHERE cr.id=$1`, ret.ID).Scan(&source.Event, &source.Movement, &source.Balance, &source.Product, &source.Variant, &source.Supplier, &source.Warehouse, &source.Quantity, &source.PhysicalAt, &source.BillingAt); err != nil {
 		t.Fatal(err)
 	}
+	var lotQuantity, units, receipts int
+	var unitTracked bool
+	if err := tx.QueryRow(`SELECT b.quantity,b.unit_tracked,
+		(SELECT COUNT(*) FROM product_units WHERE balance_id=b.id),
+		(SELECT COUNT(*) FROM warehouse_storage_receipt_lots WHERE source_kind='customer_return' AND source_event_id=$2)
+		FROM inventory_balances b WHERE b.id=$1`, source.Balance, source.Event).
+		Scan(&lotQuantity, &unitTracked, &units, &receipts); err != nil || source.Quantity != 1 || lotQuantity != 1 || unitTracked || units != 0 || receipts != 0 {
+		t.Fatalf("historical receipt quantity=%d lot quantity=%d unit tracked=%t units=%d certified=%d err=%v", source.Quantity, lotQuantity, unitTracked, units, receipts, err)
+	}
 	source.Kind, source.GoodsClass, source.Line, source.HeldFrom = "customer_return", "returned", source.Event, source.BillingAt
-	if err = insertStorageReceiptLotTx(ctx, tx, source); err == nil {
-		t.Fatal("SQL certified unallocated historical order's returned stock")
+	var pg *pq.Error
+	if err = insertStorageReceiptLotTx(ctx, tx, source); !errors.As(err, &pg) || pg.Code != "P0001" || pg.Message != "known post-cutover customer return receipt required" {
+		t.Fatalf("historical receipt must fail the SQL source guard: %v", err)
 	}
 }

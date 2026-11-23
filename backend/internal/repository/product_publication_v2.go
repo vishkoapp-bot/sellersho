@@ -27,7 +27,7 @@ import (
 //     default already exists, because the add path validates
 //     existing + incoming together; the flag is ignored here as the
 //     second line of defence for legacy all-false products.)
-func insertProductV2VariantsTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, data map[string]interface{}, assignDefault bool) error {
+func insertProductV2VariantsTx(ctx context.Context, tx *sql.Tx, productID, supplierID string, data map[string]interface{}, assignDefault bool, approvalID ...string) error {
 	rawVariants, _ := data["variants"].([]interface{})
 	// The default for this insert: the flagged variant, else the
 	// first active submitted variant (publication only).
@@ -139,5 +139,5 @@ func insertProductV2VariantsTx(ctx context.Context, tx *sql.Tx, productID, suppl
 			}
 		}
 	}
-	return SeedTrackedSKUInventoryTx(ctx, tx, productID, supplierID)
+	return SeedTrackedSKUInventoryTx(ctx, tx, productID, supplierID, approvalID...)
 }

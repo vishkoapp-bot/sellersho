@@ -9,6 +9,8 @@ import {
   Clock,
   Send,
   X,
+  XCircle,
+  Info,
   Hash,
   User,
   Calendar,
@@ -44,6 +46,35 @@ interface SupplierOrderAddon {
   feePerUnit: number;
   quantity: number;
   total: number;
+}
+
+export const TERMINAL_ORDER_STATUSES = ['cancelled', 'failed'] as const;
+export const isTerminalOrderStatus = (status: string): boolean =>
+  (TERMINAL_ORDER_STATUSES as readonly string[]).includes(status);
+
+export const isReadyOrder = (status: string): boolean =>
+  status === 'pending' || status === 'processing';
+
+export function directOrderChip(status: string) {
+  if (status === 'delivered' || status === 'delivered_confirmed') {
+    return { text: 'به دست مشتری رسیده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', Icon: CheckCircle2 };
+  }
+  if (status === 'shipped' || status === 'in_transit') {
+    return { text: 'ارسال شده', cls: 'bg-brand-soft text-brand-deep border-brand-border', Icon: Truck };
+  }
+  if (status === 'processing') {
+    return { text: 'در حال آماده‌سازی', cls: 'bg-brand-soft text-brand-deep border-brand-border', Icon: Package };
+  }
+  if (status === 'cancelled') {
+    return { text: 'لغو شده', cls: 'bg-rose-50 text-rose-700 border-rose-200', Icon: XCircle };
+  }
+  if (status === 'failed') {
+    return { text: 'ناموفق', cls: 'bg-rose-50 text-rose-700 border-rose-200', Icon: XCircle };
+  }
+  if (status === 'pending') {
+    return { text: 'منتظر ارسال', cls: 'bg-amber-50 text-amber-700 border-amber-200', Icon: Clock };
+  }
+  return { text: 'وضعیت نامشخص', cls: 'bg-slate-50 text-slate-600 border-slate-200', Icon: Info };
 }
 
 // FIX 38: rebuilt to the live bundle SupplierDashboardView-MERGED.js (bn component).
@@ -212,7 +243,7 @@ export const SupplierOrdersTab: React.FC = () => {
 
   const filteredOrders = allOrders.filter((ord) => {
     if (filterStatus === 'ready') {
-      if (ord.status === 'shipped' || ord.status === 'in_transit' || ord.status === 'delivered') return false;
+      if (!isReadyOrder(ord.status)) return false;
     } else if (filterStatus === 'shipped') {
       if (ord.status !== 'shipped' && ord.status !== 'in_transit') return false;
     } else if (filterStatus === 'delivered') {
@@ -442,7 +473,7 @@ export const SupplierOrdersTab: React.FC = () => {
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            منتظر ارسال ({toPersianDigits(allOrders.filter(o => o.status !== 'shipped' && o.status !== 'in_transit' && o.status !== 'delivered').length)})
+            منتظر ارسال ({toPersianDigits(allOrders.filter(o => isReadyOrder(o.status)).length)})
           </button>
           <button
             type="button"
@@ -502,6 +533,7 @@ export const SupplierOrdersTab: React.FC = () => {
             const isShipped = ord.status === 'shipped' || ord.status === 'in_transit';
             const isDelivered = ord.status === 'delivered' || ord.status === 'delivered_confirmed';
             const isPending = !isShipped && !isDelivered;
+            const { text: chipText, cls: chipClasses, Icon: ChipIcon } = directOrderChip(ord.status);
 
             return (
               <div
@@ -519,27 +551,10 @@ export const SupplierOrdersTab: React.FC = () => {
                     </span>
                   </div>
 
-                  {isDelivered ? (
-                    <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>به دست مشتری رسیده</span>
-                    </span>
-                  ) : isShipped ? (
-                    <span className="text-[10px] bg-brand-soft text-brand-deep font-bold px-2 py-1 rounded-full border border-brand-border flex items-center gap-1">
-                      <Truck className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>ارسال شده</span>
-                    </span>
-                  ) : ord.status === 'processing' ? (
-                    <span className="text-[10px] bg-brand-soft text-brand-deep font-bold px-2 py-1 rounded-full border border-brand-border flex items-center gap-1">
-                      <Package className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>در حال آماده‌سازی</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-2 py-1 rounded-full border border-amber-200 flex items-center gap-1">
-                      <Clock className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>منتظر ارسال</span>
-                    </span>
-                  )}
+                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full border flex items-center gap-1 ${chipClasses}`}>
+                    <ChipIcon className="w-3 h-3" strokeWidth={1.5}/>
+                    <span>{chipText}</span>
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-xl">
@@ -597,7 +612,7 @@ export const SupplierOrdersTab: React.FC = () => {
                   )}
                 </div>
 
-                {isPending && (
+                {isPending && !isTerminalOrderStatus(ord.status) && (
                   <div className="space-y-2">
                     {ord.status === 'pending' && (
                       <button

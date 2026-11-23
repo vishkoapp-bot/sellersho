@@ -15,6 +15,37 @@ export class ApiError extends Error {
   }
 }
 
+export const API_ERROR_MESSAGE_FA: Record<string, string> = {
+  'Resource does not belong to your supplier': 'دسترسی به این مورد ممکن نیست.',
+  'Shipment is not ready for shipping': 'این سفارش آماده ارسال نیست.',
+  'Unauthorized': 'نشست شما تمام شده؛ دوباره وارد شوید.',
+  'Supplier profile not found': 'پروفایل تأمین‌کننده پیدا نشد.',
+  'Supplier scope required': 'دسترسی تأمین‌کننده برقرار نیست.',
+};
+
+export function toUserFacingErrorMessage(raw: unknown, status: number): string {
+  const fallback = 'خطایی رخ داد؛ دوباره تلاش کنید.';
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+
+  if (typeof data !== 'object' || data === null) return fallback;
+
+  const { error, message } = data as { error?: unknown; message?: unknown };
+  const extracted = typeof error === 'string' ? error : message;
+  if (typeof extracted !== 'string') return fallback;
+
+  if (Object.hasOwn(API_ERROR_MESSAGE_FA, extracted)) {
+    return API_ERROR_MESSAGE_FA[extracted];
+  }
+  return /[\u0600-\u06FF]/.test(extracted) ? extracted : fallback;
+}
+
 // Token Storage and Session Management
 const TOKEN_KEY = 'seler_sho_jwt_token';
 let onUnauthorizedCallback: (() => void) | null = null;
@@ -125,11 +156,7 @@ export async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    const errorMsg =
-      (typeof data === 'object' && (data?.error || data?.message)) ||
-      (typeof data === 'string' && data) ||
-      `خطای سرور با کد وضعیت ${response.status}`;
-    throw new ApiError(response.status, errorMsg, data);
+    throw new ApiError(response.status, toUserFacingErrorMessage(data, response.status), data);
   }
 
   return data as T;

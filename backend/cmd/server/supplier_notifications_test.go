@@ -13,6 +13,7 @@ package main
 // notification_outbox.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -169,6 +170,10 @@ func (f *supplierNotificationsFixture) seedOutbox(t *testing.T, recipient, kind,
 		t.Fatalf("seed outbox: %v", err)
 	}
 	return id
+}
+
+func (f *supplierNotificationsFixture) seedOutboxWithBody(t *testing.T, recipient, kind, title, body string, payload map[string]interface{}) {
+	repository.NotifyBestEffort(context.Background(), f.db, recipient, kind, title, body, payload, t.Name())
 }
 
 func (f *supplierNotificationsFixture) token(t *testing.T, userID, mobile, role string) string {
@@ -346,5 +351,154 @@ func TestCustomerNotificationsEnvelopeUnchanged(t *testing.T) {
 	code, _ = f.callCustomer(t, f.token(t, f.ownerA, "09120000101", "supplier"))
 	if code != http.StatusForbidden {
 		t.Fatalf("customer GET as supplier: status %d, want 403", code)
+	}
+}
+
+func TestSupplierNotificationsSupplierKindFilter(t *testing.T) {
+	type seed struct {
+		kind, title, body string
+	}
+	keep := []seed{
+		{"proposal_rejected", "Proposal rejected", "مدیر پلتفرم پیشنهاد کالای «کالا» را تأیید نکرد. دلیلی ثبت نشده است؛ جزئیات را در بخش «پیشنهادها» ببینید و در صورت نیاز پیشنهاد را ویرایش و دوباره ارسال کنید."}, // supplier_repo.go:813
+		{"proposal_approved", "Proposal approved", "پیشنهاد کالای «کالا» تایید شد و کالا در کاتالوگ منتشر شد."},                                                                                                     // notifications.go:811
+		{"supplier_approved", "Supplier approved", "حساب تأمین‌کننده شما تایید و فعال شد؛ می‌توانید وارد پنل تأمین‌کننده شوید."},                                                                                    // notifications.go:866
+		{"supplier_rejected", "Supplier rejected", "حساب تأمین‌کننده شما تایید نشد."},                                                                                                                               // notifications.go:871
+		{"approval_rejected", "Approval rejected", "درخواست «کالا» تایید نشد."},                                                                                                                                     // notifications.go:830
+		{"ticket_reply", "Ticket reply", "پشتیبانی در تیکت «کالا» پاسخ داد: پاسخ تست"},                                                                                                                              // notifications.go:917
+		{"order_placed", "Order placed", "سفارش ORD-FILTER در فروشگاه شما ثبت شد. برای آماده‌سازی و ارسال، به بخش سفارش‌ها بروید."},                                                                                 // notifications.go:342
+		{"payment_confirmed", "Payment confirmed", "پرداخت سفارش ORD-FILTER تایید شد و آماده‌سازی آن آزاد شد. مبلغ قابل پرداخت: 500,000 تومان."},                                                                    // notifications.go:358
+		{"low_stock", "Low stock", "موجودی کالای «تیشرت زنانه» به 5 عدد رسید. برای جلوگیری از اتمام موجودی، آن را شارژ کنید."},                                                                                      // notifications.go:542
+		{"profit_released", "Profit released", "مهلت مرجوعی سفارش ORD-FILTER پایان یافت و سود فروشنده آن آزاد شد."},                                                                                                 // notifications.go:468
+		{"finance_adjustment", "Finance adjustment", "سند تعدیل مالی ADJ-1 برای شما صادر شد: بدهکار (کاهش مانده) به مبلغ 100,000 تومان. علت: تعدیل تست"},                                                            // notifications.go:696
+		{"payout_reviewed", "Payout reviewed", "درخواست تسویه شما به مبلغ 100,000 تومان تایید شد و برای واریز بانکی در نوبت قرار گرفت."},                                                                            // notifications.go:729
+		{"payout_transfer_confirmed", "Payout transfer confirmed", "مبلغ 100,000 تومان به حساب شبای شما واریز شد. شماره مرجع واریز: REF-1"},                                                                         // notifications.go:752
+		{"supplier_return_reviewed", "Supplier return reviewed", "درخواست مرجوعی کالای شما تایید شد."},                                                                                                              // notifications.go:1070
+		{"supplier_parcel_charge", "Supplier parcel charge", "هزینه حمل مرسوله مرجوعی به مبلغ 100,000 تومان تایید و از حساب شما کسر شد."},                                                                           // notifications.go:1089
+		{"return_qc_charged", "Return QC charged", "در مرجوعی RET-1 (سفارش ORD-FILTER) هزینه حمل 100,000 تومان بابت 1 قلم کالا از حساب شما کسر شد."},                                                                // notifications.go:1015
+		{"return_shipped", "Return shipped", "مشتری مرجوعی سفارش ORD-FILTER را ارسال کرد. کد رهگیری: TRK123"},                                                                                                       // notifications.go:971
+		{"storage_fee_charged", "Storage fee charged", "هزینه انبارداری 1 جایگاه کالای شما به مبلغ 100,000 تومان محاسبه و از موجودی شما کسر شد. جزئیات را در بخش مالی پنل تأمین‌کننده ببینید."},                     // notifications.go:1120
+	}
+	absent := []seed{
+		{"order_status", "Order packed", "سفارش ORD-FILTER بسته‌بندی شد و آماده ارسال است."},                                                                                                                                      // warehouse_repo.go:1367
+		{"payment_failed", "Payment failed", "پرداخت سفارش ORD-FILTER توسط درگاه تایید نشد و مبلغی از حساب شما کسر نشده است. می‌توانید دوباره برای پرداخت اقدام کنید."},                                                           // notifications.go:380
+		{"carrier_failed", "Carrier failed", "شرکت حمل‌ونقل ارسال سفارش ORD-FILTER را ناموفق اعلام کرد؛ پرونده آن برای بررسی به پشتیبانی ارجاع شد. نتیجه بررسی به شما اطلاع داده می‌شود."},                                        // notifications.go:485
+		{"supplier_order_accepted", "Supplier order accepted", "سفارش ORD-FILTER پذیرفته شد و در حال آماده‌سازی است."},                                                                                                            // notifications.go:502
+		{"refund_issued", "Refund issued", "مبلغ 100,000 تومان بابت سفارش ORD-FILTER به کیف پول شما بازگشت."},                                                                                                                     // notifications.go:667
+		{"return_approved", "Return approved", "درخواست مرجوعی سفارش ORD-FILTER تایید شد؛ کالا را طبق دستورالعمل مرجوعی ارسال کنید."},                                                                                             // notifications.go:947
+		{"return_rejected", "Return rejected", "درخواست مرجوعی سفارش ORD-FILTER تایید نشد."},                                                                                                                                      // notifications.go:951
+		{"return_cod_refused", "Return COD refused", "مرسوله مرجوعی سفارش ORD-FILTER به‌صورت پس‌کرایه (پرداخت در مقصد) ارسال شده بود و انبار آن را تحویل نگرفت. مرجوعی را با پرداخت پیش‌کرایه دوباره ارسال کنید."},                // notifications.go:1032
+		{"dispute_filed", "Dispute filed", "مشتری برای سفارش ORD-FILTER اختلاف ثبت کرد (نوع: damaged، مبلغ ادعا: 100,000 تومان). برای داوری به بخش اختلاف‌ها بروید."},                                                             // notifications.go:599
+		{"payout_requested", "Payout requested", "درخواست تسویه به مبلغ 100,000 تومان ثبت شد و در انتظار بررسی مالی است."},                                                                                                        // notifications.go:768
+		{"supplier_registered", "Supplier registered", "تأمین‌کننده «کالا» ثبت‌نام کرد و حساب آن فعال شد."},                                                                                                                       // notifications.go:849
+		{"settlement_skipped", "Settlement skipped", "تسویه دوره 1405-08 به مبلغ 100,000 تومان به دلیل نبود اطلاعات بانکی (شبا) انجام نشد و مبلغ در حساب شما باقی ماند. برای دریافت تسویه، اطلاعات بانکی فروشگاه را تکمیل کنید."}, // notifications.go:783
+		{"settlement_created", "Settlement created", "تسویه ماهانه دوره 1405-08 به مبلغ 100,000 تومان برای شما ثبت شد و در انتظار بررسی مالی است."},                                                                               // notifications.go:798
+		{"return_requested", "Return requested", "مشتری برای سفارش ORD-FILTER درخواست مرجوعی ثبت کرد. علت: آسیب‌دیده"},                                                                                                            // notifications.go:932
+		{"inbound_created", "Inbound created", "تأمین‌کننده کالا یک محموله ورودی ثبت کرد. برای تحویل و کنترل کیفیت به بخش ورودی‌ها بروید."},                                                                                       // notifications.go:1047
+		{"inbound_dispatched", "Inbound dispatched", "تأمین‌کننده کالا محموله ورودی را ارسال کرد و در راه انبار است."},                                                                                                            // notifications.go:1052
+		{"supplier_return_in_transit", "Supplier return in transit", "یک مرجوعی تأمین‌کننده تحویل پست شد و در راه مقصد است؛ برای تحویل آن آماده باشید."},                                                                          // notifications.go:1104
+	}
+	dual := []seed{
+		{"delivery_confirmed", "Supplier delivery confirmed", "تحویل سفارش ORD-FILTER تایید شد. سود فروشنده پس از پایان مهلت مرجوعی آزاد می‌شود."},                                              // notifications.go:440
+		{"order_cancelled", "Supplier order cancelled", "سفارش ORD-FILTER لغو شد؛ آماده‌سازی آن را متوقف کنید."},                                                                                // notifications.go:396
+		{"dispute_resolved", "Supplier dispute resolved", "در پرونده اختلاف سفارش ORD-FILTER مسئولیت با تأمین‌کننده اعلام شد (مبلغ ادعا: 100,000 تومان). جزئیات را در پنل تأمین‌کننده ببینید."}, // notifications.go:632
+	}
+	otherCopies := []seed{
+		{"order_status", "Order shipped", "سفارش ORD-FILTER به اداره پست تحویل داده شد و در راه است. کد رهگیری: TRK123"},                                                       // warehouse_repo.go:1458
+		{"delivery_confirmed", "Customer delivery confirmed", "تحویل سفارش ORD-FILTER تایید شد. اگر مشکلی در کالا هست، تا پایان مهلت مرجوعی از بخش مرجوعی اقدام کنید."},        // notifications.go:438
+		{"delivery_confirmed", "Store delivery confirmed", "تحویل سفارش ORD-FILTER تایید شد. سود شما پس از پایان مهلت مرجوعی آزاد می‌شود."},                                    // notifications.go:442
+		{"order_cancelled", "Customer order expired", "مهلت پرداخت سفارش ORD-FILTER به پایان رسید و سفارش به‌صورت خودکار لغو شد. برای خرید دوباره، سفارش جدید ثبت کنید."},      // notifications.go:417
+		{"order_cancelled", "Store order cancelled", "سفارش ORD-FILTER لغو شد."},                                                                                               // notifications.go:398
+		{"dispute_resolved", "Customer dispute upheld", "پرونده اختلاف سفارش ORD-FILTER به نفع شما حل شد و درخواست بازپرداخت مبلغ 100,000 تومان ثبت شد. طرف مسئول: supplier."}, // notifications.go:623
+		{"dispute_resolved", "Customer dispute rejected", "پرونده اختلاف سفارش ORD-FILTER بررسی شد و ادعای شما رد شد؛ مبلغی بازپرداخت نمی‌شود. طرف مسئول: seller."},            // notifications.go:621
+		{"dispute_resolved", "Seller dispute resolved", "در پرونده اختلاف سفارش ORD-FILTER مسئولیت با فروشنده اعلام شد (مبلغ ادعا: 100,000 تومان)."},                           // notifications.go:640
+	}
+
+	partition := map[string]bool{}
+	for _, group := range [][]seed{keep, dual, absent} {
+		for _, row := range group {
+			if partition[row.kind] {
+				t.Errorf("kind %q is repeated in the partition", row.kind)
+			}
+			partition[row.kind] = true
+		}
+	}
+	for _, kind := range repository.AllNotifKinds {
+		if !partition[kind] {
+			t.Errorf("registry kind %q has no partition entry or is repeated in the registry", kind)
+		}
+		delete(partition, kind)
+	}
+	for kind := range partition {
+		t.Errorf("partition kind %q is missing from AllNotifKinds", kind)
+	}
+
+	f := supplierNotificationsSetup(t)
+	want := map[string]seed{}
+	for _, group := range [][]seed{keep, dual} {
+		for _, row := range group {
+			want[row.title] = row
+		}
+	}
+	for _, group := range [][]seed{keep, dual, absent, otherCopies} {
+		for _, row := range group {
+			f.seedOutboxWithBody(t, f.ownerA, row.kind, row.title, row.body, map[string]interface{}{})
+		}
+	}
+	var seeded int
+	if err := f.db.QueryRow("SELECT COUNT(*) FROM notification_outbox WHERE recipient_user_id = $1", f.ownerA).Scan(&seeded); err != nil || seeded != len(keep)+len(dual)+len(absent)+len(otherCopies) {
+		t.Fatalf("seeded %d outbox rows, query error %v", seeded, err)
+	}
+
+	token := f.token(t, f.ownerA, "09120000101", "supplier")
+	code, body := f.callSupplier(t, http.MethodGet, "/api/v1/supplier/notifications", token, "")
+	var env notificationsEnvelope
+	if err := json.Unmarshal([]byte(body), &env); err != nil || code != http.StatusOK || !env.Success {
+		t.Fatalf("GET status %d, body %s, decode error %v", code, body, err)
+	}
+	if env.UnreadCount != len(want) {
+		t.Errorf("unreadCount = %d, want %d", env.UnreadCount, len(want))
+	}
+	for _, row := range env.Notifications {
+		expected, ok := want[row.Title]
+		if !ok {
+			t.Errorf("unexpected row %q (%s)", row.Title, row.Kind)
+			continue
+		}
+		if row.Kind != expected.kind || row.Body != expected.body || row.Status != "pending" {
+			t.Errorf("unexpected kind, body or status for %q: %+v", row.Title, row)
+		}
+		delete(want, row.Title)
+	}
+	for title := range want {
+		t.Errorf("missing row %q", title)
+	}
+}
+
+func TestSupplierNotificationsMarkReadDoesNotClearCustomerRows(t *testing.T) {
+	for _, mode := range []string{"all", "by_id"} {
+		t.Run(mode, func(t *testing.T) {
+			f := supplierNotificationsSetup(t)
+			customerID := f.seedOutbox(t, f.ownerA, "order_status", "Customer row", "pending")
+			supplierID := f.seedOutbox(t, f.ownerA, "proposal_rejected", "Supplier row", "pending")
+			token := f.token(t, f.ownerA, "09120000101", "supplier")
+			var request string
+			if mode == "by_id" {
+				request = `{"ids":["` + customerID + `","` + supplierID + `"]}`
+			}
+			code, body := f.callSupplier(t, http.MethodPost, "/api/v1/supplier/notifications/read", token, request)
+			var response struct {
+				Success bool `json:"success"`
+				Updated int  `json:"updated"`
+			}
+			if err := json.Unmarshal([]byte(body), &response); err != nil || code != http.StatusOK || !response.Success || response.Updated != 1 {
+				t.Errorf("want one updated row, got status %d, body %s, decode error %v", code, body, err)
+			}
+			for id, want := range map[string]string{customerID: "pending", supplierID: "read"} {
+				var status string
+				if err := f.db.QueryRow("SELECT status FROM notification_outbox WHERE id = $1", id).Scan(&status); err != nil || status != want {
+					t.Errorf("row %s: status = %q, want %q, query error %v", id, status, want, err)
+				}
+			}
+		})
 	}
 }

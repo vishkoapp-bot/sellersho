@@ -84,6 +84,48 @@ const (
 	NotifKindSupplierReturnTransit = "supplier_return_in_transit"
 )
 
+// AllNotifKinds lists every persisted notification kind.
+var AllNotifKinds = []string{
+	NotifKindOrderStatus,
+	NotifKindProposalRejected,
+	NotifKindOrderPlaced,
+	NotifKindPaymentConfirmed,
+	NotifKindPaymentFailed,
+	NotifKindOrderCancelled,
+	NotifKindDisputeFiled,
+	NotifKindDisputeResolved,
+	NotifKindRefundIssued,
+	NotifKindFinanceAdjustment,
+	NotifKindPayoutReviewed,
+	NotifKindPayoutTransfer,
+	NotifKindPayoutRequested,
+	NotifKindReturnApproved,
+	NotifKindReturnRejected,
+	NotifKindReturnQCCharged,
+	NotifKindReturnCODRefused,
+	NotifKindSettlementSkipped,
+	NotifKindSettlementCreated,
+	NotifKindProposalApproved,
+	NotifKindApprovalRejected,
+	NotifKindDeliveryConfirmed,
+	NotifKindProfitReleased,
+	NotifKindReturnRequested,
+	NotifKindReturnShipped,
+	NotifKindSupplierAccepted,
+	NotifKindCarrierFailed,
+	NotifKindSupplierApproved,
+	NotifKindSupplierRejected,
+	NotifKindSupplierReturnReview,
+	NotifKindSupplierParcelCharge,
+	NotifKindLowStock,
+	NotifKindTicketReply,
+	NotifKindSupplierRegistered,
+	NotifKindStorageFeeCharged,
+	NotifKindInboundCreated,
+	NotifKindInboundDispatched,
+	NotifKindSupplierReturnTransit,
+}
+
 // syncProductStockTx re-syncs the products.stock projection from the canonical
 // inventory_balances ledger: SUM(quantity) over status='sellable' rows. It is
 // a no-op for products with no balance rows, so legacy products keep their

@@ -4,8 +4,20 @@ import { useToast } from '../../context/ToastContext';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { catalogApi } from '../../services/catalogApi';
 import type { Product } from '../../types';
-import { cardPriceOf } from '../../utils/cardPrice';
+import { cardPriceOf, cardPriceVariantOf } from '../../utils/cardPrice';
+import { resolvePurchase, cartQuantityAllowed, type PurchaseResolution } from '../../utils/productPurchase';
 import { ArrowRight, Heart, ShoppingCart, Trash2, PackageOpen } from 'lucide-react';
+
+// Resolves the wishlist quick-add the same way the card prices it:
+// the card-price variant when there is one, else the no-variant
+// purchase fallback (which picks the cheapest purchasable variant
+// for simple products). Returns undefined when nothing is purchasable.
+export const resolveWishlistQuickAdd = (product: Product): PurchaseResolution | undefined => {
+  const priced = cardPriceVariantOf(product);
+  return priced.variant
+    ? resolvePurchase(product, priced.variant.id)
+    : resolvePurchase(product);
+};
 
 export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const {
@@ -13,6 +25,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
     wishlists,
     toggleWishlist,
     addToCart,
+    cart,
     openProductDetail,
     openCatalogCategory,
     formatPrice,
@@ -21,7 +34,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
     stores,
     routeStoreSlug
   } = useStore();
-  const { success, info } = useToast();
+  const { success, info, error } = useToast();
 
   // Per-store wishlist: the view belongs to the store it was entered
   // under - the routed store of a store-scoped session, else a
@@ -134,31 +147,13 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                 <div className="p-2 border-t border-slate-100 grid grid-cols-2 gap-1.5 bg-slate-50/50">
                   <button
                     onClick={() => {
-                      // Default-variant rule (the PDP displayProduct
-                      // pattern): when the card price comes from a
-                      // priced default variant, the cart line carries
-                      // that variant and its price - the customer
-                      // pays the price this card showed.
-                      const defaultVariant = product.variants?.find((v) => v.isDefault);
-                      const variantPrice = defaultVariant
-                        ? product.variantPrices?.[defaultVariant.id]
-                        : undefined;
-                      if (defaultVariant && variantPrice && variantPrice.price != null) {
-                        const triple = cardPriceOf(product);
-                        addToCart(
-                          {
-                            ...product,
-                            price: triple.price,
-                            originalPrice: triple.originalPrice,
-                            discountPercent: triple.discountPercent,
-                          },
-                          1,
-                          undefined,
-                          defaultVariant.id,
-                        );
-                      } else {
-                        addToCart(product, 1);
+                      if (routeStoreSlug && currentStore?.slug !== routeStoreSlug) return;
+                      const purchase = resolveWishlistQuickAdd(product);
+                      if (!purchase || !cartQuantityAllowed(cart, purchase, purchase.minQty)) {
+                        error(`«${product.title}» در حال حاضر ناموجود است.`);
+                        return;
                       }
+                      addToCart(purchase.product, purchase.minQty, undefined, purchase.variant?.id);
                       success(`«${product.title}» به سبد خرید اضافه شد.`);
                     }}
                     className="py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-[10px] flex items-center justify-center gap-1 transition-colors"

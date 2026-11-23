@@ -82,10 +82,16 @@ export const AppContent: React.FC = () => {
     const activeViewAuthorized = authorizedViews.includes(activeView as any);
     if (identityChanged || (isProtectedView && !activeViewAuthorized)) {
       routedIdentity.current = identity;
-      if (identityChanged && activeViewAuthorized) return;
+      if (activeView === 'dashboard' || (identityChanged && activeViewAuthorized)) return;
       setActiveView(identityChanged ? requiredView : (authorizedViews[0] || requiredView));
     }
   }, [activeView, currentUser, isSessionReady, isOnboardingActive, isProtectedView, panelForRole, setActiveView]);
+
+  useEffect(() => {
+    if (activeView === 'dashboard' && isSessionReady && currentUser) {
+      setActiveView(panelForRole(currentUser.role));
+    }
+  }, [activeView, isSessionReady, currentUser, panelForRole, setActiveView]);
 
   // ISO-A (model a, picked-only showcase): central-home/under-own-store
   // frame guard. The central `customer` view must never render under a
@@ -147,7 +153,16 @@ export const AppContent: React.FC = () => {
   }, [products, openProductDetail, setActiveView, storefrontSlug, currentStore]);
 
   // OTP login revalidates the session while an open wizard still owns its draft.
-  if (!isSessionReady && !isOnboardingActive) return <div role="status">در حال بررسی نشست…</div>;
+  if (!isSessionReady && (activeView === 'dashboard' || !isOnboardingActive)) return <div role="status">در حال بررسی نشست…</div>;
+  if (activeView === 'dashboard') {
+    if (currentUser) return <div role="status">در حال انتقال به پنل مجاز…</div>;
+    return (
+      <SellerDashboardView
+        onBackToCustomerSite={() => setActiveView('customer')}
+        onOpenStorefront={() => setActiveView('seller_storefront')}
+      />
+    );
+  }
   if (currentUser && !isOnboardingActive) {
     const panel = panelForRole(currentUser.role);
     const ready = panel === 'customer' ||

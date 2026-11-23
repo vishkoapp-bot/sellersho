@@ -520,3 +520,84 @@ func TestVariantPricingSetHonouredAndClear(t *testing.T) {
 		t.Errorf("supplier_base_cost JSON shape probe failed: %v", err)
 	}
 }
+
+func TestBatch9ApproveVariableProposalSkipsDefaultName(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		reservedName string
+		extraVariant string
+		wantCount    int
+		rejectAudit  bool
+	}{
+		{"keeps named variant", "پیش‌فرض", `, {"variant_name":"قرمز","attributes":{"رنگ":"قرمز"},"supplier_base_cost":50000,"stock":2}`, 1, false},
+		{"no synthetic fallback", "پیش‌فرض", "", 0, false},
+		{"skips name without ZWNJ", "پیشفرض", "", 0, false},
+		{"approval survives audit failure", "پیش‌فرض", "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := productGapsTestDB(t)
+			ctx := context.Background()
+			repo := repository.NewSupplierRepository(db)
+			seedProposal(t, db, "prop-batch9", "sup-gap-a", `{
+				"product_id":"prod-batch9", "category":"digital", "productType":"variable",
+				"supplierBaseCost":50000, "stock":7,
+				"variants":[{"variant_name":"`+tc.reservedName+`","attributes":{"رنگ":"زرد"},"supplier_base_cost":50000,"stock":3}`+tc.extraVariant+`]
+			}`)
+			if tc.rejectAudit {
+				if _, err := db.Exec(`ALTER TABLE audit_logs ADD CHECK (action <> 'proposal_approved_no_variants')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			productID, err := repo.ApproveProposal(ctx, "prop-batch9", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			variants, err := repo.ListProductVariants(ctx, "sup-gap-a", productID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(variants) != tc.wantCount || (tc.wantCount == 1 && variants[0].VariantName != "رنگ: قرمز") {
+				t.Errorf("unexpected variants: %+v", variants)
+			}
+			var skipped string
+			if err := db.QueryRow(`SELECT details->'skipped'->>0 FROM audit_logs WHERE action = 'proposal_variants_skipped' AND details->>'proposal_id' = 'prop-batch9'`).Scan(&skipped); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(skipped, tc.reservedName) {
+				t.Errorf("audit skipped = %q, want literal %q", skipped, tc.reservedName)
+			}
+			if tc.wantCount == 0 {
+				var audited bool
+				if err := db.QueryRow(`SELECT EXISTS (
+					SELECT 1 FROM audit_logs WHERE action = 'proposal_approved_no_variants'
+					  AND details->>'proposal_id' = 'prop-batch9' AND details->>'product_id' = $1
+				)`, productID).Scan(&audited); err != nil || audited == tc.rejectAudit {
+					t.Errorf("zero-variant approval audited = %t, want %t, err = %v", audited, !tc.rejectAudit, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBatch9LegacyVariantCreationRejectsDefaultName(t *testing.T) {
+	db := productGapsTestDB(t)
+	ctx := context.Background()
+	repo := repository.NewSupplierRepository(db)
+	if _, err := db.Exec(`INSERT INTO products (id, title, slug, category_slug, supplier_id, original_price, supplier_base_cost, product_type)
+		VALUES ('prod-batch9-write', 'Batch 9', 'batch9', 'digital', 'sup-gap-a', 50000, 50000, 'variable')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"پیش‌فرض", "پیشفرض"} {
+		if _, err := repo.CreateProductVariant(ctx, "sup-gap-a", "prod-batch9-write", name, nil); err == nil || !strings.Contains(err.Error(), "invalid variant name") {
+			t.Errorf("single variant creation with reserved name %q returned %v", name, err)
+		}
+		bulk := []repository.SupplierProductVariant{{VariantName: "قرمز"}, {VariantName: name}}
+		if _, err := repo.CreateProductVariantsBulk(ctx, "sup-gap-a", "prod-batch9-write", bulk); err == nil || !strings.Contains(err.Error(), "invalid variant name") {
+			t.Errorf("bulk variant creation with reserved name %q returned %v", name, err)
+		}
+	}
+	variants, err := repo.ListProductVariants(ctx, "sup-gap-a", "prod-batch9-write")
+	if err != nil || len(variants) != 0 {
+		t.Fatalf("variants after rejected writes = %+v, err = %v", variants, err)
+	}
+}

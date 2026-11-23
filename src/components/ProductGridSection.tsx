@@ -1,3 +1,4 @@
+import { remainingCatalogCount } from '../utils/catalogRemaining';
 import React, { useState, useEffect } from 'react';
 import { catalogApi } from '../services/catalogApi';
 import { useStore } from '../context/StoreContext';
@@ -31,6 +32,7 @@ export const ProductGridSection: React.FC = () => {
   const effMax = priceMax === '' ? dataMax : Number(priceMax);
 
   // Filter products by selectedCategory, searchQuery, stock, originality, and price
+  const remaining = remainingCatalogCount(catalogTotal, products.length);
   let filtered = products.filter((p) => {
     const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
     const matchesSearch = !searchQuery || 
@@ -235,13 +237,13 @@ export const ProductGridSection: React.FC = () => {
               pages remain, this loads the next one (the local
               filter/sort above then applies to the larger set). */}
           {/* Show how many products remain on the server across all loaded pages. */}
-          {hasMoreCatalog && (
+          {hasMoreCatalog && remaining > 0 && (
             <button
               onClick={() => { if (carouselMode) setShowAll(true); void loadMoreCatalog(); }}
               disabled={catalogLoadingMore}
               className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
             >
-              {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(catalogTotal - products.length)} کالای دیگر)`}
+              {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(remaining)} کالای دیگر)`}
             </button>
           )}
         </>

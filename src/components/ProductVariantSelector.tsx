@@ -1,7 +1,7 @@
 import React from 'react';
 import { Product, ProductVariant, VariantPrice } from '../types';
 import { toPersianDigits } from '../utils/formatters';
-import { activeProductVariants, axisOptionVariant, purchaseLimits } from '../utils/productPurchase';
+import { axisOptionVariant, isHiddenSyntheticVariant, purchaseLimits } from '../utils/productPurchase';
 
 interface ProductVariantSelectorProps {
   product?: Product;
@@ -38,22 +38,18 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
 }) => {
   const fashion = theme === 'fashion';
 
-  // USER DECISION (Nov 5, 2026 — supersedes FIX 10 live parity): the
-  // isDefault variant is a normal selectable option like any other.
-  // It can carry its own stock and seller margin (the gold bracelet's
-  // «پیش‌فرض» has stock 5 and its own 15% margin), so hiding it made
-  // that stock unpurchasable. The selector shows whenever a real
-  // choice exists (2+ variants), with every variant as a chip.
-  const visibleVariants = variants.filter((variant) => variant.isActive !== false);
+  // Nov 5: the gold bracelet's default held 5 units. Rename the SKU to keep that stock purchasable.
+  // Batch 9 excludes stale synthetic names only for variable products. Simple SKUs keep «پیش‌فرض».
+  const visibleVariants = variants.filter((variant) => variant.isActive !== false && !isHiddenSyntheticVariant(product, variant));
   const axes = product?.schemaVersion === 2 && product.productType === 'variable'
     ? product.productSchema?.attributes.filter((attribute) => attribute.role === 'axis') ?? [] : [];
   const chipClass = (selected: boolean, unavailable: boolean) => `min-h-[36px] px-3 ${fashion ? 'rounded-none' : 'rounded-xl'} border text-[11px] font-bold transition-all ${selected ? 'text-white' : unavailable ? 'bg-slate-50 text-slate-400 border-slate-100 opacity-40 cursor-not-allowed' : fashion ? 'bg-white text-[#1c1c1a] border-[#e5e0d8] hover:border-[#1c1c1a]' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'}`;
   const selectedStyle = { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' };
   if (product && axes.length > 0) {
-    const selection = activeProductVariants(product).find((variant) => variant.id === selectedId)?.selection ?? {};
+    const selectedVariantV2 = visibleVariants.find((variant) => variant.id === selectedId);
+    const selection = selectedVariantV2?.selection ?? {};
     // P2(c): the selected variant is this store's default — a quiet line
     // under the chips (the global isDefault carries no extra label).
-    const selectedVariantV2 = activeProductVariants(product).find((variant) => variant.id === selectedId);
     const isStoreDefaultV2 = !!product.storeDefaultVariantId && selectedVariantV2?.id === product.storeDefaultVariantId;
     return <div data-testid="variant-selector" className="space-y-4">
       {axes.map((axis) => <fieldset key={axis.id} className="space-y-2" data-axis-id={axis.id}>
@@ -84,7 +80,7 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
       )}
     </div>;
   }
-  if (visibleVariants.length < 2) return null;
+  if (visibleVariants.length === 0 || (visibleVariants.length === 1 && product?.productType !== 'simple')) return null;
 
   const labelOf = (variant: ProductVariant): string => {
     const attrs = Object.values(variant.attributes || {})

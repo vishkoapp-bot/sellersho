@@ -113,6 +113,7 @@ test('price-range error keeps the catalog controls visible even with no products
 });
 
 for (const [route, heading] of [
+  ['/dashboard', 'ورود به پنل همکاری دراپ‌شیپر'],
   ['/seller', 'ورود به پنل همکاری دراپ‌شیپر'],
   ['/supplier', 'ورود به پنل شرکای تأمین کالا'],
 ]) {
@@ -148,6 +149,32 @@ test('the terms strip overflows with an RTL affordance and scrolls after a tab c
     assert.ok(await page.evaluate(() => (window as any).batch8Fixture.staticTabScrolls > 0));
   });
 });
+
+for (const route of ['/terms', '/license']) {
+  test(`all five tabs fit on ${route} at 500px`, async () => {
+    await visit(route, 500, async page => {
+      await waitText(page, 'مجوزها');
+      assert.equal(new URL(page.url()).pathname, route);
+      const row = await page.$eval('div[class*="mask-image"]', element => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+          labels: [...element.querySelectorAll('button span')].map(label => {
+            const rect = label.getBoundingClientRect();
+            return {
+              text: label.textContent,
+              visible: rect.width > 0 && rect.left >= bounds.left && rect.right <= bounds.right,
+            };
+          }),
+        };
+      });
+      assert.ok(row.scrollWidth <= row.clientWidth, `tab strip is ${row.scrollWidth}px in ${row.clientWidth}px`);
+      assert.deepEqual(row.labels, ['درباره ما', 'قوانین و ضمانت', 'حریم خصوصی', 'پرسش‌های متداول', 'مجوزها']
+        .map(text => ({ text, visible: true })));
+    });
+  });
+}
 
 for (const [route, width] of [
   ['/', 390],

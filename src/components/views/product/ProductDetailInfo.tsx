@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../../../services/apiClient';
 import { Product } from '../../../types';
+import { toPersianDigits } from '../../../utils/formatters';
 import { useStore } from '../../../context/StoreContext';
 import { Truck, ShieldCheck, RotateCcw, Star, Package } from 'lucide-react';
 import { CampaignDiscountBadge } from '../../../components/common/CampaignDiscountBadge';
@@ -127,6 +128,30 @@ const ReviewsTab: React.FC<{ productId: string; fashion?: boolean }> = ({ produc
         </div>
       ))}
     </div>
+  );
+};
+
+export const ProductStockLine: React.FC<{ product: Product; fashion?: boolean; selectedVariantId?: string | null }> = ({
+  product, fashion = false, selectedVariantId = null,
+}) => {
+  // B1(b): badge from resolveStockBadge, never the raw stock
+  // field — an inactive product with stock must not show a
+  // count the buy bar cannot sell.
+  const badge = resolveStockBadge(product, selectedVariantId ?? undefined);
+  if (badge.kind === 'in-stock') {
+    const { storeCount } = product;
+    const location = storeCount != null && Number.isFinite(storeCount) && storeCount > 0
+      ? `${toPersianDigits(storeCount)} فروشگاه` : 'انبار';
+    return (
+      <span className={fashion ? 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-none font-bold border border-emerald-200' : 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200'}>
+        {toPersianDigits(badge.stock)} عدد موجود در {location}
+      </span>
+    );
+  }
+  return (
+    <span className={fashion ? 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-none border border-rose-200' : 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-lg border border-rose-200'}>
+      {badge.kind === 'inactive' ? 'غیرفعال' : 'ناموجود در انبار'}
+    </span>
   );
 };
 
@@ -269,24 +294,7 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {(() => {
-            // B1(b): badge from resolveStockBadge, never the raw stock
-            // field — an inactive product with stock must not show a
-            // count the buy bar cannot sell.
-            const badge = resolveStockBadge(product, selectedVariantId ?? undefined);
-            if (badge.kind === 'in-stock') {
-              return (
-                <span className={fashion ? 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-none font-bold border border-emerald-200' : 'text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200'}>
-                  {toPersianDigits(badge.stock)} عدد موجود در انبار
-                </span>
-              );
-            }
-            return (
-              <span className={fashion ? 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-none border border-rose-200' : 'text-xs bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded-lg border border-rose-200'}>
-                {badge.kind === 'inactive' ? 'غیرفعال' : 'ناموجود در انبار'}
-              </span>
-            );
-          })()}
+          <ProductStockLine product={product} fashion={fashion} selectedVariantId={selectedVariantId} />
           {product.discountPercent > 0 && (
             <span className={fashion ? 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-none' : 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-lg'}>
               {product.campaignName || '٪' + toPersianDigits(product.discountPercent) + ' تخفیف'}

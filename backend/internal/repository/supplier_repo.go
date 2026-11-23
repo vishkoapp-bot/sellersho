@@ -1352,6 +1352,19 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	if err := NormalizeReviewAliases(data); err != nil {
 		return "", err
 	}
+	productType, _ := data["productType"].(string)
+	isVariable := productType == "variable"
+	// Legacy variable validation derives names from attributes. Keep the
+	// submitted reserved names so publication can skip and audit them.
+	var reservedNames map[int]string
+	if isVariable && !IsProductV2(data) {
+		reservedNames = make(map[int]string)
+		for i, variant := range parseProposedVariants(data) {
+			if isReservedDefaultVariantName(variant.Name) {
+				reservedNames[i] = variant.RawName
+			}
+		}
+	}
 	if err := ValidateProductProposalTx(ctx, tx, data, proposalID); err != nil {
 		return "", err
 	}
@@ -1696,12 +1709,10 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	// forcing the supplier to re-create variants post-approval with
 	// stock 0 and no cost. Reconciliation rule: when the payload carries
 	// at least one VALID variant entry, the product ends with exactly
-	// the proposed set — the first valid entry becomes the default — and
-	// the synthetic 'پیش‌فرض' variant in the C7 block below is skipped
-	// (its hasVariant guard sees these rows). With no valid entries, C7
-	// behaves exactly as before. Malformed entries (not an object, blank
-	// name, duplicate name) are skipped with an audit note; they never
-	// fail the approval itself. Variant stock lives only on the variant
+	// the valid proposed set. For non-variable products, the first valid
+	// entry becomes the default and C7 supplies a fallback when none exist.
+	// Entries skipped during insertion are recorded in the supplier audit.
+	// Variant stock lives only on the variant
 	// row in this codebase (UpdateProductStock is product-level), so the
 	// proposed stock is written there; the proposed supplier cost goes
 	// to product_variants.supplier_base_cost (gap 10's column).
@@ -1710,6 +1721,10 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		var skippedVariants []string
 		createdVariants := 0
 		for i, pv := range parseProposedVariants(data) {
+			if rawName, reserved := reservedNames[i]; reserved {
+				skippedVariants = append(skippedVariants, fmt.Sprintf("entry %d (%s)", i, rawName))
+				continue
+			}
 			if pv.Name == "" || seenVariantNames[pv.Name] {
 				skippedVariants = append(skippedVariants, fmt.Sprintf("entry %d (%q)", i, pv.RawName))
 				continue
@@ -1731,7 +1746,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO product_variants (product_id, spnc, variant_name, attributes, is_default, stock, supplier_base_cost)
 				VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
-				productID, spnc, pv.Name, string(attrJSON), createdVariants == 0 && data["productType"] != "variable", pv.Stock, variantCost); err != nil {
+				productID, spnc, pv.Name, string(attrJSON), createdVariants == 0 && !isVariable, pv.Stock, variantCost); err != nil {
 				return "", fmt.Errorf("failed to create proposed variant %q: %w", pv.Name, err)
 			}
 			createdVariants++
@@ -1752,7 +1767,8 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 	// nothing to print. Seed the supplier-owned sellable balance so the
 	// product participates in the canonical ledger from birth (the DB trigger
 	// keeps the products.stock projection in sync), and create a default
-	// variant so the SKU engine can see it. Re-approvals are idempotent
+	// variant for non-variable products so the SKU engine can see it.
+	// Re-approvals are idempotent
 	// (upsert + EXISTS guard).
 	if !existedBefore && requestedBy != "" && !IsProductV2(data) {
 		if err := seedSupplierInitialStockTx(ctx, tx, productID, requestedBy, stock); err != nil {
@@ -1765,7 +1781,7 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		productID).Scan(&hasVariant); err != nil {
 		return "", err
 	}
-	if !hasVariant && !IsProductV2(data) {
+	if !hasVariant && !IsProductV2(data) && !isVariable {
 		spnc, err := uniqueSPNCTx(ctx, tx)
 		if err != nil {
 			return "", fmt.Errorf("failed to generate variant SKU for %s: %w", productID, err)
@@ -1775,6 +1791,20 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 			VALUES ($1, $2, 'پیش‌فرض', '{}', TRUE, $3)`,
 			productID, spnc, stock); err != nil {
 			return "", fmt.Errorf("failed to create default variant for %s: %w", productID, err)
+		}
+	}
+
+	if isVariable && !hasVariant && !IsProductV2(data) && requestedBy != "" {
+		// A failed PostgreSQL insert aborts the transaction until the savepoint is rolled back.
+		if _, err := tx.ExecContext(ctx, `SAVEPOINT zero_variant_approval_audit`); err == nil {
+			if err := insertSupplierAuditTx(ctx, tx, requestedBy, "proposal_approved_no_variants", map[string]interface{}{
+				"proposal_id": proposalID, "product_id": productID,
+				"reason": "Variable product approved with zero variants. The supplier must define real variants.",
+			}); err != nil {
+				_, _ = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT zero_variant_approval_audit`)
+				log.Printf("failed to audit zero-variant approval for proposal %s: %v", proposalID, err)
+			}
+			_, _ = tx.ExecContext(ctx, `RELEASE SAVEPOINT zero_variant_approval_audit`)
 		}
 	}
 
@@ -4073,11 +4103,15 @@ func (r *SupplierRepository) CreateProductVariant(ctx context.Context, supplierI
 	}
 	defer tx.Rollback()
 	var version int
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, productID, supplierID).Scan(&version); err != nil {
+	var productType string
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0), COALESCE(product_type,'legacy') FROM products p WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, productID, supplierID).Scan(&version, &productType); err != nil {
 		return out, err
 	}
 	if version == 2 {
 		return out, fmt.Errorf("V2 SKU creation requires canonical selection and stable UUID")
+	}
+	if productType == "variable" && isReservedDefaultVariantName(name) {
+		return out, fmt.Errorf("invalid variant name %q for a variable product", name)
 	}
 	spnc, err := uniqueSPNCTx(ctx, tx)
 	if err != nil {
@@ -4099,7 +4133,8 @@ func (r *SupplierRepository) CreateProductVariant(ctx context.Context, supplierI
 // already-registered names; the frontend validates the same rules first.
 func (r *SupplierRepository) CreateProductVariantsBulk(ctx context.Context, supplierID, productID string, variants []SupplierProductVariant) (int, error) {
 	var version int
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0) FROM products p WHERE id=$1 AND supplier_id=$2`, productID, supplierID).Scan(&version); err != nil {
+	var productType string
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE((to_jsonb(p)->>'schema_version')::int,0), COALESCE(product_type,'legacy') FROM products p WHERE id=$1 AND supplier_id=$2`, productID, supplierID).Scan(&version, &productType); err != nil {
 		return 0, err
 	}
 	if version == 2 {
@@ -4119,6 +4154,9 @@ func (r *SupplierRepository) CreateProductVariantsBulk(ctx context.Context, supp
 	for _, v := range variants {
 		if strings.TrimSpace(v.VariantName) == "" {
 			return 0, fmt.Errorf("variant name required")
+		}
+		if productType == "variable" && isReservedDefaultVariantName(v.VariantName) {
+			return 0, fmt.Errorf("invalid variant name %q for a variable product", v.VariantName)
 		}
 		if seen[v.VariantName] {
 			return 0, fmt.Errorf("duplicate variant name: %s", v.VariantName)

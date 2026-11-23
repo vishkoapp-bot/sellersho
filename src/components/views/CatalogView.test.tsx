@@ -5,6 +5,7 @@ import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type ElementHandle, type Page } from 'puppeteer';
 import { activeStoreSlugOf } from '../../context/StoreContext';
 import type { Store } from '../../types';
+import { batch8Browser, waitText } from '../../../scripts/fixtures/catalog/batch8-browser';
 
 let server: ViteDevServer;
 let browser: Browser;
@@ -384,4 +385,23 @@ test('A8 — a forced inverted filter 400s into the inline message, not the gene
     await page.waitForFunction(() => document.querySelectorAll('[data-testid="product-item"]').length === 1);
     assert.equal(await page.evaluate(() => (window as any).catalogHarness.state().priceRangeError), false);
   } finally { await context.close(); }
+});
+
+const visitCatalog = batch8Browser();
+
+test('catalog load-more shows the remaining count and keeps the header total', async () => {
+  for (const [total, header, remaining] of [[41, '۴۱', '۱۷'], [25, '۲۵', '۱']] as const) {
+    await visitCatalog(`/?category=all&total=${total}`, 390, async page => {
+      await waitText(page, `(${header})`);
+      await waitText(page, `نمایش بیشتر (${remaining} کالای دیگر)`);
+      assert.doesNotMatch(await page.$eval('body', body => body.innerText), /نمایش بیشتر \((۴۱|۲۵)/);
+    });
+  }
+});
+
+test('catalog has no load-more button when all products are loaded', async () => {
+  await visitCatalog('/?category=all&total=24', 390, async page => {
+    await waitText(page, '(۲۴)');
+    assert.doesNotMatch(await page.$eval('body', body => body.innerText), /نمایش بیشتر/);
+  });
 });

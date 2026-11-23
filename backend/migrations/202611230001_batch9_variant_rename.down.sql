@@ -1,0 +1,2 @@
+-- This rename is irreversible: the original names are lost, and rows renamed
+-- from 'پیش‌فرض' are now indistinguishable from legitimately named rows.

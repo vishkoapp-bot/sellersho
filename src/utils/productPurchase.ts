@@ -22,14 +22,19 @@ export const mergeCartPurchase = (cart: CartItem[], purchase: PurchaseResolution
   return [...cart, { ...details, product: purchase.product, selectedVariantId: variantId, quantity }];
 };
 
-export const activeProductVariants = (product: Product): ProductVariant[] =>
+export const activeProductVariants = <V extends { isActive?: boolean }>(product: { variants?: V[] }): V[] =>
   (product.variants ?? []).filter((variant) => variant.isActive !== false);
 
-export const purchaseLimits = (product: Product, variant?: ProductVariant) => {
-  const minQty = Number.isSafeInteger(variant?.minCartQty) && variant!.minCartQty > 0 ? variant!.minCartQty : 1;
+type PurchaseVariantCandidate = Pick<ProductVariant, 'id'> & Partial<Pick<
+  ProductVariant, 'variantName' | 'name' | 'stock' | 'inventoryMode' | 'minCartQty' | 'maxCartQty' | 'isActive' | 'isDefault'
+>>;
+type PurchaseProductCandidate = Pick<Product, 'schemaVersion' | 'productType' | 'isActive' | 'variantPrices'> & { stock?: number };
+
+export const purchaseLimits = (product: PurchaseProductCandidate, variant?: PurchaseVariantCandidate) => {
+  const minQty = variant?.minCartQty != null && Number.isSafeInteger(variant.minCartQty) && variant.minCartQty > 0 ? variant.minCartQty : 1;
   const tracked = variant && (variant.inventoryMode === 'tracked' || product.schemaVersion === 2 || product.productType === 'variable');
-  const rawStock = tracked
-    ? variant.stock : variant && variant.stock > 0 ? variant.stock : product.stock;
+  const variantStock = variant?.stock ?? 0;
+  const rawStock = tracked ? variantStock : variantStock > 0 ? variantStock : product.stock ?? 0;
   const stock = Number.isSafeInteger(rawStock) ? Math.max(0, rawStock) : 0;
   const maximum = variant?.maxCartQty == null ? Infinity : Math.max(0, variant.maxCartQty);
   const maxQty = Math.min(stock, Number.isNaN(maximum) ? 0 : maximum);
@@ -148,7 +153,7 @@ export const productForVariant = (product: Product, variant?: ProductVariant): P
   };
 };
 
-const variantPurchasable = (product: Product, variant: ProductVariant): boolean => {
+export const variantPurchasable = (product: PurchaseProductCandidate, variant: PurchaseVariantCandidate): boolean => {
   if (product.isActive === false || variant.isActive === false) return false;
   const price = product.variantPrices?.[variant.id];
   if ((product.schemaVersion === 2 || product.productType === 'variable')
@@ -161,9 +166,10 @@ export const resolvePurchase = (product: Product, variantId?: string): PurchaseR
   if (product.isActive === false) return undefined;
   const variants = activeProductVariants(product);
   if (product.productType === 'variable' && !variantId) return undefined;
+  const candidates = variantId ? variants : variants.filter((variant) => !isHiddenSyntheticVariant(product, variant));
   const variant = variantId
-    ? variants.find((candidate) => candidate.id === variantId)
-    : variants.find((candidate) => candidate.isDefault) ?? (variants.length === 1 ? variants[0] : undefined);
+    ? candidates.find((candidate) => candidate.id === variantId)
+    : cheapestPurchaseVariant(product) ?? (candidates.length === 1 ? candidates[0] : undefined);
   if (variantId && !variant) return undefined;
   if ((product.schemaVersion === 2 || product.productType === 'variable') && !variant) return undefined;
   if (variant && !variantPurchasable(product, variant)) return undefined;
@@ -192,17 +198,37 @@ export const resolveStockBadge = (product: Product, variantId?: string): StockBa
   return { kind: 'in-stock', stock: resolution.product.stock };
 };
 
-// P2(c) fallback chain (single source of truth, shared with cardPriceOf):
-// ?spnc= → store default → product isDefault → first purchasable → first.
-// A store default that is hidden/inactive/unpriced falls through silently.
+export const isHiddenSyntheticVariant = (
+  product: Pick<PurchaseProductCandidate, 'productType'> | undefined,
+  variant: Pick<PurchaseVariantCandidate, 'variantName' | 'name'>,
+): boolean =>
+  product?.productType === 'variable'
+  && (variant.variantName || variant.name || '').replace(/[\u200C\u200D\s]/g, '') === 'پیشفرض';
+
+export const cheapestPurchaseVariant = <V extends PurchaseVariantCandidate>(product: PurchaseProductCandidate & { variants?: V[] }): V | undefined => {
+  let cheapest: V | undefined;
+  let cheapestPrice = Infinity;
+  for (const variant of activeProductVariants(product)) {
+    const vp = product.variantPrices?.[variant.id];
+    if (!vp || !Number.isFinite(vp.price) || vp.price <= 0
+      || isHiddenSyntheticVariant(product, variant) || !variantPurchasable(product, variant)) continue;
+    const price = variantSaleOf(vp)?.price ?? vp.price;
+    if (price < cheapestPrice) {
+      cheapest = variant;
+      cheapestPrice = price;
+    }
+  }
+  return cheapest;
+};
+
+// Explicit links and purchasable store defaults take precedence over the cheapest SKU.
 export const initialPurchaseVariant = (product: Product, spnc?: string | null, storeDefaultVariantId?: string | null): ProductVariant | undefined => {
-  const variants = activeProductVariants(product);
+  const variants = activeProductVariants(product).filter((variant) => !isHiddenSyntheticVariant(product, variant));
   const linked = spnc ? variants.find((variant) => variant.spnc === spnc) : undefined;
   const storeDefault = storeDefaultVariantId
     ? variants.find((variant) => variant.id === storeDefaultVariantId && variantPurchasable(product, variant))
     : undefined;
-  return linked ?? storeDefault
-    ?? variants.find((variant) => variant.isDefault && variantPurchasable(product, variant))
+  return linked ?? storeDefault ?? cheapestPurchaseVariant(product)
     ?? variants.find((variant) => variantPurchasable(product, variant)) ?? variants[0];
 };
 
@@ -215,7 +241,8 @@ export const axisOptionVariant = (product: Product, selectedId: string | null, a
   if (index < 0) return undefined;
   const selected = activeProductVariants(product).find((variant) => variant.id === selectedId)?.selection ?? {};
   const candidates = activeProductVariants(product).filter((variant) =>
-    variant.selection?.[axisId] === valueId && variantPurchasable(product, variant)
+    !isHiddenSyntheticVariant(product, variant) && variant.selection?.[axisId] === valueId
+    && variantPurchasable(product, variant)
     && axes.slice(0, index).every((axis) => !selected[axis.id] || variant.selection?.[axis.id] === selected[axis.id]));
   return candidates.find((variant) => axes.slice(index + 1).every((axis) => variant.selection?.[axis.id] === selected[axis.id])) ?? candidates[0];
 };
@@ -223,7 +250,7 @@ export const axisOptionVariant = (product: Product, selectedId: string | null, a
 export const cartQuantityAllowed = (cart: CartItem[], purchase: PurchaseResolution, quantity: number): boolean => {
   if (!Number.isSafeInteger(quantity) || quantity <= 0) return false;
   const variantOf = (line: CartItem) => line.selectedVariantId
-    ?? activeProductVariants(line.product).find((variant) => variant.isDefault)?.id
+    ?? cheapestPurchaseVariant(line.product)?.id
     ?? (line.product.variants?.length === 1 ? line.product.variants[0].id : undefined);
   const existing = cart.filter((line) => line.product.id === purchase.product.id && variantOf(line) === purchase.variant?.id)
     .reduce((sum, line) => sum + line.quantity, 0);

@@ -71,6 +71,7 @@ export type ActiveView =
   | 'customer_orders'
   | 'customer_wishlist'
   | 'static_page'
+  | 'dashboard'
   | 'seller_dashboard'
   | 'seller_storefront'
   | 'supplier_dashboard'

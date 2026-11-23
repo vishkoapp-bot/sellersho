@@ -422,3 +422,23 @@ func TestProductModelV2IsolatedLegacyInboundCannotAllocateTrackedProduct(t *test
 		t.Fatal("legacy inbound introduced unallocated SKU stock")
 	}
 }
+
+func TestBatch9PublicationPreservesExplicitDefault(t *testing.T) {
+	db := productModelV2Fixture(t)
+	data := v2Fixture(t, 2, 1)
+	data["supplierWarehouseId"] = "model-source"
+	data["title"] = "Batch 9 shirts"
+	data["description"] = "test"
+	data["categorySlug"] = "test-shirts"
+	data["productSchema"].(map[string]interface{})["attributes"].([]interface{})[0].(map[string]interface{})["name"] = "رنگ"
+	chosen := data["variants"].([]interface{})[1].(map[string]interface{})
+	chosen["is_default"] = true
+	_, product := approveV2FixtureProposal(t, NewSupplierRepository(db), data)
+	var defaultID string
+	if err := db.QueryRow(`SELECT id::text FROM product_variants WHERE product_id = $1 AND is_default`, product).Scan(&defaultID); err != nil {
+		t.Fatal(err)
+	}
+	if defaultID != chosen["id"] {
+		t.Fatalf("stored default = %s, want %s", defaultID, chosen["id"])
+	}
+}

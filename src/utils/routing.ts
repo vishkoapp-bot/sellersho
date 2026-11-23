@@ -129,6 +129,7 @@ export type ParsedRoute =
   | { view: 'catalog'; query?: string; category?: string }
   | { view: 'customer' }
   | { view: 'supplier_dashboard' }
+  | { view: 'dashboard' }
   | { view: 'seller_dashboard'; sellerTab: SellerDashboardTab }
   | { view: 'seller_storefront'; slug: string; unsubscribe: boolean }
   | { view: 'product_detail'; id?: string; spnNumber?: number; spnc?: string; storeSlug?: string }
@@ -230,6 +231,8 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
     return { view: 'customer' };
   }
 
+  if (path === '/dashboard') return { view: 'dashboard' };
+
   // Live behaviour: unknown URLs render the NEW not_found view (it did
   // not exist in the source, where unknown URLs fell back to home).
   return { view: 'not_found' };
@@ -267,6 +270,8 @@ export function pathForView(
     }
     case 'static_page':
       return options.staticPageKey ? STATIC_PAGE_PATHS[options.staticPageKey] : '/';
+    case 'dashboard':
+      return '/dashboard';
     case 'seller_dashboard':
       return options.sellerTab && options.sellerTab !== 'overview'
         ? `/?panel=seller&tab=${options.sellerTab}`

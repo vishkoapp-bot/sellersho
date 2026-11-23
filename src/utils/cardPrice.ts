@@ -1,19 +1,10 @@
-import { variantSaleOf } from './productPurchase';
+import { activeProductVariants, cheapestPurchaseVariant, isHiddenSyntheticVariant, variantPurchasable, variantSaleOf } from './productPurchase';
 
-// OWNER DECISION (Nov 5, 2026): a product CARD displays the DEFAULT
-// variant's price triple (price / originalPrice / discountPercent)
-// whenever the product has an isDefault variant with a priced entry —
-// the PDP opens preselected on that variant, so the card price is the
-// price the customer actually pays for the default pick (gold
-// bracelet: the card showed the product-level 83,520,000 while the PDP
-// opened on the default variant at 80,040,000). P2(c) extends the pick
-// order: the store's default variant (storeDefaultVariantId) wins over
-// the product isDefault, then the first active PRICED variant; every
-// other case — no variants, no priced variant — falls back to the
-// product-level triple, exactly as cards rendered before. The card
-// price stays identical to the PDP-open price by construction, because
-// initialPurchaseVariant resolves through the same chain.
-//
+// Nov 5: the gold bracelet's default held 5 units. Rename the SKU to keep that stock purchasable.
+// Batch 9 excludes stale synthetic names only for variable products. Simple SKUs keep «پیش‌فرض».
+// The card uses the priced, purchasable store default, then the cheapest purchasable
+// variant by effective price, then the first active priced variant.
+// With no priced variant, it uses the product-level price triple.
 // Display-only: this helper never mutates the product. Cart/checkout
 // keep pricing from the cart line's own snapshot (the PDP passes its
 // variant-adjusted displayProduct), and seller-panel surfaces that
@@ -34,29 +25,25 @@ export interface CardPriceTriple {
 }
 
 
-interface CardPriceSource {
+type CardPriceSource = Parameters<typeof cheapestPurchaseVariant>[0] & {
   price: number;
   originalPrice: number;
   discountPercent?: number;
-  productType?: 'legacy' | 'simple' | 'variable';
   priceMin?: number;
   priceMax?: number;
   storeDefaultVariantId?: string | null;
-  variants?: { id: string; isDefault?: boolean; isActive?: boolean; variantName?: string; name?: string }[];
-  variantPrices?: Record<string, { price: number; originalPrice: number; discountPercent: number; salePrice?: number; saleFrom?: string | null; saleTo?: string | null; onSale?: boolean }>;
-}
+};
 
-// Shared pick: P2(c) order — store default → product isDefault →
- // first active priced variant. A candidate only counts when it has a
- // priced entry. cardPriceOf and cardPriceVariantOf both use this.
 const pickCardPriceVariant = (product: CardPriceSource) => {
-  const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
+  const active = activeProductVariants(product).filter((variant) => !isHiddenSyntheticVariant(product, variant));
   const priced = (v: { id: string }) => {
     const vp = product.variantPrices?.[v.id];
     return vp != null && vp.price != null && Number.isFinite(vp.price);
   };
-  return (product.storeDefaultVariantId ? active.find((v) => v.id === product.storeDefaultVariantId && priced(v)) : undefined)
-    ?? active.find((v) => v.isDefault && priced(v))
+  const storeDefault = product.storeDefaultVariantId
+    ? active.find((v) => v.id === product.storeDefaultVariantId && priced(v) && variantPurchasable(product, v))
+    : undefined;
+  return storeDefault ?? cheapestPurchaseVariant(product)
     ?? active.find(priced);
 };
 
@@ -92,7 +79,7 @@ export const cardPriceVariantOf = (product: CardPriceSource): { triple: CardPric
 };
 
 // P1(a) price range: a SECONDARY line under the card's main price, never
-// a replacement (Nov 5 default-variant price untouched). The backend's
+// a replacement for the main variant price. The backend's
 // priceMin/priceMax win when present; otherwise the range is computed
 // from the active priced variants' effective (post-sale) prices.
 // hasRange only for variable products with >=2 distinctly-priced
@@ -108,7 +95,7 @@ export const cardPriceRangeOf = (product: CardPriceSource): CardPriceRange => {
     min = product.priceMin;
     max = product.priceMax;
   } else {
-    const active = product.variants?.filter((variant) => variant.isActive !== false) ?? [];
+    const active = activeProductVariants(product).filter((variant) => !isHiddenSyntheticVariant(product, variant));
     const prices = active
       .map((v) => product.variantPrices?.[v.id])
       .filter((vp): vp is NonNullable<typeof vp> => vp != null && Number.isFinite(vp.price) && vp.price > 0)

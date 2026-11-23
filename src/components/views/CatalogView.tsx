@@ -1,3 +1,4 @@
+import { remainingCatalogCount } from '../../utils/catalogRemaining';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { catalogApi } from '../../services/catalogApi';
 import { isMockMode } from '../../services/apiClient';
@@ -249,6 +250,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const filtered = liveMode ? (catalogLoading ? [] : products) : mockFiltered;
   const showSkeleton = catalogLoading && filtered.length === 0;
   const hideFilters = !catalogLoading && filtered.length === 0 && !catalogPriceRangeError;
+  const remaining = remainingCatalogCount(catalogTotal, filtered.length);
   const shownTotal = liveMode ? catalogTotal : filtered.length;
 
   const activeCategoryObj = categories.find(c => c.slug === selectedCategory);
@@ -486,13 +488,13 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 <ProductCard key={product.id} product={product} />
               ))}
             </div>
-            {liveMode && hasMoreCatalog && (
+            {liveMode && hasMoreCatalog && remaining > 0 && (
               <button
                 onClick={() => { void loadMoreCatalog(); }}
                 disabled={catalogLoadingMore}
                 className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
               >
-                {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(shownTotal)} کالا)`}
+                {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(remaining)} کالای دیگر)`}
               </button>
             )}
           </>

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/google/uuid"
@@ -224,6 +225,7 @@ func validateProductClasses(data map[string]interface{}) error {
 	}
 	return nil
 }
+
 // + image fields (V-W-*, V-DIM-*, V-IMG-*), then normalises the values
 // onto canonical snake_case float64 keys so the publication insert
 // reads them consistently.
@@ -354,6 +356,15 @@ func ProductCombinationKey(selection map[string]string) string {
 	return string(b)
 }
 
+func isReservedDefaultVariantName(name string) bool {
+	return strings.Map(func(r rune) rune {
+		if r == '\u200c' || r == '\u200d' || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, name) == "پیشفرض"
+}
+
 func validateProductV2(data map[string]interface{}) error {
 	schema, e := productSchemaFromData(data)
 	if e != nil {
@@ -480,6 +491,10 @@ func validateProductV2(data map[string]interface{}) error {
 		v, ok := entry.(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("invalid SKU")
+		}
+		name, _ := v["variant_name"].(string)
+		if kind == "variable" && isReservedDefaultVariantName(name) {
+			return fmt.Errorf("invalid SKU name %q for a variable product", name)
 		}
 		id, _ := v["id"].(string)
 		if uuid.Validate(id) != nil || id != strings.ToLower(id) || seenIDs[id] {

@@ -52,7 +52,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const lastScrolledTab = useRef(activeTab);
+  const lastScrolledTab = useRef<string | null>(null);
   // FIX 15: live syncs the active tab when the route's staticPageKey
   // changes (bundle z3) and scrolls the active tab into view; the
   // candidate kept the first tab forever across /about -> /license
@@ -60,10 +60,17 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   useEffect(() => { setActiveTab(staticPageKey || 'about'); setOpenFaq(0); }, [staticPageKey]);
   useEffect(() => {
     if (lastScrolledTab.current === activeTab) return;
-    lastScrolledTab.current = activeTab;
     const el = tabRefs.current[activeTab];
-    if (el) el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-  }, [activeTab]);
+    if (!el) return;
+    const initialScroll = lastScrolledTab.current === null;
+    lastScrolledTab.current = activeTab;
+    if (initialScroll && el.parentElement) {
+      const tab = el.getBoundingClientRect();
+      const row = el.parentElement.getBoundingClientRect();
+      if (tab.left >= row.left && tab.right <= row.right) return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, [activeTab, pages]);
 
   const load = () => {
     setLoadError(null);
@@ -132,7 +139,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
 
       {/* Tabs (labels from CMS titles, CMS order) */}
       {pages && (
-        <div className="flex bg-white border-b border-slate-200 p-2 gap-1 overflow-x-auto no-scrollbar text-xs [mask-image:linear-gradient(to_left,black_92%,transparent)] sm:[mask-image:none]">
+        <div className="flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-0.5 sm:gap-1 overflow-x-auto no-scrollbar text-[11px] sm:text-xs [mask-image:linear-gradient(to_left,black_92%,transparent)] sm:[mask-image:none]">
           {pages.map((p) => {
             const Icon = TAB_ICONS[p.key] || Info;
             return (
@@ -140,11 +147,11 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
                 key={p.key}
                 ref={(el) => { tabRefs.current[p.key] = el; }}
                 onClick={() => setActiveTab(p.key)}
-                className={`py-1 px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${
+                className={`py-1 px-2 sm:px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${
                   activeTab === p.key ? 'bg-brand text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" strokeWidth={1.5} />
                 <span>{TAB_LABELS[p.key] || p.title}</span>
               </button>
             );

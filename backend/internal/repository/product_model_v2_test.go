@@ -274,3 +274,13 @@ func TestProductV2DerivesFixedSpecsFromCanonicalDefinition(t *testing.T) {
 		t.Fatal("variation axes duplicated as fixed specs")
 	}
 }
+
+func TestBatch9ProductV2RejectsSubmittedDefaultName(t *testing.T) {
+	for _, name := range []string{"پیش‌فرض", "پیشفرض", "پیش ‍ فرض"} {
+		data := v2Fixture(t, 1, 1)
+		data["variants"].([]interface{})[0].(map[string]interface{})["variant_name"] = name
+		if err := ValidateProductVariationProposal(data); err == nil {
+			t.Errorf("variable SKU accepted reserved name %q", name)
+		}
+	}
+}

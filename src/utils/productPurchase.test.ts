@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Product, ProductVariant } from '../types';
-import { axisOptionVariant, initialPurchaseVariant, resolvePurchase, resolveStockBadge, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
+import { axisOptionVariant, cheapestPurchaseVariant, initialPurchaseVariant, resolvePurchase, resolveStockBadge, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
 
 const sku = (id: string, selection: Record<string, string>, stock = 5): ProductVariant => ({
   id, selection, stock, spnc: id, name: id, variantName: id, attributes: {}, isDefault: false,
@@ -164,3 +164,104 @@ describe('canonical customer SKU resolution', () => {
     assert.equal(productForVariant({ ...product, productSchema: undefined }).specs, product.specs);
   });
 });
+
+describe('cheapest purchase variant', () => {
+  it('compares effective sale prices and keeps ties in variant order', () => {
+    const product = fixture();
+    product.variantPrices!['blue-m'].salePrice = 1000;
+    assert.equal(initialPurchaseVariant(product)?.id, 'blue-m');
+    product.variantPrices!['blue-m'].salePrice = 1100;
+    product.variants![1].isDefault = true;
+    assert.equal(initialPurchaseVariant(product)?.id, 'red-s');
+  });
+
+  it('skips synthetic spellings and excludes unpriced, inactive, and sold-out options', () => {
+    const product = fixture();
+    product.variants!.unshift(
+      { ...sku('synthetic-zwnj', {}), variantName: 'پیش‌فرض', isDefault: true },
+      { ...sku('synthetic-plain', {}), variantName: '', name: 'پیشفرض' },
+      { ...sku('inactive', {}), isActive: false },
+      sku('unpriced', {}),
+    );
+    for (const id of ['synthetic-zwnj', 'synthetic-plain', 'inactive', 'red-m']) {
+      product.variantPrices![id] = { price: 1, originalPrice: 1, discountPercent: 0 };
+    }
+    assert.equal(initialPurchaseVariant(product)?.id, 'red-s');
+    assert.equal(cheapestPurchaseVariant(product)?.id, 'red-s');
+    assert.equal(resolvePurchase(product, initialPurchaseVariant(product)?.id)?.variant?.id, 'red-s');
+
+    product.productType = 'legacy';
+    product.schemaVersion = 0;
+    assert.equal(initialPurchaseVariant(product)?.id, 'synthetic-zwnj');
+    assert.equal(resolvePurchase(product)?.variant?.id, 'synthetic-zwnj');
+  });
+
+  it('honors a deep link before a purchasable per-store default and the cheapest option', () => {
+    const product = fixture();
+    assert.equal(initialPurchaseVariant(product, 'red-m', 'blue-m')?.id, 'red-m');
+    assert.equal(initialPurchaseVariant(product, null, 'blue-m')?.id, 'blue-m');
+    assert.equal(initialPurchaseVariant(product, null, 'red-m')?.id, 'red-s');
+  });
+
+  it('falls through stale variable links and store defaults to the cheapest visible SKU', () => {
+    const product = fixture();
+    product.variants!.unshift({ ...sku('synthetic', {}), variantName: 'پیش‌فرض' });
+    product.variantPrices!.synthetic = { price: 1, originalPrice: 1, discountPercent: 0 };
+    assert.equal(initialPurchaseVariant(product, 'synthetic')?.id, 'red-s');
+    assert.equal(initialPurchaseVariant(product, null, 'synthetic')?.id, 'red-s');
+  });
+
+  it('falls back to a real active option if no priced variants exist', () => {
+    const product = fixture();
+    product.variants!.unshift({ ...sku('synthetic', {}), variantName: 'پیشفرض', isDefault: true });
+    product.variantPrices = {};
+    assert.equal(initialPurchaseVariant(product)?.id, 'red-s');
+    const synthetic = product.variants![0];
+    const blue = product.variants![2];
+    product.variants = [synthetic, blue];
+    assert.equal(initialPurchaseVariant(product)?.id, 'blue-m');
+    assert.equal(resolvePurchase(product), undefined);
+    assert.equal(resolvePurchase(product, 'blue-m'), undefined);
+    product.variants = [synthetic];
+    assert.equal(initialPurchaseVariant(product), undefined);
+    assert.equal(resolvePurchase(product), undefined);
+
+    product.productType = 'legacy';
+    product.schemaVersion = 0;
+    product.variants = [synthetic, blue];
+    assert.equal(initialPurchaseVariant(product)?.id, 'synthetic');
+    assert.equal(resolvePurchase(product)?.variant, undefined);
+    product.variants = [blue];
+    assert.equal(resolvePurchase(product)?.variant?.id, 'blue-m');
+    product.variants = [synthetic];
+    assert.equal(resolvePurchase(product)?.variant?.id, 'synthetic');
+  });
+});
+
+for (const [productType, schemaVersion] of [['simple', 2], ['legacy', 0]] as const) {
+  const variant = { ...sku('default', {}, 10), variantName: 'پیش‌فرض', isDefault: true };
+  const product: Product = {
+    ...fixture(), productType, schemaVersion, productSchema: undefined, stock: 10,
+    variants: [variant],
+    variantPrices: { default: { price: 1200, originalPrice: 1200, discountPercent: 0 } },
+  };
+
+  it(`keeps the sole پیش‌فرض SKU purchasable for ${productType} products`, () => {
+    const purchase = resolvePurchase(product);
+    assert.deepEqual({
+      initial: initialPurchaseVariant(product)?.id,
+      resolved: purchase?.variant?.id,
+      price: purchase?.product.price,
+      stock: purchase?.maxQty,
+      badge: resolveStockBadge(product),
+    }, {
+      initial: variant.id,
+      resolved: variant.id,
+      price: 1200,
+      stock: 10,
+      badge: { kind: 'in-stock', stock: 10 },
+    });
+    assert.equal(initialPurchaseVariant(product, variant.spnc), variant);
+    assert.equal(initialPurchaseVariant(product, null, variant.id), variant);
+  });
+}

@@ -7,7 +7,7 @@
 > this file. `validate_release.py` fails a release when any `*.up.sql`
 > file is missing from the classification.
 
-Repo commit classified: `92f9cca`. Counts: EXPAND 97 / BACKFILL 53 / CONTRACT 62 / DESTRUCTIVE 1 (total 213). Verdicts: compatible 191 / tightening 18 / breaking 4.
+Repo commit classified: `92f9cca`. Counts: EXPAND 97 / BACKFILL 54 / CONTRACT 62 / DESTRUCTIVE 1 (total 214). Verdicts: compatible 192 / tightening 18 / breaking 4.
 
 ## Verdict vocabulary
 
@@ -894,6 +894,11 @@ Single full-table operation (no chunking in any of the 210 files; the five LIMIT
 Single full-table operation (no chunking in any of the 210 files; the five LIMIT occurrences in the set are single-row guards, not batches). Runtime is the measured empty-schema disposable number; prod-shaped data will be slower.
 
 - `SELECT count(*) FROM users WHERE warehouse_city_confirmed IS NULL` → eq 0
+
+### `202611230001_batch9_variant_rename.up.sql` — unmeasured, tables: product_variants
+
+Batch 9: irreversibly derives display names from non-empty attribute values on variable or multi-variant products. Rows with no non-empty values are left for supplier action.
+
 
 ## Destructive file (1)
 

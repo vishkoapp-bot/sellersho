@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/drup/platform/internal/auth"
@@ -49,15 +51,17 @@ type ProductVariantResponse struct {
 	VariantName string                 `json:"variantName"`
 	Spnc        string                 `json:"spnc"`
 	Attributes  map[string]interface{} `json:"attributes"`
-	IsDefault   bool                   `json:"isDefault"`
-	Stock       int                    `json:"stock"`
-	MinCartQty  int                    `json:"minCartQty"`
-	MaxCartQty  *int                   `json:"maxCartQty"`
-	Images      []string               `json:"images,omitempty"`
-	WeightGrams *int                   `json:"weightGrams,omitempty"`
-	LengthMM    *int                   `json:"lengthMm,omitempty"`
-	WidthMM     *int                   `json:"widthMm,omitempty"`
-	HeightMM    *int                   `json:"heightMm,omitempty"`
+	// IsDefault is the effective default for this view: cheapest active priced
+	// variant; stored flag otherwise (when no variant is priced).
+	IsDefault   bool     `json:"isDefault"`
+	Stock       int      `json:"stock"`
+	MinCartQty  int      `json:"minCartQty"`
+	MaxCartQty  *int     `json:"maxCartQty"`
+	Images      []string `json:"images,omitempty"`
+	WeightGrams *int     `json:"weightGrams,omitempty"`
+	LengthMM    *int     `json:"lengthMm,omitempty"`
+	WidthMM     *int     `json:"widthMm,omitempty"`
+	HeightMM    *int     `json:"heightMm,omitempty"`
 	// P2(b): EFFECTIVE classes (variant ?? product ?? 'standard'),
 	// resolved in buildProductResponse; always present.
 	ShippingClass string `json:"shippingClass"`
@@ -343,12 +347,22 @@ func StoreDefaultVariantForResponse(variants []domain.ProductVariant, storeDefau
 	return nil
 }
 
+func isReservedDefaultVariantName(name string) bool {
+	return strings.Map(func(r rune) rune {
+		if r == '\u200c' || r == '\u200d' || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, name) == "پیشفرض"
+}
+
 // buildProductResponse renders one product in the frozen 19-key list
 // shape. discountEligible is true for every listed product: live
 // returned true for all 40 active central products and no eligibility
 // rule beyond that observation was proven, so no narrower rule is
 // invented here.
 func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, variants []domain.ProductVariant, variantPrices map[string]VariantPriceResponse, storeDefaultVariantID ...string) ProductResponse {
+	totalVariants := len(variants)
 	// Quarantined variants are absent from both selectable variants and prices.
 	// Preserve inactive tracked variants' established response semantics.
 	availableVariants := make([]domain.ProductVariant, 0, len(variants))
@@ -369,6 +383,7 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 	if variants == nil {
 		variants = []domain.ProductVariant{}
 	}
+	productType := productTypeForResponse(p)
 	vresp := make([]ProductVariantResponse, 0, len(variants))
 	for _, v := range variants {
 		attrs := v.Attributes
@@ -396,12 +411,39 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if v.TaxClass != nil {
 			taxClass = *v.TaxClass
 		}
+		name := v.Name
+		// A single legacy variant is indistinguishable from a simple product's variant.
+		if (productType == "variable" || totalVariants > 1) && isReservedDefaultVariantName(name) {
+			keys := make([]string, 0, len(attrs))
+			for key := range attrs {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			values := make([]string, 0, len(keys))
+			for _, key := range keys {
+				value := attrs[key]
+				if value == nil {
+					continue
+				}
+				label, ok := value.(string)
+				if !ok {
+					label = fmt.Sprintf("%v", value)
+				}
+				if label != "" {
+					values = append(values, label)
+				}
+			}
+			name = p.Title
+			if len(values) > 0 {
+				name = strings.Join(values, " / ")
+			}
+		}
 		vresp = append(vresp, ProductVariantResponse{
 			Selection: selection, InventoryMode: mode, IsActive: active, CombinationKey: v.CombinationKey,
 			ID:          v.ID,
 			Spnc:        v.Spnc,
-			Name:        v.Name,
-			VariantName: v.Name,
+			Name:        name,
+			VariantName: name,
 			Attributes:  attrs,
 			Stock:       v.Stock,
 			IsDefault:   v.IsDefault,
@@ -427,21 +469,30 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 	// the map alone: priceVariantsForResponse still prices legacy
 	// inactive variants.
 	var priceMin, priceMax *int64
-	for _, vr := range vresp {
+	defaultIndex := -1
+	for i, vr := range vresp {
 		if !vr.IsActive {
 			continue
 		}
 		vp, ok := variantPrices[vr.ID]
-		if !ok || vp.Price <= 0 {
+		if !ok || vp.PricingError != "" || vp.Price <= 0 {
 			continue
 		}
 		if priceMin == nil || vp.Price < *priceMin {
 			v := vp.Price
 			priceMin = &v
+			defaultIndex = i
+		} else if vp.Price == *priceMin && vr.IsDefault && !vresp[defaultIndex].IsDefault {
+			defaultIndex = i
 		}
 		if priceMax == nil || vp.Price > *priceMax {
 			v := vp.Price
 			priceMax = &v
+		}
+	}
+	if defaultIndex >= 0 {
+		for i := range vresp {
+			vresp[i].IsDefault = i == defaultIndex
 		}
 	}
 	if priceMin == nil && len(variants) == 0 {
@@ -468,7 +519,7 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 	}
 	return ProductResponse{
 		PricingError: res.PricingError,
-		ProductType:  productTypeForResponse(p), SchemaVersion: p.SchemaVersion, ProductSchema: p.ProductSchema,
+		ProductType:  productType, SchemaVersion: p.SchemaVersion, ProductSchema: p.ProductSchema,
 		ID:                    p.ID,
 		Title:                 p.Title,
 		Slug:                  p.Slug,

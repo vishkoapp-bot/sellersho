@@ -236,7 +236,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     if (parsed.view === 'product_detail') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc, storeSlug: parsed.storeSlug ?? null };
     if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'seller_dashboard') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: parsed.sellerTab, productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
-    if (parsed.view === 'catalog') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
+    if (parsed.view === 'dashboard' || parsed.view === 'catalog') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
   };
   const [initialRouteState] = useState(initialRoute);
@@ -377,6 +377,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey });
       } else if (view === 'seller_dashboard') {
         path = pathForView(view, { sellerTab: navigation.sellerTab || sellerDashboardTab });
+      } else if (view === 'dashboard') {
+        path = '/dashboard';
       } else if (view === 'supplier_dashboard') {
         path = pathForView(view);
       } else if (view === 'admin_panel') {
@@ -451,7 +453,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         setActiveViewState('seller_dashboard');
         return;
       }
-      if (parsed.view === 'supplier_dashboard' || parsed.view === 'catalog') {
+      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'catalog') {
         setActiveViewState(parsed.view);
         return;
       }

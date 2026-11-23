@@ -1,3 +1,4 @@
+import { initialPurchaseVariant } from '../utils/productPurchase';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
@@ -38,18 +39,59 @@ it('keeps a normal selectable legacy default SKU and omits inactive SKU chips', 
   assert.doesNotMatch(html, /retired/);
 });
 
-it('localizes legacy attribute labels and keeps unknown keys and default names selectable', () => {
+it('localizes legacy attribute labels and keeps unknown keys selectable', () => {
   for (const [key, value, label] of [
     ['style', 'نگیندار', 'سبک'],
     ['color', 'قرمز', 'رنگ'],
     ['size', 'بزرگ', 'سایز'],
     ['material', 'طلا', 'material'],
   ]) {
-    const entry = { ...variant('default', {}), name: 'پیش‌فرض', variantName: 'پیش‌فرض', isDefault: true, attributes: { [key]: value } };
+    const entry = { ...variant('default', {}), name: 'مدل اول', variantName: 'مدل اول', isDefault: true, attributes: { [key]: value } };
     const html = renderToStaticMarkup(<ProductVariantSelector variants={[entry, variant("alternate", {})]} selectedId="default" onSelect={() => {}} />);
     assert.match(html, new RegExp(`>${label}</span>.*: ${value}`));
     if (key === 'style') assert.doesNotMatch(html.replace(/<[^>]+>/g, ""), /style/);
-    assert.match(html, /<button[^>]*>(?:(?!<\/button>).)*پیش‌فرض/);
+    assert.match(html, /<button[^>]*>(?:(?!<\/button>).)*مدل اول/);
     assert.doesNotMatch(html, /<button[^>]*disabled/);
   }
+});
+
+it('omits the synthetic chip and presses the cheapest real variant', () => {
+  const variants = [
+    { ...variant('default', {}), variantName: 'پیش‌فرض', isDefault: true },
+    variant('regular', {}),
+    variant('cheapest', {}),
+  ];
+  const variable = {
+    ...product, productSchema: undefined, variants,
+    variantPrices: {
+      default: { price: 10, originalPrice: 10, discountPercent: 0 },
+      regular: { price: 100, originalPrice: 100, discountPercent: 0 },
+      cheapest: { price: 50, originalPrice: 50, discountPercent: 0 },
+    },
+  } satisfies Product;
+  const selectedId = initialPurchaseVariant(variable)?.id ?? null;
+  const render = (options: ProductVariant[]) => renderToStaticMarkup(
+    <ProductVariantSelector product={variable} variants={options} selectedId={selectedId} onSelect={() => {}} />,
+  );
+  const html = render(variants);
+  assert.doesNotMatch(html, /پیش‌?فرض/);
+  assert.match(html, /aria-pressed="true"[^>]*><span[^>]*><span[^>]*>cheapest<\/span>/);
+  assert.equal(render([variants[0], variants[2]]), '');
+});
+
+it('renders the sole پیش‌فرض variant for a simple product', () => {
+  const entry = { ...variant('default', {}), variantName: 'پیش‌فرض' };
+  const simple: Product = { ...product, productType: 'simple', productSchema: undefined, variants: [entry] };
+  const html = renderToStaticMarkup(
+    <ProductVariantSelector product={simple} variants={[entry]} selectedId={entry.id} onSelect={() => {}} />,
+  );
+  assert.match(html, /<button[^>]*aria-pressed="true".*پیش‌فرض/);
+});
+
+it('keeps پیش‌فرض selectable when product metadata is absent', () => {
+  const entry = { ...variant('default', {}), variantName: 'پیش‌فرض' };
+  const html = renderToStaticMarkup(
+    <ProductVariantSelector variants={[entry, variant('other', {})]} selectedId={entry.id} onSelect={() => {}} />,
+  );
+  assert.match(html, /<button[^>]*aria-pressed="true".*پیش‌فرض/);
 });

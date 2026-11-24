@@ -32,12 +32,14 @@ export async function withSellerBrowser(
   });
   const browser = await puppeteer.launch({
     executablePath: process.env.CHROME_PATH,
+    pipe: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--no-proxy-server', '--disable-dev-shm-usage'],
   });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
     page.setDefaultTimeout(5000);
+    page.on("pageerror", error => process.stderr.write(`Seller browser fixture error: ${String(error)}\n`));
     await page.setRequestInterception(true);
     page.on('request', req => {
       const url = new URL(req.url());

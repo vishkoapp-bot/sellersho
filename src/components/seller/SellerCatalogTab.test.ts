@@ -149,3 +149,14 @@ test('shouldRefetchCatalogAfterConfirm: refetch only after a resolved product PU
   assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: true }), false);
   assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: false }), false);
 });
+
+test('DRP-8: public count comes from the verified scoped listing, not twelve seller selections', async () => {
+  const { catalogPublication } = await import('./SellerCatalogTab');
+  const rows = Array.from({ length: 12 }, (_, i) => ({ id: String(i), isActive: i === 11 }));
+  const publication = catalogPublication(rows);
+  assert.equal(publication?.size, 1);
+  assert.equal(publication?.has('11'), true);
+  assert.equal(publication?.has('0'), false);
+  assert.equal(catalogPublication(null), null, 'a failed or pending scoped walk does not publish an invented zero');
+  assert.equal(catalogPublication([])?.size, 0, 'a verified empty storefront does have a confirmed zero');
+});

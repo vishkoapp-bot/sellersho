@@ -1,5 +1,5 @@
 import { markedUpPrice } from '../../utils/money';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { SellerProductPricingModal } from './SellerProductPricingModal';
@@ -82,6 +82,16 @@ export function resolveScopedCatalogOutcome(
   if (!result.complete) return 'walk';
   if (result.includeInactiveApplied !== true) return 'inactive';
   return 'ok';
+}
+
+// The authorized owner walk applies the same store membership and supplier
+// gates as the public listing; the only relaxed gate is product.isActive.
+// Do not derive public visibility from the optimistic seller draft or the
+// count of selected IDs, which can include disabled products.
+export function catalogPublication(
+  rows: ReadonlyArray<Pick<Product, 'id' | 'isActive'>> | null,
+): ReadonlySet<string> | null {
+  return rows === null ? null : new Set(rows.filter(row => row.isActive === true).map(row => row.id));
 }
 
 // Live parity ("انتخاب کالا"): picking is a DRAFT. Tapping a product or a
@@ -169,6 +179,9 @@ export const SellerCatalogTab: React.FC = () => {
   // flash as rows of 0/0/0. A previous scoped list stays visible on
   // refetch; only the first load, with nothing yet, shows loading.
   const scopedLoading = !!storeSlug && scopedProducts === null && !scopedError;
+
+  const verifiedScopedProducts = storeSlug && prevSlugRef.current === storeSlug && !scopedError ? scopedProducts : null;
+  const publicCatalogIds = useMemo(() => catalogPublication(verifiedScopedProducts), [verifiedScopedProducts]);
 
   const savedProductIds = currentStore.activeProductIds || [];
   const savedNicheIds = currentStore.selectedNicheIds || [];
@@ -347,6 +360,12 @@ export const SellerCatalogTab: React.FC = () => {
             <h4 className="text-xs font-bold text-slate-800 truncate mb-1">
               {product.title}
             </h4>
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5 mb-1 text-[10px] text-slate-600">
+              <span>پلتفرم: {product.isActive === true ? 'فعال' : product.isActive === false ? 'غیرفعال' : 'نامشخص'}</span>
+              <span>ویترین عمومی: {publicCatalogIds === null
+                ? 'نامشخص'
+                : publicCatalogIds.has(product.id) ? 'نمایش داده می‌شود' : 'نمایش داده نمی‌شود'}</span>
+            </div>
             {costMissing ? (
               <div className="flex items-center gap-2 text-[10px] text-slate-500">
                 <span>قیمت تأمین‌کننده در دسترس نیست</span>
@@ -412,8 +431,8 @@ export const SellerCatalogTab: React.FC = () => {
             type="button"
             role="switch"
             aria-checked={isPending}
-            aria-label={isPending ? `غیرفعال کردن ${product.title} در فروشگاه` : `فعال کردن ${product.title} در فروشگاه`}
-            title={isPending ? 'فعال در فروشگاه — برای غیرفعال کردن بزن' : 'غیرفعال — برای فعال کردن در فروشگاه بزن'}
+            aria-label={`انتخاب ${product.title} برای فروشگاه`}
+            title={isPending ? 'انتخاب‌شده — برای برداشتن انتخاب بزن' : 'انتخاب‌نشده — برای انتخاب بزن'}
             onClick={(e) => {
               // Without stopPropagation the click bubbles to the row's own
               // onClick and toggles twice — the switch looked dead.
@@ -423,7 +442,7 @@ export const SellerCatalogTab: React.FC = () => {
             className="min-h-[44px] px-1.5 rounded-xl flex items-center gap-2 transition-colors hover:bg-slate-50"
           >
             <span className={`text-[11px] font-bold ${isPending ? 'text-emerald-600' : 'text-slate-400'}`}>
-              {isPending ? 'فعال' : 'غیرفعال'}
+              {isPending ? 'انتخاب‌شده' : 'انتخاب‌نشده'}
             </span>
             <span
               dir="ltr"
@@ -485,9 +504,16 @@ export const SellerCatalogTab: React.FC = () => {
             <Layers className="w-4 h-4 text-blue-600" strokeWidth={1.5} />
             <h3 className="text-xs font-bold text-slate-800">انتخاب کالا برای فروشگاهت</h3>
           </div>
-          <span className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
-            {toPersianDigits(savedProductIds.length)} کالا در فروشگاهت هست
-          </span>
+          <div className="flex flex-wrap justify-end gap-1 text-[10px] font-bold">
+            <span className="text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
+              {toPersianDigits(savedProductIds.length)} کالای انتخاب‌شده
+            </span>
+            {publicCatalogIds !== null && (
+              <span className="text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">
+                {toPersianDigits(publicCatalogIds.size)} کالا در ویترین عمومی
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Section 2.2: Niche Selector Chips (Multi-Select) */}

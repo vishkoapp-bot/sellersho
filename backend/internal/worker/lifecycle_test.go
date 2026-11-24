@@ -70,18 +70,31 @@ func TestCompatibilityEntrypointsRespectDatabaseLease(t *testing.T) {
 		}
 		defer store.Release(context.Background(), id, "ops01-held")
 	}
-	var before, after int
-	if err := db.QueryRow(`SELECT count(*) FROM background_job_outcomes`).Scan(&before); err != nil {
+	// Both tables can already contain valid history from earlier cycles.
+	// Put a legacy record here so the regression does not depend on test order.
+	var existing int64
+	if err := db.QueryRow(`INSERT INTO job_runs (job_id, started_at, released)
+		VALUES ('delivery-lock-releaser', NOW() - INTERVAL '1 day', 1) RETURNING id`).Scan(&existing); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { jobExec(t, db, `DELETE FROM job_runs WHERE id=$1`, existing) })
+	readCounts := func() (outcomes, legacy int64) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT (SELECT count(*) FROM background_job_outcomes),
+			(SELECT count(*) FROM job_runs)`).Scan(&outcomes, &legacy); err != nil {
+			t.Fatal(err)
+		}
+		return outcomes, legacy
+	}
+	before, legacyBefore := readCounts()
 	w.ReleaseExpiredDeliveryLocks()
 	w.RunMonthlySettlementIfDue()
-	if err := db.QueryRow(`SELECT count(*) FROM background_job_outcomes`).Scan(&after); err != nil || before != after {
-		t.Fatal("compatibility caller bypassed lease", before, after, err)
+	after, legacyAfter := readCounts()
+	if before != after {
+		t.Fatal("compatibility caller bypassed lease", before, after)
 	}
-	var legacy int
-	if err := db.QueryRow(`SELECT count(*) FROM job_runs`).Scan(&legacy); err != nil || legacy != 0 {
-		t.Fatal("busy compatibility delivery wrote direct-cycle history", legacy, err)
+	if legacyBefore != legacyAfter {
+		t.Fatal("busy compatibility delivery wrote direct-cycle history", legacyBefore, legacyAfter)
 	}
 }
 

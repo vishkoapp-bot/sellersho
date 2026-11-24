@@ -136,7 +136,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python scripts/test-isolated.py -- go test ${{ matrix.package }} -count=1 -timeout 9m -v
+      - name: run package tests and independent repository history checks
+        env:
+          TEST_PACKAGE: ${{ matrix.package }}
+        run: |
+          run_isolated() {
+            python scripts/test-isolated.py -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v "$@"
+          }
+          if [[ "$TEST_PACKAGE" == ./internal/database/seeder ]]; then
+            # Exercise SeedDev against empty migrated schema.
+            python scripts/test-isolated.py --schema-only -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v
+            exit
+          fi
+          # The cohort requires the original full financial-history fixture;
+          # the generic floor alone has 100,000 cancelled orders, zero eligible.
+          if [[ "$TEST_PACKAGE" == ./cmd/capacity-fixture ]]; then
+            export CAPACITY_FINANCE_HISTORY=1
+          fi
+          if [[ "$TEST_PACKAGE" != ./internal/repository ]]; then
+            run_isolated
+            exit
+          fi
+          # Historical fixtures must not see other tests' retained evidence;
+          # validate the FK against canonical migrations, not a shadow table.
+          independent=(
+            TestFIN007CreationFKCatalog
+            TestINV06ReturnBinMigrationPreservesExistingPlacement
+            TestINV09MigrationPreservesHistoricalExceptions
+            TestFIN003MigrationPreservesHistoricalCancelledPaidRecords
+            TestFIN003LegacyPendingRefundTableClaimIsNotSpentAgain
+            TestFIN003LegacyPSPRefundTableClaimIsNotSpentAgain
+            TestFIN003LegacyCompletedRefundProjectionsAreNotDoubleCounted
+            TestFIN006MigrationPreservesUnknownHistoryWithoutInventingDebt
+          )
+          excluded="$(IFS='|'; printf '%s' "${independent[*]}")"
+          result=0
+          run_isolated -skip "^($excluded)$" || result=1
+          for test_name in "${independent[@]}"; do
+            run_isolated -run "^$test_name$" || result=1
+          done
+          exit "$result"
 
   go-race:
     name: go race on concurrency invariants

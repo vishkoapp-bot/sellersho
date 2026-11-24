@@ -34,7 +34,9 @@ export function batch8Browser() {
       cacheDir,
       logLevel: 'error',
       optimizeDeps: { noDiscovery: true },
-      server: { middlewareMode: true, hmr: false },
+      // This fixture transforms CSS only. In Vite 6 hmr:false still creates
+      // a WebSocket listener unless ws is disabled explicitly.
+      server: { middlewareMode: true, hmr: false, ws: false },
     });
     javascript = bundle.outputFiles[0].text;
     html = await readFile('scripts/fixtures/catalog/composed.html', 'utf8');

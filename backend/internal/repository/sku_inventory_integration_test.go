@@ -863,14 +863,27 @@ func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	returnID, returnItem, secondReturnItem := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	opsExec(t, db, `INSERT INTO customer_returns(id,order_id,customer_id) VALUES($1,$2,$3)`, returnID, order, f.user)
-	opsExec(t, db, `INSERT INTO return_items(id,return_id,order_item_id,variant_id,qty)
-		VALUES($1,$3,$4,$5,1),($2,$3,$4,$5,1)`, returnItem, secondReturnItem, returnID, orderItem, red)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	// Model a historical duplicate return claim to exercise the restock
+	// backstop. Scope the protected fixture writes to this disposable,
+	// rolled-back transaction and use the normal FIN005 writer fence.
+	if _, err := tx.ExecContext(ctx, `SELECT id FROM orders WHERE id=$1 FOR UPDATE`, order); err != nil {
+		t.Fatal(err)
+	}
+	if err := markDisputeWriterTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO customer_returns(id,order_id,customer_id) VALUES($1,$2,$3)`, returnID, order, f.user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO return_items(id,return_id,order_item_id,variant_id,qty)
+		VALUES($1,$3,$4,$5,1),($2,$3,$4,$5,1)`, returnItem, secondReturnItem, returnID, orderItem, red); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		if handled, err := restoreCapturedReturnTx(ctx, tx, returnItem, orderItem, f.product, f.supplier, 1, "ok", "warehouse:"+warehouse, f.user); err != nil || !handled {
 			t.Fatalf("return handled=%v err=%v", handled, err)

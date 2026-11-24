@@ -62,6 +62,7 @@ func TestFIN007HTTPCheckoutAdmissionRace(t *testing.T) {
 	uid, _ := uuid.FromBytes(customer[:])
 	sku := md5.Sum([]byte("cap-sku-1"))
 	vid, _ := uuid.FromBytes(sku[:])
+	seedCapacityCheckoutCodes(t, db, vid.String())
 	rp := &gap13Repos{db: db, orderRepo: repository.NewOrderRepository(db), catalogRepo: repository.NewCatalogRepository(db), storeRepo: repository.NewStoreRepository(db), shipmentRepo: repository.NewSupplierShipmentRepository(db), pricingRepo: repository.NewPricingRepository(db), supplierRepo: repository.NewSupplierRepository(db)}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

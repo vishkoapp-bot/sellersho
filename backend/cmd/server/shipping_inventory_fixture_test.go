@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"github.com/drup/platform/internal/repository"
 	"strings"
 	"testing"
 
@@ -62,5 +64,26 @@ func seedShippingInventoryFixtureLot(t *testing.T, db *sql.DB, product, supplier
 	if _, err := db.Exec(`INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
 		SELECT $1::text || '-X' || LPAD(i::text,4,'0'),$2,$3,i,'in_stock',$4 FROM generate_series(1,$5::int) i`, spnc, variant, product, lot, quantity); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// seedCapacityCheckoutCodes adds the five sellable codes needed by the FIN HTTP
+// tests without changing the benchmark dataset or their finance assertions.
+func seedCapacityCheckoutCodes(t *testing.T, db *sql.DB, variant string) {
+	t.Helper()
+	const product, lot, origin = "cap-product-1", "cap-balance-1", "cap-swh-2"
+	if _, err := db.Exec(`INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
+ SELECT v.spnc || '-X' || LPAD(i::text,4,'0'), v.id, v.product_id, i, 'in_stock', b.id
+ FROM product_variants v JOIN inventory_balances b ON b.product_id=v.product_id
+ CROSS JOIN generate_series(1,5) i
+ WHERE v.id=$1 AND v.product_id=$2 AND v.is_active AND v.inventory_mode='legacy'
+ AND b.id=$3 AND b.variant_id IS NULL AND b.status='sellable' AND b.quantity>=5
+ AND b.supplier_warehouse_id=$4
+ ON CONFLICT (variant_id,sequence) DO NOTHING`, variant, product, lot, origin); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := repository.ResolveInventoryOrigins(context.Background(), db, product, variant, "supplier_direct", 5)
+	if err != nil || len(routes) != 1 || routes[0].SupplierWarehouseID != origin || routes[0].Quantity != 5 {
+		t.Fatalf("capacity checkout fixture needs five eligible coded units at %s: origins=%+v err=%v", origin, routes, err)
 	}
 }

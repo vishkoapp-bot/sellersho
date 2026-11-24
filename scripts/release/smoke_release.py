@@ -22,9 +22,9 @@ over real HTTP — and gates on /api/ready before any of them:
               201, identical replay 200 with the SAME order id, exactly
               one orders row; GET /api/v1/checkout-attempts/<key>
               recovers the order; changed payload + same key -> 409
-  payment     the created order's payment_status/payment_method match
-              the manifest's declared payment mode (real in smoke env);
-              demo-gateway status reports testOnly:true
+  payment     the created order has the manual-bridge state and the
+              demo-gateway reports testOnly:true in the disposable runtime;
+              the separately validated release manifest declares real mode
 
 A failed check fails the whole run (exit non-zero) and must block
 the traffic switch. Everything is disposable: the database is
@@ -267,6 +267,10 @@ class Smoke:
             "('p-smoke','کالای دودآزما','smoke-product','digital','sup-smoke',12000000,10000000,0,TRUE,10,"
             "'img','desc','انبار تأمین‌کننده',1,'گارانتی',FALSE,FALSE,'supplier_direct','1day',TRUE,'برند',50000099,500,100,100,100) "
             "ON CONFLICT (id) DO NOTHING;",
+            # An implicit product-only cart resolves the sole active legacy SKU.
+            "INSERT INTO product_variants (product_id,spnc,variant_name,is_default,stock,inventory_mode,is_active) "
+            "VALUES ('p-smoke','SMOKESKU1','smoke default',TRUE,10,'legacy',TRUE) "
+            "ON CONFLICT (spnc) DO NOTHING;",
             # Physical lot backing the quote/order inventory checks.
             f"INSERT INTO inventory_balances (id, product_id, supplier_id, owner_type, location_type, "
             f"location_key, status, quantity, supplier_warehouse_id) VALUES "
@@ -274,6 +278,15 @@ class Smoke:
             f"'supplier-warehouse:swh-smoke','sellable',10,'swh-smoke') "
             f"ON CONFLICT (product_id, owner_type, location_type, location_key, status) "
             f"WHERE variant_id IS NULL DO UPDATE SET quantity = EXCLUDED.quantity;",
+            # A sale needs unit codes at the exact quoted lot. Keep a partial
+            # backfill to avoid accidentally depending on full lot coverage.
+            "INSERT INTO product_units (code,variant_id,product_id,sequence,status,balance_id) "
+            "SELECT v.spnc || '-X' || lpad(n::text,4,'0'),v.id,v.product_id,n,'in_stock',b.id "
+            "FROM product_variants v JOIN inventory_balances b ON b.product_id=v.product_id "
+            "CROSS JOIN generate_series(1,3) n "
+            "WHERE v.product_id='p-smoke' AND v.spnc='SMOKESKU1' AND b.variant_id IS NULL "
+            "AND b.supplier_warehouse_id='swh-smoke' AND b.status='sellable' "
+            "ON CONFLICT (code) DO NOTHING;",
         ]
         for sql in stmts:
             self.psql(self.db, sql)
@@ -470,7 +483,7 @@ class Smoke:
         self.check("payment: demo-gateway status reports testOnly:true",
                    code == 200 and demo.get("testOnly") is True
                    and demo.get("gateway") == "demo", f"HTTP {code}")
-        self.check("payment: manifest mode is real in the smoke env",
+        self.check("payment: release manifest declares real (runtime is isolated mock)",
                    manifest.get("config", {}).get("payment", {}).get("mode") == "real",
                    f"mode={manifest.get('config', {}).get('payment', {}).get('mode')}")
         return True

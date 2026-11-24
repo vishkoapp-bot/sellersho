@@ -139,21 +139,35 @@ jobs:
           # not the shadow schema left by those fixtures. Both runs gate CI.
           case "$TEST_PACKAGE" in
             ./cmd/server)
-              schema_tests='^(TestQUAL01WarehouseAssignmentAndSelf|TestWarehouseNotificationsReadPath)$' ;;
+              schema_groups=('TestQUAL01WarehouseAssignmentAndSelf|TestWarehouseNotificationsReadPath') ;;
             ./internal/repository)
-              schema_tests='^TestFIN007CreationFKCatalog$' ;;
+              # Historical downgrade rehearsals each need a fresh database:
+              # the down scripts correctly refuse other tests' retained evidence.
+              schema_groups=(
+                TestFIN007CreationFKCatalog
+                TestINV06ReturnBinMigrationPreservesExistingPlacement
+                TestINV09MigrationPreservesHistoricalExceptions
+                TestFIN003MigrationPreservesHistoricalCancelledPaidRecords
+                TestFIN003LegacyPendingRefundTableClaimIsNotSpentAgain
+                TestFIN003LegacyPSPRefundTableClaimIsNotSpentAgain
+                TestFIN003LegacyCompletedRefundProjectionsAreNotDoubleCounted
+                TestFIN006MigrationPreservesUnknownHistoryWithoutInventingDebt
+              ) ;;
             *)
-              schema_tests='' ;;
+              schema_groups=() ;;
           esac
           run_isolated() {
             python scripts/test-isolated.py -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v "$@"
           }
-          if [[ -z "$schema_tests" ]]; then
+          if (( ${#schema_groups[@]} == 0 )); then
             run_isolated
           else
             result=0
-            run_isolated -skip "$schema_tests" || result=1
-            run_isolated -run "$schema_tests" || result=1
+            skipped="$(IFS='|'; printf '%s' "${schema_groups[*]}")"
+            run_isolated -skip "^($skipped)$" || result=1
+            for group in "${schema_groups[@]}"; do
+              run_isolated -run "^($group)$" || result=1
+            done
             exit "$result"
           fi
 

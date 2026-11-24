@@ -920,26 +920,18 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		return
 	}
 
-	// D43 logged search: best effort, never fails the listing. The
-	// public list is catalog-wide, so the shown result count is both
-	// the store result count and the catalog result count here; the
-	// store-assortment split for seller search-insight is a separate
-	// concern and is not conflated with a guessed number. The count
-	// logged is the TOTAL matched count, not the page size.
-	// Batch 2, E2: log only terms of >= minSearchLogTermRunes runes
-	// (single letters are keystroke prefixes, not demand signal), and
-	// never log a suggestion call (suggest=1 — the sender lands in
-	// Batch 3; until then no request carries the flag). The guard is
-	// at this call site ONLY: matching is unaffected, and
-	// LogSearchEvent itself stays a plain insert.
+	// A store search with no result does not mean the same term is absent
+	// from the full public catalog. Record each scope independently. A
+	// failed central lookup is unknown, not zero; analytics are best-effort.
+	// Skip suggestion requests and keystroke prefixes as before.
 	if filter.Search != "" {
-		effectiveSlug := storeSlug
-		if effectiveSlug == "" {
-			effectiveSlug = "central"
-		}
 		normalized := normalizeSearchTerm(filter.Search)
 		if utf8.RuneCountInString(normalized) >= minSearchLogTermRunes && r.URL.Query().Get("suggest") != "1" {
-			_ = catalogRepo.LogSearchEvent(ctx, normalized, effectiveSlug, page.Total, page.Total)
+			var centralCount *int
+			if total, err := catalogRepo.CountCentralCatalogSearch(ctx, normalized); err == nil {
+				centralCount = &total
+			}
+			_ = catalogRepo.LogSearchEvent(ctx, normalized, store.Slug, page.Total, centralCount)
 		}
 	}
 

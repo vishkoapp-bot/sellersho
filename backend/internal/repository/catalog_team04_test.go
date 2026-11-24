@@ -292,7 +292,8 @@ func TestTeam04CatalogRepo(t *testing.T) {
 	}
 	// D43: search logging writes the normalised term + catalog count,
 	// and the ensure step added catalog_result_count.
-	if err := repo.LogSearchEvent(ctx, "طلا", "central", 1, 1); err != nil {
+	catalogCount := 1
+	if err := repo.LogSearchEvent(ctx, "طلا", "central", 1, &catalogCount); err != nil {
 		t.Fatalf("LogSearchEvent: %v", err)
 	}
 	var term string

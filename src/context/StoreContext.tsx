@@ -24,7 +24,7 @@ import {
 } from './storeContextTypes';
 import { formatPrice, toPersianDigits } from '../utils/formatters';
 import { cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
-import { isMockMode } from '../services/apiClient';
+import { isMockMode, tokenStore } from '../services/apiClient';
 import { storeApi } from '../services/storeApi';
 import { catalogApi } from '../services/catalogApi';
 import { mapBackendProduct } from './ProductContext';
@@ -940,18 +940,33 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     setStores((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   };
 
-  const updateStoreActiveProducts = (productIds: string[]): Promise<{ ok: boolean; status?: number }> => {
-    if (!currentStore) return Promise.resolve({ ok: false });
-    updateCurrentStoreObject({ ...currentStore, activeProductIds: productIds });
-    if (isMockMode()) return Promise.resolve({ ok: true });
-    if (!currentStore.slug) return Promise.resolve({ ok: false });
-
-    return storeApi.saveStoreProducts(currentStore.slug, productIds)
-      .then(() => ({ ok: true }))
-      .catch((err) => {
+  const updateStoreActiveProducts = async (productIds: string[]): Promise<{ ok: boolean; status?: number }> => {
+    if (!currentStore) return { ok: false };
+    const { id, slug } = currentStore;
+    const generation = tokenStore.getGeneration();
+    const updateSelection = (store: Store) =>
+      store.id === id && store.slug === slug ? { ...store, activeProductIds: productIds } : store;
+    if (!isMockMode()) {
+      if (!slug) return { ok: false };
+      try {
+        const saved = await storeApi.saveStoreProducts(slug, productIds);
+        const acknowledged = saved?.activeProductIds;
+        if (generation !== tokenStore.getGeneration() || saved?.id !== id ||
+          !Array.isArray(acknowledged) ||
+          productIds.length !== acknowledged.length ||
+          productIds.some((productId, index) => acknowledged[index] !== productId)) {
+          return { ok: false };
+        }
+      } catch (err: any) {
         console.warn('Failed to persist active products:', err);
         return { ok: false, status: typeof err?.status === 'number' ? err.status : undefined };
-      });
+      }
+    }
+    // A completed write must not replace the store if the seller switched
+    // while it was in flight, nor overwrite that store's other settings.
+    setCurrentStore((previous) => previous ? updateSelection(previous) : previous);
+    setStores((previous) => previous.map(updateSelection));
+    return { ok: true };
   };
 
   const toggleCategoryActiveProducts = (categorySlug: string, enable: boolean) => {

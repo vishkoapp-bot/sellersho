@@ -299,3 +299,101 @@ func (r *CatalogRepository) categoriesTableExists(ctx context.Context) bool {
 	}
 	return exists
 }
+
+// CentralCatalogSearchMatch supplies public catalog suggestions to the seller
+// quick-add view. It never includes owner or supplier cost fields.
+type CentralCatalogSearchMatch struct {
+	ProductID string `json:"productId"`
+	Title     string `json:"title"`
+	ImageURL  string `json:"imageUrl,omitempty"`
+}
+
+// loadCentralSearchScope resolves the current public catalog once for a
+// batch of suggestions. Analytics never issue cursors, so validation only
+// needs a positive revision.
+func loadCentralSearchScope(ctx context.Context, tx *sql.Tx) (catalogpage.Scope, error) {
+	scope := catalogpage.Scope{OwnerType: "central", Revision: 1}
+	err := tx.QueryRowContext(ctx, `SELECT id FROM stores WHERE LOWER(slug)='central' AND owner_type='central'`).Scan(&scope.ID)
+	return scope, err
+}
+
+// centralSearchParts intentionally uses the same public assortment and
+// search predicates as the product-list endpoint, with no seller scope,
+// filters, or pagination. Title-only ILIKE would miss brand and category.
+func centralSearchParts(scope catalogpage.Scope, term string, hasCategories bool) (fromWhere string, args []any, rank string, err error) {
+	from, where, args, rank, err := priceFilterParts(scope, catalogpage.Filter{Search: term, Sort: "featured"}, false, hasCategories)
+	return from + ` WHERE ` + strings.Join(where, ` AND `), args, rank, err
+}
+
+// CountCentralCatalogSearch counts the term's full public central candidate
+// set, not the results after local filters or the current page size.
+func (r *CatalogRepository) CountCentralCatalogSearch(ctx context.Context, term string) (int, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	scope, err := loadCentralSearchScope(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	setSearchJITOff(ctx, tx)
+	query, args, _, err := centralSearchParts(scope, term, categoriesTableExistsTx(ctx, tx))
+	if err != nil {
+		return 0, err
+	}
+	var total int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) `+query, args...).Scan(&total)
+	return total, err
+}
+
+// CentralCatalogSearchMatches returns up to four current public candidates
+// per term in search-rank order. One snapshot covers all of the tab's terms;
+// a stale recorded zero cannot hide a current match.
+func (r *CatalogRepository) CentralCatalogSearchMatches(ctx context.Context, terms []string) (map[string][]CentralCatalogSearchMatch, error) {
+	out := make(map[string][]CentralCatalogSearchMatch, len(terms))
+	if len(terms) == 0 {
+		return out, nil
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	scope, err := loadCentralSearchScope(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	setSearchJITOff(ctx, tx)
+	hasCategories := categoriesTableExistsTx(ctx, tx)
+	for _, term := range terms {
+		query, args, rank, err := centralSearchParts(scope, term, hasCategories)
+		if err != nil {
+			return nil, err
+		}
+		out[term], err = centralCatalogSearchMatches(ctx, tx, query, args, rank)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func centralCatalogSearchMatches(ctx context.Context, tx *sql.Tx, query string, args []any, rank string) ([]CentralCatalogSearchMatch, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT p.id, p.title, COALESCE(p.image_url, ''), `+rank+
+		` AS match_rank `+query+` ORDER BY match_rank, p.title, p.id LIMIT 4`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	matches := make([]CentralCatalogSearchMatch, 0, 4)
+	for rows.Next() {
+		var match CentralCatalogSearchMatch
+		var rankValue int
+		if err := rows.Scan(&match.ProductID, &match.Title, &match.ImageURL, &rankValue); err != nil {
+			return nil, err
+		}
+		matches = append(matches, match)
+	}
+	return matches, rows.Err()
+}

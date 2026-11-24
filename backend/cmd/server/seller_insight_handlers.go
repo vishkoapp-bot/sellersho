@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/drup/platform/internal/repository"
 )
 
 // Merge-phase backend: seller analytics and search insight reshaped
@@ -30,13 +32,11 @@ import (
 // is faked. Live aggregation details beyond the tab's field contract
 // remain unverified.
 //
-// Search insight (live _n tab): the BARE shape {topSearches,
-// unmetInStore, unmetCatalog} with no wrapper. topSearches = the
-// store's most-searched terms; unmetInStore = terms that NEVER
-// returned a store result, with catalogMatches from a product-title
-// search for the quick-add UI; unmetCatalog = the unmet terms whose
-// every recorded row also has catalog_result_count = 0 (legacy NULL
-// rows are excluded — unknown is not reported as "not in catalog").
+// Search insight (live _n tab) has the bare shape {topSearches,
+// unmetInStore, unmetCatalog}. A store miss can lead to quick-add from
+// today's public catalog, or to a confirmed catalog miss. The two lists
+// are disjoint. Historical store-scoped copies of result_count are not
+// proof of catalog absence.
 // The store_id query param filters to one owned store (404 otherwise),
 // mirroring the analytics handler.
 
@@ -489,9 +489,10 @@ func handleT01SellerSearchInsight(w http.ResponseWriter, r *http.Request, db *sq
 	}
 	ph, args := t01MergeInClause(slugs)
 	type termAgg struct {
-		term string
-		n    int64
-		z    int64
+		term                string
+		n                   int64
+		z                   int64
+		verifiedCentralMiss bool
 	}
 	scanTerms := func(q string) ([]termAgg, error) {
 		rows, err := db.QueryContext(ctx, q, args...)
@@ -502,7 +503,7 @@ func handleT01SellerSearchInsight(w http.ResponseWriter, r *http.Request, db *sq
 		out := []termAgg{}
 		for rows.Next() {
 			var t termAgg
-			if err := rows.Scan(&t.term, &t.n, &t.z); err != nil {
+			if err := rows.Scan(&t.term, &t.n, &t.z, &t.verifiedCentralMiss); err != nil {
 				return nil, err
 			}
 			out = append(out, t)
@@ -511,7 +512,7 @@ func handleT01SellerSearchInsight(w http.ResponseWriter, r *http.Request, db *sq
 	}
 	top, err := scanTerms(
 		`SELECT term_normalized, COUNT(*),
-			COALESCE(SUM(CASE WHEN result_count = 0 THEN 1 ELSE 0 END), 0)
+			COUNT(*) FILTER (WHERE result_count = 0), FALSE
 		FROM search_queries WHERE store_slug IN (` + ph + `) AND term_normalized != ''
 		GROUP BY term_normalized ORDER BY COUNT(*) DESC LIMIT 50`)
 	if err != nil {
@@ -519,83 +520,43 @@ func handleT01SellerSearchInsight(w http.ResponseWriter, r *http.Request, db *sq
 		return
 	}
 	unmet, err := scanTerms(
-		`SELECT term_normalized, COUNT(*),
-			COALESCE(SUM(CASE WHEN result_count = 0 THEN 1 ELSE 0 END), 0)
+		`SELECT term_normalized, COUNT(*), COUNT(*) FILTER (WHERE result_count = 0),
+			COUNT(*) FILTER (WHERE catalog_result_count_verified AND catalog_result_count = 0) > 0
+			  AND COUNT(*) FILTER (WHERE catalog_result_count_verified AND catalog_result_count > 0) = 0
 		FROM search_queries WHERE store_slug IN (` + ph + `) AND term_normalized != ''
-		GROUP BY term_normalized HAVING SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END) = 0
-		ORDER BY COUNT(*) DESC LIMIT 50`)
+		GROUP BY term_normalized HAVING COUNT(*) FILTER (WHERE result_count > 0) = 0
+		ORDER BY COUNT(*) DESC, term_normalized LIMIT 50`)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	catalogZero := map[string]bool{}
-	rows, err := db.QueryContext(ctx,
-		`SELECT term_normalized FROM search_queries WHERE store_slug IN (`+ph+`) AND term_normalized != ''
-		GROUP BY term_normalized HAVING SUM(CASE WHEN catalog_result_count IS NULL OR catalog_result_count > 0 THEN 1 ELSE 0 END) = 0`, args...)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
-			rows.Close()
-			writeInternalError(w, err)
-			return
-		}
-		catalogZero[t] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		writeInternalError(w, err)
-		return
-	}
-	rows.Close()
-
-	likeReplacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	topSearches := []map[string]interface{}{}
 	for _, t := range top {
 		topSearches = append(topSearches, map[string]interface{}{"term": t.term, "searches": t.n, "zeroResultSearches": t.z})
 	}
 	unmetInStore := []map[string]interface{}{}
 	unmetCatalog := []map[string]interface{}{}
+	catalog := repository.NewCatalogRepository(db)
+	terms := make([]string, 0, len(unmet))
 	for _, t := range unmet {
-		matches := []map[string]interface{}{}
-		pattern := "%" + likeReplacer.Replace(t.term) + "%"
-		mrows, err := db.QueryContext(ctx,
-			`SELECT id, title, image_url FROM products WHERE is_active AND title ILIKE $1 ESCAPE '\' ORDER BY title LIMIT 4`, pattern)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		for mrows.Next() {
-			var pid, title string
-			var img sql.NullString
-			if err := mrows.Scan(&pid, &title, &img); err != nil {
-				mrows.Close()
-				writeInternalError(w, err)
-				return
-			}
-			m := map[string]interface{}{"productId": pid, "title": title}
-			if img.Valid && img.String != "" {
-				m["imageUrl"] = img.String
-			}
-			matches = append(matches, m)
-		}
-		if err := mrows.Err(); err != nil {
-			mrows.Close()
-			writeInternalError(w, err)
-			return
-		}
-		mrows.Close()
-		unmetInStore = append(unmetInStore, map[string]interface{}{
-			"term": t.term, "searches": t.n, "zeroResultSearches": t.z, "catalogMatches": matches,
-		})
-		if catalogZero[t.term] {
+		terms = append(terms, t.term)
+	}
+	matchesByTerm, err := catalog.CentralCatalogSearchMatches(ctx, terms)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	for _, t := range unmet {
+		matches := matchesByTerm[t.term]
+		if len(matches) == 0 && t.verifiedCentralMiss {
 			unmetCatalog = append(unmetCatalog, map[string]interface{}{
 				"term": t.term, "searches": t.n, "zeroResultSearches": t.z,
 			})
+			continue
 		}
+		unmetInStore = append(unmetInStore, map[string]interface{}{
+			"term": t.term, "searches": t.n, "zeroResultSearches": t.z, "catalogMatches": matches,
+		})
 	}
 
 	t01WriteJSON(w, http.StatusOK, map[string]interface{}{

@@ -117,6 +117,7 @@ export const SellerCatalogTab: React.FC = () => {
   const [pricingProduct, setPricingProduct] = useState<any | null>(null);
   const [showNicheHelp, setShowNicheHelp] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
 
   // Fix80: the context catalogue is the UNSCOPED central list, which by
   // design carries no baseCostB (live parity) — resolvePricing on it
@@ -204,10 +205,6 @@ export const SellerCatalogTab: React.FC = () => {
     pendingNicheIds.some((id) => !savedNicheIds.includes(id));
   const hasChanges = productDiffCount > 0 || nicheDiff;
 
-  useEffect(() => {
-    if (saving && !hasChanges) setSaving(false);
-  }, [saving, hasChanges]);
-
   const toggleNiche = (nicheId: string) => {
     let next: string[];
     if (pendingNicheIds.includes(nicheId)) {
@@ -225,22 +222,30 @@ export const SellerCatalogTab: React.FC = () => {
     );
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     setSaving(true);
-    if (nicheDiff) updateStoreSelectedNiches(pendingNicheIds);
-    if (productDiffCount > 0) {
-      void updateStoreActiveProducts(pendingProductIds).then((result) => {
+    setSaveFailed(false);
+    try {
+      if (nicheDiff) updateStoreSelectedNiches(pendingNicheIds);
+      if (productDiffCount > 0) {
+        const result = await updateStoreActiveProducts(pendingProductIds);
         if (shouldRefetchCatalogAfterConfirm(productDiffCount, result)) {
           setWalkRetry((n) => n + 1);
+        } else {
+          setSaveFailed(true);
         }
-      });
+      }
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleCancel = () => {
     setPendingProductIds(savedProductIds);
     setPendingNicheIds(savedNicheIds);
-    setSaving(false);
+    setSaveFailed(false);
   };
 
   // 1. Primary Niche Products strictly aligned with official niches
@@ -654,6 +659,7 @@ export const SellerCatalogTab: React.FC = () => {
               </span>
               <span className="text-[10px] text-amber-700">(هنوز در فروشگاهت اعمال نشده)</span>
             </div>
+            {saveFailed && <p role="alert" className="text-xs text-rose-700">ذخیره انتخاب کالاها تأیید نشد. دوباره تلاش کن.</p>}
             <div className="flex items-center gap-2">
               <button
                 type="button"

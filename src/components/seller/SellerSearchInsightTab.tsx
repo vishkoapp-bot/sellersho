@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { apiRequest } from '../../services/apiClient';
 import { Search, Plus, Check, RotateCcw } from 'lucide-react';
@@ -9,8 +9,7 @@ import { Search, Plus, Check, RotateCcw } from 'lucide-react';
 // the candidate's {searches, zeroResultSearches, terms[]} shape, so this tab
 // reads the live shape directly. Live has NO time ranges or filters here:
 // three fixed sections. Unmet-in-store rows offer a quick-add into the
-// showcase (activeProductIds, defaulting to the first 8 products when the
-// store has no explicit showcase yet).
+// showcase using only the store's persisted assortment.
 interface InsightTerm {
   term: string;
   searches: number;
@@ -34,10 +33,12 @@ interface LiveSearchInsight {
 }
 
 export const SellerSearchInsightTab: React.FC = () => {
-  const { currentStore, products, updateStoreActiveProducts, toPersianDigits } = useStore();
+  const { currentStore, updateStoreActiveProducts, toPersianDigits } = useStore();
   const [data, setData] = useState<LiveSearchInsight | null>(null);
   const [failed, setFailed] = useState(false);
-  const [added, setAdded] = useState<Set<string>>(new Set());
+  const pendingAdd = useRef(false);
+  const [addingId, setAddingId] = useState<string | null>(null);
+  const [addFailed, setAddFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,13 +50,21 @@ export const SellerSearchInsightTab: React.FC = () => {
     return () => { cancelled = true; };
   }, [currentStore?.id]);
 
-  const showcaseIds = (currentStore?.activeProductIds?.length ? currentStore.activeProductIds : products.slice(0, 8).map((p) => p.id));
-  const isInShowcase = (productId: string) => showcaseIds.includes(productId) || added.has(productId);
-  const handleQuickAdd = (productId: string) => {
-    if (isInShowcase(productId)) return;
-    const next = Array.from(new Set([...showcaseIds, ...Array.from(added), productId]));
-    updateStoreActiveProducts(next);
-    setAdded((prev) => new Set(prev).add(productId));
+  const showcaseIds = currentStore?.activeProductIds ?? [];
+  const handleQuickAdd = async (productId: string) => {
+    if (pendingAdd.current || showcaseIds.includes(productId)) return;
+    pendingAdd.current = true;
+    setAddingId(productId);
+    setAddFailed(false);
+    try {
+      const result = await updateStoreActiveProducts([...showcaseIds, productId]);
+      if (!result.ok) setAddFailed(true);
+    } catch {
+      setAddFailed(true);
+    } finally {
+      pendingAdd.current = false;
+      setAddingId(null);
+    }
   };
 
   if (failed) {
@@ -128,6 +137,7 @@ export const SellerSearchInsightTab: React.FC = () => {
       <section className="bg-white rounded-2xl border border-slate-100 p-4">
         <h3 className="text-xs font-extrabold text-slate-800 mb-1">تقاضایی که فروشگاهت جواب نداده</h3>
         <p className="text-[10px] text-slate-400 mb-3">مشتری‌ها این‌ها را در فروشگاهت جستجو کرده‌اند و چیزی پیدا نکرده‌اند. اگر محصولی در کاتالوگ هست، می‌توانی همان‌جا به فروشگاهت اضافه‌اش کنی.</p>
+        {addFailed && <p role="alert" className="mb-3 text-[11px] text-rose-700">افزودن کالا تأیید نشد. دوباره تلاش کن.</p>}
         {unmetInStore.length === 0 ? (
           <p className="text-[11px] text-slate-400 text-center py-4">تقاضای برآورده‌نشده‌ای ثبت نشده است.</p>
         ) : (
@@ -139,11 +149,11 @@ export const SellerSearchInsightTab: React.FC = () => {
                   <span className="text-[10px] text-slate-400 shrink-0">{toPersianDigits(term.searches)} جستجو • {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>
                 </div>
                 {(term.catalogMatches ?? []).length === 0 ? (
-                  <p className="text-[10px] text-slate-400">در کل کاتالوگ هم محصولی برای این عبارت نیست.</p>
+                  <p className="text-[10px] text-slate-400">برای افزودن، پیشنهادی پیدا نشد.</p>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {(term.catalogMatches ?? []).map((match) => {
-                      const inStore = isInShowcase(match.productId);
+                      const inStore = showcaseIds.includes(match.productId);
                       return (
                         <div key={match.productId} className="flex items-center gap-2 rounded-xl bg-slate-50 p-2">
                           {match.imageUrl ? (
@@ -156,7 +166,7 @@ export const SellerSearchInsightTab: React.FC = () => {
                           <span className="flex-1 min-w-0 text-[11px] font-bold text-slate-700 truncate">{match.title}</span>
                           <button
                             type="button"
-                            disabled={inStore}
+                            disabled={inStore || addingId !== null}
                             onClick={() => handleQuickAdd(match.productId)}
                             className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[10px] font-bold ${inStore ? 'bg-emerald-50 text-emerald-600 cursor-default' : 'bg-brand-deep text-white hover:bg-brand'}`}
                           >
@@ -168,7 +178,7 @@ export const SellerSearchInsightTab: React.FC = () => {
                             ) : (
                               <>
                                 <Plus className="w-3 h-3" strokeWidth={1.5} />
-                                افزودن به فروشگاه
+                                {addingId === match.productId ? "در حال افزودن…" : "افزودن به فروشگاه"}
                               </>
                             )}
                           </button>

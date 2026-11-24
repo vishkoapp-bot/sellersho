@@ -851,8 +851,7 @@ func (r *CatalogRepository) GetProductStoreCount(ctx context.Context, productID 
 }
 
 // EnsureSearchLogTable creates search_queries if missing and adds the
-// catalog_result_count column if missing (D43; mirrors migration
-// 202610310009, whose comment documents this runtime ADD COLUMN).
+// catalog count and provenance columns if missing (D43 and DRP-2).
 func (r *CatalogRepository) EnsureSearchLogTable(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS search_queries (
@@ -865,14 +864,16 @@ func (r *CatalogRepository) EnsureSearchLogTable(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, `ALTER TABLE search_queries ADD COLUMN IF NOT EXISTS catalog_result_count INTEGER`)
+	_, err := r.db.ExecContext(ctx, `ALTER TABLE search_queries
+		ADD COLUMN IF NOT EXISTS catalog_result_count INTEGER,
+		ADD COLUMN IF NOT EXISTS catalog_result_count_verified BOOLEAN NOT NULL DEFAULT FALSE`)
 	return err
 }
 
 // LogSearchEvent records one search (D43, live binary symbol
 // logSearchEvent). An empty normalised term is not logged. Callers
 // treat a logging error as best-effort: it must never fail a listing.
-func (r *CatalogRepository) LogSearchEvent(ctx context.Context, termNormalized, storeSlug string, resultCount, catalogResultCount int) error {
+func (r *CatalogRepository) LogSearchEvent(ctx context.Context, termNormalized, storeSlug string, resultCount int, catalogResultCount *int) error {
 	if termNormalized == "" {
 		return nil
 	}
@@ -880,9 +881,9 @@ func (r *CatalogRepository) LogSearchEvent(ctx context.Context, termNormalized, 
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO search_queries (term_normalized, store_slug, result_count, catalog_result_count)
-		VALUES ($1, $2, $3, $4)
-	`, termNormalized, storeSlug, resultCount, catalogResultCount)
+		INSERT INTO search_queries (term_normalized, store_slug, result_count, catalog_result_count, catalog_result_count_verified)
+		VALUES ($1, $2, $3, $4, $5)
+	`, termNormalized, storeSlug, resultCount, catalogResultCount, catalogResultCount != nil)
 	return err
 }
 

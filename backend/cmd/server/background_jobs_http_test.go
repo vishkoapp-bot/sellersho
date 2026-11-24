@@ -152,16 +152,40 @@ func TestOperationsHealthIncludesMissingAndReviewBlockers(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Health) != 6 {
-		t.Fatalf("missing jobs hidden: %+v", payload.Health)
+	// Keep this list independent of the worker and repository registries
+	// so an accidentally unmonitored job fails at the HTTP boundary.
+	wantJobs := [...]string{
+		"unpaid-order-expiry",
+		"ad-cleanup",
+		"qc-response-deadline",
+		"supplier-sla",
+		"delivery-lock-releaser",
+		"monthly-settlement",
+		"refund-reconciliation",
 	}
-	h := payload.Health[0]
+	if len(payload.Health) != len(wantJobs) {
+		t.Fatalf("job health returned %d entries, want %d: %+v", len(payload.Health), len(wantJobs), payload.Health)
+	}
+	healthByJob := make(map[string]repository.JobHealth, len(wantJobs))
+	for _, h := range payload.Health {
+		if _, exists := healthByJob[h.Job]; exists {
+			t.Fatalf("duplicate job health for %q", h.Job)
+		}
+		healthByJob[h.Job] = h
+	}
+	for _, job := range wantJobs {
+		if _, exists := healthByJob[job]; !exists {
+			t.Errorf("missing job health for %q: %+v", job, payload.Health)
+		}
+	}
+	h := healthByJob["unpaid-order-expiry"]
 	if !h.Missing || !h.Stale || h.Review < 1 {
 		t.Fatalf("false healthy status: %+v", h)
 	}
-	for _, h := range payload.Health {
-		if h.Job == "monthly-settlement" && (!h.Disabled || h.Stale) {
-			t.Fatalf("disabled job alarmed: %+v", h)
-		}
+	if settlement := healthByJob["monthly-settlement"]; !settlement.Disabled || settlement.Stale {
+		t.Fatalf("disabled job alarmed: %+v", settlement)
+	}
+	if refund := healthByJob["refund-reconciliation"]; refund.Disabled {
+		t.Fatalf("refund reconciler is not monitored: %+v", refund)
 	}
 }

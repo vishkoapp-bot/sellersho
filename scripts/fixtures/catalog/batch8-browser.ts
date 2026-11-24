@@ -7,7 +7,7 @@ import puppeteer, { type Browser, type Page } from 'puppeteer';
 import tailwindcss from '@tailwindcss/vite';
 import { createServer, type ViteDevServer } from 'vite';
 
-export function batch8Browser() {
+export function batch8Browser({ inlineVazirmatn = false } = {}) {
   let browser: Browser;
   let server: ViteDevServer;
   let cacheDir: string;
@@ -41,6 +41,16 @@ export function batch8Browser() {
     const compiled = await server.transformRequest('/src/index.css?direct');
     if (!compiled) throw new Error('Missing compiled fixture stylesheet');
     styles = compiled.code + '\n' + await readFile('src/components/storefront/templates/fashion.css', 'utf8');
+    if (inlineVazirmatn) {
+      // Geometry tests need the app font; the hermetic browser aborts asset requests.
+      const sources = [...new Set([...styles.matchAll(/(?:[^"'()\s]*\/)?(Vazirmatn-[A-Za-z]+\.woff2)/g)].map(match => match[0]))];
+      if (!sources.length) throw new Error('Missing Vazirmatn asset references in compiled fixture styles');
+      for (const source of sources) {
+        const file = source.split('/').at(-1)!;
+        const font = await readFile(join('node_modules/vazirmatn/fonts/webfonts', file));
+        styles = styles.replaceAll(source, `data:font/woff2;base64,${font.toString('base64')}`);
+      }
+    }
     browser = await puppeteer.launch({
       executablePath: process.env.CHROME_PATH,
       pipe: true,

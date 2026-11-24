@@ -169,12 +169,24 @@ jobs:
             TestFIN003LegacyCompletedRefundProjectionsAreNotDoubleCounted
             TestFIN006MigrationPreservesUnknownHistoryWithoutInventingDebt
           )
-          excluded="$(IFS='|'; printf '%s' "${independent[*]}")"
+          # These reduced-schema fixtures DROP canonical storage tables CASCADE.
+          # Give the fixture writers their own DB; the receipt/custody checks
+          # still run with the ordinary repository suite against intact schema.
+          legacy_storage_fixture=(
+            TestStoragePositionQCWithoutWarehouseFailsClosed
+            TestStoragePositionShipOrderFIFOSplit
+            TestStoragePositionShipLegacyStockWithoutPositionsFailsClosed
+            TestStoragePositionHandoverReturnDecrement
+            TestINV06LegacyReturnWithoutOriginMetadataKeepsCustodyTransfer
+          )
+          excluded="$(IFS='|'; printf '%s' "${independent[*]}|${legacy_storage_fixture[*]}")"
+          legacy_pattern="$(IFS='|'; printf '%s' "${legacy_storage_fixture[*]}")"
           result=0
           run_isolated -skip "^($excluded)$" || result=1
           for test_name in "${independent[@]}"; do
             run_isolated -run "^$test_name$" || result=1
           done
+          run_isolated -run "^($legacy_pattern)$" || result=1
           exit "$result"
 
   go-race:

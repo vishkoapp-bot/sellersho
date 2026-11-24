@@ -312,7 +312,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-16 redis-tools
       - name: build a staged release from git archive
-        run: bash scripts/release/make_release.sh --payment-mode mock
+        # Build the production-shaped manifest; smoke overrides the isolated runtime to mock.
+        run: bash scripts/release/make_release.sh --payment-mode real --production
       - name: VITE negative control — ambient VITE_USE_MOCK must fail the build
         run: |
           if VITE_USE_MOCK=true bash scripts/release/make_release.sh --payment-mode mock --out-dir "$RUNNER_TEMP/vite-negative"; then
@@ -335,7 +336,9 @@ jobs:
       - name: --production negative control — mock-mode release must fail production validation (N7)
         run: |
           COMMIT="$(git rev-parse HEAD)"
-          if python3 scripts/release/validate_release.py --stage "releases/$COMMIT" --commit "$COMMIT" --production; then
+          MOCK_STAGE="$RUNNER_TEMP/mock-mode-release"
+          bash scripts/release/make_release.sh --payment-mode mock --out-dir "$MOCK_STAGE"
+          if python3 scripts/release/validate_release.py --stage "$MOCK_STAGE" --commit "$COMMIT" --production; then
             echo "NEGATIVE CONTROL FAILED: mock-mode release passed --production validation"
             exit 1
           fi

@@ -58,8 +58,9 @@ jobs:
         with:
           node-version: "22"
       - run: corepack enable
-      - run: corepack prepare pnpm@10 --activate
-      - run: pnpm install --ignore-scripts
+      - run: corepack prepare pnpm@10.34.2 --activate
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm exec puppeteer browsers install chrome
       - run: npm run build
       - run: npm test
 
@@ -220,8 +221,8 @@ jobs:
         with:
           node-version: "22"
       - run: corepack enable
-      - run: corepack prepare pnpm@10 --activate
-      - run: pnpm install --ignore-scripts
+      - run: corepack prepare pnpm@10.34.2 --activate
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - working-directory: backend
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -230,7 +231,8 @@ jobs:
 
   release:
     name: release build + validate + smoke (REL-01)
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 does not ship postgresql-client-16 in its default apt sources.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
@@ -265,7 +267,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-16 redis-tools
       - name: build a staged release from git archive
-        run: bash scripts/release/make_release.sh --payment-mode mock
+        # Validate a real-mode release artifact; smoke injects the mock provider
+        # into the disposable running process and never uses real credentials.
+        run: bash scripts/release/make_release.sh --payment-mode real --production
       - name: VITE negative control — ambient VITE_USE_MOCK must fail the build
         run: |
           if VITE_USE_MOCK=true bash scripts/release/make_release.sh --payment-mode mock --out-dir "$RUNNER_TEMP/vite-negative"; then
@@ -288,7 +292,9 @@ jobs:
       - name: --production negative control — mock-mode release must fail production validation (N7)
         run: |
           COMMIT="$(git rev-parse HEAD)"
-          if python3 scripts/release/validate_release.py --stage "releases/$COMMIT" --commit "$COMMIT" --production; then
+          MOCK_STAGE="$RUNNER_TEMP/mock-mode-release"
+          bash scripts/release/make_release.sh --payment-mode mock --out-dir "$MOCK_STAGE"
+          if python3 scripts/release/validate_release.py --stage "$MOCK_STAGE" --commit "$COMMIT" --production; then
             echo "NEGATIVE CONTROL FAILED: mock-mode release passed --production validation"
             exit 1
           fi

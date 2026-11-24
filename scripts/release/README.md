@@ -130,7 +130,7 @@ release:
 |---|---|---|
 | Go | **1.27** (local 1.27.2) | `go.mod` says `go 1.23`; BuildOnServer image `golang:1.23` |
 | Node | **24** (local 24.22.1) | CI uses Node 22; BuildOnServer image `node:24-alpine` |
-| pnpm | 10 | `pnpm-lock.yaml` was stale (predated the puppeteer devDependency); see below |
+| pnpm (frontend CI) | 10.34.2 | The canonical release frontend uses `npm ci`; see below. |
 
 The BuildOnServer image tags (`node:24-alpine`, `golang:1.23`) are
 recorded as **non-canonical**: that path is out of the D2 canonical
@@ -142,22 +142,12 @@ backend sha256 identical).
 
 Lockfile: the release frontend build uses **`npm ci` +
 `package-lock.json`** — the same lockfile `deploy.ps1
--BuildOnServer` already uses. `pnpm-lock.yaml` stays stale in
-REL-01, deliberately: regeneration was attempted (2026-11-20) and
-pnpm re-resolved **every** caret range, not just the missing
-puppeteer entry (react 19.3.0→19.3.1, vite 6.4.3→6.4.6, babel
-bumps, ~1,600 changed lines) — committing that inside REL-01
-would silently bump the whole frontend dependency tree. The fix
-is a separate, reviewed lockfile-regeneration step (diff reviewed
-as its own change), after which CI flips to
-`pnpm install --frozen-lockfile`. Note for that step: `pnpm
-install --lockfile-only` fails in-tree on this VM with
-`EPERM chown` (the sandbox blocks chown); generating in a scratch
-dir from `package.json` alone works. Until the regeneration
-lands, CI keeps the documented non-frozen install. Two lockfiles
-still coexist (npm + pnpm); the release build uses exactly one
-(npm), and CI uses the other (pnpm) — the overlap is recorded
-here rather than hidden.
+-BuildOnServer` already uses. Frontend CI uses pinned pnpm with
+`pnpm install --frozen-lockfile --ignore-scripts`, then explicitly
+installs the Chrome build required by the locked Puppeteer. The
+Puppeteer subtree was added to the pnpm lockfile without changing
+previously resolved packages. Both lockfiles still exist; do not
+assume changing one also updates the other.
 
 Image digests: the manifest records compose image **tags** with
 digest `"n/a: native build"` (D3 — recorded honestly, never

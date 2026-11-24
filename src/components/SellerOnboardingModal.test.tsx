@@ -30,16 +30,31 @@ for (const failure of [false, true]) {
       }
       assert.equal(new URL(page.url()).pathname, '/');
       assert.equal(await page.evaluate(() => (window as any).batch8Fixture.state().view), 'dropshipper_landing');
-      await fillInput(page, 'input[placeholder^="مثلاً"]', 'فروشگاه نمونه');
-      await fillInput(page, 'input[placeholder="my-store"]', 'batch-eight-store');
-      await fillInput(page, 'input[placeholder="نام و نام خانوادگی"]', 'مدیر نمونه');
-      await clickText(page, 'مرحله بعدی');
-      await clickText(page, 'مرحله بعدی');
+      await page.locator('input[placeholder="مثلاً: آریا استور، تک‌شاپ..."]').fill('فروشگاه نمونه');
+      await page.locator('input[placeholder="my-store"]').fill('batch-eight-store');
+      await page.locator('input[placeholder="نام و نام خانوادگی"]').fill('مدیر نمونه');
+      const next = () => page.locator(() => [...document.querySelectorAll('button')]
+        .find(button => button.innerText.trim() === 'مرحله بعدی')!).click();
+      await next();
+      // Steps 1 and 2 use identical button text. Wait for the new render
+      // before clicking again, so we cannot submit step 1 twice.
+      try {
+        await page.waitForFunction(() => document.body.innerText.includes('دسته‌بندی‌های فعال در فروشگاه شما'), { timeout: 5000 });
+      } catch {
+        const result = await page.evaluate(() => ({
+          notices: document.querySelector('.fixed.top-4')?.textContent,
+          modal: [...document.querySelectorAll('h3')].find(el => el.textContent?.includes('افتتاح فروشگاه'))?.parentElement?.parentElement?.parentElement?.parentElement?.innerText,
+          fields: [...document.querySelectorAll('input')].map(input => [input.placeholder, input.value]),
+        }));
+        assert.fail(JSON.stringify(result));
+      }
+      await next();
       await waitText(page, 'SIG-DRP-');
       const signature = () => page.$eval('body', node => node.innerText.match(/SIG-DRP-\d{4}/)?.[0]);
       const code = await signature();
       assert.ok(code);
-      await page.click('input[type="checkbox"]');
+      await page.locator('input[type="checkbox"]').click();
+      await page.waitForFunction(() => document.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked);
       assert.equal(await signature(), code);
       await page.evaluate(value => { (window as any).batch8Fixture.rejectRegistration = value; }, failure);
       await clickText(page, 'امضای دیجیتال و افتتاح فروشگاه');

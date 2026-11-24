@@ -85,10 +85,19 @@ func (r *SupplierRepository) createSupplierReturnTx(ctx context.Context, supplie
 		return nil, err
 	}
 	type allocation struct {
-		id, location, kind string
-		quantity           int
+		id, location, kind, physicalVariant string
+		quantity                            int
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND (variant_id=$3 OR ($4='legacy' AND variant_id IS NULL)) AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY id COLLATE "C" FOR UPDATE`, productID, supplierID, variantID, mode)
+	// A NULL physical lot is eligible only for the uniquely identified legacy default.
+	allowLegacySource := false
+	if mode == "legacy" {
+		resolved, e := ResolveLegacyPurchaseVariant(ctx, tx, productID, "")
+		if e != nil {
+			return nil, e
+		}
+		allowLegacySource = resolved == variantID
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,location_type,quantity,COALESCE(variant_id::text,'') FROM inventory_balances WHERE product_id=$1 AND supplier_id=$2 AND (variant_id=$3 OR ($4 AND variant_id IS NULL)) AND owner_type='supplier' AND status='sellable' AND quantity>0 ORDER BY id COLLATE "C" FOR UPDATE`, productID, supplierID, variantID, allowLegacySource)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +105,7 @@ func (r *SupplierRepository) createSupplierReturnTx(ctx context.Context, supplie
 	eligible := 0
 	for rows.Next() {
 		var a allocation
-		if err = rows.Scan(&a.id, &a.location, &a.kind, &a.quantity); err != nil {
+		if err = rows.Scan(&a.id, &a.location, &a.kind, &a.quantity, &a.physicalVariant); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -137,10 +146,10 @@ func (r *SupplierRepository) createSupplierReturnTx(ctx context.Context, supplie
 			first = a.id
 		}
 		key := fmt.Sprintf("%s:%s:%d", idempotencyKey, variantID, i)
-		if err = moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variantID, a.id, take, "sellable", "return_requested", a.location, a.kind, a.location, "supplier_return", id, key+":move", actorUserID); err != nil {
+		if err = moveSupplierReturnLotTx(ctx, tx, productID, supplierID, variantID, a.id, take, "sellable", "return_requested", a.location, a.kind, a.location, id, key+":move", actorUserID, a.physicalVariant == ""); err != nil {
 			return nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_reservations(id,product_id,supplier_id,variant_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,'supplier_return',$7,'active',$8)`, "RES-"+uuid.NewString(), productID, supplierID, variantID, a.location, take, id, key+":reservation"); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_reservations(id,product_id,supplier_id,variant_id,location_key,quantity,reference_type,reference_id,status,idempotency_key) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,'supplier_return',$7,'active',$8)`, "RES-"+uuid.NewString(), productID, supplierID, a.physicalVariant, a.location, take, id, key+":reservation"); err != nil {
 			return nil, err
 		}
 		remaining -= take
@@ -217,6 +226,63 @@ func supplierReturnVariantTx(ctx context.Context, tx *sql.Tx, returnID string) (
 	return variant, err
 }
 
+// Preserve NULL physical identity while reserving or releasing a legacy lot.
+// Other movements (including the request's dedicated transit bucket) keep the
+// existing SKU identity. No previously recorded reservation is reclassified.
+func moveSupplierReturnLotTx(ctx context.Context, tx *sql.Tx, product, supplier, variant, sourceID string, qty int, from, to, location, kind, destination, returnID, key, actor string, keepLegacy bool) error {
+	if !keepLegacy {
+		return moveSKUInventoryFromLotTx(ctx, tx, product, supplier, variant, sourceID, qty, from, to, location, kind, destination, "supplier_return", returnID, key, actor)
+	}
+	if destination != location {
+		return fmt.Errorf("refusing to relocate unallocated return custody")
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,'supplier_return',$9,$10,NULLIF($11,''),'{}') ON CONFLICT(idempotency_key) DO NOTHING`, "IM-"+uuid.NewString(), product, supplier, variant, qty, from, to, location, returnID, key, actor)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil || n == 0 {
+		return e
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity-$2,updated_at=NOW()
+		WHERE id=$1 AND quantity >=$2 AND product_id=$3 AND supplier_id=$4 AND variant_id IS NULL
+		AND owner_type='supplier' AND status=$5 AND location_key=$6 AND location_type=$7`, sourceID, qty, product, supplier, from, location, kind)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil || n != 1 {
+		if e != nil {
+			return e
+		}
+		return ErrInsufficientInventory
+	}
+	var held string
+	// Only cancellation back into an existing, authoritative same-bin bucket
+	// may tolerate missing legacy metadata. Never overwrite the destination,
+	// merge contradictory origins, or upgrade an unreconciled quantity.
+	if err = tx.QueryRowContext(ctx, `INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,reconciled,bin_code,warehouse_id,supplier_warehouse_id)
+		SELECT $1,product_id,supplier_id,owner_type,location_type,location_key,$2,$3,reconciled,bin_code,warehouse_id,supplier_warehouse_id FROM inventory_balances WHERE id=$4
+		ON CONFLICT(product_id,owner_type,location_type,location_key,status) WHERE variant_id IS NULL
+		DO UPDATE SET quantity=inventory_balances.quantity+EXCLUDED.quantity,updated_at=NOW()
+		WHERE inventory_balances.supplier_id IS NOT DISTINCT FROM EXCLUDED.supplier_id
+		AND inventory_balances.reconciled = EXCLUDED.reconciled
+		AND (
+			(inventory_balances.bin_code,inventory_balances.warehouse_id,inventory_balances.supplier_warehouse_id)
+			IS NOT DISTINCT FROM (EXCLUDED.bin_code,EXCLUDED.warehouse_id,EXCLUDED.supplier_warehouse_id)
+			OR ($2='sellable' AND EXCLUDED.location_type='bin'
+				AND EXCLUDED.supplier_warehouse_id IS NULL AND inventory_balances.supplier_warehouse_id IS NULL
+				AND (EXCLUDED.bin_code IS NULL OR EXCLUDED.bin_code=inventory_balances.bin_code)
+				AND (EXCLUDED.warehouse_id IS NULL OR EXCLUDED.warehouse_id=inventory_balances.warehouse_id)
+				AND EXISTS (SELECT 1 FROM warehouse_bins b WHERE b.bin_code=inventory_balances.bin_code
+					AND b.warehouse_id=inventory_balances.warehouse_id
+					AND EXCLUDED.location_key IN (b.bin_code,'bin:'||b.bin_code)))
+		)
+		RETURNING id`, "INV-"+uuid.NewString(), to, qty, sourceID).Scan(&held); err != nil {
+		return err
+	}
+	_, err = moveLotUnitsTx(ctx, tx, product, variant, sourceID, held, unitStatusForLot(from, location), unitStatusForLot(to, destination), qty, "supplier_return", "supplier_return", returnID, actor)
+	return err
+}
+
 func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, returnID, productID, supplierID, actor string, consume bool) (bool, error) {
 	variant, err := supplierReturnVariantTx(ctx, tx, returnID)
 	if err != nil {
@@ -226,12 +292,12 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 		return false, ErrSupplierReturnVariantUnresolved
 	}
 	type reservation struct {
-		id, location string
-		quantity     int
+		id, location, physicalVariant string
+		quantity                      int
 	}
 	var reservations []reservation
 	// Physical balances precede inventory_reservations in the shared CORE order.
-	balanceRows, err := tx.QueryContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 ORDER BY id COLLATE "C" FOR UPDATE`, productID, variant)
+	balanceRows, err := tx.QueryContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$3 AND (variant_id=$2 OR variant_id IS NULL) ORDER BY id COLLATE "C" FOR UPDATE`, productID, variant, supplierID)
 	if err != nil {
 		return true, err
 	}
@@ -242,13 +308,13 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 	if err != nil {
 		return true, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,quantity FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND (variant_id=$2 OR variant_id IS NULL) AND status='active' ORDER BY id FOR UPDATE`, returnID, variant)
+	rows, err := tx.QueryContext(ctx, `SELECT id,location_key,quantity,COALESCE(variant_id::text,'') FROM inventory_reservations WHERE reference_type='supplier_return' AND reference_id=$1 AND product_id=$3 AND supplier_id=$4 AND (variant_id=$2 OR variant_id IS NULL) AND status='active' ORDER BY id FOR UPDATE`, returnID, variant, productID, supplierID)
 	if err != nil {
 		return true, err
 	}
 	for rows.Next() {
 		var a reservation
-		if err = rows.Scan(&a.id, &a.location, &a.quantity); err != nil {
+		if err = rows.Scan(&a.id, &a.location, &a.quantity, &a.physicalVariant); err != nil {
 			rows.Close()
 			return true, err
 		}
@@ -265,7 +331,10 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 	total := 0
 	for _, a := range reservations {
 		var kind, balanceID string
-		if err = tx.QueryRowContext(ctx, `SELECT location_type,id FROM inventory_balances WHERE product_id=$1 AND supplier_id=$4 AND (variant_id=$2 OR variant_id IS NULL) AND location_key=$3 AND status='return_requested' AND quantity >=$5 ORDER BY (variant_id IS NULL),id LIMIT 1 FOR UPDATE`, productID, variant, a.location, supplierID, a.quantity).Scan(&kind, &balanceID); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT b.location_type,b.id FROM inventory_balances b
+			WHERE b.product_id=$1 AND b.supplier_id=$4 AND b.variant_id IS NOT DISTINCT FROM NULLIF($2,'')::uuid AND b.location_key=$3 AND b.owner_type='supplier' AND b.status='return_requested' AND b.quantity >=$5
+			AND NOT EXISTS (SELECT 1 FROM inventory_balances x WHERE x.product_id=b.product_id AND x.supplier_id=b.supplier_id AND x.variant_id IS NOT DISTINCT FROM b.variant_id AND x.location_key=b.location_key AND x.owner_type=b.owner_type AND x.status=b.status AND x.id<>b.id)
+			FOR UPDATE OF b`, productID, a.physicalVariant, a.location, supplierID, a.quantity).Scan(&kind, &balanceID); err != nil {
 			return true, err
 		}
 		status, destination, next, action := "sellable", a.location, "released", "release"
@@ -276,7 +345,7 @@ func moveSupplierReturnReservationsSKUTx(ctx context.Context, tx *sql.Tx, return
 			next = "consumed"
 			action = "handover"
 		}
-		if err = moveSKUInventoryFromLotTx(ctx, tx, productID, supplierID, variant, balanceID, a.quantity, "return_requested", status, a.location, kind, destination, "supplier_return", returnID, returnID+":"+action+":"+a.id, actor); err != nil {
+		if err = moveSupplierReturnLotTx(ctx, tx, productID, supplierID, variant, balanceID, a.quantity, "return_requested", status, a.location, kind, destination, returnID, returnID+":"+action+":"+a.id, actor, !consume && a.physicalVariant == ""); err != nil {
 			return true, err
 		}
 		// A reservation identifies its original physical lot. Keep a historical

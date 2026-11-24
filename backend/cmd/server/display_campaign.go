@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
@@ -61,4 +62,19 @@ func pickDisplayCampaign(campaigns []domain.SellerDiscountCampaign, p domain.Pro
 // displayed price IS the charged price.
 func applyDisplayCampaign(res pricing.ReferenceResolution, c *domain.SellerDiscountCampaign) pricing.DiscountResult {
 	return catalogpricing.ApplyCampaign(res, c)
+}
+
+// activeCatalogCampaignsAt uses the paged catalog's immutable store state
+// and price clock instead of querying campaigns after the page transaction.
+func activeCatalogCampaignsAt(inputs *repository.CatalogScopeInputs, asOf time.Time) []domain.SellerDiscountCampaign {
+	if inputs.Store.Slug == "central" || inputs.Store.OwnerType != "dropshipper" {
+		return nil
+	}
+	var active []domain.SellerDiscountCampaign
+	for _, c := range inputs.Campaigns {
+		if c.IsActive && !c.StartsAt.After(asOf) && c.EndsAt.After(asOf) {
+			active = append(active, c)
+		}
+	}
+	return active
 }

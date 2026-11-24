@@ -244,10 +244,14 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 // IDs with no row are silently absent (concurrent delete between
 // selection and load).
 func (r *CatalogRepository) GetProductsByIDs(ctx context.Context, ids []string) ([]domain.Product, error) {
+	return r.getProductsByIDsQ(ctx, r.db, ids)
+}
+
+func (r *CatalogRepository) getProductsByIDsQ(ctx context.Context, q catalogQuerier, ids []string) ([]domain.Product, error) {
 	if len(ids) == 0 {
 		return []domain.Product{}, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		SELECT p.id, p.title, p.slug, COALESCE(p.category_slug, ''), p.supplier_id, p.original_price,
 		       p.supplier_base_cost, p.platform_margin, p.is_original, p.stock,
 		       COALESCE(p.image_url, ''), COALESCE(p.description, ''), p.warehouse_name,
@@ -282,7 +286,7 @@ func (r *CatalogRepository) GetProductsByIDs(ctx context.Context, ids []string) 
 		products = append(products, p)
 	}
 
-	return products, nil
+	return products, rows.Err()
 }
 
 // GetProductByID retrieves a single product by ID or Slug with associated niche IDs
@@ -508,13 +512,17 @@ func parseProductSpecs(raw []byte) map[string]interface{} {
 // ordering is what DefaultVariantForResponse relies on (TODO U32 for
 // the live fallback when no default exists).
 func (r *CatalogRepository) GetVariantsByProductIDs(ctx context.Context, productIDs []string) (map[string][]domain.ProductVariant, error) {
+	return r.getVariantsByProductIDsQ(ctx, r.db, productIDs)
+}
+
+func (r *CatalogRepository) getVariantsByProductIDsQ(ctx context.Context, q catalogQuerier, productIDs []string) (map[string][]domain.ProductVariant, error) {
 	out := map[string][]domain.ProductVariant{}
 	if len(productIDs) == 0 {
 		return out, nil
 	}
 	// P1(c)/P2(b): sale + class columns ride with the variant row.
 	// A loader that omits them silently drops sales.
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		SELECT v.id, v.product_id, v.spnc, v.spnc_number, v.variant_name,
 		       v.attributes, v.is_default, v.stock, v.supplier_base_cost,
 		       COALESCE(to_jsonb(v)->'selection','{}'::jsonb), COALESCE(to_jsonb(v)->>'inventory_mode','legacy'), COALESCE((to_jsonb(v)->>'is_active')::boolean,TRUE), COALESCE(to_jsonb(v)->>'combination_key',''),
@@ -630,14 +638,18 @@ func (r *CatalogRepository) GetProductVariants(ctx context.Context, productID st
 // unfiltered loader is used — the central store is never filtered.
 // Every variant load on a store view must go through this path.
 func (r *CatalogRepository) GetVariantsByProductIDsForStore(ctx context.Context, productIDs []string, storeID string) (map[string][]domain.ProductVariant, error) {
+	return r.getVariantsByProductIDsForStoreQ(ctx, r.db, productIDs, storeID)
+}
+
+func (r *CatalogRepository) getVariantsByProductIDsForStoreQ(ctx context.Context, q catalogQuerier, productIDs []string, storeID string) (map[string][]domain.ProductVariant, error) {
 	if storeID == "" || storeID == "central" {
-		return r.GetVariantsByProductIDs(ctx, productIDs)
+		return r.getVariantsByProductIDsQ(ctx, q, productIDs)
 	}
 	out := map[string][]domain.ProductVariant{}
 	if len(productIDs) == 0 {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		SELECT v.id, v.product_id, v.spnc, v.spnc_number, v.variant_name,
 		       v.attributes, v.is_default, v.stock, v.supplier_base_cost,
 		       COALESCE(to_jsonb(v)->'selection','{}'::jsonb), COALESCE(to_jsonb(v)->>'inventory_mode','legacy'), COALESCE((to_jsonb(v)->>'is_active')::boolean,TRUE), COALESCE(to_jsonb(v)->>'combination_key',''),
@@ -755,11 +767,15 @@ func (r *CatalogRepository) GetProductVariantsForStore(ctx context.Context, prod
 // Absence = fall back to the product-level default. One batched
 // query per list/detail request.
 func (r *CatalogRepository) GetStoreVariantDefaults(ctx context.Context, storeID string, productIDs []string) (map[string]string, error) {
+	return r.getStoreVariantDefaultsQ(ctx, r.db, storeID, productIDs)
+}
+
+func (r *CatalogRepository) getStoreVariantDefaultsQ(ctx context.Context, q catalogQuerier, storeID string, productIDs []string) (map[string]string, error) {
 	out := map[string]string{}
 	if storeID == "" || storeID == "central" || len(productIDs) == 0 {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT product_id, variant_id FROM store_variant_defaults WHERE store_id = $1 AND product_id = ANY($2)`, storeID, pq.Array(productIDs))
+	rows, err := q.QueryContext(ctx, `SELECT product_id, variant_id FROM store_variant_defaults WHERE store_id = $1 AND product_id = ANY($2)`, storeID, pq.Array(productIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -1374,4 +1390,22 @@ func (r *CatalogRepository) GetUserDisplayName(ctx context.Context, userID strin
 		return "", err
 	}
 	return name.String, nil
+}
+
+// LoadCatalogPageRowsTx hydrates public catalog data in the same snapshot as
+// price refresh and page selection. Keep stock and visibility reads atomic.
+func (r *CatalogRepository) LoadCatalogPageRowsTx(ctx context.Context, tx *sql.Tx, ids []string, storeID string) ([]domain.Product, map[string][]domain.ProductVariant, map[string]string, error) {
+	products, err := r.getProductsByIDsQ(ctx, tx, ids)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	variants, err := r.getVariantsByProductIDsForStoreQ(ctx, tx, ids, storeID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defaults, err := r.getStoreVariantDefaultsQ(ctx, tx, storeID, ids)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return products, variants, defaults, nil
 }

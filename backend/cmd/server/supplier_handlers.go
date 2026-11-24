@@ -694,7 +694,13 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	json.NewEncoder(w).Encode(result)
+	// Keep the flat SPNCX result and expose the documented product-level
+	// projection on this supplier endpoint only. For tracked SKUs `stock`
+	// is the SKU projection; both values come from the committed adjustment.
+	json.NewEncoder(w).Encode(struct {
+		repository.StockAdjustmentResult
+		ProductStock int `json:"productStock"`
+	}{StockAdjustmentResult: result, ProductStock: result.ProductStock})
 }
 
 // POST /api/v1/supplier/products/origin/bulk (G4, Batch 4b).

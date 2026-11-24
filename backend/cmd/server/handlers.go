@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -411,33 +410,7 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if v.TaxClass != nil {
 			taxClass = *v.TaxClass
 		}
-		name := v.Name
-		// A single legacy variant is indistinguishable from a simple product's variant.
-		if (productType == "variable" || totalVariants > 1) && isReservedDefaultVariantName(name) {
-			keys := make([]string, 0, len(attrs))
-			for key := range attrs {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			values := make([]string, 0, len(keys))
-			for _, key := range keys {
-				value := attrs[key]
-				if value == nil {
-					continue
-				}
-				label, ok := value.(string)
-				if !ok {
-					label = fmt.Sprintf("%v", value)
-				}
-				if label != "" {
-					values = append(values, label)
-				}
-			}
-			name = p.Title
-			if len(values) > 0 {
-				name = strings.Join(values, " / ")
-			}
-		}
+		name := catalogpricing.DisplayVariantName(p, v, totalVariants)
 		vresp = append(vresp, ProductVariantResponse{
 			Selection: selection, InventoryMode: mode, IsActive: active, CombinationKey: v.CombinationKey,
 			ID:          v.ID,
@@ -555,12 +528,16 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 // This function never touches pricing internals: it only calls the
 // resolver Team 02 supplies.
 func priceVariantsForResponse(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride, campaigns []domain.SellerDiscountCampaign) map[string]VariantPriceResponse {
+	return priceVariantsForResponseAt(p, variants, store, settings, locks, overrides, campaigns, time.Now())
+}
+
+func priceVariantsForResponseAt(p domain.Product, variants []domain.ProductVariant, store domain.Store, settings *pricing.PlatformPricingSettings, locks []pricing.MarginLock, overrides map[string]pricing.StoreVariantOverride, campaigns []domain.SellerDiscountCampaign, asOf time.Time) map[string]VariantPriceResponse {
 	// Legacy callers explicitly keep their established nil-settings default.
 	// Index builders must supply validated settings and one source asOf directly.
 	prices, err := catalogpricing.ResolveVariantsAt(catalogpricing.VariantInput{
 		Product: p, Variants: variants, Store: store, Settings: pricing.OrDefault(settings),
 		Locks: locks, Overrides: overrides, ActiveCampaigns: campaigns,
-		Widget: loadDealsWidgetConfig(&store), AsOf: time.Now(),
+		Widget: loadDealsWidgetConfig(&store), AsOf: asOf,
 	})
 	if err != nil {
 		return map[string]VariantPriceResponse{}
@@ -825,6 +802,14 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// retryCatalogTxOnSerialization above.
 	var page repository.CatalogPricedPage
 	var inputs *repository.CatalogScopeInputs
+	var asOf time.Time
+	var productsByID []domain.Product
+	var variantsByProduct map[string][]domain.ProductVariant
+	var defaultsByProduct map[string]string
+	storeIDForVariants := ""
+	if store != nil && store.Slug != "central" {
+		storeIDForVariants = store.ID
+	}
 	runTx := func() error {
 		tx, err := catalogRepo.BeginCatalogTx(ctx)
 		if err != nil {
@@ -837,7 +822,8 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 		scope.Revision = revision
 		var after *catalogpage.Key
-		if token := r.URL.Query().Get("cursor"); token != "" {
+		token := r.URL.Query().Get("cursor")
+		if token != "" {
 			key, err := catalogpage.Decode(token, scope, filter)
 			if err != nil {
 				return err
@@ -848,7 +834,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		if err != nil {
 			return err
 		}
-		asOf := time.Now()
+		asOf = inputs.AsOf
 		priced := filter.Sort == "cheapest" || filter.Sort == "expensive" || filter.Sort == "discount" || filter.MinPrice != nil || filter.MaxPrice != nil
 		if priced {
 			// Order/filter depends on every row's displayed price, so
@@ -865,6 +851,13 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 				if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
 					return err
 				}
+			}
+			if token != "" && scope.Revision != revision {
+				// Persist refresh so a restart need not repeat the cold work.
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				return catalogpage.ErrRestart
 			}
 			page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
 			if err != nil {
@@ -894,6 +887,14 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 					return err
 				}
 			}
+		}
+		ids := make([]string, 0, len(page.Keys))
+		for _, key := range page.Keys {
+			ids = append(ids, key.ID)
+		}
+		productsByID, variantsByProduct, defaultsByProduct, err = catalogRepo.LoadCatalogPageRowsTx(ctx, tx, ids, storeIDForVariants)
+		if err != nil {
+			return err
 		}
 		return tx.Commit()
 	}
@@ -939,11 +940,6 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	for _, k := range page.Keys {
 		ids = append(ids, k.ID)
 	}
-	productsByID, err := catalogRepo.GetProductsByIDs(ctx, ids)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	byID := make(map[string]domain.Product, len(productsByID))
 	for _, p := range productsByID {
 		byID[p.ID] = p
@@ -955,54 +951,11 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 	}
 
-	// PERF-03 G2: reuse the scope inputs already loaded inside the
-	// snapshot transaction above (settings + locks + overrides) for
-	// response pricing instead of loading them a second time — the
-	// audit measured 8 pricing queries per list request (4 in the
-	// handler + the same 4 inside the scope tx). The values are from
-	// the same request and the same snapshot the page selection and
-	// price refresh ran under, so they are strictly more consistent
-	// with the selection than a second, later load would be; this is
-	// request-local reuse, not a cache — nothing survives the
-	// request. The fallbacks below are pure defense (a nil inputs
-	// field cannot happen: a load failure aborts the request above).
-	// The store row itself is NOT reused: inputs.Store carries only
-	// price-relevant fields, while storeVal below needs the full row.
-	settings := inputs.Settings
-	if settings == nil {
-		settings, _ = loadPricingSettings(ctx, pricingRepo)
-	}
-
-	// P2(a): a non-central store view loads store-filtered variants
-	// (hidden variants never reach pricing or the response). Central
-	// is never filtered. P2(c): the store's default variants, batched.
-	storeIDForVariants := ""
-	if store != nil && store.Slug != "central" {
-		storeIDForVariants = store.ID
-	}
-	variantsByProduct, _ := catalogRepo.GetVariantsByProductIDsForStore(ctx, ids, storeIDForVariants)
-	defaultsByProduct, _ := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, ids)
-
-	var storeVal domain.Store
-	var locks []pricing.MarginLock
-	var overrides map[string]pricing.StoreVariantOverride
-	if store != nil {
-		storeVal = *store
-		// PERF-03 G2: same reuse as settings above — the tx already
-		// loaded this store's locks and variant overrides (same
-		// queries, same ordering, same productID/variantID keying).
-		locks = inputs.Locks
-		if locks == nil {
-			locks = loadStoreMarginLocks(ctx, pricingRepo, store.ID)
-		}
-		overrides = inputs.Overrides
-		if overrides == nil {
-			overrides = loadVariantOverridesForStore(ctx, pricingRepo, store.ID)
-		}
-	} else {
-		overrides = map[string]pricing.StoreVariantOverride{}
-	}
-	displayCampaigns := loadActiveDiscountCampaignsForDisplay(ctx, storeRepo, store)
+	// Hydrate and price from the exact same materialized inputs and clock
+	// used for index selection. Rendering may occur later, after commit.
+	storeVal := inputs.Store
+	settings, locks, overrides := inputs.Settings, inputs.Locks, inputs.Overrides
+	displayCampaigns := activeCatalogCampaignsAt(inputs, asOf)
 
 	// FIX 14: live supplier rule, proven by public API probes
 	// 2026-11-03: the list carries supplierId/supplierName/baseCostB
@@ -1021,14 +974,14 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		viewer = resolveSupplierFieldsViewer(ctx, supplierRepo)
 	}
 	supplierNameByID := map[string]string{}
-	widgetCfg := loadDealsWidgetConfig(store)
+	widgetCfg := loadDealsWidgetConfig(&storeVal)
 	resp := make([]ProductResponse, 0, len(products))
 	for _, p := range products {
 		res := pricing.ResolveReferencePricing(p, storeVal, settings, locks)
 		if res.PricingError != "" {
 			continue
 		}
-		res = applyDealsWidgetDiscountForDisplay(store, widgetCfg, p.ID, res)
+		res = catalogpricing.ApplyWidgetForDisplayAt(&storeVal, widgetCfg, p.ID, res, asOf)
 		displayCampaignName := ""
 		if camp := pickDisplayCampaign(displayCampaigns, p, ""); camp != nil && !displayCampaignLocked(storeVal, locks, p, "") {
 			d := applyDisplayCampaign(res, camp)
@@ -1036,7 +989,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			displayCampaignName = d.CampaignName
 		}
 		variants := variantsByProduct[p.ID]
-		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns), defaultsByProduct[p.ID])
+		item := buildProductResponse(p, res, variants, priceVariantsForResponseAt(p, variants, storeVal, settings, locks, overrides, displayCampaigns, asOf), defaultsByProduct[p.ID])
 		item.CampaignName = displayCampaignName
 		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
 			sid := p.SupplierID
@@ -1426,7 +1379,7 @@ func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx contex
 			return err
 		}
 		if len(stale) > 0 {
-			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, time.Now()); err != nil {
+			if _, err := catalogRepo.RefreshCatalogPricesTx(ctx, tx, inputs, stale, inputs.AsOf); err != nil {
 				return err
 			}
 		}

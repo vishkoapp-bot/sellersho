@@ -191,6 +191,10 @@ func TestSupplierStockAggregateHTTPReturnsVerifiedQuantity(t *testing.T) {
 	if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK || result.Stock != 8 || result.ProductStock != 8 {
 		t.Fatalf("verified response status=%d result=%+v err=%v", w.Code, result, err)
 	}
+	var projection int
+	if err = db.QueryRow(`SELECT stock FROM products WHERE id=$1`, product).Scan(&projection); err != nil || projection != result.ProductStock {
+		t.Fatalf("legacy productStock disagrees with authoritative projection: DB=%d HTTP=%d err=%v", projection, result.ProductStock, err)
+	}
 	var local, held int
 	var actor string
 	if err = db.QueryRow(`SELECT SUM(quantity) FILTER(WHERE supplier_warehouse_id=$2),SUM(quantity) FILTER(WHERE warehouse_id=$3) FROM inventory_balances WHERE product_id=$1 AND status='sellable'`, product, source, warehouse).Scan(&local, &held); err != nil || local != 3 || held != 5 {

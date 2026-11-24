@@ -37,7 +37,7 @@ import (
 // FingerprintVersion versions the fingerprint expression. Bump it whenever
 // the priced inputs change shape: every stored row then reads as stale and
 // rebuilds exactly once.
-const FingerprintVersion = "v2"
+const FingerprintVersion = "v3-raw"
 
 // catalogPriceRefreshBatch bounds one refresh round-trip: products are
 // priced and upserted in batches of this size, never the whole stale set
@@ -124,12 +124,14 @@ func (r *CatalogRepository) GetCatalogScopeRevisionTx(ctx context.Context, tx *s
 // scope_id over the same row set (product / niche / variant scopes).
 func priceFingerprintJoins(storePlaceholder string, scoped bool) string {
 	sp := storePlaceholder
-	variantExpr := `v.id || ':' || COALESCE(v.supplier_base_cost::text,'') || ':' || COALESCE(v.is_default::text,'') || ':' || COALESCE((to_jsonb(v)->>'is_active')::text,'') || ':' || COALESCE((to_jsonb(v)->>'inventory_mode')::text,'') || ':' || COALESCE(v.sale_price::text,'') || ':' || COALESCE(v.sale_from::text,'') || ':' || COALESCE(v.sale_to::text,'')`
+	variantExpr := `jsonb_build_array(v.id,v.supplier_base_cost,v.is_default,to_jsonb(v)->'is_active',
+		to_jsonb(v)->'inventory_mode',v.sale_price,v.sale_from,v.sale_to,v.variant_name,v.attributes,v.created_at,
+		to_jsonb(v)->'min_cart_qty',to_jsonb(v)->'max_cart_qty',v.stock)::text`
 	variantSet := `SELECT v.product_id, string_agg(` + variantExpr + `, ',' ORDER BY v.id) AS s FROM product_variants v GROUP BY v.product_id`
 	if scoped {
 		variantSet = `SELECT v.product_id, string_agg(` + variantExpr + `, ',' ORDER BY v.id) AS s FROM product_variants v LEFT JOIN store_variant_visibility svv ON svv.variant_id = v.id AND svv.store_id=` + sp + ` WHERE svv.is_visible IS DISTINCT FROM FALSE GROUP BY v.product_id`
 	}
-	campExpr := `c.id || ':' || c.scope || ':' || c.target_id || ':' || c.mode || ':' || c.value::text || ':' || c.starts_at::text || ':' || c.ends_at::text || ':' || c.is_active::text`
+	campExpr := `c.id || ':' || c.scope || ':' || c.target_id || ':' || c.mode || ':' || c.value::text || ':' || c.starts_at::text || ':' || c.ends_at::text || ':' || c.is_active::text || ':' || c.created_at::text`
 	joins := `
 	LEFT JOIN platform_pct_products fp_ppp ON fp_ppp.product_id = p.id
 	LEFT JOIN platform_pct_categories fp_ppc ON fp_ppc.category_slug = p.category_slug
@@ -149,6 +151,8 @@ func priceFingerprintJoins(storePlaceholder string, scoped bool) string {
 		SELECT c.target_id AS product_id, c.id AS cid, ` + campExpr + ` AS s FROM seller_discount_campaigns c WHERE c.store_id = ` + sp + ` AND c.scope = 'product'
 		UNION ALL
 		SELECT pn.product_id, c.id AS cid, ` + campExpr + ` AS s FROM seller_discount_campaigns c JOIN product_niches pn ON pn.niche_id = c.target_id WHERE c.store_id = ` + sp + ` AND c.scope = 'niche'
+		UNION ALL
+		SELECT v.product_id, c.id AS cid, ` + campExpr + ` AS s FROM seller_discount_campaigns c JOIN product_variants v ON v.id::text = c.target_id WHERE c.store_id = ` + sp + ` AND c.scope = 'variant'
 	) u GROUP BY u.product_id) fp_camp ON fp_camp.product_id = p.id`
 	return joins
 }
@@ -175,13 +179,15 @@ func priceFingerprintJoins(storePlaceholder string, scoped bool) string {
 func priceFingerprintExpr(storePlaceholder, productAlias string, scoped bool) string {
 	p := productAlias
 	sp := storePlaceholder
-	campExpr := `c.id || ':' || c.scope || ':' || c.target_id || ':' || c.mode || ':' || c.value::text || ':' || c.starts_at::text || ':' || c.ends_at::text || ':' || c.is_active::text`
+	campExpr := `c.id || ':' || c.scope || ':' || c.target_id || ':' || c.mode || ':' || c.value::text || ':' || c.starts_at::text || ':' || c.ends_at::text || ':' || c.is_active::text || ':' || c.created_at::text`
 	storeCamp := `COALESCE((SELECT string_agg(` + campExpr + `, ',' ORDER BY id) FROM seller_discount_campaigns c WHERE store_id=` + sp + ` AND scope='store'),'')`
 	parts := []string{
 		`COALESCE(` + p + `.supplier_base_cost::text,'')`,
 		`COALESCE(` + p + `.original_price::text,'')`,
 		`COALESCE(` + p + `.category_slug,'')`,
-		`COALESCE(` + p + `.is_active::text,'')`,
+		`jsonb_build_array(` + p + `.is_active,` + p + `.stock,
+			CASE WHEN to_jsonb(` + p + `)->>'product_type'='variable' THEN regexp_replace(` + p + `.title,'[[:space:]‌‍]','','g')='پیشفرض' ELSE FALSE END,
+			to_jsonb(` + p + `)->'product_type',to_jsonb(` + p + `)->'schema_version')::text`,
 		`COALESCE((SELECT platform_pct::text || '/' || central_profit_pct::text || '/' || max_profit_margin::text FROM platform_settings WHERE id = 1),'')`,
 		`COALESCE(fp_ppp.pct::text,'')`,
 		`COALESCE(fp_ppc.pct::text,'')`,
@@ -392,6 +398,9 @@ func (r *CatalogRepository) RefreshCatalogPricesTx(ctx context.Context, tx *sql.
 	overrides := inputs.Overrides
 	campaigns := inputs.Campaigns
 	scoped := store.OwnerType == "dropshipper"
+	if !scoped || store.Slug == "central" {
+		campaigns = nil
+	}
 	widget := pricing.ParseDealsWidgetConfig(store.SellerDealsWidgetConfig)
 	for start := 0; start < len(productIDs); start += catalogPriceRefreshBatch {
 		end := start + catalogPriceRefreshBatch
@@ -438,8 +447,12 @@ func (r *CatalogRepository) refreshCatalogPriceBatchTx(ctx context.Context, tx *
 	for _, p := range products {
 		relevant := make([]domain.SellerDiscountCampaign, 0, len(campaigns))
 		active := make([]domain.SellerDiscountCampaign, 0, len(campaigns))
+		visibleVariants := make(map[string]bool, len(variantsByProduct[p.ID]))
+		for _, v := range variantsByProduct[p.ID] {
+			visibleVariants[v.ID] = true
+		}
 		for _, c := range campaigns {
-			if c.Scope == "store" || (c.Scope == "product" && c.TargetID == p.ID) || (c.Scope == "niche" && containsString(p.NicheIDs, c.TargetID)) {
+			if c.Scope == "store" || (c.Scope == "variant" && visibleVariants[c.TargetID]) || (c.Scope == "product" && c.TargetID == p.ID) || (c.Scope == "niche" && containsString(p.NicheIDs, c.TargetID)) {
 				relevant = append(relevant, c)
 				if c.IsActive && !c.StartsAt.After(asOf) && c.EndsAt.After(asOf) {
 					active = append(active, c)
@@ -450,7 +463,7 @@ func (r *CatalogRepository) refreshCatalogPriceBatchTx(ctx context.Context, tx *
 			Product: p, Variants: variantsByProduct[p.ID], Store: store,
 			Settings: settings, Locks: locks, Overrides: overrides,
 			ActiveCampaigns: active, AllCampaigns: relevant, Widget: widget,
-			StoreDefaultVariantID: defaults[p.ID], AsOf: asOf,
+			StoreDefaultVariantID: defaults[p.ID], UsePublicStock: true, AsOf: asOf,
 		})
 		if err != nil {
 			errorIDs = append(errorIDs, p.ID)
@@ -637,7 +650,8 @@ func (r *CatalogRepository) catalogVariantsByIDsTx(ctx context.Context, tx *sql.
 		SELECT v.id, v.product_id, v.supplier_base_cost, v.is_default,
 		       COALESCE((to_jsonb(v)->>'is_active')::boolean, TRUE),
 		       COALESCE((to_jsonb(v)->>'inventory_mode')::text, 'legacy'),
-		       v.sale_price, v.sale_from, v.sale_to
+		       v.sale_price, v.sale_from, v.sale_to, COALESCE(v.variant_name,''), COALESCE(v.attributes,'{}'::jsonb),
+		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int, v.stock
 		FROM product_variants v
 	`
 	args := []any{pq.Array(ids)}
@@ -661,8 +675,15 @@ func (r *CatalogRepository) catalogVariantsByIDsTx(ctx context.Context, tx *sql.
 		var cost sql.NullInt64
 		var salePrice sql.NullInt64
 		var saleFrom, saleTo sql.NullTime
-		if err := rows.Scan(&v.ID, &v.ProductID, &cost, &v.IsDefault, &v.IsActive, &v.InventoryMode, &salePrice, &saleFrom, &saleTo); err != nil {
+		var attrs []byte
+		var maxQty sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.ProductID, &cost, &v.IsDefault, &v.IsActive, &v.InventoryMode, &salePrice, &saleFrom, &saleTo, &v.Name, &attrs, &v.MinCartQty, &maxQty, &v.Stock); err != nil {
 			return nil, err
+		}
+		v.Attributes = parseProductSpecs(attrs)
+		if maxQty.Valid {
+			n := int(maxQty.Int32)
+			v.MaxCartQty = &n
 		}
 		if cost.Valid {
 			c := cost.Int64

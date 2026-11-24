@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -15,14 +16,14 @@ import (
 // overrides outside the tx would let a concurrent edit slip between the
 // load and the refresh, storing a price computed from old inputs under a
 // fingerprint of the new ones (a row that reads fresh but holds a stale
-// price). The list handler's own response pricing keeps its existing
-// loads; only the refresh — which governs order, selection and bounds —
-// uses these snapshot inputs.
+// price). Both the paged response and the index refresh use these
+// snapshot inputs.
 type CatalogScopeInputs struct {
 	Store     domain.Store // price-relevant fields only (see below)
 	Settings  *pricing.PlatformPricingSettings
 	Locks     []pricing.MarginLock
 	Overrides map[string]pricing.StoreVariantOverride
+	AsOf      time.Time
 	Campaigns []domain.SellerDiscountCampaign // ALL campaigns for the store
 }
 
@@ -38,10 +39,10 @@ func (r *CatalogRepository) LoadCatalogScopeInputsTx(ctx context.Context, tx *sq
 	var widgetRaw sql.NullString
 	var customOverride sql.NullFloat64
 	if err := tx.QueryRowContext(ctx, `SELECT slug, owner_type, seller_deals_widget_config,
-		is_margin_locked_by_admin, custom_store_margin_override
+		is_margin_locked_by_admin, custom_store_margin_override, CURRENT_TIMESTAMP
 		FROM stores WHERE id = $1`, storeID).Scan(
 		&store.Slug, &store.OwnerType, &widgetRaw,
-		&store.IsMarginLockedByAdmin, &customOverride); err != nil {
+		&store.IsMarginLockedByAdmin, &customOverride, &inputs.AsOf); err != nil {
 		return nil, err
 	}
 	if widgetRaw.Valid {

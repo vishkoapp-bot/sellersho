@@ -17,8 +17,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/drup/platform/internal/catalogpage"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/testdb"
 	_ "github.com/lib/pq"
@@ -161,30 +164,43 @@ func perf01WalkPages(t *testing.T, handler http.HandlerFunc, path string) []Prod
 	}
 }
 
-// perf01CardPrice mirrors src/utils/cardPrice.ts on the list response:
-// store-default variant, then product default, then first active priced
-// variant; else the product-level price. This is the price the index
-// main_price, the price sorts, the price filters and the bounds all
-// operate on — NOT item.Price (the product-level price).
+// perf01CardPrice independently mirrors the browser's Batch 9 pick over
+// the rendered HTTP payload, rather than trusting index fields.
 func perf01CardPrice(item ProductResponse) int64 {
-	if item.StoreDefaultVariantID != nil {
-		if vp, ok := item.VariantPrices[*item.StoreDefaultVariantID]; ok && vp.Price > 0 {
+	var cheapest, first *int64
+	for _, v := range item.Variants {
+		if !v.IsActive || (item.ProductType == "variable" && isReservedDefaultVariantName(v.VariantName)) {
+			continue
+		}
+		vp, ok := item.VariantPrices[v.ID]
+		if !ok || vp.PricingError != "" {
+			continue
+		}
+		if first == nil {
+			price := vp.Price
+			first = &price
+		}
+		stock := v.Stock
+		if v.InventoryMode != "tracked" && item.ProductType != "variable" && item.SchemaVersion != 2 && stock <= 0 {
+			stock = item.Stock
+		}
+		minQty := max(1, v.MinCartQty)
+		if !item.IsActive || stock < minQty || (v.MaxCartQty != nil && *v.MaxCartQty < minQty) {
+			continue
+		}
+		if item.StoreDefaultVariantID != nil && v.ID == *item.StoreDefaultVariantID && (vp.Price > 0 || (item.ProductType != "variable" && item.SchemaVersion != 2)) {
 			return vp.Price
 		}
-	}
-	for _, v := range item.Variants {
-		if v.IsDefault {
-			if vp, ok := item.VariantPrices[v.ID]; ok && vp.Price > 0 {
-				return vp.Price
-			}
+		if vp.Price > 0 && (cheapest == nil || vp.Price < *cheapest) {
+			price := vp.Price
+			cheapest = &price
 		}
 	}
-	for _, v := range item.Variants {
-		if v.IsActive {
-			if vp, ok := item.VariantPrices[v.ID]; ok && vp.Price > 0 {
-				return vp.Price
-			}
-		}
+	if cheapest != nil {
+		return *cheapest
+	}
+	if first != nil {
+		return *first
 	}
 	return item.Price
 }
@@ -200,7 +216,7 @@ func TestPerf01HTTPListEnvelope(t *testing.T) {
 		t.Fatalf("default page = %d items hasMore=%v total=%d (want 24/true/28)", len(page.Items), page.HasMore, page.Total)
 	}
 	// http-001: product-level price 12100 (cost 11000), variant range
-	// 13200..66000, CARD price 66000 (default variant at cost 60000).
+	// 13200..66000, CARD price 13200 (cheapest purchasable variant at cost 12000).
 	for _, item := range page.Items {
 		if item.ID == "http-001" {
 			if item.Price != 12100 {
@@ -209,8 +225,8 @@ func TestPerf01HTTPListEnvelope(t *testing.T) {
 			if item.PriceMin == nil || *item.PriceMin != 13200 || item.PriceMax == nil || *item.PriceMax != 66000 {
 				t.Fatalf("http-001 variant range = %v..%v, want 13200..66000", item.PriceMin, item.PriceMax)
 			}
-			if perf01CardPrice(item) != 66000 {
-				t.Fatalf("http-001 card price = %d, want 66000 (default variant)", perf01CardPrice(item))
+			if perf01CardPrice(item) != 13200 {
+				t.Fatalf("http-001 card price = %d, want 13200 (cheapest purchasable variant)", perf01CardPrice(item))
 			}
 		}
 	}
@@ -249,15 +265,28 @@ func TestPerf01HTTPListEnvelope(t *testing.T) {
 	}
 	for _, item := range priced {
 		// The range applies to the CARD price (index main price):
-		// http-001's product price 12100 is inside the range but its
-		// card price 66000 is not, so it must be absent.
+		// http-001's card price 13200 is outside this range.
 		if item.ID == "http-001" {
-			t.Fatal("price-range filter must use the card price: http-001 (card 66000) listed in [20000,25000]")
+			t.Fatal("price-range filter must use the card price: http-001 (card 13200) listed in [20000,25000]")
 		}
 		if cp := perf01CardPrice(item); cp < 20000 || cp > 25000 {
 			t.Fatalf("price-range item %s card price %d outside [20000,25000]", item.ID, cp)
 		}
 	}
+	for _, sample := range []struct {
+		lower, upper int
+		want         bool
+	}{{13200, 13200, true}, {66000, 66000, false}} {
+		items := perf01WalkPages(t, handler, fmt.Sprintf("/api/v1/products?category=perf01-cat&min_price=%d&max_price=%d&limit=10", sample.lower, sample.upper))
+		found := false
+		for _, item := range items {
+			found = found || item.ID == "http-001"
+		}
+		if found != sample.want {
+			t.Fatalf("http-001 filter [%d,%d]: found=%v, want %v", sample.lower, sample.upper, found, sample.want)
+		}
+	}
+
 }
 
 func TestPerf01HTTPListValidation(t *testing.T) {
@@ -425,5 +454,285 @@ func TestPerf01HTTPStoreCategoriesAndScope(t *testing.T) {
 		if page.Items[i].ID != id {
 			t.Fatalf("store-a position %d = %s, want %s", i, page.Items[i].ID, id)
 		}
+	}
+}
+
+func TestPerf01HTTPFingerprintTransitions(t *testing.T) {
+	catalogRepo, storeRepo := perf01HTTPRepos(t)
+	handler := perf01ListHandler(t, catalogRepo, storeRepo)
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const cheap = "22222222-2222-2222-2222-222222222222"
+	t.Cleanup(func() { exec("UPDATE product_variants SET min_cart_qty=1,stock=2 WHERE id='" + cheap + "'") })
+	path := "/api/v1/products?category=perf01-cat&search=Product%20001&sort=cheapest"
+	assertPrice := func(want int64) string {
+		t.Helper()
+		items := perf01WalkPages(t, handler, path)
+		if len(items) != 1 || items[0].ID != "http-001" || perf01CardPrice(items[0]) != want {
+			t.Fatalf("expected one matching card at %d, got %+v", want, items)
+		}
+		var price int64
+		var fp string
+		if err := db.QueryRow("SELECT main_price,input_fingerprint FROM catalog_public_prices WHERE store_id='store-central' AND product_id='http-001'").Scan(&price, &fp); err != nil {
+			t.Fatal(err)
+		}
+		if price != want || !strings.HasPrefix(fp, repository.FingerprintVersion+":") {
+			t.Fatalf("index must refresh to card price %d, got %d / %q", want, price, fp)
+		}
+		return fp
+	}
+	fp := assertPrice(13200)
+	exec("UPDATE catalog_public_prices SET main_price=66000,input_fingerprint='v2:old' WHERE store_id='store-central' AND product_id='http-001'")
+	if got := assertPrice(13200); got != fp {
+		t.Fatalf("stale v2 recomputation changed the input fingerprint")
+	}
+	exec("UPDATE product_variants SET min_cart_qty=3 WHERE id='" + cheap + "'")
+	if got := assertPrice(66000); got == fp {
+		t.Fatal("minimum quantity change did not invalidate the index")
+	}
+	exec("UPDATE product_variants SET min_cart_qty=2 WHERE id='" + cheap + "'")
+	atMin := assertPrice(13200)
+	exec("UPDATE product_variants SET stock=1 WHERE id='" + cheap + "'")
+	if got := assertPrice(66000); got == atMin {
+		t.Fatal("raw stock dropping below minimum did not invalidate the index")
+	}
+	exec("UPDATE product_variants SET min_cart_qty=1,stock=2 WHERE id='" + cheap + "'")
+	if got := assertPrice(13200); got != fp {
+		t.Fatal("restoring availability did not restore the correct fingerprint and price")
+	}
+	// These are valid JSONB values on older rows. Like the DTO, index
+	// rebuilding must treat non-object attributes as empty, not fail the scope.
+	t.Cleanup(func() { exec("UPDATE product_variants SET attributes='{}' WHERE id='" + cheap + "'") })
+	for _, raw := range []string{`["legacy"]`, `42`, `null`} {
+		exec("UPDATE product_variants SET attributes='" + raw + "'::jsonb WHERE id='" + cheap + "'")
+		if got := assertPrice(13200); got == fp {
+			t.Fatalf("attribute change %s did not refresh the index", raw)
+		}
+	}
+}
+
+func TestPerf01HTTPStockChangeRestartsDuringCursorRequest(t *testing.T) {
+	catalogRepo, storeRepo := perf01HTTPRepos(t)
+	handler := perf01ListHandler(t, catalogRepo, storeRepo)
+	path := "/api/v1/products?category=perf01-cat&sort=cheapest&limit=1"
+	page := perf01DecodeList(t, perf01HTTPGet(t, handler, path))
+	if len(page.Items) != 1 || page.Items[0].ID != "http-001" || page.NextCursor == nil {
+		t.Fatalf("expected cheap variant to lead page before stock change: %+v", page)
+	}
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE product_variants SET min_cart_qty=3 WHERE id='22222222-2222-2222-2222-222222222222'"); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec("UPDATE product_variants SET min_cart_qty=1 WHERE id='22222222-2222-2222-2222-222222222222'")
+	rec := perf01HTTPGet(t, handler, path+"&cursor="+*page.NextCursor)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"restart":true`) {
+		t.Fatalf("stock changes discovered while paging must return 409 restart, got %d: %s", rec.Code, rec.Body.String())
+	}
+	restarted := perf01DecodeList(t, perf01HTTPGet(t, handler, path))
+	if len(restarted.Items) != 1 || restarted.Items[0].ID == "http-001" || restarted.NextCursor == nil {
+		t.Fatalf("fresh pagination must see repricing: %+v", restarted)
+	}
+}
+
+func TestPerf01HTTPRawStockSnapshotSurvivesConcurrentThresholdChange(t *testing.T) {
+	catalogRepo, storeRepo := perf01HTTPRepos(t)
+	handler := perf01ListHandler(t, catalogRepo, storeRepo)
+	path := "/api/v1/products?category=perf01-cat&search=Product%20001&sort=cheapest&min_price=13200&max_price=13200"
+	before := perf01DecodeList(t, perf01HTTPGet(t, handler, path))
+	if len(before.Items) != 1 || perf01CardPrice(before.Items[0]) != 13200 {
+		t.Fatalf("expected one cheap card before concurrent write: %+v", before)
+	}
+	ctx := context.Background()
+	tx, err := catalogRepo.BeginCatalogTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	revision, err := catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, "store-central")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := catalogpage.Scope{ID: "store-central", OwnerType: "central", Revision: revision}
+	filter := catalogpage.Filter{Sort: "cheapest", Search: "Product 001"}
+	selected, err := catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, 1, nil)
+	if err != nil || len(selected.Keys) != 1 || selected.Keys[0].Price != 13200 {
+		t.Fatalf("snapshot selection=%+v err=%v", selected, err)
+	}
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const cheap = "22222222-2222-2222-2222-222222222222"
+	if _, err := db.Exec("UPDATE product_variants SET min_cart_qty=2, stock=1 WHERE id='" + cheap + "'"); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec("UPDATE product_variants SET min_cart_qty=1, stock=2 WHERE id='" + cheap + "'")
+	// The old post-commit read already sees the new stock, even while
+	// this request's indexed key still carries the old price.
+	live, err := catalogRepo.GetVariantsByProductIDs(ctx, []string{selected.Keys[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var liveStock int
+	for _, v := range live[selected.Keys[0].ID] {
+		if v.ID == cheap {
+			liveStock = v.Stock
+		}
+	}
+	if liveStock != 1 {
+		t.Fatalf("expected former reader to see new stock, got %d", liveStock)
+	}
+	products, variants, _, err := catalogRepo.LoadCatalogPageRowsTx(ctx, tx, []string{selected.Keys[0].ID}, "")
+	if err != nil || len(products) != 1 {
+		t.Fatalf("hydrate snapshot products=%v err=%v", products, err)
+	}
+	var oldStock int
+	for _, v := range variants[products[0].ID] {
+		if v.ID == cheap {
+			oldStock = v.Stock
+		}
+	}
+	if oldStock != 2 {
+		t.Fatalf("same snapshot hydrated stock=%d, expected 2", oldStock)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	after := perf01DecodeList(t, perf01HTTPGet(t, handler, path))
+	if len(after.Items) != 0 {
+		t.Fatalf("fresh request must exclude repriced product: %+v", after)
+	}
+}
+
+func TestPerf01HTTPVariantCampaignScope(t *testing.T) {
+	cat, stores := perf01HTTPRepos(t)
+	handler := perf01ListHandler(t, cat, stores)
+	ctx := context.Background()
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer exec("DELETE FROM seller_discount_campaigns WHERE id IN ('parity-product-campaign','parity-variant-campaign')")
+	const chosen = "22222222-2222-2222-2222-222222222222"
+	const other = "11111111-1111-1111-1111-111111111111"
+	const base = "category=perf01-cat&search=Product%20001"
+	list := func(query string) []ProductResponse {
+		return perf01DecodeList(t, perf01HTTPGet(t, handler, "/api/v1/products?"+query)).Items
+	}
+	exec(`INSERT INTO stores (id,name,slug,owner_type,owner_name) VALUES ('price-parity-store-b','Parity B','price-parity-store-b','dropshipper','B');
+		INSERT INTO store_products (store_id,product_id,position) VALUES ('price-parity-store-b','http-001',1)`)
+	defer exec("DELETE FROM stores WHERE id='price-parity-store-b'")
+	b := list(base + "&storeSlug=price-parity-store-b")[0]
+	a := list(base + "&storeSlug=store-a")[0]
+	c := list(base)[0]
+	exec(`INSERT INTO seller_discount_campaigns(id,store_id,name,scope,target_id,mode,value,starts_at,ends_at,is_active) VALUES
+		('parity-product-campaign','store-a','Product campaign','product','http-001','percent',12, NOW()-INTERVAL '1 hour',NOW()+INTERVAL '1 hour',TRUE)`)
+	withProduct := list(base + "&storeSlug=store-a")[0]
+	exec(`INSERT INTO seller_discount_campaigns(id,store_id,name,scope,target_id,mode,value,starts_at,ends_at,is_active) VALUES
+		('parity-variant-campaign','store-a','Variant campaign','variant','` + chosen + `','percent',5,NOW()-INTERVAL '1 hour',NOW()+INTERVAL '2 hour',TRUE)`)
+	selected, err := stores.GetActiveDiscountCampaign(ctx, "store-a", "http-001", nil, chosen)
+	if err != nil || selected == nil || selected.ID != "parity-variant-campaign" {
+		t.Fatalf("checkout precedence selected %+v err %v", selected, err)
+	}
+	p := list(base + "&storeSlug=store-a")[0]
+	discounted := perf01CardPrice(p)
+	if discounted == perf01CardPrice(withProduct) || discounted >= perf01CardPrice(a) ||
+		p.VariantPrices[other].Price != withProduct.VariantPrices[other].Price {
+		t.Fatalf("variant promotion must replace product campaign only for its target: before=%+v after=%+v", withProduct.VariantPrices, p.VariantPrices)
+	}
+	indexed := list(base + fmt.Sprintf("&storeSlug=store-a&sort=cheapest&min_price=%d&max_price=%d", discounted, discounted))
+	if len(indexed) != 1 || perf01CardPrice(indexed[0]) != discounted {
+		t.Fatalf("variant promotion missing from narrow index range: %+v", indexed)
+	}
+	rec := perf01HTTPGet(t, func(w http.ResponseWriter, r *http.Request) { handleProductPriceBounds(w, r, ctx, cat, stores, nil) }, "/api/v1/products/price-bounds?"+base+"&storeSlug=store-a")
+	var bounds productPriceBoundsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &bounds); rec.Code != 200 || err != nil || bounds.MinPrice != discounted || bounds.MaxPrice != 16200 || bounds.Count != 2 {
+		t.Fatalf("index bounds must match promoted card; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := list(base)[0]; perf01CardPrice(got) != perf01CardPrice(c) || got.VariantPrices[chosen].Price != c.VariantPrices[chosen].Price {
+		t.Fatal("seller-specific variant promotion leaked to central scope")
+	}
+	if got := list(base + "&storeSlug=price-parity-store-b")[0]; perf01CardPrice(got) != perf01CardPrice(b) || got.VariantPrices[chosen].CampaignName != "" {
+		t.Fatal("seller-specific variant promotion leaked to another seller")
+	}
+	exec("UPDATE seller_discount_campaigns SET is_active=FALSE WHERE id='parity-variant-campaign'")
+	if got := list(base + fmt.Sprintf("&storeSlug=store-a&min_price=%d&max_price=%d", discounted, discounted)); len(got) != 0 {
+		t.Fatal("campaign deactivation did not invalidate index")
+	}
+}
+
+func TestPerf01HTTPCampaignUsesOneTimeAndSnapshot(t *testing.T) {
+	cat, stores := perf01HTTPRepos(t)
+	ctx := context.Background()
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const variant = "22222222-2222-2222-2222-222222222222"
+	const id = "price-parity-clock"
+	if _, err := db.Exec(`INSERT INTO seller_discount_campaigns(id,store_id,name,scope,target_id,mode,value,starts_at,ends_at,is_active)
+		VALUES ($1,'store-a','Snapshot campaign','variant',$2,'percent',5,NOW()-INTERVAL '1 hour',NOW()+INTERVAL '1 hour',TRUE)`, id, variant); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec("DELETE FROM seller_discount_campaigns WHERE id=$1", id)
+	tx, err := cat.BeginCatalogTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	inputs, err := cat.LoadCatalogScopeInputsTx(ctx, tx, "store-a")
+	if err != nil || len(inputs.Campaigns) != 1 {
+		t.Fatalf("campaign snapshot %+v / %v", inputs, err)
+	}
+	c := inputs.Campaigns[0]
+	if len(activeCatalogCampaignsAt(inputs, c.StartsAt.Add(-time.Nanosecond))) != 0 ||
+		len(activeCatalogCampaignsAt(inputs, c.StartsAt)) != 1 ||
+		len(activeCatalogCampaignsAt(inputs, c.EndsAt.Add(-time.Nanosecond))) != 1 ||
+		len(activeCatalogCampaignsAt(inputs, c.EndsAt)) != 0 {
+		t.Fatal("start must be inclusive and end exclusive using the same catalog clock")
+	}
+	var dbNow time.Time
+	if err := tx.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&dbNow); err != nil || !dbNow.Equal(inputs.AsOf) {
+		t.Fatalf("price clock must equal SQL expiry check clock: %v / %v / %v", inputs.AsOf, dbNow, err)
+	}
+	p, variants, _, err := cat.LoadCatalogPageRowsTx(ctx, tx, []string{"http-001"}, "store-a")
+	if err != nil || len(p) != 1 {
+		t.Fatalf("page hydration: %+v / %v", p, err)
+	}
+	if _, err := db.Exec("UPDATE seller_discount_campaigns SET is_active=false WHERE id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	price := priceVariantsForResponseAt(p[0], variants[p[0].ID], inputs.Store, inputs.Settings, inputs.Locks, inputs.Overrides, activeCatalogCampaignsAt(inputs, inputs.AsOf), inputs.AsOf)[variant]
+	if price.CampaignName != "Snapshot campaign" {
+		t.Fatalf("same response lost its selected campaign after external write: %+v", price)
+	}
+	page := perf01DecodeList(t, perf01HTTPGet(t, perf01ListHandler(t, cat, stores), "/api/v1/products?storeSlug=store-a&search=Product%20001&sort=cheapest"))
+	if len(page.Items) != 1 || page.Items[0].VariantPrices[variant].CampaignName != "" || page.Items[0].VariantPrices[variant].Price <= price.Price {
+		t.Fatalf("fresh HTTP request must see deactivation and new variant price: %+v", page)
 	}
 }

@@ -77,7 +77,7 @@ func setupBulkOriginFixture(t *testing.T) *bulkOriginFixture {
 		t.Fatal(err)
 	}
 	f.trackedVariant = uuid.NewString()
-	if _, err := db.Exec(`INSERT INTO product_variants(id, product_id, stock, inventory_mode, spnc) VALUES($1,$2,0,'tracked',$3)`, f.trackedVariant, f.trackedProduct, "BLK-"+suffix); err != nil {
+	if _, err := db.Exec(`INSERT INTO product_variants(id, product_id, stock, inventory_mode, spnc) VALUES($1,$2,0,'tracked',$3)`, f.trackedVariant, f.trackedProduct, "BLK-"+strings.ToUpper(suffix)); err != nil {
 		t.Fatal(err)
 	}
 	all := append(append([]string{}, f.direct...), f.warehouseProduct, f.originated, f.trackedProduct)

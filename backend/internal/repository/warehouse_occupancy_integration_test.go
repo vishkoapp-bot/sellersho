@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -629,4 +630,128 @@ func TestINV06SelectedLegacySKUUsesPhysicalLegacyPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv06AssertOccupancy(t, db, bin, 0, 0, 0)
+}
+
+// A sale SKU identifies the request, not either legacy bin placement. Adding a
+// sibling after reservation must not transfer the held physical quantity to it.
+func TestINV06LegacyReturnDoesNotBorrowSiblingOrAnotherBin(t *testing.T) {
+	db, f, warehouse, first, _ := inv06Placed(t, false, 3)
+	ctx := context.Background()
+	inbound := inv09ReceiveLegacy(t, db, f, warehouse, 3)
+	wh := NewWarehouseRepository(db)
+	if err := wh.RecordQCPass(ctx, f.product, inbound, f.user, 3); err != nil {
+		t.Fatal(err)
+	}
+	var task string
+	if err := db.QueryRow(`SELECT id FROM putaway_tasks WHERE inbound_id=$1`, inbound).Scan(&task); err != nil {
+		t.Fatal(err)
+	}
+	second := inv08Bin(t, db, warehouse, 3000, 300)
+	if err := wh.AssignPutawayTask(ctx, task, second, f.user); err != nil {
+		t.Fatal(err)
+	}
+	if err := wh.ConfirmPutaway(ctx, task, f.user); err != nil {
+		t.Fatal(err)
+	}
+	original := seedSupplierReturnLegacyVariant(t, db, f.product)
+	sup := NewSupplierRepository(db)
+	cancelled, err := sup.CreateReturnRequestForVariantWithIdempotency(ctx, f.supplier, f.product, original, 1, "supplier_collect", "restore same bin", uuid.NewString(), f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.CancelReturn(ctx, f.supplier, cancelled.ID, "restored without SKU attribution", f.user); err != nil {
+		t.Fatal(err)
+	}
+	var unallocated, attributed int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity) FILTER (WHERE variant_id IS NULL),0),COALESCE(SUM(quantity) FILTER (WHERE variant_id IS NOT NULL),0) FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND location_type='bin'`, f.product).Scan(&unallocated, &attributed); err != nil || unallocated != 6 || attributed != 0 {
+		t.Fatalf("cancel changed physical custody: unallocated=%d attributed=%d err=%v", unallocated, attributed, err)
+	}
+	req, err := sup.CreateReturnRequestForVariantWithIdempotency(ctx, f.supplier, f.product, original, 4, "supplier_collect", "two-bin custody", uuid.NewString(), f.user)
+	if err != nil || req.VariantID != original {
+		t.Fatalf("legacy commercial request: %v, %v", req, err)
+	}
+	var physicalSources int
+	if err := db.QueryRow(`SELECT count(DISTINCT location_key) FROM inventory_reservations WHERE reference_id=$1 AND variant_id IS NULL AND status='active'`, req.ID).Scan(&physicalSources); err != nil || physicalSources != 2 {
+		t.Fatalf("missing original physical custody in reservations: %d, %v", physicalSources, err)
+	}
+	sibling := uuid.NewString()
+	opsExec(t, db, `INSERT INTO product_variants(id,product_id,spnc,inventory_mode,is_default) VALUES($1,$2,$3,'legacy',FALSE)`, sibling, f.product, strings.ToUpper(uuid.NewString()[:8]))
+	if _, err := sup.CreateReturnRequestForVariantWithIdempotency(ctx, f.supplier, f.product, sibling, 1, "supplier_collect", "must not guess legacy stock", uuid.NewString(), f.user); err == nil {
+		t.Fatal("sibling request borrowed unallocated stock")
+	}
+	if err := sup.ReviewReturn(ctx, req.ID, "approved", "attempt approved", f.user); err != nil {
+		t.Fatal(err)
+	}
+	opsExec(t, db, `INSERT INTO carrier_configs(code,display_name,enabled,supports_receiver_pays) VALUES('inv06','local handover fixture',TRUE,TRUE) ON CONFLICT(code) DO NOTHING`)
+	parcel, err := sup.CreateReturnParcel(ctx, req.ID, f.user, ReturnParcelInput{Quantity: 4, CarrierCode: "inv06", PaymentMethod: "receiver_pays", Origin: warehouse, Destination: "supplier", LengthMM: 100, WidthMM: 100, HeightMM: 100, WeightGrams: 400}, uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.ConfirmReturnParcelCharge(ctx, req.ID, parcel.ID, f.user, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := sup.HandoverReturn(ctx, req.ID, f.user, "handover-"+req.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var bins, released, occupied int
+	if err := db.QueryRow(`SELECT count(*),COALESCE(SUM(r.quantity),0) FROM warehouse_occupancy_releases r JOIN warehouse_placements p ON p.id=r.placement_id WHERE r.event_id=$1 AND p.bin_code IN ($2,$3) AND p.variant_id=''`, req.ID, first, second).Scan(&bins, &released); err != nil || bins != 2 || released != 4 {
+		t.Fatalf("legacy departure bins=%d units=%d: %v", bins, released, err)
+	}
+	if err := db.QueryRow(`SELECT SUM(quantity) FROM warehouse_bins WHERE bin_code IN ($1,$2)`, first, second).Scan(&occupied); err != nil || occupied != 2 {
+		t.Fatalf("retained bin occupancy=%d: %v", occupied, err)
+	}
+	var transit int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0) FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND location_key=$3 AND status='in_transit'`, f.product, original, "supplier-return-transit:"+req.ID).Scan(&transit); err != nil || transit != 4 {
+		t.Fatalf("transit custody=%d: %v", transit, err)
+	}
+}
+
+func TestINV06HistoricalNullReservationCancellationKeepsAuthoritativeBin(t *testing.T) {
+	for _, scenario := range []string{"compatible_sparse_history", "unreconciled_source", "conflicting_recorded_warehouse"} {
+		t.Run(scenario, func(t *testing.T) {
+			conflicting := scenario != "compatible_sparse_history"
+			db, f, warehouse, bin, _ := inv06Placed(t, false, 3)
+			opsExec(t, db, `UPDATE inventory_balances SET bin_code=$2,warehouse_id=$3,reconciled=TRUE WHERE product_id=$1 AND variant_id IS NULL AND status='sellable' AND location_type='bin'`, f.product, bin, warehouse)
+			sku := seedSupplierReturnLegacyVariant(t, db, f.product)
+			ctx := context.Background()
+			sup := NewSupplierRepository(db)
+			req, err := sup.CreateReturnRequestForVariantWithIdempotency(ctx, f.supplier, f.product, sku, 1, "supplier_collect", "historical active reservation", uuid.NewString(), f.user)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Older held buckets omitted canonical bin metadata; only the
+			// exact reservation location and reconciled bit are retained.
+			var historicalWarehouse any
+			if scenario == "conflicting_recorded_warehouse" {
+				other := "INV06-other-" + uuid.NewString()
+				opsExec(t, db, `INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'test','test')`, other)
+				historicalWarehouse = other
+			}
+			opsExec(t, db, `UPDATE inventory_balances SET bin_code=NULL,warehouse_id=$2,reconciled=$3 WHERE product_id=$1 AND variant_id IS NULL AND status='return_requested'`, f.product, historicalWarehouse, scenario != "unreconciled_source")
+			err = sup.CancelReturn(ctx, f.supplier, req.ID, "cancel historical return", f.user)
+			if (err != nil) != conflicting {
+				t.Fatalf("cancel incompatibility=%t: %v", conflicting, err)
+			}
+			wantSellable, wantHeld, wantStatus := 3, 0, "released"
+			if conflicting {
+				wantSellable, wantHeld, wantStatus = 2, 1, "active"
+			}
+			var sellable, held int
+			var actualWarehouse, actualBin, status string
+			var reconciled bool
+			if err = db.QueryRow(`SELECT quantity,warehouse_id,bin_code,reconciled FROM inventory_balances WHERE product_id=$1 AND variant_id IS NULL AND status='sellable' AND location_type='bin'`, f.product).Scan(&sellable, &actualWarehouse, &actualBin, &reconciled); err != nil ||
+				sellable != wantSellable || actualWarehouse != warehouse || actualBin != bin || !reconciled {
+				t.Fatalf("authoritative sellable bucket quantity=%d warehouse=%q bin=%q reconciled=%t: %v", sellable, actualWarehouse, actualBin, reconciled, err)
+			}
+			if err = db.QueryRow(`SELECT quantity FROM inventory_balances WHERE product_id=$1 AND variant_id IS NULL AND status='return_requested'`, f.product).Scan(&held); err != nil || held != wantHeld {
+				t.Fatalf("held quantity=%d: %v", held, err)
+			}
+			if err = db.QueryRow(`SELECT status FROM inventory_reservations WHERE reference_id=$1 AND variant_id IS NULL`, req.ID).Scan(&status); err != nil || status != wantStatus {
+				t.Fatalf("reservation status=%s: %v", status, err)
+			}
+			inv06AssertOccupancy(t, db, bin, 3, 3000, 300)
+		})
+	}
 }

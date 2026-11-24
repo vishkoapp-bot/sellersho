@@ -73,6 +73,9 @@ func TestINV07SKUStockHTTPValidationConflictsAndAudit(t *testing.T) {
 			if w.Code != c.status {
 				t.Errorf("HTTP=%d want%d body=%s", w.Code, c.status, w.Body.String())
 			}
+			if strings.Contains(w.Body.String(), `"productStock"`) {
+				t.Errorf("rejected stock request returned productStock: %s", w.Body.String())
+			}
 		})
 	}
 	var siblingStock int
@@ -87,14 +90,14 @@ func TestINV07SKUStockHTTPValidationConflictsAndAudit(t *testing.T) {
 		t.Errorf("invalid requests wrote movements before=%d after=%d err=%v", beforeMoves, afterMoves, err)
 	}
 	w := request(`{"variantId":"` + sku + `","new_stock":8,"reason":"  counted exact SKU  "}`)
-	var result repository.StockAdjustmentResult
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 || result.Stock != 8 {
-		t.Fatalf("save HTTP=%d result=%+v err=%v body=%s", w.Code, result, err, w.Body.String())
+	result := readStockAdjustmentWire(t, w, 8, 11)
+	if result.ProductID != product || result.VariantID != sku || result.PreviousStock != 10 || result.Delta != -2 {
+		t.Fatalf("incorrect flat adjustment result: %+v", result)
 	}
 	var projection, local, held int
 	var reason, actor string
-	if err := db.QueryRow(`SELECT stock FROM products WHERE id=$1`, product).Scan(&projection); err != nil || projection != result.ProductStock {
-		t.Fatal("response disagrees with authoritative projection")
+	if err := db.QueryRow(`SELECT stock FROM products WHERE id=$1`, product).Scan(&projection); err != nil || projection != *result.ProductStock {
+		t.Fatalf("productStock disagrees with authoritative projection: DB=%d HTTP=%d err=%v", projection, *result.ProductStock, err)
 	}
 	if err := db.QueryRow(`SELECT SUM(quantity) FILTER(WHERE supplier_warehouse_id=$2),SUM(quantity) FILTER(WHERE warehouse_id=$3) FROM inventory_balances WHERE variant_id=$1 AND status='sellable'`, sku, f.warehouse, warehouse).Scan(&local, &held); err != nil || local != 3 || held != 5 {
 		t.Fatalf("exact SKU locations=%d/%d err=%v", local, held, err)
@@ -102,21 +105,60 @@ func TestINV07SKUStockHTTPValidationConflictsAndAudit(t *testing.T) {
 	if err := db.QueryRow(`SELECT metadata->>'reason',actor_user_id FROM inventory_movements WHERE product_id=$1 AND reference_type='sku_stock_adjustment'`, product).Scan(&reason, &actor); err != nil || reason != "counted exact SKU" || actor != f.user {
 		t.Errorf("audit reason=%q actor=%q err=%v", reason, actor, err)
 	}
-	w = request(`{"variantId":"` + sku + `","new_stock":2147483644,"reason":"maximum aggregate"}`)
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 || result.Stock != 2147483644 || result.ProductStock != 2147483647 {
-		t.Errorf("maximum valid aggregate HTTP=%d result=%+v err=%v", w.Code, result, err)
+	maxInput := `{"variantId":"` + sku + `","new_stock":2147483644,"reason":"maximum aggregate"}`
+	// Projection headroom alone does not let a new adjustment mint more
+	// codes than the per-variant SPNCX sequence can represent.
+	capped := request(maxInput)
+	if capped.Code != http.StatusConflict || !strings.Contains(capped.Body.String(), `"error":"unit_cap_exceeded"`) {
+		t.Fatalf("oversized mint HTTP=%d body=%s", capped.Code, capped.Body.String())
+	}
+	if err := db.QueryRow(`SELECT stock FROM products WHERE id=$1`, product).Scan(&projection); err != nil || projection != 11 {
+		t.Fatalf("rejected mint changed the product projection: DB=%d err=%v", projection, err)
+	}
+	// Seed a pre-backfill lot just shy of the projection ceiling. Adding
+	// one real unit can reach INT_MAX without requiring billions of labels.
+	exec(`UPDATE inventory_balances SET quantity=2147483638 WHERE product_id=$1
+		AND variant_id=$2 AND supplier_warehouse_id=$3 AND status='sellable'`, product, sku, f.warehouse)
+	maximum := readStockAdjustmentWire(t, request(maxInput), 2147483644, 2147483647)
+	if maximum.Delta != 1 || maximum.PreviousStock != 2147483643 {
+		t.Fatalf("expected adjustment of one unit at the projection ceiling: %+v", maximum)
 	}
 	w = request(`{"variantId":"` + sku + `","new_stock":8,"reason":"restore counted value"}`)
 	if w.Code != 200 {
 		t.Fatal("cannot reduce maximum stock")
 	}
-	w = request(`{"variantId":"` + sibling + `","new_stock":0,"reason":"zero is valid"}`)
-	if w.Code != 200 {
-		t.Errorf("zero HTTP=%d body=%s", w.Code, w.Body.String())
-	}
+	readStockAdjustmentWire(t, request(`{"variantId":"`+sibling+`","new_stock":0,"reason":"zero is valid"}`), 0, 8)
 	exec(`UPDATE supplier_warehouses SET is_active=FALSE WHERE id=$1`, f.warehouse)
 	w = request(`{"variantId":"` + sku + `","new_stock":8,"reason":"origin unavailable"}`)
 	if w.Code != 409 {
 		t.Errorf("inactive origin HTTP=%d body=%s", w.Code, w.Body.String())
 	}
+}
+
+// Assert the HTTP contract independently of the repository's internal DTO.
+type stockAdjustmentWire struct {
+	ProductID           string          `json:"product_id"`
+	VariantID           string          `json:"variant_id"`
+	PreviousStock       int             `json:"previous_stock"`
+	Stock               *int            `json:"stock"`
+	Delta               int             `json:"delta"`
+	RetiredCodes        []string        `json:"retired_codes"`
+	RetiredPrintedCodes []string        `json:"retired_printed_codes"`
+	CoverageGap         json.RawMessage `json:"coverage_gap"`
+	ProductStock        *int            `json:"productStock"`
+}
+
+func readStockAdjustmentWire(t *testing.T, w *httptest.ResponseRecorder, stock, productStock int) stockAdjustmentWire {
+	t.Helper()
+	var v stockAdjustmentWire
+	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("stock adjustment HTTP=%d err=%v body=%s", w.Code, err, w.Body.String())
+	}
+	if v.Stock == nil || *v.Stock != stock || v.ProductStock == nil || *v.ProductStock != productStock {
+		t.Fatalf("want flat stock=%d and productStock=%d: %s", stock, productStock, w.Body.String())
+	}
+	if v.RetiredCodes == nil || v.RetiredPrintedCodes == nil || v.CoverageGap == nil {
+		t.Fatalf("missing flat SPNCX retirement or coverage fields: %s", w.Body.String())
+	}
+	return v
 }

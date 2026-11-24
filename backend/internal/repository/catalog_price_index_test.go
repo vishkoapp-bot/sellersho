@@ -235,7 +235,7 @@ func (fx *perf01Fixture) oracleMainPrice(t *testing.T, store domain.Store, i int
 		Product: product, Variants: perf01OracleVariants(i, fx.asOf), Store: store,
 		Settings: fx.settings, Locks: locks, Overrides: fx.overrides,
 		ActiveCampaigns: activeCampaigns, AllCampaigns: allCampaigns,
-		Widget: widget, StoreDefaultVariantID: storeDefault, AsOf: fx.asOf,
+		Widget: widget, StoreDefaultVariantID: storeDefault, UsePublicStock: true, AsOf: fx.asOf,
 	})
 	if err != nil {
 		t.Fatalf("oracle pricing failed for product %d: %v", i, err)

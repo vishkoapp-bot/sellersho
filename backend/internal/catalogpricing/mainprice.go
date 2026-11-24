@@ -5,9 +5,10 @@
 //     deals-widget discount and the winning display campaign applied exactly
 //     as handleProductsList applies them;
 //   - the per-variant prices (ResolveVariantsAt, same inputs);
-//   - the card pick order from src/utils/cardPrice.ts: the store's default
-//     variant, then the product isDefault variant, then the first active
-//     priced variant; otherwise the product-level price.
+//   - the card pick order from src/utils/cardPrice.ts for an authoritative
+//     public stock snapshot: purchasable store default, cheapest
+//     purchasable SKU, first active priced SKU, then product-level price.
+//     Inputs without the projection retain the historical default choice.
 //
 // PriceMin/PriceMax mirror buildProductResponse: over active priced variants
 // (post-sale prices); a zero-variant product reports the product price as
@@ -26,7 +27,11 @@
 package catalogpricing
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
@@ -46,7 +51,9 @@ type MainPriceInput struct {
 	AllCampaigns          []domain.SellerDiscountCampaign
 	Widget                *pricing.DealsWidgetConfig
 	StoreDefaultVariantID string
-	AsOf                  time.Time
+	// Apply the public card rule with the same raw-stock fields sent in the DTO.
+	UsePublicStock bool
+	AsOf           time.Time
 }
 
 // MainPrice carries public price data only, never reference/supplier costs.
@@ -127,6 +134,13 @@ func ResolveMainPrice(input MainPriceInput) (MainPrice, error) {
 			}
 		}
 	}
+	if input.UsePublicStock {
+		picked = nil
+		if id := SelectPublicCardVariant(input.Product, input.Variants, variantPrices, input.StoreDefaultVariantID); id != "" {
+			price := variantPrices[id]
+			picked = &price
+		}
+	}
 	if picked != nil {
 		out.Price = picked.Price
 		out.OriginalPrice = picked.OriginalPrice
@@ -155,6 +169,82 @@ func ResolveMainPrice(input MainPriceInput) (MainPrice, error) {
 
 	out.ValidUntil = earliestBoundary(input, input.AsOf)
 	return out, nil
+}
+
+func normalizedDefaultName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\u200c' || r == '\u200d' || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, name)
+}
+
+// DisplayVariantName is shared by the public DTO and the price-index selector
+// so the frontend and index see the same synthetic-name exclusions.
+func DisplayVariantName(p domain.Product, v domain.ProductVariant, variantCount int) string {
+	if (p.ProductType != "variable" && variantCount <= 1) || normalizedDefaultName(v.Name) != "پیشفرض" {
+		return v.Name
+	}
+	keys := make([]string, 0, len(v.Attributes))
+	for key := range v.Attributes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var values []string
+	for _, key := range keys {
+		raw := v.Attributes[key]
+		if raw == nil {
+			continue
+		}
+		value := fmt.Sprint(raw) // preserve the historical DTO's scalar labels (e.g. size 42)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		return p.Title
+	}
+	return strings.Join(values, " / ")
+}
+
+// SelectPublicCardVariant mirrors the Batch-9 public card rule over the
+// authoritative stock snapshot: purchasable store default, then cheapest
+// purchasable effective price, then first active priced row in DTO order.
+func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant, prices map[string]VariantPrice, storeDefault string) string {
+	var cheapest, first string
+	var best int64
+	for _, v := range variants {
+		if (v.InventoryMode != "" && !v.IsActive) || (p.ProductType == "variable" && normalizedDefaultName(DisplayVariantName(p, v, len(variants))) == "پیشفرض") {
+			continue
+		}
+		vp, ok := prices[v.ID]
+		if !ok || vp.PricingError != "" {
+			continue
+		}
+		if first == "" {
+			first = v.ID
+		}
+		minimum := max(v.MinCartQty, 1)
+		stock := v.Stock
+		if v.InventoryMode != "tracked" && p.ProductType != "variable" && p.SchemaVersion != 2 && stock <= 0 {
+			stock = p.Stock
+		}
+		purchasable := p.IsActive && stock >= minimum && (v.MaxCartQty == nil || *v.MaxCartQty >= minimum)
+		if !purchasable {
+			continue
+		}
+		if v.ID == storeDefault && (!(p.ProductType == "variable" || p.SchemaVersion == 2) || vp.Price > 0) {
+			return v.ID
+		}
+		if vp.Price > 0 && (cheapest == "" || vp.Price < best) {
+			cheapest, best = v.ID, vp.Price
+		}
+	}
+	if cheapest != "" {
+		return cheapest
+	}
+	return first
 }
 
 // earliestBoundary returns the nearest future instant at which the

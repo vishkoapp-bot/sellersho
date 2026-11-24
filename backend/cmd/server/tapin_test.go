@@ -405,6 +405,9 @@ type tapinQuoteResponse struct {
 // warehouse leg in the same cart keeps the formula fare.
 func TestTapinQuoteConnectedLegPricedFromInquiryMixedCart(t *testing.T) {
 	rp := tapinTestSetup(t)
+	if _, err := rp.db.Exec(`UPDATE product_variants SET weight_grams=NULL WHERE product_id='p-tapin'`); err != nil {
+		t.Fatal(err)
+	}
 	mock := newTapinMock(t)
 
 	rec := tapinQuoteRequest(t, rp, `{"productId":"p-tapin","quantity":2},{"productId":"p-central","quantity":1}`, tapinQuoteDestQom)
@@ -510,6 +513,9 @@ func TestTapinQuoteVariantWeightAndDims(t *testing.T) {
 // type 7, and a sub-1kg parcel is padded via package_weight.
 func TestTapinQuoteIntraCityAndSubKgPadding(t *testing.T) {
 	rp := tapinTestSetup(t)
+	if _, err := rp.db.Exec(`UPDATE product_variants SET weight_grams=NULL WHERE product_id='p-tapin'`); err != nil {
+		t.Fatal(err)
+	}
 	mock := newTapinMock(t)
 
 	rec := tapinQuoteRequest(t, rp, `{"productId":"p-tapin","quantity":1}`, `{"province":"تهران","city":"تهران","address":"x","postalCode":"1111111111"}`)
@@ -575,7 +581,7 @@ func TestTapinQuoteServiceNotActivatedFallsBackToFormula(t *testing.T) {
 	if calls := mock.calls("/check-price/"); len(calls) != 1 {
 		t.Fatalf("check-price calls = %d, want 1", len(calls))
 	}
-	lines, err := resolveQuoteLines(ctx, rp.catalogRepo, rp.supplierRepo, []shippingQuoteItemReq{{ProductID: "p-tapin", Quantity: 1}})
+	lines, err := resolveQuoteLines(ctx, rp.catalogRepo, rp.supplierRepo, []shippingQuoteItemReq{{ProductID: "p-tapin", VariantID: "33333333-3333-3333-3333-333333333333", Quantity: 1}})
 	if err != nil {
 		t.Fatalf("resolve lines: %v", err)
 	}

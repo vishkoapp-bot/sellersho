@@ -243,7 +243,11 @@ func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIn
 		where = append(where, `p.is_original=`+arg(*filter.IsOriginal))
 	}
 	if filter.InStockOnly {
-		where = append(where, `p.stock>0`)
+		storeIDExpr := ""
+		if scoped {
+			storeIDExpr = "scope_store.id"
+		}
+		where = append(where, codedProductInStock(storeIDExpr))
 	}
 	if filter.Search != "" {
 		searchWhere, searchRank := buildSearchCondition(filter.Search, arg, hasCategories)

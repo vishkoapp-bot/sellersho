@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,7 +79,7 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 
-	reservedProducts, err := reserveOrderInventory(ctx, orderRecord, catalogRepo, redisClient, *expiresAt)
+	reservedProducts, err := orderRepo.ReserveCodedOrderInventory(ctx, redisClient, orderID, *expiresAt)
 	if err != nil {
 		if errors.Is(err, repository.ErrPaymentExpired) {
 			writePaymentError(w, http.StatusConflict, "payment_expired", "مهلت پرداخت سفارش تمام شده است")
@@ -255,8 +254,10 @@ func handleShaparakCallback(
 			productQuantities[ref] += item.Quantity
 		}
 		productIDs := make([]repository.InventoryHoldRef, 0, len(productQuantities))
-		for ref, quantity := range productQuantities {
+		for ref := range productQuantities {
 			productIDs = append(productIDs, ref)
+		}
+		for ref, quantity := range productQuantities {
 			held, holdErr := redisClient.HasInventoryHold(ctx, existing.OrderID, ref.ProductID, ref.VariantID, quantity)
 			if holdErr != nil {
 				writeInternalError(w, holdErr)
@@ -274,6 +275,7 @@ func handleShaparakCallback(
 				}
 				if cancelled {
 					_ = redisClient.ReleaseOrderInventory(ctx, existing.OrderID, productIDs...)
+					releaseCodedOriginHolds(ctx, orderRepo, redisClient, existing.OrderID)
 					writePaymentError(w, http.StatusConflict, "inventory_hold_expired", "رزرو پایان یافته؛ وضعیت بازپرداخت در سفارش ثبت شد")
 					return
 				}
@@ -309,6 +311,7 @@ func handleShaparakCallback(
 		}
 		if redisClient != nil {
 			_ = redisClient.ReleaseOrderInventory(ctx, existing.OrderID, productIDs...)
+			releaseCodedOriginHolds(ctx, orderRepo, redisClient, existing.OrderID)
 		}
 	} else {
 		// Paid records can belong to a cancelled/extra capture. The ordered repository
@@ -338,66 +341,14 @@ func handleShaparakCallback(
 	})
 }
 
-func reserveOrderInventory(ctx context.Context, order *domain.Order, catalogRepo *repository.CatalogRepository, redisClient *repository.RedisClient, deadline time.Time) ([]repository.InventoryHoldRef, error) {
-	// PERF-04 D-06: holds are per-SKU, not per-product. Lines for different
-	// variants of one product hold against different pools, each bounded by
-	// its own stock; the PG capture in captureOrderInventoryTx stays the
-	// authoritative backstop.
-	quantities := make(map[repository.InventoryHoldRef]int)
-	for _, item := range order.Items {
-		ref := repository.InventoryHoldRef{ProductID: item.ProductID}
-		if item.VariantID != nil {
-			ref.VariantID = *item.VariantID
-		}
-		quantities[ref] += item.Quantity
+// New reservations have exact-origin holds; callbacks for already-pending
+// orders still recognize the original SKU hold and rely on PG for capture.
+func releaseCodedOriginHolds(ctx context.Context, orderRepo PaymentOrderRepository, redis *repository.RedisClient, orderID string) {
+	if scoped, ok := orderRepo.(interface {
+		ReleaseCodedOrderOriginHolds(context.Context, *repository.RedisClient, string) error
+	}); ok {
+		_ = scoped.ReleaseCodedOrderOriginHolds(ctx, redis, orderID)
 	}
-
-	reservedProducts := make([]repository.InventoryHoldRef, 0, len(quantities))
-	for ref, qty := range quantities {
-		product, err := catalogRepo.GetProductByID(ctx, ref.ProductID)
-		if err != nil || product == nil {
-			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
-			return nil, fmt.Errorf("%w: محصول %s دیگر موجود نیست", repository.ErrInsufficientInventory, ref.ProductID)
-		}
-		availableStock := product.Stock
-		if ref.VariantID != "" {
-			// A tracked variant's own stock binds admission; legacy
-			// variants fall back to the product stock, matching the PG
-			// capture (which only enforces variant stock for tracked SKUs).
-			variantStock, mode, active, verr := catalogRepo.VariantInventory(ctx, ref.ProductID, ref.VariantID)
-			if verr != nil {
-				_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
-				if errors.Is(verr, sql.ErrNoRows) {
-					return nil, fmt.Errorf("%w: محصول %s دیگر موجود نیست", repository.ErrInsufficientInventory, ref.ProductID)
-				}
-				return nil, verr
-			}
-			if mode == "tracked" {
-				if !active {
-					_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
-					return nil, fmt.Errorf("%w: موجودی محصول %s برای پرداخت کافی نیست", repository.ErrInsufficientInventory, ref.ProductID)
-				}
-				availableStock = variantStock
-			}
-		}
-		if !time.Now().Before(deadline) {
-			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
-			return nil, repository.ErrPaymentExpired
-		}
-		holdDeadline := deadline
-		if maximum := time.Now().Add(15 * time.Minute); maximum.Before(holdDeadline) {
-			holdDeadline = maximum
-		}
-		if err := redisClient.HoldInventoryUntil(ctx, order.ID, ref.ProductID, ref.VariantID, qty, availableStock, holdDeadline); err != nil {
-			_ = redisClient.ReleaseOrderInventory(ctx, order.ID, reservedProducts...)
-			if errors.Is(err, repository.ErrInsufficientInventory) {
-				return nil, fmt.Errorf("%w: موجودی محصول %s برای پرداخت کافی نیست", repository.ErrInsufficientInventory, ref.ProductID)
-			}
-			return nil, err
-		}
-		reservedProducts = append(reservedProducts, ref)
-	}
-	return reservedProducts, nil
 }
 
 func writeTokenResponse(w http.ResponseWriter, token, orderNumber string, amount int64, message string) {

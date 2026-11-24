@@ -135,6 +135,9 @@ func TestCheckout02QuoteRecomputeUsesSameHash(t *testing.T) {
 func checkout02CleanupLots(t *testing.T, rp *tapinRepos) {
 	t.Helper()
 	t.Cleanup(func() {
+		if _, err := rp.db.Exec(`DELETE FROM product_units WHERE product_id IN ('p-tapin','p-heavy','p-plain','p-central','p-central2')`); err != nil {
+			t.Errorf("cleanup fixture codes: %v", err)
+		}
 		if _, err := rp.db.Exec(`DELETE FROM inventory_balances WHERE product_id IN ('p-tapin','p-heavy','p-plain','p-central','p-central2')`); err != nil {
 			t.Errorf("cleanup fixture lots: %v", err)
 		}
@@ -245,5 +248,39 @@ func TestCheckout02SameLegsDifferentAllocationsHTTP(t *testing.T) {
 	_ = gap13OrderID(t, orec)
 	if got := checkout02OrderCount(t, rp); got != before+1 {
 		t.Fatalf("orders = %d, want %d after the matching submit", got, before+1)
+	}
+}
+
+func TestSpncxQuoteAndCheckoutCapCodedQuantity(t *testing.T) {
+	rp := tapinTestSetup(t)
+	checkout02CleanupLots(t, rp)
+	newTapinMock(t)
+	if _, err := rp.db.Exec(`UPDATE inventory_balances SET quantity=5 WHERE product_id='p-central' AND status='sellable'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rp.db.Exec(`UPDATE product_units SET status='quarantined' WHERE product_id='p-central' AND sequence>3`); err != nil {
+		t.Fatal(err)
+	}
+	threes := `{"productId":"p-central","quantity":3}`
+	fours := `{"productId":"p-central","quantity":4}`
+	bad := tapinQuoteRequest(t, rp, fours, tapinQuoteDestQom)
+	if bad.Code != http.StatusConflict || !strings.Contains(bad.Body.String(), "inventory_origin_unavailable") {
+		t.Fatalf("uncoded quote status=%d body=%s", bad.Code, bad.Body.String())
+	}
+	rec := tapinQuoteRequest(t, rp, threes, tapinQuoteDestQom)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("coded quote status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var q tapinQuoteResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &q); err != nil || q.QuoteID == "" {
+		t.Fatalf("coded quote: %v %s", err, rec.Body.String())
+	}
+	bad = tapinCreateOrder(t, rp, checkout02OrderBody(fours, q.QuoteID))
+	if bad.Code != http.StatusConflict || checkout02OrderCount(t, rp) != 0 {
+		t.Fatalf("uncoded checkout status=%d body=%s", bad.Code, bad.Body.String())
+	}
+	ok := tapinCreateOrder(t, rp, checkout02OrderBody(threes, q.QuoteID))
+	if ok.Code != http.StatusCreated || checkout02OrderCount(t, rp) != 1 {
+		t.Fatalf("coded checkout status=%d body=%s", ok.Code, ok.Body.String())
 	}
 }

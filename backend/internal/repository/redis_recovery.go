@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 )
@@ -27,95 +26,38 @@ func (r *OrderRepository) RebuildInventoryHolds(ctx context.Context, redisClient
 		return 0, errors.New("redis client unavailable")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT o.id, o.payment_expires_at, oi.product_id, COALESCE(oi.variant_id::text,''), oi.quantity
-		FROM orders o JOIN order_items oi ON oi.order_id = o.id
+		SELECT o.id, o.payment_expires_at FROM orders o
 		WHERE o.payment_status = 'pending' AND o.status IN ('pending','processing')
 		  AND NOT o.inventory_captured AND o.payment_expires_at > NOW()
-		ORDER BY o.id, oi.product_id, oi.variant_id`)
+		ORDER BY o.id`)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
-
-	type holdGroup struct {
-		orderID  string
+	type payableOrder struct {
+		id       string
 		deadline time.Time
-		ref      InventoryHoldRef
-		quantity int
 	}
-	var groups []*holdGroup
-	index := make(map[string]*holdGroup)
+	var orders []payableOrder
 	for rows.Next() {
-		var g holdGroup
-		var variant string
-		if err := rows.Scan(&g.orderID, &g.deadline, &g.ref.ProductID, &variant, &g.quantity); err != nil {
-			rows.Close()
-			return rebuilt, err
+		var o payableOrder
+		if err := rows.Scan(&o.id, &o.deadline); err != nil {
+			return 0, err
 		}
-		g.ref.VariantID = variant
-		key := g.orderID + "\x00" + g.ref.ProductID + "\x00" + variant
-		if existing, ok := index[key]; ok {
-			existing.quantity += g.quantity
-			continue
-		}
-		cp := g
-		index[key] = &cp
-		groups = append(groups, &cp)
+		orders = append(orders, o)
 	}
 	if err := rows.Err(); err != nil {
-		return rebuilt, err
+		return 0, err
 	}
-
+	rows.Close()
 	var failures []error
-	for _, g := range groups {
-		stock, stockErr := r.holdAvailableStock(ctx, g.ref)
-		if stockErr != nil {
-			failures = append(failures, stockErr)
-			continue
-		}
-		deadline := g.deadline
-		if maximum := time.Now().Add(15 * time.Minute); maximum.Before(deadline) {
-			deadline = maximum
-		}
-		if err := redisClient.HoldInventoryUntil(ctx, g.orderID, g.ref.ProductID, g.ref.VariantID, g.quantity, stock, deadline); err != nil {
+	for _, o := range orders {
+		refs, err := r.ReserveCodedOrderInventory(ctx, redisClient, o.id, o.deadline)
+		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		rebuilt++
+		rebuilt += len(refs)
 	}
 	return rebuilt, errors.Join(failures...)
-}
-
-// holdAvailableStock resolves the stock bound for one hold pool with the
-// same semantics as the payment-time hold (PERF-04 D-06): a tracked
-// variant's own stock binds; legacy variants and variant-less lines use
-// the product stock. A missing product or variant fails the rebuild of
-// that pool instead of guessing a bound.
-func (r *OrderRepository) holdAvailableStock(ctx context.Context, ref InventoryHoldRef) (int, error) {
-	var stock int
-	if err := r.db.QueryRowContext(ctx, `SELECT stock FROM products WHERE id=$1`, ref.ProductID).Scan(&stock); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrInsufficientInventory
-		}
-		return 0, err
-	}
-	if ref.VariantID == "" {
-		return stock, nil
-	}
-	var variantStock int
-	var mode string
-	var active bool
-	if err := r.db.QueryRowContext(ctx, `SELECT stock, COALESCE(inventory_mode,'legacy'), COALESCE(is_active, TRUE) FROM product_variants WHERE id=$1 AND product_id=$2`, ref.VariantID, ref.ProductID).Scan(&variantStock, &mode, &active); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrInsufficientInventory
-		}
-		return 0, err
-	}
-	if mode == "tracked" {
-		if !active {
-			return 0, ErrInsufficientInventory
-		}
-		return variantStock, nil
-	}
-	return stock, nil
 }

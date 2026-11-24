@@ -300,24 +300,26 @@ func auditUnitGapTx(ctx context.Context, tx *sql.Tx, product, variant, operation
 	return err
 }
 
-func selectCaptureUnitsTx(ctx context.Context, tx *sql.Tx, lots []skuAllocation, count int) (map[string][]lockedProductUnit, error) {
-	ids := make([]string, len(lots))
-	for i, a := range lots {
-		ids[i] = a.BalanceID
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,code,status,balance_id,printed_at IS NOT NULL FROM product_units
-		WHERE balance_id=ANY($1) AND status='in_stock' ORDER BY sequence,id LIMIT $2 FOR UPDATE`, pq.Array(ids), count)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	units, err := scanLockedUnits(rows)
-	if err != nil {
-		return nil, err
-	}
+func selectCaptureUnitsTx(ctx context.Context, tx *sql.Tx, lots []skuAllocation, it inventoryCaptureItem) (map[string][]lockedProductUnit, error) {
 	result := make(map[string][]lockedProductUnit)
-	for _, u := range units {
-		result[u.balance] = append(result[u.balance], u)
+	remaining := it.Quantity
+	for _, lot := range lots { // balances already locked in stable ID order
+		if remaining == 0 {
+			break
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id,code,status,balance_id,printed_at IS NOT NULL FROM product_units
+			WHERE balance_id=$1 AND product_id=$2 AND variant_id=NULLIF($3,'')::uuid AND status='in_stock'
+			ORDER BY sequence,id LIMIT $4 FOR UPDATE`, lot.BalanceID, it.ProductID, it.VariantID, min(remaining, lot.Quantity))
+		if err != nil {
+			return nil, err
+		}
+		units, err := scanLockedUnits(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		result[lot.BalanceID] = units
+		remaining -= len(units)
 	}
 	return result, nil
 }

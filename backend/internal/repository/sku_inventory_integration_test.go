@@ -613,7 +613,7 @@ func TestSKUInventoryExactCaptureCancelAndLegacyIsolation(t *testing.T) {
 	}
 }
 
-func TestSKUInventoryLegacyUntrackedCapturesWithCoverageGap(t *testing.T) {
+func TestSKUInventoryLegacyUntrackedRejectsUncodedCapture(t *testing.T) {
 	db, schema, _, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	defer tx.Rollback()
@@ -627,21 +627,17 @@ func TestSKUInventoryLegacyUntrackedCapturesWithCoverageGap(t *testing.T) {
 	if _, err := tx.Exec(`INSERT INTO order_items VALUES($1,'legacy-order','legacy',$2,1)`, item, sku); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := captureOrderInventoryTx(context.Background(), tx, "legacy-order"); err != nil {
-		t.Fatal(err)
+	if _, err := captureOrderInventoryTx(context.Background(), tx, "legacy-order"); !errors.Is(err, ErrInsufficientInventory) {
+		t.Fatalf("uncoded legacy capture: %v", err)
 	}
-	assertSingleUnitCaptureGap(t, tx, "legacy", sku, "legacy-order")
 	var units int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM product_units WHERE product_id='legacy'`).Scan(&units); err != nil || units != 0 {
 		t.Fatalf("legacy product units=%d, want 0, err=%v", units, err)
 	}
-	var qty int
-	if err := tx.QueryRow(`SELECT stock FROM product_variants WHERE id=$1`, sku).Scan(&qty); err != nil || qty != 0 {
-		t.Fatalf("legacy SKU changed %d %v", qty, err)
-	}
-	if err := tx.QueryRow(`SELECT quantity FROM inventory_balances WHERE product_id='legacy' AND variant_id IS NULL
-		AND location_key='warehouse:legacy_migration' AND status='sellable'`).Scan(&qty); err != nil || qty != 4 {
-		t.Fatalf("legacy unallocated lot quantity=%d, want 4, err=%v", qty, err)
+	var physical, captures int
+	if err := tx.QueryRow(`SELECT stock, (SELECT COUNT(*) FROM order_inventory_captures WHERE order_id='legacy-order')
+		FROM products WHERE id='legacy'`).Scan(&physical, &captures); err != nil || physical != 5 || captures != 0 {
+		t.Fatalf("failed capture physical=%d captures=%d err=%v", physical, captures, err)
 	}
 }
 

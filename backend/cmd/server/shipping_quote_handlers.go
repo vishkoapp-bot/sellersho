@@ -515,6 +515,16 @@ func handleShippingQuote(w http.ResponseWriter, r *http.Request, ctx context.Con
 		http.Error(w, `{"error":"shipping_unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
+	// Match checkout: resolve default SKU before loading weight and dimensions.
+	for i := range req.Items {
+		item := &req.Items[i]
+		resolved, resolveErr := repository.ResolveLegacyPurchaseVariant(ctx, db, item.ProductID, item.VariantID)
+		if resolveErr != nil {
+			http.Error(w, `{"error":"inventory_origin_unavailable"}`, http.StatusConflict)
+			return
+		}
+		item.VariantID = resolved
+	}
 	lines, err := resolveQuoteLines(ctx, catalogRepo, supplierRepo, req.Items)
 	if err != nil {
 		http.Error(w, `{"error":"invalid shipping quote"}`, http.StatusBadRequest)

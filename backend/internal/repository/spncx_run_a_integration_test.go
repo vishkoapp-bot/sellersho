@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -85,7 +86,7 @@ func TestSpncxVariantlessCaptureWritesResolvedIdentity(t *testing.T) {
 	}
 }
 
-func TestSpncxPreBackfillLegacyCapture(t *testing.T) {
+func TestSpncxUncodedLegacyCaptureRejected(t *testing.T) {
 	db, schema, _, _ := skuInventoryFixture(t)
 	for _, withVariant := range []bool{false, true} {
 		name := "variantless"
@@ -115,21 +116,18 @@ func TestSpncxPreBackfillLegacyCapture(t *testing.T) {
 			if _, err := tx.Exec(`INSERT INTO order_items(id,order_id,product_id,variant_id,quantity) VALUES($1,'legacy-sale-order','legacy-sale',NULLIF($2,'')::uuid,1)`, uuid.NewString(), variant); err != nil {
 				t.Fatal(err)
 			}
-			if handled, err := captureOrderInventoryTx(ctx, tx, "legacy-sale-order"); err != nil || !handled {
-				t.Fatalf("capture=%t err=%v", handled, err)
+			if handled, err := captureOrderInventoryTx(ctx, tx, "legacy-sale-order"); !handled || !errors.Is(err, ErrInsufficientInventory) {
+				t.Fatalf("uncoded capture=%t err=%v", handled, err)
 			}
-			var stock, units, gaps int
-			if err := tx.QueryRow(`SELECT stock,(SELECT COUNT(*) FROM product_units WHERE product_id='legacy-sale'),(SELECT COUNT(*) FROM inventory_movements WHERE product_id='legacy-sale' AND metadata->>'unit_coverage_gap'='true') FROM products WHERE id='legacy-sale'`).Scan(&stock, &units, &gaps); err != nil {
+			var stock, units, captures int
+			if err := tx.QueryRow(`SELECT stock,
+				(SELECT COUNT(*) FROM product_units WHERE product_id='legacy-sale'),
+				(SELECT COUNT(*) FROM order_inventory_captures WHERE order_id='legacy-sale-order')
+				FROM products WHERE id='legacy-sale'`).Scan(&stock, &units, &captures); err != nil {
 				t.Fatal(err)
 			}
-			if stock != 1 || units != 0 || gaps == 0 {
-				t.Fatalf("legacy stock=%d units=%d gaps=%d", stock, units, gaps)
-			}
-			if _, err := restoreOrderInventoryTx(ctx, tx, "legacy-sale-order"); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.QueryRow(`SELECT stock FROM products WHERE id='legacy-sale'`).Scan(&stock); err != nil || stock != 2 {
-				t.Fatalf("restore stock=%d err=%v", stock, err)
+			if stock != 2 || units != 0 || captures != 0 {
+				t.Fatalf("legacy stock=%d units=%d captures=%d", stock, units, captures)
 			}
 		})
 	}
@@ -167,8 +165,21 @@ func TestSpncxQuantityOnlyReturnCaptureBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			if mode != "pre-cutover" {
-				if _, err := captureOrderInventoryTx(ctx, tx, "return-boundary-order"); err != nil {
+				// Model a paid Run A quantity-only capture; never use new-sale
+				// code to create a historical row during this test.
+				if _, err := tx.Exec(`UPDATE inventory_balances SET quantity=0 WHERE id='return-source'`); err != nil {
 					t.Fatal(err)
+				}
+				variantQty := 0
+				if mode == "tracked" {
+					variantQty = 2
+				}
+				if _, err := tx.Exec(`INSERT INTO order_inventory_captures(order_item_id,order_id,product_id,variant_id,quantity,variant_quantity,inventory_mode,allocations)
+					VALUES($1,'return-boundary-order','return-boundary',$2,2,$3,$4,'[{"balanceId":"return-source","quantity":2,"unit_codes":[]}]')`, item, variant, variantQty, inventoryMode); err != nil {
+					t.Fatal(err)
+				}
+				if handled, err := captureOrderInventoryTx(ctx, tx, "return-boundary-order"); err != nil || !handled {
+					t.Fatalf("historical capture replay=%t err=%v", handled, err)
 				}
 			}
 			if _, err := tx.Exec(`INSERT INTO customer_returns(id,order_id) VALUES($1,'return-boundary-order')`, ret); err != nil {
@@ -199,5 +210,46 @@ func TestSpncxQuantityOnlyReturnCaptureBoundary(t *testing.T) {
 				t.Fatalf("stock=%d units=%d holding=%d restored=%d gaps=%d", stock, units, holding, restored, gaps)
 			}
 		})
+	}
+}
+
+func TestSpncxHistoricalQuantityOnlyCancelRestoresPhysicalButNotSaleCapacity(t *testing.T) {
+	db, schema, _, _ := skuInventoryFixture(t)
+	ctx := context.Background()
+	tx := skuTestTx(t, db, schema)
+	defer tx.Rollback()
+	sku, item := uuid.NewString(), uuid.NewString()
+	for _, step := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO products(id,supplier_id) VALUES('old-sold','s')`, nil},
+		{`INSERT INTO product_variants(id,product_id,spnc,inventory_mode) VALUES($1,'old-sold','OLD-CANCEL','tracked')`, []any{sku}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity)
+			VALUES('old-lot','old-sold','s',$1,'supplier','supplier','supplier-warehouse:sw1','sellable',0)`, []any{sku}},
+		{`INSERT INTO orders(id,status,payment_status,inventory_captured) VALUES('old-paid','processing','paid',TRUE)`, nil},
+		{`INSERT INTO order_items(id,order_id,product_id,variant_id,quantity) VALUES($1,'old-paid','old-sold',$2,1)`, []any{item, sku}},
+		{`INSERT INTO order_inventory_captures(order_item_id,order_id,product_id,variant_id,quantity,variant_quantity,inventory_mode,allocations)
+			VALUES($1,'old-paid','old-sold',$2,1,1,'tracked','[{"balanceId":"old-lot","quantity":1,"unit_codes":[]}]')`, []any{item, sku}},
+	} {
+		if _, err := tx.Exec(step.query, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if handled, err := restoreOrderInventoryTx(ctx, tx, "old-paid"); err != nil || !handled {
+			t.Fatalf("historical cancellation: %t %v", handled, err)
+		}
+	}
+	var physical, units, restored int
+	if err := tx.QueryRow(`SELECT b.quantity,(SELECT COUNT(*) FROM product_units WHERE product_id=b.product_id),c.restored_quantity
+		FROM inventory_balances b JOIN order_inventory_captures c ON c.product_id=b.product_id WHERE b.id='old-lot'`).Scan(&physical, &units, &restored); err != nil || physical != 1 || units != 0 || restored != 1 {
+		t.Fatalf("historical cancellation: physical=%d units=%d restored=%d err=%v", physical, units, restored, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveInventoryOrigins(ctx, skuScopedDB(t, schema), "old-sold", sku, "supplier_direct", 1); !errors.Is(err, ErrInsufficientInventory) {
+		t.Fatalf("uncoded return to physical stock became purchasable: %v", err)
 	}
 }

@@ -159,16 +159,19 @@ func ResolveInventoryOrigins(ctx context.Context, db *sql.DB, productID, variant
 	if routing == "supplier_direct" {
 		kind = "supplier"
 	}
-	rows, err := db.QueryContext(ctx, `SELECT COALESCE(b.warehouse_id,''),COALESCE(b.supplier_warehouse_id,''),COALESCE(w.name,sw.name,''),SUM(b.quantity)
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(b.warehouse_id,''),COALESCE(b.supplier_warehouse_id,''),COALESCE(w.name,sw.name,''),SUM(LEAST(b.quantity, coded.quantity))
  FROM inventory_balances b JOIN products p ON p.id=b.product_id
  LEFT JOIN product_variants pv ON pv.id=NULLIF($2,'')::uuid AND pv.product_id=p.id
+ JOIN LATERAL (SELECT count(*) AS quantity FROM product_units u
+ WHERE u.balance_id=b.id AND u.product_id=p.id AND u.variant_id=pv.id AND u.status='in_stock') coded ON TRUE
  LEFT JOIN warehouses w ON w.id=b.warehouse_id AND w.is_active
  LEFT JOIN supplier_warehouses sw ON sw.id=b.supplier_warehouse_id AND sw.supplier_id=p.supplier_id AND sw.is_active
- WHERE b.product_id=$1 AND b.status='sellable' AND ($2='' OR pv.id IS NOT NULL) AND
+ WHERE b.product_id=$1 AND b.status='sellable' AND p.is_active AND pv.is_active
+ AND (p.schema_version<2 OR pv.inventory_mode='tracked') AND
  ((pv.inventory_mode='tracked' AND b.variant_id=pv.id) OR (COALESCE(pv.inventory_mode,'legacy')<>'tracked' AND b.variant_id IS NULL))
  AND (($3='warehouse' AND w.id IS NOT NULL AND b.supplier_warehouse_id IS NULL AND b.location_type IN ('warehouse','bin')) OR
  ($3='supplier' AND sw.id IS NOT NULL AND b.warehouse_id IS NULL AND b.supplier_id=p.supplier_id AND b.location_type='supplier'))
- GROUP BY b.warehouse_id,b.supplier_warehouse_id,w.name,sw.name HAVING SUM(b.quantity)>0
+ GROUP BY b.warehouse_id,b.supplier_warehouse_id,w.name,sw.name HAVING SUM(LEAST(b.quantity, coded.quantity))>0
  ORDER BY b.warehouse_id COLLATE "C",b.supplier_warehouse_id COLLATE "C"`, productID, variantID, kind)
 	if err != nil {
 		return nil, err

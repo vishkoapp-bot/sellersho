@@ -53,6 +53,29 @@ func jobPaymentFixture(t *testing.T, db *sql.DB) (string, string) {
 func TestPaymentInitiationHoldEndsAtRecordedDeadline(t *testing.T) {
 	db := opsHTTPDB(t)
 	id, product := jobPaymentFixture(t, db)
+	var supplier string
+	if err := db.QueryRow(`SELECT supplier_id FROM products WHERE id=$1`, product).Scan(&supplier); err != nil {
+		t.Fatal(err)
+	}
+	sku, origin, lot := uuid.NewString(), "job-warehouse-"+uuid.NewString()[:8], uuid.NewString()
+	spnc := "JOB" + strings.ToUpper(sku[:8])
+	for _, step := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO product_variants(id,product_id,spnc,variant_name,inventory_mode) VALUES($1,$2,$3,'payment test','tracked')`, []any{sku, product, spnc}},
+		{`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name) VALUES($1,$1,1,1,'Test province','Test city')`, []any{origin}},
+		{`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,warehouse_id)
+			VALUES($1,$2,$3,$4,'supplier','warehouse',$5,'sellable',1,$6)`, []any{lot, product, supplier, sku, "warehouse:" + origin, origin}},
+		{`INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id) VALUES($1,$2,$3,1,'in_stock',$4)`, []any{spnc + "-X0001", sku, product, lot}},
+		{`UPDATE order_items SET variant_id=$2 WHERE order_id=$1`, []any{id, sku}},
+		{`INSERT INTO order_item_origins(id,order_id,order_item_id,leg_index,origin_type,supplier_id,warehouse_id,origin_label,quantity)
+			SELECT 'job-origin-'||id,order_id,id,0,'warehouse',$2,$3,'payment test',quantity FROM order_items WHERE order_id=$1`, []any{id, supplier, origin}},
+	} {
+		if _, err := db.Exec(step.query, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	redis := &repository.RedisClient{Client: testredis.Open(t, os.Getenv("SELLERSHO_TEST_REDIS_URL"), os.Getenv("SELLERSHO_TEST_REDIS_TOKEN"))}
 	deadline := time.Now().Add(2200 * time.Millisecond)
 	if _, err := db.Exec(`UPDATE orders SET payment_expires_at=$2 WHERE id=$1`, id, deadline); err != nil {
@@ -65,7 +88,7 @@ func TestPaymentInitiationHoldEndsAtRecordedDeadline(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	ttl, err := redis.Client.PTTL(ctx, "inventory:hold_qty:"+product+":"+id).Result()
+	ttl, err := redis.Client.PTTL(ctx, "inventory:hold_qty:"+product+":"+sku+":w:"+origin+":"+id).Result()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +101,7 @@ func TestPaymentInitiationHoldEndsAtRecordedDeadline(t *testing.T) {
 		t.Fatalf("hold quantity key TTL out of range: TTL=%s", ttl)
 	}
 	time.Sleep(time.Until(deadline) + 30*time.Millisecond)
-	held, err := redis.HasInventoryHold(ctx, id, product, "", 1)
+	held, err := redis.HasInventoryHold(ctx, id, product, sku, 1)
 	if err != nil || held {
 		t.Fatalf("hold survived payment deadline: held=%v err=%v", held, err)
 	}

@@ -402,21 +402,15 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 		}
 		return true, nil
 	}
+	if len(items) == 0 {
+		return true, ErrInsufficientInventory
+	}
 	for _, it := range items {
-		if it.VariantID != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE order_items SET variant_id=$2 WHERE id=$1 AND variant_id IS NULL`, it.ID, it.VariantID); err != nil {
-				return true, err
-			}
+		if it.VariantID == "" {
+			return true, ErrInsufficientInventory
 		}
-		var supplier string
-		var legacy bool
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(p.supplier_id,''),COALESCE(v.inventory_mode,'legacy')='legacy' FROM products p LEFT JOIN product_variants v ON v.id=NULLIF($2,'')::uuid AND v.product_id=p.id WHERE p.id=$1`, it.ProductID, it.VariantID).Scan(&supplier, &legacy); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE order_items SET variant_id=$2 WHERE id=$1 AND variant_id IS NULL`, it.ID, it.VariantID); err != nil {
 			return true, err
-		}
-		if legacy {
-			if err := ensureCanonicalCoverageTx(ctx, tx, it.ProductID, supplier); err != nil {
-				return true, err
-			}
 		}
 	}
 	// Validate cumulative SKU limits, including separate addon lines.
@@ -448,8 +442,12 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 	for _, it := range items {
 		var version int
 		var typ string
-		if err := tx.QueryRowContext(ctx, `SELECT schema_version,product_type FROM products WHERE id=$1 FOR UPDATE`, it.ProductID).Scan(&version, &typ); err != nil {
+		var activeProduct bool
+		if err := tx.QueryRowContext(ctx, `SELECT schema_version,product_type,is_active FROM products WHERE id=$1 FOR UPDATE`, it.ProductID).Scan(&version, &typ, &activeProduct); err != nil {
 			return true, err
+		}
+		if !activeProduct {
+			return true, ErrInsufficientInventory
 		}
 		if err := ValidateProductSKUSelection(version, typ, it.VariantID); err != nil {
 			return true, err
@@ -466,8 +464,7 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 			if version >= 2 && mode != "tracked" {
 				return true, fmt.Errorf("typed products require tracked SKU inventory")
 			}
-			// Tracked SKU stock excludes staging and sibling variants. A zero
-			// projection cannot support a quantity-only capture for this SKU.
+			// Tracked SKU stock excludes staging and sibling variants.
 			if mode == "tracked" && variantStock == 0 {
 				return true, ErrInsufficientInventory
 			}
@@ -477,7 +474,7 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 					n := int(maximum.Int32)
 					max = &n
 				}
-				// The locked lots decide stock admission, including the cutover gap.
+				// Locked, attributed, coded lots decide stock admission.
 				if err := ValidateSKUQuantity("legacy", active, 0, minimum, max, totals[key]); err != nil {
 					return true, err
 				}
@@ -504,7 +501,7 @@ func captureOrderInventoryTx(ctx context.Context, tx *sql.Tx, orderID string) (b
 }
 
 func consumeInventoryBalancesAtOriginTx(ctx context.Context, tx *sql.Tx, it inventoryCaptureItem, mode string, origin inventoryOrigin) ([]skuAllocation, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND (($3='tracked' AND variant_id=NULLIF($2,'')::uuid) OR ($3<>'tracked' AND variant_id IS NULL)) AND ((variant_id IS NULL AND location_key='warehouse:legacy_migration' AND reconciled AND $3<>'tracked') OR ($4='warehouse' AND warehouse_id=$5 AND supplier_warehouse_id IS NULL AND location_type IN ('warehouse','bin')) OR ($4='supplier' AND supplier_id=$6 AND supplier_warehouse_id=$7 AND warehouse_id IS NULL AND location_type='supplier')) ORDER BY id FOR UPDATE`, it.ProductID, it.VariantID, mode, origin.Kind, origin.WarehouseID, origin.SupplierID, origin.SupplierWarehouseID)
+	rows, err := tx.QueryContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND status='sellable' AND (($3='tracked' AND variant_id=NULLIF($2,'')::uuid) OR ($3<>'tracked' AND variant_id IS NULL)) AND (($4='warehouse' AND warehouse_id=$5 AND supplier_warehouse_id IS NULL AND location_type IN ('warehouse','bin')) OR ($4='supplier' AND supplier_id=$6 AND supplier_warehouse_id=$7 AND warehouse_id IS NULL AND location_type='supplier')) ORDER BY id FOR UPDATE`, it.ProductID, it.VariantID, mode, origin.Kind, origin.WarehouseID, origin.SupplierID, origin.SupplierWarehouseID)
 	if err != nil {
 		return nil, err
 	}
@@ -525,26 +522,10 @@ func consumeInventoryBalancesAtOriginTx(ctx context.Context, tx *sql.Tx, it inve
 	}
 	rows.Close()
 
-	if total == 0 {
-		var stock int
-		var staged bool
-		if err := tx.QueryRowContext(ctx, `SELECT stock,EXISTS(
-			SELECT 1 FROM inventory_balances b WHERE b.product_id=$1 AND b.warehouse_id=$2
-			  AND ($2<>'' AND $3='warehouse') AND b.quantity>0
-			  AND b.status IN ('quarantine','qc_accepted','physical')
-			  AND (($4='tracked' AND b.variant_id=NULLIF($5,'')::uuid) OR ($4<>'tracked' AND b.variant_id IS NULL))
-		) FROM products WHERE id=$1`, it.ProductID, origin.WarehouseID, origin.Kind, mode, it.VariantID).Scan(&stock, &staged); err != nil {
-			return nil, err
-		}
-		if stock < it.Quantity || staged {
-			return nil, ErrInsufficientInventory
-		}
+	if total < it.Quantity {
+		return nil, ErrInsufficientInventory
 	}
-	if total < it.Quantity && spncxStrict {
-		return nil, ErrUnitCoverageGap
-	}
-	take := min(total, it.Quantity)
-	unitsByBalance, err := selectCaptureUnitsTx(ctx, tx, available, take)
+	unitsByBalance, err := selectCaptureUnitsTx(ctx, tx, available, it)
 	if err != nil {
 		return nil, err
 	}
@@ -552,19 +533,13 @@ func consumeInventoryBalancesAtOriginTx(ctx context.Context, tx *sql.Tx, it inve
 	for _, units := range unitsByBalance {
 		serialized += len(units)
 	}
-	if serialized < take && spncxStrict {
-		return nil, ErrUnitCoverageGap
+	if serialized != it.Quantity {
+		return nil, ErrInsufficientInventory
 	}
-	if err := auditUnitGapTx(ctx, tx, it.ProductID, it.VariantID, "capture", it.OrderID, it.Quantity, serialized); err != nil {
-		return nil, err
-	}
-	remaining := take - serialized
 	taken := make([]skuAllocation, 0, len(available))
 	for _, a := range available {
 		units := unitsByBalance[a.BalanceID]
-		quantityOnly := min(remaining, a.Quantity-len(units))
-		a.Quantity = len(units) + quantityOnly
-		remaining -= quantityOnly
+		a.Quantity = len(units)
 		if a.Quantity == 0 {
 			continue
 		}

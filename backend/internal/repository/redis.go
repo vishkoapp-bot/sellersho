@@ -78,8 +78,14 @@ func (r *RedisClient) SetJSON(ctx context.Context, key string, val interface{}, 
 // variants. VariantID "" addresses the legacy product-level pool, so holds
 // placed before PERF-04 keep their exact key.
 type InventoryHoldRef struct {
-	ProductID string
-	VariantID string
+	ProductID           string
+	VariantID           string
+	WarehouseID         string
+	SupplierWarehouseID string
+}
+
+func (ref InventoryHoldRef) scoped() bool {
+	return ref.WarehouseID != "" || ref.SupplierWarehouseID != ""
 }
 
 // holdPool renders the pool segment of the hold keys.
@@ -87,7 +93,14 @@ func holdPool(ref InventoryHoldRef) string {
 	if ref.VariantID == "" {
 		return ref.ProductID
 	}
-	return ref.ProductID + ":" + ref.VariantID
+	pool := ref.ProductID + ":" + ref.VariantID
+	if ref.WarehouseID != "" {
+		return pool + ":w:" + ref.WarehouseID
+	}
+	if ref.SupplierWarehouseID != "" {
+		return pool + ":s:" + ref.SupplierWarehouseID
+	}
+	return pool
 }
 
 // holdKeys returns the ZSET (expiry index), the maintained aggregate of live
@@ -144,11 +157,14 @@ func (r *RedisClient) HoldInventory(ctx context.Context, orderID, productID, var
 // phantom can delay a hold but never admit an oversell — and the scan runs only
 // on the reject path, never on the hot accept path.
 func (r *RedisClient) HoldInventoryUntil(ctx context.Context, orderID, productID, variantID string, qty, availableStock int, deadline time.Time) error {
+	return r.holdInventoryRefUntil(ctx, orderID, InventoryHoldRef{ProductID: productID, VariantID: variantID}, qty, availableStock, deadline)
+}
+
+func (r *RedisClient) holdInventoryRefUntil(ctx context.Context, orderID string, ref InventoryHoldRef, qty, availableStock int, deadline time.Time) error {
 	if qty <= 0 {
 		return nil
 	}
 
-	ref := InventoryHoldRef{ProductID: productID, VariantID: variantID}
 	holdsKey, aggregateKey, holdKeyPrefix := holdKeys(ref)
 	member := orderID
 	now := float64(time.Now().UnixMilli()) / 1000
@@ -237,7 +253,10 @@ return 1
 // quantity (PERF-04); a missing aggregate is left missing so the next hold
 // rebuilds it from a scan instead of under-counting live holders.
 func (r *RedisClient) ReleaseInventory(ctx context.Context, orderID, productID, variantID string) error {
-	ref := InventoryHoldRef{ProductID: productID, VariantID: variantID}
+	return r.releaseInventoryRef(ctx, orderID, InventoryHoldRef{ProductID: productID, VariantID: variantID})
+}
+
+func (r *RedisClient) releaseInventoryRef(ctx context.Context, orderID string, ref InventoryHoldRef) error {
 	holdsKey, aggregateKey, holdKeyPrefix := holdKeys(ref)
 	const script = `
 local qty = tonumber(redis.call('GET', ARGV[2] .. ARGV[1]) or '0')
@@ -312,7 +331,7 @@ return 0
 func (r *RedisClient) ReleaseOrderInventory(ctx context.Context, orderID string, refs ...InventoryHoldRef) error {
 	var failures []error
 	for i, ref := range refs {
-		if err := r.ReleaseInventory(ctx, orderID, ref.ProductID, ref.VariantID); err != nil {
+		if err := r.releaseInventoryRef(ctx, orderID, ref); err != nil {
 			log.Printf("redis_release_failed index=%d error=%v", i, err)
 			failures = append(failures, err)
 		}

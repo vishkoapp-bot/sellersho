@@ -356,8 +356,18 @@ func isReservedDefaultVariantName(name string) bool {
 	}, name) == "پیشفرض"
 }
 
+// applyCodedStock exposes quantities, never the unit identities behind them.
+func applyCodedStock(variants []domain.ProductVariant, stocks map[string]int) int {
+	var total int
+	for i := range variants {
+		variants[i].Stock = stocks[variants[i].ID]
+		total += variants[i].Stock
+	}
+	return total
+}
+
 // buildProductResponse renders one product in the frozen 19-key list
-// shape. discountEligible is true for every listed product: live
+// shape. The top-level primaryStoreEligible flag is per-product: live
 // returned true for all 40 active central products and no eligibility
 // rule beyond that observation was proven, so no narrower rule is
 // invented here.
@@ -981,6 +991,11 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		storeIDForVariants = store.ID
 	}
 	variantsByProduct, _ := catalogRepo.GetVariantsByProductIDsForStore(ctx, ids, storeIDForVariants)
+	codedStocks, err := catalogRepo.CodedStockByVariant(ctx, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	defaultsByProduct, _ := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, ids)
 
 	var storeVal domain.Store
@@ -1036,6 +1051,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			displayCampaignName = d.CampaignName
 		}
 		variants := variantsByProduct[p.ID]
+		p.Stock = applyCodedStock(variants, codedStocks)
 		item := buildProductResponse(p, res, variants, priceVariantsForResponse(p, variants, storeVal, settings, locks, overrides, displayCampaigns), defaultsByProduct[p.ID])
 		item.CampaignName = displayCampaignName
 		if viewStore && viewer.canSeeSupplierFields(reqStore, p.SupplierID) {
@@ -1107,6 +1123,11 @@ func assembleProductDetail(ctx context.Context, catalogRepo *repository.CatalogR
 		storeIDForVariants = store.ID
 	}
 	variants, _ := catalogRepo.GetProductVariantsForStore(ctx, p.ID, storeIDForVariants)
+	codedStocks, err := catalogRepo.CodedStockByVariant(ctx, []string{p.ID})
+	if err != nil {
+		return ProductDetailResponse{}, err
+	}
+	p.Stock = applyCodedStock(variants, codedStocks)
 	storeDefaultID := ""
 	if defaults, derr := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, []string{p.ID}); derr == nil {
 		storeDefaultID = defaults[p.ID]

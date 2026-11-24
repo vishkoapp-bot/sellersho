@@ -1174,10 +1174,9 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	}
 	if err != nil {
 		failure := captureFailureCode(err)
-		mode := "pre_strict"
-		if spncxStrict {
-			mode = "strict"
-		}
+		// All new captures enforce SPNCX coverage independently of the
+		// historical return/stock-movement rollout setting.
+		const mode = "strict"
 		log.Printf("spncx_failed_capture order_id=%s failure=%s mode=%s", payment.OrderID, failure, mode)
 		const queueSQL = `INSERT INTO spncx_failed_captures(order_id,failure,mode) VALUES($1,$2,$3) ON CONFLICT(order_id) DO NOTHING`
 		// Undo the entire admission attempt. Publish the queue row while

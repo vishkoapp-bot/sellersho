@@ -111,7 +111,7 @@ func (r *CatalogRepository) GetProducts(ctx context.Context, filter ProductFilte
 	}
 
 	if filter.InStockOnly {
-		whereClauses = append(whereClauses, "p.stock > 0")
+		whereClauses = append(whereClauses, codedProductInStock(""))
 	}
 
 	// D42 list-only: the public list returns active products only.

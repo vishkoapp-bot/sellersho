@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -10,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestAuditSupplyWarehouseOriginCapturesWithCoverageGap(t *testing.T) {
+func TestWarehouseCaptureCannotBorrowSupplierUnits(t *testing.T) {
 	db, schema, red, _ := skuInventoryFixture(t)
 	tx := skuTestTx(t, db, schema)
 	defer tx.Rollback()
@@ -24,11 +23,13 @@ func TestAuditSupplyWarehouseOriginCapturesWithCoverageGap(t *testing.T) {
 	if _, err := tx.Exec(`UPDATE order_item_origins SET origin_type='warehouse',warehouse_id='w1',supplier_warehouse_id=NULL WHERE order_item_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := captureOrderInventoryTx(context.Background(), tx, "origin-order"); err != nil {
-		t.Fatal(err)
+	if _, err := captureOrderInventoryTx(context.Background(), tx, "origin-order"); !errors.Is(err, ErrInsufficientInventory) {
+		t.Fatalf("warehouse capture borrowed supplier codes: %v", err)
 	}
-	assertSingleUnitCaptureGap(t, tx, "p", red, "origin-order")
-	assertCaptureWithoutAllocations(t, tx, id)
+	var captures int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM order_inventory_captures WHERE order_id='origin-order'`).Scan(&captures); err != nil || captures != 0 {
+		t.Fatalf("failed capture wrote %d records: %v", captures, err)
+	}
 	var qty int
 	if err := tx.QueryRow(`SELECT quantity FROM inventory_balances
 		WHERE product_id='p' AND variant_id=$1 AND supplier_warehouse_id='sw1' AND status='sellable'`, red).Scan(&qty); err != nil || qty != 1 {
@@ -36,44 +37,19 @@ func TestAuditSupplyWarehouseOriginCapturesWithCoverageGap(t *testing.T) {
 	}
 }
 
-func assertSingleUnitCaptureGap(t *testing.T, tx *sql.Tx, productID, variantID, orderID string) {
-	t.Helper()
-	var gaps, matching int
-	if err := tx.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE reference_type='unit_coverage_gap'
-		AND quantity=1 AND metadata->>'variant_id'=$2 AND metadata->>'requested'='1'
-		AND metadata->>'allocated'='0' AND metadata->>'shortfall'='1')
-		FROM inventory_movements WHERE product_id=$1 AND metadata->>'unit_coverage_gap'='true'
-		AND metadata->>'operation'='capture' AND metadata->>'order_id'=$3`, productID, variantID, orderID).Scan(&gaps, &matching); err != nil || gaps != 1 || matching != 1 {
-		t.Fatalf("capture gap rows=%d, matching=%d, want 1/1, err=%v", gaps, matching, err)
-	}
-}
-
-func assertCaptureWithoutAllocations(t *testing.T, tx *sql.Tx, itemID string) {
-	t.Helper()
-	var units int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM order_item_units WHERE order_item_id=$1`, itemID).Scan(&units); err != nil || units != 0 {
-		t.Fatalf("captured units=%d, want 0, err=%v", units, err)
-	}
-	var captures int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM order_inventory_captures
-		WHERE order_item_id=$1 AND variant_quantity=0 AND allocations='[]'::jsonb`, itemID).Scan(&captures); err != nil || captures != 1 {
-		t.Fatalf("capture rows with no allocations=%d, want 1, err=%v", captures, err)
-	}
-}
-
 func TestInventoryOriginExactAllocationAndRestore(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, warehouse, swh, lotKind, lotWarehouse, lotSwh string
-		inactive, wantErr, wantGap                                bool
+		inactive, wantErr                                         bool
 	}{
-		{"warehouse to supplier captures with gap", "supplier", "", "sw1", "warehouse", "w1", "", false, false, true},
-		{"other warehouse captures with gap", "warehouse", "w2", "", "warehouse", "w1", "", false, false, true},
-		{"other supplier warehouse captures with gap", "supplier", "", "sw2", "supplier", "", "sw1", false, false, true},
-		{"unknown warehouse captures with gap", "warehouse", "w1", "", "warehouse", "", "", false, false, true},
-		{"inactive warehouse rejects", "warehouse", "w1", "", "warehouse", "w1", "", true, true, false},
-		{"inactive supplier warehouse rejects", "supplier", "", "sw1", "supplier", "", "sw1", true, true, false},
-		{"warehouse exact", "warehouse", "w1", "", "warehouse", "w1", "", false, false, false},
-		{"supplier exact", "supplier", "", "sw1", "supplier", "", "sw1", false, false, false},
+		{"warehouse to supplier rejects", "supplier", "", "sw1", "warehouse", "w1", "", false, true},
+		{"other warehouse rejects", "warehouse", "w2", "", "warehouse", "w1", "", false, true},
+		{"other supplier warehouse rejects", "supplier", "", "sw2", "supplier", "", "sw1", false, true},
+		{"unknown warehouse rejects", "warehouse", "w1", "", "warehouse", "", "", false, true},
+		{"inactive warehouse rejects", "warehouse", "w1", "", "warehouse", "w1", "", true, true},
+		{"inactive supplier warehouse rejects", "supplier", "", "sw1", "supplier", "", "sw1", true, true},
+		{"warehouse exact", "warehouse", "w1", "", "warehouse", "w1", "", false, false},
+		{"supplier exact", "supplier", "", "sw1", "supplier", "", "sw1", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, schema, red, _ := skuInventoryFixture(t)
@@ -111,16 +87,6 @@ func TestInventoryOriginExactAllocationAndRestore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.wantGap {
-				assertSingleUnitCaptureGap(t, tx, "p", red, "exact")
-				assertCaptureWithoutAllocations(t, tx, id)
-				var qty int
-				if err := tx.QueryRow(`SELECT quantity FROM inventory_balances WHERE variant_id=$1 AND status='sellable'
-					AND location_type=$2 AND COALESCE(warehouse_id,'')=$3 AND COALESCE(supplier_warehouse_id,'')=$4`, red, tc.lotKind, tc.lotWarehouse, tc.lotSwh).Scan(&qty); err != nil || qty != 1 {
-					t.Fatalf("red lot quantity=%d, want 1, err=%v", qty, err)
-				}
-				return
-			}
 			// Catalog origin edits after checkout do not relocate the captured lot.
 			if _, err := tx.Exec(`UPDATE products SET origin_supplier_warehouse_id='sw2' WHERE id='p'`); err != nil {
 				t.Fatal(err)
@@ -153,10 +119,13 @@ func TestInventoryOriginMultiLegAndSplitConservation(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
 	for _, q := range []string{`UPDATE inventory_balances SET location_type='warehouse',warehouse_id='w1',supplier_warehouse_id=NULL WHERE variant_id='` + red + `'`,
-		`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled,warehouse_id) VALUES('other','p','s','` + red + `','supplier','warehouse','w2','sellable',1,TRUE,'w2')`} {
+		`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled,warehouse_id) VALUES('other','p','s','` + red + `','supplier','warehouse','w2','sellable',0,TRUE,'w2')`} {
 		if _, err := tx.Exec(q); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := mintUnitsTx(ctx, tx, red, "p", "other", 1, "in_stock", "fixture", "second-origin", ""); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`INSERT INTO orders(id) VALUES('split')`); err != nil {
 		t.Fatal(err)

@@ -67,6 +67,23 @@ func TestSPNCXStaffRoutesKeepUnitCodeOutOfCustomerAccessAndCatalog(t *testing.T)
 			t.Fatalf("%s lookup=%d %s", role, denied.Code, denied.Body.String())
 		}
 	}
+	discover := fmt.Sprintf(`{"spnc":%q,"limit":1}`, spnc)
+	for _, disallowed := range []struct {
+		path, principal, role string
+		status                int
+	}{
+		{warehousePath + "unprinted", customer, "customer", http.StatusForbidden},
+		{"/api/v1/supplier/inventory/spncx/unprinted", owner, "supplier", http.StatusOK},
+	} {
+		w := call(disallowed.path, disallowed.principal, disallowed.role, discover)
+		if w.Code != disallowed.status || strings.Contains(w.Body.String(), code) || strings.Contains(w.Body.String(), sku) {
+			t.Fatalf("unprinted discovery disclosed out-of-custody stock: %s %d %s", disallowed.role, w.Code, w.Body.String())
+		}
+	}
+	unprinted := call(warehousePath+"unprinted", staff, "warehouse_staff", discover)
+	if unprinted.Code != http.StatusOK || !strings.Contains(unprinted.Body.String(), code) || !strings.Contains(unprinted.Body.String(), sku) {
+		t.Fatalf("warehouse could not find an issued unprinted code: %d %s", unprinted.Code, unprinted.Body.String())
+	}
 	w := call(warehousePath+"lookup", staff, "warehouse_staff", query)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), code) || w.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("warehouse lookup=%d %s", w.Code, w.Body.String())
@@ -78,6 +95,11 @@ func TestSPNCXStaffRoutesKeepUnitCodeOutOfCustomerAccessAndCatalog(t *testing.T)
 	w = call(warehousePath+"print-jobs", staff, "warehouse_staff", fmt.Sprintf(`{"productId":%q,"variantId":%q,"codes":[%q]}`, product, sku, code))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "CODE128") {
 		t.Fatalf("authorized warehouse print=%d %s", w.Code, w.Body.String())
+	}
+
+	unprinted = call(warehousePath+"unprinted", staff, "warehouse_staff", discover)
+	if unprinted.Code != http.StatusOK || !strings.Contains(unprinted.Body.String(), `"codes":[]`) || strings.Contains(unprinted.Body.String(), code) {
+		t.Fatalf("printed unit remained in first-label results: %d %s", unprinted.Code, unprinted.Body.String())
 	}
 
 	catalog, stores, pricing := repository.NewCatalogRepository(db), repository.NewStoreRepository(db), repository.NewPricingRepository(db)

@@ -37,9 +37,11 @@ import {
   Users,
   ChevronDown,
   Bell,
+  Barcode,
 } from 'lucide-react';
 
 import { AdminLoginPage } from './AdminLoginPage';
+import { SPNCXLabelPanel } from '../common/SPNCXLabelPanel';
 import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
 import { adminNotificationsApi } from '../../services/notificationsApi';
 import { apiRequest } from '../../services/apiClient';
@@ -132,6 +134,7 @@ const ADMIN_NAV_SECTIONS: AdminNavSection[] = [
     { id: 'stores-list', label: 'لیست فروشگاه‌ها', icon: Store, allowedRoles: ['super_admin'] },
     { id: 'suppliers', label: 'تأمین‌کنندگان', icon: Building2, allowedRoles: ['super_admin', 'logistics_specialist', 'admin'] },
     { id: 'catalog', label: 'تأیید کالاها', icon: Package, allowedRoles: ['super_admin', 'logistics_specialist', 'admin'] },
+    { id: 'spncx-labels', label: 'برچسب واحد (SPNCX)', icon: Barcode, allowedRoles: ['super_admin', 'admin'] },
     { id: 'warehouses', label: 'انبارها و تعرفه‌ها', icon: Warehouse, allowedRoles: ['super_admin', 'logistics_specialist', 'admin'] },
     { id: 'historical-reconciliation', label: 'تطبیق تاریخی', icon: ClipboardCheck, allowedRoles: ['super_admin', 'logistics_specialist', 'admin'] },
   ] },
@@ -451,6 +454,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'stores' && <AdminStoresTab />}
               {activeTab === 'suppliers' && <AdminSuppliersTab />}
               {activeTab === 'catalog' && <AdminCatalogTab />}
+              {activeTab === 'spncx-labels' && <SPNCXLabelPanel scope="admin" />}
               {activeTab === 'commission' && <AdminCommissionTab />}
               {activeTab === 'warehouses' && <AdminWarehousesTab />}
               {activeTab === 'historical-reconciliation' && <HistoricalReconciliationReviewTab />}

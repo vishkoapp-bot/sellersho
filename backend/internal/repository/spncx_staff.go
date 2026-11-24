@@ -54,20 +54,20 @@ func (a SPNCXAccess) allowed() bool {
 // Lookups authorize supplier ownership, current warehouse custody, or the
 // exact un-restored sale allocation when the unit moved to a sold ledger lot.
 // Print mutations never use historical custody as authority.
-func (a SPNCXAccess) predicate(param string, print bool) (string, []any) {
+func (a SPNCXAccess) predicate(param string, custodyOnly, lockScope bool) (string, []any) {
 	switch a.role {
 	case "admin":
 		return "TRUE", nil
 	case "supplier":
 		owned := "p.supplier_id=" + param
-		if print {
+		if custodyOnly {
 			owned += ` AND b.supplier_id=p.supplier_id AND b.location_type='supplier' AND b.warehouse_id IS NULL
 				AND EXISTS(SELECT 1 FROM supplier_warehouses sw WHERE sw.id=b.supplier_warehouse_id AND sw.supplier_id=p.supplier_id AND sw.is_active)`
 		}
 		return owned, []any{a.supplier}
 	case "warehouse":
 		site := "site.id=b.warehouse_id"
-		if !print {
+		if !custodyOnly {
 			site = `((u.status<>'sold' AND ` + site + `) OR (b.status='sold' AND u.status='sold' AND EXISTS (
 				SELECT 1 FROM order_inventory_captures cap
 				CROSS JOIN LATERAL jsonb_array_elements(cap.allocations) alloc
@@ -78,7 +78,7 @@ func (a SPNCXAccess) predicate(param string, print bool) (string, []any) {
 		}
 		pred := `EXISTS(SELECT 1 FROM warehouses site JOIN users staff ON staff.id=` + param + `
 			WHERE site.is_active AND ` + warehouseStaffCityMatch + ` AND ` + site
-		if print {
+		if lockScope {
 			pred += " FOR SHARE OF site,staff"
 		}
 		return pred + ")", []any{a.actor}
@@ -131,7 +131,7 @@ func (r *SPNCXRepository) LookupUnit(ctx context.Context, access SPNCXAccess, co
 		return trace, err
 	}
 	defer tx.Rollback()
-	predicate, scope := access.predicate("$2", false)
+	predicate, scope := access.predicate("$2", false, false)
 	var id string
 	err = tx.QueryRowContext(ctx, `SELECT u.id,u.code,u.product_id,u.variant_id,u.status,u.issued_at,u.printed_at,u.last_printed_at,u.print_count,sale.order_id
 		FROM product_units u JOIN products p ON p.id=u.product_id

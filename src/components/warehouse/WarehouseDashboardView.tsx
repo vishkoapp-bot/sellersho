@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { useAuth } from '../../context/AuthContext';
 import { 
   ArrowRight, 
   LayoutDashboard, 
@@ -13,10 +14,12 @@ import {
   PackageCheck,
   Undo2,
   LogOut,
-  Bell
+  Bell,
+  Barcode
 } from 'lucide-react';
 
 import { WarehouseAuthGuard } from './WarehouseAuthGuard';
+import { SPNCXLabelPanel } from '../common/SPNCXLabelPanel';
 import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
 import { warehouseNotificationsApi } from '../../services/notificationsApi';
 import { WarehouseOverviewTab } from './WarehouseOverviewTab';
@@ -35,6 +38,9 @@ interface Props {
 
 export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) => {
   const { warehouseSession, logoutWarehouse } = useStore();
+  const { currentUser } = useAuth();
+  const canPrintUnitLabels = currentUser?.capabilities?.includes('warehouse_staff')
+    ?? (currentUser?.role === 'warehouse_staff');
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedPackingOrderId, setSelectedPackingOrderId] = useState<string | undefined>();
   // Warehouse notification inbox (Phase 2, W2): the bell count is
@@ -51,7 +57,8 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
   }, []);
 
   // FIX 17: live warehouse menu (WarehouseDashboardView-MERGED.js):
-  // 11 live tabs in this exact order. 'receive', 'customer-returns'
+  // The 11 live tabs retain their relative order; SPNCX is staff-only.
+  // 'receive', 'customer-returns'
   // and 'return-backs' were missing; 'returns' is relabelled to
   // live's meaning (supplier returns), not customer returns.
   const menuItems = [
@@ -60,6 +67,7 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
     { id: 'inbound', label: 'بارانداز ورودی', icon: Truck },
     { id: 'qc', label: 'کنترل کیفیت (QC)', icon: ShieldCheck },
     { id: 'putaway', label: 'جانمایی در قفسه', icon: Layers },
+    ...(canPrintUnitLabels ? [{ id: 'spncx-labels', label: 'برچسب واحد (SPNCX)', icon: Barcode }] : []),
     { id: 'picking', label: 'جمع‌آوری (Pick)', icon: ScanLine },
     { id: 'packing', label: 'میز بسته‌بندی', icon: Package },
     { id: 'shipping', label: 'مانیفست خروج', icon: Send },
@@ -160,6 +168,7 @@ export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }
         {activeTab === 'inbound' && <WarehouseInboundTab onGoToQC={() => setActiveTab('qc')} />}
         {activeTab === 'qc' && <WarehouseQCTab onGoToPutaway={() => setActiveTab('putaway')} />}
         {activeTab === 'putaway' && <WarehousePutawayTab onGoToPicking={() => setActiveTab('picking')} />}
+        {activeTab === 'spncx-labels' && canPrintUnitLabels && <SPNCXLabelPanel scope="warehouse" />}
         {activeTab === 'picking' && (
           <WarehousePickingTab
             onGoToPacking={(orderNumber) => {

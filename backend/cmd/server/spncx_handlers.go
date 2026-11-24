@@ -48,6 +48,7 @@ func installSPNCXRoutes(mux *http.ServeMux, jwt *auth.JWTService, suppliers *rep
 			}))
 		}
 		register("lookup", handleSPNCXLookup)
+		register("unprinted", handleSPNCXUnprinted)
 		register("print-jobs", handleSPNCXPrint)
 	}
 }
@@ -70,6 +71,23 @@ func handleSPNCXLookup(w http.ResponseWriter, r *http.Request, access repository
 		return
 	}
 	result, err := units.LookupUnit(r.Context(), access, request.Code)
+	if err != nil {
+		writeSPNCXProblem(w, err)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func handleSPNCXUnprinted(w http.ResponseWriter, r *http.Request, access repository.SPNCXAccess, units *repository.SPNCXRepository) {
+	var request struct {
+		SPNC  string `json:"spnc"`
+		Limit int    `json:"limit"`
+	}
+	if !readSPNCXJSON(w, r, &request) {
+		writeSPNCXProblem(w, repository.ErrSPNCXInput)
+		return
+	}
+	result, err := units.UnprintedLabels(r.Context(), access, request.SPNC, request.Limit)
 	if err != nil {
 		writeSPNCXProblem(w, err)
 		return

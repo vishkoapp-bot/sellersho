@@ -1,7 +1,8 @@
 # SPNCX staff lookup and label jobs
 
-This backend slice reads the already-issued unit ledger. It does not mint
-codes, backfill inventory, render labels, or add a portal screen.
+The backend reads the already-issued unit ledger and records label jobs.
+The staff panels render only approved job responses. Neither path mints
+codes or backfills inventory.
 
 The authenticated staff prefixes are:
 
@@ -42,3 +43,27 @@ provenance in the same transaction that issues their codes. This allows
 the current QC and storage-history validators to recognize the real
 receipt and preserves the code through QC and putaway. No prior receipt
 or existing unit was changed by this slice.
+
+## Staff panel printing
+
+The supplier, warehouse staff, and admin panels offer **برچسب واحد
+(SPNCX)** under their existing role access. For the first print, enter the
+existing variant SPNC and label count. `POST {prefix}/unprinted` accepts
+`{"spnc":"A0C00001","limit":10}` and returns already-issued, unprinted
+codes from sellable lots in current print custody, oldest first. It
+returns an empty code list with no SKU IDs when no scoped code is
+available. Discovery is not a reservation: the print job still verifies
+ownership, location, stock, and print state.
+
+Known codes can be pasted or typed for verification and reprint. One job
+contains a single SKU and a single print state (first or reprint). An
+uncertain response is retried with the same idempotency key; the browser
+never renders from an unverified response. Authorized jobs can reopen the
+same browser print preview without recording a new job.
+
+The print window produces one [Code 128](https://www.iso.org/standard/43896.html)
+label per 80 × 30 mm page, with
+the original human-readable code. The browser dialog can print or save
+PDF, but job registration cannot verify carriage, stock, calibration,
+or a physical print. Test the actual printer and scanner at its configured
+label size before operational use.

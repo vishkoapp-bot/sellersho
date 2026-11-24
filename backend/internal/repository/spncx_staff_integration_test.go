@@ -222,3 +222,147 @@ func TestSPNCXExternalIngressIssuesOnceBeforeAnyPrinting(t *testing.T) {
 	}
 	assertUnitCount(1)
 }
+
+func TestSPNCXUnprintedDiscoveryHonorsOwnershipPrintStateAndLotCapacity(t *testing.T) {
+	_, schema, _, sku := skuInventoryFixture(t)
+	db := skuScopedDB(t, schema)
+	repo := NewSPNCXRepository(db)
+	ctx := context.Background()
+	supplier := SPNCXSupplierAccess("supplier-staff", "s")
+	const first = "A0C00002-X0001"
+	const second = "A0C00002-X0002"
+	const variantCode = "A0C00002"
+	if _, err := db.Exec(`UPDATE inventory_balances SET quantity=2 WHERE variant_id=$1 AND status='sellable'`, sku); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.UnprintedLabels(ctx, supplier, variantCode, 1)
+	if err != nil || got.VariantID != sku || len(got.Codes) != 1 || got.Codes[0] != first || !got.HasMore {
+		t.Fatalf("bounded oldest-first discovery=%+v err=%v", got, err)
+	}
+	if _, err := repo.PrintLabels(ctx, supplier, "test-discovery-first", SPNCXPrintRequest{ProductID: "p", VariantID: sku, Codes: []string{first}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.UnprintedLabels(ctx, supplier, variantCode, 100)
+	if err != nil || len(got.Codes) != 1 || got.Codes[0] != second || got.HasMore {
+		t.Fatalf("already-printed or excess physical code leaked=%+v err=%v", got, err)
+	}
+	got, err = repo.UnprintedLabels(ctx, SPNCXSupplierAccess("foreign-staff", "foreign"), variantCode, 100)
+	if err != nil || len(got.Codes) != 0 || got.ProductID != "" || got.VariantID != "" || got.HasMore {
+		t.Fatalf("cross-supplier discovery disclosed identity=%+v err=%v", got, err)
+	}
+}
+
+func TestSPNCXTypedFirstPrintRejectsIneligibleUnitWithoutChangingHistory(t *testing.T) {
+	_, schema, red, blue := skuInventoryFixture(t)
+	db := skuScopedDB(t, schema)
+	repo := NewSPNCXRepository(db)
+	ctx := context.Background()
+	supplier := SPNCXSupplierAccess("supplier-staff", "s")
+	const overflow = "A0C00002-X0003"
+	const misplaced = "A0C00001-X0001"
+	if _, err := db.Exec(`UPDATE inventory_balances SET quantity=2 WHERE variant_id=$1 AND status='sellable'`, blue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE product_units SET balance_id=(SELECT id FROM inventory_balances WHERE variant_id=$1 AND status='sellable')
+		WHERE code=$2 AND variant_id=$3`, blue, misplaced, red); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, sku, spnc, code string
+	}{
+		{"uncountable overflow ordinal", blue, "A0C00002", overflow},
+		{"code assigned to sibling SKU lot", red, "A0C00001", misplaced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			discovered, err := repo.UnprintedLabels(ctx, supplier, tc.spnc, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, code := range discovered.Codes {
+				if code == tc.code {
+					t.Fatalf("test is not exercising a discovery-ineligible code: %s", code)
+				}
+			}
+			_, err = repo.PrintLabels(ctx, supplier, "adversarial:"+tc.code, SPNCXPrintRequest{
+				ProductID: "p", VariantID: tc.sku, Codes: []string{tc.code},
+			})
+			if !errors.Is(err, ErrSPNCXPrintConflict) {
+				t.Errorf("typed code bypassed initial label eligibility: %v", err)
+			}
+			var total, jobs, events int
+			if err := db.QueryRow(`SELECT print_count,
+				(SELECT count(*) FROM spncx_print_job_units WHERE code=$1),
+				(SELECT count(*) FROM product_unit_events WHERE code=$1 AND event_type='printed')
+				FROM product_units WHERE code=$1`, tc.code).Scan(&total, &jobs, &events); err != nil || total != 0 || jobs != 0 || events != 0 {
+				t.Errorf("ineligible print mutated history: count=%d jobs=%d events=%d err=%v", total, jobs, events, err)
+			}
+		})
+	}
+}
+
+func TestSPNCXOriginalPrintReplayAndReprintIgnoreInitialDiscoveryOrdinal(t *testing.T) {
+	_, schema, _, sku := skuInventoryFixture(t)
+	db := skuScopedDB(t, schema)
+	repo := NewSPNCXRepository(db)
+	ctx := context.Background()
+	supplier := SPNCXSupplierAccess("supplier-staff", "s")
+	const code = "A0C00002-X0002"
+	request := SPNCXPrintRequest{ProductID: "p", VariantID: sku, Codes: []string{code}}
+	first, err := repo.PrintLabels(ctx, supplier, "original-held-code", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reconciliation may reduce the balance beneath this already-printed
+	// code's ordinal. Existing authenticated jobs and in-stock reprints
+	// must not create a replacement code or lose their original history.
+	if _, err := db.Exec(`UPDATE inventory_balances SET quantity=1 WHERE variant_id=$1 AND status='sellable'`, sku); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := repo.PrintLabels(ctx, supplier, "original-held-code", request)
+	if err != nil || replay.ID != first.ID {
+		t.Fatalf("authorized replay changed job=%+v err=%v", replay, err)
+	}
+	request.Reprint = true
+	reprint, err := repo.PrintLabels(ctx, supplier, "reprint-held-code", request)
+	if err != nil || len(reprint.Codes) != 1 || reprint.Codes[0] != code || reprint.ID == first.ID {
+		t.Fatalf("authorized reprint changed the original code: %+v err=%v", reprint, err)
+	}
+	var count int
+	var printedAt time.Time
+	if err := db.QueryRow(`SELECT print_count,printed_at FROM product_units WHERE code=$1`, code).Scan(&count, &printedAt); err != nil || count != 2 || !printedAt.Equal(first.CreatedAt) {
+		t.Fatalf("historical print metadata changed: count=%d time=%v err=%v", count, printedAt, err)
+	}
+}
+
+func TestSPNCXNewReprintRejectsMismatchedLotButOriginalJobReplays(t *testing.T) {
+	_, schema, red, blue := skuInventoryFixture(t)
+	db := skuScopedDB(t, schema)
+	repo := NewSPNCXRepository(db)
+	ctx := context.Background()
+	supplier := SPNCXSupplierAccess("supplier-staff", "s")
+	const code = "A0C00002-X0001"
+	originalRequest := SPNCXPrintRequest{ProductID: "p", VariantID: blue, Codes: []string{code}}
+	first, err := repo.PrintLabels(ctx, supplier, "original-correct-custody", originalRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE product_units SET balance_id=(SELECT id FROM inventory_balances WHERE variant_id=$1 AND status='sellable')
+		WHERE code=$2`, red, code); err != nil {
+		t.Fatal(err)
+	}
+	reprint := originalRequest
+	reprint.Reprint = true
+	if _, err := repo.PrintLabels(ctx, supplier, "mismatched-custody-reprint", reprint); !errors.Is(err, ErrSPNCXPrintConflict) {
+		t.Errorf("new reprint accepted another SKU's lot: %v", err)
+	}
+	replay, err := repo.PrintLabels(ctx, supplier, "original-correct-custody", originalRequest)
+	if err != nil || replay.ID != first.ID || len(replay.Codes) != 1 || replay.Codes[0] != code {
+		t.Fatalf("original job replay changed: %+v err=%v", replay, err)
+	}
+	var count, reprinted int
+	if err := db.QueryRow(`SELECT print_count,
+		(SELECT count(*) FROM product_unit_events WHERE code=$1 AND event_type='reprinted')
+		FROM product_units WHERE code=$1`, code).Scan(&count, &reprinted); err != nil || count != 1 || reprinted != 0 {
+		t.Errorf("mismatched reprint touched original history: count=%d events=%d err=%v", count, reprinted, err)
+	}
+}

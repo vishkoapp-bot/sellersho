@@ -22,10 +22,12 @@ import {
   Boxes,
   Users,
   Wallet,
-  Bell
+  Bell,
+  Barcode
 } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
+import { SPNCXLabelPanel } from '../common/SPNCXLabelPanel';
 import { SupplierProductsTab } from './SupplierProductsTab';
 import { SupplierInventoryTab } from './SupplierInventoryTab';
 import { SupplierInboundFlowTab } from './SupplierInboundFlowTab';
@@ -95,6 +97,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'customer-returns', label: 'مرجوعی‌های مشتریان', icon: RotateCcw },
     { id: 'products', label: 'کالاها و تنوع‌ها', icon: Package },
     { id: 'inventory', label: 'موجودی کالاها', icon: Boxes },
+    { id: 'spncx-labels', label: 'برچسب واحد (SPNCX)', icon: Barcode },
     { id: 'my-warehouses', label: 'انبارهای من', icon: Warehouse },
     { id: 'inbound', label: 'فرستادن بار به انبار', icon: PackagePlus },
     { id: 'shipping-methods', label: 'روش‌های ارسال', icon: Truck },
@@ -106,7 +109,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'contract', label: 'قرارداد من', icon: FileText },
   ];
 
-  const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
+  const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', 'spncx-labels': 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
   const permissions = supplierSession?.permissions || [];
   const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]));
   const visibleTab = allowedTabs.some((item) => item.id === activeTab) ? activeTab : allowedTabs[0]?.id;
@@ -129,12 +132,12 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
 
   // Desktop sidebar grouping (layout only): the same permission-filtered
   // tabs as the mobile tab bar, partitioned into sidebar groups covering
-  // all 16 tab ids exactly once. A group with no permitted tab disappears
+  // every tab id exactly once. A group with no permitted tab disappears
   // entirely, so gating is inherited unchanged.
   const menuGroups: { heading: string; icon: typeof LayoutDashboard; ids: string[] }[] = [
     { heading: 'پیشخوان', icon: LayoutDashboard, ids: ['overview', 'analytics', 'demand-insight'] },
     { heading: 'سفارش و ارسال', icon: Truck, ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
-    { heading: 'کالا و انبار', icon: Warehouse, ids: ['products', 'inventory', 'my-warehouses', 'inbound'] },
+    { heading: 'کالا و انبار', icon: Warehouse, ids: ['products', 'inventory', 'spncx-labels', 'my-warehouses', 'inbound'] },
     { heading: 'مالی', icon: Wallet, ids: ['settlement'] },
     { heading: 'بازاریابی', icon: Megaphone, ids: ['ads'] },
     { heading: 'حساب کاربری', icon: User, ids: ['team', 'profile', 'contract'] },
@@ -356,6 +359,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {visibleTab === 'orders' && <SupplierOrdersTab />}
             {visibleTab === 'products' && <SupplierProductsTab focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
+            {visibleTab === 'spncx-labels' && <SPNCXLabelPanel scope="supplier" />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab />}
             {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
             {visibleTab === 'ads' && <SupplierAdsCampaignTab />}

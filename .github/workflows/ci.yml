@@ -130,7 +130,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python scripts/test-isolated.py -- go test ${{ matrix.package }} -count=1 -timeout 9m -v
+      - name: run package tests and independently validate the canonical schema
+        env:
+          TEST_PACKAGE: ${{ matrix.package }}
+        run: |
+          # Some compatibility suites intentionally rebuild legacy tables;
+          # these schema-sensitive checks must observe canonical migrations,
+          # not the shadow schema left by those fixtures. Both runs gate CI.
+          case "$TEST_PACKAGE" in
+            ./cmd/server)
+              schema_tests='^(TestQUAL01WarehouseAssignmentAndSelf|TestWarehouseNotificationsReadPath)$' ;;
+            ./internal/repository)
+              schema_tests='^TestFIN007CreationFKCatalog$' ;;
+            *)
+              schema_tests='' ;;
+          esac
+          run_isolated() {
+            python scripts/test-isolated.py -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v "$@"
+          }
+          if [[ -z "$schema_tests" ]]; then
+            run_isolated
+          else
+            result=0
+            run_isolated -skip "$schema_tests" || result=1
+            run_isolated -run "$schema_tests" || result=1
+            exit "$result"
+          fi
 
   go-race:
     name: go race on concurrency invariants

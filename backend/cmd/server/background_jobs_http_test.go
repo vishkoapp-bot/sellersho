@@ -175,10 +175,24 @@ func TestOperationsHealthIncludesMissingAndReviewBlockers(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Health) != 6 {
-		t.Fatalf("missing jobs hidden: %+v", payload.Health)
+	wantJobs := map[string]bool{
+		"unpaid-order-expiry": true, "ad-cleanup": true, "qc-response-deadline": true,
+		"supplier-sla": true, "delivery-lock-releaser": true, "monthly-settlement": true,
+		"refund-reconciliation": true,
 	}
-	h := payload.Health[0]
+	var h repository.JobHealth
+	for _, job := range payload.Health {
+		if !wantJobs[job.Job] {
+			t.Fatalf("unexpected or repeated job %q in %+v", job.Job, payload.Health)
+		}
+		delete(wantJobs, job.Job)
+		if job.Job == "unpaid-order-expiry" {
+			h = job
+		}
+	}
+	if len(wantJobs) != 0 {
+		t.Fatalf("missing jobs hidden: %v; received %+v", wantJobs, payload.Health)
+	}
 	if !h.Missing || !h.Stale || h.Review < 1 {
 		t.Fatalf("false healthy status: %+v", h)
 	}

@@ -6,6 +6,7 @@ package testdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"net/url"
 	"regexp"
@@ -16,6 +17,23 @@ import (
 )
 
 var databaseName = regexp.MustCompile(`^sellersho_test_[a-z0-9_]+$`)
+
+// NoConnections provides a *sql.DB for unit tests that only inspect or
+// configure database/sql's connection pool. A query cannot contact a server.
+func NoConnections(t testing.TB) *sql.DB {
+	t.Helper()
+	db := sql.OpenDB(noConnector{})
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+type noConnector struct{}
+
+func (noConnector) Driver() driver.Driver { return noConnector{} }
+func (noConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("this test database does not permit connections")
+}
+func (c noConnector) Open(string) (driver.Conn, error) { return c.Connect(context.Background()) }
 
 // Identity refuses implicit libpq defaults and parameters that can override the
 // parsed host/database or inject session options. Errors deliberately omit DSNs.

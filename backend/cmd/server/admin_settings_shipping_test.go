@@ -22,19 +22,20 @@ func setupAdminShippingSettings(t *testing.T, charge any) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`
-		DROP TABLE IF EXISTS public.platform_settings;
-		CREATE TABLE public.platform_settings (
-			id INTEGER PRIMARY KEY,
-			supplier_return_postal_charge BIGINT,
-			default_item_weight_grams INTEGER NOT NULL
-		);
-	`); err != nil {
-		t.Fatalf("create platform_settings fixture: %v", err)
+	var oldCharge, oldWeight sql.NullInt64
+	row := db.QueryRow(`SELECT supplier_return_postal_charge, default_item_weight_grams
+		FROM public.platform_settings WHERE id = 1`)
+	if err := row.Scan(&oldCharge, &oldWeight); err != nil {
+		t.Fatalf("read canonical platform_settings fixture: %v", err)
 	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`UPDATE public.platform_settings
+			SET supplier_return_postal_charge = $1, default_item_weight_grams = $2 WHERE id = 1`, oldCharge, oldWeight); err != nil {
+			t.Errorf("restore platform_settings fixture: %v", err)
+		}
+	})
 	if _, err := db.Exec(`
-		INSERT INTO public.platform_settings (id, supplier_return_postal_charge, default_item_weight_grams)
-		VALUES (1, $1, 300)
+		UPDATE public.platform_settings SET supplier_return_postal_charge = $1, default_item_weight_grams = 300 WHERE id = 1
 	`, charge); err != nil {
 		t.Fatalf("seed platform_settings fixture: %v", err)
 	}
@@ -71,6 +72,34 @@ func assertAdminShippingSettings(t *testing.T, response *httptest.ResponseRecord
 func TestAdminShippingSettingsGetPreservesNull(t *testing.T) {
 	db := setupAdminShippingSettings(t, nil)
 	assertAdminShippingSettings(t, requestAdminShippingSettings(db, http.MethodGet, ""), "null")
+}
+
+func TestAdminShippingSettingsFixturePreservesCanonicalTable(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("TEAM04_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type snapshot struct {
+		tableOID       int64
+		charge, weight sql.NullInt64
+	}
+	read := func() (s snapshot) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT 'public.platform_settings'::regclass::oid,
+				supplier_return_postal_charge, default_item_weight_grams
+			FROM public.platform_settings WHERE id=1`).Scan(&s.tableOID, &s.charge, &s.weight); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	before := read()
+	t.Run("temporary value", func(t *testing.T) {
+		fixture := setupAdminShippingSettings(t, nil)
+		assertAdminShippingSettings(t, requestAdminShippingSettings(fixture, http.MethodGet, ""), "null")
+	})
+	if after := read(); after != before {
+		t.Fatalf("shipping fixture changed canonical settings: before=%+v after=%+v", before, after)
+	}
 }
 
 func TestAdminShippingSettingsPutAcceptsZeroAsFree(t *testing.T) {

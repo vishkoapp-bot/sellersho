@@ -32,7 +32,11 @@ func TestFIN007HTTPCheckoutErrorsAndRecovery(t *testing.T) {
 }
 
 func TestFIN007HTTPCheckoutAdmissionRace(t *testing.T) {
-	target, err := url.Parse(os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL"))
+	dsn := os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires the disposable supplier-flow test database")
+	}
+	target, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

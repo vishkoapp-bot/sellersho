@@ -74,14 +74,18 @@ func TestCompatibilityEntrypointsRespectDatabaseLease(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM background_job_outcomes`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
+	var legacyBefore int
+	if err := db.QueryRow(`SELECT count(*) FROM job_runs`).Scan(&legacyBefore); err != nil {
+		t.Fatal(err)
+	}
 	w.ReleaseExpiredDeliveryLocks()
 	w.RunMonthlySettlementIfDue()
 	if err := db.QueryRow(`SELECT count(*) FROM background_job_outcomes`).Scan(&after); err != nil || before != after {
 		t.Fatal("compatibility caller bypassed lease", before, after, err)
 	}
 	var legacy int
-	if err := db.QueryRow(`SELECT count(*) FROM job_runs`).Scan(&legacy); err != nil || legacy != 0 {
-		t.Fatal("busy compatibility delivery wrote direct-cycle history", legacy, err)
+	if err := db.QueryRow(`SELECT count(*) FROM job_runs`).Scan(&legacy); err != nil || legacy != legacyBefore {
+		t.Fatal("busy compatibility delivery wrote direct-cycle history", legacyBefore, legacy, err)
 	}
 }
 

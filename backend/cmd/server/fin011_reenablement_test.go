@@ -38,7 +38,11 @@ import (
 // 35% (store default abolished Nov 5; profit_margin_percent is not
 // consulted), so final unit price = 148,500.
 func TestFIN011ReenablementCommissionBase(t *testing.T) {
-	target, err := url.Parse(os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL"))
+	dsn := os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires the disposable supplier-flow test database")
+	}
+	target, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

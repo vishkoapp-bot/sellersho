@@ -1,9 +1,10 @@
 package repository
 
 import (
-	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 )
 
 // PERF-03 G4: pool bounds validate at boot and apply to a *sql.DB.
@@ -39,11 +40,7 @@ func TestPERF03PoolSettingsValidate(t *testing.T) {
 }
 
 func TestPERF03ApplyPoolSettings(t *testing.T) {
-	db, err := sql.Open("postgres", "postgres://perf03:perf03@localhost:5433/perf03_nonexistent?sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testdb.NoConnections(t)
 	ApplyPoolSettings(db, PoolSettings{MaxOpenConns: 7, MaxIdleConns: 3, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: 30 * time.Second})
 	stats := db.Stats()
 	if stats.MaxOpenConnections != 7 {

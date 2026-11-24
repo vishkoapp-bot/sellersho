@@ -3,8 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 )
@@ -236,22 +234,18 @@ func TestFIN014ApplyDisposableGuard(t *testing.T) {
 	if err := FIN014RequireDisposableDB(context.Background(), db); err != nil {
 		t.Fatalf("disposable guard refused the test database: %v", err)
 	}
-	// A maintenance database (same cluster, no guard marker) refuses.
-	raw := os.Getenv("OPERATIONS_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("OPERATIONS_TEST_DATABASE_URL is not set")
+	// Simulate the missing-marker rejection in the verified disposable DB,
+	// never by opening a second connection to the maintenance database.
+	var marker string
+	if err := db.QueryRow(`DELETE FROM public.sellersho_test_guard WHERE singleton = TRUE RETURNING database_name`).Scan(&marker); err != nil {
+		t.Fatalf("remove disposable guard marker: %v", err)
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/postgres"
-	other, err := sql.Open("postgres", u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
-	if err := FIN014RequireDisposableDB(context.Background(), other); err == nil {
-		t.Errorf("disposable guard accepted the postgres maintenance database, want refusal")
+	t.Cleanup(func() {
+		if _, err := db.Exec(`INSERT INTO public.sellersho_test_guard (singleton, database_name) VALUES (TRUE, $1)`, marker); err != nil {
+			t.Errorf("restore disposable guard marker: %v", err)
+		}
+	})
+	if err := FIN014RequireDisposableDB(context.Background(), db); err == nil {
+		t.Errorf("disposable guard accepted a database with no guard marker, want refusal")
 	}
 }

@@ -7,6 +7,7 @@ export interface ProductVariant {
   selection?: Record<string,string>;
   combinationKey?: string;
   inventoryMode?: 'legacy' | 'tracked';
+  stockAuthority?: 'coded-v1';
   isActive?: boolean;
   id: string;
   spnc: string;

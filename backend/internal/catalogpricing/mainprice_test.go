@@ -97,6 +97,32 @@ func TestMainPricePicksDefaultVariantThenStoreDefault(t *testing.T) {
 	}
 }
 
+func TestCodedCardVariantRespectsStoreChoiceAndMinimum(t *testing.T) {
+	p := domain.Product{IsActive: true, ProductType: "variable", SchemaVersion: 2}
+	variants := []domain.ProductVariant{
+		{ID: "expensive", IsActive: true, IsDefault: true, InventoryMode: "tracked", MinCartQty: 1},
+		{ID: "cheap", IsActive: true, InventoryMode: "tracked", MinCartQty: 3},
+	}
+	prices := map[string]VariantPrice{
+		"expensive": {Price: 66000},
+		"cheap":     {Price: 13200, OnSale: true},
+	}
+	stock := map[string]int{"expensive": 1, "cheap": 3}
+	if got := SelectCodedCardVariant(p, variants, prices, "", stock); got != "cheap" {
+		t.Fatalf("active effective sale price loses to default: %s", got)
+	}
+	if got := SelectCodedCardVariant(p, variants, prices, "expensive", stock); got != "expensive" {
+		t.Fatalf("purchasable store default loses: %s", got)
+	}
+	stock["cheap"] = 2
+	if got := SelectCodedCardVariant(p, variants, prices, "cheap", stock); got != "expensive" {
+		t.Fatalf("store default below minimum did not fall through: %s", got)
+	}
+	if got := SelectCodedCardVariant(p, variants, prices, "cheap", map[string]int{}); got != "expensive" {
+		t.Fatalf("no purchasable variants must preserve the first priced fallback: %s", got)
+	}
+}
+
 func TestMainPriceDropshipperCampaignWidgetSale(t *testing.T) {
 	asOf := time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
 	base := MainPriceInput{

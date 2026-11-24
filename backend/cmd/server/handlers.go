@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/drup/platform/internal/auth"
@@ -66,6 +64,8 @@ type ProductVariantResponse struct {
 	// resolved in buildProductResponse; always present.
 	ShippingClass string `json:"shippingClass"`
 	TaxClass      string `json:"taxClass"`
+	// A coded zero is known unavailable, not an unknown legacy quantity.
+	StockAuthority string `json:"stockAuthority,omitempty"`
 }
 
 // VariantPriceResponse is one entry of variantPrices, keyed by variant
@@ -347,20 +347,12 @@ func StoreDefaultVariantForResponse(variants []domain.ProductVariant, storeDefau
 	return nil
 }
 
-func isReservedDefaultVariantName(name string) bool {
-	return strings.Map(func(r rune) rune {
-		if r == '\u200c' || r == '\u200d' || unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, name) == "پیشفرض"
-}
-
 // applyCodedStock exposes quantities, never the unit identities behind them.
 func applyCodedStock(variants []domain.ProductVariant, stocks map[string]int) int {
 	var total int
 	for i := range variants {
 		variants[i].Stock = stocks[variants[i].ID]
+		variants[i].CodedStock = true
 		total += variants[i].Stock
 	}
 	return total
@@ -421,32 +413,10 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if v.TaxClass != nil {
 			taxClass = *v.TaxClass
 		}
-		name := v.Name
-		// A single legacy variant is indistinguishable from a simple product's variant.
-		if (productType == "variable" || totalVariants > 1) && isReservedDefaultVariantName(name) {
-			keys := make([]string, 0, len(attrs))
-			for key := range attrs {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			values := make([]string, 0, len(keys))
-			for _, key := range keys {
-				value := attrs[key]
-				if value == nil {
-					continue
-				}
-				label, ok := value.(string)
-				if !ok {
-					label = fmt.Sprintf("%v", value)
-				}
-				if label != "" {
-					values = append(values, label)
-				}
-			}
-			name = p.Title
-			if len(values) > 0 {
-				name = strings.Join(values, " / ")
-			}
+		name := catalogpricing.DisplayVariantName(p, v, totalVariants)
+		stockAuthority := ""
+		if v.CodedStock {
+			stockAuthority = "coded-v1"
 		}
 		vresp = append(vresp, ProductVariantResponse{
 			Selection: selection, InventoryMode: mode, IsActive: active, CombinationKey: v.CombinationKey,
@@ -465,8 +435,9 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 			WidthMM:     v.WidthMM,
 			HeightMM:    v.HeightMM,
 			// P2(b): effective classes, resolved once here.
-			ShippingClass: domain.EffectiveShippingClass(shipClass, p.ShippingClass),
-			TaxClass:      domain.EffectiveTaxClass(taxClass, p.TaxClass),
+			ShippingClass:  domain.EffectiveShippingClass(shipClass, p.ShippingClass),
+			TaxClass:       domain.EffectiveTaxClass(taxClass, p.TaxClass),
+			StockAuthority: stockAuthority,
 		})
 	}
 	if variantPrices == nil {
@@ -498,6 +469,28 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		if priceMax == nil || vp.Price > *priceMax {
 			v := vp.Price
 			priceMax = &v
+		}
+	}
+	var coded map[string]int
+	for _, v := range variants {
+		if v.CodedStock {
+			if coded == nil {
+				coded = make(map[string]int)
+			}
+			coded[v.ID] = v.Stock
+		}
+	}
+	if coded != nil {
+		storeDefault := ""
+		if len(storeDefaultVariantID) > 0 {
+			storeDefault = storeDefaultVariantID[0]
+		}
+		chosen := catalogpricing.SelectCodedCardVariant(p, variants, variantPrices, storeDefault, coded)
+		for i := range vresp {
+			if vresp[i].ID == chosen {
+				defaultIndex = i
+				break
+			}
 		}
 	}
 	if defaultIndex >= 0 {
@@ -835,6 +828,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// retryCatalogTxOnSerialization above.
 	var page repository.CatalogPricedPage
 	var inputs *repository.CatalogScopeInputs
+	var codedStocks map[string]int
 	runTx := func() error {
 		tx, err := catalogRepo.BeginCatalogTx(ctx)
 		if err != nil {
@@ -904,6 +898,16 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 					return err
 				}
 			}
+		}
+		selected := make([]string, 0, len(page.Keys))
+		for _, key := range page.Keys {
+			selected = append(selected, key.ID)
+		}
+		// Use the same inventory snapshot for this response and index
+		// selection; a sale after selection appears on the next request.
+		codedStocks, err = catalogRepo.CodedStockByVariantTx(ctx, tx, selected)
+		if err != nil {
+			return err
 		}
 		return tx.Commit()
 	}
@@ -983,11 +987,6 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		storeIDForVariants = store.ID
 	}
 	variantsByProduct, _ := catalogRepo.GetVariantsByProductIDsForStore(ctx, ids, storeIDForVariants)
-	codedStocks, err := catalogRepo.CodedStockByVariant(ctx, ids)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
 	defaultsByProduct, _ := catalogRepo.GetStoreVariantDefaults(ctx, storeIDForVariants, ids)
 
 	var storeVal domain.Store

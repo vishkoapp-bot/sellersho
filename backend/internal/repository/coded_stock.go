@@ -2,14 +2,16 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/lib/pq"
 )
 
 // Coded sellable capacity is bounded by both the physical lot and live
 // units of the exact product/SKU. Do not expose or alter physical stock here.
-const codedStockLots = `
- FROM product_units u
+const codedStockLots = ` FROM product_units u ` + codedStockJoins
+
+const codedStockJoins = `
  JOIN product_variants v ON v.id=u.variant_id AND v.product_id=u.product_id AND v.is_active
  JOIN inventory_balances b ON b.id=u.balance_id AND b.product_id=u.product_id AND b.status='sellable' AND b.quantity>0
  LEFT JOIN warehouses w ON w.id=b.warehouse_id AND w.is_active
@@ -49,15 +51,33 @@ func codedProductInStock(storeIDExpr string) string {
 // CodedStockByVariant is a batched public availability projection, not a
 // reservation. Quote and payment capture enforce the selected origin.
 func (r *CatalogRepository) CodedStockByVariant(ctx context.Context, productIDs []string) (map[string]int, error) {
+	return queryCodedStockByVariant(ctx, r.db, productIDs)
+}
+
+func (r *CatalogRepository) CodedStockByVariantTx(ctx context.Context, tx *sql.Tx, productIDs []string) (map[string]int, error) {
+	return queryCodedStockByVariant(ctx, tx, productIDs)
+}
+
+// A set-based projection shared by the DTO, refresh batch and fingerprint.
+// Aggregate actual unit rows by lot first so duplicate origin rows or an
+// oversized set of units cannot inflate the lot's sellable capacity.
+func codedVariantQuantitiesSQL(productFilter string) string {
+	return `SELECT lot.product_id,lot.variant_id,SUM(lot.quantity) AS quantity FROM (
+ SELECT p.id AS product_id,v.id::text AS variant_id,LEAST(b.quantity,count(*)) AS quantity
+ FROM product_units u JOIN products p ON p.id=u.product_id` + codedStockJoins + codedStockRouted + productFilter + `
+ GROUP BY p.id,v.id,b.id,b.quantity
+ ) lot GROUP BY lot.product_id,lot.variant_id`
+}
+
+func queryCodedStockByVariant(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, productIDs []string) (map[string]int, error) {
 	out := make(map[string]int)
 	if len(productIDs) == 0 {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT c.variant_id,SUM(c.quantity)
- FROM products p CROSS JOIN LATERAL (
- SELECT v.id::text variant_id,LEAST(b.quantity,count(*)) quantity`+codedStockLots+codedStockRouted+`
- GROUP BY v.id,b.id,b.quantity
- ) c WHERE p.id=ANY($1::text[]) AND p.is_active GROUP BY c.variant_id`, pq.Array(productIDs))
+	rows, err := db.QueryContext(ctx, `SELECT stock.variant_id,stock.quantity FROM (`+
+		codedVariantQuantitiesSQL(" AND p.id=ANY($1::text[])")+`) stock`, pq.Array(productIDs))
 	if err != nil {
 		return nil, err
 	}

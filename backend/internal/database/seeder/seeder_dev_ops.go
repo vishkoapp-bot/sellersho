@@ -8,6 +8,8 @@ import (
 
 func (s *Seeder) seedDevOperations(ctx context.Context, tx *sql.Tx) error {
 	// 4. Dev Products & Niches (Upsert on unique business key slug)
+	// NOTE: stock is intentionally not overwritten on conflict — a re-seed must not reset live-adjusted stock.
+	// Fresh inserts still take the fixture stock from the VALUES list.
 	queryProduct := `
 		INSERT INTO products (
 			id, title, slug, category_slug, supplier_id, original_price,
@@ -17,7 +19,6 @@ func (s *Seeder) seedDevOperations(ctx context.Context, tx *sql.Tx) error {
 			title = EXCLUDED.title,
 			supplier_base_cost = EXCLUDED.supplier_base_cost,
 			platform_margin = EXCLUDED.platform_margin,
-			stock = EXCLUDED.stock,
 			updated_at = NOW()
 	`
 	for _, p := range GetDevProducts() {

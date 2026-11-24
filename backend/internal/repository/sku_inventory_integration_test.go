@@ -835,7 +835,7 @@ func TestSKUInventoryReceiptAndReturnRemainExactAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{red, 1, "pass"}}); err != nil {
+		if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 1, QCStatus: "pass"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

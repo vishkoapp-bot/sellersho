@@ -34,7 +34,7 @@ func TestAuditSupplyReceiptDoesNotRecreateSoldTransferredUnits(t *testing.T) {
 			}
 		}
 		if stage == "received" {
-			if _, err := repo.ReceiveWarehouseShipment(context.Background(), code, []WarehouseReceiveItem{{red, 1, "pass"}}); err != nil {
+			if _, err := repo.ReceiveWarehouseShipment(context.Background(), code, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 1, QCStatus: "pass"}}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -68,18 +68,18 @@ func TestInboundTransferCumulativeReceiptAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{red, 1, "pass"}}); err == nil {
+	if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 1, QCStatus: "pass"}}); err == nil {
 		t.Fatal("undispatched receipt accepted")
 	}
 	if err := repo.ChangeCartonDispatch(ctx, "s", shipment.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []int{2, 5, 5} {
-		if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{red, n, "pass"}}); err != nil {
+		if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: n, QCStatus: "pass"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{red, 6, "pass"}}); err == nil {
+	if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 6, QCStatus: "pass"}}); err == nil {
 		t.Fatal("over-receipt accepted")
 	}
 	if err := repo.ChangeCartonDispatch(ctx, "s", shipment.ID, true); err != nil {
@@ -191,7 +191,7 @@ func TestInboundTransferExternalReferenceAndUnknownSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := repo.ReceiveWarehouseShipment(ctx, sh.ShipmentCode, []WarehouseReceiveItem{{red, 1, "pass"}}); err != nil {
+		if _, err := repo.ReceiveWarehouseShipment(ctx, sh.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 1, QCStatus: "pass"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -247,10 +247,10 @@ func TestInboundTransferHistoricalReceiptReplayDoesNotBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := NewSupplierRepository(db)
-	if _, err := repo.ReceiveWarehouseShipment(context.Background(), "HISTORY", []WarehouseReceiveItem{{red, 1, "pass"}}); err != nil {
+	if _, err := repo.ReceiveWarehouseShipment(context.Background(), "HISTORY", []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 1, QCStatus: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ReceiveWarehouseShipment(context.Background(), "HISTORY", []WarehouseReceiveItem{{red, 2, "pass"}}); err == nil {
+	if _, err := repo.ReceiveWarehouseShipment(context.Background(), "HISTORY", []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 2, QCStatus: "pass"}}); err == nil {
 		t.Fatal("historical receipt expanded")
 	}
 	var n int

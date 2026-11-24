@@ -62,6 +62,33 @@ func TestRouteTableNoConflicts(t *testing.T) {
 			mux.HandleFunc(pattern, noop)
 		}()
 	}
+
+	const pendingPayment = "/api/v1/admin/orders/pending-payment"
+	const adminOrders = "/api/v1/admin/orders/"
+	const adminSpncx = "/api/v1/admin/spncx/"
+	const reconciliation = "/api/v1/admin/inventory/reconciliation"
+	for _, pattern := range []string{adminSpncx, reconciliation} {
+		if !seen[pattern] {
+			t.Errorf("missing admin route registration %q", pattern)
+		}
+	}
+	for _, tc := range []struct{ method, path, wantPattern string }{
+		{http.MethodGet, pendingPayment, pendingPayment},
+		{http.MethodPost, adminOrders + "fixture/retry-capture", adminOrders},
+		{http.MethodPost, adminSpncx + "backfill", adminSpncx},
+		{http.MethodGet, adminSpncx + "backfill/status", adminSpncx},
+		{http.MethodPost, adminSpncx + "backfill/rollback", adminSpncx},
+		{http.MethodPost, adminSpncx + "backfill/excess-decision", adminSpncx},
+		{http.MethodGet, reconciliation, reconciliation},
+	} {
+		req, err := http.NewRequest(tc.method, tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, pattern := mux.Handler(req); pattern != tc.wantPattern {
+			t.Errorf("%s %s resolves to %q, want %q", tc.method, tc.path, pattern, tc.wantPattern)
+		}
+	}
 }
 
 // TestManualDispatchOrderingInvariants extends the route-table gate
@@ -80,6 +107,7 @@ func TestRouteTableNoConflicts(t *testing.T) {
 //     counts, so no path can match both; likewise the variant DELETE
 //     (5 parts, "variants"/"images") vs the product DELETE (3 parts,
 //     "images").
+//
 // The assertions are source-position checks on main.go and fail
 // loudly (like the extraction count above) if a refactor moves or
 // renames a branch, so a human re-verifies the dispatch instead of

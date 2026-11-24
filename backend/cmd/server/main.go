@@ -665,6 +665,22 @@ func run(signalCtx context.Context) (result error) {
 
 	// 7. Warehouse WMS & Fulfillment Endpoints
 	warehouseRoles := []string{"warehouse_staff", "logistics_specialist", "admin"}
+	mux.HandleFunc("/api/v1/warehouse/units/print", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		HandlePrintWarehouseUnits(w, r, db.DB)
+	}))
+
+	// SPNCX Run B (B2, §7.1): staff-only unit lookup + list. Admin and
+	// warehouse callers are unscoped; a supplier caller sees only their own
+	// products' units (404, never 403, outside that scope — enforced in the
+	// handlers). Exact /units keeps precedence over the /units/{code}
+	// wildcard, the same shape as the live /admin/suppliers pair.
+	unitLookupGuard := RequireRoles(jwtService, "admin", "warehouse_staff", "logistics_specialist", "supplier")
+	mux.HandleFunc("/api/v1/units", unitLookupGuard(func(w http.ResponseWriter, r *http.Request) {
+		HandleListUnits(w, r, db.DB, supplierRepo)
+	}))
+	mux.HandleFunc("/api/v1/units/{code}", unitLookupGuard(func(w http.ResponseWriter, r *http.Request) {
+		HandleGetUnit(w, r, db.DB, supplierRepo, r.PathValue("code"))
+	}))
 	mux.HandleFunc("/api/v1/warehouse/customer-returns/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) { handleCustomerReturnBinEntry(w, r, warehouseRepo) }))
 
 	mux.HandleFunc("/api/v1/warehouse/bins", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
@@ -752,6 +768,10 @@ func run(signalCtx context.Context) (result error) {
 		handleGetInbounds(w, r, r.Context(), wmsRepo)
 	}))
 
+	mux.HandleFunc("/api/v1/warehouse/inbound-lines/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		dispatchInboundLineReceipt(w, r, supplierRepo)
+	}))
+
 	mux.HandleFunc("/api/v1/warehouse/qc/queue", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleGetQCQueue(w, r, r.Context(), warehouseRepo)
 	}))
@@ -768,8 +788,7 @@ func run(signalCtx context.Context) (result error) {
 		ctx := r.Context()
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/qc/")
 		if strings.HasSuffix(sub, "/pass") && r.Method == http.MethodPost {
-			prodID := strings.TrimSuffix(sub, "/pass")
-			handlePassQCItem(w, r, ctx, prodID, warehouseRepo)
+			dispatchWarehouseQCPass(w, r, strings.TrimSuffix(sub, "/pass"), warehouseRepo)
 			return
 		}
 		if strings.HasSuffix(sub, "/fail") && r.Method == http.MethodPost {
@@ -822,10 +841,14 @@ func run(signalCtx context.Context) (result error) {
 	}))
 
 	mux.HandleFunc("/api/v1/warehouse/returns/", requireWarehouseCityRoles(jwtService, warehouseRoles...)(func(w http.ResponseWriter, r *http.Request) {
+		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/returns/")
+		if strings.HasSuffix(sub, "/receive") && r.Method == http.MethodPost {
+			dispatchWarehouseReturnReceipt(w, r, strings.TrimSuffix(sub, "/receive"), supplierRepo, orderRepo)
+			return
+		}
 		if !requireUnscopedWarehouseWork(w, r) {
 			return
 		}
-		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/returns/")
 		if strings.HasSuffix(sub, "/correct-charge") && r.Method == http.MethodPost {
 			parts := strings.Split(strings.TrimSuffix(strings.Trim(sub, "/"), "/correct-charge"), "/parcels/")
 			if len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.Contains(parts[0], "/") && !strings.Contains(parts[1], "/") {
@@ -846,10 +869,6 @@ func run(signalCtx context.Context) (result error) {
 		}
 		if strings.HasSuffix(sub, "/handover") && r.Method == http.MethodPost {
 			handleHandoverReturn(w, r, r.Context(), strings.TrimSuffix(sub, "/handover"), supplierRepo)
-			return
-		}
-		if strings.HasSuffix(sub, "/receive") && r.Method == http.MethodPost {
-			handleReceiveReturn(w, r, r.Context(), strings.TrimSuffix(sub, "/receive"), supplierRepo)
 			return
 		}
 		if strings.HasSuffix(sub, "/inspect") && r.Method == http.MethodPost {
@@ -1572,6 +1591,19 @@ func run(signalCtx context.Context) (result error) {
 				return
 			}
 		}
+		productID, labelAction := supplierUnitLabelRoute(sub)
+		switch labelAction {
+		case "units":
+			if t01MethodOnly(w, r, http.MethodGet) {
+				supplierHandlers.HandleGetProductUnitLabels(w, r, productID)
+			}
+			return
+		case "print":
+			if t01MethodOnly(w, r, http.MethodPost) {
+				supplierHandlers.HandlePrintProductUnitLabels(w, r, productID)
+			}
+			return
+		}
 		if strings.HasSuffix(sub, "/labels") && r.Method == http.MethodGet {
 			productID := strings.TrimSuffix(sub, "/labels")
 			productID = strings.Trim(productID, "/")
@@ -2204,6 +2236,15 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/admin/payouts/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { wr69AdminPayouts(w, r, db.DB, finRepo) }))
 	mux.HandleFunc("/api/v1/admin/orders/pending-payment", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleAdminPendingPayments(w, r, db.DB)
+	}))
+	mux.HandleFunc("/api/v1/admin/orders/", RequireCapabilities(jwtService, "super_admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleAdminOrdersSubtree(w, r, db.DB, orderRepo)
+	}))
+	mux.HandleFunc("/api/v1/admin/spncx/", RequireCapabilities(jwtService, "super_admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleAdminSpncxSubtree(w, r, db.DB)
+	}))
+	mux.HandleFunc("/api/v1/admin/inventory/reconciliation", RequireCapabilities(jwtService, "super_admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleAdminReconciliation(w, r, db.DB)
 	}))
 	mux.HandleFunc("/api/v1/admin/payments", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT01AdminGenericList(w, r, db.DB, "payment_transactions", "payments", "")

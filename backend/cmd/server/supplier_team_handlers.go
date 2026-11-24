@@ -75,6 +75,12 @@ func RequireSupplierAccess(jwtService *auth.JWTService, repo *repository.Supplie
 				return
 			}
 			if !repo.OwnsSupplierResource(r.Context(), supplierID, r.URL.Path) {
+				if sub, ok := strings.CutPrefix(r.URL.Path, "/api/v1/supplier/products/"); ok {
+					if _, action := supplierUnitLabelRoute(sub); action != "" {
+						writeSPNCXError(w, repository.ErrPrintProductNotFound)
+						return
+					}
+				}
 				http.Error(w, `{"error":"Resource does not belong to your supplier"}`, http.StatusForbidden)
 				return
 			}

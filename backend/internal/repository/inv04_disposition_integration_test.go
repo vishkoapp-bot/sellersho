@@ -33,11 +33,11 @@ func inv04Receipt(t *testing.T, quantity, received int, both ...bool) (*sql.DB, 
 	if err := sup.ChangeCartonDispatch(context.Background(), "s", sh.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sup.ReceiveWarehouseShipment(context.Background(), sh.ShipmentCode, []WarehouseReceiveItem{{red, received, "pass"}}); err != nil {
+	if _, err := sup.ReceiveWarehouseShipment(context.Background(), sh.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: received, QCStatus: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(both) > 0 && both[0] {
-		if _, err := sup.ReceiveWarehouseShipment(context.Background(), sh.ShipmentCode, []WarehouseReceiveItem{{blue, 2, "fail"}}); err != nil {
+		if _, err := sup.ReceiveWarehouseShipment(context.Background(), sh.ShipmentCode, []WarehouseReceiveItem{{VariantID: blue, ReceivedQty: 2, QCStatus: "fail"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -437,7 +437,7 @@ func TestINV04CumulativeReceiptAndDelayedReplay(t *testing.T) {
 	if err := db.QueryRow(`SELECT shipment_code FROM shipments WHERE id=$1`, shipment).Scan(&code); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{variant, 5, "pass"}}); err != nil {
+	if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{VariantID: variant, ReceivedQty: 5, QCStatus: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
 	// This is the old completed batch, never a new delta against receipt 5.
@@ -477,7 +477,7 @@ func TestINV04ShortageHasNoPhysicalCredit(t *testing.T) {
 	if err := db.QueryRow(`SELECT shipment_code FROM shipments WHERE id=$1`, shipment).Scan(&code); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{variant, 5, "pass"}}); err != nil {
+	if _, err := NewSupplierRepository(db).ReceiveWarehouseShipment(ctx, code, []WarehouseReceiveItem{{VariantID: variant, ReceivedQty: 5, QCStatus: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := wh.CompleteQC(ctx, "p", shipment, "00000000-0000-4000-8000-000000000999", 4, 1, 0, "late arrival counted"); err != nil {

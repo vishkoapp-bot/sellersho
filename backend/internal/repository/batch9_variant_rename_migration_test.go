@@ -8,9 +8,9 @@ import (
 
 func TestBatch9VariantRenameMigration(t *testing.T) {
 	db := fin014FixtureDB(t)
-	// Batch 9 is no longer the newest migration. Rewind the later additive
-	// migration on this disposable, empty serialization schema before replaying
-	// the CLI; deleting only Batch 9 history correctly fails the ordering guard.
+	// Rewind migrations 202611230002 and 202611230004 on this disposable,
+	// empty serialization schema before replaying the CLI. Deleting only
+	// Batch 9 history fails the ordering guard.
 	var units int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units`).Scan(&units); err != nil || units != 0 {
 		t.Fatalf("migration rehearsal requires empty units: count=%d err=%v", units, err)
@@ -19,11 +19,21 @@ func TestBatch9VariantRenameMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	storageReceiptDown, err := os.ReadFile("../../migrations/202611230004_spncx_inbound_storage_receipt.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(string(storageReceiptDown)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM schema_migrations WHERE version='202611230004_spncx_inbound_storage_receipt.up.sql'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(string(down)); err != nil {
 		t.Fatal(err)
 	}

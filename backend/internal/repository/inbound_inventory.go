@@ -32,7 +32,7 @@ type inboundPersistedLine struct {
 // lockInboundShipmentTx. Dispositions are append-only subordinate event metadata,
 // serialized by the existing shipment guard, never late independent row guards.
 // Counts are cumulative: (line,total disposed) is a durable business identity.
-func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, actor string, passed, failed, shortage int, reason string) error {
+func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, actor string, passed, failed, shortage int, reason string, selection dispositionUnitSelection) error {
 	total := passed + failed // bounded by the public caller before arithmetic
 	if total <= 0 || total > l.Received {
 		return ErrInboundProvenance
@@ -98,10 +98,16 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 		return err
 	}
 	qcID := "QC-" + uuid.NewString()
-	for _, move := range []struct {
+	moves := []struct {
 		status   string
 		quantity int
-	}{{"qc_accepted", deltaPassed}, {"damaged", deltaFailed}} {
+		units    []lockedProductUnit
+	}{{"qc_accepted", deltaPassed, selection.passedUnits}, {"damaged", deltaFailed, selection.failedUnits}}
+	if len(selection.FailedCodes) > 0 {
+		// Remove the explicitly failed units before FIFO selects passed units.
+		moves[0], moves[1] = moves[1], moves[0]
+	}
+	for _, move := range moves {
 		if move.quantity == 0 {
 			continue
 		}
@@ -151,12 +157,31 @@ func dispositionInboundLineTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 			if _, err = moveLotUnitsTx(ctx, tx, l.Product, resolved, stage, target, "quarantined", "damaged", move.quantity, "inbound", "inbound_qc_disposition", qcID, actor); err != nil {
 				return err
 			}
-		} else if legacyMint {
-			if _, err = mintUnitsTx(ctx, tx, resolved, l.Product, target, move.quantity, "defined", "inbound_qc_disposition", qcID, actor); err != nil {
-				return err
+		} else {
+			var movedCodes []string
+			switch {
+			case legacyMint:
+				units, err := mintUnitsTx(ctx, tx, resolved, l.Product, target, move.quantity, "defined", "inbound_qc_disposition", qcID, actor)
+				if err != nil {
+					return err
+				}
+				for _, unit := range units {
+					movedCodes = append(movedCodes, unit.Code)
+				}
+			case move.units != nil:
+				if err := moveSelectedInboundUnitsTx(ctx, tx, move.units, sourceLot, target, unitStatusForLot(move.status, destination), "inbound_qc_disposition", qcID, actor); err != nil {
+					return err
+				}
+				movedCodes = unitCodes(move.units)
+			default:
+				movedCodes, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, sourceLot, target, "quarantined", unitStatusForLot(move.status, destination), move.quantity, "inbound", "inbound_qc_disposition", qcID, actor)
+				if err != nil {
+					return err
+				}
 			}
-		} else if _, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, sourceLot, target, "quarantined", unitStatusForLot(move.status, destination), move.quantity, "inbound", "inbound_qc_disposition", qcID, actor); err != nil {
-			return err
+			if move.status == "qc_accepted" && selection.passedEcho != nil {
+				*selection.passedEcho = movedCodes
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata) VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,'quarantine',$6,$7,$11,'inbound_qc_disposition',$8,$9,NULLIF($10,''),'{}')`, "IM-"+uuid.NewString(), l.Product, l.Supplier, resolved, move.quantity, move.status, sourceLocation, qcID, fmt.Sprintf("inbound-qc:%s:%d:%s", l.ID, total, move.status), actor, destination); err != nil {
@@ -359,7 +384,7 @@ func inboundLinesTx(ctx context.Context, tx *sql.Tx, shipment string) ([]inbound
 	}
 	return out, rows.Err()
 }
-func inboundMoveTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, from, to string, n int, actor string) error {
+func inboundMoveTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, from, to string, n int, actor string, selected ...lockedProductUnit) error {
 	if n == 0 {
 		return nil
 	}
@@ -390,7 +415,11 @@ func inboundMoveTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, from
 		if err != nil {
 			return err
 		}
-		if _, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, source, target, unitStatusForLot(from, location), unitStatusForLot(to, location), n, "inbound", "inbound_transfer", l.ID, actor); err != nil {
+		if selected != nil {
+			if err := moveSelectedInboundUnitsTx(ctx, tx, selected, source, target, unitStatusForLot(to, location), "inbound_transfer", l.ID, actor); err != nil {
+				return err
+			}
+		} else if _, err = moveLotUnitsTx(ctx, tx, l.Product, l.Variant, source, target, unitStatusForLot(from, location), unitStatusForLot(to, location), n, "inbound", "inbound_transfer", l.ID, actor); err != nil {
 			return err
 		}
 	}
@@ -441,22 +470,7 @@ func receiveInboundLineTx(ctx context.Context, tx *sql.Tx, lineID string, cumula
 		if l.ID != lineID {
 			continue
 		}
-		if cumulativeReceived < l.Received || cumulativeReceived > l.Dispatched {
-			return ErrInboundProvenance
-		}
-		n := cumulativeReceived - l.Received
-		if n == 0 {
-			return nil
-		}
-		from := "in_transit"
-		if l.Kind == "external_replenishment" {
-			from = "external"
-		}
-		if err := inboundMoveTx(ctx, tx, l, from, "quarantine", n, actor); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE inbound_inventory_lines SET received_quantity=$2 WHERE id=$1`, lineID, cumulativeReceived)
-		return err
+		return applyInboundLineReceiptTx(ctx, tx, l, cumulativeReceived, nil, actor)
 	}
 	return ErrInboundProvenance
 }

@@ -1228,6 +1228,169 @@ func (r *OrderRepository) MarkPaymentPaid(ctx context.Context, gatewayToken, rrn
 	return &payment, nil
 }
 
+var (
+	ErrRetryOrderNotFound           = errors.New("order_not_found")
+	ErrRetryCaptureAlreadyCompleted = errors.New("capture_already_completed")
+	ErrRetryPaymentNotRetryable     = errors.New("payment_not_retryable")
+)
+
+type RetryCaptureFailedError struct {
+	Failure string
+}
+
+func (e *RetryCaptureFailedError) Error() string { return e.Failure }
+
+type RetryCaptureResult struct {
+	OrderID   string   `json:"order_id"`
+	Captured  bool     `json:"captured"`
+	UnitCodes []string `json:"unit_codes"`
+}
+
+// RetryFailedCapture resolves an inventory capture through the manual retry path.
+func (r *OrderRepository) RetryFailedCapture(ctx context.Context, orderID string) (*RetryCaptureResult, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	paymentID, err := lockRetryCapturePaymentTx(ctx, tx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	// Mirror the payment-confirm prologue (MarkPaymentPaid). lockOrderFinanceTx
+	// acquires the finance row locks and, via lockOrderCouponTx, marks this tx
+	// as a FIN007 coupon writer; the fin007_payment_fence / fin007_order_fence
+	// triggers reject any UPDATE of payment_transactions.status or
+	// orders.payment_status/inventory_captured on a coupon-backed order without
+	// that flag. confirmOrderCouponTx then admits the coupon (reserved ->
+	// consumed/review_hold); without the admission the order could never ship
+	// (fin007_shipment_fence requires state consumed/review_hold). Skipping
+	// this prologue made every coupon-backed retry capture successfully and
+	// then fail finalization with 500 — the capture rolled back, so the retry
+	// was unusable for coupon orders. An inadmissible coupon (e.g. released)
+	// is a 409: the refund path owns the order from there.
+	if err := lockOrderFinanceTx(ctx, tx, orderID, true); err != nil {
+		return nil, err
+	}
+	admissible, err := confirmOrderCouponTx(ctx, tx, orderID, false)
+	if err != nil {
+		return nil, err
+	}
+	if !admissible {
+		return nil, ErrRetryPaymentNotRetryable
+	}
+	handled, captureErr := captureOrderInventoryTx(ctx, tx, orderID)
+	if captureErr == nil && !handled {
+		captureErr = errors.New("inventory capture schema unavailable")
+	}
+	if captureErr != nil {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			return nil, fmt.Errorf("roll back retry capture: %w", err)
+		}
+		return nil, r.recordRetryCaptureFailure(ctx, orderID, captureFailureCode(captureErr))
+	}
+
+	result := &RetryCaptureResult{OrderID: orderID, Captured: true, UnitCodes: []string{}}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT ARRAY(SELECT code::text FROM order_item_units WHERE order_id=$1 ORDER BY captured_at, code)
+	`, orderID).Scan(pq.Array(&result.UnitCodes)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE payment_transactions SET status='paid' WHERE id=$1 AND status='pending'`, paymentID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE orders SET payment_status='paid', inventory_captured=TRUE, updated_at=NOW() WHERE id=$1`, orderID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM spncx_failed_captures WHERE order_id=$1`, orderID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func lockRetryCapturePaymentTx(ctx context.Context, tx *sql.Tx, orderID string) (string, error) {
+	var orderStatus string
+	err := tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1 FOR UPDATE`, orderID).Scan(&orderStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrRetryOrderNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+
+	// Check both replay markers independently so a missing capture schema
+	// can still reach captureOrderInventoryTx's schema-unavailable result.
+	for _, table := range []string{"order_inventory_captures", "order_item_units"} {
+		var available, captured bool
+		if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&available); err != nil {
+			return "", err
+		}
+		if !available {
+			continue
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE order_id=$1)`, orderID).Scan(&captured); err != nil {
+			return "", err
+		}
+		if captured {
+			return "", ErrRetryCaptureAlreadyCompleted
+		}
+	}
+	if orderStatus == "cancelled" {
+		return "", ErrRetryPaymentNotRetryable
+	}
+
+	var paymentID, paymentStatus string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id,status FROM payment_transactions WHERE order_id=$1
+		ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE
+	`, orderID).Scan(&paymentID, &paymentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrRetryPaymentNotRetryable
+	}
+	if err != nil {
+		return "", err
+	}
+	if paymentStatus != "pending" {
+		return "", ErrRetryPaymentNotRetryable
+	}
+	return paymentID, nil
+}
+
+func (r *OrderRepository) recordRetryCaptureFailure(ctx context.Context, orderID, failure string) error {
+	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	tx, err := r.db.BeginTx(queueCtx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// A successful retry or refund can take the order lock between rollback
+	// and this transaction. Recheck eligibility before refreshing the queue.
+	if _, err := lockRetryCapturePaymentTx(queueCtx, tx, orderID); err != nil {
+		return err
+	}
+	mode := "pre_strict"
+	if spncxStrict {
+		mode = "strict"
+	}
+	if _, err := tx.ExecContext(queueCtx, `
+		INSERT INTO spncx_failed_captures(order_id,failure,mode) VALUES($1,$2,$3)
+		ON CONFLICT(order_id) DO UPDATE SET failure=EXCLUDED.failure,mode=EXCLUDED.mode,at=NOW()
+	`, orderID, failure, mode); err != nil {
+		return fmt.Errorf("record retry capture failure: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("spncx_failed_capture order_id=%s failure=%s mode=%s", orderID, failure, mode)
+	return &RetryCaptureFailedError{Failure: failure}
+}
+
 // ---- Team 03 (live parity, D34/D35/D36/D37/D38) ----
 
 func orderNullString(p *string) interface{} {
@@ -2626,6 +2789,10 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 		return nil, err
 	}
 	defer tx.Rollback()
+	return r.receiveCustomerReturnTx(ctx, tx, id, qc, nil, nil, actorUserID)
+}
+
+func (r *OrderRepository) receiveCustomerReturnTx(ctx context.Context, tx *sql.Tx, id string, qc []CustomerReturnItemQC, receiptItems []CustomerReturnUnitItem, receipts *[]UnitReceiptResult, actorUserID string) (*ReturnShippingSettlement, error) {
 	var financeOrderID string
 	returnFilter := ` FROM customer_returns WHERE id=$1`
 	args := []any{id}
@@ -2662,6 +2829,14 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	// receive in the live flow); the approved-only shortcut is kept.
 	if status != "approved" && status != "shipped" {
 		return nil, sql.ErrNoRows
+	}
+	var codesByReturnItem map[string][]string
+	if receipts != nil {
+		var err error
+		qc, codesByReturnItem, *receipts, err = validateCustomerReturnReceiptTx(ctx, tx, id, receiptItems)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !prepaid {
 		// Critic fix (Phase 2): guard on cod_refused = FALSE — a retry
@@ -2730,9 +2905,21 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 	// Restock (GAP 6): the goods are physically back and their
 	// verdicts are recorded, so stock truth moves NOW, at receive —
 	// not at refund, which may lag or never be pressed.
-	storageSourcesAvailable, err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID)
+	storageSourcesAvailable, err := r.restockReceivedReturnTx(ctx, tx, id, orderID, destWarehouseID, destSupplierWarehouseID, actorUserID, codesByReturnItem, receipts)
 	if err != nil {
 		return nil, err
+	}
+	if receipts != nil {
+		var mismatches UnitMismatchError
+		for _, receipt := range *receipts {
+			codes := codesByReturnItem[receipt.LineID]
+			if len(receipt.UnitCodes) != len(codes) && codes != nil {
+				mismatches.rejectCodes(receipt.LineID, codes, "sold", "return inventory unavailable")
+			}
+		}
+		if err := mismatches.err(); err != nil {
+			return nil, err
+		}
 	}
 
 	settlement := &ReturnShippingSettlement{}
@@ -2844,7 +3031,7 @@ func (r *OrderRepository) ReceiveCustomerReturn(ctx context.Context, id string, 
 // No units are minted. A partially installed capture schema fails the receipt
 // transaction rather than claiming inventory or storage provenance was restored.
 // The result enables storage-source verification after a successful restore.
-func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string) (bool, error) {
+func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.Tx, returnID, orderID string, destWarehouseID, destSupplierWarehouseID sql.NullString, actorUserID string, codesByReturnItem map[string][]string, receipts *[]UnitReceiptResult) (bool, error) {
 	var hasInventory bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('inventory_movements') IS NOT NULL AND to_regclass('inventory_balances') IS NOT NULL`).Scan(&hasInventory); err != nil {
 		return false, err
@@ -2901,9 +3088,22 @@ func (r *OrderRepository) restockReceivedReturnTx(ctx context.Context, tx *sql.T
 	}
 	rows.Close()
 	for _, it := range items {
-		handled, err := restoreCapturedReturnTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID)
+		var restored []string
+		var restoredCodes *[]string
+		if receipts != nil {
+			restoredCodes = &restored
+		}
+		handled, err := restoreCapturedReturnWithUnitsTx(ctx, tx, it.id, it.orderItemID, it.productID, it.supplierID, it.qty, it.qcStatus, destination, actorUserID, codesByReturnItem[it.id], restoredCodes)
 		if err != nil {
 			return false, err
+		}
+		if receipts != nil {
+			for i := range *receipts {
+				if (*receipts)[i].LineID == it.id {
+					(*receipts)[i].UnitCodes = append([]string{}, restored...)
+					break
+				}
+			}
 		}
 		if !handled {
 			return false, fmt.Errorf("customer return requires inventory capture schema")

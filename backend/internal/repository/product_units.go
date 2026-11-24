@@ -104,16 +104,7 @@ func mintUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceI
 	if err != nil {
 		return nil, err
 	}
-	var next int
-	readCounter := func() error {
-		return tx.QueryRowContext(ctx, `SELECT next_sequence FROM product_variant_unit_counters WHERE variant_id=$1 FOR UPDATE`, variantID).Scan(&next)
-	}
-	if err = readCounter(); errors.Is(err, sql.ErrNoRows) {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO product_variant_unit_counters(variant_id) VALUES($1) ON CONFLICT DO NOTHING`, variantID); err != nil {
-			return nil, err
-		}
-		err = readCounter()
-	}
+	next, err := lockOrCreateUnitCounterTx(ctx, tx, variantID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,31 +122,12 @@ func mintUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceI
 			return nil, err
 		}
 		codes := make([]string, n)
+		sequences := make([]int, n)
 		for i := range codes {
-			codes[i] = formatUnitCode(spnc, next+i)
+			sequences[i] = next + i
+			codes[i] = formatUnitCode(spnc, sequences[i])
 		}
-		rows, err := tx.QueryContext(ctx, `WITH minted AS (
-			INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
-			SELECT code,$1,$2,$3::int+ordinality::int-1,$4,$5 FROM unnest($6::text[]) WITH ORDINALITY AS code_list(code,ordinality)
-			RETURNING id,code,sequence,issued_at,created_at,updated_at
-		), events AS (
-			INSERT INTO product_unit_events(unit_id,code,event_type,to_status,reference_type,reference_id,actor_user_id)
-			SELECT id,code,'minted',$4,$7,NULLIF($8,''),NULLIF($9,'') FROM minted
-		) SELECT id,code,sequence,issued_at,created_at,updated_at FROM minted ORDER BY sequence`, variantID, productID, next, status, balanceID, pq.Array(codes), refType, refID, actor)
-		var units []domain.ProductUnit
-		if err == nil {
-			for rows.Next() {
-				unit := domain.ProductUnit{VariantID: variantID, ProductID: productID, Status: status, BalanceID: &balanceID}
-				if err = rows.Scan(&unit.ID, &unit.Code, &unit.Sequence, &unit.IssuedAt, &unit.CreatedAt, &unit.UpdatedAt); err != nil {
-					break
-				}
-				units = append(units, unit)
-			}
-			if err == nil {
-				err = rows.Err()
-			}
-			rows.Close()
-		}
+		units, err := insertMintedUnitsTx(ctx, tx, variantID, productID, balanceID, status, codes, sequences, refType, refID, actor)
 		if err != nil {
 			var pg *pq.Error
 			if !errors.As(err, &pg) || pg.Code != "23505" || (pg.Constraint != "product_units_code_key" && pg.Constraint != "product_units_variant_id_sequence_key") {
@@ -171,7 +143,7 @@ func mintUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceI
 			if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT spncx_mint`); err != nil {
 				return nil, err
 			}
-			if err := readCounter(); err != nil {
+			if next, err = lockOrCreateUnitCounterTx(ctx, tx, variantID); err != nil {
 				return nil, err
 			}
 			continue
@@ -179,17 +151,8 @@ func mintUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceI
 		if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT spncx_mint`); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity+$2,updated_at=NOW() WHERE id=$1`, balanceID, n); err != nil {
+		if err := creditMintedUnitsTx(ctx, tx, variantID, balanceID, n, next, refType, refID, actor, len(movementKey) == 0); err != nil {
 			return nil, err
-		}
-		if err := refreshUnitTrackedLotTx(ctx, tx, balanceID); err != nil {
-			return nil, err
-		}
-		if len(movementKey) == 0 {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata)
-				SELECT $1,product_id,supplier_id,variant_id,$2,'external',status,'external',location_key,$3,$4,$5,NULLIF($6,''),'{}' FROM inventory_balances WHERE id=$7`, "IM-"+uuid.NewString(), n, refType, refID, fmt.Sprintf("spncx:%s:%s:%s:%d", refType, refID, variantID, next), actor, balanceID); err != nil {
-				return nil, err
-			}
 		}
 		if next+n-1 >= 9000 {
 			log.Printf("unit_sequence_high_watermark variant_id=%s sequence=%d", variantID, next+n-1)
@@ -197,6 +160,61 @@ func mintUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceI
 		return units, nil
 	}
 	return nil, ErrUnitCodeCollision
+}
+
+func lockOrCreateUnitCounterTx(ctx context.Context, tx *sql.Tx, variantID string) (int, error) {
+	var next int
+	read := func() error {
+		return tx.QueryRowContext(ctx, `SELECT next_sequence FROM product_variant_unit_counters WHERE variant_id=$1 FOR UPDATE`, variantID).Scan(&next)
+	}
+	err := read()
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO product_variant_unit_counters(variant_id) VALUES($1) ON CONFLICT DO NOTHING`, variantID); err != nil {
+			return 0, err
+		}
+		err = read()
+	}
+	return next, err
+}
+
+func insertMintedUnitsTx(ctx context.Context, tx *sql.Tx, variantID, productID, balanceID, status string, codes []string, sequences []int, refType, refID, actor string) ([]domain.ProductUnit, error) {
+	rows, err := tx.QueryContext(ctx, `WITH minted AS (
+		INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
+		SELECT code,$1,$2,sequence,$3,$4 FROM unnest($5::text[], $6::int[]) AS code_list(code,sequence)
+		RETURNING id,code,sequence,issued_at,created_at,updated_at
+	), events AS (
+		INSERT INTO product_unit_events(unit_id,code,event_type,to_status,reference_type,reference_id,actor_user_id)
+		SELECT id,code,'minted',$3,$7,NULLIF($8,''),NULLIF($9,'') FROM minted
+	) SELECT id,code,sequence,issued_at,created_at,updated_at FROM minted ORDER BY sequence`, variantID, productID, status, balanceID, pq.Array(codes), pq.Array(sequences), refType, refID, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var units []domain.ProductUnit
+	for rows.Next() {
+		unit := domain.ProductUnit{VariantID: variantID, ProductID: productID, Status: status, BalanceID: &balanceID}
+		if err := rows.Scan(&unit.ID, &unit.Code, &unit.Sequence, &unit.IssuedAt, &unit.CreatedAt, &unit.UpdatedAt); err != nil {
+			return nil, err
+		}
+		units = append(units, unit)
+	}
+	return units, rows.Err()
+}
+
+func creditMintedUnitsTx(ctx context.Context, tx *sql.Tx, variantID, balanceID string, n, next int, refType, refID, actor string, recordMovement bool) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE inventory_balances SET quantity=quantity+$2,updated_at=NOW() WHERE id=$1`, balanceID, n); err != nil {
+		return err
+	}
+	if err := refreshUnitTrackedLotTx(ctx, tx, balanceID); err != nil {
+		return err
+	}
+	if recordMovement {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_movements(id,product_id,supplier_id,variant_id,quantity,from_status,to_status,from_location_key,to_location_key,reference_type,reference_id,idempotency_key,actor_user_id,metadata)
+			SELECT $1,product_id,supplier_id,variant_id,$2,'external',status,'external',location_key,$3,$4,$5,NULLIF($6,''),'{}' FROM inventory_balances WHERE id=$7`, "IM-"+uuid.NewString(), n, refType, refID, fmt.Sprintf("spncx:%s:%s:%s:%d", refType, refID, variantID, next), actor, balanceID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Keep existing mixed lots untracked until every physical unit is covered.
@@ -210,8 +228,8 @@ func refreshUnitTrackedLotTx(ctx context.Context, tx *sql.Tx, balance string) er
 }
 
 type lockedProductUnit struct {
-	id, code, status, balance string
-	printed                   bool
+	id, code, status, balance, variant string
+	printed                            bool
 }
 
 // transitionUnitsTx receives already locked units and a destination lot whose

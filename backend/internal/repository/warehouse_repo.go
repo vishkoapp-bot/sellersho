@@ -427,22 +427,26 @@ func (r *WarehouseRepository) GetQCQueue(ctx context.Context) ([]QCQueueItem, er
 // RecordQCPass accepts cumulative all-passed counts through the same durable
 // receipt-line identity as CompleteQC. Accepted stock awaits exact putaway.
 func (r *WarehouseRepository) RecordQCPass(ctx context.Context, productID, inboundID, inspectorUserID string, qty int, receiptLineID ...string) error {
-	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, qty, 0, 0, "", receiptLineID...)
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, qty, 0, 0, "", nil, 0, nil, receiptLineID...)
 }
 
 // CompleteQC accepts cumulative disposition counts, never a second source debit.
 func (r *WarehouseRepository) CompleteQC(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+	return r.CompleteQCWithUnits(ctx, productID, inboundID, inspectorUserID, passed, failed, shortage, reason, nil, receiptLineID...)
+}
+
+func (r *WarehouseRepository) CompleteQCWithUnits(ctx context.Context, productID, inboundID, inspectorUserID string, passed, failed, shortage int, reason string, codes []string, receiptLineID ...string) error {
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("QC reason is required")
 	}
-	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, passed, failed, shortage, strings.TrimSpace(reason), receiptLineID...)
+	return r.recordInboundDisposition(ctx, productID, inboundID, inspectorUserID, passed, failed, shortage, strings.TrimSpace(reason), codes, 0, nil, receiptLineID...)
 }
 
-func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, productID, shipmentID, actor string, passed, failed, shortage int, reason string, receiptLineID ...string) error {
+func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, productID, shipmentID, actor string, passed, failed, shortage int, reason string, codes []string, delta int, echo *[]string, receiptLineID ...string) error {
 	if len(receiptLineID) > 1 || (len(receiptLineID) == 1 && strings.TrimSpace(receiptLineID[0]) == "") {
 		return ErrInboundProvenance
 	}
-	if strings.TrimSpace(productID) == "" || strings.TrimSpace(shipmentID) == "" || passed < 0 || failed < 0 || shortage < 0 || int64(passed)+int64(failed) <= 0 || int64(passed)+int64(failed) > 2147483647 || int64(shortage) > 2147483647 {
+	if strings.TrimSpace(productID) == "" || strings.TrimSpace(shipmentID) == "" || passed < 0 || failed < 0 || shortage < 0 || (delta == 0 && codes == nil && passed == 0 && failed == 0) || passed > 2147483647 || failed > 2147483647 || int64(passed)+int64(failed) > 2147483647 || int64(shortage) > 2147483647 {
 		return ErrInboundProvenance
 	}
 	ctx, done := context.WithTimeout(ctx, 10*time.Second)
@@ -477,7 +481,29 @@ func (r *WarehouseRepository) recordInboundDisposition(ctx context.Context, prod
 	if err := lockWarehouseQCReceiptScopeTx(ctx, tx, shipmentID, productID, selected.ID, selected.Supplier); err != nil {
 		return err
 	}
-	if err := dispositionInboundLineTx(ctx, tx, *selected, actor, passed, failed, shortage, reason); err != nil {
+	selection := dispositionUnitSelection{passedEcho: echo}
+	if delta > 0 || codes != nil {
+		prior, err := latestInboundDispositionTx(ctx, tx, selected.ID)
+		if err != nil {
+			return err
+		}
+		if delta > 0 {
+			if delta > selected.Received-prior.passed-prior.failed {
+				return ErrInboundProvenance
+			}
+			passed, failed, shortage, reason = prior.passed+delta, prior.failed, prior.shortage, prior.reason
+		}
+		if codes != nil {
+			if passed < prior.passed || failed < prior.failed {
+				return ErrInboundProvenance
+			}
+			selection, err = selectDispositionUnitsTx(ctx, tx, *selected, codes, passed-prior.passed, failed-prior.failed, echo)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if err := dispositionInboundLineTx(ctx, tx, *selected, actor, passed, failed, shortage, reason, selection); err != nil {
 		return err
 	}
 	return tx.Commit()

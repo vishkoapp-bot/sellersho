@@ -136,8 +136,7 @@ func ReceiveTrackedSKUShipmentItemTx(ctx context.Context, tx *sql.Tx, shipmentID
 	if err := receiveInboundLineTx(ctx, tx, line, receivedQty, ""); err != nil {
 		return true, err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE shipment_items SET received_qty=$3,inventory_received_qty=$3,qc_status=$4 WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID, receivedQty, qcStatus)
-	return true, err
+	return true, recordShipmentItemReceiptTx(ctx, tx, shipmentID, variantID, receivedQty, qcStatus)
 }
 
 func moveSKUInventoryTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, qty int, fromStatus, toStatus, source, locationType, destination, referenceType, referenceID, key, actor string) error {
@@ -216,6 +215,10 @@ func lockSKUProductTx(ctx context.Context, tx *sql.Tx, productID, variantID stri
 // the order line. A return lot has exact SKU identity without inventing its old
 // location; historical orders stay explicitly unallocated in the legacy path.
 func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orderItemID, productID, supplierID string, qty int, qcStatus, destination, actor string) (bool, error) {
+	return restoreCapturedReturnWithUnitsTx(ctx, tx, returnItemID, orderItemID, productID, supplierID, qty, qcStatus, destination, actor, nil, nil)
+}
+
+func restoreCapturedReturnWithUnitsTx(ctx context.Context, tx *sql.Tx, returnItemID, orderItemID, productID, supplierID string, qty int, qcStatus, destination, actor string, codes []string, restoredCodes *[]string) (bool, error) {
 	enabled, err := hasSKUInventoryTx(ctx, tx)
 	if err != nil || !enabled {
 		return enabled, err
@@ -273,11 +276,24 @@ func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orde
 	if err != nil {
 		return true, err
 	}
-	units, err := capturedUnitsTx(ctx, tx, orderItemID, nil, []string{"sold"}, qty)
+	units, err := capturedUnitsTx(ctx, tx, orderItemID, codes, []string{"sold"}, qty)
 	if err != nil {
 		return true, err
 	}
 	if len(units) < qty {
+		if codes != nil {
+			var mismatches UnitMismatchError
+			found := make(map[string]bool, len(units))
+			for _, unit := range units {
+				found[unit.code] = true
+			}
+			for _, code := range codes {
+				if !found[code] {
+					mismatches.add(returnItemID, code, "sold", "not_captured_for_item")
+				}
+			}
+			return true, &mismatches
+		}
 		if spncxStrict && hasCapture {
 			var serialized bool
 			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_item_units WHERE order_item_id=$1)`, orderItemID).Scan(&serialized); err != nil {
@@ -296,6 +312,13 @@ func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orde
 	}
 	if err = transitionUnitsTx(ctx, tx, units, "returned", holding, "returned", "customer_return", returnID, actor); err != nil {
 		return true, err
+	}
+	if restoredCodes != nil {
+		// The warehouse receipt records the intervening returned state in
+		// the next unit event. The legacy verdict path retains its audit.
+		for i := range units {
+			units[i].status = "returned"
+		}
 	}
 	// A recorded quantity-only capture is still restockable before backfill.
 	// Only pre-cutover orders without a capture stay in the holding lot (§4.3).
@@ -344,6 +367,9 @@ func restoreCapturedReturnTx(ctx context.Context, tx *sql.Tx, returnItemID, orde
 	}
 	if err = refreshUnitTrackedLotTx(ctx, tx, holding); err != nil {
 		return true, err
+	}
+	if restoredCodes != nil {
+		*restoredCodes = unitCodes(units)
 	}
 	if !hasCapture {
 		return true, nil

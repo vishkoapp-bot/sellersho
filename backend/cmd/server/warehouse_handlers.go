@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -140,12 +141,18 @@ func handlePassQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID     string  `json:"inboundId"`
-		Quantity      int     `json:"quantity"`
-		ReceiptLineID *string `json:"receiptLineId"`
+		InboundID     string   `json:"inboundId"`
+		Quantity      int      `json:"quantity"`
+		ReceiptLineID *string  `json:"receiptLineId"`
+		UnitCodes     []string `json:"unit_codes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+	// The cumulative product route cannot attribute scans to a receipt line.
+	if req.UnitCodes != nil {
+		writeSPNCXError(w, repository.ErrUnitCodesRequireReceiptLine)
 		return
 	}
 	var receiptLine []string
@@ -204,12 +211,13 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		return
 	}
 	var req struct {
-		InboundID     string  `json:"inboundId"`
-		Passed        int     `json:"passedQuantity"`
-		Failed        int     `json:"failedQuantity"`
-		Shortage      int     `json:"shortageQuantity"`
-		Reason        string  `json:"defectReason"`
-		ReceiptLineID *string `json:"receiptLineId"`
+		InboundID     string   `json:"inboundId"`
+		Passed        int      `json:"passedQuantity"`
+		Failed        int      `json:"failedQuantity"`
+		Shortage      int      `json:"shortageQuantity"`
+		Reason        string   `json:"defectReason"`
+		ReceiptLineID *string  `json:"receiptLineId"`
+		UnitCodes     []string `json:"unit_codes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
@@ -219,7 +227,11 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 	if req.ReceiptLineID != nil {
 		receiptLine = append(receiptLine, *req.ReceiptLineID)
 	}
-	if err := repo.CompleteQC(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason, receiptLine...); err != nil {
+	if err := repo.CompleteQCWithUnits(ctx, productID, req.InboundID, getCallerUserID(ctx), req.Passed, req.Failed, req.Shortage, req.Reason, req.UnitCodes, receiptLine...); err != nil {
+		if errors.Is(err, repository.ErrUnitMismatch) {
+			writeSPNCXError(w, err)
+			return
+		}
 		if errors.Is(err, repository.ErrInboundLifecycleClosed) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
@@ -227,7 +239,7 @@ func handleCompleteQC(w http.ResponseWriter, r *http.Request, ctx context.Contex
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "inboundId": req.InboundID, "status": "completed"})
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "productId": productID, "inboundId": req.InboundID, "status": "completed", "unit_codes": append([]string{}, req.UnitCodes...)})
 }
 
 func handleCreateQCDiscrepancy(w http.ResponseWriter, r *http.Request, ctx context.Context, repo *repository.WarehouseRepository) {
@@ -879,7 +891,11 @@ func handleReceiveWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
 		return
 	}
-	status, err := repo.ReceiveWarehouseShipment(ctx, code, req.Items)
+	status, items, err := repo.ReceiveWarehouseShipmentWithUnits(ctx, code, req.Items)
+	if errors.Is(err, repository.ErrUnitMismatch) || errors.Is(err, repository.ErrUnitCapExceeded) {
+		writeSPNCXError(w, err)
+		return
+	}
 	if err == sql.ErrNoRows {
 		http.Error(w, `{"error":"Shipment not found"}`, http.StatusNotFound)
 		return
@@ -892,5 +908,116 @@ func handleReceiveWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "shipment_code": code, "status": status})
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "shipment_code": code, "status": status, "items": items})
+}
+
+func dispatchInboundLineReceipt(w http.ResponseWriter, r *http.Request, repo *repository.SupplierRepository) {
+	lineID, action, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/v1/warehouse/inbound-lines/"), "/")
+	if !ok || lineID == "" || action != "receive" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	handleReceiveInboundLine(w, r, lineID, repo)
+}
+
+func handleReceiveInboundLine(w http.ResponseWriter, r *http.Request, lineID string, repo *repository.SupplierRepository) {
+	if repo == nil {
+		writeInternalError(w, errors.New("database not initialized"))
+		return
+	}
+	var req struct {
+		Quantity  int      `json:"received_quantity"`
+		UnitCodes []string `json:"unit_codes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
+		return
+	}
+	result, err := repo.ReceiveInboundLine(r.Context(), lineID, req.Quantity, req.UnitCodes, getCallerUserID(r.Context()))
+	if err != nil {
+		writeSPNCXError(w, err)
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, result)
+}
+
+func dispatchWarehouseQCPass(w http.ResponseWriter, r *http.Request, segment string, repo *repository.WarehouseRepository) {
+	ctx := r.Context()
+	if repo == nil {
+		handlePassQCItem(w, r, ctx, segment, repo)
+		return
+	}
+	shipment, product, err := repo.QCReceiptLine(ctx, segment)
+	switch {
+	case err == sql.ErrNoRows:
+		handlePassQCItem(w, r, ctx, segment, repo)
+	case err != nil:
+		writeInternalError(w, err)
+	default:
+		handlePassQCReceiptLine(w, r, shipment, product, segment, repo)
+	}
+}
+
+func handlePassQCReceiptLine(w http.ResponseWriter, r *http.Request, shipment, product, lineID string, repo *repository.WarehouseRepository) {
+	var req struct {
+		Quantity  int      `json:"quantity"`
+		UnitCodes []string `json:"unit_codes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
+		return
+	}
+	result, err := repo.RecordResolvedQCLinePassDelta(r.Context(), shipment, product, lineID, req.Quantity, req.UnitCodes, getCallerUserID(r.Context()))
+	if err != nil {
+		writeSPNCXError(w, err)
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, result)
+}
+
+func dispatchWarehouseReturnReceipt(w http.ResponseWriter, r *http.Request, returnID string, suppliers *repository.SupplierRepository, orders *repository.OrderRepository) {
+	var req struct {
+		Items []repository.CustomerReturnUnitItem `json:"items"`
+	}
+	body, err := io.ReadAll(r.Body)
+	// Only a non-empty items array with an order-item ID on every entry
+	// selects customer receipt. The supplier receipt ignores the body.
+	customer := err == nil && json.Unmarshal(body, &req) == nil && len(req.Items) > 0
+	for _, item := range req.Items {
+		customer = customer && item.OrderItemID != ""
+	}
+	if customer {
+		handleReceiveCustomerReturnUnits(w, r, returnID, req.Items, orders)
+		return
+	}
+	if requireUnscopedWarehouseWork(w, r) {
+		handleReceiveReturn(w, r, r.Context(), returnID, suppliers)
+	}
+}
+
+func handleReceiveCustomerReturnUnits(w http.ResponseWriter, r *http.Request, returnID string, items []repository.CustomerReturnUnitItem, repo *repository.OrderRepository) {
+	actor, err := returnActor(r.Context())
+	if err != nil {
+		t01WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	if repo == nil {
+		writeInternalError(w, errors.New("database not initialized"))
+		return
+	}
+	result, err := repo.ReceiveCustomerReturnUnits(r.Context(), returnID, items, actor)
+	switch {
+	case err == nil:
+		t01WriteJSON(w, http.StatusOK, map[string]any{"items": result})
+	case errors.Is(err, repository.ErrUnitMismatch), errors.Is(err, repository.ErrIncompleteReturnReceipt):
+		writeSPNCXError(w, err)
+	case errors.Is(err, sql.ErrNoRows):
+		t01WriteJSON(w, http.StatusNotFound, map[string]string{"error": "Return or item not found, or return not approved"})
+	default:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
 }

@@ -2983,26 +2983,30 @@ func readWarehouseShipment(ctx context.Context, db interface {
 
 // WarehouseReceiveItem is one line of the live receive request.
 type WarehouseReceiveItem struct {
-	VariantID   string `json:"variant_id"`
-	ReceivedQty int    `json:"received_qty"`
-	QCStatus    string `json:"qc_status"`
+	VariantID   string   `json:"variant_id"`
+	ReceivedQty int      `json:"received_qty"`
+	QCStatus    string   `json:"qc_status"`
+	UnitCodes   []string `json:"unit_codes"`
 }
 
 // ReceiveWarehouseShipment records a warehouse receipt of a carton shipment.
 // Live sends qc_status "pass"/"fail"; the schema stores "passed"/"failed".
 // Status becomes 'received' when every line is fully received, otherwise
-// 'partially_received' (the schema CHECK has no 'qc_passed' state, unlike
-// live's UI). An already-'received' shipment is rejected, matching live's
-// UI disabling the form for received shipments.
+// 'partially_received'. A matching cumulative retry acknowledges the receipt.
 func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code string, items []WarehouseReceiveItem) (string, error) {
+	status, _, err := r.ReceiveWarehouseShipmentWithUnits(ctx, code, items)
+	return status, err
+}
+
+func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Context, code string, items []WarehouseReceiveItem) (string, []UnitReceiptResult, error) {
 	ctx, done := context.WithTimeout(ctx, 10*time.Second)
 	defer done()
 	if len(items) == 0 {
-		return "", fmt.Errorf("at least one received item is required")
+		return "", nil, fmt.Errorf("at least one received item is required")
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer tx.Rollback()
 	var shipmentID, status string
@@ -3014,30 +3018,42 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 			WHERE UPPER(s.shipment_code) = UPPER($1)`+scopedCartonCityMatch+scopedCartonDestinationConsistent, code, staffID).Scan(&shipmentID, &status)
 	}
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var provenance bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inbound_inventory_lines WHERE shipment_id=$1)`, shipmentID).Scan(&provenance); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if provenance {
 		if err := lockInboundShipmentTx(ctx, tx, shipmentID); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 	if staffID != "" {
 		if err := lockScopedCartonReceipt(ctx, tx, shipmentID, staffID, code, &status); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
+	results := make([]UnitReceiptResult, 0, len(items))
 	if !provenance {
+		var mismatches UnitMismatchError
+		seen := map[string]bool{}
+		for _, item := range items {
+			if item.UnitCodes != nil {
+				mismatches.checkDuplicates(item.VariantID, item.UnitCodes, seen)
+				mismatches.rejectCodes(item.VariantID, item.UnitCodes, "receipt line", "shipment has no receipt provenance")
+			}
+		}
+		if err := mismatches.err(); err != nil {
+			return "", nil, err
+		}
 		// Already-accounted history can be acknowledged without recreating a source.
 		// Every submitted cumulative quantity and QC state must match that old effect.
 		for _, item := range items {
 			var accounted int
 			var oldQC string
 			if err := tx.QueryRowContext(ctx, `SELECT inventory_received_qty,qc_status FROM shipment_items WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, item.VariantID).Scan(&accounted, &oldQC); err != nil {
-				return "", ErrInboundProvenance
+				return "", nil, ErrInboundProvenance
 			}
 			qc := item.QCStatus
 			if qc == "pass" {
@@ -3047,12 +3063,45 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 				qc = "failed"
 			}
 			if accounted <= 0 || accounted != item.ReceivedQty || qc != oldQC {
-				return "", ErrInboundProvenance
+				return "", nil, ErrInboundProvenance
 			}
+			results = append(results, unitReceipt(item.VariantID, item.ReceivedQty, nil))
 		}
-		return status, tx.Commit()
+		return status, results, tx.Commit()
 	}
-	for _, item := range items {
+	lines, err := inboundLinesTx(ctx, tx, shipmentID)
+	if err != nil {
+		return "", nil, err
+	}
+	byVariant := make(map[string]inboundPersistedLine, len(lines))
+	for _, l := range lines {
+		byVariant[l.Variant] = l
+	}
+	arrivals := make([]inboundUnitArrivals, len(items))
+	var mismatches UnitMismatchError
+	seen := map[string]bool{}
+	explicitVariants := map[string]bool{}
+	// A scan mismatch invalidates the entire shipment receipt. Check every
+	// supplied line before applying any inventory changes so a 422 is retryable.
+	for i, item := range items {
+		if item.UnitCodes == nil {
+			continue
+		}
+		l, ok := byVariant[item.VariantID]
+		if !ok {
+			return "", nil, ErrInboundProvenance
+		}
+		explicitVariants[item.VariantID] = true
+		arrivals[i], err = validateInboundArrivalsTx(ctx, tx, l, item.ReceivedQty, item.UnitCodes, seen, &mismatches)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if err := mismatches.err(); err != nil {
+		return "", nil, err
+	}
+	visited := map[string]bool{}
+	for i, item := range items {
 		var stored string
 		switch item.QCStatus {
 		case "pass", "passed":
@@ -3060,45 +3109,53 @@ func (r *SupplierRepository) ReceiveWarehouseShipment(ctx context.Context, code 
 		case "fail", "failed":
 			stored = "failed"
 		default:
-			return "", fmt.Errorf("invalid qc_status for variant %s", item.VariantID)
+			return "", nil, fmt.Errorf("invalid qc_status for variant %s", item.VariantID)
 		}
 		if item.ReceivedQty < 0 {
-			return "", fmt.Errorf("invalid received_qty for variant %s", item.VariantID)
+			return "", nil, fmt.Errorf("invalid received_qty for variant %s", item.VariantID)
 		}
-		handled, err := ReceiveTrackedSKUShipmentItemTx(ctx, tx, shipmentID, item.VariantID, item.ReceivedQty, stored)
+		l, ok := byVariant[item.VariantID]
+		if !ok {
+			return "", nil, ErrInboundProvenance
+		}
+		// An explicit selection was validated against the original cumulative
+		// state. A second entry for the same line would invalidate that selection.
+		if visited[item.VariantID] && explicitVariants[item.VariantID] {
+			return "", nil, ErrInboundProvenance
+		}
+		visited[item.VariantID] = true
+		if item.ReceivedQty < l.Received || item.ReceivedQty > l.Dispatched {
+			return "", nil, ErrInboundProvenance
+		}
+		if err := applyInboundArrivalsTx(ctx, tx, l, item.ReceivedQty, arrivals[i], ""); err != nil {
+			return "", nil, err
+		}
+		if err := recordShipmentItemReceiptTx(ctx, tx, shipmentID, item.VariantID, item.ReceivedQty, stored); err != nil {
+			return "", nil, err
+		}
+		l.Received = item.ReceivedQty
+		byVariant[item.VariantID] = l
+		result, err := inboundLineReceiptEchoTx(ctx, tx, l, item.ReceivedQty)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		if handled {
-			continue
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE shipment_items SET received_qty = $1, qc_status = $2 WHERE shipment_id = $3 AND variant_id = $4`, item.ReceivedQty, stored, shipmentID, item.VariantID)
-		if err != nil {
-			return "", err
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return "", err
-		}
-		if n == 0 {
-			return "", fmt.Errorf("variant %s is not part of shipment %s", item.VariantID, code)
-		}
+		results = append(results, result)
 	}
 	var total, fully int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE received_qty >= expected_qty) FROM shipment_items WHERE shipment_id = $1`, shipmentID).Scan(&total, &fully); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	newStatus := "partially_received"
 	if total > 0 && fully == total {
 		newStatus = "received"
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = COALESCE(received_at,NOW()) WHERE id = $2`, newStatus, shipmentID); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return newStatus, nil
+	return newStatus, results, nil
 }
 
 // SupplierProductVariant is one variant of live's Fl modal (variant_name +

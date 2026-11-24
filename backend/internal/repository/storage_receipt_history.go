@@ -23,7 +23,13 @@ type storageReceiptSource struct {
 func creditQCStorageReceiptTx(ctx context.Context, tx *sql.Tx, disposition string) error {
 	var source storageReceiptSource
 	var prior, passed, received int
-	err := tx.QueryRowContext(ctx, `SELECT d.id,l.id,l.product_id,l.variant_id,l.supplier_id,l.warehouse_id,l.shipment_id,d.passed_delta,d.cumulative_disposed-d.passed_delta-d.failed_delta,d.received_quantity,d.created_at FROM inbound_qc_dispositions d JOIN inbound_inventory_lines l ON l.id=d.receipt_line_id WHERE d.id=$1`, disposition).Scan(&source.Event, &source.Line, &source.Product, &source.Variant, &source.Supplier, &source.Warehouse, &source.Inbound, &passed, &prior, &received, &source.BillingAt)
+	var receiptVariant, kind string
+	err := tx.QueryRowContext(ctx, `SELECT d.id,l.id,l.product_id,COALESCE(a.variant_id,l.variant_id),l.variant_id,l.source_kind,l.supplier_id,l.warehouse_id,l.shipment_id,d.passed_delta,d.cumulative_disposed-d.passed_delta-d.failed_delta,d.received_quantity,d.created_at
+		FROM inbound_qc_dispositions d JOIN inbound_inventory_lines l ON l.id=d.receipt_line_id
+		LEFT JOIN inbound_putaway_allocations a ON l.variant_id='' AND a.disposition_id=d.id AND a.receipt_line_id=l.id
+			AND a.shipment_id=l.shipment_id AND a.product_id=l.product_id AND a.supplier_id=l.supplier_id AND a.warehouse_id=l.warehouse_id
+			AND a.source_location_key='qc-accepted:'||d.id AND a.quantity=d.passed_delta
+		WHERE d.id=$1`, disposition).Scan(&source.Event, &source.Line, &source.Product, &source.Variant, &receiptVariant, &kind, &source.Supplier, &source.Warehouse, &source.Inbound, &passed, &prior, &received, &source.BillingAt)
 	if err != nil {
 		return err
 	}
@@ -44,7 +50,11 @@ func creditQCStorageReceiptTx(ctx context.Context, tx *sql.Tx, disposition strin
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM inventory_balances WHERE product_id=$1 AND COALESCE(variant_id::text,'')=$2 AND supplier_id=$3 AND warehouse_id=$4 AND owner_type='supplier' AND location_type='warehouse' AND status='qc_accepted' AND location_key=$5 AND quantity=$6`, source.Product, source.Variant, source.Supplier, source.Warehouse, "qc-accepted:"+disposition, passed).Scan(&source.Balance); err != nil {
 		return ErrStorageReceiptSource
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,quantity,created_at FROM inventory_movements WHERE reference_type='inbound_transfer' AND reference_id=$1 AND to_status='quarantine' AND to_location_key=$2 AND product_id=$3 AND supplier_id=$4 AND COALESCE(variant_id::text,'')=$5 ORDER BY created_at,id COLLATE "C"`, source.Line, "inbound-line:"+source.Line, source.Product, source.Supplier, source.Variant)
+	rows, err := tx.QueryContext(ctx, `SELECT id,quantity,created_at FROM inventory_movements
+		WHERE (reference_type='inbound_transfer' OR (reference_type='inbound_receive' AND $6='external_replenishment'
+			AND $5<>'' AND from_status='external' AND from_location_key='external'))
+		AND reference_id=$1 AND to_status='quarantine' AND to_location_key=$2 AND product_id=$3 AND supplier_id=$4 AND COALESCE(variant_id::text,'')=$5
+		ORDER BY created_at,id COLLATE "C"`, source.Line, "inbound-line:"+source.Line, source.Product, source.Supplier, receiptVariant, kind)
 	if err != nil {
 		return err
 	}

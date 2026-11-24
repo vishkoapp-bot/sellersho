@@ -1,6 +1,7 @@
 import React from 'react';
 import { Order } from '../../types';
 import { computeOrderBreakdown } from '../../utils/cartPricing';
+import { orderItemTitle } from '../../utils/orderItemTitle';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { maskName, maskPhone, maskAddress } from '../../utils/privacyMasker';
@@ -107,7 +108,7 @@ export const OrderDetailModal: React.FC<Props> = ({ order, isOpen, onClose, hide
             <div className="divide-y divide-slate-100">
               {order.items.map((item, idx) => (
                 <div key={idx} className="py-1 flex items-center justify-between text-[11px]">
-                  <span className="truncate">{item.product.title}</span>
+                  <span className="truncate">{orderItemTitle(item)}</span>
                   <span className="text-brand-deep font-bold shrink-0">{toPersianDigits(item.quantity)} عدد</span>
                 </div>
               ))}

@@ -3,6 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { storeApi } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { OrderDetailModal } from '../common/OrderDetailModal';
+import { orderItemTitle } from '../../utils/orderItemTitle';
 import { Package, Truck, CheckCircle2, Clock, Search, Eye, AlertCircle, Info, RefreshCw, XCircle, Loader2 } from 'lucide-react';
 
 // W5 (live parity): seller orders tab rebuilt to the live component
@@ -53,7 +54,6 @@ const normalizeOrder = (raw: any): any => {
     },
     items: (raw.items || []).map((it: any) => ({
       ...it,
-      product: it.product || (it.product_title ? { title: it.product_title } : undefined),
       variantName: it.variant?.name ?? it.variant_name ?? it.variantName ?? '',
     })),
   };
@@ -314,7 +314,7 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
                   {order.items.map((item: any, idx: number) => (
                     <div key={idx} className="flex justify-between truncate">
                       <span className="truncate">
-                        {item.product?.title || 'کالای سفارشی'}
+                        {orderItemTitle(item)}
                         {item.variantName ? <span className="text-slate-400"> — {item.variantName}</span> : null}
                       </span>
                       <span className="shrink-0 mr-2 font-bold">{toPersianDigits(item.quantity)} عدد</span>

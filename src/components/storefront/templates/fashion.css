@@ -12,7 +12,7 @@
   color: var(--fashion-ink);
 }
 
-.fashion-storefront { min-width: 0; }
+.fashion-storefront { min-width: 0; container: fashion-frame / inline-size; }
 .fashion-storefront :is(a, button) { -webkit-tap-highlight-color: transparent; }
 .fashion-storefront :is(button, a, input):focus-visible,
 .fashion-header :is(button, a):focus-visible,
@@ -31,7 +31,7 @@
 .fashion-hero-copy { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px 24px 30px; min-width: 0; }
 .fashion-eyebrow { display: flex; align-items: center; gap: 12px; color: var(--fashion-accent); font-size: 12px; font-weight: 500; }
 .fashion-eyebrow::before { content: ''; width: 28px; height: 1px; background: currentColor; }
-.fashion-hero h1 { font-size: clamp(28px, 3.4vw, 50px); font-weight: 750; line-height: 1.55; margin: 12px 0; overflow-wrap: anywhere; }
+.fashion-hero h1 { font-size: clamp(28px, 3.4cqi, 50px); font-weight: 750; line-height: 1.55; margin: 12px 0; overflow-wrap: anywhere; }
 .fashion-hero-copy > p { font-size: 13px; line-height: 2.15; color: #57544f; max-width: 390px; margin-bottom: 20px; }
 .fashion-button { display: inline-flex; align-items: center; justify-content: center; gap: 28px; min-height: 46px; padding: 11px 24px; background: var(--fashion-ink); color: #fff; font-size: 13px; font-weight: 500; text-decoration: none; transition: background .2s; }
 .fashion-button:hover { background: #433d35; }
@@ -120,11 +120,25 @@
   .fashion-product:hover .fashion-product-quick { opacity: 1; transform: translateY(0); }
 }
 
-@media (min-width: 640px) {
-  .fashion-section-stack { gap: 44px; }
+/* The same hero is used in the scaled desktop stage and phone emulator.
+   Use its own frame width rather than the outer browser viewport. */
+@container fashion-frame (min-width: 640px) {
   .fashion-hero { width: calc(100% - 48px); max-width: 1360px; margin: 20px auto 0; }
   .fashion-hero-media { aspect-ratio: 16/9; }
   .fashion-hero-copy { padding: 32px; }
+}
+
+@container fashion-frame (min-width: 1024px) {
+  .fashion-hero { width: calc(100% - 80px); margin-top: 28px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); direction: ltr; }
+  .fashion-hero-media { aspect-ratio: auto; min-height: 440px; }
+  .fashion-hero-photo { position: absolute; inset: 0; object-position: center top; }
+  .fashion-hero:not(.fashion-hero-text-only) .fashion-hero-copy { direction: rtl; align-items: flex-start; text-align: right; padding: 44px; }
+  .fashion-hero-copy > p { font-size: 15px; }
+  .fashion-eyebrow { font-size: 13px; }
+}
+
+@media (min-width: 640px) {
+  .fashion-section-stack { gap: 44px; }
   .fashion-category-grid { gap: 20px; }
   .fashion-category > span { font-size: 14px; min-height: 54px; }
   .fashion-category > span > svg { display: block; }
@@ -141,12 +155,6 @@
 @media (min-width: 1024px) {
   .fashion-section-stack { gap: 56px; }
   .fashion-section-stack > div:has(> [data-testid="store-category-macro"]) { margin-top: -28px; }
-  .fashion-hero { width: calc(100% - 80px); margin-top: 28px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); direction: ltr; }
-  .fashion-hero-media { aspect-ratio: auto; min-height: 440px; }
-  .fashion-hero-photo { position: absolute; inset: 0; object-position: center top; }
-  .fashion-hero-copy { direction: rtl; align-items: flex-start; text-align: right; padding: 44px; }
-  .fashion-hero-copy > p { font-size: 15px; }
-  .fashion-eyebrow { font-size: 13px; }
   .fashion-category-grid { gap: 24px; }
   .fashion-category-image { aspect-ratio: 1.9/1; }
   .fashion-category-contact { background-position-y: 12% !important; }

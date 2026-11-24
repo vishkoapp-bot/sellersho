@@ -30,9 +30,20 @@ for (const failure of [false, true]) {
       }
       assert.equal(new URL(page.url()).pathname, '/');
       assert.equal(await page.evaluate(() => (window as any).batch8Fixture.state().view), 'dropshipper_landing');
-      await page.locator('input[placeholder="مثلاً: آریا استور، تک‌شاپ..."]').fill('فروشگاه نمونه');
-      await page.locator('input[placeholder="my-store"]').fill('batch-eight-store');
-      await page.locator('input[placeholder="نام و نام خانوادگی"]').fill('مدیر نمونه');
+      const requiredDetails = [
+        ['input[placeholder="my-store"]', 'batch-eight-store'],
+        ['input[placeholder="نام و نام خانوادگی"]', 'مدیر نمونه'],
+        ['input[placeholder="مثلاً: آریا استور، تک‌شاپ..."]', 'فروشگاه نمونه'],
+      ] as const;
+      // Use the native input event for the controlled fields, then wait for
+      // the rendered draft before interacting with the step button.
+      for (const [selector, value] of requiredDetails) {
+        await fillInput(page, selector, value);
+      }
+      await page.waitForFunction(details => details.every(([selector, value]) => {
+        const field = document.querySelector<HTMLInputElement>(selector);
+        return field?.value === value && field.getClientRects().length > 0;
+      }), {}, requiredDetails);
       const next = () => page.locator(() => [...document.querySelectorAll('button')]
         .find(button => button.innerText.trim() === 'مرحله بعدی')!).click();
       await next();

@@ -526,6 +526,7 @@ type ProductVariant struct {
 	Attributes       map[string]interface{} `json:"attributes"`
 	IsDefault        bool                   `json:"isDefault"`
 	Stock            int                    `json:"stock"`
+	CodedStock       bool                   `json:"-"`
 	SupplierBaseCost *int64                 `json:"supplierBaseCost,omitempty"`
 	// Images are the variant's own photos, ordered; images[0] is the hero.
 	// Empty/nil = no variant image; PDP falls back to the product gallery.

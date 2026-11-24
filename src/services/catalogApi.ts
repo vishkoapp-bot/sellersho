@@ -21,6 +21,7 @@ export interface ProductVariantDto {
   selection?: Record<string,string>;
   combinationKey?: string;
   inventoryMode?: 'legacy' | 'tracked';
+  stockAuthority?: 'coded-v1';
   isActive?: boolean;
   supplierBaseCost?: number;
   // Variant systems P0/P1/P2 (backend names, camelCase on the wire):

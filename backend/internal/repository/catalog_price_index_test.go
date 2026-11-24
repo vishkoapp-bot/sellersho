@@ -62,7 +62,8 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 		"platform_settings", "platform_pct_products", "platform_pct_categories",
 		"product_margin_ceilings", "store_product_overrides", "store_variant_overrides",
 		"store_margin_locks", "seller_discount_campaigns", "store_variant_defaults",
-		"store_variant_visibility", "catalog_public_prices", "catalog_scope_revisions"}
+		"store_variant_visibility", "catalog_public_prices", "catalog_scope_revisions",
+		"product_units", "inventory_balances", "warehouses", "supplier_warehouses", "supplier_shipping_methods"}
 	for _, table := range tables {
 		if _, err := tx.ExecContext(ctx, `CREATE TABLE `+schema+`.`+table+` (LIKE public.`+table+` INCLUDING ALL)`); err != nil {
 			t.Fatal(err)
@@ -120,6 +121,20 @@ func perf01FixtureSetup(t *testing.T) *perf01Fixture {
 			('11111111-1111-1111-1111-111111111007','perf01-prod-004','P004AAAB','On','{}',FALSE,0,15000,'tracked',TRUE)`,
 		`UPDATE product_variants SET sale_price=23000, sale_from=CURRENT_TIMESTAMP - INTERVAL '24 hours', sale_to=CURRENT_TIMESTAMP + INTERVAL '24 hours' WHERE id='11111111-1111-1111-1111-111111111005'`,
 		`UPDATE products SET stock=CASE WHEN id='perf01-prod-038' THEN 0 ELSE 5 END`,
+		`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name)
+			VALUES('perf01-origin','Fixture',1,1,'Tehran','Tehran')`,
+		// Preserve the 37-in-stock invariant with actual coded units instead
+		// of raw stock counters. Product 001's lower-priced variant remains
+		// unavailable, so its priced range and card remain distinct.
+		`INSERT INTO product_variants(product_id,spnc,variant_name,is_default,inventory_mode,is_active)
+			SELECT id,'PERF'||right(id,3),'Fixture',true,'tracked',true
+			FROM products WHERE id BETWEEN 'perf01-prod-005' AND 'perf01-prod-037'`,
+		`INSERT INTO inventory_balances(id,product_id,variant_id,supplier_id,owner_type,location_type,location_key,status,quantity,warehouse_id)
+			SELECT spnc,v.product_id,v.id,p.supplier_id,'supplier','warehouse','warehouse:perf01-origin','sellable',1,'perf01-origin'
+			FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.is_active AND v.spnc<>'P001AAAB'`,
+		`INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
+			SELECT v.spnc||'-X0001',v.id,v.product_id,1,'in_stock',b.id
+			FROM product_variants v JOIN inventory_balances b ON b.variant_id=v.id`,
 		`INSERT INTO store_variant_defaults(store_id,product_id,variant_id) VALUES
 			('perf01-A','perf01-prod-002','11111111-1111-1111-1111-111111111004')`,
 		`INSERT INTO store_product_overrides(store_id,product_id,override_value,mode) VALUES

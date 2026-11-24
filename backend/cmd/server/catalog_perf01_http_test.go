@@ -260,6 +260,73 @@ func TestPerf01HTTPListEnvelope(t *testing.T) {
 	}
 }
 
+func TestPerf01IndexFollowsPurchasableCardPrice(t *testing.T) {
+	catalogRepo, storeRepo := perf01HTTPRepos(t)
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, statement := range []string{
+			`DELETE FROM product_units WHERE product_id='http-001' AND code IN ('A01B02C3D4-X0001','E5F6A7B8C9-X0001')`,
+			`DELETE FROM inventory_balances WHERE id='perf01-card-lot'`,
+			`DELETE FROM warehouses WHERE id='perf01-card-origin'`,
+		} {
+			if _, err := db.Exec(statement); err != nil {
+				t.Errorf("clean stock-aware card fixture: %v", err)
+			}
+		}
+	})
+	for _, statement := range []string{
+		`INSERT INTO warehouses(id,name,tapin_province_id,tapin_city_id,province_name,city_name)
+		VALUES ('perf01-card-origin','Card price test',1,1,'Tehran','Tehran') ON CONFLICT DO NOTHING`,
+		`INSERT INTO inventory_balances(id,product_id,supplier_id,owner_type,location_type,location_key,status,quantity,warehouse_id)
+		VALUES ('perf01-card-lot','http-001','sup-1','supplier','warehouse','warehouse:perf01-card-origin','sellable',2,'perf01-card-origin')
+		ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO product_units(code,variant_id,product_id,sequence,status,balance_id)
+		SELECT spnc||'-X0001',id,product_id,1,'in_stock','perf01-card-lot'
+		FROM product_variants WHERE product_id='http-001'
+		ON CONFLICT (code) DO NOTHING`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := perf01ListHandler(t, catalogRepo, storeRepo)
+	inRange := func(min, max int) *ProductResponse {
+		t.Helper()
+		page := perf01DecodeList(t, perf01HTTPGet(t, handler, fmt.Sprintf("/api/v1/products?category=perf01-cat&min_price=%d&max_price=%d", min, max)))
+		for i := range page.Items {
+			if page.Items[i].ID == "http-001" {
+				return &page.Items[i]
+			}
+		}
+		return nil
+	}
+	low := inRange(13000, 14000)
+	if low == nil || perf01CardPrice(*low) != 13200 || inRange(65000, 67000) != nil {
+		t.Fatal("both variants are purchasable: range index must choose the lowest priced SKU")
+	}
+	if _, err := db.Exec(`UPDATE product_units SET status='removed',balance_id=NULL WHERE code='E5F6A7B8C9-X0001'`); err != nil {
+		t.Fatal(err)
+	}
+	high := inRange(65000, 67000)
+	if inRange(13000, 14000) != nil || high == nil || perf01CardPrice(*high) != 66000 {
+		t.Fatal("depleting the cheap coded SKU must invalidate the price index and choose the remaining purchasable SKU")
+	}
+	if high.PriceMin == nil || *high.PriceMin != 13200 || high.PriceMax == nil || *high.PriceMax != 66000 {
+		t.Fatal("secondary displayed range must still include all active priced variants")
+	}
+	for _, variant := range high.Variants {
+		if variant.StockAuthority != "coded-v1" {
+			t.Fatal("authoritative stock marker missing from public SKU")
+		}
+		if variant.Spnc == "E5F6A7B8C9" && variant.Stock != 0 {
+			t.Fatal("a depleted SKU must not borrow its sibling's coded units")
+		}
+	}
+}
+
 func TestPerf01HTTPListValidation(t *testing.T) {
 	catalogRepo, storeRepo := perf01HTTPRepos(t)
 	handler := perf01ListHandler(t, catalogRepo, storeRepo)

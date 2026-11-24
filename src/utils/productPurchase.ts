@@ -26,13 +26,13 @@ export const activeProductVariants = <V extends { isActive?: boolean }>(product:
   (product.variants ?? []).filter((variant) => variant.isActive !== false);
 
 type PurchaseVariantCandidate = Pick<ProductVariant, 'id'> & Partial<Pick<
-  ProductVariant, 'variantName' | 'name' | 'stock' | 'inventoryMode' | 'minCartQty' | 'maxCartQty' | 'isActive' | 'isDefault'
+  ProductVariant, 'variantName' | 'name' | 'stock' | 'stockAuthority' | 'inventoryMode' | 'minCartQty' | 'maxCartQty' | 'isActive' | 'isDefault'
 >>;
 type PurchaseProductCandidate = Pick<Product, 'schemaVersion' | 'productType' | 'isActive' | 'variantPrices'> & { stock?: number };
 
 export const purchaseLimits = (product: PurchaseProductCandidate, variant?: PurchaseVariantCandidate) => {
   const minQty = variant?.minCartQty != null && Number.isSafeInteger(variant.minCartQty) && variant.minCartQty > 0 ? variant.minCartQty : 1;
-  const tracked = variant && (variant.inventoryMode === 'tracked' || product.schemaVersion === 2 || product.productType === 'variable');
+  const tracked = variant && (variant.stockAuthority === 'coded-v1' || variant.inventoryMode === 'tracked' || product.schemaVersion === 2 || product.productType === 'variable');
   const variantStock = variant?.stock ?? 0;
   const rawStock = tracked ? variantStock : variantStock > 0 ? variantStock : product.stock ?? 0;
   const stock = Number.isSafeInteger(rawStock) ? Math.max(0, rawStock) : 0;

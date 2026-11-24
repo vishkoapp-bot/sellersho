@@ -1,0 +1,88 @@
+name: Release candidate (no deployment)
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact current main SHA (40 lowercase hexadecimal characters)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  candidate:
+    if: github.repository == 'vishkoapp-bot/sellersho' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: candidate-smoke-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # the migration rollback floor uses git history
+          persist-credentials: false
+      - name: Require exact-SHA successful main push CI
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m unittest discover -s scripts/release -p test_candidate_gate.py
+          ci_url="$(python3 scripts/release/candidate_gate.py)"
+          printf 'Candidate commit: `%s`\n\n[Exact-SHA CI push](%s)\n' "$GITHUB_SHA" "$ci_url" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.27"
+          cache: false
+      - name: Install disposable smoke test clients
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16 redis-tools
+      - name: Build real-mode archive and verify its digest and extracted contents
+        run: |
+          stage="$RUNNER_TEMP/candidate-stage"
+          out="$RUNNER_TEMP/candidate-upload"
+          mkdir -p "$out" "$RUNNER_TEMP/candidate-check"
+          bash scripts/release/make_release.sh --payment-mode real --production --out-dir "$stage"
+          tar -C "$stage" -czf "$out/release-$GITHUB_SHA.tar.gz" .
+          (cd "$out"; sha256sum "release-$GITHUB_SHA.tar.gz" > SHA256SUMS; sha256sum -c SHA256SUMS)
+          tar -xzf "$out/release-$GITHUB_SHA.tar.gz" -C "$RUNNER_TEMP/candidate-check"
+          python3 scripts/release/validate_release.py --stage "$RUNNER_TEMP/candidate-check" --commit "$GITHUB_SHA" --production
+      - name: Smoke extracted archive with mock payment and disposable local services
+        env:
+          SMOKE_PG_HOST: localhost
+          SMOKE_PG_PORT: "5432"
+          SMOKE_PG_USER: postgres
+          SMOKE_PG_PASSWORD: candidate-smoke-only
+          SMOKE_REDIS_URL: redis://localhost:6379/15
+        run: |
+          python3 scripts/release/smoke_release.py --self-test-negative
+          python3 scripts/release/smoke_release.py --stage "$RUNNER_TEMP/candidate-check"
+      - name: Publish unpromoted candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/candidate-upload/release-${{ github.sha }}.tar.gz
+            ${{ runner.temp }}/candidate-upload/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7

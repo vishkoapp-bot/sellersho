@@ -287,6 +287,9 @@ func run(signalCtx context.Context) (result error) {
 	).WithPricingRepository(pricingRepo).WithTapinRepository(tapinRepo)
 
 	mux := http.NewServeMux()
+	if db != nil {
+		installSPNCXRoutes(mux, jwtService, supplierRepo, repository.NewSPNCXRepository(db.DB))
+	}
 	mux.HandleFunc("/api/v1/admin/ad-network/report", RequireRoles(jwtService, "admin", "support_specialist")(func(w http.ResponseWriter, r *http.Request) { handleAdNetworkReport(w, r, storeRepo) }))
 	mux.HandleFunc("/internal/domains/allow", func(w http.ResponseWriter, r *http.Request) { handleDomainPermission(w, r, storeRepo) })
 	mux.HandleFunc("/api/v1/domain-store", func(w http.ResponseWriter, r *http.Request) { handleDomainStore(w, r, storeRepo) })

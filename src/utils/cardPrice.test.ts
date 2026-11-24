@@ -15,6 +15,20 @@ test('card uses the priced active store default before cheaper siblings', () => 
   assert.deepEqual(cardPriceOf({ ...base, variants, variantPrices }), variantPrices['first-other']);
 });
 
+test('authoritative coded zero never borrows a sibling legacy SKU’s stock', () => {
+  const coded = {
+    ...base, productType: 'legacy' as const, stock: 2,
+    variants: variants.map(v => ({
+      ...v,
+      stockAuthority: 'coded-v1' as const,
+      stock: v.id === 'product-default' ? 2 : 0,
+    })),
+    variantPrices, storeDefaultVariantId: 'store-default',
+  };
+  assert.equal(cardPriceVariantOf(coded).variant?.id, 'product-default');
+  assert.equal(cardPriceOf(coded).price, variantPrices['product-default'].price);
+});
+
 test('inactive or unpriced defaults fall through in server variant order, with a product fallback', () => {
   const active = [{ id: 'product-default', isDefault: true, isActive: false }, { id: 'unpriced', isDefault: true }, { id: 'first-other' }, { id: 'store-default' }];
   assert.deepEqual(cardPriceOf({ ...base, variants: active, variantPrices, storeDefaultVariantId: 'unpriced' }), variantPrices['first-other']);

@@ -22,6 +22,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -37,7 +38,7 @@ import (
 // FingerprintVersion versions the fingerprint expression. Bump it whenever
 // the priced inputs change shape: every stored row then reads as stale and
 // rebuilds exactly once.
-const FingerprintVersion = "v2"
+const FingerprintVersion = "v3"
 
 // catalogPriceRefreshBatch bounds one refresh round-trip: products are
 // priced and upserted in batches of this size, never the whole stale set
@@ -124,7 +125,9 @@ func (r *CatalogRepository) GetCatalogScopeRevisionTx(ctx context.Context, tx *s
 // scope_id over the same row set (product / niche / variant scopes).
 func priceFingerprintJoins(storePlaceholder string, scoped bool) string {
 	sp := storePlaceholder
-	variantExpr := `v.id || ':' || COALESCE(v.supplier_base_cost::text,'') || ':' || COALESCE(v.is_default::text,'') || ':' || COALESCE((to_jsonb(v)->>'is_active')::text,'') || ':' || COALESCE((to_jsonb(v)->>'inventory_mode')::text,'') || ':' || COALESCE(v.sale_price::text,'') || ':' || COALESCE(v.sale_from::text,'') || ':' || COALESCE(v.sale_to::text,'')`
+	variantExpr := `jsonb_build_array(v.id,v.supplier_base_cost,v.is_default,to_jsonb(v)->'is_active',
+		to_jsonb(v)->'inventory_mode',v.sale_price,v.sale_from,v.sale_to,v.variant_name,v.attributes,v.created_at,
+		to_jsonb(v)->'min_cart_qty',to_jsonb(v)->'max_cart_qty')::text`
 	variantSet := `SELECT v.product_id, string_agg(` + variantExpr + `, ',' ORDER BY v.id) AS s FROM product_variants v GROUP BY v.product_id`
 	if scoped {
 		variantSet = `SELECT v.product_id, string_agg(` + variantExpr + `, ',' ORDER BY v.id) AS s FROM product_variants v LEFT JOIN store_variant_visibility svv ON svv.variant_id = v.id AND svv.store_id=` + sp + ` WHERE svv.is_visible IS DISTINCT FROM FALSE GROUP BY v.product_id`
@@ -137,6 +140,11 @@ func priceFingerprintJoins(storePlaceholder string, scoped bool) string {
 	LEFT JOIN store_product_overrides fp_po ON fp_po.store_id = ` + sp + ` AND fp_po.product_id = p.id
 	LEFT JOIN store_variant_defaults fp_def ON fp_def.store_id = ` + sp + ` AND fp_def.product_id = p.id
 	LEFT JOIN (` + variantSet + `) fp_var ON fp_var.product_id = p.id
+	LEFT JOIN (SELECT cs.product_id, string_agg(cs.variant_id, ',' ORDER BY cs.variant_id) AS s
+		FROM (` + codedVariantQuantitiesSQL("") + `) cs
+		JOIN product_variants cv ON cv.id=cs.variant_id::uuid
+		WHERE cs.quantity>=GREATEST(COALESCE((to_jsonb(cv)->>'min_cart_qty')::int,1),1)
+		GROUP BY cs.product_id) fp_coded ON fp_coded.product_id = p.id
 	LEFT JOIN (SELECT product_id, string_agg(variant_id::text || ':' || override_value::text || ':' || mode, ',' ORDER BY variant_id) AS s FROM store_variant_overrides WHERE store_id = ` + sp + ` GROUP BY product_id) fp_vo ON fp_vo.product_id = p.id
 	LEFT JOIN (SELECT u.product_id, string_agg(u.scope || ':' || u.scope_id || ':' || u.lock_mode || ':' || COALESCE(u.lock_value::text,''), ',' ORDER BY u.scope, u.scope_id) AS s FROM (
 		SELECT l.scope, l.scope_id, l.lock_mode, l.lock_value, l.scope_id AS product_id FROM store_margin_locks l WHERE l.store_id = ` + sp + ` AND l.scope = 'product'
@@ -182,6 +190,11 @@ func priceFingerprintExpr(storePlaceholder, productAlias string, scoped bool) st
 		`COALESCE(` + p + `.original_price::text,'')`,
 		`COALESCE(` + p + `.category_slug,'')`,
 		`COALESCE(` + p + `.is_active::text,'')`,
+		// A title only affects selection when it can make a renamed
+		// variable SKU look like a hidden synthetic default in the DTO.
+		`CASE WHEN to_jsonb(` + p + `)->>'product_type'='variable' AND regexp_replace(` + p + `.title,'[[:space:]‌‍]','','g')='پیشفرض' THEN 'synthetic' ELSE '' END`,
+		`COALESCE(to_jsonb(` + p + `)->>'product_type','')`,
+		`COALESCE(to_jsonb(` + p + `)->>'schema_version','')`,
 		`COALESCE((SELECT platform_pct::text || '/' || central_profit_pct::text || '/' || max_profit_margin::text FROM platform_settings WHERE id = 1),'')`,
 		`COALESCE(fp_ppp.pct::text,'')`,
 		`COALESCE(fp_ppc.pct::text,'')`,
@@ -189,6 +202,7 @@ func priceFingerprintExpr(storePlaceholder, productAlias string, scoped bool) st
 		`COALESCE((SELECT is_margin_locked_by_admin::text || '/' || COALESCE(custom_store_margin_override::text,'') || '/' || COALESCE(seller_deals_widget_config::text,'') FROM stores WHERE id=` + sp + `),'')`,
 		`COALESCE(fp_po.override_value::text || '/' || fp_po.mode,'')`,
 		`COALESCE(fp_var.s,'')`,
+		`COALESCE(fp_coded.s,'')`,
 		`COALESCE(fp_def.variant_id::text,'')`,
 		`COALESCE(fp_vo.s,'')`,
 		`COALESCE(fp_locks.s,'')`,
@@ -425,6 +439,10 @@ func (r *CatalogRepository) refreshCatalogPriceBatchTx(ctx context.Context, tx *
 	if err != nil {
 		return false, err
 	}
+	codedStock, err := queryCodedStockByVariant(ctx, tx, batch)
+	if err != nil {
+		return false, err
+	}
 	defaults, err := r.catalogStoreDefaultsTx(ctx, tx, store.ID, batch)
 	if err != nil {
 		return false, err
@@ -455,6 +473,7 @@ func (r *CatalogRepository) refreshCatalogPriceBatchTx(ctx context.Context, tx *
 			Settings: settings, Locks: locks, Overrides: overrides,
 			ActiveCampaigns: active, AllCampaigns: relevant, Widget: widget,
 			StoreDefaultVariantID: defaults[p.ID], AsOf: asOf,
+			CodedStock: codedStock,
 		})
 		if err != nil {
 			errorIDs = append(errorIDs, p.ID)
@@ -641,7 +660,8 @@ func (r *CatalogRepository) catalogVariantsByIDsTx(ctx context.Context, tx *sql.
 		SELECT v.id, v.product_id, v.supplier_base_cost, v.is_default,
 		       COALESCE((to_jsonb(v)->>'is_active')::boolean, TRUE),
 		       COALESCE((to_jsonb(v)->>'inventory_mode')::text, 'legacy'),
-		       v.sale_price, v.sale_from, v.sale_to
+		       v.sale_price, v.sale_from, v.sale_to, COALESCE(v.variant_name,''), COALESCE(v.attributes,'{}'::jsonb),
+		       COALESCE((to_jsonb(v)->>'min_cart_qty')::int,1), (to_jsonb(v)->>'max_cart_qty')::int
 		FROM product_variants v
 	`
 	args := []any{pq.Array(ids)}
@@ -665,8 +685,17 @@ func (r *CatalogRepository) catalogVariantsByIDsTx(ctx context.Context, tx *sql.
 		var cost sql.NullInt64
 		var salePrice sql.NullInt64
 		var saleFrom, saleTo sql.NullTime
-		if err := rows.Scan(&v.ID, &v.ProductID, &cost, &v.IsDefault, &v.IsActive, &v.InventoryMode, &salePrice, &saleFrom, &saleTo); err != nil {
+		var attrs []byte
+		var maxQty sql.NullInt32
+		if err := rows.Scan(&v.ID, &v.ProductID, &cost, &v.IsDefault, &v.IsActive, &v.InventoryMode, &salePrice, &saleFrom, &saleTo, &v.Name, &attrs, &v.MinCartQty, &maxQty); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal(attrs, &v.Attributes); err != nil {
+			return nil, err
+		}
+		if maxQty.Valid {
+			n := int(maxQty.Int32)
+			v.MaxCartQty = &n
 		}
 		if cost.Valid {
 			c := cost.Int64

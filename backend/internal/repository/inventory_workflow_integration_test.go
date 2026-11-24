@@ -23,12 +23,14 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // TestINV12ReceiptVsCaptureSameLotExactlyOnce — audit §6, receipt/capture race.
@@ -308,8 +310,8 @@ func TestINV12CapacityAssignmentVsDepartureSamePosition(t *testing.T) {
 //
 // The occupancy release for a paid, packed order is pre-created exactly as
 // ShipOrderWithActor does, then two concurrent consumeStorageBusinessEventTx
-// calls run on the same warehouse_shipment event. Exactly one must succeed;
-// the other is a no-op/error — never a second subtraction. Final departures
+// calls run on the same warehouse_shipment event. Exactly one must apply;
+// the other can be a successful no-op or an expected guard error. Final departures
 // sum to the order quantity and no history exception is written.
 func TestINV12DoubleDepartureSameEventExactlyOnce(t *testing.T) {
 	db, f, warehouse, _, sku := inv06Placed(t, true, 1)
@@ -362,23 +364,38 @@ func TestINV12DoubleDepartureSameEventExactlyOnce(t *testing.T) {
 	for err := range results {
 		if err == nil {
 			successes++
-		} else {
-			t.Logf("inv12 double-departure loser: %v", err)
+			continue
+		}
+		var guarded *pq.Error
+		if !errors.As(err, &guarded) || guarded.Code != "P0001" ||
+			(guarded.Message != "storage departure exceeds actual physical event" &&
+				guarded.Message != "storage exception requires the whole actual unresolved physical source") {
+			t.Fatalf("unexpected concurrent departure error: %v", err)
 		}
 	}
-	if successes != 1 {
-		t.Fatalf("double departure successes=%d, want exactly 1", successes)
+	if successes == 0 {
+		t.Fatal("neither departure transaction committed")
 	}
-	var departed, departureRows, exceptions int
-	if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0),COUNT(*) FROM warehouse_storage_lot_departures WHERE event_type='warehouse_shipment' AND event_id=$1`, order).Scan(&departed, &departureRows); err != nil {
-		t.Fatal(err)
+	assertExactlyOneDeparture := func() {
+		t.Helper()
+		var departed, departureRows, exceptions int
+		if err := db.QueryRow(`SELECT COALESCE(SUM(quantity),0),COUNT(*) FROM warehouse_storage_lot_departures WHERE event_type='warehouse_shipment' AND event_id=$1`, order).Scan(&departed, &departureRows); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`SELECT COUNT(*) FROM warehouse_storage_history_exceptions WHERE event_type='warehouse_shipment' AND event_id=$1`, order).Scan(&exceptions); err != nil {
+			t.Fatal(err)
+		}
+		if departed != 1 || departureRows != 1 || exceptions != 0 {
+			t.Fatalf("double departure: departed=%d rows=%d exceptions=%d", departed, departureRows, exceptions)
+		}
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM warehouse_storage_history_exceptions WHERE event_type='warehouse_shipment' AND event_id=$1`, order).Scan(&exceptions); err != nil {
-		t.Fatal(err)
+	assertExactlyOneDeparture()
+	// The helper deliberately returns nil once matching evidence is already
+	// recorded. A repeat after commit must keep the same one-row oracle.
+	if err := consume(); err != nil {
+		t.Fatalf("committed departure replay: %v", err)
 	}
-	if departed != 1 || departureRows != 1 || exceptions != 0 {
-		t.Fatalf("double departure: departed=%d rows=%d exceptions=%d", departed, departureRows, exceptions)
-	}
+	assertExactlyOneDeparture()
 }
 
 // TestINV12MixedWorkloadConservationOracle — audit §6, disjoint per-lot/event

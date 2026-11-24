@@ -5,7 +5,7 @@ import { batch8Browser, clickText, fillInput, waitText } from '../../scripts/fix
 const visit = batch8Browser();
 for (const failure of [false, true]) {
   test(`seller wizard resumes after login and ${failure ? 'localizes a 401' : 'registers once'}`, async () => {
-    await visit('/?admin', 390, async page => {
+    await visit('/?admin&holdInitialProfile', 390, async page => {
       await clickText(page, 'راه‌اندازی دراپ‌شیپینگ');
       await clickText(page, 'شروع');
       await waitText(page, 'برای افتتاح فروشگاه ابتدا وارد حساب کاربری شوید');
@@ -17,11 +17,21 @@ for (const failure of [false, true]) {
       await fillInput(page, 'input[maxlength="4"]', '1234');
       await clickText(page, 'تأیید و ورود');
       try {
-        await page.waitForSelector('input[placeholder="my-store"]', { timeout: 5000 });
+        // The form can briefly mount while OTP profile revalidation is still
+        // pending. Finishing it changes the private provider keys and remounts
+        // the store subtree. Interact only after the verified scope is mounted.
+        await page.waitForFunction(() => (window as any).batch8Fixture.initialProfilePending());
+        await page.evaluate(() => (window as any).batch8Fixture.finishInitialProfile());
+        await page.waitForFunction(() => {
+          const snapshot = (window as any).batch8Fixture.state?.();
+          return snapshot?.userId === 'fixture-user' && snapshot.isSessionReady;
+        }, { timeout: 5000 });
+        await page.waitForSelector('input[placeholder="my-store"]', { visible: true, timeout: 5000 });
       } catch {
         const result = await page.evaluate(() => ({
           view: (window as any).batch8Fixture.state().view,
           verified: (window as any).batch8Fixture.verifications,
+          auth: (window as any).batch8Fixture.state?.(),
           notices: document.querySelector('.fixed.top-4')?.textContent,
           headings: [...document.querySelectorAll('h1, h3, [role="status"]')].map(node => node.textContent?.trim()).slice(-8),
           inputs: [...document.querySelectorAll('input')].map(node => node.placeholder),

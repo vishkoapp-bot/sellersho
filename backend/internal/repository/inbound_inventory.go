@@ -370,7 +370,9 @@ func inboundMoveTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, from
 		if err != nil {
 			return err
 		}
-		return mintSKUStockTx(ctx, tx, l.Product, l.Supplier, l.Variant, target, n, to, location, "inbound_receive", l.ID, key, actor)
+		// Use the canonical receipt-line provenance recognized by the
+		// storage-history validator, including when receipt mints units.
+		return mintSKUStockTx(ctx, tx, l.Product, l.Supplier, l.Variant, target, n, to, location, "inbound_transfer", l.ID, key, actor)
 	}
 	var source string
 	if from != "external" {

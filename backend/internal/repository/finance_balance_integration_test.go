@@ -398,12 +398,25 @@ func TestFinanceBalanceConcurrentDebits(t *testing.T) {
 
 func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 	db, f, warehouse := fin006Fixture(t)
-	fin006KnownReceipt(t, db, f, warehouse, 1, tehranDay(time.Now()).AddDate(0, 0, -35))
-	// TEST-02 round 5: the ctx was 8s, but the assessment goroutine
-	// must reach this supplier's lot before the wait (15s) can see
-	// it block — 8s expires first in a large shared DB. 30s gives
-	// both room; the intent (the writer waits on the account row
-	// guard) is unchanged.
+	_, position := fin006KnownReceipt(t, db, f, warehouse, 1, tehranDay(time.Now()).AddDate(0, 0, -35))
+	// This test exercises one account's guard, not global scheduler progress.
+	// A prior assessment may have advanced the shared cursor past this new lot
+	// (or left another full bounded page ahead of it). Start immediately before
+	// our fixture so the real bounded scan must encounter it and restore the
+	// cursor for subsequent tests.
+	var previousCursor string
+	var previousPending bool
+	if err := db.QueryRow(`SELECT last_receipt_id,cycle_pending FROM warehouse_storage_assessment_cursor WHERE id=1`).Scan(&previousCursor, &previousPending); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`UPDATE warehouse_storage_assessment_cursor SET last_receipt_id=$1,cycle_pending=$2 WHERE id=1`, previousCursor, previousPending); err != nil {
+			t.Errorf("restore storage assessment cursor: %v", err)
+		}
+	})
+	opsExec(t, db, `UPDATE warehouse_storage_assessment_cursor SET cycle_pending=FALSE,
+		last_receipt_id=COALESCE((SELECT id FROM warehouse_storage_receipt_lots WHERE id COLLATE "C" < $1 ORDER BY id COLLATE "C" DESC LIMIT 1),'')
+		WHERE id=1`, position)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
@@ -411,17 +424,39 @@ func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	var blockerPID int
+	if err = tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
 	var set TransactionLockSet
 	if err := LockAccountsTx(ctx, tx, &set, FinancialAccount{Type: "supplier", ID: f.supplier}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() { _, err := NewSupplierRepository(db).RunStorageFeeAssessment(ctx); done <- err }()
-	waitFinanceAccountGuard(t, db, "suppliers")
-	select {
-	case err := <-done:
-		t.Fatalf("storage debit bypassed account guard: %v", err)
-	default:
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("storage assessment returned before waiting on this supplier's account guard: %v", err)
+		default:
+		}
+		var waiting bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))
+			AND query LIKE '%SELECT id FROM suppliers WHERE id=$1 FOR UPDATE%')`, blockerPID).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("storage assessment never waited on this supplier's account guard")
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if n := storageChargeCountFor(t, db, position); n != 0 {
+		t.Fatalf("storage assessment wrote %d receipt charges while the supplier guard was held", n)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -429,8 +464,8 @@ func TestFinanceBalanceStorageWriterUsesAccountGuard(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if storageChargeCount(t, db) != 5 {
-		t.Fatalf("charges=%d want5", storageChargeCount(t, db))
+	if n := storageChargeCountFor(t, db, position); n != 5 {
+		t.Fatalf("receipt charges=%d want5", n)
 	}
 }
 

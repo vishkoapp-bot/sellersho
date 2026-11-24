@@ -43,7 +43,10 @@ test('stock form requires reason and exact SKU, retains a conflict draft, accept
     for (const invalid of ['-1', '1.5', '2147483648']) { await fill('موجودی کل قابل فروش', invalid); await clickText('ثبت موجودی'); assert.equal(payloads.length, 0, 'invalid stock submitted: ' + invalid); }
     await fill('موجودی کل قابل فروش', '8');
     await Promise.all([page.waitForResponse(response => response.url().endsWith('/stock') && response.request().method() === 'PUT'), clickText('ثبت موجودی')]);
-    await page.waitForFunction(() => document.body.innerText.includes('count changed; correct the draft'));
+    // The client intentionally translates unrecognized English provider
+    // errors to its safe Persian fallback; the raw 409 payload must not leak.
+    await page.waitForFunction(() => document.body.innerText.includes('خطایی رخ داد؛ دوباره تلاش کنید.'));
+    assert.doesNotMatch(await page.$eval('body', el => el.innerText), /count changed; correct the draft/);
     assert.equal(await page.$eval('input[aria-label="موجودی کل قابل فروش"]', el => (el as HTMLInputElement).value), '8');
     assert.equal(await page.$eval('input[aria-label="علت اصلاح موجودی"]', el => (el as HTMLInputElement).value), '  counted SKU  ');
     assert.equal(await page.$eval('select[aria-label="تنوع برای اصلاح موجودی"]', el => (el as HTMLSelectElement).value), 'sku-a');

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type inventoryHoldRequest struct {
@@ -94,7 +96,9 @@ func (r *OrderRepository) codedOrderHoldRequests(ctx context.Context, orderID st
 	return requests, nil
 }
 
-func codedStockForReservation(ctx context.Context, db *sql.DB, ref InventoryHoldRef) (int, error) {
+func codedStockForReservation(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, ref InventoryHoldRef) (int, error) {
 	var total int
 	err := db.QueryRowContext(ctx, `SELECT COALESCE(SUM(c.quantity),0)
  FROM products p CROSS JOIN LATERAL (
@@ -115,9 +119,49 @@ func (r *OrderRepository) ReserveCodedOrderInventory(ctx context.Context, redis 
 	if maximum := time.Now().Add(15 * time.Minute); maximum.Before(deadline) {
 		deadline = maximum
 	}
+	if !time.Now().Before(deadline) {
+		return nil, ErrPaymentExpired
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Inventory writers take exclusive product guards. Keep shared guards
+	// from capacity read through the Redis claim: a retirement either sees
+	// the new hold before committing or finishes before we count capacity.
+	products := make([]string, 0, len(requests))
+	seen := map[string]bool{}
+	for _, req := range requests {
+		id := req.ref.ProductID
+		if !seen[id] {
+			products = append(products, id)
+			seen[id] = true
+		}
+	}
+	guards, err := tx.QueryContext(ctx, `SELECT id FROM products WHERE id=ANY($1::text[]) ORDER BY id COLLATE "C" FOR SHARE`, pq.Array(products))
+	if err != nil {
+		return nil, err
+	}
+	for guards.Next() {
+		var id string
+		if err := guards.Scan(&id); err != nil {
+			guards.Close()
+			return nil, err
+		}
+	}
+	err = guards.Err()
+	guards.Close()
+	if err != nil {
+		return nil, err
+	}
+
 	bounds := make([]int, len(requests))
 	for i, req := range requests {
-		bounds[i], err = codedStockForReservation(ctx, r.db, req.ref)
+		bounds[i], err = codedStockForReservation(ctx, tx, req.ref)
 		if err != nil {
 			return nil, err
 		}
@@ -126,15 +170,24 @@ func (r *OrderRepository) ReserveCodedOrderInventory(ctx context.Context, redis 
 		}
 	}
 	reserved := make([]InventoryHoldRef, 0, len(requests))
+	release := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cleanupCancel()
+		_ = redis.ReleaseOrderInventory(cleanupCtx, orderID, reserved...)
+	}
 	for i, req := range requests {
 		if err := redis.holdInventoryRefUntil(ctx, orderID, req.ref, req.quantity, bounds[i], deadline); err != nil {
-			_ = redis.ReleaseOrderInventory(ctx, orderID, reserved...)
+			release()
 			if errors.Is(err, ErrInsufficientInventory) {
 				return nil, fmt.Errorf("%w: موجودی محصول %s برای پرداخت کافی نیست", err, req.ref.ProductID)
 			}
 			return nil, err
 		}
 		reserved = append(reserved, req.ref)
+	}
+	if err := tx.Commit(); err != nil {
+		release()
+		return nil, err
 	}
 	return reserved, nil
 }

@@ -78,7 +78,7 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 		}
 	}
 	if mode != "tracked" {
-		result.Stock, err = setSupplierSellableTotalTx(ctx, tx, product, supplier, total, reason, actor)
+		result.Stock, err = setSupplierSellableTotalTx(ctx, tx, product, supplier, total, reason, actor, r.inventoryHolds)
 		if err != nil {
 			return result, err
 		}

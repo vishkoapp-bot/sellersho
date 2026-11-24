@@ -433,19 +433,10 @@ func guardFailedCaptureTx(ctx context.Context, tx *sql.Tx, order string) error {
 	return nil
 }
 
-func retireUnitsTx(ctx context.Context, tx *sql.Tx, product, variant, balance string, n, held int, actor string) ([]string, []string, error) {
+func retireUnitsTx(ctx context.Context, tx *sql.Tx, product, variant, balance string, n int, actor string) ([]string, []string, error) {
 	units, err := selectLotUnitsTx(ctx, tx, balance, "in_stock", n, true)
 	if err != nil {
 		return nil, nil, err
-	}
-	if held > 0 {
-		var inStock int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_units WHERE variant_id=$1 AND status='in_stock'`, variant).Scan(&inStock); err != nil {
-			return nil, nil, err
-		}
-		if inStock-len(units) < held {
-			return nil, nil, ErrStockBelowHeld
-		}
 	}
 	if len(units) < n {
 		if spncxStrict {

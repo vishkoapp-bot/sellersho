@@ -20,7 +20,7 @@ var ErrStockProjectionLimit = errors.New("مجموع موجودی تنوع‌ه�
 
 // Caller preholds supplier/product guards. Balance IDs are locked bytewise;
 // only the named local legacy pool changes. Every other sellable lot is held.
-func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, product, supplier string, total int, reason, actor string) (int, error) {
+func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, product, supplier string, total int, reason, actor string, caches ...*RedisClient) (int, error) {
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return 0, ErrStockAdjustmentInput
 	}
@@ -90,6 +90,36 @@ func setSupplierSellableTotalTx(ctx context.Context, tx *sql.Tx, product, suppli
 			}
 			if err != nil {
 				return 0, err
+			}
+			if delta < 0 && len(caches) > 0 && caches[0] != nil {
+				// Legacy physical stock shares this lot across variants;
+				// only SKUs with coded units here can lose capacity.
+				rows, err := tx.QueryContext(ctx, `SELECT DISTINCT u.variant_id::text FROM product_units u
+					JOIN product_variants v ON v.id=u.variant_id AND v.product_id=u.product_id
+					WHERE u.balance_id=$1 AND u.product_id=$2 AND u.status='in_stock' AND v.inventory_mode='legacy'`, id, product)
+				if err != nil {
+					return 0, err
+				}
+				var affected []string
+				for rows.Next() {
+					var variant string
+					if err := rows.Scan(&variant); err != nil {
+						rows.Close()
+						return 0, err
+					}
+					affected = append(affected, variant)
+				}
+				err = rows.Err()
+				rows.Close()
+				if err != nil {
+					return 0, err
+				}
+				warehouse := strings.TrimPrefix(location, "supplier-warehouse:")
+				for _, variant := range affected {
+					if err := checkCodedStockHoldsTx(ctx, tx, caches[0], product, variant, warehouse); err != nil {
+						return 0, err
+					}
+				}
 			}
 			from, to, quantity := "adjustment", "sellable", delta
 			if delta < 0 {

@@ -31,11 +31,7 @@
 #   deps            — govulncheck (Go, fails on any affecting-code vulnerability) +
 #                     npm audit --audit-level=high.
 #
-# Lockfile note: pnpm install runs WITHOUT --frozen-lockfile on purpose. The committed
-# pnpm-lock.yaml is stale relative to package.json (it predates the puppeteer
-# devDependency; see TEST-02 audit §7 / fix report F-UP-1). A frozen install would fail
-# on that pre-existing drift, not on this change. Regenerate the lockfile on a machine
-# where pnpm can write it, then switch this step to --frozen-lockfile.
+# CI uses the same committed package-lock.json as the REL-01 build.
 name: ci
 
 on:
@@ -57,9 +53,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: corepack enable
-      - run: corepack prepare pnpm@10 --activate
-      - run: pnpm install --ignore-scripts
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install puppeteer browsers install chrome
       - run: npm run build
       - run: npm test
 
@@ -219,9 +214,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: corepack enable
-      - run: corepack prepare pnpm@10 --activate
-      - run: pnpm install --ignore-scripts
+      - run: npm ci --ignore-scripts
       - working-directory: backend
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -230,7 +223,7 @@ jobs:
 
   release:
     name: release build + validate + smoke (REL-01)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # provides the pinned PostgreSQL 16 client
     timeout-minutes: 30
     services:
       postgres:
@@ -251,6 +244,9 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # migration compatibility floor requires complete ancestry
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "24"

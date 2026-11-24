@@ -17,6 +17,9 @@ import (
 
 func TestSPNCXReceiveHTTP(t *testing.T) {
 	db := supplierFlowDB(t)
+	// Earlier catalog fixtures rebuild the view's base tables with CASCADE.
+	// Restore the migration-defined measurement view before the QC receipt.
+	createEffectiveMeasurementsView(t, db)
 	f := supplierFlowSeed(t, db)
 	const spnc = "B3HTTP001"
 	variant, _ := lookupHTTPSeed(t, db, f, spnc)

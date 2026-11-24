@@ -49,7 +49,8 @@ CREATE TABLE users (
 	failed_login_attempts integer NOT NULL DEFAULT 0,
 	locked_until timestamp with time zone,
 	password_hash text,
-	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying,
+	warehouse_city_confirmed BOOLEAN NOT NULL DEFAULT FALSE);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/drup/platform/internal/testdb"
 )
 
 // PERF-03 G5: the pool-wait histogram folds cumulative sql.DBStats
@@ -68,11 +70,7 @@ func TestPERF03DBWaitHistogramSamplesIntervalMeans(t *testing.T) {
 func TestPERF03DBWaitSamplingGuards(t *testing.T) {
 	m := New()
 	m.StartDBWaitSampling(nil, 100*time.Millisecond)
-	db, err := sql.Open("postgres", "postgres://perf03:perf03@localhost:5433/perf03_nonexistent?sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testdb.NoConnections(t)
 	m.StartDBWaitSampling(db, 0)
 	m.StartDBWaitSampling(db, 10*time.Millisecond)
 	m.StartDBWaitSampling(db, 10*time.Millisecond)

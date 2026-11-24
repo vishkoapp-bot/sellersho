@@ -21,7 +21,7 @@ func TestQUAL01WarehouseGETOnly(t *testing.T) {
 	}{
 		{"/api/v1/warehouse/orders/ready-to-pack", "pack", `{"orders":[],"success":true}`},
 		{"/api/v1/warehouse/orders/ready-to-ship", "ship", `{"orders":[],"success":true}`},
-		{"/api/v1/warehouses/returns", "", `{"returns":[]}`},
+		{"/api/v1/warehouses/returns", "", `{"hasMore":false,"limit":50,"nextCursor":"","returns":[]}`},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {

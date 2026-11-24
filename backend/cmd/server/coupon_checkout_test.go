@@ -32,7 +32,11 @@ func TestFIN007HTTPCheckoutErrorsAndRecovery(t *testing.T) {
 }
 
 func TestFIN007HTTPCheckoutAdmissionRace(t *testing.T) {
-	target, err := url.Parse(os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL"))
+	raw := os.Getenv("SUPPLIER_FLOW_TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("integration test requires a guarded supplier-flow test database")
+	}
+	target, err := url.Parse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

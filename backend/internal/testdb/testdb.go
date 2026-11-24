@@ -6,6 +6,7 @@ package testdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"net/url"
 	"regexp"
@@ -16,6 +17,23 @@ import (
 )
 
 var databaseName = regexp.MustCompile(`^sellersho_test_[a-z0-9_]+$`)
+
+// NoConnections supplies a pool for unit tests that exercise database/sql
+// settings or metrics without opening a network connection.
+func NoConnections(t testing.TB) *sql.DB {
+	t.Helper()
+	db := sql.OpenDB(noConnector{})
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+type noConnector struct{}
+
+func (noConnector) Driver() driver.Driver { return noConnector{} }
+func (noConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("unit test pool refuses all connections")
+}
+func (c noConnector) Open(string) (driver.Conn, error) { return c.Connect(context.Background()) }
 
 // Identity refuses implicit libpq defaults and parameters that can override the
 // parsed host/database or inject session options. Errors deliberately omit DSNs.

@@ -441,7 +441,7 @@ export interface ReferralProgramSettings {
 
 export interface PlatformContracts {
   sellerContractText: string;
-  sellerContractVersion: number; // Item 7: contract versioning
+  sellerContractVersion?: number; // Unknown until the live contract response supplies it.
   supplierContractText: string;
   supplierContractVersion: number; // Item 7: contract versioning
   lastUpdated: string;

@@ -24,7 +24,8 @@ import { storeApi } from '../../../src/services/storeApi';
 const params = new URLSearchParams(window.location.search);
 history.replaceState(null, '', params.get('route') || '/');
 const routeParams = new URLSearchParams(window.location.search);
-const role = routeParams.has('admin') ? 'admin' : 'customer';
+const drp = routeParams.has('drp');
+const role = routeParams.has('admin') ? 'admin' : drp ? 'seller' : 'customer';
 const hasSeller = routeParams.has('seller');
 const hasSupplier = routeParams.has('supplier');
 const fixtureImages = [
@@ -35,7 +36,7 @@ const fixtureImages = [
 const capabilities: string[] = [role];
 if (hasSeller) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-seller-token');
-  capabilities.push('seller');
+  if (!capabilities.includes('seller')) capabilities.push('seller');
 }
 if (hasSupplier) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-supplier-token');
@@ -61,6 +62,12 @@ const products = Array.from({ length: 24 }, (_, index) => ({
 } as ProductDto));
 const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه مرکزی', ownerType: 'central' as const };
 const seller = { id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper' as const, activeProductIds: products.map(product => product.id), templateId: 'tpl-electronic-1' };
+const sellerB = { ...seller, id: 'fixture-store-b', slug: 'second-store', name: 'فروشگاه دوم', tagline: '', signedContractVersion: 3 };
+const unowned = { ...seller, id: 'fixture-unowned', slug: 'unowned-store', name: 'فروشگاه دیگر' };
+const drpSeller = {
+  ...seller, slug: 'mone', name: 'فروشگاه مونه', tagline: 'شعار نمونه', activePlanId: routeParams.has('standard') ? 'standard' : 'trial',
+  signedContractVersion: routeParams.has('unknownSigned') ? undefined : routeParams.has('signedOne') ? 1 : 3,
+};
 const user = { id: 'fixture-user', mobile: '09120000000', fullName: 'کاربر نمونه', role: role, capabilities };
 
 let release: ((outcome: 'success' | 'error') => void) | undefined;
@@ -74,15 +81,49 @@ const fixture = {
   finish: (outcome: 'success' | 'error' = 'success') => release?.(outcome),
 };
 Object.assign(window, { batch8Fixture: fixture });
+const privateCalls: string[] = [];
+const pendingReads: (() => void)[] = [];
+let ownedReads = 0;
+let releaseOwned: (() => void) | undefined;
+let releaseContract: (() => void) | undefined;
+let latestModalVisible = false;
+if (drp) {
+  new MutationObserver(() => {
+    if (document.body.textContent?.includes('قرارداد همکاری عوض شده است')) latestModalVisible = true;
+  }).observe(document.body, { childList: true, subtree: true });
+  Object.assign(fixture, {
+    privateCalls: () => privateCalls.slice(),
+    ownedReads: () => ownedReads,
+    ownerReadyToRelease: () => !!releaseOwned,
+    releaseOwned: () => releaseOwned?.(),
+    contractReadyToRelease: () => !!releaseContract,
+    releaseContract: () => releaseContract?.(),
+    hadContractModal: () => latestModalVisible,
+    pendingReads: () => pendingReads.length,
+    releaseOldReads: () => pendingReads.splice(0).forEach(release => release()),
+  });
+}
 const nativeScrollIntoView = HTMLElement.prototype.scrollIntoView;
 HTMLElement.prototype.scrollIntoView = function (options) {
   if (this.parentElement?.className.includes('mask-image')) fixture.staticTabScrolls += 1;
   nativeScrollIntoView.call(this, options);
 };
 
-storeApi.getAllStores = async () => [central] as Awaited<ReturnType<typeof storeApi.getAllStores>>;
-storeApi.getOwnedStores = async () => hasSeller ? [seller] as Awaited<ReturnType<typeof storeApi.getOwnedStores>> : [];
-storeApi.getStoreBySlug = async slug => [central, seller].find(store => store.slug === slug) as Awaited<ReturnType<typeof storeApi.getStoreBySlug>>;
+storeApi.getAllStores = async () => (drp ? [routeParams.has('samePublic') ? { ...drpSeller, signedContractVersion: undefined } : unowned, central] : [central]) as Awaited<ReturnType<typeof storeApi.getAllStores>>;
+storeApi.getOwnedStores = async () => {
+  if (drp) ownedReads += 1;
+  if (drp && ownedReads === 2 && routeParams.has('failOwner')) throw new ApiError(503, 'بارگذاری فروشگاه ناموفق بود.', null);
+  if (drp && ownedReads === 2 && routeParams.has('delayOwner')) {
+    await new Promise<void>(resolve => { releaseOwned = resolve; });
+  }
+  return hasSeller ? (drp ? [drpSeller, sellerB] : [seller]) as Awaited<ReturnType<typeof storeApi.getOwnedStores>> : [];
+};
+storeApi.getStoreBySlug = async slug => {
+  const publicStores = drp
+    ? [central, unowned, { ...drpSeller, signedContractVersion: undefined }, { ...sellerB, signedContractVersion: undefined }]
+    : [central, seller];
+  return publicStores.find(store => store.slug === slug) as Awaited<ReturnType<typeof storeApi.getStoreBySlug>>;
+};
 storeApi.registerStore = async () => {
   fixture.registrations += 1;
   if (fixture.rejectRegistration) throw new ApiError(401, '{"error":"Unauthorized"}', null);
@@ -164,6 +205,34 @@ const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = String(input);
   if (!url.includes('/api/')) return nativeFetch(input, init);
+  if (drp && url.endsWith('/platform/contracts')) {
+    if (routeParams.has('delayContract')) await new Promise<void>(resolve => { releaseContract = resolve; });
+    return Response.json(routeParams.has('unknownActive') ? {} : { sellerContractVersion: 3, sellerContractText: 'متن واقعی قرارداد ۳' });
+  }
+  const storeRequest = drp && url.match(/\/api\/v1\/stores\/([^/]+)\/(orders|payouts|balance|wallet|early-withdrawals|returns|services)(?:\?|$)/);
+  if (storeRequest) {
+    const [, slug, endpoint] = storeRequest;
+    privateCalls.push(slug + ':' + endpoint + (init?.method === 'POST' ? ':' + String(init.body) : ''));
+    if (slug !== 'mone' && slug !== sellerB.slug) return Response.json({ error: 'forbidden unowned store' }, { status: 403 });
+    if (routeParams.has('delayOldOrders') && slug === 'mone' && endpoint === 'orders') {
+      await new Promise<void>(resolve => pendingReads.push(resolve));
+    }
+    if (routeParams.has('delayOldBalance') && slug === 'mone' && endpoint === 'balance') {
+      await new Promise<void>(resolve => pendingReads.push(resolve));
+      return Response.json({ error: 'موجودی فروشگاه مونه بارگذاری نشد' }, { status: 503 });
+    }
+    if (endpoint === 'orders') return Response.json({ orders: [{ id: slug, orderNumber: slug === 'mone' ? 'FIRST-ORDER' : 'SECOND-ORDER', status: 'pending', items: [] }] });
+    if (endpoint === 'balance') return Response.json({ availableAmount: slug === 'mone' ? 890000 : 123000 });
+    if (endpoint === 'returns') return Response.json([
+      { id: 'canceled', return_code: 'CANCELLED-RETURN', status: 'cancelled', items: [
+        { product_title: 'unchecked', qc_status: 'pending' }, { product_title: 'missing' },
+        { product_title: 'checked', qc_status: 'ok' }, { product_title: 'damage', qc_status: 'defective' },
+      ] },
+      { id: 'pending', return_code: 'OPEN-RETURN', status: 'requested', items: [{ product_title: 'incoming', qc_status: 'pending' }] },
+    ]);
+    if (endpoint === 'services') return Response.json({ id: drpSeller.id, activePlanId: 'standard', planExpiresAt: '2027-02-24', amount: 890000, durationDays: 90 });
+    return Response.json([]);
+  }
   const body = url.endsWith('/homepage-sections')
     ? { sections: [
         { id: 'grid', sectionType: 'product_grid', config: {}, sortOrder: 0, isActive: true },

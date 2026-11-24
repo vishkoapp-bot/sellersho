@@ -45,9 +45,9 @@ const STATUS_MAP: Record<string, { label: string; cls: string; Icon: any }> = {
   cancelled: { label: 'لغوشده', cls: 'text-slate-500 bg-slate-100 border-slate-200', Icon: XCircle },
 };
 
-// Live QC badge (jn in the live bundle): ok "سالم", defective "معیوب",
-// anything else "در انتظار بررسی".
-const QcBadge: React.FC<{ status: string | undefined }> = ({ status }) => {
+// Recorded QC findings stay visible on cancelled returns.
+// Only open returns show outstanding checks as "در انتظار بررسی".
+const QcBadge: React.FC<{ status: string | undefined; cancelled: boolean }> = ({ status, cancelled }) => {
   if (status === 'ok') {
     return (
       <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">سالم</span>
@@ -58,6 +58,7 @@ const QcBadge: React.FC<{ status: string | undefined }> = ({ status }) => {
       <span className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">معیوب</span>
     );
   }
+  if (cancelled) return null;
   return (
     <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">در انتظار بررسی</span>
   );
@@ -212,7 +213,7 @@ export const SellerReturnsTab: React.FC = () => {
                   </span>
                   <span className="flex items-center gap-2 shrink-0">
                     <span className="text-slate-500">{toPersianDigits(item.qty)} عدد</span>
-                    <QcBadge status={item.qcStatus} />
+                    <QcBadge status={item.qcStatus} cancelled={r.status === 'cancelled'} />
                   </span>
                 </div>
               ))}

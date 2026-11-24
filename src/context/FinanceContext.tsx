@@ -233,10 +233,17 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
   const [adjustmentRecords, setAdjustmentRecords] = useState<AdjustmentRecord[]>(INITIAL_ADJUSTMENTS);
   const [disputes, setDisputes] = useState<DisputeRecord[]>(INITIAL_DISPUTES);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(INITIAL_AUDIT_LOGS);
-  const [platformSettings, setPlatformSettings] = useState<PlatformSettings>(INITIAL_PLATFORM_SETTINGS);
+  const [platformSettings, setPlatformSettings] = useState<PlatformSettings>(() => isMockMode()
+    ? INITIAL_PLATFORM_SETTINGS
+    : {
+      ...INITIAL_PLATFORM_SETTINGS,
+      contracts: {
+        ...INITIAL_PLATFORM_SETTINGS.contracts,
+        sellerContractVersion: undefined,
+      },
+    });
 
-  // Contracts come from the server (GET /platform/contracts); the INITIAL
-  // values are only a fallback when the request fails or mock mode is on.
+  // In live mode an absent seller contract is unknown, not the mock version.
   useEffect(() => {
     if (isMockMode()) return;
     apiRequest<{ sellerContractText?: string; sellerContractVersion?: number; supplierContractText?: string; supplierContractVersion?: number }>('/platform/contracts', { method: 'GET' })
@@ -245,7 +252,9 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         contracts: {
           ...prev.contracts,
           ...(c.sellerContractText ? { sellerContractText: c.sellerContractText } : {}),
-          ...(typeof c.sellerContractVersion === 'number' ? { sellerContractVersion: c.sellerContractVersion } : {}),
+          ...(typeof c.sellerContractText === 'string' && c.sellerContractText.trim() &&
+              typeof c.sellerContractVersion === 'number' && Number.isSafeInteger(c.sellerContractVersion) && c.sellerContractVersion > 0
+            ? { sellerContractVersion: c.sellerContractVersion } : {}),
           ...(c.supplierContractText ? { supplierContractText: c.supplierContractText } : {}),
           ...(typeof c.supplierContractVersion === 'number' ? { supplierContractVersion: c.supplierContractVersion } : {}),
         },

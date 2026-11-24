@@ -82,7 +82,10 @@ export const AppContent: React.FC = () => {
     const activeViewAuthorized = authorizedViews.includes(activeView as any);
     if (identityChanged || (isProtectedView && !activeViewAuthorized)) {
       routedIdentity.current = identity;
-      if (activeView === 'dashboard' || (identityChanged && activeViewAuthorized)) return;
+      // A storefront is an explicit public destination. Restoring a saved
+      // seller must not replace the store URL with the identity's workspace.
+      if (activeView === 'dashboard' || activeView === 'seller_storefront' ||
+          (identityChanged && activeViewAuthorized)) return;
       setActiveView(identityChanged ? requiredView : (authorizedViews[0] || requiredView));
     }
   }, [activeView, currentUser, isSessionReady, isOnboardingActive, isProtectedView, panelForRole, setActiveView]);
@@ -159,11 +162,11 @@ export const AppContent: React.FC = () => {
     return (
       <SellerDashboardView
         onBackToCustomerSite={() => setActiveView('customer')}
-        onOpenStorefront={() => setActiveView('seller_storefront')}
+        onOpenStorefront={() => setActiveView('seller_storefront', { storeSlug: currentStore.slug })}
       />
     );
   }
-  if (currentUser && !isOnboardingActive) {
+  if (currentUser && !isOnboardingActive && activeView !== 'seller_storefront') {
     const panel = panelForRole(currentUser.role);
     const ready = panel === 'customer' ||
       (panel === 'supplier_dashboard' && supplierSession) ||
@@ -264,7 +267,7 @@ export const AppContent: React.FC = () => {
         {activeView === 'seller_dashboard' ? (
           <SellerDashboardView
             onBackToCustomerSite={() => setActiveView('customer')}
-            onOpenStorefront={() => setActiveView('seller_storefront')}
+            onOpenStorefront={() => setActiveView('seller_storefront', { storeSlug: currentStore.slug })}
           />
         ) : activeView === 'seller_storefront' ? (
           storefrontUnsubscribeSlug ? (

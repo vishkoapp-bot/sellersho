@@ -25,18 +25,10 @@ interface SetupStep {
 
 const SellerSetupChecklist: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ onNavigateTab }) => {
   const { currentStore, platformSettings, toPersianDigits } = useStore();
-  const [serverSignedVersion, setServerSignedVersion] = useState<number | null>(null);
   const [serverActiveCount, setServerActiveCount] = useState<number | null>(null);
   useEffect(() => {
     if (!currentStore?.id) return;
     let cancelled = false;
-    storeApi.getOwnedStores()
-      .then((owned) => {
-        if (cancelled) return;
-        const mine = owned.find((s) => s.id === currentStore.id);
-        if (mine && typeof mine.signedContractVersion === 'number') setServerSignedVersion(mine.signedContractVersion);
-      })
-      .catch(() => {});
     if (currentStore.slug) {
       storeApi.getStoreBySlug(currentStore.slug)
         .then((store) => {
@@ -47,17 +39,16 @@ const SellerSetupChecklist: React.FC<{ onNavigateTab: (tab: string) => void }> =
     return () => { cancelled = true; };
   }, [currentStore?.id, currentStore?.slug]);
   if (!currentStore) return null;
-  const latestContract = platformSettings.contracts?.sellerContractVersion || 0;
-  const signed = serverSignedVersion !== null
-    ? serverSignedVersion
-    : (typeof currentStore.signedContractVersion === 'number' ? currentStore.signedContractVersion : null);
+  const latestContract = platformSettings.contracts?.sellerContractVersion;
+  const signed = currentStore.signedContractVersion;
+  const contractKnown = typeof signed === 'number' && signed > 0 && typeof latestContract === 'number' && latestContract > 0;
   const steps: SetupStep[] = [];
-  if (signed !== null) {
+  if (contractKnown) {
     steps.push({
       id: 'contract',
       title: 'قرارداد همکاری را امضا کن',
       hint: 'بدون امضای قرارداد، فروشگاهت شروع به کار نمی‌کند.',
-      done: latestContract > 0 && signed >= latestContract,
+      done: signed >= latestContract,
       tab: 'store-setup',
       action: 'دیدن قرارداد',
     });
@@ -81,15 +72,15 @@ const SellerSetupChecklist: React.FC<{ onNavigateTab: (tab: string) => void }> =
     },
     {
       id: 'identity',
-      title: 'شعار و لوگوی فروشگاهت را بگذار',
-      hint: 'مشتری با اسم، شعار و لوگوی فروشگاهت تو را می‌شناسد.',
-      done: !!(currentStore.tagline?.trim() && currentStore.logo),
-      tab: 'template',
-      action: 'گذاشتن شعار و لوگو',
+      title: 'شعار فروشگاهت را بگذار',
+      hint: 'در یک جمله بگو فروشگاهت چه چیزی به مشتری‌ها ارائه می‌کند.',
+      done: !!currentStore.tagline?.trim(),
+      tab: 'store-setup',
+      action: 'گذاشتن شعار',
     },
   );
   const doneCount = steps.filter((s) => s.done).length;
-  if (doneCount === steps.length) {
+  if (contractKnown && doneCount === steps.length) {
     return (
       <div className="flex items-center gap-2 px-1.5 py-0.5">
         <span className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">

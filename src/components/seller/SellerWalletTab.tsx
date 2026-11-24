@@ -36,25 +36,29 @@ export const SellerWalletTab: React.FC = () => {
 
   // Fetch real authoritative store balance from server
   useEffect(() => {
-    if (!isMockMode() && currentStore.id) {
+    let active = true;
+    const controller = new AbortController();
+    if (!isMockMode() && currentStore.id && currentStore.slug) {
+      const slug = currentStore.slug;
+      const showReadError = (err: Error) => { if (active) error(err.message); };
       setServerBalance(null);
       setWalletBreakdown(null);
       setEarlyWithdrawals([]);
       setServerOrders(null);
       setServerPayouts([]);
-      storeApi.getStoreOrders(currentStore.slug).then(setServerOrders).catch(() => setServerOrders(null));
-      storeApi.getPayouts(currentStore.slug).then(setServerPayouts).catch((err) => error(err.message));
-      storeApi.getOwnedBalance(currentStore.slug)
+      storeApi.getStoreOrders(slug).then((res) => { if (active) setServerOrders(res); }).catch(() => {});
+      storeApi.getPayouts(slug).then((res) => { if (active) setServerPayouts(res); }).catch(showReadError);
+      storeApi.getOwnedBalance(slug, { signal: controller.signal })
         .then((res) => {
-          if (res && typeof res.availableAmount === 'number') {
-            setServerBalance(res);
-          }
+          if (active && typeof res?.availableAmount === 'number') setServerBalance(res);
         })
-        .catch((err) => error(err.message));
-      storeApi.getWalletBreakdown(currentStore.slug).then(setWalletBreakdown).catch(() => {});
-      storeApi.getEarlyWithdrawals(currentStore.slug).then(setEarlyWithdrawals).catch(() => {});
+        .catch(showReadError);
+      storeApi.getWalletBreakdown(slug, { signal: controller.signal })
+        .then((res) => { if (active) setWalletBreakdown(res); }).catch(() => {});
+      storeApi.getEarlyWithdrawals(slug).then((res) => { if (active) setEarlyWithdrawals(res); }).catch(() => {});
     }
-  }, [currentStore.id]);
+    return () => { active = false; controller.abort(); };
+  }, [currentStore.id, currentStore.slug, error]);
 
   // Derive actual balances based on real released vs pending orders
   // Live kn: server orders when fetched, otherwise context orders.
@@ -107,7 +111,8 @@ export const SellerWalletTab: React.FC = () => {
     return { text: 'مهلتش تمام شده؛ سود به‌زودی آزاد می‌شود', urgent: false };
   };
 
-  const handleServicePurchase = async (type: 'plan_renewal' | 'catalog_upgrade', cost: number, title: string) => {
+  const renewsStandard = currentStore.activePlanId === 'standard';
+  const handleServicePurchase = async (type: 'plan_renewal' | 'catalog_upgrade', cost: number) => {
     if (!isMockMode()) {
       try { await storeApi.purchaseService(currentStore.slug, type === 'plan_renewal' ? 'standard' : type, currentStore.id); success('خدمت ثبت و مبلغ از کیف پول کسر شد.'); try { setServerBalance(await storeApi.getOwnedBalance(currentStore.slug)); } catch { info('خرید ثبت شد؛ برای دیدن موجودی تازه، صفحه را دوباره بارگذاری کن.'); } }
       catch (err: any) { error(err.message || 'تراکنش انجام نشد.'); }
@@ -473,15 +478,20 @@ export const SellerWalletTab: React.FC = () => {
                 <Crown className="w-4 h-4"  strokeWidth={1.5}/>
               </div>
               <div>
-                <span className="font-bold text-xs text-slate-800 block">تمدید اشتراک فروشگاه (پلن استاندارد ۳ ماهه)</span>
-                <span className="text-[10px] text-slate-400 block mt-0.5">فروشگاهت ۳ ماه دیگر فعال می‌ماند + تا ۱۰۰ کالا</span>
+                <span className="font-bold text-xs text-slate-800 block">
+                  {renewsStandard ? 'تمدید اشتراک فروشگاه (پلن استاندارد ۳ ماهه)'
+                    : currentStore.activePlanId === 'trial' ? 'ارتقا به پلن استاندارد ۳ ماهه' : 'خرید پلن استاندارد ۳ ماهه'}
+                </span>
+                <span className="text-[10px] text-slate-400 block mt-0.5">
+                  {renewsStandard ? 'فروشگاهت ۳ ماه دیگر فعال می‌ماند + تا ۱۰۰ کالا' : 'اشتراک استاندارد ۳ ماهه + امکان فروش تا ۱۰۰ کالا'}
+                </span>
               </div>
             </div>
             <div className="text-left shrink-0">
               <span className="text-xs font-black text-slate-900 block font-mono">۸۹۰٬۰۰۰ تومان</span>
               <button
                 type="button"
-                onClick={() => handleServicePurchase('plan_renewal', 890000, 'تمدید پلن ۳ ماهه')}
+                onClick={() => handleServicePurchase('plan_renewal', 890000)}
                 className="mt-1 px-3 py-1 bg-brand-deep hover:bg-brand-deep text-white font-bold text-[10px] rounded-lg shadow-2xs transition-colors"
               >
                 خرید با کیف پول

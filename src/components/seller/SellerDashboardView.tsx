@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useStore } from '../../context/StoreContext';
+import { useStore, useStoreManager } from '../../context/StoreContext';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { 
   ArrowRight, 
@@ -69,7 +70,33 @@ const newUuid = (): string => {
   return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 };
 
-export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
+export const SellerDashboardView: React.FC<SellerDashboardViewProps> = (props) => (
+  <SellerAuthGuard onBackToCustomerSite={props.onBackToCustomerSite}>
+    <SellerDashboardScope {...props} />
+  </SellerAuthGuard>
+);
+
+const SellerDashboardScope: React.FC<SellerDashboardViewProps> = (props) => {
+  const { currentStore, stores, sellerPanelStoresReady, sellerPanelStoresError, retrySellerPanelStores } = useStoreManager();
+  const { sellerSession } = useAuth();
+  if (!isMockMode() && (!sellerPanelStoresReady || !stores.some(
+    store => store.id === currentStore?.id && store.slug === currentStore?.slug,
+  ))) {
+    return (
+      <div className="min-h-[50vh] flex flex-col items-center justify-center gap-4" dir="rtl">
+        {sellerPanelStoresError ? <>
+          <p role="alert">بارگذاری فروشگاه‌های شما انجام نشد.</p>
+          <button type="button" onClick={retrySellerPanelStores}>تلاش مجدد</button>
+        </> : <p role="status">در حال آماده‌سازی فروشگاه شما…</p>}
+      </div>
+    );
+  }
+  // Store-scoped tabs must not reuse state or late results from a previous
+  // store selection (including an address change on the same store ID).
+  return <SellerDashboardContent key={`${sellerSession?.storeId}:${currentStore?.id}:${currentStore?.slug}`} {...props} />;
+};
+
+const SellerDashboardContent: React.FC<SellerDashboardViewProps> = ({
   onBackToCustomerSite,
   onOpenStorefront,
 }) => {
@@ -111,8 +138,9 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   // block (Hs) and gates submit on its acceptance.
   const [createContractAccepted, setCreateContractAccepted] = useState(false);
   const createContractText = platformSettings.contracts?.sellerContractText || '';
-  const createContractVersion = platformSettings.contracts?.sellerContractVersion || 0;
-  const createContractAcceptedEffective = createContractAccepted && !!createContractText.trim();
+  const createContractVersion = platformSettings.contracts?.sellerContractVersion;
+  const canReadCreateContract = typeof createContractVersion === 'number' && createContractVersion > 0 && !!createContractText.trim();
+  const createContractAcceptedEffective = createContractAccepted && canReadCreateContract;
 
   const ownedStores = stores.filter((store) => store.ownerType === 'dropshipper' && (!isMockMode() || store.id === sellerSession?.storeId || store.ownerName === currentStore.ownerName)).map((store) => store.id === currentStore.id ? currentStore : store);
   const maxStores = ownedStores.some((store) => store.activePlanId === 'vip') ? 10 : 1;
@@ -175,9 +203,11 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   const [reconfirmContractAccepted, setReconfirmContractAccepted] = useState(false);
 
   // Item 7: Digital contract version check
-  const activeSellerContractVer = platformSettings.contracts?.sellerContractVersion || 2;
-  const currentStoreContractVer = currentStore.signedContractVersion || 1;
-  const needsContractReconfirmation = currentStoreContractVer < activeSellerContractVer;
+  const activeSellerContractVer = platformSettings.contracts?.sellerContractVersion;
+  const currentStoreContractVer = currentStore.signedContractVersion;
+  const needsContractReconfirmation = typeof activeSellerContractVer === 'number' &&
+    typeof currentStoreContractVer === 'number' && currentStoreContractVer > 0 &&
+    currentStoreContractVer < activeSellerContractVer && !!createContractText.trim();
 
   // FIX 69 (G2): the reconfirm modal must persist acceptance via the
   // store-settings save path (same signature as SellerStoreSetupTab),
@@ -186,7 +216,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   // local state is applied only after a successful save so a failed
   // save leaves the modal open instead of falsely closing it.
   const handleReconfirmContract = async () => {
-    if (!reconfirmContractAccepted) return;
+    if (!needsContractReconfirmation || !reconfirmContractAccepted) return;
     if (!isMockMode() && currentStore.slug) {
       try {
         await storeApi.saveStoreSettings(currentStore.slug, { signedContractVersion: activeSellerContractVer });
@@ -270,7 +300,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   };
 
   return (
-    <SellerAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
+    <>
       <div className="flex-1 flex flex-col bg-[#f8fafc]">
         {/* Top Sticky Header */}
         <header className="sticky top-0 z-30 bg-white border-b border-slate-200/80">
@@ -373,19 +403,19 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
               <div className="space-y-2.5 rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
                 <div className="flex items-center gap-2 text-brand-deep">
                   <h4 className="text-xs font-bold text-slate-800">قرارداد همکاری را بخوان و قبول کن</h4>
-                  {createContractText.trim() && (
+                  {canReadCreateContract && (
                     <span className="text-[9px] bg-brand-border text-brand-deep px-1.5 py-0.5 rounded font-mono font-bold">نسخه {toPersianDigits(createContractVersion)}</span>
                   )}
                 </div>
                 <p className="text-[11px] text-slate-500 leading-relaxed">ساخت فروشگاه یعنی قبول قرارداد همکاری زیر؛ اول متنش را کامل بخوان:</p>
                 <div className="p-3 bg-white border border-slate-200 rounded-2xl max-h-44 overflow-y-auto text-[11px] text-slate-700 leading-relaxed whitespace-pre-line">
-                  {createContractText.trim() ? createContractText : 'متن قرارداد الان از سرور نرسید؛ چند لحظه دیگر دوباره تلاش کن.'}
+                  {canReadCreateContract ? createContractText : 'متن قرارداد الان از سرور نرسید؛ چند لحظه دیگر دوباره تلاش کن.'}
                 </div>
-                <label className={`flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-white ${createContractText.trim() ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+                <label className={`flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-white ${canReadCreateContract ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
                   <input
                     type="checkbox"
                     checked={createContractAcceptedEffective}
-                    disabled={!createContractText.trim()}
+                    disabled={!canReadCreateContract}
                     onChange={(e) => setCreateContractAccepted(e.target.checked)}
                     className="w-4 h-4 accent-[#5d44f8] rounded mt-0.5 cursor-pointer shrink-0 disabled:cursor-not-allowed"
                   />
@@ -603,6 +633,6 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
         api={sellerNotificationsApi}
         onUnreadCountChange={setUnreadNotifCount}
       />
-    </SellerAuthGuard>
+    </>
   );
 };

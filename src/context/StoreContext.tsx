@@ -98,6 +98,9 @@ export interface StoreState {
   currentStore: Store | null;
   setCurrentStore: (store: Store | null) => void;
   stores: Store[];
+  sellerPanelStoresReady: boolean;
+  sellerPanelStoresError: boolean;
+  retrySellerPanelStores: () => void;
   addStore: (store: Store) => void;
   storeStatuses: { [storeId: string]: 'active' | 'suspended' };
   toggleStoreStatus: (storeId: string) => 'active' | 'suspended';
@@ -179,7 +182,7 @@ const StoreContext = createContext<StoreState | undefined>(undefined);
 
 export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChildren?: boolean }> = ({ children, allowUnselectedChildren = false }) => {
   const { products, openProductDetail, currentProductDetail, setSearchQuery, setSelectedCategory, clearCatalogBrand, setWishlistScope } = useProducts();
-  const { sellerSession } = useAuth();
+  const { sellerSession, authToken, isSessionReady } = useAuth();
   const onboardingDraft = useSellerOnboardingDraft();
   const [stores, setStores] = useState<Store[]>([]);
   const [currentStore, setCurrentStore] = useState<Store | null>(null);
@@ -216,6 +219,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     clearCatalogBrand();
   }, [currentStore?.slug]);
   const [storesLoading, setStoresLoading] = useState(true);
+  const [sellerPanelLoad, setSellerPanelLoad] = useState<{ token: string; ready: boolean } | null>(null);
+  const [sellerPanelRetry, setSellerPanelRetry] = useState(0);
   const [storeStatuses, setStoreStatuses] = useState<{ [storeId: string]: 'active' | 'suspended' }>({
     'central-store': 'active',
     'store-bibi': 'active',
@@ -539,27 +544,50 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     prevSellerStoreIdRef.current = storeId;
   }, [sellerSession?.storeId]);
 
+  const ownerToken = isSessionReady && sellerSession?.status === 'active' &&
+    sellerSession.token === authToken ? authToken : null;
+  const sellerPanelToken = activeView === 'seller_dashboard' ? ownerToken : null;
+  const explicitStorefrontSlug = activeView === 'seller_storefront' ? storefrontSlug : null;
   useEffect(() => {
     let cancelled = false;
+    // Readiness belongs only to this authenticated seller's dashboard, never
+    // to the public list or to a previous visit to the panel.
+    setSellerPanelLoad(null);
 
     const loadStores = async () => {
       try {
         const loadedStores = isMockMode()
           ? mockStores
-          : sellerSession?.status === 'active'
+          : ownerToken
             ? await storeApi.getOwnedStores()
             : await storeApi.getAllStores();
         if (cancelled) return;
 
         const availableStores = Array.isArray(loadedStores) ? loadedStores : [];
         setStores(availableStores);
+        if (sellerPanelToken && !availableStores.length) {
+          setSellerPanelLoad({ token: sellerPanelToken, ready: false });
+          return;
+        }
         setCurrentStore((previous) => {
+          if (sellerPanelToken) {
+            // Install the full owner record even if the public store happens
+            // to have the same ID. Missing private fields must not be inherited
+            // from the storefront or from a different account.
+            return availableStores.find((store) => store.id === previous?.id) ??
+              availableStores.find((store) => store.id === sellerSession?.storeId) ??
+              availableStores[0];
+          }
+          if (explicitStorefrontSlug) {
+            if (previous?.slug === explicitStorefrontSlug) return previous;
+            return availableStores.find((store) => store.slug === explicitStorefrontSlug) ??
+              previous ?? availableStores[0] ?? null;
+          }
           if (previous) {
             const fresh = availableStores.find((store) => store.id === previous.id);
-            // FIX 79: a storefront-resolved store carries no signedContractVersion
-            // (the public single-store response omits it); keeping it verbatim
-            // would pin the seller reconfirm gate to undefined -> 1 forever.
-            // Fill the owner-private field from the fresh owned store when present.
+            // Keep the routed store's public fields, and retain the contract
+            // version for this same store when the list supplies it. The
+            // dashboard path above uses the full fresh owner record.
             if (fresh) return { ...previous, signedContractVersion: fresh.signedContractVersion ?? previous.signedContractVersion };
           }
           if (sellerSession?.storeId) {
@@ -585,8 +613,12 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
           }
           return availableStores[0] || null;
         });
+        if (sellerPanelToken) setSellerPanelLoad({ token: sellerPanelToken, ready: true });
       } catch (error) {
-        if (!cancelled) console.warn('Failed to fetch stores:', error);
+        if (!cancelled) {
+          if (sellerPanelToken) setSellerPanelLoad({ token: sellerPanelToken, ready: false });
+          console.warn('Failed to fetch stores:', error);
+        }
       } finally {
         if (!cancelled) setStoresLoading(false);
       }
@@ -596,7 +628,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     return () => {
       cancelled = true;
     };
-  }, [referredStoreSlug, sellerSession?.storeId, sellerSession?.status]);
+  }, [referredStoreSlug, sellerSession?.storeId, ownerToken, sellerPanelToken, explicitStorefrontSlug, sellerPanelRetry]);
 
   const setReferredStoreSlug = (slug: string | null) => {
     setReferredStoreSlugState(slug);
@@ -662,12 +694,8 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
           centralDealsFilter: resolved.centralDealsFilter,
           centralDealsProductIds: resolved.centralDealsProductIds,
         };
-        // FIX 79: the public single-store response never carries the
-        // owner-private signedContractVersion, so a plain merge dropped it
-        // from currentStore; the seller reconfirm gate then read
-        // undefined -> 1 < latest and re-prompted on every login even
-        // though the DB already held the current version. Keep the
-        // previous value when the merged store is the same store.
+        // The public response omits the private contract version. Do not
+        // discard an already-known value for this exact same store.
         setCurrentStore((previous) => ({
           ...merged,
           signedContractVersion:
@@ -1211,6 +1239,9 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     currentStore,
     setCurrentStore,
     stores,
+    sellerPanelStoresReady: !!sellerPanelToken && sellerPanelLoad?.token === sellerPanelToken && sellerPanelLoad.ready,
+    sellerPanelStoresError: !!sellerPanelToken && sellerPanelLoad?.token === sellerPanelToken && !sellerPanelLoad.ready,
+    retrySellerPanelStores: () => setSellerPanelRetry((retry) => retry + 1),
     addStore,
     storeStatuses,
     toggleStoreStatus,

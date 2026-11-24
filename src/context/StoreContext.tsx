@@ -101,6 +101,7 @@ export interface StoreState {
   sellerPanelStoresReady: boolean;
   sellerPanelStoresError: boolean;
   retrySellerPanelStores: () => void;
+  recordSellerContractVersion: (storeId: string, slug: string, version: number) => void;
   addStore: (store: Store) => void;
   storeStatuses: { [storeId: string]: 'active' | 'suspended' };
   toggleStoreStatus: (storeId: string) => 'active' | 'suspended';
@@ -928,6 +929,15 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     setCurrentStore(store);
   };
 
+  const recordSellerContractVersion = (storeId: string, slug: string, version: number) => {
+    const update = (store: Store): Store => store.id === storeId && store.slug === slug &&
+      (store.signedContractVersion ?? 0) < version ? { ...store, signedContractVersion: version } : store;
+    // Update both selections immutably without restoring a store that the
+    // seller left while the save was in flight.
+    setStores((previous) => previous.map(update));
+    setCurrentStore((previous) => previous ? update(previous) : previous);
+  };
+
   const toggleStoreStatus = (storeId: string): 'active' | 'suspended' => {
     const current = storeStatuses[storeId] || 'active';
     const next = current === 'active' ? 'suspended' : 'active';
@@ -1257,6 +1267,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     sellerPanelStoresReady: !!sellerPanelToken && sellerPanelLoad?.token === sellerPanelToken && sellerPanelLoad.ready,
     sellerPanelStoresError: !!sellerPanelToken && sellerPanelLoad?.token === sellerPanelToken && !sellerPanelLoad.ready,
     retrySellerPanelStores: () => setSellerPanelRetry((retry) => retry + 1),
+    recordSellerContractVersion,
     addStore,
     storeStatuses,
     toggleStoreStatus,

@@ -133,6 +133,21 @@ test('DRP-9 unknown versions do not request signatures, but a known v1 vs v3 doe
   });
 });
 
+test('DRP-9 confirmed acceptance remains current when switching to another owned store and back', async () => {
+  await visit(panel('overview', '&signedOne'), 390, async page => {
+    await waitText(page, 'قرارداد همکاری عوض شده است');
+    await page.click('input[type="checkbox"]');
+    await clickText(page, 'تأیید نسخه جدید و ادامه فعالیت');
+    await page.waitForFunction(() => !document.body.textContent?.includes('قرارداد همکاری عوض شده است'));
+    assert.ok(await page.evaluate(() => (window as any).batch8Fixture.privateCalls().includes('mone:settings')));
+    await page.select(scope, 'fixture-store-b');
+    await page.waitForFunction(() => document.querySelector('button[aria-pressed="true"]')?.textContent?.includes('فروشگاه دوم'));
+    await page.select(scope, 'fixture-store');
+    await page.waitForFunction(() => document.querySelector('button[aria-pressed="true"]')?.textContent?.includes('فروشگاه مونه'));
+    assert.doesNotMatch(await page.evaluate(() => document.body.textContent ?? ''), /قرارداد همکاری عوض شده است/);
+  });
+});
+
 test('DRP-10 a saved tagline completes the checklist without a logo and its missing step opens settings', async () => {
   await visit(panel('overview'), 390, async page => {
     await page.waitForSelector(scope);

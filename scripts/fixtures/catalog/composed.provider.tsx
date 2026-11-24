@@ -64,7 +64,7 @@ const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه 
 const seller = { id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper' as const, activeProductIds: products.map(product => product.id), templateId: 'tpl-electronic-1' };
 const sellerB = { ...seller, id: 'fixture-store-b', slug: 'second-store', name: 'فروشگاه دوم', tagline: '', signedContractVersion: 3 };
 const unowned = { ...seller, id: 'fixture-unowned', slug: 'unowned-store', name: 'فروشگاه دیگر' };
-const drpSeller = {
+let drpSeller = {
   ...seller, slug: 'mone', name: 'فروشگاه مونه', tagline: 'شعار نمونه', activePlanId: routeParams.has('standard') ? 'standard' : 'trial',
   signedContractVersion: routeParams.has('unknownSigned') ? undefined : routeParams.has('signedOne') ? 1 : 3,
 };
@@ -209,7 +209,7 @@ window.fetch = async (input, init) => {
     if (routeParams.has('delayContract')) await new Promise<void>(resolve => { releaseContract = resolve; });
     return Response.json(routeParams.has('unknownActive') ? {} : { sellerContractVersion: 3, sellerContractText: 'متن واقعی قرارداد ۳' });
   }
-  const storeRequest = drp && url.match(/\/api\/v1\/stores\/([^/]+)\/(orders|payouts|balance|wallet|early-withdrawals|returns|services)(?:\?|$)/);
+  const storeRequest = drp && url.match(/\/api\/v1\/stores\/([^/]+)\/(orders|payouts|balance|wallet|early-withdrawals|returns|services|settings)(?:\?|$)/);
   if (storeRequest) {
     const [, slug, endpoint] = storeRequest;
     privateCalls.push(slug + ':' + endpoint + (init?.method === 'POST' ? ':' + String(init.body) : ''));
@@ -230,6 +230,11 @@ window.fetch = async (input, init) => {
       ] },
       { id: 'pending', return_code: 'OPEN-RETURN', status: 'requested', items: [{ product_title: 'incoming', qc_status: 'pending' }] },
     ]);
+    if (endpoint === 'settings' && init?.method === 'PUT' && slug === 'mone') {
+      const version: number = JSON.parse(String(init.body)).signedContractVersion;
+      drpSeller = { ...drpSeller, signedContractVersion: version };
+      return Response.json(drpSeller);
+    }
     if (endpoint === 'services') return Response.json({ id: drpSeller.id, activePlanId: 'standard', planExpiresAt: '2027-02-24', amount: 890000, durationDays: 90 });
     return Response.json([]);
   }

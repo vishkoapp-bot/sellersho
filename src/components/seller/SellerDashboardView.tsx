@@ -32,7 +32,7 @@ import { SellerAuthGuard } from './SellerAuthGuard';
 import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
 import { sellerNotificationsApi } from '../../services/notificationsApi';
 import { storeApi } from '../../services/storeApi';
-import { isMockMode } from '../../services/apiClient';
+import { isMockMode, tokenStore } from '../../services/apiClient';
 import { validateStoreSlug } from '../../utils/validators';
 import { SellerOverviewTab } from './SellerOverviewTab';
 import { SellerStoreSetupTab } from './SellerStoreSetupTab';
@@ -101,6 +101,7 @@ const SellerDashboardContent: React.FC<SellerDashboardViewProps> = ({
   onOpenStorefront,
 }) => {
   const { currentStore, setCurrentStore, stores, addStore, platformSettings, sellerSession, logoutSeller, toPersianDigits, sellerDashboardTab, setSellerDashboardTab, setActiveView } = useStore();
+  const { recordSellerContractVersion } = useStoreManager();
   const { info, success, error } = useToast();
   // Seller notification inbox (Phase 2, W2): the bell count is
   // fetched once on mount so it is live on first paint (unlike
@@ -209,26 +210,26 @@ const SellerDashboardContent: React.FC<SellerDashboardViewProps> = ({
     typeof currentStoreContractVer === 'number' && currentStoreContractVer > 0 &&
     currentStoreContractVer < activeSellerContractVer && !!createContractText.trim();
 
-  // FIX 69 (G2): the reconfirm modal must persist acceptance via the
-  // store-settings save path (same signature as SellerStoreSetupTab),
-  // not only local state, or acceptance is lost on reload. The backend
-  // column write for signedContractVersion is a separate worker's job;
-  // local state is applied only after a successful save so a failed
-  // save leaves the modal open instead of falsely closing it.
   const handleReconfirmContract = async () => {
     if (!needsContractReconfirmation || !reconfirmContractAccepted) return;
-    if (!isMockMode() && currentStore.slug) {
+    const { id, slug } = currentStore;
+    if (!isMockMode()) {
+      const token = tokenStore.getToken();
+      const generation = tokenStore.getGeneration();
+      const sameSession = () => tokenStore.getToken() === token && tokenStore.getGeneration() === generation;
       try {
-        await storeApi.saveStoreSettings(currentStore.slug, { signedContractVersion: activeSellerContractVer });
+        const updated = await storeApi.saveStoreSettings(slug, { signedContractVersion: activeSellerContractVer });
+        if (!sameSession()) return;
+        if (updated?.id !== id || updated.slug !== slug || updated.signedContractVersion !== activeSellerContractVer) {
+          error('ثبت تأیید قرارداد در سرور تأیید نشد.');
+          return;
+        }
       } catch (err: any) {
-        error(err?.message || 'ثبت تایید قرارداد در سرور انجام نشد.');
+        if (sameSession()) error(err?.message || 'ثبت تایید قرارداد در سرور انجام نشد.');
         return;
       }
     }
-    setCurrentStore({
-      ...currentStore,
-      signedContractVersion: activeSellerContractVer,
-    });
+    recordSellerContractVersion(id, slug, activeSellerContractVer);
     success(`نسخه به‌روزشده قرارداد (${toPersianDigits(activeSellerContractVer)}.۰) با موفقیت تأیید گردید.`);
   };
   // FIX 17: live seller menu (SellerDashboardView-MERGED.js, single

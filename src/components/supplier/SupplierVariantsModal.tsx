@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { SupplierUnitPrint } from './SupplierUnitPrint';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierPriceIncreaseDto } from '../../services/supplierApi';
-import { formatPrice } from '../../utils/formatters';
+import { formatPrice, toPersianDigits } from '../../utils/formatters';
+import { extractSpncxErrorCode } from '../../services/spncxAdminApi';
+import type { UnitLabelListResponse } from '../../services/unitsApi';
 import { X, Plus, Trash2, Printer, Loader2, Tag } from 'lucide-react';
 
 // Live variants modal (Fl) + cart-limits editor (Ul) + label print
@@ -35,6 +38,51 @@ interface VariantRow {
   sale_to?: string | null;
   shipping_class?: string | null;
   tax_class?: string | null;
+}
+
+interface VariantUnitCounts {
+  counts: Record<string, number>;
+  errors: Record<string, string | null>;
+}
+
+export async function fetchVariantUnitCounts(
+  getUnitLabels: (productId: string, filters: { variant_id: string; status: 'in_stock'; limit: 1 }) =>
+    Promise<Pick<UnitLabelListResponse, 'total_for_filter'>>,
+  productId: string,
+  variants: Array<{ id: string }>,
+): Promise<VariantUnitCounts> {
+  const counts: VariantUnitCounts['counts'] = {};
+  const errors: VariantUnitCounts['errors'] = {};
+  await Promise.all(variants.map(async ({ id }) => {
+    try {
+      const result = await getUnitLabels(productId, { variant_id: id, status: 'in_stock', limit: 1 });
+      counts[id] = result.total_for_filter;
+    } catch (cause) {
+      errors[id] = extractSpncxErrorCode(cause);
+    }
+  }));
+  return { counts, errors };
+}
+
+export function unitCountDiscrepancy(unitCount: number, stock: number): string {
+  return `مغایرت: ${toPersianDigits(unitCount)} واحد در برابر ${toPersianDigits(stock)} عدد`;
+}
+
+export function VariantUnitCountLine({ stock, unitCount, errorCode }: {
+  stock: number; unitCount?: number; errorCode?: string | null;
+}) {
+  const mismatch = unitCount !== undefined && unitCount !== stock;
+  return (
+    <div className={`text-[11px] ${mismatch ? 'rounded-lg bg-amber-50 p-1.5 text-amber-800' : 'text-slate-500'}`}>
+      <p>{`موجودی: ${toPersianDigits(stock)} عدد • ${unitCount === undefined ? '—' : toPersianDigits(unitCount)} واحد سریال‌دار`}</p>
+      {mismatch && <p className="font-bold">{unitCountDiscrepancy(unitCount, stock)}</p>}
+      {errorCode !== undefined && (
+        <p className="text-[10px] text-rose-700">
+          دریافت تعداد واحدها انجام نشد.{errorCode && <> <code dir="ltr">{errorCode}</code></>}
+        </p>
+      )}
+    </div>
+  );
 }
 
 interface CustomAttr {
@@ -221,30 +269,42 @@ const VariantCostEditor: React.FC<{
 };
 
 const LabelPrintPreview: React.FC<{
+  productId: string;
+  variants: VariantRow[];
   spn: string;
   productTitle: string;
   labels: any[];
   stockBySpnc: Record<string, number>;
   onClose: () => void;
-}> = ({ spn, productTitle, labels, stockBySpnc, onClose }) => {
+  initialMode?: 'unit' | 'variant';
+}> = ({ productId, variants, spn, productTitle, labels, stockBySpnc, onClose, initialMode }) => {
   const { toPersianDigits } = useStore();
+  const [mode, setMode] = useState<'loading' | 'variant' | 'unit'>(initialMode ?? 'loading');
+  const applyAvailability = useCallback((available: boolean) => {
+    setMode(previous => previous === 'loading' ? (available ? 'unit' : 'variant') : previous);
+  }, []);
   return (
     <div className="fixed inset-0 z-[80] bg-slate-100 overflow-y-auto" dir="rtl">
       <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
         <div>
           <h2 className="text-sm font-extrabold text-slate-900">پیش‌نمایش چاپ برچسب</h2>
-          <p className="text-[11px] text-slate-500 mt-0.5">{toPersianDigits(labels.length)} برچسب • هر برچسب روی یک برچسب جداگانه چاپ می‌شود</p>
+          {mode === 'variant' && <p className="text-[11px] text-slate-500 mt-0.5">{toPersianDigits(labels.length)} برچسب • هر برچسب روی یک برچسب جداگانه چاپ می‌شود</p>}
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors">
+          {mode === 'variant' && <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors">
             <Printer className="w-4 h-4"  strokeWidth={1.5}/><span>چاپ</span>
-          </button>
+          </button>}
           <button type="button" onClick={onClose} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600" aria-label="بستن">
             <X className="w-4 h-4"  strokeWidth={1.5}/>
           </button>
         </div>
       </div>
-      <div className="p-4 flex flex-col items-center gap-4">
+      <div className="flex gap-3 border-b bg-white p-3 text-sm">
+        <button type="button" aria-pressed={mode === 'variant'} onClick={() => setMode('variant')}>برچسب تنوع</button>
+        <button type="button" aria-pressed={mode === 'unit'} onClick={() => setMode('unit')}>برچسب واحد</button>
+      </div>
+      {mode !== 'variant' && <SupplierUnitPrint productId={productId} variants={variants} onInitialAvailability={applyAvailability} />}
+      {mode === 'variant' && <div className="p-4 flex flex-col items-center gap-4">
         {labels.length === 0 && (
           <div className="bg-white rounded-2xl p-8 text-center text-xs text-slate-500">برچسبی برای چاپ وجود ندارد.</div>
         )}
@@ -268,7 +328,7 @@ const LabelPrintPreview: React.FC<{
             )}
           </div>
         ))}
-      </div>
+      </div>}
     </div>
   );
 };
@@ -448,10 +508,13 @@ export const SupplierVariantsModal: React.FC<{
   productBaseCost?: number | null;
   onClose: () => void;
   onChanged?: () => void;
-}> = ({ productId, productTitle, productBaseCost, onClose, onChanged }) => {
+  onUnitCountsLoaded?: (productId: string, counts: Record<string, number>) => void;
+}> = ({ productId, productTitle, productBaseCost, onClose, onChanged, onUnitCountsLoaded }) => {
   const { toPersianDigits } = useStore();
   const { success, error } = useToast();
   const [variants, setVariants] = useState<VariantRow[]>([]);
+  const [unitCounts, setUnitCounts] = useState<VariantUnitCounts>({ counts: {}, errors: {} });
+  const loadVersion = useRef(0);
   const [spn, setSpn] = useState('');
   const [labels, setLabels] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -463,7 +526,7 @@ export const SupplierVariantsModal: React.FC<{
   const [singleSaving, setSingleSaving] = useState(false);
   const [bulkRows, setBulkRows] = useState([emptyBulkRow(), emptyBulkRow()]);
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [printOpen, setPrintOpen] = useState(false);
+  const [printSelection, setPrintSelection] = useState<VariantRow | 'all' | null>(null);
   const [priceIncreases, setPriceIncreases] = useState<SupplierPriceIncreaseDto[]>([]);
   const reloadPriceIncreases = useCallback(() => {
     supplierApi.getPriceIncreases().then(setPriceIncreases).catch(() => undefined);
@@ -476,25 +539,36 @@ export const SupplierVariantsModal: React.FC<{
   );
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     setLoading(true);
+    setUnitCounts({ counts: {}, errors: {} });
     try {
       const [vs, lb] = await Promise.all([
         supplierApi.getVariants(productId),
         supplierApi.getLabels(productId).catch(() => null),
       ]);
+      if (version !== loadVersion.current) return;
       setVariants(vs || []);
+      void fetchVariantUnitCounts(supplierApi.getUnitLabels, productId, vs || []).then(result => {
+        if (version !== loadVersion.current) return;
+        setUnitCounts(result);
+        if (Object.keys(result.errors).length === 0) onUnitCountsLoaded?.(productId, result.counts);
+      });
       if (lb) {
         setSpn(lb.spn || '');
         setLabels(lb.labels || []);
       }
     } catch {
-      error('خطا در دریافت تنوع‌های محصول.');
+      if (version === loadVersion.current) error('خطا در دریافت تنوع‌های محصول.');
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
-  }, [productId, error]);
+  }, [productId, error, onUnitCountsLoaded]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { loadVersion.current += 1; };
+  }, [load]);
 
   const collectSingleAttrs = (): Record<string, string> => {
     const out: Record<string, string> = {};
@@ -526,8 +600,8 @@ export const SupplierVariantsModal: React.FC<{
       setSingleAttrs({ رنگ: '', سایز: '' });
       setSingleCustom([]);
       setFormOpen(false);
-      await load();
       onChanged?.();
+      await load();
     } catch (err: any) {
       error(err?.message || 'ثبت تنوع انجام نشد.');
     } finally {
@@ -573,8 +647,8 @@ export const SupplierVariantsModal: React.FC<{
       success(`${toPersianDigits(res.count || rows.length)} تنوع ثبت شد؛ کد SPNC همه با هم صادر شد.`);
       setBulkRows([emptyBulkRow(), emptyBulkRow()]);
       setFormOpen(false);
-      await load();
       onChanged?.();
+      await load();
     } catch (err: any) {
       error(err?.message || 'ثبت گروهی تنوع‌ها انجام نشد.');
     } finally {
@@ -618,7 +692,7 @@ export const SupplierVariantsModal: React.FC<{
               <button type="button" onClick={() => setFormOpen((v) => !v)} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors">
                 <Plus className="w-4 h-4"  strokeWidth={1.5}/><span>مدل تازه</span>
               </button>
-              <button type="button" onClick={() => setPrintOpen(true)} disabled={labels.length === 0} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-brand-soft text-brand-deep text-xs font-bold hover:bg-brand-border/40 transition-colors disabled:opacity-50">
+              <button type="button" onClick={() => setPrintSelection('all')} disabled={loading} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-brand-soft text-brand-deep text-xs font-bold hover:bg-brand-border/40 transition-colors disabled:opacity-50">
                 <Printer className="w-4 h-4"  strokeWidth={1.5}/><span>چاپ برچسب</span>
               </button>
             </div>
@@ -707,8 +781,9 @@ export const SupplierVariantsModal: React.FC<{
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-sm font-black text-brand-deep tracking-wider" dir="ltr">{v.spnc}</span>
-                      <span className="text-[11px] text-slate-500">موجودی: <strong className="text-slate-800">{toPersianDigits(v.stock ?? 0)}</strong></span>
+                      <button type="button" onClick={() => setPrintSelection(v)} className="text-[11px] font-bold text-brand-deep underline">مشاهده واحدها</button>
                     </div>
+                    <VariantUnitCountLine stock={v.stock ?? 0} unitCount={unitCounts.counts[v.id]} errorCode={unitCounts.errors[v.id]} />
                     {v.attributes && Object.keys(v.attributes).length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
                         {Object.entries(v.attributes).map(([k, val]) => (
@@ -726,8 +801,11 @@ export const SupplierVariantsModal: React.FC<{
           </div>
         </div>
       </div>
-      {printOpen && (
-        <LabelPrintPreview spn={spn} productTitle={productTitle} labels={labels} stockBySpnc={stockBySpnc} onClose={() => setPrintOpen(false)} />
+      {printSelection && (
+        <LabelPrintPreview productId={productId} variants={printSelection === 'all' ? variants : [printSelection]}
+          initialMode={printSelection === 'all' ? undefined : 'unit'} spn={spn} productTitle={productTitle}
+          labels={printSelection === 'all' ? labels : labels.filter(label => label.spnc === printSelection.spnc)}
+          stockBySpnc={stockBySpnc} onClose={() => setPrintSelection(null)} />
       )}
     </>
   );

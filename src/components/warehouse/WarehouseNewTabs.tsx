@@ -1,6 +1,11 @@
+import { WarehouseUnitPrint } from './WarehouseUnitPrint';
+import { WarehouseReturnReceipt } from './WarehouseReturnReceipt';
+import { UnitLookup } from '../common/UnitLookup';
+import { UnitScanField } from '../common/UnitScanField';
+import { completeScan, unitMutationError, type ScannedUnit } from '../../utils/unitScan';
 import React, { useState, useEffect } from 'react';
 import { CustomerReturnBinEntry } from './CustomerReturnBinEntry';
-import { wmsApi } from '../../services/wmsApi';
+import { wmsApi, type UnitReceiptResult } from '../../services/wmsApi';
 import { apiRequest } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
 import { RotateCcw, Undo2, ScanLine, CheckCircle2, XCircle } from 'lucide-react';
@@ -37,17 +42,26 @@ export const WarehouseReceiveTab: React.FC = () => {
   const [qc, setQc] = useState<Record<string, 'pass' | 'fail'>>({});
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [scans, setScans] = useState<Record<string, ScannedUnit[]>>({});
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [receipts, setReceipts] = useState<UnitReceiptResult[]>([]);
+  const [receiveError, setReceiveError] = useState('');
 
   const alreadyReceived = shipment?.status === 'received' || shipment?.status === 'qc_passed';
 
   const lookup = async () => {
     const shipmentCode = code.trim().toUpperCase();
+    if (submitting || lookingUp) return;
     if (!shipmentCode) { error('کد محموله را وارد کنید.'); return; }
     setLookingUp(true);
     try {
       const data = await apiRequest<{ shipment: Shipment }>(`/warehouse/shipments/${encodeURIComponent(shipmentCode)}`, { method: 'GET', auth: true });
       const found = data.shipment;
       setShipment(found);
+      setScans({});
+      setPending({});
+      setReceipts([]);
+      setReceiveError('');
       const qty: Record<string, string> = {};
       const qcState: Record<string, 'pass' | 'fail'> = {};
       const confirmedState: Record<string, boolean> = {};
@@ -68,7 +82,7 @@ export const WarehouseReceiveTab: React.FC = () => {
   };
 
   const submit = async () => {
-    if (!shipment) return;
+    if (!shipment || submitting) return;
     const items = (shipment.items || []).filter((item) => confirmed[item.variant_id]);
     if (items.length === 0) { error('حداقل یک قلم را با «تأیید اسکن» تأیید کنید.'); return; }
     const payload = items.map((item) => {
@@ -77,20 +91,23 @@ export const WarehouseReceiveTab: React.FC = () => {
         variant_id: item.variant_id,
         received_qty: Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0,
         qc_status: qc[item.variant_id] || 'pass',
+        ...(scans[item.variant_id]?.length ? { unit_codes: scans[item.variant_id].map(unit => unit.code) } : {}),
       };
     });
+    if (payload.some(item => pending[item.variant_id] || !completeScan(scans[item.variant_id] ?? [], item.received_qty))) {
+      setReceiveError('همه واحدهای ردیف را اسکن کنید یا اسکن‌ها را پاک کنید.');
+      return;
+    }
     setSubmitting(true);
+    setReceiveError('');
     try {
-      await apiRequest(`/warehouse/shipments/${encodeURIComponent(shipment.shipment_code)}/receive`, {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({ items: payload }),
-      });
+      const result = await wmsApi.receiveShipment(shipment.shipment_code, { items: payload });
+      setReceipts(result && 'line_id' in result ? [result] : result?.items ?? []);
       success('دریافت محموله ثبت شد.');
       setShipment(null);
       setCode('');
     } catch (cause) {
-      error(cause instanceof Error ? cause.message : 'ثبت دریافت انجام نشد.');
+      setReceiveError(unitMutationError(cause, 'ثبت دریافت انجام نشد.'));
     } finally {
       setSubmitting(false);
     }
@@ -100,6 +117,10 @@ export const WarehouseReceiveTab: React.FC = () => {
 
   return (
     <div className="space-y-3.5 pb-6">
+      <section aria-labelledby="warehouse-unit-lookup-heading" className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
+        <h3 id="warehouse-unit-lookup-heading" className="text-xs font-extrabold text-slate-800">جست‌وجوی واحد</h3>
+        <UnitLookup compact />
+      </section>
       <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
           <ScanLine className="w-4 h-4 text-amber-600" strokeWidth={1.5} />
@@ -117,7 +138,7 @@ export const WarehouseReceiveTab: React.FC = () => {
           <button
             type="button"
             onClick={() => void lookup()}
-            disabled={lookingUp}
+            disabled={lookingUp || submitting}
             className="px-4 py-2.5 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 disabled:opacity-50 flex items-center gap-1.5"
           >
             <ScanLine className="w-4 h-4" strokeWidth={1.5} />
@@ -126,6 +147,12 @@ export const WarehouseReceiveTab: React.FC = () => {
         </div>
       </section>
 
+      {receiveError && <p role="alert" className="text-xs text-rose-700">{receiveError}</p>}
+      {receipts.map(receipt => <section key={receipt.line_id} className="space-y-2 rounded-xl border bg-white p-3">
+        <p>ردیف دریافت <bdi>{receipt.line_id}</bdi></p>
+        <div>{receipt.unit_codes?.map(code => <code dir="ltr" className="me-2" key={code}>{code}</code>)}</div>
+        <WarehouseUnitPrint receiptLineId={receipt.line_id} unitCodes={receipt.unit_codes} />
+      </section>)}
       {shipment && (
         <section className="space-y-3">
           <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-3.5 flex items-center justify-between">
@@ -159,7 +186,7 @@ export const WarehouseReceiveTab: React.FC = () => {
 
                   <button
                     type="button"
-                    disabled={alreadyReceived}
+                    disabled={alreadyReceived || submitting}
                     onClick={() => setConfirmed((current) => ({ ...current, [item.variant_id]: !current[item.variant_id] }))}
                     className={`w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[11px] font-extrabold border-2 border-dashed transition-colors disabled:opacity-50 ${isConfirmed ? 'bg-emerald-50 text-emerald-700 border-emerald-400 border-solid' : 'bg-slate-50 text-slate-600 border-slate-300'}`}
                   >
@@ -167,6 +194,14 @@ export const WarehouseReceiveTab: React.FC = () => {
                     <span>{isConfirmed ? 'اسکن تأیید شد — برای لغو بزنید' : 'تأیید اسکن و QC این قلم'}</span>
                   </button>
 
+                  {!alreadyReceived && <UnitScanField
+                    key={shipment.shipment_code}
+                    disabled={submitting}
+                    scans={scans[item.variant_id] ?? []}
+                    quantity={Math.max(0, Number(receivedQty[item.variant_id]) || 0)}
+                    onChange={value => setScans(current => ({ ...current, [item.variant_id]: value }))}
+                    onPending={value => setPending(current => ({ ...current, [item.variant_id]: value }))}
+                  />}
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block">
                       <span className="text-[10px] font-bold text-slate-500 block mb-1">تعداد دریافتی</span>
@@ -174,7 +209,7 @@ export const WarehouseReceiveTab: React.FC = () => {
                         type="text"
                         inputMode="numeric"
                         min="0"
-                        disabled={alreadyReceived}
+                        disabled={alreadyReceived || submitting}
                         value={receivedQty[item.variant_id] ?? ''}
                         onChange={(e) => setReceivedQty((current) => ({ ...current, [item.variant_id]: e.target.value }))}
                         className="w-full rounded-xl border border-slate-200 p-2 text-sm font-mono font-bold text-center disabled:bg-slate-50"
@@ -186,7 +221,7 @@ export const WarehouseReceiveTab: React.FC = () => {
                       <div className="grid grid-cols-2 gap-1.5">
                         <button
                           type="button"
-                          disabled={alreadyReceived}
+                          disabled={alreadyReceived || submitting}
                           onClick={() => setQc((current) => ({ ...current, [item.variant_id]: 'pass' }))}
                           className={`flex items-center justify-center gap-1 py-2 rounded-xl text-[11px] font-bold border transition-colors disabled:opacity-50 ${qc[item.variant_id] !== 'fail' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}
                         >
@@ -195,7 +230,7 @@ export const WarehouseReceiveTab: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          disabled={alreadyReceived}
+                          disabled={alreadyReceived || submitting}
                           onClick={() => setQc((current) => ({ ...current, [item.variant_id]: 'fail' }))}
                           className={`flex items-center justify-center gap-1 py-2 rounded-xl text-[11px] font-bold border transition-colors disabled:opacity-50 ${qc[item.variant_id] === 'fail' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-rose-700 border-rose-200'}`}
                         >
@@ -220,7 +255,7 @@ export const WarehouseReceiveTab: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void submit()}
-                disabled={submitting || confirmedCount === 0}
+                disabled={submitting || confirmedCount === 0 || Object.values(pending).some(Boolean)}
                 className="w-full py-3 rounded-2xl bg-amber-600 text-white text-sm font-extrabold hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
               >
                 <span>{submitting ? 'در حال ثبت…' : `تأیید دریافت محموله (${confirmedCount} قلم تأییدشده)`}</span>
@@ -288,7 +323,8 @@ export const WarehouseCustomerReturnsTab: React.FC = () => {
           </div>
           {r.reason && <p className="text-[11px] text-slate-600">دلیل: {r.reason}</p>}
           {r.trackingNumber && <p className="text-[11px] text-slate-500">کد رهگیری: {r.trackingNumber}</p>}
-          {(r.status === 'received' || r.status === 'refunded') && <CustomerReturnBinEntry returnID={r.id} />}
+          {(r.status === 'received' || r.status === 'refunded') ? <CustomerReturnBinEntry returnID={r.id} /> :
+            <WarehouseReturnReceipt returnId={r.id} orderId={r.orderId ?? r.order_id} items={r.items ?? r.orderItems ?? r.order_items ?? []} />}
         </div>
       ))}
     </ListShell>

@@ -1,6 +1,7 @@
 import { financeOperation } from './financeOperation';
 import { apiRequest, tokenStore, getApiBase } from './apiClient';
 import type { ProductSchema } from '../types/productSchema';
+import type { PrintLabelPayload, PrintUnitsRequest, UnitLabelListResponse } from './unitsApi';
 
 export interface SupplierSKUIdentity { variantId?: string; variantName?: string; variantSpnc?: string; }
 export interface SupplierProductVariantDto { id: string; variant_name: string; spnc: string; stock: number; selection?: Record<string,string>; attributes?: Record<string,string>; is_default?: boolean; is_active?: boolean; inventory_mode?: 'legacy'|'tracked'; combination_key?: string; min_cart_qty?: number|null; max_cart_qty?: number|null; supplier_base_cost?: number|null; images?: string[]; image_url?: string | null; weight_grams?: number | null; length_mm?: number | null; width_mm?: number | null; height_mm?: number | null; sale_price?: number | null; sale_from?: string | null; sale_to?: string | null; shipping_class?: string | null; tax_class?: string | null; }
@@ -390,6 +391,29 @@ export const supplierApi = {
     const data = await apiRequest<any>(`/supplier/products/${encodeURIComponent(productId)}/labels`, { method: 'GET', auth: true });
     return data;
   },
+  getUnitLabels: (productId: string, params: {
+    variant_id?: string;
+    status?: string;
+    unprinted_only?: boolean;
+    limit?: number;
+    cursor?: string;
+  } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    }
+    const suffix = query.size ? `?${query}` : '';
+    return apiRequest<UnitLabelListResponse>(`/supplier/products/${encodeURIComponent(productId)}/labels/units${suffix}`, {
+      method: 'GET',
+      auth: true,
+    });
+  },
+  printUnitLabels: (productId: string, body: PrintUnitsRequest) =>
+    apiRequest<{ units: PrintLabelPayload[] }>(`/supplier/products/${encodeURIComponent(productId)}/labels/print`, {
+      method: 'POST',
+      auth: true,
+      body: JSON.stringify(body),
+    }),
   createVariant: (productId: string, payload: { variant_name: string; attributes: Record<string, string> }) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   createVariantsBulk: (productId: string, variants: { variant_name: string; attributes: Record<string, string> }[]) => apiRequest<{ count: number }>(`/supplier/products/${encodeURIComponent(productId)}/variants/bulk`, { method: 'POST', auth: true, body: JSON.stringify({ variants }) }),
   updateVariantCartLimits: (productId: string, variantId: string, minQty: number, maxQty: number | null) => apiRequest(`/supplier/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}/cart-limits`, { method: 'PUT', auth: true, body: JSON.stringify({ min_cart_qty: minQty, max_cart_qty: maxQty }) }),

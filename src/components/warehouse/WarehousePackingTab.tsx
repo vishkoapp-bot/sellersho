@@ -1,3 +1,4 @@
+import { unitsApi } from '../../services/unitsApi';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -11,6 +12,9 @@ import { Package, Printer, CheckCircle2, FileText, RefreshCw } from 'lucide-reac
 // No customer name, city, product title or tracking code is ever defaulted here:
 // with no order in the server queue the tab shows live's honest empty state.
 interface ServerPackItem {
+  id?: string;
+  orderItemId?: string;
+  order_item_id?: string;
   productId?: string;
   productTitle?: string;
   variantName?: string;
@@ -95,10 +99,6 @@ export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGo
 
   const matchedStore = stores.find((s) => s.name === activeOrder?.storeName);
   const storeDisplayName = activeOrder?.storeName || '';
-  const productTitle = (activeOrder?.items || [])
-    .map((item) => `${item.productTitle || 'کالا'} (${toPersianDigits(item.quantity || 0)} عدد)`)
-    .join(' + ');
-
   const handlePrintStoreInvoice = () => {
     if (!activeOrder) { error('سفارشی برای چاپ فاکتور انتخاب نشده است.'); return; }
     success(`پیش‌نمایش فاکتور مشتری با سربرگ «${storeDisplayName}» آماده شد.`);
@@ -106,8 +106,8 @@ export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGo
   };
 
   const handlePrintPostLabel = () => {
-    if (!activeOrder) { error('سفارشی برای چاپ برچسب انتخاب نشده است.'); return; }
-    success(`لیبل آدرس و بارکد پستی مرسوله ${activeOrder.orderNumber} برای چاپگر حرارتی آماده شد.`);
+    if (!activeOrder) { error('سفارشی برای چاپ فهرست بسته‌بندی انتخاب نشده است.'); return; }
+    success(`فهرست بسته‌بندی سفارش ${activeOrder.orderNumber} برای چاپ آماده شد.`);
     window.print();
   };
 
@@ -207,7 +207,15 @@ export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGo
         </div>
 
         <div>
-          <span className="text-xs font-bold text-slate-800 block">{productTitle || '—'}</span>
+          <div className="space-y-1 text-xs font-bold text-slate-800">
+            {activeOrder.items?.length ? activeOrder.items.map((item, index) => {
+              const lineId = item.orderItemId ?? item.order_item_id ?? item.id;
+              return <div key={lineId ?? index}>
+                <span>{item.productTitle || 'کالا'}{item.variantName && ` — ${item.variantName}`} ({toPersianDigits(item.quantity || 0)} عدد)</span>
+                {lineId && <PackingUnitCodes key={activeOrder.id + lineId} orderItemId={lineId} />}
+              </div>;
+            }) : '—'}
+          </div>
           <span className="text-[11px] text-slate-500 mt-0.5 block">
             گیرنده: {activeOrder.customerName} • مبلغ: {toPersianDigits(Math.round(activeOrder.totalAmount || 0))} تومان
           </span>
@@ -297,7 +305,7 @@ export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGo
             className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
           >
             <Printer className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.5} />
-            <span>چاپ برچسب پستی</span>
+            <span>چاپ فهرست بسته‌بندی</span>
           </button>
         </div>
 
@@ -336,3 +344,27 @@ export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGo
     </form>
   );
 };
+
+function PackingUnitCodes({ orderItemId }: { orderItemId: string }) {
+  const [codes, setCodes] = useState<string[]>([]);
+  useEffect(() => {
+    let current = true;
+    async function load() {
+      const codes: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await unitsApi.listUnits({ order_item_id: orderItemId, cursor, limit: 200 });
+        codes.push(...page.units.map(unit => unit.code));
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor && current);
+      if (current) setCodes(codes);
+    }
+    void load().catch(() => { if (current) setCodes([]); });
+    return () => { current = false; };
+  }, [orderItemId]);
+
+  if (!codes.length) return null;
+  return <div className="spncx-pack-unit-code flex flex-wrap gap-x-2 text-[11px]">
+    {codes.map(code => <code key={code} dir="ltr" className="spncx-pack-unit-code font-mono">{code}</code>)}
+  </div>;
+}

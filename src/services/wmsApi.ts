@@ -1,4 +1,5 @@
 import { apiRequest } from './apiClient';
+import type { PrintLabelPayload } from './unitsApi';
 
 export interface WarehouseBinDto {
   positionX?: number;
@@ -36,7 +37,7 @@ export interface InboundShipmentDto {
   status: string;
   createdAt: string;
   receivedAt?: string;
-  items?: Array<{ productId?: string; product_id?: string; barcode?: string; quantity?: number }>;
+  items?: Array<{ line_id?: string; lineId?: string; productId?: string; product_id?: string; barcode?: string; quantity?: number }>;
   scannedItems?: Array<{ productId?: string; product_id?: string; barcode?: string; quantity?: number }>;
 }
 
@@ -108,7 +109,46 @@ export interface ReturnBinSourceDto {
   bins: { binCode: string; remainingVolumeCm3: number; remainingWeightGrams: number }[];
 }
 
+type WarehousePrintUnitsRequest = {
+  idempotency_key: string;
+  reprint?: boolean;
+} & (
+  | { unit_codes: string[]; receipt_line_id?: never }
+  | { receipt_line_id: string; unit_codes?: never }
+);
+
+export interface UnitReceiptResult {
+  line_id: string;
+  quantity: number;
+  unit_codes: string[];
+  mismatched: [];
+}
+
+type ReceiptResponse = UnitReceiptResult | { items?: UnitReceiptResult[] };
+
 export const wmsApi = {
+  printUnits: (body: WarehousePrintUnitsRequest) =>
+    apiRequest<{ units: PrintLabelPayload[] }>('/warehouse/units/print', {
+      method: 'POST', auth: true, body: JSON.stringify(body),
+    }),
+  receiveShipment: (code: string, body: {
+    items: { variant_id: string; received_qty: number; qc_status: 'pass' | 'fail'; unit_codes?: string[] }[];
+  }) => apiRequest<ReceiptResponse>(`/warehouse/shipments/${encodeURIComponent(code)}/receive`, {
+    method: 'POST', auth: true, body: JSON.stringify(body),
+  }),
+  receiveInboundLine: (lineId: string, body: { received_quantity: number; unit_codes?: string[] }) =>
+    apiRequest<UnitReceiptResult>(`/warehouse/inbound-lines/${encodeURIComponent(lineId)}/receive`, {
+      method: 'POST', auth: true, body: JSON.stringify(body),
+    }),
+  passReceiptLineQC: (lineId: string, body: { quantity: number; unit_codes?: string[] }) =>
+    apiRequest<UnitReceiptResult>(`/warehouse/qc/${encodeURIComponent(lineId)}/pass`, {
+      method: 'POST', auth: true, body: JSON.stringify(body),
+    }),
+  receiveReturn: (returnId: string, body: {
+    items: { order_item_id: string; qty: number; unit_codes?: string[] }[];
+  }) => apiRequest<ReceiptResponse>(`/warehouse/returns/${encodeURIComponent(returnId)}/receive`, {
+    method: 'POST', auth: true, body: JSON.stringify(body),
+  }),
   getReturnBinSources: (returnID: string) => apiRequest<ReturnBinSourceDto[]>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/putaway-sources`, { method: 'GET', auth: true }),
   placeReturnInBin: async (returnID: string, itemID: string, payload: { binCode: string; quantity: number; reason: string }, key: string) => {
     const result = await apiRequest<{ id: string; quantity: number }>(`/warehouse/customer-returns/${encodeURIComponent(returnID)}/items/${encodeURIComponent(itemID)}/putaway`, { method: 'POST', auth: true, headers: { 'Idempotency-Key': key }, body: JSON.stringify(payload) });
@@ -136,8 +176,8 @@ export const wmsApi = {
   scanInboundItem: (inboundId: string, payload: { productId?: string; barcode?: string; quantity: number }) => apiRequest<{ success: boolean; scannedCount: number }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/scan-item`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   completeReceiving: (inboundId: string) => apiRequest<{ success: boolean; status: string }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/complete`, { method: 'POST', auth: true }),
   getQCQueue: () => apiRequest<{ success: boolean; queue: QCQueueItemDto[] }>('/warehouse/qc/queue', { method: 'GET', auth: true }),
-  completeQC: async (productId: string, payload: { inboundId: string; receiptLineId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string }) => {
-    const result = await apiRequest<{ success: boolean; status: string }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) });
+  completeQC: async (productId: string, payload: { inboundId: string; receiptLineId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string; unit_codes?: string[] }) => {
+    const result = await apiRequest<{ success: boolean; status: string; unit_codes?: string[] }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) });
     if (result?.success !== true || result.status !== 'completed') throw new Error('پاسخ ثبت QC کامل نیست؛ همان نتیجه را دوباره ارسال کنید.');
     return result;
   },

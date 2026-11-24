@@ -125,6 +125,8 @@
 }
 
 
+.spncx-print-sheet { display: none; }
+
 /* Official Print Stylesheet for Invoices, Labels & Carrier Manifests */
 @media print {
   body {
@@ -145,6 +147,48 @@
     padding: 0 !important;
     margin: 0 !important;
   }
+
+  @page spncx-label { size: 100mm 60mm; margin: 0; }
+
+  /* Isolate unit-label jobs while preserving invoice and legacy label printing. */
+  body:has(.spncx-print-sheet > .spncx-label) * { visibility: hidden; }
+  body:has(.spncx-print-sheet > .spncx-label) .spncx-print-sheet,
+  body:has(.spncx-print-sheet > .spncx-label) .spncx-print-sheet * { visibility: visible; }
+  body:has(.spncx-print-sheet > .spncx-label) *:not(:has(.spncx-print-sheet > .spncx-label)):not(.spncx-print-sheet, .spncx-print-sheet *) {
+    display: none !important;
+  }
+  body:has(.spncx-print-sheet > .spncx-label),
+  body *:has(.spncx-print-sheet > .spncx-label) {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+  }
+  /* The in-flow body selects the named page for the positioned sheet. */
+  body:has(.spncx-print-sheet > .spncx-label) { page: spncx-label; }
+  .spncx-print-sheet { display: block; position: absolute; inset: 0; }
+  .spncx-label {
+    page: spncx-label;
+    width: 100mm;
+    height: 60mm;
+    page-break-after: always;
+    break-after: page;
+    overflow: hidden;
+    background-color: #fff;
+    border: 0;
+  }
+  .spncx-label:last-child { page-break-after: auto; break-after: auto; }
+  .spncx-label, .spncx-label * { color: #000 !important; }
+  .spncx-barcode svg {
+    background-color: #fff;
+    print-color-adjust: exact;
+  }
+  .spncx-pack-unit-code { display: none !important; }
 }
 
 

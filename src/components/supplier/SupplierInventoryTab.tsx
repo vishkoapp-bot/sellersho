@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto, SupplierProductVariantDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
@@ -6,6 +6,10 @@ import { SupplierResourceState } from './SupplierResourceState';
 import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
 import { supplierInventoryLabel, supplierReturnAttemptScope, supplierReturnQuantity } from '../../utils/supplierSkuInventory';
 import { formatPrice, toPersianDigits } from '../../utils/formatters';
+import { ApiError } from '../../services/apiClient';
+import { extractSpncxErrorCode } from '../../services/spncxAdminApi';
+import { unitsApi, type ListUnitsParams, type ListUnitsResponse } from '../../services/unitsApi';
+import { UNIT_STATUS_LABELS } from '../../utils/unitStatus';
 
 // FIX 42: rebuilt to the live bundle SupplierDashboardView-MERGED.js (Zl component).
 // Divergences fixed vs the previous candidate tab: wrong h2 (it even said
@@ -168,6 +172,85 @@ export const formatReturnDate = (iso: string): string => {
   }
 };
 
+export interface StockAdjustResponse {
+  product_id: string;
+  variant_id: string | null;
+  previous_stock: number;
+  stock: number;
+  delta: number;
+  retired_codes: string[];
+  retired_printed_codes: string[];
+  coverage_gap: Record<string, unknown> | null;
+}
+
+export function retiredPrintedCodesOf(response: unknown): string[] {
+  if (!response || typeof response !== 'object' || !('retired_printed_codes' in response)) return [];
+  const codes = response.retired_printed_codes;
+  return Array.isArray(codes) ? codes.filter((code): code is string => typeof code === 'string') : [];
+}
+
+export function stockAdjustmentErrorMessage(cause: unknown, fallback: string): string {
+  const code = extractSpncxErrorCode(cause);
+  if (cause instanceof ApiError && cause.status === 409 && code === 'stock_below_held') {
+    return `موجودی رزروشده مانع کاهش موجودی است. (${code})`;
+  }
+  if (code) return `${fallback} (${code})`;
+  return cause instanceof Error ? cause.message : fallback;
+}
+
+export function RetiredPrintedCodesPanel({ codes, onAcknowledge }: { codes: string[]; onAcknowledge: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const [copyStatus, setCopyStatus] = useState('');
+  useEffect(() => {
+    const panel = dialog.current;
+    panel?.showModal();
+    return () => panel?.close();
+  }, []);
+
+  const copyAll = async () => {
+    if (typeof document === 'undefined' || typeof navigator === 'undefined') return;
+    const text = codes.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('کدها کپی شدند.');
+      return;
+    } catch {
+      // Plain HTTP and denied clipboard permissions can still use selection-based copying.
+    }
+    const previousFocus = document.activeElement;
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.readOnly = true;
+    input.className = 'fixed opacity-0 pointer-events-none';
+    dialog.current?.appendChild(input);
+    try {
+      input.select();
+      setCopyStatus(document.execCommand('copy') ? 'کدها کپی شدند.' : 'کپی کدها انجام نشد.');
+    } catch {
+      setCopyStatus('کپی کدها انجام نشد.');
+    } finally {
+      input.remove();
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    }
+  };
+
+  return (
+    <dialog ref={dialog} onCancel={event => event.preventDefault()} aria-labelledby={titleId} dir="rtl"
+      className="m-auto w-[calc(100%-2rem)] max-w-lg space-y-3 rounded-2xl bg-white p-4 text-slate-900 backdrop:bg-slate-950/60">
+      <h3 id={titleId} className="text-sm font-bold text-amber-800">این برچسب‌های چاپ‌شده دیگر معتبر نیستند — آن‌ها را از قفسه/کارتن جدا و معدوم کنید:</h3>
+      <ul className="max-h-64 space-y-1 overflow-auto rounded-lg bg-amber-50 p-3">
+        {codes.map((code, index) => <li key={index} dir="ltr" className="font-mono break-all text-xs">{code}</li>)}
+      </ul>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <button type="button" onClick={copyAll} className="rounded-lg border px-3 py-2 font-bold">کپی همه کدها</button>
+        <button type="button" onClick={onAcknowledge} className="rounded-lg bg-brand-deep px-3 py-2 font-bold text-white">متوجه شدم</button>
+        <span role="status">{copyStatus}</span>
+      </div>
+    </dialog>
+  );
+}
+
 // The stock-save contract, extracted so tests can pin the exact
 // updateStock payload: absolute total, counted reason and exact SKU when needed.
 // The
@@ -179,7 +262,7 @@ export async function saveStockEdit(
   stockVariantId: string,
   variantRows: SupplierProductVariantDto[],
   reason = '',
-): Promise<void> {
+): Promise<StockAdjustResponse> {
   const value = Number(stock);
   if (stock.trim() === '' || !Number.isSafeInteger(value) || value < 0 || value > 2147483647) {
     throw new Error('موجودی را با عدد وارد کن (از صفر تا ۲۱۴۷۴۸۳۶۴۷).');
@@ -188,7 +271,7 @@ export async function saveStockEdit(
     throw new Error('تنوع دقیق کالا را انتخاب کنید.');
   }
   if (!reason.trim()) throw new Error('علت اصلاح موجودی را وارد کنید.');
-  await api.updateStock(product.id, value, reason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined);
+  return await api.updateStock(product.id, value, reason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined) as unknown as StockAdjustResponse;
 }
 
 export interface ReturnValidationInput {
@@ -211,6 +294,94 @@ export const validateReturnRequest = (input: ReturnValidationInput): string | nu
 
 // --- Presentational view ---------------------------------------------------
 
+type InventoryLocation = SupplierInventoryLocationDto & { balanceId?: string };
+
+export function loadLotUnits(
+  listUnits: (params: ListUnitsParams) => Promise<ListUnitsResponse>,
+  balanceId: string,
+  cursor?: string,
+): Promise<ListUnitsResponse> {
+  return listUnits({ balance_id: balanceId, limit: 200, ...(cursor ? { cursor } : {}) });
+}
+
+interface LotUnitsDrillDownProps {
+  allocation?: InventoryLocation['allocation'];
+  balanceId?: string;
+  page?: ListUnitsResponse;
+  expanded?: boolean;
+  loading?: boolean;
+  error?: string;
+  onToggle?: () => void;
+  onLoadMore?: () => void;
+}
+
+export function LotUnitsDrillDown({
+  allocation, balanceId, page, expanded, loading, error, onToggle, onLoadMore,
+}: LotUnitsDrillDownProps) {
+  const listId = useId();
+  if (allocation === 'unallocated') return <span>بدون واحد سریال‌دار</span>;
+  if (!balanceId) return <span>—</span>;
+  return (
+    <div className="mt-1 space-y-1">
+      <button type="button" onClick={onToggle} aria-expanded={!!expanded} aria-controls={listId} className="font-bold text-brand-deep underline">
+        {page ? `${toPersianDigits(page.units.length)}${page.next_cursor !== null ? '+' : ''} واحد` : '— واحد'}
+      </button>
+      {error && <p role="alert" className="text-rose-700">{error}</p>}
+      <div id={listId} hidden={!expanded}>
+        {expanded && (
+          <>
+            {page && <ul className="space-y-1">
+              {page.units.map(unit => (
+                <li key={unit.code} className="flex flex-wrap items-center gap-x-2">
+                  <span dir="ltr" className="font-mono break-all">{unit.code}</span>
+                  <span>{UNIT_STATUS_LABELS[unit.status] || unit.status}</span>
+                  <span>{unit.print_count > 0 ? `${toPersianDigits(unit.print_count)} بار چاپ شده` : 'هنوز چاپ نشده'}</span>
+                </li>
+              ))}
+            </ul>}
+            {loading && <p role="status">در حال دریافت واحدها…</p>}
+            {(page?.next_cursor != null || (!page && error)) && (
+              <button type="button" onClick={onLoadMore} disabled={loading} className="font-bold text-brand-deep underline">
+                {error ? 'تلاش دوباره' : 'نمایش بیشتر'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InventoryLotUnits({ balanceId, enabled }: { balanceId: string; enabled: boolean }) {
+  const [page, setPage] = useState<ListUnitsResponse>();
+  const [expanded, setExpanded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const fetchPage = useCallback(async (cursor?: string, isActive: () => boolean = () => true) => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await loadLotUnits(unitsApi.listUnits, balanceId, cursor);
+      if (isActive()) setPage(previous => cursor && previous ? { ...result, units: [...previous.units, ...result.units] } : result);
+    } catch (cause) {
+      const code = extractSpncxErrorCode(cause);
+      if (isActive()) setError(code ? `دریافت واحدهای این محل انجام نشد. (${code})` : 'دریافت واحدهای این محل انجام نشد.');
+    } finally {
+      if (isActive()) setLoading(false);
+    }
+  }, [balanceId]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    void fetchPage(undefined, () => active);
+    return () => { active = false; };
+  }, [enabled, fetchPage]);
+
+  return <LotUnitsDrillDown balanceId={balanceId} page={page} expanded={expanded} loading={loading} error={error}
+    onToggle={() => setExpanded(value => !value)} onLoadMore={() => { if (!loading) void fetchPage(page?.next_cursor ?? undefined); }} />;
+}
+
 export interface SupplierInventoryEditState {
   product: SupplierProductDto;
   variantId: string;
@@ -221,7 +392,7 @@ export interface SupplierInventoryEditState {
 export interface SupplierInventoryViewProps {
   items: SupplierProductDto[];
   totalCount: number;
-  locations: SupplierInventoryLocationDto[];
+  locations: InventoryLocation[];
   returns: SupplierReturnRequestDto[];
   productsById: Record<string, SupplierProductDto>;
   shareData: { centralStockShare: number | null; centralUnits: number; supplierUnits: number } | null;
@@ -272,7 +443,8 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
     onReturnVariantChange, onReturnQuantityChange, onReturnMethodChange, onReturnReasonChange,
     onSubmitReturn, onCancelReturn, returnableOf,
   } = props;
-  const grouped = locations.reduce<Record<string, SupplierInventoryLocationDto[]>>((groups, location) => {
+  const [openedLocationDetails, setOpenedLocationDetails] = useState<Record<string, boolean>>({});
+  const grouped = locations.reduce<Record<string, InventoryLocation[]>>((groups, location) => {
     (groups[location.productId] ||= []).push(location);
     return groups;
   }, {});
@@ -412,7 +584,11 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
             {item.schemaVersion === 2 && variants.length === 0 && (
               <p className="text-[10px] leading-relaxed text-slate-400">هنوز تنوعی از این کالا در انبار ثبت نشده؛ با «عوض‌کردن موجودی» تنوع را انتخاب کن.</p>
             )}
-            <details className="rounded-xl bg-slate-50 px-3 py-2">
+            <details className="rounded-xl bg-slate-50 px-3 py-2" onToggle={event => {
+              if (event.currentTarget.open && !openedLocationDetails[item.id]) {
+                setOpenedLocationDetails(previous => ({ ...previous, [item.id]: true }));
+              }
+            }}>
               <summary className="cursor-pointer text-[11px] font-bold text-slate-600">جزئیات وضعیت انبار</summary>
               <div className="grid grid-cols-3 gap-1 pt-2 text-[10px] text-slate-600">
                 <span className="font-bold text-emerald-700">آماده فروش: <b>{toPersianDigits(sums.sellable || 0)}</b></span>
@@ -423,9 +599,12 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                 <span>هنوز شمرده نشده: <b>{toPersianDigits(unreconciled)}</b></span>
               </div>
               {itemLocations.map(location => (
-                <p key={`${location.locationKey}-${location.status}-${location.variantId || 'unallocated'}`} className="pt-1 text-[10px] text-slate-500">
-                  {supplierInventoryLabel(location)} · {location.locationKey} · {STATUS_LABELS[location.status] || location.status} · {toPersianDigits(location.quantity)} عدد {location.reconciled ? '' : '· انبار هنوز ثبت نکرده'}
-                </p>
+                <div key={location.balanceId || `${location.locationKey}-${location.status}-${location.variantId || 'unallocated'}`} className="pt-1 text-[10px] text-slate-500">
+                  <p>{supplierInventoryLabel(location)} · {location.locationKey} · {STATUS_LABELS[location.status] || location.status} · {toPersianDigits(location.quantity)} عدد {location.reconciled ? '' : '· انبار هنوز ثبت نکرده'}</p>
+                  {location.allocation !== 'unallocated' && location.balanceId
+                    ? <InventoryLotUnits balanceId={location.balanceId} enabled={!!openedLocationDetails[item.id]} />
+                    : <LotUnitsDrillDown allocation={location.allocation} />}
+                </div>
               ))}
             </details>
             <div className="flex flex-wrap gap-2">
@@ -563,8 +742,9 @@ export const SupplierInventoryTab: React.FC = () => {
   const [stockReason, setStockReason] = useState('');
   const [stockVariantId, setStockVariantId] = useState('');
   const [saving, setSaving] = useState(false);
+  const [retiredPrintedCodes, setRetiredPrintedCodes] = useState<string[]>([]);
   const [returns, setReturns] = useState<SupplierReturnRequestDto[]>([]);
-  const [locations, setLocations] = useState<SupplierInventoryLocationDto[]>([]);
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
   // E7: the locations fetch is a second, independent load — track it
   // explicitly so the view never renders data-looking zeros while either
   // fetch is still in flight.
@@ -629,16 +809,20 @@ export const SupplierInventoryTab: React.FC = () => {
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!editing || saving) return;
+    if (!editing || saving || retiredPrintedCodes.length > 0) return;
     setSaving(true);
     try {
-      await saveStockEdit(supplierApi, editing, stock, stockVariantId, stockVariants.rows, stockReason);
+      const response = await saveStockEdit(supplierApi, editing, stock, stockVariantId, stockVariants.rows, stockReason);
+      if (response.delta < 0) {
+        const codes = retiredPrintedCodesOf(response);
+        if (codes.length > 0) setRetiredPrintedCodes(codes);
+      }
       setEditing(null);
       success('موجودی ذخیره شد.');
       await resource.reload();
       supplierApi.getInventoryLocations().then(data => setLocations(data.inventory || [])).catch(() => {});
     } catch (cause: unknown) {
-      error(cause instanceof Error ? cause.message : 'ذخیره انجام نشد.');
+      error(stockAdjustmentErrorMessage(cause, 'ذخیره انجام نشد.'));
     } finally {
       setSaving(false);
     }
@@ -713,7 +897,9 @@ const newUuid = (): string => {
   const productsById = Object.fromEntries(allProducts.map(item => [item.id, item]));
 
   return (
-    <SupplierInventoryView
+    <>
+      {retiredPrintedCodes.length > 0 && <RetiredPrintedCodesPanel codes={retiredPrintedCodes} onAcknowledge={() => setRetiredPrintedCodes([])} />}
+      <SupplierInventoryView
       items={items}
       totalCount={allProducts.length}
       locations={locations}
@@ -753,6 +939,7 @@ const newUuid = (): string => {
       onSubmitReturn={submitReturn}
       onCancelReturn={() => setReturning(null)}
       returnableOf={canonicalSellable}
-    />
+      />
+    </>
   );
 };

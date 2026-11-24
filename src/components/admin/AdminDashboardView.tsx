@@ -81,6 +81,7 @@ import {
 } from './AdminNewTabs';
 import { AdminAuditLogTab } from './AdminAuditLogTab';
 import { AdminOperationsTab } from './AdminOperationsTab';
+import { AdminSpncxTab } from './AdminSpncxTab';
 
 interface Props {
   onBackToCustomerSite: () => void;
@@ -169,6 +170,7 @@ const ADMIN_NAV_SECTIONS: AdminNavSection[] = [
     { id: 'sms', label: 'پیامک و اعتبار', icon: MessageSquare, allowedRoles: ['super_admin', 'admin'] },
     { id: 'jobs-queue', label: 'صف کارها', icon: Cpu, allowedRoles: ['super_admin', 'admin'] },
     { id: 'operations', label: 'پایش عملیات خودکار', icon: Activity, allowedRoles: ['super_admin', 'admin', 'logistics_specialist'] },
+    { id: 'spncx-backfill', label: 'سریال واحد (SPNCX)', icon: Package, allowedRoles: ['super_admin'] },
     { id: 'audit-logs', label: 'گزارش حسابرسی', icon: ShieldCheck, allowedRoles: ['super_admin', 'admin'] },
   ] },
 ];
@@ -453,7 +455,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'catalog' && <AdminCatalogTab />}
               {activeTab === 'commission' && <AdminCommissionTab />}
               {activeTab === 'warehouses' && <AdminWarehousesTab />}
-              {activeTab === 'historical-reconciliation' && <HistoricalReconciliationReviewTab />}
+              {activeTab === 'historical-reconciliation' && <HistoricalReconciliationReviewTab enableSpncx={adminSession.role === 'super_admin'} />}
               {activeTab === 'campaigns' && <AdminCampaignsPlansTab />}
               {activeTab === 'ad-network' && <AdminAdNetworkTab />}
               {activeTab === 'referral-network' && <AdminReferralNetworkTab />}
@@ -476,6 +478,7 @@ export const AdminDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) =>
               {activeTab === 'site-content' && <AdminSiteContentTab />}
               {activeTab === 'finance-pending-payments' && <FinancePendingPaymentsTab />}
               {activeTab === 'operations' && <AdminOperationsTab />}
+              {activeTab === 'spncx-backfill' && <AdminSpncxTab />}
               {activeTab === 'finance-callback-retries' && <AdminCallbackRetriesTab />}
               {activeTab === 'newsletter' && <AdminNewsletterTab />}
               {activeTab === 'reviews' && <AdminReviewsTab />}

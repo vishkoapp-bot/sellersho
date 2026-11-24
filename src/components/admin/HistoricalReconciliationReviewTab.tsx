@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardCheck, FileSearch, RefreshCw, Save, Search } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
 import { historicalReviewApi, HistoricalInventoryReportRow, HistoricalReviewStatus } from '../../services/adminApi';
 import { toPersianDigits } from '../../utils/formatters';
+import {
+  extractSpncxErrorCode, isSpncxUnavailable, spncxAdminApi, SPNCX_UNAVAILABLE,
+  type ReconciliationReport,
+} from '../../services/spncxAdminApi';
+import { SpncxCheckResult, SpncxCode, SpncxError, SpncxEvidenceRows } from './AdminSpncxTab';
 
 // ---------------------------------------------------------------------------
 // Plain-Persian labels for the backend's classification codes.
@@ -210,7 +215,47 @@ export const HistoricalReconciliationRowCard: React.FC<HistoricalReconciliationR
   );
 };
 
-export const HistoricalReconciliationReviewTab: React.FC = () => {
+type CaptureRetryState = { busy: boolean; errorCode: string | null; done: boolean; failed?: boolean };
+
+const historicalSpncxChecks = new Set(['V1', 'V1b', 'V1c', 'V3', 'V6b', 'V12']);
+
+export function SpncxReconciliationPanel({ report, onRetryCapture, retryState }: {
+  report: ReconciliationReport | null;
+  onRetryCapture?: (orderId: string) => void;
+  retryState?: Record<string, CaptureRetryState>;
+}) {
+  if (!report) return null;
+  return <section dir="rtl" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-800">
+    <h2 className="font-bold">واحدهای سریال‌دار</h2>
+    <p>زمان گزارش <SpncxCode>{report.generated_at}</SpncxCode></p>
+    {report.checks.filter(check => historicalSpncxChecks.has(check.id)).map(check =>
+      <SpncxCheckResult key={check.id} check={check} />)}
+    <h3 className="font-semibold">محموله‌های نگه‌داشته‌شده و مهلت ۳۰ روزه بررسی</h3>
+    <SpncxEvidenceRows rows={report.held_lots} />
+    <h3 className="font-semibold">کسری پوشش برای بررسی</h3>
+    <SpncxEvidenceRows rows={report.coverage_gaps} />
+    <h3 className="font-semibold">ثبت‌های ناموفق سفارش</h3>
+    {!report.failed_captures.length && <p>موردی ثبت نشده است.</p>}
+    <ul className="space-y-2">{report.failed_captures.map(item => {
+      const state = retryState && Object.hasOwn(retryState, item.order_id) ? retryState[item.order_id] : undefined;
+      return <li key={item.order_id} className="space-y-2 rounded-xl bg-slate-50 p-3">
+        <p>شناسه سفارش <SpncxCode>{item.order_id}</SpncxCode></p>
+        <p>کد ناموفق <SpncxCode>{item.failure}</SpncxCode></p>
+        <p>حالت <SpncxCode>{item.mode}</SpncxCode> · زمان <SpncxCode>{item.at}</SpncxCode></p>
+        {onRetryCapture && !state?.done && <button type="button" disabled={state?.busy}
+          className="rounded-xl border border-slate-300 px-3 py-2 font-semibold disabled:opacity-50"
+          onClick={() => onRetryCapture(item.order_id)}>
+          {state?.busy ? 'در حال تلاش مجدد…' : 'تلاش مجدد ثبت سفارش'}
+        </button>}
+        {state?.done && <p role="status">ثبت سفارش تکمیل شد.</p>}
+        {(state?.failed || state?.errorCode != null) &&
+          <SpncxError code={state?.errorCode ?? null} fallback="تلاش مجدد برای ثبت سفارش انجام نشد." />}
+      </li>;
+    })}</ul>
+  </section>;
+}
+
+export const HistoricalReconciliationReviewTab: React.FC<{ enableSpncx?: boolean }> = ({ enableSpncx = true }) => {
   const { success, error } = useToast();
   const [rows, setRows] = useState<HistoricalInventoryReportRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -223,6 +268,47 @@ export const HistoricalReconciliationReviewTab: React.FC = () => {
   const [nextStatus, setNextStatus] = useState<HistoricalReviewStatus>('in_review');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const [spncxReport, setSpncxReport] = useState<ReconciliationReport | null>(null);
+  const [spncxFailure, setSpncxFailure] = useState<{ code: string | null; unavailable: boolean } | null>(null);
+  const [captureUnavailable, setCaptureUnavailable] = useState(false);
+  const [retryState, setRetryState] = useState<Record<string, CaptureRetryState>>({});
+  const captureRequests = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!enableSpncx) return;
+    let active = true;
+    const loadSpncx = async () => {
+      try {
+        const report = await spncxAdminApi.getReconciliation();
+        if (active) setSpncxReport(report);
+      } catch (cause) {
+        const code = extractSpncxErrorCode(cause);
+        if (active) setSpncxFailure({ code, unavailable: isSpncxUnavailable(cause, code) });
+      }
+    };
+    void loadSpncx();
+    return () => { active = false; };
+  }, [enableSpncx]);
+
+  const retrySpncxCapture = async (orderId: string) => {
+    if (captureUnavailable || captureRequests.current.has(orderId)) return;
+    captureRequests.current.add(orderId);
+    const update = (state: CaptureRetryState) => setRetryState(previous => ({ ...previous, [orderId]: state }));
+    update({ busy: true, errorCode: null, done: false });
+    try {
+      const result = await spncxAdminApi.retryCapture(orderId);
+      update({ busy: false, errorCode: null, done: result.captured, failed: !result.captured });
+    } catch (cause) {
+      const code = extractSpncxErrorCode(cause);
+      const unavailable = isSpncxUnavailable(cause, code);
+      if (unavailable) setCaptureUnavailable(true);
+      update({ busy: false, errorCode: code, done: false, failed: !unavailable });
+    } finally {
+      captureRequests.current.delete(orderId);
+    }
+  };
+
 
   // PERF-02 Step 9: cursor pages (50 rows) over the summary view; a
   // cursor appends, a fresh load replaces. Products past the first page
@@ -346,6 +432,14 @@ export const HistoricalReconciliationReviewTab: React.FC = () => {
           <p className="text-[10px] text-slate-500">جستجو و فیلتر روی ردیف‌های بارگذاری‌شده اعمال می‌شود.</p>
         </div>
       )}
+
+      {enableSpncx && <>
+        {(spncxFailure?.unavailable || captureUnavailable) && <p role="status">{SPNCX_UNAVAILABLE}</p>}
+        {spncxFailure && (!spncxFailure.unavailable || spncxFailure.code !== null) &&
+          <SpncxError code={spncxFailure.code} fallback={spncxFailure.unavailable ? SPNCX_UNAVAILABLE : 'گزارش واحدهای سریال‌دار دریافت نشد.'} />}
+        <SpncxReconciliationPanel report={spncxReport} retryState={retryState}
+          onRetryCapture={captureUnavailable ? undefined : orderId => void retrySpncxCapture(orderId)} />
+      </>}
 
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3">

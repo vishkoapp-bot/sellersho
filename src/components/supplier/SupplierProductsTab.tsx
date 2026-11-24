@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, isSupplierProductActive, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
@@ -6,7 +6,9 @@ import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { Package, Plus, CheckCircle2, Clock, ShieldCheck, Edit3, XCircle, AlertCircle, Save, Upload, Trash2, Star, Layers, Image as ImageIcon } from 'lucide-react';
 import { SupplierGalleryModal } from './SupplierGalleryModal';
-import { SupplierVariantsModal } from './SupplierVariantsModal';
+import { SupplierVariantsModal, unitCountDiscrepancy } from './SupplierVariantsModal';
+import { RetiredPrintedCodesPanel, retiredPrintedCodesOf, stockAdjustmentErrorMessage, type StockAdjustResponse } from './SupplierInventoryTab';
+import { toPersianDigits } from '../../utils/formatters';
 import { SupplierReviewsModal } from './SupplierReviewsModal';
 import { SupplierFeedbackModal } from './SupplierFeedbackModal';
 import { SupplierAddonsWidget } from './SupplierAddonsWidget';
@@ -77,6 +79,26 @@ export const isStockOriginRequiredError = (cause: unknown): boolean => {
   return (cause as { status?: number }).status === 409 && cause.message.includes('انبار فعال متعلق به تأمین‌کننده');
 };
 
+export function sumProductUnitCount(counts: Record<string, number> | undefined): number | null {
+  const values = Object.values(counts ?? {});
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+export function productUnitChipState(unitCount: number | null, stock: number): 'unloaded' | 'matched' | 'mismatch' {
+  if (unitCount === null) return 'unloaded';
+  return unitCount === stock ? 'matched' : 'mismatch';
+}
+
+export function ProductUnitChip({ unitCount, stock }: { unitCount: number | null; stock: number }) {
+  const state = productUnitChipState(unitCount, stock);
+  return (
+    <span className={`rounded-lg px-1.5 py-0.5 ${state === 'mismatch' ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>
+      {unitCount === null ? '—' : `${toPersianDigits(unitCount)} واحد سریال‌دار از ${toPersianDigits(stock)} عدد موجودی`}
+      {unitCount !== null && state === 'mismatch' && <strong className="block">{unitCountDiscrepancy(unitCount, stock)}</strong>}
+    </span>
+  );
+}
+
 export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void }> = ({ focusProposalId, onFocusConsumed }) => {
   const {
     supplierSession,
@@ -98,6 +120,19 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const [originEditingProduct, setOriginEditingProduct] = useState<SupplierProductDto | null>(null);
   const [galleryProduct, setGalleryProduct] = useState<SupplierProductDto | null>(null);
   const [variantsProduct, setVariantsProduct] = useState<SupplierProductDto | null>(null);
+  const [unitCountsByProduct, setUnitCountsByProduct] = useState<Record<string, Record<string, number>>>({});
+  const [retiredPrintedCodes, setRetiredPrintedCodes] = useState<string[]>([]);
+  const storeUnitCounts = useCallback((productId: string, counts: Record<string, number>) => {
+    setUnitCountsByProduct(previous => ({ ...previous, [productId]: counts }));
+  }, []);
+  const invalidateUnitCounts = (productId: string) => {
+    setUnitCountsByProduct(previous => {
+      if (!Object.hasOwn(previous, productId)) return previous;
+      const next = { ...previous };
+      delete next[productId];
+      return next;
+    });
+  };
   const [reviewsProduct, setReviewsProduct] = useState<SupplierProductDto | null>(null);
   const [feedbackProposalId, setFeedbackProposalId] = useState<string | null>(null);
   // Reject-notification deep-link (DESIGN.md §4.3-4.4): the drawer hands
@@ -352,10 +387,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                         </span>
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-1">
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 mt-1">
                       <span>قیمت عمده تو: <strong className="text-slate-800">{formatPrice(effectiveCost)} تومان</strong></span>
                       <span>•</span>
                       <span>موجودی: <strong className="text-brand-deep">{toPersianDigits(effectiveStock)} عدد</strong></span>
+                      <ProductUnitChip unitCount={sumProductUnitCount(unitCountsByProduct[product.id])} stock={effectiveStock} />
                       {product.brand ? (<><span>•</span><span>برند: <strong className="text-slate-800">{product.brand}</strong></span></>) : null}
                       {product.fulfillmentMethod ? (<><span>•</span><span>{product.fulfillmentMethod === 'supplier_direct' ? 'ارسال مستقیم از تو' : 'ارسال از انبار مرکزی'}</span></>) : null}
                       {product.fulfillmentMethod === 'supplier_direct' ? (<><span>•</span><span>مبدأ: {originDisplay}</span></>) : null}
@@ -425,7 +461,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     </button>
                     <button
                       type="button"
-                      onClick={() => setVariantsProduct(product)}
+                      onClick={() => { invalidateUnitCounts(product.id); setVariantsProduct(product); }}
                       className="text-brand-deep hover:text-brand-deep font-bold flex items-center gap-1 bg-brand-soft px-2 py-1 rounded-md"
                     >
                       <Layers className="w-3 h-3"  strokeWidth={1.5}/>
@@ -480,10 +516,28 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                       if (!stockReason.trim()) { error('علت اصلاح موجودی را وارد کنید.'); return; }
 
                       if (supplierStockNeedsOrigin(product)) { setStockOriginBlockedId(product.id); return; }
-                      if (saving) return;
+                      if (saving || retiredPrintedCodes.length > 0) return;
                       setSaving(true);
-                      try { await supplierApi.updateStock(product.id, newStock, stockReason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined); success('موجودی ذخیره شد.'); setEditingStockProduct(null); setStockOriginBlockedId(null); setEditedStock(''); setStockReason(''); await productsResource.reload(); }
-                      catch (cause: unknown) { if (isStockOriginRequiredError(cause)) { setStockOriginBlockedId(product.id); } else { error(cause instanceof Error ? cause.message : 'ذخیره موجودی انجام نشد.'); } }
+                      try {
+                        const response = await supplierApi.updateStock(product.id, newStock, stockReason.trim(), product.schemaVersion === 2 ? stockVariantId : undefined) as unknown as StockAdjustResponse;
+                        if (response.delta !== 0) invalidateUnitCounts(product.id);
+                        if (response.delta < 0) {
+                          const codes = retiredPrintedCodesOf(response);
+                          if (codes.length > 0) setRetiredPrintedCodes(codes);
+                        }
+                        success('موجودی ذخیره شد.');
+                        setEditingStockProduct(null);
+                        setStockOriginBlockedId(null);
+                        setEditedStock('');
+                        setStockReason('');
+                        await productsResource.reload();
+                      } catch (cause: unknown) {
+                        if (isStockOriginRequiredError(cause)) {
+                          setStockOriginBlockedId(product.id);
+                        } else {
+                          error(stockAdjustmentErrorMessage(cause, 'ذخیره موجودی انجام نشد.'));
+                        }
+                      }
                       finally { setSaving(false); }
                     }}
                     className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-bold hover:bg-green-700"
@@ -668,8 +722,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
         <SupplierGalleryModal productId={galleryProduct.id} productTitle={galleryProduct.title} onClose={() => setGalleryProduct(null)} onChanged={() => productsResource.reload()} />
       )}
       {variantsProduct && (
-        <SupplierVariantsModal productId={variantsProduct.id} productTitle={variantsProduct.title} productBaseCost={variantsProduct.supplierBaseCost} onClose={() => setVariantsProduct(null)} onChanged={() => productsResource.reload()} />
+        <SupplierVariantsModal key={variantsProduct.id} productId={variantsProduct.id} productTitle={variantsProduct.title} productBaseCost={variantsProduct.supplierBaseCost}
+          onClose={() => setVariantsProduct(null)} onUnitCountsLoaded={storeUnitCounts}
+          onChanged={() => { invalidateUnitCounts(variantsProduct.id); void productsResource.reload(); }} />
       )}
+      {retiredPrintedCodes.length > 0 && <RetiredPrintedCodesPanel codes={retiredPrintedCodes} onAcknowledge={() => setRetiredPrintedCodes([])} />}
       {reviewsProduct && (
         <SupplierReviewsModal productId={reviewsProduct.id} productTitle={reviewsProduct.title} rating={reviewsProduct.rating ?? 0} reviewsCount={reviewsProduct.reviewsCount ?? 0} onClose={() => setReviewsProduct(null)} />
       )}

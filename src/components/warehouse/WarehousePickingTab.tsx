@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, CheckCircle2, RefreshCw, ScanLine } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
-import { apiRequest } from '../../services/apiClient';
+import { ApiError, apiRequest } from '../../services/apiClient';
+import { listUnits, type ListUnitsResponse } from '../../services/unitsApi';
 import { PickingRoutePlanner } from './WarehouseOptimizationTools';
 
 // Live contract (live bundles, read-only):
@@ -12,6 +13,7 @@ import { PickingRoutePlanner } from './WarehouseOptimizationTools';
 // binLocation (or the honest "not recorded" line when absent), fulfillmentMethod,
 // quantity. No bin or barcode is ever fabricated here.
 interface ServerPickItem {
+  orderItemId?: string;
   productId?: string;
   productTitle?: string;
   variantName?: string;
@@ -35,6 +37,64 @@ interface ServerPickOrder {
 
 interface Props {
   onGoToPacking: (orderNumber: string) => void;
+}
+
+const QUANTITY_ONLY_NOTE = 'بدون کد واحد (سفارش پیش از سریال‌دار شدن)';
+
+function PickingUnitChecklist({ orderItemId }: { orderItemId: string }) {
+  const [result, setResult] = useState<{ codes: string[]; truncated?: boolean; error?: string } | null>(null);
+  const [checkedCodes, setCheckedCodes] = useState<string[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    // The list endpoint defaults to 50 rows; a pick line can allocate more
+    // than that, so follow next_cursor (server max 200/page, bounded at 10
+    // pages) until the allocation is fully loaded. A truncated load is shown
+    // as a warning, never as a complete checklist.
+    void (async () => {
+      try {
+        const codes: string[] = [];
+        let cursor: string | undefined;
+        let truncated = false;
+        for (let page = 0; page < 10; page++) {
+          const response: ListUnitsResponse = await listUnits({
+            order_item_id: orderItemId, limit: 200, ...(cursor ? { cursor } : {}),
+          });
+          codes.push(...response.units.map(unit => unit.code));
+          cursor = response.next_cursor ?? undefined;
+          if (!cursor) break;
+          if (page === 9) truncated = true;
+        }
+        if (active) setResult({ codes, truncated });
+      } catch (cause: unknown) {
+        const rawCode = cause instanceof ApiError && typeof cause.body?.error === 'string' ? cause.body.error : null;
+        if (active) setResult({ codes: [], error: rawCode ?? (cause instanceof Error ? cause.message : 'دریافت کدهای واحد انجام نشد.') });
+      }
+    })();
+    return () => { active = false; };
+  }, [orderItemId]);
+
+  if (!result) return <p role="status" className="mt-1 text-slate-500">در حال دریافت کدهای واحد…</p>;
+  if (!result.codes.length) return <div className="mt-1">
+    <p className="text-slate-500">{QUANTITY_ONLY_NOTE}</p>
+    {result.error && <p role="alert" className="text-rose-700"><bdi>{result.error}</bdi></p>}
+  </div>;
+
+  return <div className="mt-1 space-y-1">
+    <p role="status" className="text-slate-500">{checkedCodes.length} از {result.codes.length} تیک خورد</p>
+    {result.truncated && <p role="alert" className="text-amber-700">فهرست واحدها کامل بارگذاری نشد؛ پیش از جمع‌آوری، فهرست را دوباره بررسی کنید.</p>}
+    <ul className="space-y-1">
+      {result.codes.map(code => <li key={code}>
+        <label className="inline-flex items-center gap-1.5">
+          <input type="checkbox" checked={checkedCodes.includes(code)} onChange={event => {
+            const checked = event.target.checked;
+            setCheckedCodes(current => checked ? [...current, code] : current.filter(value => value !== code));
+          }} />
+          <code className="font-mono" dir="ltr">{code}</code>
+        </label>
+      </li>)}
+    </ul>
+  </div>;
 }
 
 export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
@@ -145,7 +205,7 @@ export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
 
                 <div className="space-y-1.5">
                   {(order.items || []).map((item, itemIdx) => (
-                    <div key={`${item.productId || 'item'}-${itemIdx}`} className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 rounded-xl px-2.5 py-2">
+                    <div key={item.orderItemId || `${item.productId || 'item'}-${itemIdx}`} className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 rounded-xl px-2.5 py-2">
                       <div className="min-w-0">
                         <span className="font-bold text-slate-800 block truncate">{item.productTitle || 'کالا'}</span>
                         {item.variantName && (
@@ -164,6 +224,9 @@ export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
                         <span className={`inline-block text-[9px] font-bold px-1.5 py-px rounded-full border mt-1 ${item.fulfillmentMethod === 'supplier_direct' ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
                           {item.fulfillmentMethod === 'supplier_direct' ? 'ارسال مستقیم تأمین‌کننده' : 'انبار'}
                         </span>
+                        {item.orderItemId
+                          ? <PickingUnitChecklist orderItemId={item.orderItemId} />
+                          : <p className="mt-1 text-slate-500">{QUANTITY_ONLY_NOTE}</p>}
                       </div>
                       <span className="text-slate-700 font-bold shrink-0">
                         {new Intl.NumberFormat('fa-IR').format(item.quantity || 0)} عدد

@@ -34,7 +34,7 @@ export function batch8Browser() {
       cacheDir,
       logLevel: 'error',
       optimizeDeps: { noDiscovery: true },
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: false },
     });
     javascript = bundle.outputFiles[0].text;
     html = await readFile('scripts/fixtures/catalog/composed.html', 'utf8');

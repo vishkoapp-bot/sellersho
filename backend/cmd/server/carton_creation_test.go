@@ -220,6 +220,14 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 			warehouse_name character varying(100) NOT NULL DEFAULT 'انبار مرکزی تهران'::character varying)`,
 		`CREATE TABLE inventory_balances(LIKE public.inventory_balances INCLUDING ALL)`,
 		`CREATE TABLE inventory_movements(LIKE public.inventory_movements INCLUDING ALL)`,
+		// The scoped connection must not fall back to public for SPNCX writes.
+		`CREATE TABLE product_units (LIKE public.product_units INCLUDING ALL)`,
+		`ALTER TABLE product_units
+			ADD FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE RESTRICT,
+			ADD FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT,
+			ADD FOREIGN KEY (balance_id) REFERENCES inventory_balances(id) ON DELETE RESTRICT`,
+		`CREATE TABLE product_unit_events (LIKE public.product_unit_events INCLUDING ALL)`,
+		`ALTER TABLE product_unit_events ADD FOREIGN KEY (unit_id) REFERENCES product_units(id) ON DELETE RESTRICT`,
 		`INSERT INTO suppliers VALUES('s'); INSERT INTO warehouses VALUES('w',TRUE); INSERT INTO supplier_warehouses VALUES('sw','s',TRUE); INSERT INTO products VALUES('p','s','sw')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -241,11 +249,18 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	red, blue := uuid.NewString(), uuid.NewString()
-	if _, err := db.Exec(`INSERT INTO product_variants VALUES($1,'p'),($2,'p')`, red, blue); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{red, blue} {
-		if _, err := db.Exec(`INSERT INTO inventory_balances(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled,supplier_warehouse_id) VALUES($1,'p','s',$2,'supplier','supplier','supplier-warehouse:sw','sellable',1,TRUE,'sw')`, uuid.NewString(), id); err != nil {
+	for _, variant := range []struct{ id, spnc string }{{red, "TESTRED"}, {blue, "TESTBLUE"}} {
+		if _, err := db.Exec(`INSERT INTO product_variants(id,product_id,spnc) VALUES ($1,'p',$2)`, variant.id, variant.spnc); err != nil {
+			t.Fatal(err)
+		}
+		balanceID := uuid.NewString()
+		if _, err := db.Exec(`INSERT INTO inventory_balances
+			(id,product_id,supplier_id,variant_id,owner_type,location_type,location_key,status,quantity,reconciled,supplier_warehouse_id,unit_tracked)
+			VALUES($1,'p','s',$2,'supplier','supplier','supplier-warehouse:sw','sellable',1,TRUE,'sw',TRUE)`, balanceID, variant.id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO product_units (code, variant_id, product_id, sequence, status, balance_id)
+			VALUES ($1, $2, 'p', 1, 'in_stock', $3)`, variant.spnc+"-X0001", variant.id, balanceID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -260,9 +275,17 @@ func TestCartonCreationAPIAtomicAndRetrySafe(t *testing.T) {
 	}
 	counts := func(headers, lines int) {
 		t.Helper()
-		var h, l, r int
-		if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM shipments),(SELECT COUNT(*) FROM shipment_items),(SELECT COUNT(*) FROM inventory_reservations)`).Scan(&h, &l, &r); err != nil || h != headers || l != lines || r != 0 {
-			t.Fatalf("atomic counts %d/%d/%d err=%v", h, l, r, err)
+		var h, l, r, inStock, reserved, events int
+		if err := db.QueryRow(`SELECT
+			(SELECT COUNT(*) FROM shipments), (SELECT COUNT(*) FROM shipment_items), (SELECT COUNT(*) FROM inventory_reservations),
+			(SELECT COUNT(*) FROM product_units WHERE status='in_stock'),
+			(SELECT COUNT(*) FROM product_units WHERE status='reserved'),
+			(SELECT COUNT(*) FROM product_unit_events)`).Scan(&h, &l, &r, &inStock, &reserved, &events); err != nil {
+			t.Fatal(err)
+		}
+		if h != headers || l != lines || r != 0 || inStock != 2-lines || reserved != lines || events != lines {
+			t.Fatalf("atomic counts: headers=%d lines=%d reservations=%d in_stock=%d reserved=%d events=%d; want %d/%d/0/%d/%d/%d",
+				h, l, r, inStock, reserved, events, headers, lines, 2-lines, lines, lines)
 		}
 	}
 	items := []repository.CartonShipmentItem{{VariantID: red, ExpectedQty: 1}}

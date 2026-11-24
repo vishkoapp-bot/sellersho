@@ -34,13 +34,16 @@ func TestQUAL01WarehouseCityListings(t *testing.T) {
 			position_x float8, position_y float8, position_z float8);
 		CREATE TEMP TABLE putaway_capacity_reservations (bin_code text, status text, volume_cm3 bigint);
 		CREATE TEMP TABLE customer_returns (
-			id text PRIMARY KEY, warehouse_id text, destination_supplier_warehouse_id text,
-			order_id text DEFAULT 'order', customer_id text DEFAULT 'customer', status text DEFAULT 'approved',
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id text, destination_supplier_warehouse_id text,
+			order_id text DEFAULT 'order', customer_id uuid DEFAULT '00000000-0000-0000-0000-000000000001',
+			status text DEFAULT 'approved',
 			reason text DEFAULT '', admin_note text DEFAULT '', prepaid bool, tracking_number text,
 			shipped_at timestamptz, return_code text DEFAULT '', return_shipping_amount bigint DEFAULT 0,
 			return_shipping_bearer text DEFAULT '', created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
-		CREATE TEMP TABLE return_items (id text, return_id text, order_item_id text, variant_id text, qty int, qc_status text, received_at timestamptz);
-		CREATE TEMP TABLE warehouse_customer_return_bin_sources (return_id text, source_proven bool, available_quantity int);
+		CREATE TEMP TABLE return_items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			return_id uuid NOT NULL REFERENCES customer_returns(id), order_item_id text,
+			variant_id uuid, qty int, qc_status text, received_at timestamptz);
+		CREATE TEMP TABLE warehouse_customer_return_bin_sources (return_id uuid, source_proven bool, available_quantity int);
 		INSERT INTO users VALUES ('staff', ' Tehran ', true, true), ('blank', '   ', true, true),
 			('defaulted', DEFAULT, true, DEFAULT), ('inactive', 'Tehran', false, true);
 		INSERT INTO warehouses VALUES ('a', 'Site A', 'Tehran'), ('b', 'Site B', ' Tehran '),
@@ -50,15 +53,44 @@ func TestQUAL01WarehouseCityListings(t *testing.T) {
 		INSERT INTO warehouse_bins (bin_code, warehouse_id, warehouse_name) VALUES
 			('a','a','Site A'), ('b','b','Site B'), ('foreign','c','Site A'), ('null-city','d','Site A'),
 			('case','e','Site A'), ('unknown','missing','Site A'), ('legacy',NULL,'Site A');
-		INSERT INTO customer_returns (id, warehouse_id, destination_supplier_warehouse_id, status) VALUES
-			('a','a',NULL,'approved'), ('b','b',NULL,'received'), ('foreign','c',NULL,'approved'),
-			('blank-city','f',NULL,'approved'), ('case','e',NULL,'approved'), ('legacy',NULL,NULL,'approved'),
-			('supplier-own',NULL,'s1','approved'), ('supplier-foreign','a','s2','approved'),
-			('supplier-unknown','a','missing','approved'), ('supplier-blank','a','s3','approved'),
-			('refunded','a',NULL,'refunded'), ('refunded-empty','a',NULL,'refunded'), ('pending','a',NULL,'pending');
-		INSERT INTO warehouse_customer_return_bin_sources VALUES ('refunded',true,1);
 	`)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The paged repository batches return items by UUID as in the live
+	// schema. Keep readable case names separate from persisted identifiers.
+	returnIDs := map[string]string{}
+	for _, fixture := range []struct{ name, warehouse, supplierWarehouse, status string }{
+		{"a", "a", "", "approved"},
+		{"b", "b", "", "received"},
+		{"foreign", "c", "", "approved"},
+		{"blank-city", "f", "", "approved"},
+		{"case", "e", "", "approved"},
+		{"legacy", "", "", "approved"},
+		{"supplier-own", "", "s1", "approved"},
+		{"supplier-foreign", "a", "s2", "approved"},
+		{"supplier-unknown", "a", "missing", "approved"},
+		{"supplier-blank", "a", "s3", "approved"},
+		{"refunded", "a", "", "refunded"},
+		{"refunded-empty", "a", "", "refunded"},
+		{"pending", "a", "", "pending"},
+	} {
+		var id string
+		err := db.QueryRowContext(ctx, `INSERT INTO customer_returns
+			(warehouse_id, destination_supplier_warehouse_id, status)
+			VALUES (NULLIF($1, ''), NULLIF($2, ''), $3) RETURNING id`,
+			fixture.warehouse, fixture.supplierWarehouse, fixture.status).Scan(&id)
+		if err != nil {
+			t.Fatalf("seed return %s: %v", fixture.name, err)
+		}
+		returnIDs[fixture.name] = id
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO warehouse_customer_return_bin_sources VALUES ($1, true, 1)`, returnIDs["refunded"]); err != nil {
+		t.Fatal(err)
+	}
+	var returnItemID string
+	if err := db.QueryRowContext(ctx, `INSERT INTO return_items (return_id, order_item_id, qty, qc_status)
+		VALUES ($1, 'order-line', 2, 'pending') RETURNING id`, returnIDs["a"]).Scan(&returnItemID); err != nil {
 		t.Fatal(err)
 	}
 	bins := &WMSRepository{db: db}
@@ -86,10 +118,22 @@ func TestQUAL01WarehouseCityListings(t *testing.T) {
 		var got []string
 		for _, row := range rows {
 			got = append(got, row.ID)
+			if row.ID == returnIDs["a"] && (len(row.Items) != 1 || row.Items[0].ID != returnItemID || row.Items[0].Qty != 2) {
+				t.Errorf("return a items = %+v, want its persisted UUID item with quantity 2", row.Items)
+			}
+		}
+		var expected []string
+		for _, name := range want {
+			id, ok := returnIDs[name]
+			if !ok {
+				t.Fatalf("unknown return fixture %q", name)
+			}
+			expected = append(expected, id)
 		}
 		slices.Sort(got)
-		if !slices.Equal(got, want) {
-			t.Errorf("returns for %q = %v, want %v", dest, got, want)
+		slices.Sort(expected)
+		if !slices.Equal(got, expected) {
+			t.Errorf("returns for %q = %v, want cases %v with IDs %v", dest, got, want, expected)
 		}
 	}
 	staff := WithWarehouseStaffID(ctx, "staff")

@@ -54,9 +54,21 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci --ignore-scripts
-      - run: npx --no-install puppeteer browsers install chrome
+      - name: Provision browser-test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
+          /usr/bin/google-chrome --version
+          timeout 30s /usr/bin/google-chrome --headless --disable-dev-shm-usage --dump-dom "data:text/html,<title>ci-chrome-ready</title>" | grep -F "ci-chrome-ready"
+          command -v pdfinfo
+          command -v pdftotext
       - run: npm run build
       - run: npm test
+        env:
+          # Ubuntu's AppArmor policy covers installed Chrome, not the
+          # Chrome-for-Testing executable downloaded into Puppeteer's cache.
+          CHROME_PATH: /usr/bin/google-chrome
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
 
   go-unit:
     name: go vet + default unit suite (no DB)
@@ -301,8 +313,9 @@ jobs:
           # disposable service Postgres on localhost; the password is
           # the same disposable service password already declared
           # above for the postgres service.
-          DB_URL="$(printf '%s://%s:%s@%s:%s/%s' postgres postgres "$PGPASSWORD" localhost 5432 rel01_dburl)"
-          ADMIN_URL="$(printf '%s://%s:%s@%s:%s/%s' postgres postgres "$PGPASSWORD" localhost 5432 postgres)"
+          # This disposable localhost service has no TLS; lib/pq defaults to require.
+          DB_URL="$(printf '%s://%s:%s@%s:%s/%s?sslmode=disable' postgres postgres "$PGPASSWORD" localhost 5432 rel01_dburl)"
+          ADMIN_URL="$(printf '%s://%s:%s@%s:%s/%s?sslmode=disable' postgres postgres "$PGPASSWORD" localhost 5432 postgres)"
           psql "$ADMIN_URL" -c "DROP DATABASE IF EXISTS rel01_dburl;" -c "CREATE DATABASE rel01_dburl;"
           # Negative control: an unmigrated DB (empty schema_migrations
           # table, all 210 migrations pending, unreviewed historical)

@@ -440,8 +440,8 @@ func TestTapinQuoteConnectedLegPricedFromInquiryMixedCart(t *testing.T) {
 	}
 	// The inquiry payload follows the captured contract: the supplier's
 	// own shop id, destination ids from the geo snapshot, inter-city
-	// service (Tehran -> Qom), declared value in Rial, 500 g fallback
-	// weight per unweighed item, no sub-1kg padding at exactly 1000 g.
+	// service (Tehran -> Qom), declared value in Rial, the 2500 g sole
+	// legacy SKU when variantId is omitted, and no sub-1kg padding.
 	calls := mock.calls("/check-price/")
 	if len(calls) != 1 {
 		t.Fatalf("check-price calls = %d, want 1", len(calls))
@@ -457,7 +457,7 @@ func TestTapinQuoteConnectedLegPricedFromInquiryMixedCart(t *testing.T) {
 		t.Fatalf("service_type = %v, want 2 (inter-city)", c["service_type"])
 	}
 	if c["package_weight"] != float64(0) {
-		t.Fatalf("package_weight = %v, want 0 (goods exactly 1000 g)", c["package_weight"])
+		t.Fatalf("package_weight = %v, want 0 (goods exceed 1000 g)", c["package_weight"])
 	}
 	prods, _ := c["products"].([]any)
 	if len(prods) != 1 {
@@ -467,8 +467,8 @@ func TestTapinQuoteConnectedLegPricedFromInquiryMixedCart(t *testing.T) {
 	if p0["amount_per_count"] != float64(20000000) {
 		t.Fatalf("amount_per_count = %v, want 20000000 Rial (2,000,000 Toman)", p0["amount_per_count"])
 	}
-	if p0["weight_per_count"] != float64(500) {
-		t.Fatalf("weight_per_count = %v, want 500 (fallback)", p0["weight_per_count"])
+	if p0["weight_per_count"] != float64(2500) {
+		t.Fatalf("weight_per_count = %v, want 2500 (implicitly selected SKU)", p0["weight_per_count"])
 	}
 	if p0["count"] != float64(2) {
 		t.Fatalf("count = %v, want 2", p0["count"])
@@ -506,11 +506,38 @@ func TestTapinQuoteVariantWeightAndDims(t *testing.T) {
 	}
 }
 
+func TestTapinQuoteImplicitDefaultVariantMatchesExplicit(t *testing.T) {
+	rp := tapinTestSetup(t)
+	newTapinMock(t)
+	items := []string{
+		`{"productId":"p-tapin","quantity":1}`,
+		`{"productId":"p-tapin","variantId":"33333333-3333-3333-3333-333333333333","quantity":1}`,
+	}
+	var quotes [2]tapinQuoteResponse
+	for i, item := range items {
+		rec := tapinQuoteRequest(t, rp, item, tapinQuoteDestQom)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("quote %d status = %d, body %s", i, rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &quotes[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if quotes[0].QuoteID == "" || quotes[0].QuoteID != quotes[1].QuoteID {
+		t.Fatalf("implicit quote ID = %q, want explicit ID %q", quotes[0].QuoteID, quotes[1].QuoteID)
+	}
+}
+
 // Intra-city (origin warehouse city == destination city) uses service
 // type 7, and a sub-1kg parcel is padded via package_weight.
 func TestTapinQuoteIntraCityAndSubKgPadding(t *testing.T) {
 	rp := tapinTestSetup(t)
 	mock := newTapinMock(t)
+	// The sole SKU is selected even without variantId. Make it unweighed
+	// as well as its parent so this exercises the genuine 500 g fallback.
+	if _, err := rp.db.Exec(`UPDATE product_variants SET weight_grams = NULL WHERE product_id = 'p-tapin'`); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := tapinQuoteRequest(t, rp, `{"productId":"p-tapin","quantity":1}`, `{"province":"تهران","city":"تهران","address":"x","postalCode":"1111111111"}`)
 	if rec.Code != http.StatusOK {
@@ -582,6 +609,11 @@ func TestTapinQuoteServiceNotActivatedFallsBackToFormula(t *testing.T) {
 	lines, err = resolveQuoteOrigins(ctx, rp.db, lines)
 	if err != nil {
 		t.Fatal("resolve exact formula origins", err)
+	}
+	// Independently use the sole SKU's fixture measurements. The
+	// unavailable service changes the tariff source, not the chosen SKU.
+	for i := range lines {
+		lines[i].WeightG, lines[i].LengthMM, lines[i].WidthMM, lines[i].HeightMM = 2500, 150, 150, 100
 	}
 	rates, err := loadShippingRates(ctx, rp.db)
 	if err != nil {

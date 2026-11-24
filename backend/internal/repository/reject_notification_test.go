@@ -17,7 +17,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -111,17 +110,14 @@ func rejectNotifyTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("REJECT_NOTIFY_TEST_DATABASE_URL not set; skipping disposable-DB integration test")
 	}
-	db, err := testdb.Open(t, dsn)
-	if err != nil {
-		t.Fatalf("open test DB: %v", err)
-	}
+	// The reduced fixture drops and recreates canonical table names.
+	db := openPrivateFinanceFixture(t, dsn)
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping test DB: %v", err)
 	}
 	if _, err := db.Exec(rejectNotifyDDL); err != nil {
 		t.Fatalf("seed DDL: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
 	return db
 }
 

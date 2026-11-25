@@ -12,6 +12,7 @@ import { RoleSwitcherBar } from './components/RoleSwitcherBar';
 import { Header } from './components/Header';
 import { CategoriesBar } from './components/CategoriesBar';
 import { HeroSlider } from './components/HeroSlider';
+import { GitDeployProbe } from './components/GitDeployProbe';
 import { SpecialDealsSlider } from './components/SpecialDealsSlider';
 import { HomeFeedSections } from './components/HomeFeedSections';
 import { Footer } from './components/Footer';
@@ -418,6 +419,7 @@ export const AppContent: React.FC = () => {
         ) : (
           <>
             <Header />
+            <GitDeployProbe />
             {/* FIX 16: hero lives OUTSIDE the gutter-padded main (live
                 banner-reorder model: full-width child, no negative
                 margins). The wrapper preserves the exact vertical gaps

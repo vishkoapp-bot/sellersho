@@ -1,3 +1,5 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
+import { Boxes, Search } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto, SupplierProductVariantDto } from '../../services/supplierApi';
@@ -450,18 +452,18 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
   }, {});
 
   return (
-    <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold">موجودی کالاهای تو</h2>
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      <SupplierSectionHeading title="موجودی کالاها" description="موجودی آمادهٔ فروش را ببین یا کالا و تنوع موردنظر را برای اصلاح موجودی پیدا کن." icon={<Boxes />} />
       <details className="rounded-2xl border border-slate-100 bg-white px-4 py-3 text-[11px] leading-relaxed text-slate-600">
         <summary className="cursor-pointer font-bold text-slate-700">راهنمای موجودی</summary>
         <p className="pt-2">اینجا برای هر کالا می‌بینی چند تا از آن کجاست: آماده فروش، کنار گذاشته برای سفارش، یا در راه انبار. موجودی را هم از همین‌جا عوض می‌کنی.</p>
       </details>
-      {shareLoaded && shareData && (
-        <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/70 p-3 text-[11px] leading-5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-bold text-slate-800">سهم انبار مرکزی</span>
+      {shareLoaded && shareData && Number.isFinite(shareData.centralUnits) && Number.isFinite(shareData.supplierUnits) && (
+        <div className="space-y-2 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm leading-6 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-extrabold text-[#261b41]">سهم انبار مرکزی</span>
             <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">ارسال سریع</span>
-            {shareData.centralStockShare !== null ? (
+            {shareData.centralStockShare !== null && Number.isFinite(shareData.centralStockShare) ? (
               <span className="font-extrabold text-slate-900 font-mono">{toPersianDigits(Math.round(shareData.centralStockShare * 100))}٪</span>
             ) : (
               <span className="text-slate-400">بدون موجودی قابل فروش</span>
@@ -471,14 +473,18 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
           <p className="font-bold text-emerald-800 text-[10px]">کالایی که در انبار مرکزی دپو شده باشد، با «ارسال سریع» فروش می‌رود و امتیازت بالاتر می‌رود.</p>
         </div>
       )}
-      <div className="sticky top-0 z-10 space-y-2 rounded-2xl border bg-white/95 p-2 shadow-sm backdrop-blur">
-        <input
+      <div className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+        <div className="relative">
+          <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-3.5 size-4 text-slate-500" />
+          <input
+          type="search"
           aria-label="جستجوی موجودی"
           value={query}
           onChange={event => onQueryChange(event.target.value)}
           placeholder="اسم، کد کالا یا تنوع را بنویس"
-          className="w-full rounded-xl border p-2.5 min-h-[44px] text-xs"
-        />
+          className="min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] ps-9 pe-3 text-sm focus:bg-white focus-visible:ring-2 focus-visible:ring-brand"
+          />
+        </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="فیلتر وضعیت موجودی">
           {(['all', 'in', 'low', 'out'] as InventoryStatusFilter[]).map(filter => (
             <button
@@ -486,7 +492,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               type="button"
               aria-pressed={statusFilter === filter}
               onClick={() => onStatusFilterChange(filter)}
-              className={`rounded-full border px-3 py-1.5 min-h-[32px] text-[11px] font-bold ${statusFilter === filter ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
+              className={`min-h-11 rounded-xl border px-3 text-xs font-bold focus-visible:ring-2 focus-visible:ring-brand ${statusFilter === filter ? 'border-[#382660] bg-[#382660] text-white' : 'border-[#e6e2f0] bg-[#f8f6fc] text-[#382660] hover:bg-brand-soft'}`}
             >
               {filter === 'all' ? 'همه' : STOCK_STATUS_LABEL[filter]} ({loading ? '—' : toPersianDigits(statusCounts[filter])})
             </button>
@@ -543,23 +549,23 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
         const unreconciled = itemLocations.filter(location => !location.reconciled).reduce((sum, location) => sum + location.quantity, 0);
         const variants = item.schemaVersion === 2 ? variantSellableRows(locations, item.id) : [];
         return (
-          <section key={item.id} id={`inventory-${item.id}`} className="scroll-mt-24 space-y-2 rounded-2xl border bg-white p-3">
+          <section key={item.id} id={`inventory-${item.id}`} className="scroll-mt-24 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
             <div className="flex gap-3">
               {item.imageUrl ? (
-                <img src={item.imageUrl} alt={item.title} className="h-12 w-12 shrink-0 rounded-xl border object-cover" />
+                <img src={item.imageUrl} alt="" width={48} height={48} loading="lazy" className="size-12 shrink-0 rounded-xl border border-[#e6e2f0] object-cover" />
               ) : (
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border bg-slate-50 text-[10px] text-slate-400">بدون عکس</div>
               )}
               <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="text-xs font-bold leading-5">{item.title}</h3>
+                <div className="flex flex-wrap items-start gap-2">
+                  <h3 className="min-w-0 break-words text-sm font-extrabold leading-6 text-[#261b41]">{item.title}</h3>
                   <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STOCK_STATUS_PILL[status]}`}>{STOCK_STATUS_LABEL[status]}</span>
                 </div>
-                <p className="text-[10px] text-slate-400">کد کالا: {item.id}{item.categorySlug ? ` · ${item.categorySlug}` : ''}</p>
+                <p className="break-all text-xs text-slate-600">کد کالا: {item.id}{item.categorySlug ? ` · ${item.categorySlug}` : ''}</p>
                 {item.originalPrice > 0 && <p className="text-[10px] text-slate-500">قیمت: {formatPrice(item.originalPrice)} تومان</p>}
               </div>
-              <div className="shrink-0 text-left">
-                <p className={`text-lg font-extrabold leading-6 ${status === 'out' ? 'text-rose-600' : status === 'low' ? 'text-amber-600' : 'text-slate-900'}`}>{toPersianDigits(sellable)}</p>
+              <div className="shrink-0 rounded-xl bg-[#f4effa] px-2.5 py-2 text-center">
+                <p className={`text-xl font-extrabold tabular-nums leading-6 ${status === 'out' ? 'text-rose-600' : status === 'low' ? 'text-amber-600' : 'text-slate-900'}`}>{toPersianDigits(sellable)}</p>
                 <p className="text-[10px] text-slate-400">آماده فروش</p>
               </div>
             </div>
@@ -573,7 +579,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                       type="button"
                       aria-label={`تغییر موجودی ${row.label}`}
                       onClick={() => onOpenEdit(item, row.variantId)}
-                      className="shrink-0 rounded-lg bg-brand-soft px-2.5 py-1.5 min-h-[32px] text-[11px] font-bold text-brand-deep"
+                      className="min-h-11 shrink-0 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
                     >
                       تغییر
                     </button>
@@ -590,7 +596,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               }
             }}>
               <summary className="cursor-pointer text-[11px] font-bold text-slate-600">جزئیات وضعیت انبار</summary>
-              <div className="grid grid-cols-3 gap-1 pt-2 text-[10px] text-slate-600">
+              <div className="grid grid-cols-2 gap-2 pt-2 text-xs text-slate-600 sm:grid-cols-3">
                 <span className="font-bold text-emerald-700">آماده فروش: <b>{toPersianDigits(sums.sellable || 0)}</b></span>
                 <span>کنار گذاشته برای سفارش: <b>{toPersianDigits(sums.sales_reserved || 0)}</b></span>
                 <span>درخواست برگشت: <b>{toPersianDigits(sums.return_requested || 0)}</b></span>
@@ -612,14 +618,14 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                 type="button"
                 disabled={saving}
                 onClick={() => onOpenEdit(item)}
-                className="flex-1 rounded-lg bg-brand-soft px-3 py-2 min-h-[40px] text-xs font-bold text-brand-deep"
+                className="min-h-11 flex-1 rounded-xl bg-brand-soft px-3 py-2 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
               >
                 عوض‌کردن موجودی
               </button>
               <button
                 type="button"
                 onClick={() => onOpenReturn(item)}
-                className="flex-1 rounded-lg bg-amber-50 px-3 py-2 min-h-[40px] text-xs font-bold text-amber-700"
+                className="min-h-11 flex-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 focus-visible:ring-2 focus-visible:ring-amber-700"
               >
                 برگرداندن کالا
               </button>

@@ -65,7 +65,7 @@ test('mobile supplier navigation exposes each section and overview shortcuts and
         await (await element.toElement('button')).click();
       };
       await click('رسیدگی به سفارش‌ها');
-      await page.waitForFunction(() => document.querySelector('main button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
+      await page.waitForFunction(() => document.querySelector('main [aria-label="وضعیت سفارش"] button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
       await page.type('input[aria-label="جستجوی سفارش‌ها"]', 'no matching order');
       await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('بارگذاری سفارش‌های قدیمی‌تر'));
       await click('پاک کردن فیلترها');

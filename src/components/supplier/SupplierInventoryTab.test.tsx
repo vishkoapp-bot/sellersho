@@ -350,7 +350,7 @@ it('countByStockStatus of empty input is all zeros — and the view must not ren
   // No «showing X of Y» line while loading — «در حال دریافت…» instead.
   assert.doesNotMatch(html, /نمایش .* کالا/);
   assert.match(html, /در حال دریافت…/);
-  assert.match(html, /در حال دریافت اطلاعات\.\.\./);
+  assert.match(html, /در حال دریافت اطلاعات…/);
   // No product cards (and no empty state) until both fetches settle.
   assert.doesNotMatch(html, /تیشرت زنانه/);
   assert.doesNotMatch(html, /id="inventory-p1"/);
@@ -362,5 +362,5 @@ it('a locations failure surfaces through the shared error path with retry, not a
   assert.match(html, /دریافت موجودی انبار انجام نشد\./);
   assert.match(html, /تلاش دوباره/);
   // Counts render only after settlement — with the error shown, no cards.
-  assert.doesNotMatch(html, /در حال دریافت اطلاعات\.\.\./);
+  assert.doesNotMatch(html, /در حال دریافت اطلاعات…/);
 });

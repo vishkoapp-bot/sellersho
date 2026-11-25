@@ -13,10 +13,18 @@ export const getSupplierWorkCounts = (signal?: AbortSignal) =>
 export const getSellerWorkCounts = (slug: string, signal?: AbortSignal) =>
   apiRequest<{ orderFollowUp: number }>(`/stores/${encodeURIComponent(slug)}/work-queue`, { auth: true, signal });
 
-export const getSellerOrderPage = (slug: string, work?: 'follow-up', cursor?: string, signal?: AbortSignal) => {
+interface SellerOrderPage {
+  orders: unknown[];
+  hasMore?: boolean;
+  nextCursor?: string;
+}
+
+export const getSellerOrderPage = async (slug: string, work?: 'follow-up', cursor?: string, signal?: AbortSignal): Promise<SellerOrderPage> => {
   const params = new URLSearchParams();
   if (work) params.set('work', work);
   if (cursor) params.set('cursor', cursor);
   const query = params.size ? `?${params}` : '';
-  return apiRequest<{ orders: unknown[]; hasMore?: boolean; nextCursor?: string }>(`/stores/${encodeURIComponent(slug)}/orders${query}`, { auth: true, signal });
+  const page = await apiRequest<SellerOrderPage | unknown[]>(`/stores/${encodeURIComponent(slug)}/orders${query}`, { auth: true, signal });
+  if (Array.isArray(page)) return { orders: page };
+  return Array.isArray(page?.orders) ? page : { orders: [] };
 };

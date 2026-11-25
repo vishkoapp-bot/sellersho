@@ -382,9 +382,14 @@ function fixtureOrder(shippingCost: number, items?: FixtureOrderItems): Order {
 }
 
 if (routeParams.has('fixture-orders')) {
-  storeApi.getStoreOrders = async slug => slug === seller.slug
-    ? [{ ...fixtureOrder(0, 'both'), storeId: seller.id, storeName: seller.name }]
-    : [];
+  const fetchCatalogFixture = window.fetch.bind(window);
+  window.fetch = async (input, options) => {
+    const url = new URL(String(input), window.location.href);
+    if (url.pathname === `/api/v1/stores/${seller.slug}/orders`) {
+      return Response.json({ orders: [{ ...fixtureOrder(0, 'both'), storeId: seller.id, storeName: seller.name }], hasMore: false });
+    }
+    return fetchCatalogFixture(input, options);
+  };
 }
 
 function FixtureControls() {

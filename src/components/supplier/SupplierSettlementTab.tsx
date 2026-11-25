@@ -6,7 +6,7 @@ import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { isValidIranianSheba } from '../../utils/validators';
 import { useSupplierResource } from './useSupplierResource';
-import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 
 // Live settlement tab (on): supplier balance, manual bank-transfer
 // withdrawal requests, storage-fee charges (separate endpoint), payout
@@ -208,7 +208,7 @@ export const SupplierSettlementTab: React.FC = () => {
         </>
       )}
       {!history.error && (history.data || []).length > 0 && <h3 className="text-base font-extrabold text-[#261b41]">سوابق برداشت</h3>}
-      {!history.error && !(history.data || []).length && !history.loading && <p className="rounded-[20px] border border-[#e6e2f0] bg-white p-4 text-sm leading-6 text-slate-600 shadow-sm">هنوز برداشتی نداشته‌ای. وقتی موجودی قابل برداشت داشتی، از فرم بالا اولین برداشتت را ثبت کن.</p>}
+      {!history.error && !(history.data || []).length && !history.loading && <SupplierEmptyState icon={<Wallet />} title="هنوز برداشتی نداشته‌ای." description="وقتی موجودی قابل برداشت داشتی، از فرم بالا درخواست برداشت ثبت کن." />}
       {!history.error && (history.data || []).map((item) => (
         <section key={item.id} className="rounded-[20px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">

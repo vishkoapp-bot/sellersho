@@ -1,9 +1,10 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
-import type { SupplierSearchInsight } from '../../services/supplierApi';
-import { Search, RotateCcw, Plus } from 'lucide-react';
+import { Search, Plus } from 'lucide-react';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
+import { useSupplierResource } from './useSupplierResource';
 
 // اینسایت تقاضا — GET /supplier/search-insight?days=7|30|90.
 // The server computes PLATFORM-WIDE search aggregates and footprint-scopes
@@ -29,48 +30,15 @@ const formatDelta = (value: number): string => {
 export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> = ({ onPropose }) => {
   const { toPersianDigits } = useStore();
   const [days, setDays] = useState(30);
-  const [data, setData] = useState<SupplierSearchInsight | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    setData(null);
-    setFailed(false);
-    supplierApi.getSearchInsight(days)
-      .then((res) => { if (!cancelled) setData(res); })
-      .catch(() => { if (!cancelled) setFailed(true); });
-    return () => { cancelled = true; };
-  }, [days, reloadKey]);
-
-  if (failed) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-        <p className="text-xs font-bold text-slate-700 mb-1">بارگذاری اینسایت تقاضا انجام نشد</p>
-        <p className="text-[11px] text-slate-400 mb-4">اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</p>
-        <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white hover:bg-brand">
-          <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-          تلاش دوباره
-        </button>
-      </div>
-    );
-  }
-  if (!data) {
-    return (
-      <div className="space-y-3 pb-6 animate-pulse" aria-label="در حال بارگذاری اینسایت تقاضا">
-        <div className="bg-white rounded-2xl border border-slate-100 h-32" />
-        <div className="bg-white rounded-2xl border border-slate-100 h-32" />
-      </div>
-    );
-  }
-
-  const topDemand = data.topDemand ?? [];
-  const unmetInScope = data.unmetInScope ?? [];
-  const ownProductTrend = data.ownProductTrend ?? [];
+  const load = useCallback(() => supplierApi.getSearchInsight(days), [days]);
+  const { data, loading, error, reload } = useSupplierResource(load);
+  const topDemand = data?.topDemand ?? [];
+  const unmetInScope = data?.unmetInScope ?? [];
+  const ownProductTrend = data?.ownProductTrend ?? [];
   const hasAny = topDemand.length > 0 || unmetInScope.length > 0 || ownProductTrend.length > 0;
 
   return (
-    <div className="space-y-3 pb-6">
+    <div className="space-y-4 pb-6 sm:space-y-5">
       <SupplierSectionHeading title="تقاضای بازار" description="جستجوهای مرتبط با کالاها و دسته‌های فروشگاهت را ببین." icon={<Search />}
         action={<div role="group" aria-label="بازهٔ زمانی تقاضا" className="flex flex-wrap gap-1 rounded-2xl border border-[#e6e2f0] bg-[#f8f6fc] p-1">
             {WINDOW_OPTIONS.map((opt) => (
@@ -79,31 +47,27 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
                 type="button"
                 aria-pressed={days === opt.days}
                 onClick={() => setDays(opt.days)}
-                className={`min-h-11 rounded-xl px-3 text-xs font-bold transition-colors ${days === opt.days ? 'bg-brand-deep text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`min-h-11 rounded-xl px-3 text-xs font-bold transition-colors focus-visible:ring-2 focus-visible:ring-brand ${days === opt.days ? 'bg-[#382660] text-white' : 'text-slate-700 hover:bg-brand-soft'}`}
               >
                 {opt.label}
               </button>
             ))}
         </div>} />
 
-      {!hasAny ? (
-        <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-brand-soft border border-brand-border flex items-center justify-center mx-auto mb-4">
-            <Search className="w-7 h-7 text-brand" strokeWidth={1.5} />
-          </div>
-          <p className="text-[11px] leading-6 text-slate-400 max-w-[320px] mx-auto">هنوز داده‌ای جمع نشده است؛ این بخش با جستجوی مشتری‌ها برای کالاها و دسته‌های تو پر می‌شود.</p>
-        </div>
+      <SupplierResourceState loading={loading} error={error} retry={reload} />
+      {!loading && !error && data && (!hasAny ? (
+        <SupplierEmptyState icon={<Search />} title="در این بازه جستجویی ثبت نشده است." description="بازهٔ زمانی دیگری انتخاب کن تا جستجوهای مرتبط با کالاها و دسته‌هایت را ببینی." />
       ) : (
         <>
-          <section className="bg-white rounded-2xl border border-slate-100 p-4">
-            <h3 className="text-xs font-extrabold text-slate-800 mb-3">تقاضا برای کالاهای تو</h3>
+          <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+            <h3 className="mb-3 text-base font-extrabold text-[#261b41]">تقاضا برای کالاهای تو</h3>
             {topDemand.length === 0 ? (
-              <p className="text-[11px] text-slate-400 text-center py-4">هنوز جستجویی برای کالاها و دسته‌های تو ثبت نشده است.</p>
+              <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">در این بازه جستجویی برای کالاها و دسته‌هایت ثبت نشده است.</p>
             ) : (
               <div className="overflow-x-auto -mx-4 px-4">
-                <table className="w-full min-w-[420px] text-[11px]">
+                <table className="w-full min-w-[420px] text-sm">
                   <thead>
-                    <tr className="text-slate-400 text-right border-b border-slate-100">
+                    <tr className="border-b border-slate-200 text-right text-slate-700">
                       <th className="py-2 pl-2 font-bold">عبارت</th>
                       <th className="py-2 pl-2 font-bold">تعداد جستجو</th>
                       <th className="py-2 font-bold">بی‌نتیجه</th>
@@ -141,19 +105,19 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
             )}
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-100 p-4">
-            <h3 className="text-xs font-extrabold text-slate-800 mb-1">تقاضایی که هنوز در کاتالوگ نیست — در حوزه تو</h3>
-            <p className="text-[10px] text-slate-400 mb-3">مشتری‌ها این عبارت‌ها را جستجو کرده‌اند و در کل کاتالوگ هم محصولی برایشان نیست؛ این‌ها به دسته‌ها یا برندهای تو مربوط‌اند.</p>
+          <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+            <h3 className="mb-1 text-base font-extrabold text-[#261b41]">فرصت‌های پیشنهاد کالا</h3>
+            <p className="mb-3 text-sm leading-6 text-slate-600">مشتری‌ها این عبارت‌های مرتبط با دسته‌ها یا برندهایت را جستجو کرده‌اند و کالایی پیدا نکرده‌اند.</p>
             {unmetInScope.length === 0 ? (
-              <p className="text-[11px] text-slate-400 text-center py-4">تقاضای برآورده‌نشده‌ای در حوزه تو ثبت نشده است.</p>
+              <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">در این بازه فرصت تازه‌ای پیدا نشده است.</p>
             ) : (
               <>
                 <ul className="divide-y divide-slate-50">
                   {unmetInScope.map((term) => (
                     <li key={term.term} className="py-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold text-slate-800">{term.term}</span>
-                        <span className="text-[10px] text-slate-400 shrink-0">{toPersianDigits(term.searches)} جستجو • {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="min-w-0 break-words text-sm font-bold text-slate-800">{term.term}</span>
+                        <span className="rounded-lg bg-brand-bg px-2 py-1 text-xs text-slate-700">{toPersianDigits(term.searches)} جستجو · {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>
                       </div>
                       {(term.scopeMatches ?? []).length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -168,7 +132,7 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
                   ))}
                 </ul>
                 {onPropose && (
-                  <button type="button" onClick={onPropose} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white hover:bg-brand">
+                  <button type="button" onClick={onPropose} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
                     <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
                     پیشنهاد کالای جدید
                   </button>
@@ -177,10 +141,10 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
             )}
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-100 p-4">
-            <h3 className="text-xs font-extrabold text-slate-800 mb-3">روند فروش کالاهای تو</h3>
+          <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+            <h3 className="mb-3 text-base font-extrabold text-[#261b41]">روند فروش کالاهای تو</h3>
             {ownProductTrend.length === 0 ? (
-              <p className="text-[11px] text-slate-400 text-center py-4">هنوز فروشی برای نمایش روند ثبت نشده است.</p>
+              <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">در این بازه فروشی برای نمایش روند ثبت نشده است.</p>
             ) : (
               <ul className="divide-y divide-slate-50">
                 {ownProductTrend.map((item) => (
@@ -204,7 +168,7 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
             )}
           </section>
         </>
-      )}
+      ))}
     </div>
   );
 };

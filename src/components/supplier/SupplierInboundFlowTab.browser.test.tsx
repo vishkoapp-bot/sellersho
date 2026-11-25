@@ -32,6 +32,7 @@ test('supplier can combine different products, resume the draft and reach dispat
     else if (path === '/products/product/variants') response.end(JSON.stringify([{ id: 'sku', variant_name: 'Test model', spnc: 'SKU001' }]));
     else if (path === '/products/other/variants') response.end(JSON.stringify([{ id: 'other-sku', variant_name: 'Other model', spnc: 'SKU002' }]));
     else if (path === '/warehouses/central') response.end(JSON.stringify([{ id: 'central', name: 'Central' }]));
+    else if (path === '/warehouses') response.end(JSON.stringify([{ id: 'active', name: 'Active source', isActive: true }, { id: 'inactive', name: 'Inactive source', isActive: false }]));
     else if (path === '/inventory') response.end('{"inventory":[]}');
     else if (path === '/shipments' && request.method === 'POST') {
       let body = '';
@@ -60,6 +61,8 @@ test('supplier can combine different products, resume the draft and reach dispat
         await (await element.toElement('button')).click();
       };
       await click('Test model');
+      await page.waitForSelector('option[value="active"]');
+      assert.equal(await page.$('option[value="inactive"]'), null);
       await page.type('input[aria-label="تعداد Test model"]', '5');
       await page.select('#carton-product', 'other');
       await click('Other model');

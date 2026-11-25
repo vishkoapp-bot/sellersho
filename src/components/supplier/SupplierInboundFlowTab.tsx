@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Box, ListChecks, PackagePlus } from 'lucide-react';
+import { Box, ListChecks, PackagePlus } from 'lucide-react';
 import { supplierApi } from '../../services/supplierApi';
 import { SupplierLabeledInboundTab } from './SupplierLabeledInboundTab';
 import { SupplierProductsTab } from './SupplierProductsTab';
@@ -10,7 +10,7 @@ import { useSupplierResource } from './useSupplierResource';
 export type ShipmentStage = 'products' | 'prepare' | 'track';
 
 const stages = [
-  { id: 'products', title: 'کالا و مدل‌ها', detail: 'ثبت کالا، مدل‌ها و پیگیری تأیید', icon: Box },
+  { id: 'products', title: 'ثبت کالا', detail: 'ثبت کالا، تنوع‌ها و پیگیری تأیید', icon: Box },
   { id: 'prepare', title: 'آماده‌سازی محموله', detail: 'انتخاب کالاها، تعداد و انبار مقصد', icon: PackagePlus },
   { id: 'track', title: 'ارسال و برچسب‌ها', detail: 'چاپ کارتن، ثبت ارسال و پیگیری دریافت', icon: ListChecks },
 ] as const;
@@ -86,7 +86,7 @@ export function SupplierInboundFlowTab({ initialProductId, activeStage, onStageC
   return (
     <div className="space-y-4 sm:space-y-5">
       <section ref={stepNavigation} aria-label="مراحل ثبت کالا و ارسال" className="scroll-mt-24 rounded-[24px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
-        <p className="mb-4 max-w-2xl text-sm leading-7 text-slate-700">{canManageProducts && canManageShipments ? 'برای کالای جدید از ثبت کالا شروع کن. اگر کالا قبلاً ثبت شده، مستقیم محموله را آماده کن.' : canManageProducts ? 'کالا و مدل‌هایش را ثبت کن و وضعیت تأیید را همین‌جا پیگیری کن.' : 'کالاهای ثبت‌شده را به محموله اضافه کن و ارسالشان را پیگیری کن.'}</p>
+        <p className="mb-4 max-w-2xl text-sm leading-7 text-slate-700">{canManageProducts && canManageShipments ? 'برای کالای جدید از ثبت کالا شروع کن. اگر کالا قبلاً ثبت شده، «آماده‌سازی محموله» را انتخاب کن.' : canManageProducts ? 'کالا و تنوع‌هایش را ثبت کن و وضعیت تأیید را همین‌جا پیگیری کن.' : 'کالاهای ثبت‌شده را به محموله اضافه کن و ارسالشان را پیگیری کن.'}</p>
         <nav aria-label="مراحل" className={`grid gap-2 ${availableStages.length === 3 ? 'grid-cols-3' : availableStages.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
           {availableStages.map(({ id, title, detail, icon: Icon }) => (
             <button key={id} type="button" aria-current={id === currentStage ? 'step' : undefined} onClick={() => navigate(id)}
@@ -105,11 +105,6 @@ export function SupplierInboundFlowTab({ initialProductId, activeStage, onStageC
 
       {canManageProducts && (
         <section hidden={currentStage !== 'products'} className="space-y-3">
-          {canManageShipments && (
-            <button type="button" onClick={() => navigate('prepare')} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
-              کالایم ثبت شده، ساخت محموله <ArrowLeft aria-hidden="true" className="size-4" />
-            </button>
-          )}
           <SupplierProductsTab onPrepareShipment={canManageShipments ? prepareProduct : undefined} />
         </section>
       )}

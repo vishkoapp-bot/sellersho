@@ -35,23 +35,31 @@ test('supplier sections, navigation history and daily workflows work on mobile a
   const statuses = ['pending', 'processing', 'cancelled', 'delivered_confirmed'];
   const orders = statuses.map((status, index) => ({ id: String(index), orderNumber: String(index), status, items: [] }));
   let failNextProfileRead = false;
+  let failNextDemandRead = true;
+  let directStatus = 'requested';
   let shipmentStatus = 'draft';
+  let deletedPhotos = 0;
   const shipmentUpdates: unknown[] = [];
   const server = createServer(async (request, response) => {
-    const path = new URL(request.url ?? '/', 'http://fixture').pathname;
+    const { pathname: path, searchParams } = new URL(request.url ?? '/', 'http://fixture');
     response.setHeader('Content-Type', 'application/json');
     const font = path.endsWith('.woff2') ? assets.find(asset => `/${asset.fileName}` === path) : undefined;
     if (font) { response.setHeader('Content-Type', 'font/woff2'); response.end(font.source); }
     else if (path === '/supplier-test.css') { response.setHeader('Content-Type', 'text/css'); response.end(css.source); }
     else if (path === '/api/v1/supplier/orders') response.end(JSON.stringify({ orders, hasMore: true }));
     else if (path === '/api/v1/supplier/analytics') response.end('{"orderCount":0,"totalBaseAmount":0,"totalQuantity":0,"returns":{"totalReturned":0}}');
+    else if (path === '/api/v1/supplier/shipping-methods') response.end(JSON.stringify([{ method: 'direct', status: directStatus }, { method: 'warehouse', status: 'disabled' }]));
+    else if (path === '/api/v1/supplier/search-insight' && searchParams.get('days') === '7' && failNextDemandRead) { failNextDemandRead = false; response.statusCode = 503; response.end('{"error":"دریافت داده‌ها انجام نشد"}'); }
     else if (path === '/api/v1/supplier/search-insight') response.end('{"unmetInScope":[{"term":"کیف چرمی","searches":12,"zeroResultSearches":10}]}');
     else if (path === '/api/v1/supplier/profile' && failNextProfileRead) { failNextProfileRead = false; response.statusCode = 503; response.end('{"error":"خطای دریافت پروفایل"}'); }
     else if (path === '/api/v1/supplier/profile') response.end('{"name":"تأمین‌کننده نمونه","warehouse_city":"تهران"}');
     else if (path === '/api/v1/supplier/products') response.end(JSON.stringify([
-      { id: 'a', title: 'کیف دستی', brand: 'آبی', stock: 5, supplierBaseCost: 50 },
+      { id: 'a', title: 'کیف دستی', brand: 'آبی', stock: 5, supplierBaseCost: 50, reviewsCount: 1, rating: 5 },
       { id: 'b', title: 'کفش سفید', stock: 2, supplierBaseCost: 80 },
     ]));
+    else if (path === '/api/v1/products/a/reviews') response.end('{"items":[{"id":"review1","displayName":"خریدار نمونه","rating":5,"body":"نظر نمونه درباره کالا","createdAt":"2026-11-24T00:00:00Z"}],"rating":5,"reviewsCount":1,"total":1}');
+    else if (/^\/api\/v1\/supplier\/products\/[ab]\/images$/.test(path)) response.end(JSON.stringify(deletedPhotos ? [] : [{ id: 'image1', imageUrl: '' }]));
+    else if (/^\/api\/v1\/supplier\/products\/[ab]\/images\/image1$/.test(path) && request.method === 'DELETE') { deletedPhotos++; response.end('{}'); }
     else if (path === '/api/v1/supplier/shipments' && request.method === 'POST') {
       let body = '';
       for await (const chunk of request) body += chunk;
@@ -94,6 +102,12 @@ test('supplier sections, navigation history and daily workflows work on mobile a
         assert.ok(element);
         await (await element.toElement('button')).click();
       };
+      await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('در انتظار تأیید روش ارسال'), { timeout: 3000 });
+      assert.ok(!(await page.$eval('main', main => main.textContent))?.includes('همه‌چیز آماده است'));
+      await page.tap('header button[aria-label="اعلان‌ها"]');
+      await page.waitForSelector('dialog[open] #supplier-notifications-title', { visible: true });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
       await click('رسیدگی به سفارش‌ها');
       await page.waitForFunction(() => document.querySelector('main [aria-label="وضعیت سفارش"] button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
       assert.equal(new URL(page.url()).searchParams.get('section'), 'orders');
@@ -111,7 +125,10 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('بارگذاری سفارش‌های قدیمی‌تر'));
       await click('پاک کردن فیلترها');
       assert.equal(await page.$eval('input[aria-label="جستجوی سفارش‌ها"]', input => (input as HTMLInputElement).value), '');
+      directStatus = 'enabled';
       await page.select('#supplier-section', 'overview');
+      await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('همه‌چیز آماده است'));
+      assert.ok(!(await page.$eval('main', main => main.textContent))?.includes('اولین بار را به انبار بفرست'));
       await click('پیگیری محموله‌ها');
       await page.waitForFunction(() => document.querySelector('main [aria-current="step"]')?.textContent?.includes('ارسال و برچسب‌ها'));
       await click('آماده‌سازی محموله');
@@ -138,7 +155,31 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('کفش سفید'));
       await page.type('input[placeholder="نام یا برند کالا"]', 'كيف');
       await page.waitForFunction(() => { const content = document.querySelector('main')?.innerText ?? ''; return content.includes('کیف دستی') && !content.includes('کفش سفید'); });
+      await click('گالری تصاویر');
+      const deletePhoto = await page.waitForSelector('dialog[open] button[aria-label="حذف تصویر 1"]', { visible: true, timeout: 3500 });
+      assert.ok(deletePhoto);
+      assert.ok(await deletePhoto.evaluate(button => button.getBoundingClientRect().height >= 44 && !button.closest('[class*="opacity-0"]')));
+      await deletePhoto.tap();
+      await page.waitForFunction(() => [...document.querySelectorAll('dialog h3')].some(heading => heading.textContent === 'تصویر حذف شود؟'));
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.querySelectorAll('dialog[open]').length === 1);
+      assert.equal(deletedPhotos, 0);
+      await deletePhoto.tap();
+      await click('تأیید حذف تصویر');
+      await page.waitForFunction(() => document.querySelector('dialog[open]')?.textContent?.includes('هنوز تصویری ثبت نشده است.'));
+      assert.equal(deletedPhotos, 1);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
+      await click('مشاهده نظرات');
+      await page.waitForSelector('dialog[open] #supplier-reviews-title', { visible: true });
+      await page.waitForFunction(() => document.querySelector('dialog[open]')?.textContent?.includes('نظر نمونه درباره کالا'));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
       await page.select('#supplier-section', 'demand-insight');
+      await click('۷ روز اخیر');
+      await page.waitForSelector('main [role="alert"]');
+      assert.ok((await page.$eval('main [aria-label="بازهٔ زمانی تقاضا"] button[aria-pressed="true"]', button => button.textContent))?.includes('۷ روز اخیر'));
+      await click('تلاش دوباره');
       await click('پیشنهاد کالای جدید');
       assert.equal(new URL(page.url()).searchParams.get('view'), 'propose');
       await page.waitForSelector('section[aria-label="فرم پیشنهاد کالای جدید"]', { visible: true });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi, isSupplierProductActive } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
@@ -7,26 +7,40 @@ import { ArrowLeft, Boxes, Check, ChevronLeft, CircleAlert, Flag, Package, Packa
 import { isReadyOrder } from './SupplierOrdersTab';
 import { canRespondToDiscrepancy } from './SupplierDiscrepanciesTab';
 
-type Navigate = (tab: string, destination?: 'ready' | 'track') => void;
+type Destination = 'ready' | 'track' | 'prepare' | 'propose' | 'proposals';
+type Navigate = (tab: string, destination?: Destination) => void;
+type Resource<T> = ReturnType<typeof useSupplierResource<T>>;
 
-const GettingStarted: React.FC<{ onNavigateTab: Navigate; shipmentDone: boolean | null }> = ({ onNavigateTab, shipmentDone }) => {
+const GettingStarted: React.FC<{
+  onNavigateTab: Navigate;
+  products: Resource<Awaited<ReturnType<typeof supplierApi.getProducts>>>;
+  shipments: Resource<{ status: string }[]>;
+}> = ({ onNavigateTab, products, shipments }) => {
   const { toPersianDigits } = useStore();
-  const [proposalCount, setProposalCount] = useState<number | null>(null);
-  const [productCount, setProductCount] = useState<number | null>(null);
-  const [shippingReady, setShippingReady] = useState<boolean | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    supplierApi.getProposals().then((d) => { if (!cancelled) setProposalCount((d || []).length); }).catch(() => {});
-    supplierApi.getProducts().then((d) => { if (!cancelled) setProductCount((d || []).filter(isSupplierProductActive).length); }).catch(() => {});
-    supplierApi.getShippingMethods().then((d: any) => { if (!cancelled) setShippingReady(((d.methods || d) || []).some((m: any) => m.status === 'enabled' || m.status === 'requested')); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-  const steps: { id: string; title: string; hint: string; done: boolean; tab?: string; action?: string }[] = [];
-  if (proposalCount !== null) steps.push({ id: 'proposal', title: 'اولین کالایت را پیشنهاد بده', hint: 'اطلاعات کالا را در مسیر ثبت کالا وارد کن تا بررسی شود.', done: proposalCount > 0 || (productCount ?? 0) > 0, tab: 'inbound', action: 'پیشنهاد کالا' });
-  if (productCount !== null) steps.push({ id: 'approved', title: 'کالایت تأیید شود و به فروش برسد', hint: 'بعد از تأیید مدیر، کالایت در فروشگاه‌ها نمایش داده می‌شود.', done: productCount > 0, tab: 'products', action: 'دیدن کالاها' });
-  if (shippingReady !== null) steps.push({ id: 'shipping', title: 'روش فرستادن کالا را انتخاب کن', hint: 'مشخص کن سفارش‌ها را خودت می‌فرستی یا کالا را به انبار مرکزی می‌دهی.', done: shippingReady, tab: 'shipping-methods', action: 'انتخاب روش ارسال' });
-  if (shipmentDone !== null) steps.push({ id: 'shipment', title: 'اولین بار را به انبار بفرست', hint: 'وقتی بار را می‌فرستی، اول همین‌جا ثبتش کن تا انبار آماده تحویل باشد.', done: shipmentDone, tab: 'inbound', action: 'فرستادن بار' });
-  if (steps.length === 0) return null;
+  const proposals = useSupplierResource(supplierApi.getProposals);
+  const methods = useSupplierResource(supplierApi.getShippingMethods);
+  const warehouseEnabled = methods.data?.some(method => method.method === 'warehouse' && method.status === 'enabled');
+  const resources = warehouseEnabled ? [products, proposals, methods, shipments] : [products, proposals, methods];
+  const loading = resources.some(resource => resource.loading);
+  const loadError = resources.find(resource => resource.error)?.error ?? '';
+  if (loading || loadError) {
+    return <SupplierResourceState loading={loading} error={loadError} retry={() => {
+      resources.filter(resource => resource.error).forEach(resource => { void resource.reload(); });
+    }} />;
+  }
+
+  const hasActiveProduct = products.data?.some(isSupplierProductActive) ?? false;
+  const hasProposal = hasActiveProduct || (proposals.data?.length ?? 0) > 0;
+  const shippingReady = methods.data?.some(method => method.status === 'enabled') ?? false;
+  const awaitingShipping = !shippingReady && methods.data?.some(method => method.status === 'requested');
+  const steps: { id: string; title: string; hint: string; done: boolean; tab: string; action: string; destination?: Destination }[] = [
+    { id: 'proposal', title: 'اولین کالایت را پیشنهاد بده', hint: 'اطلاعات کالا را در فرم پیشنهاد وارد کن.', done: hasProposal, tab: 'products', destination: 'propose', action: 'پیشنهاد کالا' },
+    { id: 'approved', title: 'تأیید اولین کالا', hint: 'نتیجهٔ بررسی مدیر در فهرست پیشنهادها نمایش داده می‌شود.', done: hasActiveProduct, tab: 'products', destination: 'proposals', action: 'پیگیری پیشنهادها' },
+    { id: 'shipping', title: awaitingShipping ? 'در انتظار تأیید روش ارسال' : 'فعال‌سازی روش ارسال', hint: awaitingShipping ? 'درخواستت ثبت شده و در حال بررسی است.' : 'برای ارسال مستقیم یا تحویل به انبار مرکزی، درخواست فعال‌سازی بده.', done: shippingReady, tab: 'shipping-methods', action: awaitingShipping ? 'دیدن وضعیت درخواست' : 'انتخاب روش ارسال' },
+  ];
+  if (warehouseEnabled) {
+    steps.push({ id: 'shipment', title: 'اولین بار را به انبار بفرست', hint: 'کالاهای محموله را انتخاب کن و برای کارتن کد بگیر.', done: shipments.data?.some(shipment => !['draft', 'created', 'cancelled'].includes(shipment.status)) ?? false, tab: 'inbound', destination: 'prepare', action: 'آماده‌سازی محموله' });
+  }
   const doneCount = steps.filter((s) => s.done).length;
   if (doneCount === steps.length) {
     return (
@@ -60,8 +74,8 @@ const GettingStarted: React.FC<{ onNavigateTab: Navigate; shipmentDone: boolean 
               <p className={`text-xs font-bold ${s.done ? 'text-slate-500 line-through decoration-emerald-300' : 'text-slate-800'}`}>{s.title}</p>
               {!s.done && <p className="text-[11px] leading-5 text-slate-500 mt-0.5">{s.hint}</p>}
             </div>
-            {!s.done && s.tab && (
-              <button type="button" onClick={() => onNavigateTab(s.tab as string)} className="shrink-0 flex items-center gap-0.5 min-h-[44px] px-3 rounded-xl bg-brand-deep text-white text-xs font-bold"><span>{s.action}</span><ChevronLeft className="w-3.5 h-3.5" strokeWidth={1.5} /></button>
+            {!s.done && (s.id !== 'approved' || hasProposal) && (
+              <button type="button" onClick={() => onNavigateTab(s.tab, s.destination)} className="shrink-0 flex items-center gap-1 min-h-11 px-3 rounded-xl bg-brand-soft text-brand-deep text-xs font-bold hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"><span>{s.action}</span><ChevronLeft aria-hidden="true" className="size-3.5" strokeWidth={1.5} /></button>
             )}
           </div>
         ))}
@@ -92,7 +106,7 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: Navigate }> = ({ onN
   const workLoading = orders.loading || shipments.loading || discrepancies.loading;
   const totalRevenue = report.data?.total_revenue || 0;
   const ordersCount = report.data?.orders_count || 0;
-  const lowStock = [...(products.data || [])].sort((x, y) => (x.stock ?? 0) - (y.stock ?? 0)).slice(0, 5);
+  const lowStock = (products.data ?? []).filter(isSupplierProductActive).sort((x, y) => (x.stock ?? 0) - (y.stock ?? 0)).slice(0, 5);
   return (
     <div className="space-y-4 sm:space-y-5">
       <section className="relative isolate overflow-hidden rounded-[26px] bg-[#2c2050] px-5 py-6 text-white shadow-lg shadow-[#2c2050]/15 sm:px-8 sm:py-8">
@@ -158,7 +172,7 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: Navigate }> = ({ onN
         </section>
 
         <div className="min-w-0 space-y-4">
-          <GettingStarted onNavigateTab={onNavigateTab} shipmentDone={shipments.data ? shipments.data.some(shipment => !['draft', 'cancelled'].includes(shipment.status)) : null} />
+          <GettingStarted onNavigateTab={onNavigateTab} products={products} shipments={shipments} />
           {!loading && !error && (
             <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm">
               <h3 className="mb-2 text-sm font-extrabold text-[#261b41]">کم‌موجودی‌ترین کالاها</h3>

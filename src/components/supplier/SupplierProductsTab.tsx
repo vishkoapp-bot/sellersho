@@ -4,7 +4,7 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, isSupplierProductActive, SupplierProductDto, SupplierPriceIncreaseDto, WarrantyPropertyDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
-import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 import { Package, Plus, CheckCircle2, Clock, ShieldCheck, Edit3, XCircle, AlertCircle, Save, Upload, Trash2, Star, Layers, Image as ImageIcon } from 'lucide-react';
 import { SupplierGalleryModal } from './SupplierGalleryModal';
 import { SupplierVariantsModal, unitCountDiscrepancy } from './SupplierVariantsModal';
@@ -101,7 +101,7 @@ export function ProductUnitChip({ unitCount, stock }: { unitCount: number | null
   );
 }
 
-export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void; onPrepareShipment?: (productId: string) => void; openProposal?: boolean }> = ({ focusProposalId, onFocusConsumed, onPrepareShipment, openProposal }) => {
+export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void; onPrepareShipment?: (productId: string) => void; openProposal?: boolean; showProposals?: boolean }> = ({ focusProposalId, onFocusConsumed, onPrepareShipment, openProposal, showProposals }) => {
   const {
     supplierSession,
     formatPrice,
@@ -120,10 +120,9 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
       proposalFormRef.current?.scrollIntoView({ block: 'start' });
     }
   }, [showAddForm]);
-  const [subTab, setSubTab] = useState<'active_products' | 'proposed_offers' | 'my_challenges'>('active_products');
-  const [challenges, setChallenges] = useState<any[]>([]);
-  const [challengesLoading, setChallengesLoading] = useState(false);
-  const [challengesLoaded, setChallengesLoaded] = useState(false);
+  const [subTab, setSubTab] = useState<'active_products' | 'proposed_offers' | 'my_challenges'>(showProposals ? 'proposed_offers' : 'active_products');
+  const loadChallenges = useCallback(() => subTab === 'my_challenges' ? supplierApi.getMyExclusivityChallenges() : Promise.resolve(null), [subTab]);
+  const challenges = useSupplierResource(loadChallenges);
   const [myWarehouses, setMyWarehouses] = useState<any[]>([]);
   const [profileCity, setProfileCity] = useState('');
   const [profileCityConfirmed, setProfileCityConfirmed] = useState(false);
@@ -166,11 +165,6 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
     supplierApi.getMyWarehouses().then(setMyWarehouses).catch(() => {});
     supplierApi.getProfile().then((pr: any) => { setProfileCity(pr.warehouse_city || pr.warehouseCity || ''); setProfileCityConfirmed(!!(pr.warehouse_city_confirmed || pr.warehouseCityConfirmed)); }).catch(() => {});
   }, []);
-  useEffect(() => {
-    if (subTab !== 'my_challenges' || challengesLoaded) return;
-    setChallengesLoading(true);
-    supplierApi.getMyExclusivityChallenges().then((list) => { setChallenges(list); setChallengesLoaded(true); }).catch(() => { setChallengesLoaded(true); }).finally(() => setChallengesLoading(false));
-  }, [subTab, challengesLoaded]);
   const [warranties, setWarranties] = useState<WarrantyPropertyDto[]>([]);
 
   const [editingProduct, setEditingProduct] = useState<SupplierProductDto | null>(null);
@@ -266,13 +260,13 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             profileCityConfirmed={profileCityConfirmed}
             sessionToken={supplierSession?.token}
             onSubmitted={async () => { setShowAddForm(false); setSubTab('proposed_offers'); await proposalsResource.reload(); await productsResource.reload(); }}
-            onChallengeSubmitted={() => { setShowAddForm(false); setSubTab('my_challenges'); }}
+            onChallengeSubmitted={() => { setShowAddForm(false); if (subTab === 'my_challenges') void challenges.reload(); else setSubTab('my_challenges'); }}
           />
         </section>
       )}
       <div role="group" aria-label="بخش‌های کالاها" className="grid gap-2 rounded-[20px] border border-[#e6e2f0] bg-white p-2 shadow-sm sm:grid-cols-3">
         {([
-          { id: 'active_products', label: `کالاهای تأییدشده (${toPersianDigits(activeSupplierProducts.length)})`, note: inactiveSupplierProductsCount > 0 ? `${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : '' },
+          { id: 'active_products', label: `کالاهای تأییدشده (${toPersianDigits(supplierProducts.length)})`, note: inactiveSupplierProductsCount > 0 ? `${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : '' },
           { id: 'proposed_offers', label: `پیشنهادهای کالا (${toPersianDigits(proposalCounts.total)})`, note: proposalCounts.pending > 0 ? `${toPersianDigits(proposalCounts.pending)} در انتظار بررسی` : '' },
           { id: 'my_challenges', label: 'درخواست‌های من', note: '' },
         ] as const).map(({ id, label, note }) => (
@@ -327,17 +321,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
               {bulkResult && <p className="text-[10px] text-emerald-700">{bulkResult}</p>}
             </div>
           )}
-          {!productsResource.loading && !productsResource.error && supplierProducts.length === 0 && <div className="rounded-2xl border bg-white p-6 text-center space-y-2">
-            <Package className="w-10 h-10 text-slate-300 mx-auto"  strokeWidth={1.5}/>
-            <p className="text-xs font-bold text-slate-700">هنوز کالای تأییدشده‌ای نداری.</p>
-            <p className="text-[11px] leading-5 text-slate-400">اول کالایت را پیشنهاد بده؛ مدیر بررسی می‌کند و وقتی تأیید شد، اینجا می‌آید و به فروش می‌رسد.</p>
-            <button type="button" onClick={() => setShowAddForm(true)} className="min-h-[44px] px-4 rounded-xl bg-brand-deep text-white text-xs font-bold">پیشنهاد کالای جدید</button>
-          </div>}
+          {!productsResource.loading && !productsResource.error && !showAddForm && supplierProducts.length === 0 && <SupplierEmptyState icon={<Package />} title="هنوز کالای تأییدشده‌ای نداری." description="کالا را پیشنهاد بده و نتیجهٔ بررسی را در بخش «پیشنهادهای کالا» پیگیری کن." />}
           {query && supplierProducts.length > 0 && visibleProducts.length === 0 && (
-            <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4 text-sm">
-              <p role="status">کالایی با این نام یا برند پیدا نشد.</p>
-              <button type="button" onClick={() => setProductQuery('')} className="mt-2 min-h-11 rounded-lg bg-brand-bg px-3 font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن جستجو</button>
-            </div>
+            <SupplierEmptyState icon={<Package />} title="کالایی با این نام یا برند پیدا نشد."
+              action={<button type="button" onClick={() => setProductQuery('')} className="min-h-11 rounded-xl bg-brand-soft px-4 text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن جستجو</button>} />
           )}
           {visibleProducts.map((product) => {
             const effectiveCost = product.supplierBaseCost;
@@ -614,11 +601,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
               <button type="button" onClick={() => scrollToProposal(String(rejectedProposals[0].id))} className="shrink-0 min-h-[36px] px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold transition">مشاهده اولین ردشده</button>
             </div>
           )}
-          {supplierProposedOffers.length === 0 ? (
-            <div className="bg-white rounded-2xl p-6 text-center space-y-1.5">
-              <p className="text-xs font-bold text-slate-600">هنوز پیشنهادی نفرستاده‌ای.</p>
-              <p className="text-[11px] leading-5 text-slate-400">با دکمه «پیشنهاد کالای جدید» بالای همین صفحه شروع کن. پیشنهادت اینجا می‌آید و وضعیتش را می‌بینی: در انتظار بررسی، تأییدشده یا ردشده.</p>
-            </div>
+          {!proposalsResource.loading && !proposalsResource.error && (supplierProposedOffers.length === 0 ? (
+            !showAddForm && <SupplierEmptyState icon={<Package />} title="هنوز پیشنهادی نفرستاده‌ای." description="با «پیشنهاد کالای جدید» شروع کن. وضعیت پیشنهادها و نتیجهٔ بررسی اینجا نمایش داده می‌شود." />
           ) : (
             supplierProposedOffers.map((prop) => (
               <div key={prop.id} id={`proposal-card-${prop.id}`} className={`bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2 text-xs transition-shadow ${highlightedProposalId === String(prop.id) ? 'ring-2 ring-rose-400 border-rose-300' : ''}`}>
@@ -668,23 +652,18 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                 )}
               </div>
             ))
-          )}
+          ))}
         </div>
       )}
 
       {/* Sub-Tab 3: My Exclusivity Challenges */}
       {subTab === 'my_challenges' && (
         <div className="space-y-2.5">
-          {challengesLoading ? (
-            <div className="bg-white rounded-2xl p-6 text-center text-xs text-slate-400">در حال دریافت درخواست‌ها…</div>
-          ) : challenges.length === 0 ? (
-            <div className="bg-white rounded-2xl p-6 text-center space-y-1.5">
-              <ShieldCheck className="w-8 h-8 mx-auto text-slate-300" strokeWidth={1.5} />
-              <p className="text-xs font-bold text-slate-600">هنوز درخواست چالشی ثبت نکرده‌ای.</p>
-              <p className="text-[11px] leading-5 text-slate-400">وقتی پیشنهاد کالایی به‌خاطر ثبت قبلی همان کالا توسط تأمین‌کننده‌ای دیگر رد شود، همان‌جا گزینهٔ ثبت چالش نمایش داده می‌شود و درخواستت اینجا قرار می‌گیرد.</p>
-            </div>
+          <SupplierResourceState loading={challenges.loading || (!challenges.data && !challenges.error)} error={challenges.error} retry={challenges.reload} />
+          {!challenges.loading && !challenges.error && challenges.data && (challenges.data.length === 0 ? (
+            <SupplierEmptyState icon={<ShieldCheck />} title="هنوز درخواست بررسی انحصار ثبت نکرده‌ای." description="اگر هنگام پیشنهاد کالا، گزینهٔ ثبت درخواست بررسی انحصار نمایش داده شد، نتیجهٔ درخواستت را اینجا ببین." />
           ) : (
-            challenges.map((ch: any) => {
+            challenges.data.map((ch: any) => {
               const variantNames: string[] = Array.isArray(ch.variantNames) ? ch.variantNames : (typeof ch.variantNames === 'string' && ch.variantNames ? (() => { try { const parsed = JSON.parse(ch.variantNames); return Array.isArray(parsed) ? parsed : []; } catch { return []; } })() : []);
               return (
                 <div key={ch.id} className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2 text-xs">
@@ -713,7 +692,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                 </div>
               );
             })
-          )}
+          ))}
         </div>
       )}
       <SupplierAddonsWidget ownProducts={supplierProducts.map(item => ({ id: item.id, title: item.title }))} />

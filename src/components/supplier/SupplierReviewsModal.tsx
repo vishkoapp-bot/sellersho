@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi } from '../../services/supplierApi';
-import { Star, X, CheckCircle2 } from 'lucide-react';
+import { Star, CheckCircle2 } from 'lucide-react';
+import { SupplierDialog, SupplierDialogHeading } from './SupplierDialog';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 
 // Live reviews modal (jl shell + rv list): buyer reviews for one product.
 // Page size is live's ZC=10; load-more appends by offset.
@@ -69,30 +71,11 @@ export const SupplierReviewsModal: React.FC<{
   }, [load]);
 
   return (
-    <div className="fixed inset-0 z-[70] bg-slate-950/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4" dir="rtl">
-      <div className="bg-white w-full sm:max-w-lg max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl">
-        <div className="sticky top-0 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex items-center justify-between z-10">
-          <div className="min-w-0">
-            <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
-              <Star className="w-4 h-4 text-amber-400 fill-amber-400" strokeWidth={1.5} />
-              نظرات خریداران
-            </h2>
-            <p className="text-[11px] text-slate-500 truncate max-w-[260px]">{productTitle} • میانگین {toPersianDigits(avgRating)} از ۵ ({toPersianDigits(count)} نظر)</p>
-          </div>
-          <button type="button" onClick={onClose} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 shrink-0" aria-label="بستن">
-            <X className="w-4 h-4"  strokeWidth={1.5}/>
-          </button>
-        </div>
-        <div className="p-4">
-          {loading ? (
-            <p className="text-[11px] text-slate-400 py-2">در حال بارگذاری نظرات…</p>
-          ) : failed ? (
-            <div className="py-2 space-y-2">
-              <p className="text-[11px] text-slate-500">بارگذاری نظرات ناموفق بود.</p>
-              <button type="button" onClick={() => { setLoading(true); load(0); }} className="text-[11px] font-bold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50">تلاش مجدد</button>
-            </div>
-          ) : count === 0 || total === 0 ? (
-            <p className="text-[11px] text-slate-500 py-1">هنوز نظری برای این کالا ثبت نشده است.</p>
+    <SupplierDialog titleId="supplier-reviews-title" onDismiss={onClose}>
+      <SupplierDialogHeading id="supplier-reviews-title" title="نظرات خریداران" detail={productTitle} onClose={onClose} />
+      <SupplierResourceState loading={loading} error={failed ? 'دریافت نظرات انجام نشد.' : ''} retry={() => { setLoading(true); load(0); }} />
+      {!loading && !failed && (count === 0 || total === 0 ? (
+            <SupplierEmptyState icon={<Star />} title="هنوز نظری برای این کالا ثبت نشده است." />
           ) : (
             <div className="space-y-3">
               <div className="flex items-center gap-2 flex-wrap">
@@ -116,19 +99,17 @@ export const SupplierReviewsModal: React.FC<{
                     </div>
                     <Stars rating={rv.rating} className="w-3 h-3" />
                     {rv.title ? <h4 className="text-[11px] font-extrabold text-slate-800">{rv.title}</h4> : null}
-                    <p className="text-[11px] text-slate-600 leading-relaxed whitespace-pre-line">{rv.body}</p>
+                    <p className="whitespace-pre-line break-words text-sm leading-6 text-slate-700">{rv.body}</p>
                   </article>
                 ))}
               </div>
               {items.length < total && (
-                <button type="button" disabled={loadingMore} onClick={() => { setLoadingMore(true); load(items.length); }} className="w-full py-2 text-[11px] font-bold rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors" style={{ color: '#5d44f8' }}>
+                <button type="button" disabled={loadingMore} onClick={() => { setLoadingMore(true); load(items.length); }} className="min-h-11 w-full rounded-xl border border-slate-200 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
                   {loadingMore ? 'در حال بارگذاری…' : 'نمایش نظرات بیشتر'}
                 </button>
               )}
             </div>
-          )}
-        </div>
-      </div>
-    </div>
+          ))}
+    </SupplierDialog>
   );
 };

@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto, SupplierProductVariantDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
-import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
 import { supplierInventoryLabel, supplierReturnAttemptScope, supplierReturnQuantity } from '../../utils/supplierSkuInventory';
 import { formatPrice, toPersianDigits } from '../../utils/formatters';
@@ -530,14 +530,9 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
         </section>
       )}
       {items.length === 0 && !loading && !error && (
-        <div className="rounded-2xl border bg-white p-8 text-center space-y-2">
-          <p className="text-xs font-bold text-slate-600">
-            {query.trim() ? 'کالایی با این اسم پیدا نشد' : statusFilter !== 'all' ? 'کالایی با این وضعیت نیست' : 'هنوز کالای تأییدشده‌ای نداری'}
-          </p>
-          <p className="text-[10px] text-slate-400 leading-relaxed">
-            {query.trim() ? 'اسم دیگری را امتحان کن.' : statusFilter !== 'all' ? 'فیلتر وضعیت را عوض کن.' : 'وقتی مدیر کالایت را تأیید کند، موجودی‌اش اینجا می‌آید.'}
-          </p>
-        </div>
+        <SupplierEmptyState icon={<Boxes />} title={query.trim() ? 'کالایی با این اسم پیدا نشد' : statusFilter !== 'all' ? 'کالایی با این وضعیت نیست' : 'هنوز کالای تأییدشده‌ای نداری'}
+          description={!query.trim() && statusFilter === 'all' ? 'وقتی مدیر کالایت را تأیید کند، موجودی‌اش اینجا نمایش داده می‌شود.' : undefined}
+          action={(query || statusFilter !== 'all') && <button type="button" onClick={() => { onQueryChange(''); onStatusFilterChange('all'); }} className="min-h-11 rounded-xl bg-brand-soft px-4 text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن فیلترها</button>} />
       )}
       {!loading && items.map(item => {
         const itemLocations = grouped[item.id] || [];

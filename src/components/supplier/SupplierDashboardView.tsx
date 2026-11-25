@@ -46,14 +46,14 @@ interface Props {
   onBackToCustomerSite: () => void;
 }
 
-type SectionDestination = 'ready' | 'propose' | ShipmentStage;
+type SectionDestination = 'ready' | 'propose' | 'proposals' | ShipmentStage;
 
 function readSupplierLocation() {
   const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
   const section = params.get('section') || 'overview';
   const view = params.get('view');
   const destination = (section === 'orders' && view === 'ready')
-    || (section === 'products' && view === 'propose')
+    || (section === 'products' && (view === 'propose' || view === 'proposals'))
     || (section === 'inbound' && (view === 'products' || view === 'prepare' || view === 'track')) ? view : undefined;
   return { section, destination };
 }
@@ -340,7 +340,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
             {visibleTab === 'orders' && <SupplierOrdersTab key={tabDestination ?? 'all'} initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
-            {visibleTab === 'products' && <SupplierProductsTab key={tabDestination ?? 'catalog'} openProposal={tabDestination === 'propose'} onPrepareShipment={canManageShipments ? (id) => { setWorkflowProductId(id); navigateTab('inbound', 'prepare'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
+            {visibleTab === 'products' && <SupplierProductsTab key={tabDestination ?? 'catalog'} openProposal={tabDestination === 'propose'} showProposals={tabDestination === 'proposals'} onPrepareShipment={canManageShipments ? (id) => { setWorkflowProductId(id); navigateTab('inbound', 'prepare'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab
               initialProductId={workflowProductId}

@@ -1,20 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Image as ImageIcon, Plus, Star, Trash2 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
-import { useToast } from '../../context/ToastContext';
 import { supplierApi } from '../../services/supplierApi';
-import { Image as ImageIcon, Plus, Star, Trash2, ChevronRight, ChevronLeft, Loader2 } from 'lucide-react';
+import { SupplierDialog, SupplierDialogHeading } from './SupplierDialog';
+import { SupplierResourceState } from './SupplierResourceState';
+import { useSupplierResource } from './useSupplierResource';
 
-// Live gallery modal (Ll): supplier product gallery, max 8 images,
-// first image is the cover. Uploads apply immediately in this build;
-// a server that returns pendingReview still takes live's review branch.
 const MAX_IMAGES = 8;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-
-interface GalleryImage {
-  id: string;
-  imageUrl: string;
-  sortOrder?: number;
-}
+const imageAction = 'grid min-h-11 place-items-center rounded-lg bg-white text-slate-700 hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40';
 
 export const SupplierGalleryModal: React.FC<{
   productId: string;
@@ -23,188 +17,132 @@ export const SupplierGalleryModal: React.FC<{
   onChanged?: () => void;
 }> = ({ productId, productTitle, onClose, onChanged }) => {
   const { toPersianDigits } = useStore();
-  const { success, error } = useToast();
-  const [images, setImages] = useState<GalleryImage[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  const load = useCallback(() => supplierApi.getProductImages(productId), [productId]);
+  const gallery = useSupplierResource(load);
+  const images = gallery.data ?? [];
+  const [busy, setBusy] = useState(false);
+  const [confirmImageId, setConfirmImageId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const inProgress = useRef(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
+  const changeGallery = async (
+    change: () => Promise<unknown>,
+    updatedText: string,
+    reviewText: string,
+    failedText: string,
+  ) => {
+    if (inProgress.current) return;
+    inProgress.current = true;
+    setBusy(true);
+    setNotice(null);
     try {
-      const list = await supplierApi.getProductImages(productId);
-      setImages(list || []);
-    } catch {
-      error('خطا در دریافت تصاویر گالری.');
+      const result = await change();
+      await gallery.reload();
+      const pending = typeof result === 'object' && result !== null && 'pendingReview' in result && result.pendingReview === true;
+      setNotice({ text: pending ? reviewText : updatedText, error: false });
+      onChanged?.();
+    } catch (cause: unknown) {
+      setNotice({ text: cause instanceof Error ? cause.message : failedText, error: true });
     } finally {
-      setLoading(false);
+      inProgress.current = false;
+      setBusy(false);
     }
-  }, [productId, error]);
+  };
 
-  useEffect(() => { load(); }, [load]);
-
-  const handleFiles = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const list = Array.from(files);
+  const handleFiles = (files: FileList | null) => {
+    const list = Array.from(files ?? []);
+    if (fileRef.current) fileRef.current.value = '';
+    if (list.length === 0) return;
     if (images.length + list.length > MAX_IMAGES) {
-      error(`حداکثر ${toPersianDigits(MAX_IMAGES)} تصویر برای هر محصول مجاز است.`);
-      return;
-    }
-    for (const f of list) {
-      if (!ALLOWED_TYPES.includes(f.type)) {
-        error('فرمت نامعتبر. فقط JPG، PNG و WEBP مجاز است.');
-        return;
-      }
-      if (f.size > 5 * 1024 * 1024) {
-        error('حجم هر فایل نباید بیشتر از ۵ مگابایت باشد.');
-        return;
-      }
-    }
-    setUploading(true);
-    try {
-      const res: any = await supplierApi.uploadProductImages(productId, list);
-      if (res?.pendingReview) {
-        success('تصاویر برای بازبینی ارسال شد؛ پس از تأیید در گالری نمایش داده می‌شوند.');
-      } else {
-        success(`${toPersianDigits(list.length)} تصویر به گالری اضافه شد.`);
-      }
-      await load();
-      onChanged?.();
-    } catch (e: any) {
-      error(e?.message || 'خطا در آپلود تصاویر');
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
+      setNotice({ text: `حداکثر ${toPersianDigits(MAX_IMAGES)} تصویر برای هر کالا مجاز است.`, error: true });
+    } else if (list.some(file => !ALLOWED_TYPES.includes(file.type))) {
+      setNotice({ text: 'فرمت تصویر باید JPG، PNG یا WEBP باشد.', error: true });
+    } else if (list.some(file => file.size > 5 * 1024 * 1024)) {
+      setNotice({ text: 'حجم هر تصویر باید حداکثر ۵ مگابایت باشد.', error: true });
+    } else {
+      void changeGallery(() => supplierApi.uploadProductImages(productId, list),
+        `${toPersianDigits(list.length)} تصویر به گالری اضافه شد.`, 'تصاویر برای بازبینی ارسال شدند.', 'بارگذاری تصاویر انجام نشد.');
     }
   };
 
-  const handleDelete = async (id: string) => {
-    setBusyId(id);
-    try {
-      const res: any = await supplierApi.deleteProductImage(productId, id);
-      if (res?.pendingReview) {
-        success('درخواست حذف تصویر در صف بازبینی قرار گرفت؛ پس از تأیید حذف می‌شود.');
-      } else {
-        success('تصویر حذف شد.');
-      }
-      await load();
-      onChanged?.();
-    } catch {
-      error('خطا در حذف تصویر.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const handleCover = async (id: string) => {
-    setBusyId(id);
-    try {
-      const res: any = await supplierApi.setProductCoverImage(productId, id);
-      if (res?.pendingReview) {
-        success('درخواست تغییر تصویر شاخص در صف بازبینی قرار گرفت.');
-      } else {
-        success('تصویر شاخص تنظیم شد.');
-      }
-      await load();
-      onChanged?.();
-    } catch {
-      error('خطا در تنظیم تصویر شاخص.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const handleMove = async (index: number, delta: number) => {
-    const target = index + delta;
+  const moveImage = (index: number, step: number) => {
+    const target = index + step;
     if (target < 0 || target >= images.length) return;
-    const next = [...images];
-    const [moved] = next.splice(index, 1);
-    next.splice(target, 0, moved);
-    setImages(next);
-    try {
-      const res: any = await supplierApi.reorderProductImages(productId, next.map((im) => im.id));
-      if (res?.pendingReview) {
-        success('درخواست تغییر ترتیب گالری در صف بازبینی قرار گرفت.');
-      }
-      onChanged?.();
-    } catch {
-      error('خطا در ذخیره ترتیب.');
-      await load();
-    }
+    const order = images.map(image => image.id);
+    [order[index], order[target]] = [order[target], order[index]];
+    void changeGallery(() => supplierApi.reorderProductImages(productId, order),
+      'ترتیب تصاویر ذخیره شد.', 'درخواست تغییر ترتیب تصاویر برای بازبینی ارسال شد.', 'ترتیب تصاویر ذخیره نشد.');
+  };
+
+  const selectCover = (id: string) => void changeGallery(() => supplierApi.setProductCoverImage(productId, id),
+    'تصویر شاخص تغییر کرد.', 'درخواست تغییر تصویر شاخص برای بازبینی ارسال شد.', 'تصویر شاخص تغییر نکرد.');
+
+  const removeImage = (id: string) => {
+    setConfirmImageId(null);
+    void changeGallery(() => supplierApi.deleteProductImage(productId, id),
+      'تصویر حذف شد.', 'درخواست حذف تصویر برای بازبینی ارسال شد.', 'تصویر حذف نشد.');
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-3 bg-slate-950/70 backdrop-blur-md" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-[480px] max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-extrabold text-slate-800">گالری تصاویر محصول</h3>
-            <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-[280px]">{productTitle}</p>
-          </div>
-          <button type="button" onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500 text-lg leading-none">✕</button>
-        </div>
-        <div className="p-4 overflow-y-auto no-scrollbar flex-1">
-          {loading ? (
-            <div className="grid grid-cols-3 gap-2">
-              {[1, 2, 3].map((k) => (
-                <div key={k} className="aspect-square rounded-xl bg-slate-100 animate-pulse" />
-              ))}
+    <SupplierDialog titleId="supplier-gallery-title" wide onDismiss={busy ? undefined : onClose}>
+      <SupplierDialogHeading id="supplier-gallery-title" title="گالری تصاویر" detail={productTitle} onClose={onClose} busy={busy} />
+      <div className="space-y-4">
+        <SupplierResourceState loading={gallery.loading && !gallery.data} error={gallery.error} retry={gallery.reload} />
+        {busy && <p role="status" className="rounded-xl bg-brand-bg p-3 text-sm text-brand-deep">در حال ذخیرهٔ تغییر گالری…</p>}
+        {notice && <p role={notice.error ? 'alert' : 'status'} className={`rounded-xl p-3 text-sm ${notice.error ? 'bg-rose-50 text-rose-800' : 'bg-emerald-50 text-emerald-800'}`}>{notice.text}</p>}
+        {!gallery.error && gallery.data && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-slate-700">{toPersianDigits(images.length)} از {toPersianDigits(MAX_IMAGES)} تصویر</p>
+              {images.length < MAX_IMAGES && (
+                <button type="button" disabled={busy} onClick={() => fileRef.current?.click()} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+                  <Plus aria-hidden="true" className="size-4" /> افزودن تصویر
+                </button>
+              )}
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {images.map((im, idx) => (
-                  <div key={im.id} className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-50">
-                    {im.imageUrl ? (
-                      <img src={im.imageUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <ImageIcon className="w-6 h-6 text-slate-300"  strokeWidth={1.5}/>
+            {images.length === 0 ? (
+              <p role="status" className="rounded-xl bg-brand-bg p-4 text-sm text-slate-700">هنوز تصویری ثبت نشده است.</p>
+            ) : (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3" aria-label="تصاویر گالری">
+                {images.map((image, index) => {
+                  const number = toPersianDigits(index + 1);
+                  return (
+                    <li key={image.id} className="min-w-0 overflow-hidden rounded-2xl border border-[#e6e2f0] bg-[#f8f6fc]">
+                      <div className="relative aspect-square bg-slate-50">
+                        {image.imageUrl
+                          ? <img src={image.imageUrl} alt={`تصویر ${number} از ${productTitle}`} className="size-full object-cover" loading="lazy" />
+                          : <ImageIcon aria-hidden="true" className="absolute inset-0 m-auto size-6 text-slate-400" />}
+                        {index === 0 && <span className="absolute start-2 top-2 rounded-lg bg-white px-2 py-1 text-xs font-bold text-brand-deep shadow-sm">تصویر شاخص</span>}
                       </div>
-                    )}
-                    {idx === 0 && (
-                      <span className="absolute top-1 right-1 flex items-center gap-0.5 bg-amber-400 text-amber-950 text-[9px] font-bold px-1.5 py-0.5 rounded-full">
-                        <Star className="w-2.5 h-2.5 fill-current"  strokeWidth={1.5}/> شاخص
-                      </span>
-                    )}
-                    <div className="absolute inset-x-0 bottom-0 p-1 bg-gradient-to-t from-black/60 to-transparent flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                      <div className="flex gap-0.5">
-                        <button type="button" onClick={() => handleMove(idx, -1)} disabled={idx === 0 || busyId !== null} className="p-1 rounded-lg bg-white/90 text-slate-700 disabled:opacity-30" title="انتقال به قبل">
-                          <ChevronRight className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                        </button>
-                        <button type="button" onClick={() => handleMove(idx, 1)} disabled={idx === images.length - 1 || busyId !== null} className="p-1 rounded-lg bg-white/90 text-slate-700 disabled:opacity-30" title="انتقال به بعد">
-                          <ChevronLeft className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                        </button>
+                      <div role="group" aria-label={`عملیات تصویر ${number}`} className={`grid gap-1.5 p-2 ${images.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                        {images.length > 1 && <>
+                          <button type="button" disabled={busy || index === 0} onClick={() => moveImage(index, -1)} aria-label={`انتقال تصویر ${number} به قبل`} title="انتقال به قبل" className={imageAction}><ChevronRight aria-hidden="true" className="size-4" /></button>
+                          <button type="button" disabled={busy || index === images.length - 1} onClick={() => moveImage(index, 1)} aria-label={`انتقال تصویر ${number} به بعد`} title="انتقال به بعد" className={imageAction}><ChevronLeft aria-hidden="true" className="size-4" /></button>
+                        </>}
+                        {index > 0 && <button type="button" disabled={busy} onClick={() => selectCover(image.id)} aria-label={`انتخاب تصویر ${number} به‌عنوان شاخص`} title="انتخاب به‌عنوان شاخص" className={imageAction}><Star aria-hidden="true" className="size-4" /></button>}
+                        <button type="button" disabled={busy} onClick={() => setConfirmImageId(image.id)} aria-label={`حذف تصویر ${number}`} title="حذف تصویر" className={`flex min-h-11 items-center justify-center gap-1.5 rounded-lg bg-rose-50 text-xs font-bold text-rose-700 hover:bg-rose-100 focus-visible:ring-2 focus-visible:ring-rose-700 disabled:opacity-40 ${index === 0 && images.length > 1 ? 'col-span-2' : ''}`}><Trash2 aria-hidden="true" className="size-4" />{index === 0 && 'حذف تصویر'}</button>
                       </div>
-                      <div className="flex gap-0.5">
-                        {idx !== 0 && (
-                          <button type="button" onClick={() => handleCover(im.id)} disabled={busyId !== null} className="p-1 rounded-lg bg-white/90 text-amber-600" title="تنظیم به‌عنوان شاخص">
-                            <Star className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                          </button>
-                        )}
-                        <button type="button" onClick={() => handleDelete(im.id)} disabled={busyId !== null} className="p-1 rounded-lg bg-white/90 text-rose-600" title="حذف">
-                          {busyId === im.id ? <Loader2 className="w-3.5 h-3.5 animate-spin"  strokeWidth={1.5}/> : <Trash2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {images.length < MAX_IMAGES && (
-                  <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="aspect-square rounded-xl border-2 border-dashed border-brand-border hover:border-brand-deep bg-brand-soft/40 hover:bg-brand-soft flex flex-col items-center justify-center gap-1.5 text-brand-deep transition-colors disabled:opacity-50">
-                    {uploading ? <Loader2 className="w-6 h-6 animate-spin"  strokeWidth={1.5}/> : (<><Plus className="w-6 h-6"  strokeWidth={1.5}/><span className="text-[10px] font-bold">افزودن تصویر</span></>)}
-                  </button>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-400 text-center">{toPersianDigits(images.length)} از {toPersianDigits(MAX_IMAGES)} تصویر • اولین تصویر، تصویر شاخص محصول است</p>
-            </>
-          )}
-          <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={(e) => handleFiles(e.target.files)} />
-        </div>
-        <div className="p-3 border-t border-slate-100 bg-slate-50 flex items-center gap-2 text-[10px] text-slate-500">
-          <ImageIcon className="w-3.5 h-3.5 shrink-0"  strokeWidth={1.5}/>
-          <span>با دکمه‌های جهت‌دار ترتیب نمایش را تغییر دهید. تصویر اول به‌عنوان شاخص در لیست‌ها نمایش داده می‌شود.</span>
-        </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <p className="text-xs leading-6 text-slate-600">تصویر اول در فهرست کالاها نمایش داده می‌شود. {images.length > 1 && 'برای تغییر ترتیب از فلش‌ها استفاده کن. '}فرمت‌های JPG، PNG و WEBP تا ۵ مگابایت پذیرفته می‌شوند.</p>
+          </>
+        )}
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={event => handleFiles(event.target.files)} />
       </div>
-    </div>
+      {confirmImageId && (
+        <SupplierDialog titleId="supplier-delete-image-title" onDismiss={() => setConfirmImageId(null)}>
+          <h3 id="supplier-delete-image-title" className="text-base font-extrabold">تصویر حذف شود؟</h3>
+          <p className="mt-2 text-sm leading-7 text-slate-700">این تصویر از گالری «{productTitle}» برداشته می‌شود.</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button type="button" onClick={() => setConfirmImageId(null)} className="min-h-11 rounded-xl border border-slate-300 px-4 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand">انصراف</button>
+            <button type="button" onClick={() => removeImage(confirmImageId)} className="min-h-11 rounded-xl bg-rose-700 px-4 text-sm font-bold text-white hover:bg-rose-800 focus-visible:ring-2 focus-visible:ring-rose-700">تأیید حذف تصویر</button>
+          </div>
+        </SupplierDialog>
+      )}
+    </SupplierDialog>
   );
 };

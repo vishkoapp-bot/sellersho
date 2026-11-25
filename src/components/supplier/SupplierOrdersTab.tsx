@@ -1,5 +1,6 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
 import { SupplierDialog } from './SupplierDialog';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -326,7 +327,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
 
   return (
     <div className="space-y-4 pb-6 sm:space-y-5">
-      <SupplierSectionHeading title="سفارش‌ها" description="سفارش‌های ارسالی خودت و سفارش‌های انبار مرکزی را از همین‌جا پیگیری کن." icon={<Truck />} />
+      <SupplierSectionHeading title="سفارش‌های من" description="سفارش‌های ارسال مستقیم و انبار مرکزی را پیگیری کن." icon={<Truck />} />
       <div role="group" aria-label="مسیر ارسال سفارش" className="grid grid-cols-2 gap-2 rounded-[20px] border border-[#e6e2f0] bg-white p-2 shadow-sm">
         {([
           { id: 'direct', label: 'ارسال توسط من', Icon: Truck },
@@ -356,19 +357,9 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
             </div>
           </div>
 
-          {warehouseLoading && <div role="status" className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت سفارش‌های انبار مرکزی…</div>}
-          {warehouseError && (
-            <div role="alert" className="space-y-2 rounded-2xl bg-rose-50 p-4 text-xs text-rose-800">
-              <p>{warehouseError}</p>
-              <button type="button" onClick={fetchWarehouseOrders} className="rounded-lg bg-white px-3 py-2 font-bold">تلاش دوباره</button>
-            </div>
-          )}
+          <SupplierResourceState loading={warehouseLoading} error={warehouseError || ''} retry={fetchWarehouseOrders} />
           {!warehouseLoading && !warehouseError && warehouseOrders.length === 0 ? (
-            <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-2">
-              <Warehouse className="w-10 h-10 text-slate-300 mx-auto" strokeWidth={1.5} />
-              <h4 className="text-xs font-bold text-slate-700">هنوز سفارشی از انبار مرکزی برای کالاهای تو ثبت نشده است.</h4>
-              <p className="text-[10px] leading-5 text-slate-400">وقتی مشتری کالایی از تو را که در انبار مرکزی است بخرد و پرداخت کند، سفارشش اینجا دیده می‌شود.</p>
-            </div>
+            <SupplierEmptyState icon={<Warehouse />} title="هنوز سفارشی از انبار مرکزی ثبت نشده است." description="سفارش‌های پرداخت‌شدهٔ کالاهای موجود در انبار مرکزی اینجا نمایش داده می‌شوند." />
           ) : (
             <div className="space-y-2.5">
               {warehouseOrders.map((ord) => {
@@ -508,21 +499,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
         </div>
       )}
       {!loading && !loadError && filteredOrders.length === 0 ? (
-        <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-2">
-          <Package className="w-10 h-10 text-slate-300 mx-auto"  strokeWidth={1.5}/>
-          {filterStatus === 'all' && allOrders.length === 0 ? (
-            <>
-              <h4 className="text-xs font-bold text-slate-700">هنوز سفارشی برای تو نیامده است.</h4>
-              <p className="text-[10px] leading-5 text-slate-400">وقتی مشتری کالای تو را بخرد، سفارشش اینجا می‌آید. آن وقت بسته‌بندی‌اش می‌کنی، می‌فرستی و کد رهگیری را روی همان سفارش ثبت می‌کنی.</p>
-            </>
-          ) : (
-            <>
-              <h4 className="text-sm font-bold text-slate-700">{searchQuery.trim() ? 'سفارشی با این جستجو پیدا نشد.' : 'سفارشی در این وضعیت نیست.'}</h4>
-              <button type="button" onClick={() => { setSearchQuery(''); setFilterStatus('all'); }}
-                className="min-h-11 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep">پاک کردن فیلترها و دیدن همه سفارش‌ها</button>
-            </>
-          )}
-        </div>
+        filterStatus === 'all' && allOrders.length === 0 ? (
+          <SupplierEmptyState icon={<Package />} title="هنوز سفارش ارسال مستقیم نداری." description="سفارش‌های ارسال مستقیم و فرم ثبت کد رهگیری آن‌ها اینجا نمایش داده می‌شوند." />
+        ) : (
+          <SupplierEmptyState icon={<Package />} title={searchQuery.trim() ? 'سفارشی با این جستجو پیدا نشد.' : 'سفارشی در این وضعیت نیست.'}
+            action={<button type="button" onClick={() => { setSearchQuery(''); setFilterStatus('all'); }} className="min-h-11 rounded-xl bg-brand-soft px-4 text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن فیلترها و دیدن همه سفارش‌ها</button>} />
+        )
       ) : (
         <div className="space-y-2.5">
           {filteredOrders.map((ord) => {

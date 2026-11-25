@@ -5,7 +5,7 @@ import { supplierApi } from '../../services/supplierApi';
 import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { useSupplierResource } from './useSupplierResource';
-import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 
 export function canRespondToDiscrepancy(item: { status: string; escalated_at?: string; responded_at?: string; response_due_at: string }) {
   return item.status === 'open' && !item.escalated_at && Date.parse(item.response_due_at) > Date.now();
@@ -42,13 +42,9 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
   return (
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="مغایرت‌های تحویل انبار" description="اختلاف تعداد یا خرابیِ ثبت‌شده را بررسی کن و تا پایان مهلت پاسخ بده." icon={<AlertTriangle />} />
-      <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">گاهی انبار می‌گوید تعدادی که رسیده با تعدادی که تو گفتی فرق دارد، یا چند تایی خراب بوده. این اختلاف‌ها اینجا می‌آید؛ نگاه کن و اگر اشتباه شده، جوابت را بنویس.</div>
       <SupplierResourceState loading={resource.loading} error={resource.error} retry={resource.reload} />
       {!resource.loading && !resource.error && !(resource.data || []).length && (
-        <div className="rounded-2xl border bg-white p-6 text-center space-y-1.5">
-          <p className="text-xs font-bold text-emerald-700">اختلافی ثبت نشده است.</p>
-          <p className="text-[11px] leading-5 text-slate-400">اگر انبار برای محموله‌ای اختلاف تعداد یا خرابی ثبت کند، اینجا نمایش داده می‌شود.</p>
-        </div>
+        <SupplierEmptyState icon={<AlertTriangle />} title="مغایرتی ثبت نشده است." description="اگر انبار اختلاف تعداد یا خرابی ثبت کند، جزئیات آن همین‌جا نمایش داده می‌شود." />
       )}
       {!resource.error && sortedItems.map((item) => (
         <section key={item.id} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm">

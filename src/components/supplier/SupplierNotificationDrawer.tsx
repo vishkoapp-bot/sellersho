@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { supplierApi, SupplierNotification } from '../../services/supplierApi';
-import { Bell, Check, CheckCheck, X, XCircle } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Bell, Check, CheckCheck, XCircle } from 'lucide-react';
+import { SupplierDialog, SupplierDialogHeading } from './SupplierDialog';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 
 // Supplier rejection-notification drawer (DESIGN.md §4.3).
 // Deliberately NOT a reuse of src/components/common/NotificationDrawer:
@@ -193,59 +194,20 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-hidden bg-slate-900/60 backdrop-blur-xs flex justify-center" dir="rtl">
-      <motion.div
-        initial={{ y: '100%' }}
-        animate={{ y: 0 }}
-        exit={{ y: '100%' }}
-        transition={{ type: 'spring', damping: 28, stiffness: 240 }}
-        className="w-full max-w-[504px] bg-white h-full shadow-2xl flex flex-col justify-between"
-      >
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-              <Bell className="w-4 h-4" strokeWidth={1.5} />
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-slate-900">اعلان‌های تأمین‌کننده</h3>
-              <span className="text-[10px] text-slate-400 block">
-                {unreadCount > 0 ? `${toPersianDigits(unreadCount)} اعلان جدید خوانده‌نشده` : 'تمام اعلان‌ها خوانده شده است'}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {unreadCount > 0 && (
-              <button
-                onClick={() => void handleMarkAllRead()}
-                className="text-[10px] text-brand-deep font-bold hover:underline flex items-center gap-1"
-              >
-                <CheckCheck className="w-3.5 h-3.5" strokeWidth={1.5} />
-                <span>خواندن همه</span>
-              </button>
-            )}
-            <button
-              onClick={onClose}
-              className="p-1 rounded-lg text-slate-400 hover:bg-slate-100"
-              aria-label="بستن اعلان‌ها"
-            >
-              <X className="w-4 h-4" strokeWidth={1.5} />
-            </button>
-          </div>
-        </div>
-
-        <div className="px-4 pt-3 flex items-center gap-2 border-b border-slate-100" role="tablist" aria-label="دسته‌بندی اعلان‌ها">
+    <SupplierDialog titleId="supplier-notifications-title" onDismiss={onClose}>
+        <SupplierDialogHeading id="supplier-notifications-title" title="اعلان‌های تأمین‌کننده" onClose={onClose}
+          detail={loading || loadError ? undefined : unreadCount > 0 ? `${toPersianDigits(unreadCount)} اعلان جدید خوانده‌نشده` : 'تمام اعلان‌ها خوانده شده است'} />
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-2xl bg-[#f8f6fc] p-2" role="group" aria-label="دسته‌بندی اعلان‌ها">
           {(['all', 'unread', 'read'] as NotificationTab[]).map((t) => {
             const active = tab === t;
             return (
               <button
                 key={t}
                 type="button"
-                role="tab"
-                aria-selected={active}
+                aria-pressed={active}
                 onClick={() => setTab(t)}
-                className={`pb-2 text-[11px] font-bold border-b-2 transition-colors ${
-                  active ? 'text-rose-600 border-rose-600' : 'text-slate-400 border-transparent hover:text-slate-600'
+                className={`min-h-11 rounded-xl px-2.5 text-xs font-bold focus-visible:ring-2 focus-visible:ring-brand ${
+                  active ? 'bg-[#382660] text-white' : 'text-slate-700 hover:bg-brand-soft'
                 }`}
               >
                 {`${NOTIFICATION_TAB_LABELS[t]} ${toPersianDigits(tabCounts[t])}`}
@@ -253,33 +215,20 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
             );
           })}
         </div>
-
-        <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
-          {loading ? (
-            <p className="text-xs text-slate-400 text-center py-8">در حال دریافت اعلان‌ها…</p>
-          ) : loadError ? (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-center space-y-2">
-              <p className="text-xs font-bold text-rose-700">{loadError}</p>
-              <button
-                type="button"
-                onClick={() => {
-                  setLoading(true);
-                  setLoadError('');
-                  supplierApi.getNotifications()
-                    .then((res) => { setNotifications(res.notifications); onUnreadCountChange?.(res.unreadCount); })
-                    .catch(() => setLoadError('دریافت اعلان‌ها انجام نشد.'))
-                    .finally(() => setLoading(false));
-                }}
-                className="min-h-[40px] px-4 rounded-xl bg-rose-600 text-white text-xs font-bold"
-              >
-                تلاش دوباره
-              </button>
-            </div>
-          ) : notifications.length === 0 ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
-              <p className="text-xs font-bold text-slate-600">اعلان جدیدی نیست.</p>
-              <p className="text-[11px] leading-5 text-slate-400">اعلان‌های مربوط به تأمین‌کننده — رد پیشنهاد، سفارش و ارسال — اینجا می‌آیند.</p>
-            </div>
+        <div className="space-y-2.5">
+          {!loading && !loadError && unreadCount > 0 && <button type="button" onClick={() => void handleMarkAllRead()} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
+            <CheckCheck aria-hidden="true" className="size-4" /> خواندن همه
+          </button>}
+          <SupplierResourceState loading={loading} error={loadError} retry={() => {
+            setLoading(true);
+            setLoadError('');
+            supplierApi.getNotifications()
+              .then((res) => { setNotifications(res.notifications); onUnreadCountChange?.(res.unreadCount); })
+              .catch(() => setLoadError('دریافت اعلان‌ها انجام نشد.'))
+              .finally(() => setLoading(false));
+          }} />
+          {!loading && !loadError && (notifications.length === 0 ? (
+            <SupplierEmptyState icon={<Bell />} title="اعلان جدیدی نیست." description="خبرهای مربوط به پیشنهاد کالا، سفارش و ارسال اینجا نمایش داده می‌شوند." />
           ) : visibleNotifications.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center space-y-1.5">
               <p className="text-xs font-bold text-slate-600">
@@ -315,7 +264,7 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
                         type="button"
                         aria-label={`خوانده شد: ${item.title}`}
                         onClick={() => handleMarkOneRead(item)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[28px] rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                        className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-brand"
                       >
                         <Check className="w-3.5 h-3.5" strokeWidth={2} />
                         <span>خوانده شد</span>
@@ -327,7 +276,7 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
                       <button
                         type="button"
                         onClick={() => handleSelect(item)}
-                        className="w-full py-1.5 min-h-[40px] px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-colors"
+                        className="flex min-h-11 w-full items-center justify-center rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
                       >
                         <span>ویرایش و ارسال مجدد</span>
                       </button>
@@ -336,18 +285,8 @@ export const SupplierNotificationDrawer: React.FC<Props> = ({
                 </div>
               );
             })
-          )}
+          ))}
         </div>
-
-        <div className="p-3 border-t border-slate-100 bg-slate-50">
-          <button
-            onClick={onClose}
-            className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors"
-          >
-            بستن اعلان‌ها
-          </button>
-        </div>
-      </motion.div>
-    </div>
+    </SupplierDialog>
   );
 };

@@ -57,7 +57,8 @@ it('renders the empty state when there are no notifications', () => {
 
 it('renders the supplier-inbox empty state when there are no notifications', () => {
   const html = render([]);
-  assert.match(html, /اعلان‌های مربوط به تأمین‌کننده — رد پیشنهاد، سفارش و ارسال — اینجا می‌آیند\./);
+  assert.match(html, /<dialog[^>]*aria-labelledby="supplier-notifications-title"/);
+  assert.match(html, /پیشنهاد کالا، سفارش و ارسال اینجا نمایش داده می‌شوند\./);
 });
 
 it('renders nothing when closed', () => {

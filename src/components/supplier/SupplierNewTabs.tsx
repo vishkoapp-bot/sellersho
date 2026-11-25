@@ -1,5 +1,5 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
-import { SupplierResourceState } from './SupplierResourceState';
+import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -136,7 +136,7 @@ export const SupplierAnalyticsTab: React.FC = () => {
   const percent = (r: number) => toPersianDigits(`${Math.round(r * 1e3) / 10}٪`);
   return (
     <div className="space-y-3 pb-6">
-      <SupplierSectionHeading title="تحلیل فروش و مرجوعی کالاهای تو" description="روند فروش، کالاهای پرفروش و نتیجهٔ مرجوعی‌ها را بررسی کن." icon={<BarChart3 />} />
+      <SupplierSectionHeading title="تحلیل فروش" description="روند فروش، کالاهای پرفروش و نتیجهٔ مرجوعی‌ها را بررسی کن." icon={<BarChart3 />} />
       <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-2">
         <p className="text-[11px] leading-6 text-slate-600">اینجا می‌بینی از کالاهای خودت چقدر فروش رفته، چقدرش برگشته و موجودی هر کالا با همین سرعت فروش چند روز دیگر تمام می‌شود. فقط کالاهای خودت را می‌بینی.</p>
         <p className="text-[11px] font-bold text-slate-700">مبلغ پایه یعنی چه؟</p>
@@ -144,11 +144,7 @@ export const SupplierAnalyticsTab: React.FC = () => {
       </div>
       <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && data && !hasSales && (
-        <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-brand-soft border border-brand-border flex items-center justify-center mx-auto mb-4"><BarChart3 className="w-7 h-7 text-brand-deep" strokeWidth={1.5} /></div>
-          <p className="text-sm font-extrabold text-slate-800 mb-1.5">هنوز فروشی ثبت نشده</p>
-          <p className="text-[11px] leading-6 text-slate-400 max-w-[260px] mx-auto">به محض ثبت اولین سفارش پرداخت‌شده برای کالاهایت، آمار فروش، نمودار ۳۰ روزه و وضعیت مرجوعی همین‌جا نمایش داده می‌شود.</p>
-        </div>
+        <SupplierEmptyState icon={<BarChart3 />} title="هنوز فروشی ثبت نشده است." description="پس از اولین سفارش پرداخت‌شده، آمار فروش و روند مرجوعی‌ها اینجا نمایش داده می‌شود." />
       )}
       {!loading && !loadError && data && hasSales && (<>
         <div className="grid grid-cols-2 gap-2.5">
@@ -342,7 +338,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
       <SupplierSectionHeading title="مرجوعی‌های مشتریان" description="وضعیت مرجوعی‌ها را ببین و کالایی را که انبار تحویل گرفته برای بازگشت درخواست کن." icon={<RotateCcw />} />
       <p className="rounded-2xl border border-[#e6e2f0] bg-white p-3 text-sm leading-6 text-slate-700">بعد از تحویل کالا به انبار، درخواست بازگشت را ثبت کن. انبار درخواست را بررسی می‌کند و هزینهٔ ارسال به عهدهٔ توست. این هزینه از کیف پول کسر نمی‌شود.</p>
       <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
-      {!loading && !loadError && returns.length === 0 && (<div className="rounded-2xl border bg-white p-6 text-center space-y-1.5"><p className="text-xs font-bold text-emerald-700">مرجوعی‌ای برای کالاهای تو ثبت نشده است.</p><p className="text-[11px] leading-5 text-slate-400">وقتی مشتری‌ای کالای تو را مرجوع کند، اینجا نمایش داده می‌شود.</p></div>)}
+      {!loading && !loadError && returns.length === 0 && <SupplierEmptyState icon={<RotateCcw />} title="مرجوعی‌ای برای کالاهای تو ثبت نشده است." description="وقتی مشتری کالایی را مرجوع کند، وضعیت آن را همین‌جا می‌بینی." />}
       {!loadError && returns.map((ret: any, ri: number) => (
         <section key={ret.returnId || ri} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
@@ -509,13 +505,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
       <SupplierSectionHeading title="انبارهای من" description="انبار یا کارخانه‌ای را که مبدأ ارسال مستقیم کالاهایت است اینجا ثبت کن." icon={<Warehouse />}
         action={!formOpen && <button type="button" onClick={openCreate} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><Plus aria-hidden="true" className="size-4" /> ثبت انبار جدید</button>} />
       <SupplierResourceState loading={loading} error={loadError} retry={load} />
-      {items.length === 0 && !loading && !loadError && (
-        <div className="rounded-2xl border bg-white p-8 text-center space-y-2">
-          <Warehouse className="w-8 h-8 mx-auto text-slate-300"  strokeWidth={1.5}/>
-          <p className="text-xs font-bold text-slate-600">هنوز انباری ثبت نکرده‌ای</p>
-          <p className="text-[10px] text-slate-400 leading-relaxed">انبار لازم نیست؛ اگر انبار ثبت نکنی، کالاهای مستقیم از شهر انبار پروفایلت ارسال می‌شوند. ولی اگر کارخانه یا انبار جداگانه داری، اینجا ثبتش کن تا مبدأ هر کالا دقیق باشد.</p>
-        </div>
-      )}
+      {items.length === 0 && !loading && !loadError && !formOpen && <SupplierEmptyState icon={<Warehouse />} title="هنوز انباری ثبت نکرده‌ای." description="برای تعیین مبدأ ارسال یا انتقال موجودی، از دکمهٔ «ثبت انبار جدید» استفاده کن." />}
       {formOpen && (
         <form onSubmit={submit} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
           <h3 className="text-base font-extrabold text-[#261b41]">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
@@ -870,7 +860,6 @@ export const SupplierShippingMethodsTab: React.FC = () => {
   return (
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="روش‌های ارسال" description="روش‌های فعال فروشگاه را ببین و درخواست فعال‌سازی روش‌های دیگر را ثبت کن." icon={<Truck />} />
-      <SupplierSLACard />
       <div className="flex items-start gap-2.5 rounded-2xl border border-brand-border bg-brand-bg p-3.5">
         <Info className="h-4 w-4 shrink-0 mt-0.5 text-brand-deep"  strokeWidth={1.5}/>
         <p className="text-[11px] leading-6 text-slate-600">
@@ -924,6 +913,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
           </section>
         );
       })}
+      <SupplierSLACard />
       {supplierSession?.permissions?.includes('supplier.manage') && <SupplierTapinCard />}
     </div>
   );
@@ -940,7 +930,7 @@ export const SupplierContractTab: React.FC = () => {
   const signed = supplierSession?.signedContractVersion;
   return (
     <div className="space-y-4 pb-6">
-      <SupplierSectionHeading title="قرارداد همکاری" description="متن قرارداد تأمین و توزیع و وضعیت امضای آن را ببین." icon={<FileText />} />
+      <SupplierSectionHeading title="قرارداد من" description="متن قرارداد تأمین و توزیع و وضعیت امضای آن را ببین." icon={<FileText />} />
       <div className="overflow-hidden rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
         <div className="p-3.5 flex items-center gap-1.5">
           <FileText className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/>

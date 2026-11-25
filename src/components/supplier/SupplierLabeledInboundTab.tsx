@@ -34,16 +34,7 @@ const formatNumber = (digits: string, toPersianDigits: (n: number | string) => s
   const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, '٬');
   return toPersianDigits(grouped);
 };
-const parseDigits = (value: string): string => {
-  const persian = '۰۱۲۳۴۵۶۷۸۹';
-  let out = '';
-  for (const ch of value) {
-    const pi = persian.indexOf(ch);
-    if (pi >= 0) out += String(pi);
-    else if (ch >= '0' && ch <= '9') out += ch;
-  }
-  return out;
-};
+const parseDigits = (value: string) => normalizePersianText(value).replace(/[^0-9]/g, '');
 
 const printCartonLabel = (shipment: ShipmentLabel) => {
   const created = shipment.created_at ? new Date(shipment.created_at).toLocaleDateString("fa-IR") : "";
@@ -69,6 +60,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   const [productId, setProductId] = useState('');
   const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
   const sourceWarehouses = useSupplierResource(supplierApi.getMyWarehouses);
+  const activeSources = (sourceWarehouses.data ?? []).filter(warehouse => warehouse.isActive !== false);
   const sourceInventory = useSupplierResource(supplierApi.getInventoryLocations);
   const [sourceId, setSourceId] = useState('');
   const [sourceKind, setSourceKind] = useState('transfer');
@@ -151,7 +143,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
     setSubmitError('');
     if (!warehouseId || !(warehouses.data || []).some((w: any) => w.id === warehouseId)) { setSubmitError('انبار مقصد را انتخاب کن.'); return; }
     const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) }));
-    if (items.length === 0) { setSubmitError('حداقل یک مدل کالا به محموله اضافه کن.'); return; }
+    if (items.length === 0) { setSubmitError('حداقل یک تنوع کالا به محموله اضافه کن.'); return; }
     const invalidLine = items.findIndex(item => !Number.isSafeInteger(item.expected_qty) || item.expected_qty <= 0 || item.expected_qty > 2147483647);
     if (invalidLine !== -1) {
       const line = lines[invalidLine];
@@ -161,7 +153,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      if (sourceKind === 'transfer' && !sourceId) throw new Error('انبار مبدأ را انتخاب کن.');
+      if (sourceKind === 'transfer' && (sourceWarehouses.error || !activeSources.some(warehouse => warehouse.id === sourceId))) throw new Error('یک انبار مبدأ فعال را انتخاب کن.');
       if (sourceKind === 'external_replenishment') {
         if (!externalReference.trim()) throw new Error('شماره فاکتور خرید یا شماره مدرک ورود کالا را وارد کن.');
         if (!sourceReason.trim()) throw new Error('دلیل ورود کالا را بنویس، مثلاً خرید از تولیدکننده.');
@@ -199,13 +191,13 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
       )}
       <section hidden={stage === 'track'} className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-4 sm:p-5">
         <h3 className="text-base font-extrabold text-[#261b41] flex items-center gap-2"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
-        <p className="text-sm leading-7 text-slate-700">مبدأ و مقصد را مشخص کن، بعد همه کالاها و مدل‌هایی را که در این محموله می‌فرستی اضافه کن.</p>
+        <p className="text-sm leading-7 text-slate-700">مبدأ و مقصد را مشخص کن. سپس کالاها و تنوع‌هایی را که در این محموله می‌فرستی اضافه کن.</p>
         <fieldset disabled={submitting} className="min-w-0 space-y-4 disabled:opacity-70">
         <label className="block text-sm font-bold">کالا از کجا می‌آید؟<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className={fieldClass}><option value="transfer">از موجودی یکی از انبارهای من</option><option value="external_replenishment">ورود کالای جدید با فاکتور یا مدرک</option></select></label>
         {sourceKind === 'transfer' ? <>
           <SupplierResourceState loading={sourceWarehouses.loading} error={sourceWarehouses.error} retry={sourceWarehouses.reload} />
-          <label className="block text-sm font-bold">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className={fieldClass}><option value="">انتخاب انبار مبدأ</option>{(sourceWarehouses.data ?? []).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
-          {!sourceWarehouses.loading && !sourceWarehouses.error && !sourceWarehouses.data?.length && <p className="text-sm text-slate-700">برای انتقال موجودی، ابتدا در بخش «انبارهای من» یک انبار ثبت کن.</p>}
+          <label className="block text-sm font-bold">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className={fieldClass}><option value="">انتخاب انبار مبدأ</option>{activeSources.map(warehouse => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label>
+          {!sourceWarehouses.loading && !sourceWarehouses.error && activeSources.length === 0 && <p className="rounded-xl bg-brand-bg p-3 text-sm leading-6 text-slate-700">برای انتقال موجودی، در بخش «انبارهای من» یک انبار فعال ثبت کن.</p>}
         </> : (
           <div className="space-y-3">
             <label className="block text-sm font-bold">
@@ -239,7 +231,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
         {productId && <SupplierResourceState loading={variants.loading} error={variants.error} retry={variants.reload} />}
         {productId && !variants.loading && !variants.error && variants.data && (
           <div className="flex flex-wrap gap-1.5">
-            {variants.data.length === 0 ? (<p className="text-sm leading-6 text-slate-600">این کالا مدلی ندارد. از بخش «کالاها و تنوع‌ها» برایش مدل بساز.</p>) : variants.data.map(v => (
+            {variants.data.length === 0 ? (<p className="text-sm leading-6 text-slate-600">این کالا تنوعی ندارد. از بخش «کالاها و تنوع‌ها» برایش تنوع ثبت کن.</p>) : variants.data.map(v => (
               <button key={v.id} type="button" onClick={() => addVariant(v)} disabled={lines.some(l => l.variant.id === v.id)} className="flex min-h-11 max-w-full flex-wrap items-center gap-1.5 rounded-xl bg-brand-soft px-3 py-2 text-xs font-bold text-brand-deep hover:bg-brand-border/40 disabled:opacity-60">
                 <Tag className="w-3 h-3"  strokeWidth={1.5}/>
                 <span>{v.variant_name}</span>
@@ -251,7 +243,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
         )}
         {lines.length > 0 && (
           <div className="space-y-2">
-            <p className="text-sm font-bold">مدل‌های داخل محموله ({toPersianDigits(lines.length)})</p>
+            <p className="text-sm font-bold">تنوع‌های داخل محموله ({toPersianDigits(lines.length)})</p>
             {lines.map((l) => (
               <div key={l.variant.id} className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200 p-2">
                 <div className="flex-1 min-w-0">
@@ -319,7 +311,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
                 <bdi dir="ltr" className="break-all text-sm font-black tracking-wider text-[#261b41]">{s.shipment_code}</bdi>
                 <span className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand-deep">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>
               </div>
-              <p className="mt-1 text-xs text-slate-600">{toPersianDigits(s.item_count ?? 0)} مدل{s.created_at ? ` · ${new Date(s.created_at).toLocaleDateString('fa-IR')}` : ''}</p>
+              <p className="mt-1 text-xs text-slate-600">{toPersianDigits(s.item_count ?? 0)} تنوع{s.created_at ? ` · ${new Date(s.created_at).toLocaleDateString('fa-IR')}` : ''}</p>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               <button type="button" onClick={() => print(s)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#dfd8ef] bg-white px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">

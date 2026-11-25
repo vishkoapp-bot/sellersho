@@ -32,7 +32,7 @@ test('uploaded image delete button is visible and tappable without hover at 390p
     await page.waitForSelector('input[type="checkbox"]');
     await page.click('input[type="checkbox"]');
     await clickText(page, 'قبول دارم، ادامه بده');
-    await clickText(page, 'کالاها و تنوع‌ها');
+    await page.select('#supplier-section', 'products');
     await clickText(page, 'پیشنهاد کالای جدید');
     await page.waitForFunction(selector => {
       const images = [...document.querySelectorAll<HTMLImageElement>(selector)];

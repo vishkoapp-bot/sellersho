@@ -1,9 +1,10 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { useStore } from '../../context/StoreContext';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Megaphone } from 'lucide-react';
 
 // Live ads tab (dn): click advertising is NOT active yet — a coming-soon
 // page. Past campaigns (if any) are listed read-only, all inactive, with
@@ -14,10 +15,7 @@ export const SupplierAdsCampaignTab: React.FC = () => {
   const list = campaigns.data || [];
   return (
     <div className="space-y-3 pb-6">
-      <div className="flex items-center gap-2">
-        <h2 className="text-sm font-bold">تبلیغ کالاها</h2>
-        <span className="rounded-full bg-amber-100 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800">به‌زودی</span>
-      </div>
+      <SupplierSectionHeading title="تبلیغ کالاها" description="سوابق کمپین‌ها و وضعیت فعال‌سازی تبلیغات را ببین." icon={<Megaphone />} />
       <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3">
         <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" strokeWidth={1.5} />
         <div className="space-y-1">

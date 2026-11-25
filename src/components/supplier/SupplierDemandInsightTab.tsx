@@ -1,3 +1,4 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -70,24 +71,20 @@ export const SupplierDemandInsightTab: React.FC<SupplierDemandInsightTabProps> =
 
   return (
     <div className="space-y-3 pb-6">
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <h3 className="text-xs font-extrabold text-slate-800">اینسایت تقاضا</h3>
-          <div className="flex items-center gap-1 rounded-xl bg-slate-50 border border-slate-100 p-1">
+      <SupplierSectionHeading title="تقاضای بازار" description="جستجوهای مرتبط با کالاها و دسته‌های فروشگاهت را ببین." icon={<Search />}
+        action={<div role="group" aria-label="بازهٔ زمانی تقاضا" className="flex flex-wrap gap-1 rounded-2xl border border-[#e6e2f0] bg-[#f8f6fc] p-1">
             {WINDOW_OPTIONS.map((opt) => (
               <button
                 key={opt.days}
                 type="button"
+                aria-pressed={days === opt.days}
                 onClick={() => setDays(opt.days)}
-                className={`rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition-colors ${days === opt.days ? 'bg-brand-deep text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`min-h-11 rounded-xl px-3 text-xs font-bold transition-colors ${days === opt.days ? 'bg-brand-deep text-white' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 {opt.label}
               </button>
             ))}
-          </div>
-        </div>
-        <p className="text-[10px] text-slate-400 mt-2 leading-5">بر اساس جستجوهای مشتریان در فروشگاه‌ها؛ فقط عبارت‌هایی که به کالاها و دسته‌های تو مربوط‌اند نمایش داده می‌شوند.</p>
-      </section>
+        </div>} />
 
       {!hasAny ? (
         <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">

@@ -1,3 +1,4 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React, { useEffect, useState } from 'react';
 import { UserPlus, UserCheck, UserX, ShieldCheck } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
@@ -41,12 +42,8 @@ export const SupplierTeamTab: React.FC = () => {
   };
 
   return <div className="space-y-3.5 pb-6">
-    <section className="rounded-2xl border border-brand-border bg-brand-soft p-4 space-y-2">
-      <h2 className="flex items-center gap-2 text-sm font-bold text-brand-deep"><ShieldCheck className="h-5 w-5"  strokeWidth={1.5}/> همکاران من</h2>
-      <p className="text-xs leading-6 text-brand-deep">برای هر کارمندت یک حساب جدا بساز. هر همکار فقط بخش‌هایی را می‌بیند که تو مشخص می‌کنی و فقط اطلاعات همین شرکت را.</p>
-      <p className="text-xs leading-6 text-brand-deep">همکار با نام کاربری و رمز خودش وارد پنل می‌شود. حسابش را غیرفعال کنی، دیگر نمی‌تواند وارد شود.</p>
-      <button type="button" onClick={() => setShowForm(true)} className="flex items-center gap-2 rounded-xl bg-brand-deep px-3.5 py-2 min-h-[44px] text-xs font-bold text-white"><UserPlus className="h-4 w-4"  strokeWidth={1.5}/> افزودن همکار</button>
-    </section>
+    <SupplierSectionHeading title="همکاران من" description="برای همکاران حساب جدا بساز و دسترسی هر نفر را بر اساس نقشش تعیین کن." icon={<ShieldCheck />}
+      action={<button type="button" aria-expanded={showForm} onClick={() => setShowForm(true)} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><UserPlus aria-hidden="true" className="size-4" /> افزودن همکار</button>} />
     {showForm && <form onSubmit={submit} className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
       <h3 className="text-sm font-bold">حساب همکار جدید</h3>
       {([['fullName', 'نام و نام خانوادگی'], ['username', 'نام کاربری'], ['mobile', 'شماره موبایل'], ['password', 'رمز عبور (حداقل ۸ حرف)']] as const).map(([key, label]) => <label key={key} className="block text-xs">{label}<input required disabled={saving} minLength={key === 'password' ? 8 : undefined} maxLength={key === 'password' ? 72 : key === 'fullName' ? 100 : key === 'username' ? 50 : 11} pattern={key === 'mobile' ? '09[0-9]{9}' : key === 'username' ? '[a-zA-Z0-9_.\\-]{3,50}' : undefined} type={key === 'password' ? 'password' : key === 'mobile' ? 'tel' : 'text'} autoComplete={key === 'password' ? 'new-password' : 'off'} value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 min-h-[44px] text-xs" /></label>)}

@@ -294,7 +294,7 @@ const LabelPrintPreview: React.FC<{
           {mode === 'variant' && <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors">
             <Printer className="w-4 h-4"  strokeWidth={1.5}/><span>چاپ</span>
           </button>}
-          <button type="button" onClick={onClose} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600" aria-label="بستن">
+          <button type="button" onClick={onClose} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f7f4fc] text-[#382660] hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand" aria-label="بستن">
             <X className="w-4 h-4"  strokeWidth={1.5}/>
           </button>
         </div>
@@ -665,20 +665,20 @@ export const SupplierVariantsModal: React.FC<{
   return (
     <>
       <div className="fixed inset-0 z-[70] bg-slate-950/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4" dir="rtl">
-        <div className="bg-white w-full sm:max-w-lg max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl">
+        <div className="w-full max-h-[92dvh] overflow-y-auto overscroll-contain rounded-t-[26px] border border-[#e6e2f0] bg-white shadow-2xl sm:max-w-xl sm:rounded-[26px]">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between z-10">
             <div className="flex items-center gap-2">
               <Tag className="w-4.5 h-4.5 text-brand-deep"  strokeWidth={1.5}/>
               <div>
-                <h2 className="text-sm font-extrabold text-slate-900">مدل‌های این کالا</h2>
+                <h2 className="text-base font-extrabold text-[#261b41]">مدل‌های این کالا</h2>
                 <p className="text-[11px] text-slate-500 truncate max-w-[240px]">{productTitle}</p>
               </div>
             </div>
-            <button type="button" onClick={onClose} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600" aria-label="بستن">
+            <button type="button" onClick={onClose} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f7f4fc] text-[#382660] hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand" aria-label="بستن">
               <X className="w-4 h-4"  strokeWidth={1.5}/>
             </button>
           </div>
-          <div className="mx-4 mt-3 rounded-2xl bg-gradient-to-l from-brand-deep to-brand p-3.5 text-white">
+          <div className="mx-4 mt-3 rounded-[20px] bg-[#382660] p-4 text-white">
             <span className="text-[10px] font-bold opacity-80 block">کد کالا (SPN)</span>
             {loading ? (
               <span className="text-xs opacity-70">در حال دریافت…</span>

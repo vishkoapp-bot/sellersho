@@ -1,3 +1,4 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -134,7 +135,7 @@ export const SupplierAnalyticsTab: React.FC = () => {
   const percent = (r: number) => toPersianDigits(`${Math.round(r * 1e3) / 10}٪`);
   return (
     <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold">تحلیل فروش و مرجوعی کالاهای تو</h2>
+      <SupplierSectionHeading title="تحلیل فروش و مرجوعی کالاهای تو" description="روند فروش، کالاهای پرفروش و نتیجهٔ مرجوعی‌ها را بررسی کن." icon={<BarChart3 />} />
       <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-2">
         <p className="text-[11px] leading-6 text-slate-600">اینجا می‌بینی از کالاهای خودت چقدر فروش رفته، چقدرش برگشته و موجودی هر کالا با همین سرعت فروش چند روز دیگر تمام می‌شود. فقط کالاهای خودت را می‌بینی.</p>
         <p className="text-[11px] font-bold text-slate-700">مبلغ پایه یعنی چه؟</p>
@@ -338,15 +339,15 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold flex items-center gap-2"><RotateCcw className="w-4 h-4 text-brand-deep" strokeWidth={1.5} />مرجوعی‌های مشتریان</h2>
-      <div className="rounded-2xl border bg-white p-3 text-[11px] leading-5 text-slate-600">کالاهایی که مشتری‌ها مرجوع کرده‌اند و مال توست، اینجا می‌آید. وقتی کالا به انبار مرجوعی رسید، می‌توانی درخواست بدهی که کالاها را برایت پس بفرستند؛ انبار بررسی می‌کند و بعد ارسال می‌کند. هزینه ارسالِ برگشتِ کالا به تو را خودت می‌پردازی و از کیف پولت چیزی کسر نمی‌شود.</div>
+      <SupplierSectionHeading title="مرجوعی‌های مشتریان" description="وضعیت مرجوعی‌ها را ببین و کالایی را که انبار تحویل گرفته برای بازگشت درخواست کن." icon={<RotateCcw />} />
+      <p className="rounded-2xl border border-[#e6e2f0] bg-white p-3 text-sm leading-6 text-slate-700">بعد از تحویل کالا به انبار، درخواست بازگشت را ثبت کن. انبار درخواست را بررسی می‌کند و هزینهٔ ارسال به عهدهٔ توست. این هزینه از کیف پول کسر نمی‌شود.</p>
       {loading && (<div className="rounded-2xl border bg-white p-6 text-center text-[11px] text-slate-400">در حال دریافت مرجوعی‌ها…</div>)}
       {!loading && loadError && (<div className="rounded-2xl border bg-white p-6 text-center space-y-2" role="alert"><p className="text-[11px] text-red-600">{loadError}</p><button type="button" onClick={load} className="rounded-xl bg-brand-deep px-3 py-2 min-h-[40px] text-white font-bold text-[11px]">تلاش مجدد</button></div>)}
       {!loading && !loadError && returns.length === 0 && (<div className="rounded-2xl border bg-white p-6 text-center space-y-1.5"><p className="text-xs font-bold text-emerald-700">مرجوعی‌ای برای کالاهای تو ثبت نشده است.</p><p className="text-[11px] leading-5 text-slate-400">وقتی مشتری‌ای کالای تو را مرجوع کند، اینجا نمایش داده می‌شود.</p></div>)}
       {!loadError && returns.map((ret: any, ri: number) => (
-        <section key={ret.returnId || ri} className="space-y-2 rounded-2xl border bg-white p-3 text-xs">
+        <section key={ret.returnId || ri} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-bold">سفارش {toPersianDigits(ret.orderNumber || ret.orderId)}</h3>
+            <h3 className="break-words text-base font-extrabold text-[#261b41]">سفارش {toPersianDigits(ret.orderNumber || ret.orderId)}</h3>
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">{RETURN_STATUS_LABELS[ret.status] || ret.status}</span>
             {ret.returnCode && (<span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] text-violet-700">کد مرجوعی: {toPersianDigits(ret.returnCode)}</span>)}
             <span className="text-[10px] text-slate-400">{formatFaDate(ret.createdAt)}</span>
@@ -369,7 +370,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
               { label: "تحویل گرفتید", at: back.completedAt, done: !!back.completedAt, icon: <Package className="w-3.5 h-3.5" strokeWidth={1.5} /> },
             ] : [];
             return (
-              <div key={item.returnItemId} className="rounded-xl border border-slate-100 p-2.5 space-y-2">
+              <div key={item.returnItemId} className="space-y-2 rounded-2xl border border-[#e6e2f0] bg-[#f8f6fc] p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <Package className="w-4 h-4 text-slate-400" strokeWidth={1.5} />
                   <span className="font-bold">{item.productTitle}</span>
@@ -506,8 +507,8 @@ export const SupplierMyWarehousesTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold">انبارهای من</h2>
-      <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">اینجا انبارهای خودت را ثبت می‌کنی — کارخانه یا انبارهای خودت. وقتی کالایی را مستقیم می‌فرستی، مبدأ آن کالا همین‌جا مشخص می‌شود؛ اگر انباری انتخاب نکنی، شهر انبار پروفایلت مبدأ است.</div>
+      <SupplierSectionHeading title="انبارهای من" description="انبار یا کارخانه‌ای را که مبدأ ارسال مستقیم کالاهایت است اینجا ثبت کن." icon={<Warehouse />}
+        action={!formOpen && <button type="button" onClick={openCreate} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><Plus aria-hidden="true" className="size-4" /> ثبت انبار جدید</button>} />
       {loading && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">در حال بارگذاری…</p>}
       {loadError && !loading && (
         <div className="rounded-xl bg-white p-4 text-xs text-rose-600">{loadError} <button type="button" onClick={() => void load()} className="font-bold underline">تلاش مجدد</button></div>
@@ -519,32 +520,10 @@ export const SupplierMyWarehousesTab: React.FC = () => {
           <p className="text-[10px] text-slate-400 leading-relaxed">انبار لازم نیست؛ اگر انبار ثبت نکنی، کالاهای مستقیم از شهر انبار پروفایلت ارسال می‌شوند. ولی اگر کارخانه یا انبار جداگانه داری، اینجا ثبتش کن تا مبدأ هر کالا دقیق باشد.</p>
         </div>
       )}
-      {items.map((w: any, i: number) => (
-        <section key={w.id || i} className="space-y-1 rounded-2xl border bg-white p-3">
-          <div className="flex items-start justify-between gap-2">
-            <h3 className="text-xs font-bold">{w.name}</h3>
-            {w.isActive ? (
-              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-700">فعال</span>
-            ) : (
-              <span className="rounded-full bg-slate-100 border border-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-500">غیرفعال (مدیر)</span>
-            )}
-          </div>
-          <p className="text-[10px] text-slate-600">{w.provinceName} · {w.cityName}</p>
-          {w.address && <p className="text-[10px] text-slate-500">{w.address}</p>}
-          {(w.postalCode || w.phone) && <p className="text-[10px] text-slate-500" dir="ltr">{[w.postalCode, w.phone].filter(Boolean).join(" · ")}</p>}
-          {!w.isActive && <p className="text-[10px] text-amber-700 bg-amber-50 border-amber-100 rounded-lg px-2 py-1">این انبار را مدیر غیرفعال کرده است؛ کالاهایی که مبدأشان این انبار بود، فعلاً از شهر انبار پروفایلت ارسال می‌شوند.</p>}
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={() => openEdit(w)} className="rounded-lg bg-brand-soft px-3 py-2 min-h-[40px] text-xs font-bold text-brand-deep flex items-center gap-1"><Pencil className="w-3.5 h-3.5"  strokeWidth={1.5}/> ویرایش</button>
-          </div>
-        </section>
-      ))}
-      {!formOpen && (
-        <button type="button" onClick={openCreate} className="w-full rounded-xl bg-brand-deep px-3 py-3 min-h-[44px] text-xs font-bold text-white flex items-center justify-center gap-1"><Plus className="w-4 h-4"  strokeWidth={1.5}/> ثبت انبار جدید</button>
-      )}
       {formOpen && (
-        <form onSubmit={submit} className="space-y-2 rounded-2xl border bg-white p-3">
-          <h3 className="text-xs font-bold">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
-          <label className="block text-[11px] font-bold text-slate-600">نام انبار *<input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج یا انبار شماره ۲" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
+        <form onSubmit={submit} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+          <h3 className="text-base font-extrabold text-[#261b41]">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
+          <label className="block text-[11px] font-bold text-slate-600">نام انبار *<input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج یا انبار شماره ۲" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
           <div className="grid grid-cols-2 gap-2">
             <div className="block text-[11px] font-bold text-slate-600">استان *</div>
             <div className="block text-[11px] font-bold text-slate-600">شهر *</div>
@@ -553,15 +532,15 @@ export const SupplierMyWarehousesTab: React.FC = () => {
               city={form.cityName}
               onProvinceChange={(value, fromList) => setForm((f) => applyWarehouseProvinceChange(f, value, fromList))}
               onCityChange={(value) => setForm((f) => ({ ...f, cityName: value }))}
-              inputClassName="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal"
+              inputClassName="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand"
               provinceId="supplier-warehouse-province"
               cityId="supplier-warehouse-city"
             />
           </div>
-          <label className="block text-[11px] font-bold text-slate-600">نشانی (اختیاری)<input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
+          <label className="block text-[11px] font-bold text-slate-600">نشانی (اختیاری)<input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
           <div className="grid grid-cols-2 gap-2">
-            <label className="block text-[11px] font-bold text-slate-600">کد پستی (اختیاری — ۱۰ رقم)<input value={form.postalCode} onChange={(e) => setForm({ ...form, postalCode: e.target.value })} inputMode="numeric" dir="ltr" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
-            <label className="block text-[11px] font-bold text-slate-600">تلفن (اختیاری)<input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="tel" dir="ltr" className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs font-normal" /></label>
+            <label className="block text-[11px] font-bold text-slate-600">کد پستی (اختیاری — ۱۰ رقم)<input value={form.postalCode} onChange={(e) => setForm({ ...form, postalCode: e.target.value })} inputMode="numeric" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
+            <label className="block text-[11px] font-bold text-slate-600">تلفن (اختیاری)<input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="tel" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
           </div>
           <div className="flex gap-2">
             <button disabled={saving} className="flex-1 rounded-lg bg-brand-deep px-3 py-2 min-h-[44px] text-xs font-bold text-white">{saving ? "ذخیره…" : "ذخیره انبار"}</button>
@@ -569,6 +548,27 @@ export const SupplierMyWarehousesTab: React.FC = () => {
           </div>
         </form>
       )}
+      <div className="grid items-start gap-3 xl:grid-cols-2">
+        {items.map((w: any, i: number) => (
+          <section key={w.id || i} className="min-w-0 space-y-2 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="break-words text-base font-extrabold text-[#261b41]">{w.name}</h3>
+              {w.isActive ? (
+                <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-700">فعال</span>
+              ) : (
+                <span className="rounded-full bg-slate-100 border border-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-500">غیرفعال (مدیر)</span>
+              )}
+            </div>
+            <p className="text-sm text-slate-700">{w.provinceName} · {w.cityName}</p>
+            {w.address && <p className="break-words text-xs text-slate-600">{w.address}</p>}
+            {(w.postalCode || w.phone) && <p className="break-words text-xs text-slate-600" dir="ltr">{[w.postalCode, w.phone].filter(Boolean).join(" · ")}</p>}
+            {!w.isActive && <p className="text-[10px] text-amber-700 bg-amber-50 border-amber-100 rounded-lg px-2 py-1">این انبار را مدیر غیرفعال کرده است؛ کالاهایی که مبدأشان این انبار بود، فعلاً از شهر انبار پروفایلت ارسال می‌شوند.</p>}
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => openEdit(w)} className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"><Pencil className="w-3.5 h-3.5"  strokeWidth={1.5}/> ویرایش</button>
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 };
@@ -873,7 +873,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold">روش‌های ارسال</h2>
+      <SupplierSectionHeading title="روش‌های ارسال" description="روش‌های فعال فروشگاه را ببین و درخواست فعال‌سازی روش‌های دیگر را ثبت کن." icon={<Truck />} />
       <SupplierSLACard />
       <div className="flex items-start gap-2.5 rounded-2xl border border-brand-border bg-brand-bg p-3.5">
         <Info className="h-4 w-4 shrink-0 mt-0.5 text-brand-deep"  strokeWidth={1.5}/>
@@ -949,8 +949,9 @@ export const SupplierContractTab: React.FC = () => {
   const version = platformSettings.contracts?.supplierContractVersion || 0;
   const signed = supplierSession?.signedContractVersion;
   return (
-    <div className="space-y-3 pb-6">
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="قرارداد همکاری" description="متن قرارداد تأمین و توزیع و وضعیت امضای آن را ببین." icon={<FileText />} />
+      <div className="overflow-hidden rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
         <div className="p-3.5 flex items-center gap-1.5">
           <FileText className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/>
           <span className="text-xs font-bold text-slate-800">قرارداد تأمین و توزیع من</span>

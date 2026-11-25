@@ -1,3 +1,4 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -238,62 +239,29 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   };
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">
-        <p className="font-bold text-slate-700">قیمت عمده یعنی چه؟</p>
-        <p>کالای تازه را با دکمه «پیشنهاد کالای جدید» بفرست؛ مدیر اول بررسی می‌کند و اگر تأیید شود، کالایت به فروش می‌رسد. قیمت عمده همان پولی است که پلتفرم برای هر دانه از کالایت به تو می‌دهد. قیمت فروش به مشتری جدا حساب می‌شود و لازم نیست تو تعیینش کنی.</p>
-        <p className="text-slate-500">مثال: قیمت عمده را ۱۰۰ هزار تومان می‌گذاری؛ هر دانه که فروش برود، ۱۰۰ هزار تومان به حساب تو می‌آید.</p>
-      </div>
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      <SupplierSectionHeading title="کالاها و تنوع‌ها" description="مدل‌ها و وضعیت کالاها را ببین یا کالای جدیدی برای بررسی پیشنهاد بده." icon={<Package />}
+        action={<button type="button" aria-expanded={showAddForm} onClick={() => setShowAddForm(open => !open)}
+          className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
+          <Plus aria-hidden="true" className="size-4" /> پیشنهاد کالای جدید
+        </button>} />
       <SupplierResourceState loading={productsResource.loading || proposalsResource.loading} error={productsResource.error || proposalsResource.error} retry={() => { void productsResource.reload(); void proposalsResource.reload(); }} />
-      {/* FIX 50 — live addons widget (Ql), above the products header. */}
-      <SupplierAddonsWidget ownProducts={supplierProducts.map((item) => ({ id: item.id, title: item.title }))} />
-      {/* Header and Add Offer */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-xs font-bold text-slate-800">کالاهای تو</h3>
-          <span className="text-[10px] text-slate-400 block mt-0.5">
-            پیشنهادهای تازه و کالاهای تأییدشده
-          </span>
-        </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="flex items-center gap-1 bg-brand-deep text-white text-[11px] font-bold min-h-[44px] px-3.5 rounded-xl shadow-xs"
-        >
-          <Plus className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-          <span>پیشنهاد کالای جدید</span>
-        </button>
+      <div role="group" aria-label="بخش‌های کالاها" className="grid gap-2 rounded-[20px] border border-[#e6e2f0] bg-white p-2 shadow-sm sm:grid-cols-3">
+        {([
+          { id: 'active_products', label: `کالاهای تأییدشده (${toPersianDigits(activeSupplierProducts.length)})`, note: inactiveSupplierProductsCount > 0 ? `${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : '' },
+          { id: 'proposed_offers', label: `پیشنهادهای کالا (${toPersianDigits(proposalCounts.total)})`, note: proposalCounts.pending > 0 ? `${toPersianDigits(proposalCounts.pending)} در انتظار بررسی` : '' },
+          { id: 'my_challenges', label: 'درخواست‌های من', note: '' },
+        ] as const).map(({ id, label, note }) => (
+          <button key={id} type="button" aria-pressed={subTab === id} onClick={() => setSubTab(id)}
+            className={`min-h-11 rounded-xl px-3 py-2 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand ${subTab === id ? 'bg-[#382660] text-white' : 'bg-[#f7f4fc] text-[#382660] hover:bg-brand-soft'}`}>
+            {label}{note && <span className="ms-1.5 text-xs font-medium">· {note}</span>}
+          </button>
+        ))}
       </div>
-
-      {/* Navigation Sub-Tabs */}
-      <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold gap-1">
-        <button
-          type="button"
-          onClick={() => setSubTab('active_products')}
-          className={`flex-1 min-h-[44px] px-2 rounded-lg transition-all ${
-            subTab === 'active_products' ? 'bg-white text-brand-deep shadow-2xs' : 'text-slate-600'
-          }`}
-        >
-          کالاهای تأییدشده ({toPersianDigits(activeSupplierProducts.length)}){inactiveSupplierProductsCount > 0 ? ` · ${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : ''}
-        </button>
-        <button
-          type="button"
-          onClick={() => setSubTab('proposed_offers')}
-          className={`flex-1 min-h-[44px] px-2 rounded-lg transition-all ${
-            subTab === 'proposed_offers' ? 'bg-white text-brand-deep shadow-2xs' : 'text-slate-600'
-          }`}
-        >
-        پیشنهادهای در انتظار بررسی ({toPersianDigits(proposalCounts.pending)}) · همه پیشنهادها ({toPersianDigits(proposalCounts.total)})
-        </button>
-        <button
-          type="button"
-          onClick={() => setSubTab('my_challenges')}
-          className={`flex-1 min-h-[44px] px-2 rounded-lg transition-all flex items-center justify-center ${
-            subTab === 'my_challenges' ? 'bg-white text-brand-deep shadow-2xs' : 'text-slate-600'
-          }`}
-        >
-          درخواست‌های من
-        </button>
-      </div>
+      <details className="rounded-2xl border border-[#e6e2f0] bg-white px-4 py-3 text-sm leading-7 text-slate-700">
+        <summary className="cursor-pointer font-bold text-[#261b41]">قیمت عمده یعنی چه؟</summary>
+        <p className="mt-2">قیمت عمده مبلغی است که برای فروش هر واحد از کالایت دریافت می‌کنی. قیمت فروش به مشتری جدا تعیین می‌شود.</p>
+      </details>
 
       {showAddForm && (
         <SupplierProposeForm
@@ -309,12 +277,12 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
       {subTab === 'active_products' && (
         <div className="space-y-2.5">
-          {myWarehouses.filter((w: any) => w.isActive).length > 0 && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2">
+          {(nullOriginDirectCount > 0 || bulkResult) && myWarehouses.some(w => w.isActive) && (
+            <div className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-2">
               <p className="text-[11px] font-bold text-slate-700">مبدأ پیش‌فرض برای کالاهای بدون مبدأ</p>
               <p className="text-[10px] leading-5 text-slate-500">{nullOriginDirectCount > 0 ? `${toPersianDigits(nullOriginDirectCount)} کالا مبدأ ندارند و ویرایش موجودی‌شان بسته است؛ یک انبار را انتخاب کن تا برای همه‌شان مبدأ بگیرد.` : 'همه کالاهای ارسال مستقیم مبدأ دارند.'}</p>
-              <div className="flex items-center gap-2">
-                <select value={bulkWarehouseId} onChange={(e) => setBulkWarehouseId(e.target.value)} className="flex-1 text-[10px] p-1.5 rounded-lg bg-slate-50 border border-slate-200 outline-none">
+              <div className="flex flex-wrap items-center gap-2">
+                <select aria-label="انبار مبدأ کالاها" value={bulkWarehouseId} onChange={(e) => setBulkWarehouseId(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-xs focus-visible:ring-2 focus-visible:ring-brand">
                   <option value="">انتخاب انبار…</option>
                   {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
                 </select>
@@ -332,7 +300,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                       await productsResource.reload();
                     } catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'تعیین مبدأ انجام نشد.'); } finally { setBulkSaving(false); }
                   }}
-                  className="px-2.5 py-1.5 bg-brand-deep text-white font-bold text-[10px] rounded-lg disabled:opacity-50"
+                  className="min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
                 >
                   تعیین مبدأ برای کالاهای بدون مبدأ
                 </button>
@@ -357,13 +325,13 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             return (
               <div
                 key={product.id}
-                className={`bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2${productActive ? '' : ' opacity-60'}`}
+                className={`space-y-3 rounded-[22px] border border-[#e6e2f0] p-4 shadow-sm ${productActive ? 'bg-white' : 'bg-[#f8f6fc]'}`}
               >
                 <div className="flex items-center gap-2.5">
                   {product.imageUrl ? (
                     <img
                       src={product.imageUrl}
-                      alt={product.title}
+                      alt="" width={48} height={48} loading="lazy"
                       className="w-12 h-12 rounded-xl object-contain bg-slate-50 border border-slate-100 p-1 shrink-0"
                     />
                   ) : (
@@ -372,8 +340,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-bold text-slate-800 truncate">
+                    <div className="flex flex-wrap items-start justify-between gap-1.5">
+                      <h4 className="min-w-0 break-words text-sm font-extrabold text-[#261b41]">
                         {product.title}
                       </h4>
                       <span className="flex items-center gap-1 shrink-0">
@@ -402,7 +370,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
               
               {product.fulfillmentMethod === 'supplier_direct' && (originEditingProduct?.id === product.id ? (
                 <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
-                  <select value={originWarehouseId} onChange={(e) => setOriginWarehouseId(e.target.value)} className="flex-1 text-[10px] p-1.5 rounded-lg bg-slate-50 border border-slate-200 outline-none">
+                  <select value={originWarehouseId} onChange={(e) => setOriginWarehouseId(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-xs focus-visible:ring-2 focus-visible:ring-brand">
                     <option value="">— بدون مبدأ (برای ویرایش موجودی اول انبار انتخاب کن) —</option>
                     {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
                   </select>
@@ -450,7 +418,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
               ) : (
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
                   <span>{product.supplierWarranty}</span>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {onPrepareShipment && (
                       <button type="button" onClick={() => onPrepareShipment(product.id)} className="rounded-md bg-brand-soft px-2 py-1 font-bold text-brand-deep">
                         افزودن به محموله
@@ -467,7 +435,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     <button
                       type="button"
                       onClick={() => { invalidateUnitCounts(product.id); setVariantsProduct(product); }}
-                      className="text-brand-deep hover:text-brand-deep font-bold flex items-center gap-1 bg-brand-soft px-2 py-1 rounded-md"
+                      className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
                     >
                       <Layers className="w-3 h-3"  strokeWidth={1.5}/>
                       <span>مدل‌های کالا</span>
@@ -478,7 +446,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                         setEditingProduct(product);
                         setEditedCostC(effectiveCost.toString());
                       }}
-                      className="text-brand-deep hover:text-brand-deep font-bold flex items-center gap-1 bg-brand-soft px-2 py-1 rounded-md"
+                      className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
                     >
                       <Edit3 className="w-3 h-3"  strokeWidth={1.5}/>
                       <span>عوض‌کردن قیمت عمده</span>
@@ -723,6 +691,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
           )}
         </div>
       )}
+      <SupplierAddonsWidget ownProducts={supplierProducts.map(item => ({ id: item.id, title: item.title }))} />
+
       {galleryProduct && (
         <SupplierGalleryModal productId={galleryProduct.id} productTitle={galleryProduct.title} onClose={() => setGalleryProduct(null)} onChanged={() => productsResource.reload()} />
       )}

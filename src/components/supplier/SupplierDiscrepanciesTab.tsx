@@ -1,3 +1,5 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
+import { AlertTriangle } from 'lucide-react';
 import React, { useState } from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { useToast } from '../../context/ToastContext';
@@ -39,7 +41,7 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
 
   return (
     <div className="space-y-3 pb-6">
-      <h2 className="text-sm font-bold">اختلاف در تحویل کالا</h2>
+      <SupplierSectionHeading title="مغایرت‌های تحویل انبار" description="اختلاف تعداد یا خرابیِ ثبت‌شده را بررسی کن و تا پایان مهلت پاسخ بده." icon={<AlertTriangle />} />
       <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">گاهی انبار می‌گوید تعدادی که رسیده با تعدادی که تو گفتی فرق دارد، یا چند تایی خراب بوده. این اختلاف‌ها اینجا می‌آید؛ نگاه کن و اگر اشتباه شده، جوابت را بنویس.</div>
       <SupplierResourceState loading={resource.loading} error={resource.error} retry={resource.reload} />
       {!resource.loading && !resource.error && !(resource.data || []).length && (
@@ -49,7 +51,7 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
         </div>
       )}
       {!resource.error && sortedItems.map((item) => (
-        <section key={item.id} className="space-y-2 rounded-2xl border bg-white p-3 text-xs">
+        <section key={item.id} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm">
           <h3 className="font-bold">{item.product_title || item.product_id.slice(0, 8)}</h3>
           <p className="text-[10px] text-slate-400">کد پیگیری: {item.id} · کد بار: {item.inbound_id}</p>
           <p>تعدادی که تو گفتی: <b>{toPersianDigits(item.expected_quantity)}</b> · تعدادی که انبار تحویل گرفت: <b>{toPersianDigits(item.received_quantity)}</b> · خراب و معیوب: <b>{toPersianDigits(item.defect_count)}</b></p>

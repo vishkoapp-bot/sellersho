@@ -1,3 +1,4 @@
+import { SupplierSectionHeading } from './SupplierSectionHeading';
 import React, { useState, useEffect, useRef } from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { useToast } from '../../context/ToastContext';
@@ -110,11 +111,8 @@ export const SupplierProfileTab: React.FC = () => {
 
   return (
     <div className="space-y-3 pb-6">
-      <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs space-y-3">
-        <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-          <User className="w-4 h-4 text-brand-deep" strokeWidth={1.5} />
-          پروفایل تأمین‌کننده
-        </h3>
+      <SupplierSectionHeading title="پروفایل تأمین‌کننده" description="اطلاعات و لوگوی کسب‌وکارت را مدیریت کن." icon={<User />} />
+      <div className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
         <div>
           <label className="text-[10px] text-slate-600 block mb-1">نام ثبت‌شده (غیرقابل ویرایش)</label>
           <input type="text" value={name} disabled className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-500" />

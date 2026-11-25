@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react';
 
-export function SupplierSectionHeading({ title, description, icon }: {
+export function SupplierSectionHeading({ title, description, icon, action }: {
   title: string;
   description: string;
   icon: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <section className="flex flex-wrap items-center justify-between gap-4 rounded-[24px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
@@ -14,6 +15,7 @@ export function SupplierSectionHeading({ title, description, icon }: {
           <p className="mt-1 text-sm leading-6 text-slate-600">{description}</p>
         </div>
       </div>
+      {action}
     </section>
   );
 }

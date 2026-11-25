@@ -22,7 +22,9 @@ import {
   Boxes,
   Users,
   Wallet,
-  Bell
+  Bell,
+  ChevronLeft,
+  ChevronDown
 } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
@@ -34,7 +36,7 @@ import { SupplierAdsCampaignTab } from './SupplierAdsCampaignTab';
 import { SupplierSettlementTab } from './SupplierSettlementTab';
 import { SupplierOrdersTab } from './SupplierOrdersTab';
 import { SupplierTeamTab } from './SupplierTeamTab';
-import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesTab, SupplierShippingMethodsTab, SupplierDemandInsightTab, SupplierContractTab, SupplierPlaceholderTab } from './SupplierNewTabs';
+import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesTab, SupplierShippingMethodsTab, SupplierDemandInsightTab, SupplierContractTab } from './SupplierNewTabs';
 import { SupplierProfileTab } from './SupplierProfileTab';
 import { supplierApi } from '../../services/supplierApi';
 import { SupplierNotificationDrawer } from './SupplierNotificationDrawer';
@@ -49,10 +51,11 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const { info, success, error } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [tabDestination, setTabDestination] = useState<'ready' | 'track'>();
-  const navigateTab = (tab: string, destination?: 'ready' | 'track') => {
+  const navigateTab = useCallback((tab: string, destination?: 'ready' | 'track') => {
     setTabDestination(destination);
     setActiveTab(tab);
-  };
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, []);
   // Reject-notification bell (DESIGN.md §4.3): unread count lives here,
   // NOT in StoreContext.setUnreadNotificationCount — that counter feeds
   // the customer/storefront header bell and would leak supplier counts
@@ -137,18 +140,17 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // tabs as the mobile tab bar, partitioned into sidebar groups covering
   // all 16 tab ids exactly once. A group with no permitted tab disappears
   // entirely, so gating is inherited unchanged.
-  const menuGroups: { heading: string; icon: typeof LayoutDashboard; ids: string[] }[] = [
-    { heading: 'پیشخوان', icon: LayoutDashboard, ids: ['overview', 'analytics', 'demand-insight'] },
-    { heading: 'سفارش و ارسال', icon: Truck, ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
-    { heading: 'کالا و انبار', icon: Warehouse, ids: ['inbound', 'products', 'inventory', 'my-warehouses'] },
-    { heading: 'مالی', icon: Wallet, ids: ['settlement'] },
-    { heading: 'بازاریابی', icon: Megaphone, ids: ['ads'] },
-    { heading: 'حساب کاربری', icon: User, ids: ['team', 'profile', 'contract'] },
+  const menuGroups: { heading: string; ids: string[] }[] = [
+    { heading: 'پیشخوان', ids: ['overview', 'analytics', 'demand-insight'] },
+    { heading: 'سفارش و ارسال', ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
+    { heading: 'کالا و انبار', ids: ['inbound', 'products', 'inventory', 'my-warehouses'] },
+    { heading: 'مالی', ids: ['settlement'] },
+    { heading: 'بازاریابی', ids: ['ads'] },
+    { heading: 'حساب کاربری', ids: ['team', 'profile', 'contract'] },
   ];
   const sidebarGroups = menuGroups
     .map((group) => ({
       heading: group.heading,
-      icon: group.icon,
       items: group.ids
         .map((id) => allowedTabs.find((item) => item.id === id))
         .filter((item): item is (typeof menuItems)[number] => !!item),
@@ -163,21 +165,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   useEffect(() => { if (visibleTab === 'products') refreshUnreadNotifCount(); }, [visibleTab, refreshUnreadNotifCount]);
   const handleSelectNotifProposal = useCallback((proposalId: string) => {
     setIsNotifOpen(false);
-    setActiveTab('products');
+    navigateTab('products');
     setFocusProposalId(proposalId);
-  }, []);
-  // Warehouse status pill for the sidebar identity card, driven by the same
-  // warehouseCityConfirmed flag as the header line: explicitly unconfirmed
-  // -> amber; a recorded city -> confirmed (emerald); no city -> neutral.
-  const warehousePill = warehouseCityConfirmed === false
-    ? { text: 'انبار تأییدنشده', cls: 'bg-amber-50 text-amber-700 border-amber-200' }
-    : supplierSession?.warehouseCity
-      ? { text: 'انبار تأییدشده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
-      : { text: 'بدون انبار ثبت‌شده', cls: 'bg-slate-50 text-slate-500 border-slate-200' };
+  }, [navigateTab]);
+  const warehouseStatus = warehouseCityConfirmed === false ? 'انبار تأییدنشده' : supplierSession?.warehouseCity ? 'انبار تأییدشده' : 'بدون انبار ثبت‌شده';
 
   return (
     <SupplierAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
-    <div className="flex-1 flex flex-col bg-[#f8fafc]">
+    <div dir="rtl" className="flex min-h-screen flex-1 flex-col bg-[#f5f5fa] text-slate-900">
       {showContractModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
           <div className="bg-white rounded-3xl max-w-md w-full p-4 shadow-2xl border border-slate-100 space-y-3 text-xs">
@@ -203,142 +198,100 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </div>
       )}
       <a href="#supplier-main" className="sr-only focus:not-sr-only focus:absolute focus:z-40 focus:rounded-lg focus:bg-white focus:p-3">رفتن به محتوای پنل</a>
-      {/* Top Header */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 py-2.5">
-        <div className="max-w-7xl mx-auto w-full px-3.5 lg:px-6 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleHeaderBack}
-            className="p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-            title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-            aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-          >
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-          </button>
-          {/* Below lg the header carries the identity; at lg the sidebar
-              identity card is the single identity surface, so the header
-              slot shows the active tab's label instead. */}
-          <div className="lg:hidden">
-            <h1 className="text-xs font-bold text-slate-800">
-              {supplierSession?.companyName || 'پنل تأمین‌کننده'}
-            </h1>
-            <span className="text-[10px] text-slate-400 block">
-              مدیر: {supplierSession?.managerName} • انبار: {warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity}
-            </span>
+      <header className="sticky top-0 z-30 border-b border-[#e5e3f0] bg-white/95 backdrop-blur-md">
+        <div className="mx-auto flex min-h-16 w-full max-w-[1520px] items-center justify-between gap-3 px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" onClick={handleHeaderBack}
+              aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
+              title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
+              className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:border-brand-border hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand">
+              <ArrowRight aria-hidden="true" className="size-5" strokeWidth={1.75} />
+            </button>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-slate-600">
+                {supplierSession?.companyName || 'پنل تأمین‌کننده'}
+              </p>
+              <h1 className="truncate text-base font-extrabold sm:text-lg">{activeTabLabel || 'پنل تأمین‌کننده'}</h1>
+            </div>
           </div>
-          <div className="hidden lg:block">
-            <h1 className="text-[13px] font-extrabold text-slate-900">{activeTabLabel || 'پنل تأمین‌کننده'}</h1>
+          <div className="flex shrink-0 items-center gap-2">
+            <button type="button" onClick={() => setIsNotifOpen(true)} aria-label="اعلان‌ها" title="اعلان‌ها"
+              className="relative grid size-11 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:border-brand-border hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand">
+              <Bell aria-hidden="true" className="size-5" strokeWidth={1.75} />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -start-1 -top-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white ring-2 ring-white">
+                  {toPersianDigits(unreadNotifCount)}
+                </span>
+              )}
+            </button>
+            <button type="button" onClick={() => { logoutSupplier(); info('از حساب تأمین‌کننده خارج شدی.'); }}
+              aria-label="خروج از حساب تأمین‌کننده" title="خروج از حساب تأمین‌کننده"
+              className="flex min-h-11 items-center gap-2 rounded-xl px-2.5 text-xs font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-700 focus-visible:ring-2 focus-visible:ring-rose-600 sm:px-3">
+              <LogOut aria-hidden="true" className="size-4" strokeWidth={1.75} />
+              <span className="hidden sm:inline">خروج</span>
+            </button>
           </div>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-        <button
-          onClick={() => setIsNotifOpen(true)}
-          className="relative p-2.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-          title="اعلان‌ها"
-          aria-label="اعلان‌ها"
-        >
-          <Bell className="w-5 h-5" strokeWidth={1.5} />
-          {unreadNotifCount > 0 && (
-            <span className="absolute -top-0.5 -left-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
-              {toPersianDigits(unreadNotifCount)}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => {
-            logoutSupplier();
-            info('از حساب تأمین‌کننده خارج شدی.');
-          }}
-          className="flex items-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 text-[11px] font-bold transition-colors"
-          title="خروج از حساب تأمین‌کننده"
-        >
-          <LogOut className="w-4 h-4"  strokeWidth={1.5}/>
-          <span>خروج</span>
-        </button>
-        </div>
         </div>
       </header>
 
       {!!sidebarGroups.length && (
-        <nav aria-label="منوی موبایل تأمین‌کننده" className="border-b border-slate-200 bg-white px-3.5 py-2.5 lg:hidden">
-          <label htmlFor="supplier-section" className="block text-xs font-bold text-slate-700">بخش پنل</label>
-          <select id="supplier-section" value={visibleTab} onChange={event => navigateTab(event.target.value)}
-            className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 focus-visible:ring-2 focus-visible:ring-brand">
-            {sidebarGroups.map(group => (
-              <optgroup key={group.heading} label={group.heading}>
-                {group.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-              </optgroup>
-            ))}
-          </select>
+        <nav aria-label="منوی موبایل تأمین‌کننده" className="px-4 pt-4 sm:px-6 lg:hidden">
+          <label htmlFor="supplier-section" className="mb-1.5 block text-xs font-bold text-slate-700">بخش پنل</label>
+          <div className="relative">
+            <select id="supplier-section" value={visibleTab} onChange={event => navigateTab(event.target.value)}
+              className="min-h-12 w-full appearance-none rounded-2xl border border-[#e5e3f0] bg-white ps-4 pe-10 text-sm font-bold text-slate-900 shadow-sm focus-visible:ring-2 focus-visible:ring-brand">
+              {sidebarGroups.map(group => (
+                <optgroup key={group.heading} label={group.heading}>
+                  {group.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <ChevronDown aria-hidden="true" className="pointer-events-none absolute end-4 top-4 size-4 text-brand-deep" />
+          </div>
         </nav>
       )}
 
-      <div className="flex-1 w-full min-w-0 max-w-7xl mx-auto flex flex-col lg:flex-row lg:gap-6 lg:p-6">
-        {/* Sidebar Navigation (desktop only; same permission-filtered tabs as the mobile bar) */}
-        <aside className="hidden lg:block w-72 shrink-0 space-y-4 lg:sticky lg:top-[73px] lg:self-start lg:max-h-[calc(100vh-97px)] lg:overflow-y-auto">
-          {/* Identity Card */}
-          <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-brand flex items-center justify-center text-white shrink-0">
-              <Building2 className="w-4 h-4" strokeWidth={1.5} />
-            </div>
+      <div className="mx-auto flex w-full max-w-[1520px] flex-1 flex-col gap-4 px-4 pb-8 pt-4 sm:px-6 lg:flex-row lg:gap-6 lg:pt-6">
+        <aside className="hidden w-[250px] shrink-0 self-start overflow-y-auto rounded-[26px] bg-[#211a3d] p-3 text-white shadow-lg shadow-[#262044]/15 lg:sticky lg:top-[88px] lg:block lg:max-h-[calc(100dvh-110px)] xl:w-[270px]">
+          <div className="mb-2 flex min-w-0 items-start gap-3 rounded-2xl border border-white/10 bg-white/8 p-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#dacfff] text-[#352466]">
+              <Building2 aria-hidden="true" className="size-5" strokeWidth={1.75} />
+            </span>
             <div className="min-w-0">
-              <span className="text-[10px] text-slate-400 block">پنل تأمین‌کننده</span>
-              <span className="text-xs font-extrabold text-slate-900 block truncate" title={supplierSession?.companyName || 'تأمین‌کننده'}>
-                {supplierSession?.companyName || 'تأمین‌کننده'}
-              </span>
-              <span className="text-[10px] text-slate-400 block truncate" title={`مدیر: ${supplierSession?.managerName ?? ''} • انبار: ${warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity ?? ''}`}>
-                مدیر: {supplierSession?.managerName} • انبار: {warehouseCityConfirmed === false ? 'نامشخص' : supplierSession?.warehouseCity}
-              </span>
-              <span className={`inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full border ${warehousePill.cls}`}>
-                {warehousePill.text}
-              </span>
+              <p className="truncate text-sm font-extrabold" title={supplierSession?.companyName || 'تأمین‌کننده'}>{supplierSession?.companyName || 'تأمین‌کننده'}</p>
+              <p className="mt-1 text-[11px] text-[#d3c9ed]">
+                {warehouseStatus}{warehouseCityConfirmed !== false && supplierSession?.warehouseCity ? ` · ${supplierSession.warehouseCity}` : ''}
+              </p>
             </div>
           </div>
 
-          {/* Grouped Menu */}
-          {sidebarGroups.length > 0 && (
-            <nav className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs" aria-label="منوی پنل تأمین‌کننده">
-              {sidebarGroups.map((group, groupIndex) => {
-                const GroupIcon = group.icon;
-                return (
-                  <div key={group.heading} className={groupIndex > 0 ? 'mt-3 border-t border-slate-100 pt-2' : ''}>
-                    <div className="flex items-center gap-2.5 px-2 py-1.5">
-                      <GroupIcon className="w-4 h-4 shrink-0 text-slate-400" strokeWidth={1.5} />
-                      <span className="flex-1 text-xs font-extrabold text-slate-900">{group.heading}</span>
-                    </div>
-                    <div className="border-r-2 border-slate-100 pr-2 space-y-1">
-                      {group.items.map((item) => {
-                        const Icon = item.icon;
-                        const isActive = visibleTab === item.id;
-                        return (
-                          <button
-                            key={item.id}
-                            onClick={() => navigateTab(item.id)}
-                            aria-current={isActive ? 'page' : undefined}
-                            title={item.label}
-                            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all w-full text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
-                              isActive
-                                ? 'bg-brand text-white shadow-xs'
-                                : 'text-slate-600 hover:bg-slate-100'
-                            }`}
-                          >
-                            <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} strokeWidth={1.5} />
-                            <span className="flex-1 truncate">{item.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+          {!!sidebarGroups.length && (
+            <nav aria-label="منوی پنل تأمین‌کننده" className="space-y-3 py-1">
+              {sidebarGroups.map(group => (
+                <section key={group.heading}>
+                  <h2 className="px-3 pb-1 text-[11px] font-semibold text-[#c7b7e5]">{group.heading}</h2>
+                  <div className="space-y-0.5">
+                    {group.items.map(({ id, label, icon: Icon }) => {
+                      const isActive = visibleTab === id;
+                      return (
+                        <button key={id} type="button" onClick={() => navigateTab(id)} aria-current={isActive ? 'page' : undefined}
+                          className={`flex min-h-10 w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-start text-xs font-bold transition-colors focus-visible:ring-2 focus-visible:ring-[#e4d9ff] ${isActive ? 'bg-[#e8dfff] text-[#302056]' : 'text-[#f0eafa] hover:bg-white/12'}`}>
+                          <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
+                          <span className="flex-1 leading-5">{label}</span>
+                          {isActive && <ChevronLeft aria-hidden="true" className="size-4 shrink-0" />}
+                        </button>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                </section>
+              ))}
             </nav>
           )}
         </aside>
 
         {/* Main Tab Content */}
         <main id="supplier-main" tabIndex={-1} className="flex-1 min-w-0 scroll-mt-20">
-          <div className="p-3.5 lg:p-0">
+          <div className="min-w-0">
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
             {visibleTab === 'orders' && <SupplierOrdersTab initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
@@ -356,7 +309,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {visibleTab === 'settlement' && <SupplierSettlementTab />}
             {visibleTab === 'team' && <SupplierTeamTab />}
             {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
-            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => setActiveTab('products')} />}
+            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => navigateTab('products')} />}
             {visibleTab === 'customer-returns' && <SupplierCustomerReturnsTab />}
             {visibleTab === 'my-warehouses' && <SupplierMyWarehousesTab />}
             {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}

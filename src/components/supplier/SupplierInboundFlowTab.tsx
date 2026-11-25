@@ -77,15 +77,20 @@ export function SupplierInboundFlowTab({ initialProductId, initialStage, onProdu
   };
 
   return (
-    <div className="space-y-4">
-      <section ref={stepNavigation} aria-label="مراحل ثبت کالا و ارسال" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p className="mb-3 text-sm leading-6 text-slate-700">{canManageProducts && canManageShipments ? 'برای کالای جدید از ثبت کالا شروع کن. اگر کالا قبلاً ثبت شده، مستقیم محموله را آماده کن.' : canManageProducts ? 'کالا و مدل‌هایش را ثبت کن و وضعیت تأیید را همین‌جا پیگیری کن.' : 'کالاهای ثبت‌شده را به محموله اضافه کن و ارسالشان را پیگیری کن.'}</p>
-        <nav aria-label="مراحل" className="grid gap-2 sm:grid-cols-3">
+    <div className="space-y-4 sm:space-y-5">
+      <section ref={stepNavigation} aria-label="مراحل ثبت کالا و ارسال" className="scroll-mt-24 rounded-[24px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <p className="mb-4 max-w-2xl text-sm leading-7 text-slate-700">{canManageProducts && canManageShipments ? 'برای کالای جدید از ثبت کالا شروع کن. اگر کالا قبلاً ثبت شده، مستقیم محموله را آماده کن.' : canManageProducts ? 'کالا و مدل‌هایش را ثبت کن و وضعیت تأیید را همین‌جا پیگیری کن.' : 'کالاهای ثبت‌شده را به محموله اضافه کن و ارسالشان را پیگیری کن.'}</p>
+        <nav aria-label="مراحل" className="grid gap-2.5 sm:grid-cols-3">
           {availableStages.map(({ id, title, detail, icon: Icon }) => (
             <button key={id} type="button" aria-current={id === currentStage ? 'step' : undefined} onClick={() => navigate(id)}
-              className={`flex min-h-16 items-center gap-3 rounded-xl border px-3 py-2 text-start focus-visible:outline-2 focus-visible:outline-brand-deep ${id === currentStage ? 'border-brand-deep bg-brand-soft text-brand-deep' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
-              <Icon aria-hidden="true" className="size-5 shrink-0" />
-              <span><strong className="block text-sm">{title}</strong><span className="block text-xs leading-5 text-slate-600">{detail}</span></span>
+              className={`group flex min-h-18 items-center gap-3 rounded-2xl border px-3 py-2.5 text-start focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${id === currentStage ? 'border-[#382660] bg-[#382660] text-white' : 'border-[#e6e2f0] bg-[#f8f6fc] text-[#302056] hover:border-brand-border hover:bg-brand-soft'}`}>
+              <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${id === currentStage ? 'bg-white/15' : 'bg-[#ede6fa]'}`}>
+                <Icon aria-hidden="true" className="size-4.5" strokeWidth={1.75} />
+              </span>
+              <span className="min-w-0">
+                <strong className="block text-sm leading-6">{title}</strong>
+                <span className={`block text-xs leading-5 ${id === currentStage ? 'text-[#f1e9ff]' : 'text-slate-600'}`}>{detail}</span>
+              </span>
             </button>
           ))}
         </nav>
@@ -94,7 +99,7 @@ export function SupplierInboundFlowTab({ initialProductId, initialStage, onProdu
       {canManageProducts && (
         <section hidden={currentStage !== 'products'} className="space-y-3">
           {canManageShipments && (
-            <button type="button" onClick={() => navigate('prepare')} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white">
+            <button type="button" onClick={() => navigate('prepare')} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
               کالایم ثبت شده، ساخت محموله <ArrowLeft aria-hidden="true" className="size-4" />
             </button>
           )}

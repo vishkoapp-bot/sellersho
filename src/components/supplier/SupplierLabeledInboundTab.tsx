@@ -167,9 +167,9 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
           </div>
         </div>
       )}
-      <section hidden={stage === 'track'} className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
-        <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
-        <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
+      <section hidden={stage === 'track'} className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-4 sm:p-5">
+        <h3 className="text-base font-extrabold text-[#261b41] flex items-center gap-2"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
+        <p className="text-sm leading-7 text-slate-700">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
         <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود کالای جدید با فاکتور یا مدرک</option></select></label>
         {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : (
           <div className="space-y-3">
@@ -225,13 +225,13 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
             ))}
           </div>
         )}
-        <button type="button" onClick={submit} disabled={submitting || lines.length === 0 || !warehouseId || warehouses.loading || !!warehouses.error} className="w-full py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-xs font-bold hover:bg-brand transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
+        <button type="button" onClick={submit} disabled={submitting || lines.length === 0 || !warehouseId || warehouses.loading || !!warehouses.error} className="w-full py-2.5 min-h-12 rounded-xl bg-brand-deep text-white text-sm font-bold hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
           {submitting && (<RefreshCw className="w-4 h-4 animate-spin"  strokeWidth={1.5}/>)}
           <Truck className="w-4 h-4"  strokeWidth={1.5}/>
           <span>{submitting ? "در حال ثبت…" : "ثبت محموله و گرفتن کد کارتن"}</span>
         </button>
       </section>
-      <section hidden={stage === 'prepare'} className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
+      <section hidden={stage === 'prepare'} className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-3 sm:p-5">
         {stage === 'track' && (
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-6 text-slate-700">
             <p><strong>برچسب کارتن</strong> را چاپ کن، روی کارتن بچسبان و هنگام تحویل بار، «ثبت ارسال» را بزن.</p>
@@ -240,21 +240,30 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
           </div>
         )}
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-extrabold text-slate-800">محموله‌های قبلی</h3>
-          <button type="button" onClick={() => void loadShipments()} disabled={shipmentsLoading} className="p-1.5 rounded-xl border border-slate-200 text-slate-600 disabled:opacity-50" title="به‌روزرسانی"><RefreshCw className={`w-3.5 h-3.5 ${shipmentsLoading ? "animate-spin" : ""}`}  strokeWidth={1.5}/></button>
+          <h3 className="text-base font-extrabold text-[#261b41]">محموله‌های قبلی</h3>
+          <button type="button" onClick={() => void loadShipments()} disabled={shipmentsLoading} className="grid size-11 place-items-center rounded-xl border border-slate-200 text-slate-600 hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50" aria-label="به‌روزرسانی محموله‌ها" title="به‌روزرسانی"><RefreshCw className={`w-3.5 h-3.5 ${shipmentsLoading ? "animate-spin" : ""}`}  strokeWidth={1.5}/></button>
         </div>
         {shipmentsLoading ? (<p className="text-[11px] text-slate-500 text-center py-4">در حال دریافت…</p>) : shipments.length === 0 ? (<p className="text-[11px] leading-5 text-slate-500 text-center py-4">هنوز محموله‌ای با کد نفرستاده‌ای. اولین محموله‌ات را با فرم بالا بساز.</p>) : shipments.map((s: any) => (
-          <div key={s.id} className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 p-2.5">
-            <div>
-              <span className="font-mono text-sm font-black text-slate-800 tracking-wider" dir="ltr">{s.shipment_code}</span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">{toPersianDigits(s.item_count ?? 0)} مدل • {s.created_at ? new Date(s.created_at).toLocaleDateString("fa-IR") : ""}</span>
+          <article key={s.id} className="space-y-2 rounded-2xl border border-[#e6e2f0] bg-[#f9f7fc] p-3 sm:flex sm:items-center sm:justify-between sm:gap-3 sm:space-y-0">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <bdi dir="ltr" className="break-all text-sm font-black tracking-wider text-[#261b41]">{s.shipment_code}</bdi>
+                <span className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand-deep">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>
+              </div>
+              <p className="mt-1 text-xs text-slate-600">{toPersianDigits(s.item_count ?? 0)} مدل{s.created_at ? ` · ${new Date(s.created_at).toLocaleDateString('fa-IR')}` : ''}</p>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <button type="button" onClick={() => printCartonLabel(s)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-brand-deep hover:border-brand-border transition-colors" title="چاپ برچسب کارتن"><Printer className="w-3.5 h-3.5"  strokeWidth={1.5}/></button>
-              {s.status === 'draft' && <><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'dispatch'); await loadShipments();} catch {error('ارسال ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">ثبت ارسال</button><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'cancel'); await loadShipments();} catch {error('لغو ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">لغو و آزادسازی رزرو</button></>}
-              <span className="text-[10px] font-bold bg-brand-soft text-brand-deep px-2.5 py-1 rounded-full">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button type="button" onClick={() => printCartonLabel(s)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#dfd8ef] bg-white px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
+                <Printer aria-hidden="true" className="size-4" strokeWidth={1.75} /> چاپ برچسب کارتن
+              </button>
+              {s.status === 'draft' && (
+                <>
+                  <button type="button" onClick={async () => { try { await supplierApi.changeShipmentDispatch(s.id, 'dispatch'); await loadShipments(); } catch { error('ارسال ثبت نشد.'); } }} className="min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">ثبت ارسال</button>
+                  <button type="button" onClick={async () => { try { await supplierApi.changeShipmentDispatch(s.id, 'cancel'); await loadShipments(); } catch { error('لغو ثبت نشد.'); } }} className="min-h-11 rounded-xl px-2 text-xs font-bold text-rose-700 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-700">لغو محموله</button>
+                </>
+              )}
             </div>
-          </div>
+          </article>
         ))}
       </section>
     </div>

@@ -117,7 +117,9 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       assert.ok(await page.evaluate(() => [...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'قبول دارم، ادامه بده' && button.disabled)));
       const submitContract = async () => {
         const button = await page.waitForFunction(() => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === 'قبول دارم، ادامه بده' && !item.disabled));
-        await button.asElement()!.click();
+        const element = button.asElement();
+        assert.ok(element);
+        await (await element.toElement('button')).click();
       };
       await contractCheckbox.click();
       await submitContract();

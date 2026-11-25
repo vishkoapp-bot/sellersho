@@ -123,7 +123,11 @@ export const SupplierLabeledInboundTab: React.FC = () => {
     setSubmitting(true);
     try {
       if (sourceKind === 'transfer' && !sourceId) throw new Error('انبار مبدأ را انتخاب کن.');
-      if (sourceKind === 'external_replenishment' && (!externalReference.trim() || !sourceReason.trim())) throw new Error('مرجع یکتا و دلیل ورود جدید الزامی است.');
+      if (sourceKind === 'external_replenishment') {
+        if (!externalReference.trim()) throw new Error('شماره فاکتور خرید یا شماره مدرک ورود کالا را وارد کن.');
+        if (!sourceReason.trim()) throw new Error('دلیل ورود کالا را بنویس، مثلاً خرید از تولیدکننده.');
+        if (items.length !== 1) throw new Error('برای هر محموله ورود جدید فقط یک مدل کالا انتخاب کن.');
+      }
       const source = sourceKind === 'transfer' ? {source_kind: sourceKind, supplier_warehouse_id: sourceId} : {source_kind: sourceKind, external_reference: externalReference.trim(), reason: sourceReason.trim()};
       const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId, source });
       draftOperation.current.reset();
@@ -153,8 +157,21 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
         <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
-        <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود جدید با مدرک مستقل</option></select></label>
-        {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : <div className="space-y-2"><input aria-label="مرجع ورود جدید" placeholder="مرجع یکتای مدرک ورود جدید" value={externalReference} onChange={e => setExternalReference(e.target.value)} className="w-full border rounded-xl p-2"/><input aria-label="دلیل ورود جدید" placeholder="دلیل ورود جدید" value={sourceReason} onChange={e => setSourceReason(e.target.value)} className="w-full border rounded-xl p-2"/></div>}
+        <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود کالای جدید با فاکتور یا مدرک</option></select></label>
+        {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : (
+          <div className="space-y-3">
+            <p className="text-xs leading-5 text-slate-600">این گزینه برای کالایی است که به‌تازگی تأمین کرده‌ای. برای هر محموله یک مدل کالا انتخاب کن.</p>
+            <label className="block text-xs">
+              شماره فاکتور خرید یا شماره مدرک ورود
+              <input placeholder="مثلاً شماره فاکتور ۱۴۰۵-۲۵۸" aria-describedby="carton-document-help" value={externalReference} onChange={e => setExternalReference(e.target.value)} className="mt-1 w-full border rounded-xl p-2"/>
+            </label>
+            <p id="carton-document-help" className="text-xs leading-5 text-slate-600">شماره‌ای را وارد کن که روی فاکتور خرید، رسید تولید یا مدرک ورود درج شده است. هر شماره برای ثبت یک محموله قابل استفاده است.</p>
+            <label className="block text-xs">
+              دلیل ورود کالا
+              <input placeholder="مثلاً خرید از تولیدکننده برای شارژ موجودی" value={sourceReason} onChange={e => setSourceReason(e.target.value)} className="mt-1 w-full border rounded-xl p-2"/>
+            </label>
+          </div>
+        )}
         {sourceKind === 'transfer' && sourceId && (
           <SupplierResourceState loading={sourceInventory.loading} error={sourceInventory.error} retry={sourceInventory.reload} />
         )}

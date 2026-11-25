@@ -6,20 +6,21 @@ import (
 )
 
 type SupplierInventoryLocation struct {
-	ProductID     string `json:"productId"`
-	ProductTitle  string `json:"productTitle"`
-	VariantID     string `json:"variantId,omitempty"`
-	VariantName   string `json:"variantName,omitempty"`
-	VariantSPNC   string `json:"variantSpnc,omitempty"`
-	Allocation    string `json:"allocation"`
-	OwnerType     string `json:"ownerType"`
-	LocationType  string `json:"locationType"`
-	LocationKey   string `json:"locationKey"`
-	WarehouseName string `json:"warehouseName,omitempty"`
-	BinCode       string `json:"binCode,omitempty"`
-	Status        string `json:"status"`
-	Quantity      int    `json:"quantity"`
-	Reconciled    bool   `json:"reconciled"`
+	ProductID           string `json:"productId"`
+	ProductTitle        string `json:"productTitle"`
+	VariantID           string `json:"variantId,omitempty"`
+	VariantName         string `json:"variantName,omitempty"`
+	VariantSPNC         string `json:"variantSpnc,omitempty"`
+	Allocation          string `json:"allocation"`
+	OwnerType           string `json:"ownerType"`
+	LocationType        string `json:"locationType"`
+	LocationKey         string `json:"locationKey"`
+	SupplierWarehouseID string `json:"supplierWarehouseId,omitempty"`
+	WarehouseName       string `json:"warehouseName,omitempty"`
+	BinCode             string `json:"binCode,omitempty"`
+	Status              string `json:"status"`
+	Quantity            int    `json:"quantity"`
+	Reconciled          bool   `json:"reconciled"`
 }
 
 type CarrierOption struct {
@@ -48,12 +49,12 @@ func (r *SupplierRepository) GetSupplierInventory(ctx context.Context, supplierI
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT ib.product_id, p.title, ib.owner_type, ib.location_type, ib.location_key,
 		       COALESCE(ib.warehouse_name,''), COALESCE(ib.bin_code,''), ib.status, ib.quantity, ib.reconciled,
-		       COALESCE(ib.variant_id::text,''),COALESCE(pv.variant_name,''),COALESCE(pv.spnc,''),CASE WHEN ib.variant_id IS NULL THEN 'unallocated' ELSE 'sku' END
+		       COALESCE(ib.variant_id::text,''),COALESCE(pv.variant_name,''),COALESCE(pv.spnc,''),CASE WHEN ib.variant_id IS NULL THEN 'unallocated' ELSE 'sku' END, COALESCE(ib.supplier_warehouse_id,'')
 		FROM inventory_balances ib JOIN products p ON p.id=ib.product_id
 		LEFT JOIN product_variants pv ON pv.id=ib.variant_id
 		WHERE ib.supplier_id=$1
 		UNION ALL
-		SELECT p.id, p.title, 'unreconciled', 'unknown', 'legacy:' || p.id, COALESCE(p.warehouse_name,''), '', 'unreconciled', p.stock, FALSE,'','','','unallocated'
+		SELECT p.id, p.title, 'unreconciled', 'unknown', 'legacy:' || p.id, COALESCE(p.warehouse_name,''), '', 'unreconciled', p.stock, FALSE,'','','','unallocated',''
 		FROM products p
 		WHERE p.supplier_id=$1 AND p.schema_version<2 AND NOT EXISTS (SELECT 1 FROM inventory_balances ib WHERE ib.product_id=p.id AND ib.supplier_id=$1)
 		ORDER BY 2, 8, 5`, supplierID)
@@ -64,7 +65,7 @@ func (r *SupplierRepository) GetSupplierInventory(ctx context.Context, supplierI
 	result := []SupplierInventoryLocation{}
 	for rows.Next() {
 		var item SupplierInventoryLocation
-		if err := rows.Scan(&item.ProductID, &item.ProductTitle, &item.OwnerType, &item.LocationType, &item.LocationKey, &item.WarehouseName, &item.BinCode, &item.Status, &item.Quantity, &item.Reconciled, &item.VariantID, &item.VariantName, &item.VariantSPNC, &item.Allocation); err != nil {
+		if err := rows.Scan(&item.ProductID, &item.ProductTitle, &item.OwnerType, &item.LocationType, &item.LocationKey, &item.WarehouseName, &item.BinCode, &item.Status, &item.Quantity, &item.Reconciled, &item.VariantID, &item.VariantName, &item.VariantSPNC, &item.Allocation, &item.SupplierWarehouseID); err != nil {
 			return nil, err
 		}
 		result = append(result, item)

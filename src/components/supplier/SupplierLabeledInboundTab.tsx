@@ -57,6 +57,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   const [productId, setProductId] = useState('');
   const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
   const sourceWarehouses = useSupplierResource(supplierApi.getMyWarehouses);
+  const sourceInventory = useSupplierResource(supplierApi.getInventoryLocations);
   const [sourceId, setSourceId] = useState('');
   const [sourceKind, setSourceKind] = useState('transfer');
   const [externalReference, setExternalReference] = useState('');
@@ -99,6 +100,15 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       .catch(() => { error("مدل‌های کالا نیامدند."); })
       .finally(() => { setVariantsLoading(false); });
   }, [productId, error]);
+  const sourceStock = new Map<string, number>();
+  for (const row of sourceInventory.data?.inventory ?? []) {
+    if (row.variantId && row.supplierWarehouseId === sourceId && row.ownerType === 'supplier'
+        && row.locationType === 'supplier' && row.status === 'sellable') {
+      sourceStock.set(row.variantId, (sourceStock.get(row.variantId) ?? 0) + row.quantity);
+    }
+  }
+  const showSourceStock = sourceKind === 'transfer' && !!sourceId && !!sourceInventory.data
+    && !sourceInventory.loading && !sourceInventory.error;
   const addVariant = (v: any) => {
     if (lines.some((l) => l.variant.id === v.id)) { error("این مدل را قبلاً اضافه کرده‌ای."); return; }
     setLines((prev) => [...prev, { variant: v, expectedQty: "" }]);
@@ -122,7 +132,11 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       success("محموله ثبت شد. کدش را روی کارتن بنویس.");
       await loadShipments();
     } catch (cause: unknown) { error(cause instanceof Error ? cause.message : "ثبت محموله انجام نشد."); }
-    finally { submittingRef.current = false; setSubmitting(false); }
+    finally {
+      if (sourceKind === 'transfer') void sourceInventory.reload();
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
   return (
     <div className="space-y-3.5 pb-6">
@@ -141,6 +155,9 @@ export const SupplierLabeledInboundTab: React.FC = () => {
         <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
         <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود جدید با مدرک مستقل</option></select></label>
         {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : <div className="space-y-2"><input aria-label="مرجع ورود جدید" placeholder="مرجع یکتای مدرک ورود جدید" value={externalReference} onChange={e => setExternalReference(e.target.value)} className="w-full border rounded-xl p-2"/><input aria-label="دلیل ورود جدید" placeholder="دلیل ورود جدید" value={sourceReason} onChange={e => setSourceReason(e.target.value)} className="w-full border rounded-xl p-2"/></div>}
+        {sourceKind === 'transfer' && sourceId && (
+          <SupplierResourceState loading={sourceInventory.loading} error={sourceInventory.error} retry={sourceInventory.reload} />
+        )}
         <SupplierResourceState loading={warehouses.loading} error={warehouses.error} retry={warehouses.reload} />
         <label className="block text-xs font-bold text-slate-700">انبار مرکزی مقصد
           <select aria-label="انبار مرکزی مقصد" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-2.5 min-h-[44px] bg-white">
@@ -159,7 +176,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
                 <Tag className="w-3 h-3"  strokeWidth={1.5}/>
                 <span>{v.variant_name}</span>
                 <span className="font-mono text-[10px]" dir="ltr">{v.spnc}</span>
-                {typeof v.stock === "number" && (<span className={`text-[10px] font-black ${v.stock > 0 ? "text-emerald-700" : "text-rose-600"}`}>موجودی: {toPersianDigits(v.stock)}</span>)}
+                {showSourceStock && (<span className={`text-[10px] font-black ${(sourceStock.get(v.id) ?? 0) > 0 ? "text-emerald-700" : "text-rose-600"}`}>موجودی قابل رزرو: {toPersianDigits(sourceStock.get(v.id) ?? 0)}</span>)}
               </button>
             ))}
           </div>

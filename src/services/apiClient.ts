@@ -21,6 +21,9 @@ export const API_ERROR_MESSAGE_FA: Record<string, string> = {
   'Unauthorized': 'نشست شما تمام شده؛ دوباره وارد شوید.',
   'Supplier profile not found': 'پروفایل تأمین‌کننده پیدا نشد.',
   'Supplier scope required': 'دسترسی تأمین‌کننده برقرار نیست.',
+  shipment_source_stock_insufficient: 'موجودی قابل رزرو در انبار مبدأ برای تعداد واردشده کافی نیست.',
+  shipment_unit_coverage_gap: 'تعداد واحدهای دارای کد در انبار مبدأ برای این انتقال کافی نیست.',
+  shipment_source_conflict: 'اطلاعات مبدأ محموله با موجودی ثبت‌شده سازگار نیست.',
 };
 
 export function toUserFacingErrorMessage(raw: unknown, status: number): string {

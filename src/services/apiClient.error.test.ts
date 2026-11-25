@@ -69,6 +69,7 @@ test('toUserFacingErrorMessage maps known errors and handles missing or invalid 
     [{ error: 'Supplier scope required' }, 403, 'دسترسی تأمین‌کننده برقرار نیست.'],
     ['{"message":"Unauthorized"}', 401, 'نشست شما تمام شده؛ دوباره وارد شوید.'],
     ['404 page not found', 404, 'خطایی رخ داد؛ دوباره تلاش کنید.'],
+    [{ error: 'shipment_source_stock_insufficient' }, 409, 'موجودی قابل رزرو در انبار مبدأ برای تعداد واردشده کافی نیست.'],
     [null, 500, 'خطایی رخ داد؛ دوباره تلاش کنید.'],
     [undefined, 500, 'خطایی رخ داد؛ دوباره تلاش کنید.'],
   ];

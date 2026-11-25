@@ -47,7 +47,7 @@ export interface ReturnParcelInput { quantity:number; carrierCode:string; paymen
 export interface ReturnParcelDto extends ReturnParcelInput { id:string; returnRequestId:string; parcelNumber:number; status:string; createdBy:string; confirmedBy?:string; }
 export interface ReturnFinancialEventDto { id:string; returnRequestId:string; parcelId?:string; operation:string; amount:number; paymentMethod:string; ledgerEntryId?:string; reason:string; actorUserId:string; createdAt:string; }
 export interface CarrierOptionDto { code:string; displayName:string; supportsSenderPays:boolean; supportsReceiverPays:boolean; supportsQuoteApi:boolean; tariffVersion:number; }
-export interface SupplierInventoryLocationDto extends SupplierSKUIdentity { allocation?: 'sku'|'unallocated'; productId:string; productTitle:string; ownerType:string; locationType:string; locationKey:string; warehouseName?:string; binCode?:string; status:string; quantity:number; reconciled:boolean; }
+export interface SupplierInventoryLocationDto extends SupplierSKUIdentity { allocation?: 'sku'|'unallocated'; productId:string; productTitle:string; ownerType:string; locationType:string; locationKey:string; supplierWarehouseId?:string; warehouseName?:string; binCode?:string; status:string; quantity:number; reconciled:boolean; }
 export interface WarrantyPropertyDto { id:string; name:string; description:string; status:string; }
 
 export interface SupplierInboundDto {

@@ -895,8 +895,20 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 	}
 	out, err := h.supplierRepo.CreateCartonShipmentFromSource(r.Context(), supplierID, body.Items, body.Source, body.WarehouseID, body.CreationKey)
 	if err != nil {
-		if errors.Is(err, repository.ErrCartonCreationConflict) || errors.Is(err, repository.ErrInboundProvenance) || errors.Is(err, repository.ErrInsufficientInventory) {
+		if errors.Is(err, repository.ErrCartonCreationConflict) {
 			http.Error(w, `{"error":"creation_key belongs to a different shipment payload"}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrUnitCoverageGap) {
+			http.Error(w, `{"error":"shipment_unit_coverage_gap"}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrInsufficientInventory) {
+			http.Error(w, `{"error":"shipment_source_stock_insufficient"}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrInboundProvenance) {
+			http.Error(w, `{"error":"shipment_source_conflict"}`, http.StatusConflict)
 			return
 		}
 		var state interface{ SQLState() string }

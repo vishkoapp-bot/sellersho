@@ -38,11 +38,13 @@ export interface HistoricalInventoryReportRow { productId:string; productTitle:s
 export interface SettlementSettingsDto {
   settlementDay: number;
   earlyWithdrawalFeePct: number;
+  earlyWithdrawalMinimumToman: number;
 }
 
 export interface SettlementSettingsPayload {
   settlementDay: number | null;
   earlyWithdrawalFeePct: number | null;
+  earlyWithdrawalMinimumToman: number;
 }
 
 export interface ShippingSettingsDto {

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Order } from '../../types';
+import { CartItem, Order } from '../../types';
+import type { BackendOrderItemDto } from '../../services/orderApi';
 import { computeOrderBreakdown } from '../../utils/cartPricing';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -105,9 +106,9 @@ export const OrderDetailModal: React.FC<Props> = ({ order, isOpen, onClose, hide
           <div className="border border-slate-200 rounded-xl p-2.5 space-y-1">
             <h4 className="font-bold text-slate-800 text-[11px]">اقلام سفارش:</h4>
             <div className="divide-y divide-slate-100">
-              {order.items.map((item, idx) => (
+              {order.items.map((item: CartItem & Pick<BackendOrderItemDto, 'productTitle'>, idx) => (
                 <div key={idx} className="py-1 flex items-center justify-between text-[11px]">
-                  <span className="truncate">{item.product.title}</span>
+                  <span className="truncate">{item.product?.title || item.productTitle || 'کالای سفارشی'}</span>
                   <span className="text-brand-deep font-bold shrink-0">{toPersianDigits(item.quantity)} عدد</span>
                 </div>
               ))}

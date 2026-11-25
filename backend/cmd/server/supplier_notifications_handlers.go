@@ -59,6 +59,58 @@ func supplierNotificationFilter() (string, []any) {
 	}
 }
 
+// The seller drawer covers all owned stores. Every current writer targets
+// specific recipients, so the global set is empty and every included event
+// is individual. A future platform-wide announcement belongs in the global set.
+func sellerNotificationFilter() (string, []any) {
+	// A supplier who owns the store can receive only the supplier-body delivery copy.
+	const ownedStore = `EXISTS (SELECT 1 FROM stores
+		WHERE stores.id = (notification_outbox.payload->>'store_id') AND stores.owner_user_id = $1::uuid)`
+	return ` AND (
+		kind = ANY($2)
+		OR (kind = $3 AND (body LIKE $4 OR (body LIKE $5 AND ` + ownedStore + `)))
+		OR (kind = $6 AND body LIKE $7)
+		OR (kind = $8 AND payload->>'event' = 'order_cancelled')
+		OR (kind = $9 AND payload->>'target_kind' = 'seller')
+		OR (kind = ANY($10) AND ` + ownedStore + `)
+		OR (kind = $11 AND EXISTS (SELECT 1 FROM support_tickets
+			WHERE support_tickets.id = (notification_outbox.payload->>'ticket_id')
+			AND requester_role = 'seller' AND requester_user_id = $1::uuid))
+		OR (kind = $12 AND payload->>'entity_type' IN ('store_name','store_slug','custom_domain')
+			AND EXISTS (SELECT 1 FROM pending_approvals pa
+				WHERE pa.id = (notification_outbox.payload->>'approval_id')
+				AND pa.target_id IN (SELECT id FROM stores WHERE owner_user_id = $1::uuid)))
+	)`, []any{
+		pq.Array([]string{
+			repository.NotifKindOrderPlaced,
+			repository.NotifKindPaymentConfirmed,
+			repository.NotifKindProfitReleased,
+			repository.NotifKindLowStock,
+			repository.NotifKindSettlementCreated,
+			repository.NotifKindSettlementSkipped,
+		}),
+		repository.NotifKindDeliveryConfirmed,
+		"%سود شما پس از پایان مهلت مرجوعی آزاد می‌شود%",
+		"%سود فروشنده پس از پایان مهلت مرجوعی آزاد می‌شود%",
+		repository.NotifKindDisputeResolved, "%مسئولیت با فروشنده اعلام شد%",
+		repository.NotifKindOrderCancelled,
+		repository.NotifKindFinanceAdjustment,
+		pq.Array([]string{repository.NotifKindPayoutReviewed, repository.NotifKindPayoutTransfer}),
+		repository.NotifKindTicketReply,
+		repository.NotifKindApprovalRejected,
+	}
+}
+
+func listSellerNotifications(ctx context.Context, db *sql.DB, userID string) ([]map[string]interface{}, int, bool, error) {
+	filter, args := sellerNotificationFilter()
+	return listNotificationsWithFilter(ctx, db, userID, filter, args...)
+}
+
+func markSellerNotificationsRead(ctx context.Context, db *sql.DB, userID string, ids []string) (int64, error) {
+	filter, args := sellerNotificationFilter()
+	return markNotificationsReadWithFilter(ctx, db, userID, ids, filter, args...)
+}
+
 func listSupplierNotifications(ctx context.Context, db *sql.DB, userID string) ([]map[string]interface{}, int, bool, error) {
 	filter, args := supplierNotificationFilter()
 	return listNotificationsWithFilter(ctx, db, userID, filter, args...)

@@ -110,6 +110,7 @@ export interface NicheDto {
 
 export interface ProductDto {
   productType?: 'legacy' | 'simple' | 'variable';
+  hasVariants?: boolean; // Seller catalog identity when all variants are hidden.
   schemaVersion?: number;
   productSchema?: ProductSchema;
   id: string;

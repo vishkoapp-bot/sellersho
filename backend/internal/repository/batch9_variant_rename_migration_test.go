@@ -8,7 +8,7 @@ import (
 
 func TestBatch9VariantRenameMigration(t *testing.T) {
 	db := fin014FixtureDB(t)
-	// Rewind migrations 202611230002 and 202611230004 on this disposable,
+	// Rewind migrations 202611240001, 202611230004, and 202611230002 on this disposable,
 	// empty serialization schema before replaying the CLI. Deleting only
 	// Batch 9 history fails the ordering guard.
 	var units int
@@ -28,6 +28,12 @@ func TestBatch9VariantRenameMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE IF EXISTS platform_settings DROP COLUMN IF EXISTS early_withdrawal_minimum_toman`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM schema_migrations WHERE version='202611240001_seller_early_withdrawal_minimum.up.sql'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(string(storageReceiptDown)); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +95,8 @@ func TestBatch9VariantRenameMigration(t *testing.T) {
 	}
 
 	var restored bool
-	if err := db.QueryRow(`SELECT to_regclass('product_units') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='inventory_balances' AND column_name='unit_tracked')`).Scan(&restored); err != nil || !restored {
+	if err := db.QueryRow(`SELECT to_regclass('product_units') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='inventory_balances' AND column_name='unit_tracked')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='platform_settings' AND column_name='early_withdrawal_minimum_toman')`).Scan(&restored); err != nil || !restored {
 		t.Fatalf("SPNCX up schema: %t %v", restored, err)
 	}
 	for spnc, want := range map[string]string{

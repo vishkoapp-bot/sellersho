@@ -103,6 +103,7 @@ func openTeam03DB(t *testing.T) *sql.DB {
 		`CREATE TABLE platform_settings (id INT  DEFAULT 1 PRIMARY KEY, return_window_days INT DEFAULT 7 , shipping_base_rate BIGINT DEFAULT 0 , shipping_per_kg BIGINT DEFAULT 0 , volumetric_divisor BIGINT DEFAULT 5000 , default_item_weight_grams BIGINT DEFAULT 500 ,
 			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 			early_withdrawal_fee_pct NUMERIC,
+			early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 			platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
 			settlement_day INTEGER,
 			supplier_contract_version INTEGER NOT NULL DEFAULT 2,

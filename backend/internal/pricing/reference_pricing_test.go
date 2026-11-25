@@ -269,3 +269,18 @@ func TestMaxAllowedFallbackOwnerRule(t *testing.T) {
 		t.Errorf("(f) locked variant margin=%v final=%d tier=%q; want 30/650000/product-locked", v.MarginPercent, v.FinalPrice, v.ActiveTier)
 	}
 }
+
+func TestVariantAdminSetLockWinsOverOverrideAndCeiling(t *testing.T) {
+	product := domain.Product{ID: "prod-c", SupplierBaseCost: 1000000}
+	store := domain.Store{ID: "store-ds", OwnerType: "dropshipper"}
+	settings := liveSettings()
+	settings.ProductMarginCeilings = map[string]float64{product.ID: 25}
+	override := StoreVariantOverride{StoreID: store.ID, ProductID: product.ID, VariantID: "var-1", Value: 15, Mode: "percent"}
+	lockedMargin := 30.0
+	locks := []MarginLock{{Scope: "variant", ScopeID: override.VariantID, Mode: "admin_set", Value: &lockedMargin}}
+
+	res := ResolveReferencePricingForStoreProductVariantWithCost(product, 500000, override.VariantID, store, settings, locks, &override)
+	if res.MarginPercent != 30 || res.FinalPrice != 650000 || res.ActiveTier != "variant" || !res.AdminLocked {
+		t.Fatalf("variant lock resolution = %+v, want 30%% at 650000 with variant tier and AdminLocked", res)
+	}
+}

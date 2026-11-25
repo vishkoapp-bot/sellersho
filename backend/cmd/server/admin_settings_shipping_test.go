@@ -22,22 +22,19 @@ func setupAdminShippingSettings(t *testing.T, charge any) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The handler reads unqualified platform_settings. Shadow it only
-	// for this fixture's connection; other server tests share the migrated
-	// public settings table, including pricing and settlement columns.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 	if _, err := db.Exec(`
-		CREATE TEMP TABLE platform_settings (
+		DROP TABLE IF EXISTS public.platform_settings;
+		CREATE TABLE public.platform_settings (
 			id INTEGER PRIMARY KEY,
 			supplier_return_postal_charge BIGINT,
 			default_item_weight_grams INTEGER NOT NULL
+			, early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991)
 		);
 	`); err != nil {
 		t.Fatalf("create platform_settings fixture: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO pg_temp.platform_settings (id, supplier_return_postal_charge, default_item_weight_grams)
+		INSERT INTO public.platform_settings (id, supplier_return_postal_charge, default_item_weight_grams)
 		VALUES (1, $1, 300)
 	`, charge); err != nil {
 		t.Fatalf("seed platform_settings fixture: %v", err)
@@ -110,4 +107,51 @@ func TestAdminShippingSettingsPutRejectsInvalidValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAdminSettlementSettingsEarlyWithdrawalMinimum(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prior int64
+	if err := db.QueryRow(`SELECT early_withdrawal_minimum_toman FROM platform_settings WHERE id=1`).Scan(&prior); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`UPDATE platform_settings SET early_withdrawal_minimum_toman=$1 WHERE id=1`, prior); err != nil {
+			t.Errorf("restore minimum: %v", err)
+		}
+	})
+
+	request := func(method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/api/v1/admin/settings/settlement", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleT01AdminSettingsSettlement(w, r, db)
+		return w
+	}
+	put := func(value string, status int) {
+		t.Helper()
+		w := request(http.MethodPut, `{"earlyWithdrawalMinimumToman":`+value+`}`)
+		if w.Code != status {
+			t.Fatalf("PUT minimum %s: status=%d, want %d: %s", value, w.Code, status, w.Body)
+		}
+	}
+	put("2000000", http.StatusOK)
+	w := request(http.MethodGet, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status=%d, want 200: %s", w.Code, w.Body)
+	}
+	var body struct {
+		Minimum int64 `json:"earlyWithdrawalMinimumToman"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Minimum != 2000000 {
+		t.Fatalf("GET minimum=%d, want 2000000", body.Minimum)
+	}
+	put("0", http.StatusBadRequest)
+	put("9007199254740992", http.StatusBadRequest)
+	put("null", http.StatusBadRequest)
 }

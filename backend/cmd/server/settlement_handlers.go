@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/drup/platform/internal/repository"
 )
@@ -17,7 +19,12 @@ import (
 func settlementSellerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, repository.ErrEarlyWithdrawalTooSmall):
-		http.Error(w, `{"error":"حداقل مبلغ برداشت زودهنگام ۱٬۰۰۰٬۰۰۰ تومان است."}`, http.StatusBadRequest)
+		minimum := "۱٬۰۰۰٬۰۰۰"
+		var belowFloor *repository.EarlyWithdrawalTooSmallError
+		if errors.As(err, &belowFloor) {
+			minimum = formatPersianWithdrawalMinimum(belowFloor.Minimum)
+		}
+		http.Error(w, `{"error":"حداقل مبلغ برداشت زودهنگام `+minimum+` تومان است."}`, http.StatusBadRequest)
 	case errors.Is(err, repository.ErrEarlyWithdrawalFeeUnset):
 		http.Error(w, `{"error":"کارمزد برداشت زودهنگام هنوز توسط مدیر تنظیم نشده است."}`, http.StatusBadRequest)
 	case errors.Is(err, repository.ErrStoreInsufficientBalance):
@@ -25,4 +32,16 @@ func settlementSellerError(w http.ResponseWriter, err error) {
 	default:
 		sellerError(w, err)
 	}
+}
+
+func formatPersianWithdrawalMinimum(minimum int64) string {
+	digits := strconv.FormatInt(minimum, 10)
+	var formatted strings.Builder
+	for i, digit := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			formatted.WriteRune('٬')
+		}
+		formatted.WriteRune('۰' + digit - '0')
+	}
+	return formatted.String()
 }

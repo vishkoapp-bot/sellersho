@@ -49,8 +49,7 @@ CREATE TABLE users (
 	failed_login_attempts integer NOT NULL DEFAULT 0,
 	locked_until timestamp with time zone,
 	password_hash text,
-	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying,
-	warehouse_city_confirmed BOOLEAN NOT NULL DEFAULT FALSE);
+	warehouse_city character varying(50) NOT NULL DEFAULT 'تهران'::character varying);
 CREATE TABLE suppliers (
 	id VARCHAR(50) PRIMARY KEY,
 	owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -93,6 +92,49 @@ CREATE TABLE supplier_members (
 	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 	invited_by uuid,
 	updated_at timestamp with time zone NOT NULL DEFAULT now());
+DO $$
+BEGIN
+	IF to_regclass('stores') IS NULL THEN
+		CREATE TABLE stores (
+			id VARCHAR(50) PRIMARY KEY,
+			name VARCHAR(100) NOT NULL,
+			slug VARCHAR(100) UNIQUE NOT NULL,
+			owner_name VARCHAR(100) NOT NULL,
+			owner_user_id UUID
+		);
+	ELSIF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('stores')
+		AND attname = 'owner_user_id' AND atttypid <> 'uuid'::regtype) THEN
+		ALTER TABLE stores ALTER COLUMN owner_user_id TYPE uuid USING CASE
+			WHEN owner_user_id ~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' THEN owner_user_id::uuid
+			ELSE md5(owner_user_id)::uuid
+		END;
+	END IF;
+END $$;
+DO $$
+BEGIN
+	IF to_regclass('support_tickets') IS NULL THEN
+		CREATE TABLE support_tickets (
+			id VARCHAR(50) PRIMARY KEY,
+			requester_role VARCHAR(30) NOT NULL,
+			requester_user_id UUID,
+			subject VARCHAR(200) NOT NULL
+		);
+	ELSIF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('support_tickets')
+		AND attname = 'requester_user_id' AND atttypid <> 'uuid'::regtype) THEN
+		ALTER TABLE support_tickets ALTER COLUMN requester_user_id TYPE uuid USING CASE
+			WHEN requester_user_id ~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' THEN requester_user_id::uuid
+			ELSE md5(requester_user_id)::uuid
+		END;
+	END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS pending_approvals (
+	id VARCHAR(50) PRIMARY KEY,
+	target_id VARCHAR(50) NOT NULL,
+	entity_type VARCHAR(30) NOT NULL,
+	title VARCHAR(200) NOT NULL,
+	requested_data JSONB NOT NULL,
+	requested_by VARCHAR(100) NOT NULL
+);
 CREATE TABLE notification_outbox (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	recipient_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

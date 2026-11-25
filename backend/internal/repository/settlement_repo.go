@@ -62,15 +62,12 @@ import (
 // User decisions applied here (NOT live-verified facts — see
 // MASTER-AUDIT U02/U03): the automatic sweep runs on the
 // admin-configured settlement_day (default 10, changeable in the
-// super-admin panel); early withdrawal requires at least
-// 1,000,000 تومان, charges the admin-configured
-// early_withdrawal_fee_pct, and finance must review it within 24
-// hours (deadlineAt = created_at + 24h, pending rows only). Day and
-// fee are NEVER hard-coded in business logic: both are read from the
-// platform_settings singleton (id = 1) on every run/request, and
-// NULL means unset — the sweep stays inert and early withdrawal is
-// refused until an admin sets them. The candidate branch works with
-// its own settings row; it does NOT assume the live database values.
+// super-admin panel). Early withdrawal uses the admin-configured floor
+// and fee, and finance must review it within 24 hours (deadlineAt =
+// created_at + 24h, pending rows only). The sweep stays inert if the
+// settlement day is unset. Early withdrawal requires both a floor
+// and a fee. These values come from the platform_settings singleton
+// (id = 1). The monthly sweep accepts any positive balance.
 //
 // No real bank transfer exists in this codebase, and none is
 // invented here: "automatic to Sheba" means the sweep automatically
@@ -78,17 +75,9 @@ import (
 // finance/bank execution, exactly like the manual engine. Monthly
 // payouts are fee-free; only early withdrawals charge a fee.
 
-const (
-	// EarlyWithdrawalMinimumToman is the user-approved minimum for an
-	// early (off-cycle) withdrawal request. The monthly sweep has no
-	// minimum: any positive balance is swept, so small balances are
-	// never stuck forever. U03: this number comes from the branch /
-	// user decision only; it is NOT verified against live behaviour.
-	EarlyWithdrawalMinimumToman int64 = 1000000
-	// EarlyWithdrawalSLAHours is the user-approved review SLA for an
-	// early withdrawal: finance settles it within 24 hours.
-	EarlyWithdrawalSLAHours = 24
-)
+// EarlyWithdrawalSLAHours is the user-approved review SLA for an
+// early withdrawal: finance settles it within 24 hours.
+const EarlyWithdrawalSLAHours = 24
 
 var (
 	ErrSettlementNotConfigured = errors.New("settlement settings are not configured")
@@ -96,9 +85,22 @@ var (
 	ErrEarlyWithdrawalFeeUnset = errors.New("early withdrawal fee percent is not configured")
 )
 
+type EarlyWithdrawalTooSmallError struct {
+	Minimum int64
+}
+
+func (e *EarlyWithdrawalTooSmallError) Error() string {
+	return ErrEarlyWithdrawalTooSmall.Error()
+}
+
+func (e *EarlyWithdrawalTooSmallError) Unwrap() error {
+	return ErrEarlyWithdrawalTooSmall
+}
+
 type SettlementSettings struct {
-	SettlementDay         *int     `json:"settlementDay,omitempty"`
-	EarlyWithdrawalFeePct *float64 `json:"earlyWithdrawalFeePct,omitempty"`
+	SettlementDay               *int     `json:"settlementDay,omitempty"`
+	EarlyWithdrawalFeePct       *float64 `json:"earlyWithdrawalFeePct,omitempty"`
+	EarlyWithdrawalMinimumToman *int64   `json:"earlyWithdrawalMinimumToman,omitempty"`
 }
 
 type WalletBreakdown struct {
@@ -170,7 +172,8 @@ func (r *FinanceRepository) GetSettlementSettings(ctx context.Context) (*Settlem
 	var s SettlementSettings
 	var day sql.NullInt64
 	var fee sql.NullFloat64
-	if err := r.db.QueryRowContext(ctx, `SELECT settlement_day, early_withdrawal_fee_pct FROM platform_settings WHERE id = 1`).Scan(&day, &fee); err != nil {
+	var minimum sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, `SELECT settlement_day, early_withdrawal_fee_pct, early_withdrawal_minimum_toman FROM platform_settings WHERE id = 1`).Scan(&day, &fee, &minimum); err != nil {
 		return nil, err
 	}
 	if day.Valid {
@@ -180,6 +183,9 @@ func (r *FinanceRepository) GetSettlementSettings(ctx context.Context) (*Settlem
 	if fee.Valid {
 		v := fee.Float64
 		s.EarlyWithdrawalFeePct = &v
+	}
+	if minimum.Valid {
+		s.EarlyWithdrawalMinimumToman = &minimum.Int64
 	}
 	return &s, nil
 }
@@ -216,9 +222,6 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	if gross > pricing.MaxTransportMoney {
 		return nil, pricing.ErrInvalidMoney
 	}
-	if gross < EarlyWithdrawalMinimumToman {
-		return nil, ErrEarlyWithdrawalTooSmall
-	}
 	if shaba == "" || bankName == "" {
 		return nil, fmt.Errorf("shaba and bank_name are required")
 	}
@@ -248,6 +251,21 @@ func (r *FinanceRepository) RequestEarlyWithdrawal(ctx context.Context, ownerUse
 	} else if replay {
 		original.fillDeadline()
 		return &original, nil
+	}
+	// Apply the current floor only to new requests so saved withdrawals can always replay.
+	var minimum sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT early_withdrawal_minimum_toman FROM platform_settings WHERE id=1`).Scan(&minimum)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSettlementNotConfigured
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !minimum.Valid {
+		return nil, fmt.Errorf("%w: early withdrawal minimum is NULL", ErrSettlementNotConfigured)
+	}
+	if gross < minimum.Int64 {
+		return nil, &EarlyWithdrawalTooSmallError{Minimum: minimum.Int64}
 	}
 	// sellerAvailableSQL (live-parity, D31) already subtracts pending
 	// early withdrawals, pending/approved payouts and service

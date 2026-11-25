@@ -79,6 +79,7 @@ CREATE TABLE platform_settings (
  DEFAULT 2 ,
 	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 	early_withdrawal_fee_pct NUMERIC,
+	early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
 	settlement_day INTEGER,
 	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
@@ -270,7 +271,6 @@ CREATE TABLE inventory_balances (
 	warehouse_name VARCHAR(100),
 	status VARCHAR(30) NOT NULL,
 	quantity INT NOT NULL DEFAULT 0,
-	unit_tracked BOOLEAN NOT NULL DEFAULT FALSE,
 	reconciled BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

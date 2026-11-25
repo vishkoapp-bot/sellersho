@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS platform_settings (
 ,
 	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 	early_withdrawal_fee_pct NUMERIC,
+	early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
 	settlement_day INTEGER,
 	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)

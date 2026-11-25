@@ -303,6 +303,7 @@ func t01SettlementSettingsFields() []t01SettingField {
 	return []t01SettingField{
 		{JSONKey: "settlementDay", Column: "settlement_day", Kind: "int", Min: 1, HasMin: true, Max: 31, HasMax: true, AllowNull: true},
 		{JSONKey: "earlyWithdrawalFeePct", Column: "early_withdrawal_fee_pct", Kind: "float", Min: 0, HasMin: true, Max: 100, HasMax: true, AllowNull: true},
+		{JSONKey: "earlyWithdrawalMinimumToman", Column: "early_withdrawal_minimum_toman", Kind: "int", Min: 1, HasMin: true, Max: float64(pricing.MaxTransportMoney), HasMax: true},
 	}
 }
 

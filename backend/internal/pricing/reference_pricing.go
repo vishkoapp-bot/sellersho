@@ -169,12 +169,12 @@ func ResolvePlatformPct(productID, categorySlug string, settings *PlatformPricin
 	return settings.PlatformPct, "global"
 }
 
-// effectiveMarginCeiling returns the ceiling that binds a seller-set
+// EffectiveMarginCeiling returns the ceiling that binds a seller-set
 // margin for one product (ISO-C margin model). A per-product ceiling
 // row, when present, REPLACES the global MaxProfitMargin for that
 // product; otherwise the global value binds. Per-product ceilings are
 // platform-set via the admin product-pricing endpoint.
-func effectiveMarginCeiling(productID string, settings *PlatformPricingSettings) float64 {
+func EffectiveMarginCeiling(productID string, settings *PlatformPricingSettings) float64 {
 	settings = OrDefault(settings)
 	if settings.ProductMarginCeilings != nil {
 		if v, ok := settings.ProductMarginCeilings[productID]; ok {
@@ -192,7 +192,7 @@ func capSellerMargin(margin float64, tier, productID string, settings *PlatformP
 	if tier == "product-locked" {
 		return margin
 	}
-	if ceiling := effectiveMarginCeiling(productID, settings); margin > ceiling {
+	if ceiling := EffectiveMarginCeiling(productID, settings); margin > ceiling {
 		return ceiling
 	}
 	return margin
@@ -317,7 +317,7 @@ func selectDropshipperMarginForProduct(product domain.Product, store domain.Stor
 	// Tier 4 (owner rule, 2026-11-05): the max-allowed fallback — the
 	// per-product ceiling row when present, else the global
 	// MaxProfitMargin. No store default participates anymore.
-	def := effectiveMarginCeiling(product.ID, settings)
+	def := EffectiveMarginCeiling(product.ID, settings)
 
 	// 1. admin_set product lock for this product.
 	for _, l := range locks {
@@ -547,7 +547,7 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 				// margin for the product on the variant cost — never
 				// the product resolution (U10: the fixed row itself
 				// is still not applied).
-				res := resolveVariantAtMargin(variantProduct, variantCost, effectiveMarginCeiling(product.ID, settings), "max-default", settings)
+				res := resolveVariantAtMargin(variantProduct, variantCost, EffectiveMarginCeiling(product.ID, settings), "max-default", settings)
 				res.UnverifiedNote = "U10: fixed-mode variant override present but not applied; max allowed margin used"
 				return res
 			}
@@ -565,7 +565,7 @@ func ResolveReferencePricingForStoreProductVariantWithCost(product domain.Produc
 		// variant prices at the MAX ALLOWED margin for the product,
 		// computed on the variant cost. It does NOT inherit the product
 		// override, and no store default exists anymore.
-		return resolveVariantAtMargin(variantProduct, variantCost, effectiveMarginCeiling(product.ID, settings), "max-default", settings)
+		return resolveVariantAtMargin(variantProduct, variantCost, EffectiveMarginCeiling(product.ID, settings), "max-default", settings)
 	}
 	return ResolveReferencePricing(variantProduct, store, settings, locks)
 }

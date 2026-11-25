@@ -2,10 +2,11 @@ import { markedUpPrice } from '../../utils/money';
 import React, { useEffect, useRef, useState } from 'react';
 import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
+import { useToast } from '../../context/ToastContext';
 import { SellerProductPricingModal } from './SellerProductPricingModal';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
-import { resolvePricing, resolvePlatformPct, roundTo100 } from '../../utils/pricingEngine';
-import { storeApi } from '../../services/storeApi';
+import { resolvePricing, resolvePlatformPct } from '../../utils/pricingEngine';
+import { storeApi, type SellerProductCandidate, type SellerVariantEffectiveMargin } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { catalogApi, type ProductDto } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
@@ -21,6 +22,7 @@ import { Search, Check, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 
 // still renders computed 0/0/0).
 export interface CatalogCostPresence {
   product: boolean;
+  hasVariants?: true;
   variants: Record<string, boolean>;
 }
 
@@ -30,6 +32,7 @@ export function buildCatalogCostPresence(items: ProductDto[]): Record<string, Ca
     const variants: Record<string, boolean> = {};
     for (const v of d.variants || []) variants[v.id] = v.supplierBaseCost != null;
     out[d.id] = { product: d.baseCostB != null, variants };
+    if (d.hasVariants) out[d.id].hasVariants = true;
   }
   return out;
 }
@@ -84,29 +87,58 @@ export function resolveScopedCatalogOutcome(
   return 'ok';
 }
 
-// Live parity ("انتخاب کالا"): picking is a DRAFT. Tapping a product or a
-// niche only changes pending state; nothing is applied to the storefront
-// until the fixed bottom bar's "تأیید و ذخیره" is pressed, and "انصراف"
-// discards the draft. Pending rows carry live's "جدید — ذخیره نشده" /
-// "حذف می‌شود — ذخیره نشده" badges. Saved values come from the store only
-// (no invented first-8-products fallback).
+export function addedProductIds(pending: string[], saved: string[]): string[] {
+  const savedIds = new Set(saved);
+  return pending.filter((id) => !savedIds.has(id));
+}
+
+export function removedProductIds(saved: string[], pending: string[]): string[] {
+  return addedProductIds(saved, pending);
+}
+
+export function unionUndoProductIds(freshIds: string[], removedIds: string[]): string[] {
+  return [...new Set([...freshIds, ...removedIds])];
+}
+
+export function staleAddedIds(addedIds: string[], eligibleIds: string[]): string[] {
+  return addedProductIds(addedIds, eligibleIds);
+}
+
+// Product changes stay in the draft until the seller confirms or cancels.
 export const SellerCatalogTab: React.FC = () => {
   const {
     products,
     currentStore,
+    setCurrentStore,
     updateStoreActiveProducts,
     updateStoreSelectedNiches,
     platformSettings,
     formatPrice,
     toPersianDigits,
   } = useStore();
+  const { success, error } = useToast();
 
   const [nicheSearch, setNicheSearch] = useState('');
   const [extraSearch, setExtraSearch] = useState('');
   const [showExtraSection, setShowExtraSection] = useState(false);
-  const [pricingProduct, setPricingProduct] = useState<any | null>(null);
+  const [pricingProduct, setPricingProduct] = useState<Product | null>(null);
   const [showNicheHelp, setShowNicheHelp] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [nicheSaving, setNicheSaving] = useState(false);
+  const [confirmBaseline, setConfirmBaseline] = useState<string[] | null>(null);
+  const [undoableRemoval, setUndoableRemoval] = useState<string[] | null>(null);
+  const [undoSaving, setUndoSaving] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [pickerResults, setPickerResults] = useState<SellerProductCandidate[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(true);
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  const [pickerHasMore, setPickerHasMore] = useState(false);
+  const [pickerCursor, setPickerCursor] = useState<string | null>(null);
+  const [pickerTitleById, setPickerTitleById] = useState<Record<string, string>>({});
+  const pickerRequestRef = useRef(0);
+  const nicheSavingRef = useRef(false);
+  const suppressPendingResyncRef = useRef(false);
+  const productsBusy = saving || undoSaving;
 
   // Fix80: the context catalogue is the UNSCOPED central list, which by
   // design carries no baseCostB (live parity) — resolvePricing on it
@@ -170,7 +202,47 @@ export const SellerCatalogTab: React.FC = () => {
   // refetch; only the first load, with nothing yet, shows loading.
   const scopedLoading = !!storeSlug && scopedProducts === null && !scopedError;
 
-  const savedProductIds = currentStore.activeProductIds || [];
+  const loadPickerPage = async (slug: string, query: string, cursor?: string) => {
+    const request = ++pickerRequestRef.current;
+    setPickerLoading(true);
+    setPickerError(null);
+    try {
+      const response = await storeApi.getSellerProductCandidates({
+        storeSlug: slug, q: query, ...(cursor ? { cursor } : {}),
+      });
+      if (request !== pickerRequestRef.current) return;
+      if (!Array.isArray(response.products)) throw new Error('Invalid product candidates response');
+      setPickerResults((previous) => cursor
+        ? [...new Map([...previous, ...response.products].map((product) => [product.id, product])).values()]
+        : response.products);
+      setPickerCursor(response.nextCursor);
+      setPickerHasMore(response.hasMore);
+    } catch {
+      if (request === pickerRequestRef.current) setPickerError('دریافت فهرست کالاها ناموفق بود');
+    } finally {
+      if (request === pickerRequestRef.current) setPickerLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showExtraSection || !storeSlug) return;
+    setPickerLoading(true);
+    setPickerError(null);
+    setPickerResults([]);
+    setPickerHasMore(false);
+    setPickerCursor(null);
+    const timer = window.setTimeout(() => {
+      void loadPickerPage(storeSlug, pickerQuery);
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      pickerRequestRef.current += 1;
+    };
+  }, [showExtraSection, storeSlug, pickerQuery, walkRetry]);
+
+  // The context updates optimistically. Keep comparing against the server
+  // baseline until the PUT succeeds or a server read supplies a fresh one.
+  const savedProductIds = confirmBaseline ?? currentStore.activeProductIds ?? [];
   const savedNicheIds = currentStore.selectedNicheIds || [];
 
   const [pendingProductIds, setPendingProductIds] = useState<string[]>(savedProductIds);
@@ -180,22 +252,27 @@ export const SellerCatalogTab: React.FC = () => {
   // a confirm persists), never on unrelated store updates.
   const savedProductsKey = savedProductIds.join(',');
   const savedNichesKey = savedNicheIds.join(',');
-  useEffect(() => { setPendingProductIds(savedProductIds); }, [savedProductsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (confirmBaseline !== null) return;
+    if (suppressPendingResyncRef.current) {
+      suppressPendingResyncRef.current = false;
+      return;
+    }
+    setPendingProductIds(savedProductIds);
+  }, [savedProductsKey, confirmBaseline]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setPendingNicheIds(savedNicheIds); }, [savedNichesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const productDiffCount =
-    pendingProductIds.filter((id) => !savedProductIds.includes(id)).length +
-    savedProductIds.filter((id) => !pendingProductIds.includes(id)).length;
-  const nicheDiff =
-    pendingNicheIds.length !== savedNicheIds.length ||
-    pendingNicheIds.some((id) => !savedNicheIds.includes(id));
-  const hasChanges = productDiffCount > 0 || nicheDiff;
+    addedProductIds(pendingProductIds, savedProductIds).length +
+    removedProductIds(savedProductIds, pendingProductIds).length;
+  const hasChanges = productDiffCount > 0;
 
   useEffect(() => {
     if (saving && !hasChanges) setSaving(false);
   }, [saving, hasChanges]);
 
-  const toggleNiche = (nicheId: string) => {
+  const toggleNiche = async (nicheId: string) => {
+    if (nicheSavingRef.current || productsBusy) return;
     let next: string[];
     if (pendingNicheIds.includes(nicheId)) {
       if (pendingNicheIds.length === 1) return; // Live label: "یک یا چند تا"
@@ -203,24 +280,138 @@ export const SellerCatalogTab: React.FC = () => {
     } else {
       next = [...pendingNicheIds, nicheId];
     }
+    if (!currentStore) return;
+    const serverAcked = currentStore.selectedNicheIds || [];
     setPendingNicheIds(next);
+    if (!currentStore.slug || isMockMode()) {
+      updateStoreSelectedNiches(next);
+      return;
+    }
+    nicheSavingRef.current = true;
+    setNicheSaving(true);
+    try {
+      const returned = await storeApi.saveStoreSettings(currentStore.slug, { selectedNicheIds: next });
+      const selected = returned.selectedNicheIds ?? next;
+      setPendingNicheIds(selected);
+      updateStoreSelectedNiches(selected);
+    } catch {
+      setPendingNicheIds(serverAcked);
+      error('ذخیره نیچ انجام نشد؛ دوباره تلاش کن');
+    } finally {
+      nicheSavingRef.current = false;
+      setNicheSaving(false);
+    }
   };
 
   const toggleProductSelect = (id: string) => {
+    if (productsBusy) return;
     setPendingProductIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
-  const handleConfirm = () => {
+  const pickerRows = pickerResults.filter((product) => !pendingProductIds.includes(product.id));
+  const addPickerProduct = ({ id, title }: SellerProductCandidate) => {
+    if (productsBusy) return;
+    setPendingProductIds((previous) => previous.includes(id) ? previous : [...previous, id]);
+    setPickerTitleById((previous) => ({ ...previous, [id]: title }));
+  };
+
+  const findOwnedStore = async () => {
+    const owned = await storeApi.getOwnedStores();
+    return owned.find((store) => store.id === currentStore.id);
+  };
+
+  const restoreProducts = async (preserveDraft: boolean) => {
+    try {
+      const freshStore = await findOwnedStore();
+      if (!freshStore) return false;
+      suppressPendingResyncRef.current = preserveDraft;
+      setCurrentStore(freshStore);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const revalidateAddedProducts = async (ids: string[]) => {
+    if (!ids.length || !storeSlug || isMockMode()) return [];
+    try {
+      const { products: eligible } = await storeApi.getSellerProductCandidates({ storeSlug, ids });
+      return staleAddedIds(ids, eligible.map((product) => product.id));
+    } catch (err) {
+      console.warn('Failed to re-validate seller product candidates:', err);
+      return [];
+    }
+  };
+
+  const dropStaleProducts = (stale: string[]) => {
+    if (!stale.length) return;
+    const staleIds = new Set(stale);
+    setPendingProductIds((previous) => previous.filter((id) => !staleIds.has(id)));
+    for (const id of staleIds) {
+      const title = pickerTitleById[id] ?? displayProducts.find((product) => product.id === id)?.title ?? id;
+      error(`«${title}» دیگر قابل افزودن نیست و از تغییرات حذف شد`);
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (productsBusy || nicheSavingRef.current) return;
     setSaving(true);
-    if (nicheDiff) updateStoreSelectedNiches(pendingNicheIds);
-    if (productDiffCount > 0) {
-      void updateStoreActiveProducts(pendingProductIds).then((result) => {
-        if (shouldRefetchCatalogAfterConfirm(productDiffCount, result)) {
-          setWalkRetry((n) => n + 1);
-        }
-      });
+    const savedBefore = [...savedProductIds];
+    const pendingBefore = [...pendingProductIds];
+    const previousBaseline = confirmBaseline;
+    setConfirmBaseline(savedBefore);
+    let baselineAfterSave: string[] | null = previousBaseline;
+    try {
+      const added = addedProductIds(pendingBefore, savedBefore);
+      const stale = await revalidateAddedProducts(added);
+      dropStaleProducts(stale);
+      const remaining = pendingBefore.filter((id) => !stale.includes(id));
+      const removed = removedProductIds(savedBefore, remaining);
+      const remainingDiff = addedProductIds(remaining, savedBefore).length + removed.length;
+      if (remainingDiff === 0) return;
+
+      const result = await updateStoreActiveProducts(remaining);
+      if (result.ok) {
+        baselineAfterSave = null;
+        setUndoableRemoval(removed.length > 0 ? removed : null);
+        if (shouldRefetchCatalogAfterConfirm(remainingDiff, result)) setWalkRetry((n) => n + 1);
+      } else {
+        // If the rollback read fails, the context still has the optimistic
+        // list. Retain the acknowledged baseline here so the draft can retry.
+        baselineAfterSave = await restoreProducts(true) ? null : savedBefore;
+        const newlyStale = (await revalidateAddedProducts(added)).filter((id) => remaining.includes(id));
+        dropStaleProducts(newlyStale);
+        if (!newlyStale.length) error('ذخیره کالاها انجام نشد؛ دوباره تلاش کن');
+      }
+    } finally {
+      setConfirmBaseline(baselineAfterSave);
+      setSaving(false);
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!currentStore || !undoableRemoval || productsBusy || nicheSavingRef.current) return;
+    setUndoSaving(true);
+    try {
+      const freshStore = await findOwnedStore();
+      if (!freshStore) throw new Error('Owned store missing');
+      const union = unionUndoProductIds(freshStore.activeProductIds || [], undoableRemoval);
+      const result = await updateStoreActiveProducts(union);
+      if (!result.ok) {
+        if (await restoreProducts(false)) setConfirmBaseline(null);
+        error('بازگردانی انجام نشد؛ دوباره تلاش کن');
+        return;
+      }
+      setConfirmBaseline(null);
+      setWalkRetry((n) => n + 1);
+      setUndoableRemoval(null);
+      success('کالاهای حذف‌شده بازگردانده شدند');
+    } catch {
+      error('بازگردانی انجام نشد؛ دوباره تلاش کن');
+    } finally {
+      setUndoSaving(false);
     }
   };
 
@@ -251,76 +442,88 @@ export const SellerCatalogTab: React.FC = () => {
     return isOutside && matchesSearch;
   });
 
-  // Per-variant seller percents for this store (productId -> variantId -> pct).
-  // Variant products price from these (backend: variant override wins), so
-  // the list must show them — not the product-level fallback percent.
-  const [variantPctByProduct, setVariantPctByProduct] = useState<Record<string, Record<string, number>>>({});
+  const [variantMargins, setVariantMargins] = useState<{
+    storeId: string;
+    byProduct: Map<string, Map<string, SellerVariantEffectiveMargin>>;
+  }>();
+  const [marginRefresh, setMarginRefresh] = useState(0);
+  const storeId = currentStore.id;
+  const effectiveByProduct = variantMargins?.storeId === storeId ? variantMargins.byProduct : undefined;
   useEffect(() => {
-    // Refetch when the pricing modal closes too: percents saved there must
-    // show in the list immediately (a mount-only fetch went stale and kept
-    // showing the old uniform percent instead of the new range).
-    if (pricingProduct) return;
-    if (!currentStore?.id || isMockMode()) return;
-    let cancelled = false;
-    storeApi.getSellerVariantOverrides(currentStore.id)
-      .then((rows) => {
-        if (cancelled) return;
-        const map: Record<string, Record<string, number>> = {};
-        for (const r of rows) {
-          (map[r.productId] = map[r.productId] || {})[r.variantId] = r.value;
-        }
-        setVariantPctByProduct(map);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [currentStore?.id, pricingProduct]);
+    // Re-read both sources when the modal closes, including after clearing a margin.
+    if (!storeId || isMockMode()) return;
+    const controller = new AbortController();
+    const effective = storeApi.getSellerVariantEffectiveMargins(storeId, controller.signal);
+    const overrides = storeApi.getSellerVariantOverrides(storeId);
+    void effective.catch(() => []).then((rows) => {
+      if (controller.signal.aborted) return;
+      const byProduct = new Map<string, Map<string, SellerVariantEffectiveMargin>>();
+      for (const row of rows) {
+        const variants = byProduct.get(row.productId) ?? new Map<string, SellerVariantEffectiveMargin>();
+        variants.set(row.variantId, row);
+        byProduct.set(row.productId, variants);
+      }
+      setVariantMargins({ storeId, byProduct });
+    });
+    void Promise.all([effective, overrides]).then(([rows, saved]) => {
+      if (controller.signal.aborted) return;
+      const ovMap = new Map(saved.filter(row => row.mode === 'percent').map(row => [row.variantId, row.value] as const));
+      for (const row of rows) {
+        if (row.tier !== 'variant' || row.locked || ovMap.get(row.variantId) === row.marginPct) continue;
+        console.warn('Seller variant effective margin differs from saved override', {
+          storeId, productId: row.productId, variantId: row.variantId,
+          effective: row.marginPct, saved: ovMap.get(row.variantId),
+        });
+      }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [storeId, marginRefresh, walkRetry]);
 
-  const renderRow = (product: any, purple: boolean) => {
+  const renderRow = (product: Product, purple: boolean) => {
     const isPending = pendingProductIds.includes(product.id);
     const isSaved = savedProductIds.includes(product.id);
     const isNew = isPending && !isSaved;
     const isRemoved = !isPending && isSaved;
-    const pricing = resolvePricing(product, currentStore, platformSettings);
-    const baseCostR = pricing.baseCost;
-    const finalPrice = pricing.finalPrice;
-    const profitToman = pricing.sellerMargin;
-
-    // Variant products: the row shows the VARIANT pricing (what is actually
-    // charged), using each variant's effective percent (its own override,
-    // else the product fallback). Uniform -> exact numbers; mixed -> «از».
-    let displayFinal = finalPrice;
-    let displayProfit = profitToman;
-    let displayPctText = `${pricing.marginPercent.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪`;
-    let fromPrefix = '';
-    const rowVariants: Array<{ id: string; supplierBaseCost?: number }> = (product as any).variants || [];
-    // C5: the row's cost is missing iff no cost is known for it (see
-    // catalogRowCostMissing). The effective product cost is the mapped
-    // number ONLY when the scoped DTO carried baseCostB; otherwise it
-    // is null — never the mapper's 0.
+    const rowVariants: NonNullable<Product['variants']> = product.variants ?? [];
+    const effective = effectiveByProduct?.get(product.id);
     const presence = costPresence[product.id];
-    const effProductCost: number | null = presence?.product ? product.supplierBaseCost : null;
-    const costMissing = catalogRowCostMissing(product, presence);
-    if (rowVariants.length > 0) {
-      const ovMap = variantPctByProduct[product.id] || {};
+    const isVariantProduct = product.productType === 'variable' || rowVariants.length > 0 || presence?.hasVariants
+      || !!effective?.size || !!products.find((p) => p.id === product.id)?.variants?.length;
+    const pricing = isVariantProduct ? undefined : resolvePricing(product, currentStore, platformSettings);
+    let baseCostR = pricing?.baseCost ?? 0;
+    let displayFinal = pricing?.finalPrice ?? 0;
+    let displayProfit = pricing?.sellerMargin ?? 0;
+    const fa = (n: number) => n.toLocaleString('fa-IR', { maximumFractionDigits: 2 });
+    let displayPctText = pricing ? `${fa(pricing.marginPercent)}٪` : '';
+    let fromPrefix = '';
+    let unverified = false;
+    let costMissing = catalogRowCostMissing(product, presence);
+
+    // Variants never inherit a product override. An unset variant uses the
+    // max allowed margin, with the per-product ceiling binding when set.
+    if (isVariantProduct) {
+      const effProductCost = presence?.product ? product.supplierBaseCost : null;
       const pctR = resolvePlatformPct(product, platformSettings);
-      const rowsV = rowVariants.map((v) => {
+      const rowsV = rowVariants.flatMap((v) => {
+        const resolved = effective?.get(v.id);
         const costV = catalogVariantCost(v, effProductCost, presence?.variants[v.id] ?? false);
-        if (costV == null) return null;
-        const baseV = markedUpPrice(costV, pctR);
-        const pct = ovMap[v.id] ?? pricing.marginPercent;
-        const finV = markedUpPrice(baseV, pct);
-        return { pct, finV, profitV: finV - baseV, baseV };
-      }).filter((r): r is { pct: number; finV: number; profitV: number; baseV: number } => r !== null && r.baseV > 0);
+        const baseV = resolved?.referenceCost ?? (costV == null ? null : markedUpPrice(costV, pctR));
+        if (baseV == null) return [];
+        const pct = resolved?.marginPct ?? platformSettings.maxProfitMargin ?? 35;
+        const finV = resolved?.finalPrice ?? markedUpPrice(baseV, pct);
+        if (!resolved) unverified = true;
+        return [{ pct, finV, profitV: finV - baseV, baseV }];
+      });
+      costMissing = rowsV.length === 0;
       if (rowsV.length > 0) {
         const pcts = rowsV.map((r) => r.pct);
         const fins = rowsV.map((r) => r.finV);
-        const profs = rowsV.map((r) => r.profitV);
         const minPct = Math.min(...pcts);
         const maxPct = Math.max(...pcts);
+        baseCostR = Math.min(...rowsV.map((r) => r.baseV));
         displayFinal = Math.min(...fins);
-        displayProfit = Math.min(...profs);
+        displayProfit = Math.min(...rowsV.map((r) => r.profitV));
         if (Math.max(...fins) !== displayFinal || maxPct !== minPct) fromPrefix = 'از ';
-        const fa = (n: number) => n.toLocaleString('fa-IR', { maximumFractionDigits: 2 });
         displayPctText = minPct === maxPct ? `${fa(minPct)}٪` : `${fa(minPct)}٪ تا ${fa(maxPct)}٪`;
       }
     }
@@ -352,7 +555,7 @@ export const SellerCatalogTab: React.FC = () => {
                 <span>قیمت تأمین‌کننده در دسترس نیست</span>
               </div>
             ) : (
-            <div className="flex items-center gap-2 text-[10px] text-slate-500">
+            <div className={`flex items-center gap-2 text-[10px] text-slate-500${isVariantProduct ? ' flex-wrap' : ''}`}>
               <span>خرید: <strong className="text-slate-800">{formatPrice(baseCostR)}</strong></span>
               <span>•</span>
               <span>فروش: <strong className="text-slate-800">{fromPrefix}{formatPrice(displayFinal)}</strong></span>
@@ -361,6 +564,7 @@ export const SellerCatalogTab: React.FC = () => {
                 سود تو: +{formatPrice(displayProfit)} ت
                 <span className="text-emerald-700"> ({displayPctText})</span>
               </span>
+              {isVariantProduct && <span>پیش از تخفیف{unverified ? ' · تأیید نشده' : ''}</span>}
             </div>
             )}
             {(() => {
@@ -448,7 +652,7 @@ export const SellerCatalogTab: React.FC = () => {
       {/* Live intro + niche help. */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
         <p className="text-[11px] text-slate-600 leading-6">
-          اینجا کالاهایی را انتخاب می‌کنی که در فروشگاهت فروخته شوند. اول موضوع‌های فروشگاهت (نیچ) را انتخاب کن، بعد روی هر کالا بزن تا انتخاب شود یا از انتخاب دربیاید؛ در پایان دکمه «تأیید و ذخیره» را بزن تا تغییرات در فروشگاهت اعمال شود.
+          اینجا کالاهایی را انتخاب می‌کنی که در فروشگاهت فروخته شوند. موضوع‌های فروشگاهت (نیچ) با هر لمس همان لحظه ذخیره می‌شوند. روی هر کالا بزن تا انتخاب شود یا از انتخاب دربیاید؛ در پایان دکمه «تأیید و ذخیره» را بزن تا تغییرات کالاها در فروشگاهت اعمال شود.
         </p>
         <button
           type="button"
@@ -478,6 +682,18 @@ export const SellerCatalogTab: React.FC = () => {
         </div>
       )}
 
+      {undoableRemoval && (
+        <div className="flex flex-wrap items-center gap-3 bg-blue-50 border border-blue-200 rounded-2xl p-3.5 text-xs text-blue-800">
+          <span className="grow">{toPersianDigits(undoableRemoval.length)} کالا از فروشگاه حذف شد</span>
+          <button type="button" onClick={handleUndo} disabled={productsBusy || nicheSaving} className="font-bold underline disabled:opacity-60">
+            بازگردانی
+          </button>
+          <button type="button" aria-label="بستن" onClick={() => setUndoableRemoval(null)} className="px-2 text-lg leading-none">
+            ×
+          </button>
+        </div>
+      )}
+
       {/* 1. Header & Active Products Count */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
@@ -494,6 +710,7 @@ export const SellerCatalogTab: React.FC = () => {
         <div>
           <label className="text-[11px] font-bold text-slate-600 block mb-1.5">
             نیچ‌های فروشگاهت (موضوع‌هایی که می‌فروشی) — یک یا چند تا:
+            <span className="mr-2 font-normal">با هر لمس، همان لحظه ذخیره می‌شود</span>
           </label>
           <div className="flex flex-wrap gap-1.5">
             {OFFICIAL_NICHES.map((niche) => {
@@ -503,7 +720,8 @@ export const SellerCatalogTab: React.FC = () => {
                   key={niche.id}
                   type="button"
                   onClick={() => toggleNiche(niche.id)}
-                  className={`px-3 py-2.5 min-h-[44px] rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  disabled={nicheSaving || productsBusy}
+                  className={`px-3 py-2.5 min-h-[44px] rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${
                     isSelected
                       ? 'bg-blue-600 text-white shadow-xs scale-102'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -605,6 +823,66 @@ export const SellerCatalogTab: React.FC = () => {
               />
             </div>
 
+            {storeSlug && (
+              <div className="space-y-2 rounded-xl border border-slate-200 p-2.5">
+                <input
+                  type="text"
+                  placeholder="جستجو در همه کالاهای پلتفرم…"
+                  aria-label="جستجوی همه کالاهای پلتفرم"
+                  value={pickerQuery}
+                  onChange={(e) => setPickerQuery(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-800"
+                />
+                {pickerRows.map((product) => (
+                  <div key={product.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 p-2.5 text-xs">
+                    <div>
+                      <p className="font-bold text-slate-800">{product.title}</p>
+                      {!product.isActive && (
+                        <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-800">
+                          غیرفعال — تا فعال نشود در فروشگاه نمایش داده نمی‌شود
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`افزودن ${product.title} به فروشگاه`}
+                      onClick={() => addPickerProduct(product)}
+                      disabled={productsBusy}
+                      className="shrink-0 rounded-xl bg-blue-50 px-3 py-2 font-bold text-blue-700 disabled:opacity-60"
+                    >
+                      افزودن
+                    </button>
+                  </div>
+                ))}
+                {pickerLoading && <p role="status" className="text-xs text-slate-500">در حال جستجو…</p>}
+                {pickerError && (
+                  <p role="alert" className="flex flex-wrap gap-2 text-xs text-rose-800">
+                    {pickerError}
+                    <button
+                      type="button"
+                      onClick={() => void loadPickerPage(storeSlug, pickerQuery, pickerCursor ?? undefined)}
+                      className="font-bold underline"
+                    >
+                      تلاش مجدد
+                    </button>
+                  </p>
+                )}
+                {!pickerLoading && !pickerError && pickerRows.length === 0 && (
+                  <p className="text-xs text-slate-500">در همه کالاهای پلتفرم کالایی با این جستجو پیدا نشد</p>
+                )}
+                {pickerHasMore && (
+                  <button
+                    type="button"
+                    disabled={pickerLoading || !!pickerError || !pickerCursor}
+                    onClick={() => { if (pickerCursor) void loadPickerPage(storeSlug, pickerQuery, pickerCursor); }}
+                    className="text-xs font-bold text-blue-700 disabled:opacity-60"
+                  >
+                    نمایش بیشتر
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="space-y-2">
               {outsideNicheProducts.length === 0 ? (
                 <p className="text-center text-xs text-slate-400 py-4">کالایی پیدا نشد</p>
@@ -632,7 +910,7 @@ export const SellerCatalogTab: React.FC = () => {
               <button
                 type="button"
                 onClick={handleConfirm}
-                disabled={saving}
+                disabled={productsBusy || nicheSaving}
                 className="flex-1 min-h-[48px] rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-extrabold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60 disabled:cursor-wait"
               >
                 {saving ? 'در حال ذخیره…' : 'تأیید و ذخیره'}
@@ -640,7 +918,7 @@ export const SellerCatalogTab: React.FC = () => {
               <button
                 type="button"
                 onClick={handleCancel}
-                disabled={saving}
+                disabled={productsBusy}
                 className="min-h-[48px] px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1 transition-colors disabled:opacity-60"
               >
                 انصراف
@@ -654,7 +932,12 @@ export const SellerCatalogTab: React.FC = () => {
       <SellerProductPricingModal
         isOpen={!!pricingProduct}
         product={pricingProduct}
-        onClose={() => setPricingProduct(null)}
+        effectiveMargins={pricingProduct ? effectiveByProduct?.get(pricingProduct.id) : undefined}
+        hasVariants={!!(pricingProduct && costPresence[pricingProduct.id]?.hasVariants)}
+        onClose={() => {
+          setPricingProduct(null);
+          setMarginRefresh((n) => n + 1);
+        }}
       />
     </div>
   );

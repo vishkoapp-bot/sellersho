@@ -1,9 +1,9 @@
-import { parsePercent } from '../../utils/money';
+import { markedUpPrice, parsePercent } from '../../utils/money';
 import React, { useState, useEffect } from 'react';
 import { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
-import { storeApi } from '../../services/storeApi';
+import { storeApi, type SellerVariantEffectiveMargin } from '../../services/storeApi';
 import { catalogApi } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { activeProductVariants, resolvePurchase, sellerVariantPreview } from '../../utils/productPurchase';
@@ -15,16 +15,20 @@ import { motion } from 'motion/react';
 
 interface Props {
   product: Product | null;
+  hasVariants?: boolean;
   isOpen: boolean;
   onClose: () => void;
+  effectiveMargins?: ReadonlyMap<string, SellerVariantEffectiveMargin>;
 }
 
 interface ModalContentProps {
   product: Product;
+  hasVariants?: boolean;
   onClose: () => void;
+  effectiveMargins?: ReadonlyMap<string, SellerVariantEffectiveMargin>;
 }
 
-const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product, onClose }) => {
+const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product, onClose, effectiveMargins, hasVariants }) => {
   const {
     products,
     currentStore,
@@ -88,13 +92,17 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   }, [variantSettingsReady]);
 
   // Percent base price R = C x (1+pct/100) (server percent engine).
-  const baseCostR = resolveBaseCostR(pricingProduct, platformSettings);
-  const productPct = resolvePlatformPct(pricingProduct, platformSettings);
+  const platformPct = resolvePlatformPct(pricingProduct, platformSettings);
 
   // Live: store-level admin margin lock (candidate context carries only the
   // store flag; live also has per-product / per-niche locks — see report).
   const isLocked = !!currentStore.isMarginLockedByAdmin;
   const variantCount = pricingVariants.length;
+  const isVariantProduct = !!hasVariants || product.productType === 'variable' || pricingProduct.productType === 'variable'
+    || centralPricingProduct?.productType === 'variable' || !!product.variants?.length
+    || variantCount > 0 || !!effectiveMargins?.size || !!products.find((p) => p.id === product.id)?.variants?.length;
+  const showPlainPricing = !isVariantProduct && (isCentralStore || isMockMode() || centralFetchDone);
+  const baseCostR = showPlainPricing ? resolveBaseCostR(pricingProduct, platformSettings) : 0;
   const visibleVariantCount = pricingVariants.filter((v) => visibilityInputs[v.id] !== false).length;
   const allVariantsHidden = variantSettingsReady && variantCount > 0 && visibleVariantCount === 0;
   const baseUnknown = !isFinite(baseCostR) || baseCostR <= 0;
@@ -106,11 +114,11 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // Products in this niche for bulk impact preview
   const nicheProducts = products.filter((p) => {
     const ids = p.nicheIds && p.nicheIds.length > 0 ? p.nicheIds : getProductNicheIds(p);
-    return ids.includes(productNiche.id);
+    return p.productType !== 'variable' && !p.variants?.length && ids.includes(productNiche.id);
   });
 
   // Current product pricing state
-  const existingOverride = currentStore.productPriceOverrides?.[product.id];
+  const existingOverride = isVariantProduct ? undefined : currentStore.productPriceOverrides?.[product.id];
 
   // No store-wide default margin exists anymore: with no per-product
   // percent the input starts EMPTY and the maximum allowed margin
@@ -129,15 +137,14 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // per-product ceiling, when set by the platform, is enforced
   // server-side and surfaced by the save error path).
   const maxAllowed = platformSettings.maxProfitMargin ?? 35;
+  const effectiveCeiling = effectiveMargins?.values().next().value?.ceilingPct ?? maxAllowed;
   let validPrecision = false;
   try { parsePercent(numVal); validPrecision = true; } catch { /* invalid draft */ }
   const isProfitValid = profitVal !== '' && validPrecision && numVal >= minAllowed && numVal <= maxAllowed;
   // Wherever no percent is set, the maximum allowed margin applies
   // automatically (platform max; a per-product ceiling, when the
   // platform sets one, is enforced server-side and surfaced via the
-  // save error path). Used for the plain-product preview; per-variant
-  // rows fall back to the max directly (an unset variant never inherits
-  // the product percent — backend parity).
+  // save error path). Used for the plain-product preview.
   const fallbackPct = profitVal !== '' && !isNaN(numVal) ? numVal : maxAllowed;
   const previewValid = profitVal === '' || isProfitValid;
 
@@ -146,7 +153,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   // saving. Save failures are reported by kind: a 400 names the range, a
   // 403 is the admin lock, anything else is a server error — never blame
   // the range for a server failure.
-  const rangeText = `از ${toPersianDigits(minAllowed)}٪ تا ${toPersianDigits(maxAllowed)}٪`;
+  const rangeText = `از ${toPersianDigits(minAllowed)}٪ تا ${toPersianDigits(isVariantProduct ? effectiveCeiling : maxAllowed)}٪`;
   const saveErrorText = (status?: number): string => {
     if (status === 400) return `ذخیره انجام نشد؛ درصد سود باید در بازه مجاز پلتفرم باشد (${rangeText}).`;
     if (status === 403) return 'ذخیره انجام نشد؛ قیمت‌گذاری این فروشگاه توسط مدیر پلتفرم قفل شده است.';
@@ -154,22 +161,22 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   };
 
   // Priority 2.1: Use Canonical resolvePricing from pricingEngine
-  const simulatedStore = {
+  const simulatedPricing = showPlainPricing ? resolvePricing(pricingProduct, {
     ...currentStore,
     productPriceOverrides: { ...(currentStore.productPriceOverrides || {}), [product.id]: previewValid ? fallbackPct : maxAllowed },
-  };
-  const simulatedPricing = resolvePricing(pricingProduct, simulatedStore as any, platformSettings);
-  const finalPriceP = previewValid ? simulatedPricing.finalPrice : baseCostR;
+  }, platformSettings) : undefined;
+  const finalPriceP = previewValid && simulatedPricing ? simulatedPricing.finalPrice : baseCostR;
   const netProfitToman = finalPriceP - baseCostR;
   // Displayed margin is the applied input margin (server definition), not
   // profit/final — so the number shown matches the number typed.
-  const effectiveMarginPercent = previewValid ? simulatedPricing.marginPercent : 0;
+  const effectiveMarginPercent = previewValid ? simulatedPricing?.marginPercent ?? 0 : 0;
 
   const handleInitialSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     // Variant products have no product-level margin: their prices come
     // from the per-variant percents only (saved by the variant button).
-    if (variantCount > 0) { onClose(); return; }
+    if (isVariantProduct) { onClose(); return; }
+    if (!showPlainPricing) return;
     if (isLocked) return;
     if (profitVal === '') {
       if (applyToNiche) {
@@ -239,21 +246,21 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   // Per-variant margins (percent-only): the dropshipper sets a profit
   // PERCENT per variant; the supplier sets the variant's own price
-  // (supplierBaseCost). Empty input = the product percent if one is
-  // set, otherwise the maximum allowed margin, automatically.
-  // Fetched once per modal open (the content remounts per product via
-  // key); the product-margin save must not clobber typed variant values.
+  // (supplierBaseCost). As of Nov 5, an unset variant uses its effective
+  // ceiling and never inherits a parent override. Drafts load per modal.
   const [variantInputs, setVariantInputs] = useState<Record<string, string>>({});
   const [variantSaved, setVariantSaved] = useState<Record<string, string>>({});
   const [variantSaving, setVariantSaving] = useState(false);
 
   useEffect(() => {
-    if (variantCount === 0 || isMockMode() || !currentStore?.id) return;
+    if (!isVariantProduct || isMockMode() || !currentStore?.id) return;
+    let cancelled = false;
     storeApi.getSellerVariantOverrides(currentStore.id)
       .then((rows) => {
+        if (cancelled) return;
         const next: Record<string, string> = {};
         for (const row of rows) {
-          if (row.productId === product.id && product.variants?.some((v) => v.id === row.variantId)) {
+          if (row.productId === product.id && row.mode === 'percent') {
             next[row.variantId] = String(row.value);
           }
         }
@@ -261,7 +268,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
         setVariantInputs(next);
       })
       .catch(() => {});
-  }, []);
+    return () => { cancelled = true; };
+  }, [isVariantProduct, currentStore.id, product.id]);
 
   const handleSaveVariantMargins = async () => {
     if (isLocked || variantSaving) return;
@@ -270,8 +278,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
       const raw = variantInputs[v.id];
       if (raw === undefined || raw === '') continue;
       const n = Number(raw);
-      if (!Number.isFinite(n) || (n !== 0 && (n < minAllowed || n > maxAllowed))) {
-        error(`درصد سود تنوع «${v.variantName || v.name}» باید در بازه مجاز پلتفرم باشد (صفر برای حذف سود سفارشی).`);
+      if (!Number.isFinite(n) || (n !== 0 && (n < minAllowed || n > effectiveCeiling))) {
+        error(`درصد سود تنوع «${v.variantName || v.name}» باید در بازه ${rangeText} باشد (صفر برای حذف سود سفارشی).`);
         return;
       }
     }
@@ -348,19 +356,28 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
     success('تنظیمات تنوع‌ها ذخیره شد.');
   };
 
-  // Summary for variant products: computed from each variant's EFFECTIVE
-  // percent (typed ?? saved ?? auto max) and its own base price —
-  // the same numbers the backend charges with (variant override wins).
+  const previewVariant = (variant: typeof pricingVariants[number]) => {
+    const resolved = effectiveMargins?.get(variant.id);
+    const draft = variantInputs[variant.id];
+    const typed = Number(draft);
+    const draftMargin = Number.isFinite(typed) && typed > 0 ? Math.min(typed, effectiveCeiling) : effectiveCeiling;
+    const margin = resolved && (resolved.locked || draft === undefined) ? resolved.marginPct : draftMargin;
+    const baseCost = resolved?.referenceCost;
+    if (baseCost == null) return { ...sellerVariantPreview(pricingProduct, variant, platformPct, margin), margin };
+    try {
+      const resolvedPrice = resolved?.marginPct === margin ? resolved.finalPrice : undefined;
+      const finalPrice = resolvedPrice ?? markedUpPrice(baseCost, margin);
+      return { baseCost, finalPrice, profit: finalPrice - baseCost, margin };
+    } catch {
+      return { baseCost, margin };
+    }
+  };
+
   const variantSummary = (() => {
     if (variantCount === 0) return null;
-    const rowsV = pricingVariants.map((v) => {
-      const typed = variantInputs[v.id] ?? '';
-      const eff = typed !== '' && Number.isFinite(Number(typed)) && Number(typed) > 0 ? Number(typed) : maxAllowed;
-      const preview = sellerVariantPreview(pricingProduct, v, productPct, eff);
-      return { ...preview, eff };
-    }).filter((row) => row.finalPrice != null && row.finalPrice > 0);
+    const rowsV = pricingVariants.map(previewVariant).filter((row) => row.finalPrice != null && row.finalPrice > 0);
     if (rowsV.length === 0) return null;
-    const pcts = rowsV.map((r) => r.eff);
+    const pcts = rowsV.map((r) => r.margin);
     const finals = rowsV.map((r) => r.finalPrice!);
     const profits = rowsV.map((r) => r.profit ?? 0);
     return {
@@ -401,12 +418,12 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
         <form onSubmit={handleInitialSubmit} className="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1 pb-1 text-xs">
           {/* Section 3.1: Single unified base price (R) */}
-          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
+          {showPlainPricing && <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
             <span className="text-slate-600 font-bold text-[11px]">قیمت پایه:</span>
             <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{baseUnknown ? 'اعلام نشده' : `${formatPrice(baseCostR)} تومان`}</span>
-          </div>
+          </div>}
 
-          {variantCount > 0 && (
+          {isVariantProduct && (
             <p className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 text-[11px] leading-5 text-slate-600">
               این کالا تنوع دارد؛ قیمتش فقط از سود هر تنوع حساب می‌شود و سود جداگانه‌ای در سطح کالا ندارد. درصد هر تنوع را همین‌جا تعیین کن.
             </p>
@@ -416,15 +433,14 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
             <div className="space-y-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
               <p className="text-[11px] font-bold text-slate-800">سود هر تنوع (درصد روی قیمت پایه همان تنوع)</p>
               <p className="text-[10px] leading-5 text-slate-500">
-                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. تنوعی که خالی بماند، درصد محصول به آن نمی‌رسد؛ به‌صورت خودکار حداکثر سود مجاز پلتفرم ({toPersianDigits(maxAllowed)}٪) برای همان تنوع اعمال می‌شود.
+                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. برای تنوعی که خالی بماند، حداکثر سود مجاز این کالا ({toPersianDigits(effectiveCeiling)}٪) به‌صورت خودکار اعمال می‌شود.
               </p>
               <p className="text-[10px] leading-5 text-slate-500">
-                بازه مجاز سود برای هر تنوع هم همان بازه پلتفرم است: {rangeText}
+                بازه مجاز سود برای هر تنوع: {rangeText}
               </p>
               {pricingVariants.map((v) => {
                 const typed = variantInputs[v.id] ?? '';
-                const marginV = typed !== '' && Number.isFinite(Number(typed)) && Number(typed) > 0 ? Number(typed) : maxAllowed;
-                const preview = sellerVariantPreview(pricingProduct, v, productPct, marginV);
+                const preview = previewVariant(v);
                 const baseV = preview.baseCost;
                 const finalV = preview.finalPrice;
                 const isVisible = visibilityInputs[v.id] ?? true;
@@ -439,7 +455,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                         disabled={isLocked || variantSaving}
                         value={typed}
                         onChange={(e) => setVariantInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
-                        placeholder={toPersianDigits(maxAllowed)}
+                        placeholder={toPersianDigits(effectiveCeiling)}
                         className="w-20 shrink-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
                         aria-label={`درصد سود تنوع ${v.variantName || v.name}`}
                       />
@@ -510,7 +526,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           )}
 
           {/* Section 3.2: Percent-only profit input (single-variant / plain products only) */}
-          {variantCount === 0 && (
+          {showPlainPricing && (
           <div>
 
             <div className={`relative flex items-center rounded-xl px-3 py-2 border transition-all ${
@@ -556,13 +572,13 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           )}
 
           {/* Section 3.3.b: Niche Bulk Checkbox (plain products only) */}
-          {variantCount === 0 && (<>
+          {showPlainPricing && (<>
           <div className="p-2.5 bg-blue-50/50 border border-blue-100 rounded-xl flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-600 shrink-0"  strokeWidth={1.5}/>
               <div>
                 <span className="text-[11px] font-bold text-slate-800 block">
-                  اعمال روی کل نیچ «{productNiche.title}»
+                  اعمال روی کالاهای سادهٔ نیچ «{productNiche.title}»
                 </span>
                 <span className="text-[9px] text-slate-500">
                   شامل {toPersianDigits(nicheProducts.length)} کالا در این نیچ (نیازمند تایید دومرحله‌ای)
@@ -598,9 +614,9 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 <span>حاشیه سود: {variantSummary.minPct === variantSummary.maxPct ? `٪${toPersianDigits(variantSummary.minPct)}` : `٪${toPersianDigits(variantSummary.minPct)} تا ٪${toPersianDigits(variantSummary.maxPct)}`}</span>
               </div>}
             </div>
-          ) : variantCount > 0 ? (
+          ) : isVariantProduct ? (
             <p className="text-xs text-slate-500">قیمت تنوع‌ها هنوز اعلام نشده است.</p>
-          ) : baseUnknown ? (
+          ) : !showPlainPricing ? null : baseUnknown ? (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
               {previewValid ? (
                 <>
@@ -627,7 +643,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
           </div>
 
           )}
-          {variantCount > 0 ? (
+          {!showPlainPricing ? (
             <button
               type="button"
               onClick={onClose}
@@ -656,12 +672,12 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
         </form>
 
         {/* Requirement 3: Two-Step Confirmation Modal for Bulk Niche Pricing */}
-        {showNicheConfirmModal && (
+        {showPlainPricing && showNicheConfirmModal && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-3 bg-slate-900/70 backdrop-blur-xs select-none">
             <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-amber-200 space-y-3 text-xs max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain">
               <div className="flex items-center gap-2 text-amber-600 border-b border-slate-100 pb-2">
                 <AlertTriangle className="w-5 h-5 shrink-0"  strokeWidth={1.5}/>
-                <h4 className="font-bold text-slate-900">این سود روی همه کالاهای این نیچ اعمال شود؟</h4>
+                <h4 className="font-bold text-slate-900">این سود روی کالاهای ساده این نیچ اعمال شود؟</h4>
               </div>
 
               <div className="space-y-2 text-slate-600 text-[11px] leading-relaxed">
@@ -670,7 +686,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                   <strong className="text-blue-700 font-bold">
                     `${toPersianDigits(numVal)}٪`
                   </strong>{' '}
-                  روی کل نیچ تخصصی <strong className="text-slate-900">«{productNiche.title}»</strong> هستید.
+                  روی کالاهای ساده در نیچ تخصصی <strong className="text-slate-900">«{productNiche.title}»</strong> هستید.
                 </p>
 
                 <div className="p-2.5 bg-amber-50/70 border border-amber-200/80 rounded-xl space-y-1">
@@ -688,7 +704,7 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 </div>
 
                 <p className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-[10px] leading-5 text-slate-600">
-                  <strong>دقت کن:</strong> این نرخ فقط روی کالاهایی اثر می‌گذارد که سود جداگانه برای خود کالا یا تنوعش تعیین نشده باشد؛ سودهای جداگانه سر جایشان می‌مانند و هر وقت خواستی می‌توانی سود هر کالا را جداگانه عوض کنی.
+                  <strong>دقت کن:</strong> این نرخ برای کالاهای ساده‌ای است که سود جداگانه ندارند؛ سودهای جداگانه سر جایشان می‌مانند و هر وقت خواستی می‌توانی سود هر کالا را جداگانه عوض کنی.
                 </p>
               </div>
 
@@ -717,8 +733,8 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 };
 
 
-export const SellerProductPricingModal: React.FC<Props> = ({ product, isOpen, onClose }) => {
+export const SellerProductPricingModal: React.FC<Props> = ({ product, isOpen, onClose, effectiveMargins, hasVariants }) => {
   if (!isOpen || !product) return null;
-  return <SellerProductPricingModalContent key={product.id} product={product} onClose={onClose} />;
+  return <SellerProductPricingModalContent key={product.id} product={product} onClose={onClose} effectiveMargins={effectiveMargins} hasVariants={hasVariants} />;
 };
 

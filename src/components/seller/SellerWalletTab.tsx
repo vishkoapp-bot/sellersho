@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi, StoreBalanceResponse, WalletBreakdownResponse, EarlyWithdrawalResponse } from '../../services/storeApi';
@@ -26,9 +26,17 @@ export const SellerWalletTab: React.FC = () => {
   const [submitted, setSubmitted] = useState(false);
   const [breakdownType, setBreakdownType] = useState<'pending' | 'reserved' | null>(null);
   const [serverBalance, setServerBalance] = useState<StoreBalanceResponse | null>(null);
+  const [balanceLoadFailed, setBalanceLoadFailed] = useState(false);
+  const mockMode = isMockMode();
   // FIX 14: wallet breakdown + early-withdrawal list, wired to the
   // monthly-settlement endpoints (previously unwired).
   const [walletBreakdown, setWalletBreakdown] = useState<WalletBreakdownResponse | null>(null);
+  const [breakdownFailedFor, setBreakdownFailedFor] = useState<string | null>(null);
+  const refreshWalletBreakdown = useRef<(() => Promise<void>) | null>(null);
+  const breakdownLoaded = mockMode || (walletBreakdown !== null && walletBreakdown.storeId === currentStore.id);
+  const breakdownFailed = breakdownFailedFor === currentStore.id;
+  const minimum = mockMode ? 500000 : (walletBreakdown?.settlementSettings?.earlyWithdrawalMinimumToman ?? 1000000);
+  const earlyWithdrawalFeePct = walletBreakdown?.settlementSettings?.earlyWithdrawalFeePct;
   const [earlyWithdrawals, setEarlyWithdrawals] = useState<EarlyWithdrawalResponse[]>([]);
   const [serverPayouts, setServerPayouts] = useState<typeof localPayoutRequests>([]);
   const [serverOrders, setServerOrders] = useState<typeof orders | null>(null);
@@ -36,9 +44,10 @@ export const SellerWalletTab: React.FC = () => {
 
   // Fetch real authoritative store balance from server
   useEffect(() => {
-    if (!isMockMode() && currentStore.id) {
+    if (!mockMode && currentStore.id) {
+      let active = true;
       setServerBalance(null);
-      setWalletBreakdown(null);
+      setBalanceLoadFailed(false);
       setEarlyWithdrawals([]);
       setServerOrders(null);
       setServerPayouts([]);
@@ -46,13 +55,36 @@ export const SellerWalletTab: React.FC = () => {
       storeApi.getPayouts(currentStore.slug).then(setServerPayouts).catch((err) => error(err.message));
       storeApi.getOwnedBalance(currentStore.slug)
         .then((res) => {
-          if (res && typeof res.availableAmount === 'number') {
-            setServerBalance(res);
+          if (!active) return;
+          if (!res || typeof res.availableAmount !== 'number' || res.storeId !== currentStore.id) {
+            throw new Error('دریافت موجودی کیف پول انجام نشد.');
           }
+          setServerBalance(res);
         })
-        .catch((err) => error(err.message));
-      storeApi.getWalletBreakdown(currentStore.slug).then(setWalletBreakdown).catch(() => {});
+        .catch((err) => {
+          if (!active) return;
+          setBalanceLoadFailed(true);
+          error(err.message);
+        });
+      const readBreakdown = async () => {
+        if (!active) return;
+        setWalletBreakdown(null);
+        setBreakdownFailedFor(null);
+        try {
+          const res = await storeApi.getWalletBreakdown(currentStore.slug);
+          if (active) setWalletBreakdown(res);
+        } catch (err) {
+          if (!active) return;
+          setBreakdownFailedFor(currentStore.id);
+          throw err;
+        }
+      };
+      refreshWalletBreakdown.current = readBreakdown;
+      void readBreakdown().catch(() => {
+        // The withdrawal section renders the settings error.
+      });
       storeApi.getEarlyWithdrawals(currentStore.slug).then(setEarlyWithdrawals).catch(() => {});
+      return () => { active = false; };
     }
   }, [currentStore.id]);
 
@@ -75,7 +107,8 @@ export const SellerWalletTab: React.FC = () => {
   const mockAvailable = Math.max(0, releasedProfit + mockReleasedBonus - totalApprovedPayouts);
 
   // If server balance is available, use exact database figures; otherwise use local calculation (no fake 2450000 baseline)
-  const availableBalance = serverBalance ? serverBalance.availableAmount : isMockMode() ? mockAvailable : 0;
+  const availableBalance = serverBalance ? serverBalance.availableAmount : mockMode ? mockAvailable : 0;
+  const balanceLoaded = mockMode || (serverBalance !== null && serverBalance.storeId === currentStore.id);
   const releasedBonusTotal = serverBalance ? serverBalance.bonusAvailable : mockReleasedBonus;
   const lockedBonusTotal = serverBalance ? serverBalance.bonusLocked : mockLockedBonus;
   const referralCommissionEarned = serverBalance ? serverBalance.referralCommissionEarned : 0;
@@ -132,24 +165,18 @@ export const SellerWalletTab: React.FC = () => {
       return;
     }
     const amountNum = Number(withdrawAmount);
-    // FIX 14: non-mock withdrawals go through the early-withdrawal
-    // endpoint (monthly-settlement rule): floor 1,000,000 تومان and a
-    // 5% fee (from admin settings). The mock path keeps its old
-    // 500,000 floor unchanged.
-    if (!isMockMode() && amountNum < 1000000) {
-      error('حداقل مبلغ برداشت زودهنگام ۱,۰۰۰,۰۰۰ تومان است.');
-      return;
-    }
-    if (isMockMode() && amountNum < 500000) {
-      error('حداقل مبلغ قابل برداشت ۵۰۰,۰۰۰ تومان است.');
+    if (amountNum < minimum) {
+      const label = mockMode ? 'حداقل مبلغ قابل برداشت' : 'حداقل مبلغ برداشت زودهنگام';
+      error(`${label} ${formatPrice(minimum)} تومان است.`);
       return;
     }
     if (amountNum > availableBalance) {
       error('این مبلغ از پول آماده برداشتت بیشتر است.');
       return;
     }
-    if (!isMockMode()) {
+    if (!mockMode) {
       if (isVerifying) return;
+      const refreshBreakdown = refreshWalletBreakdown.current;
       setIsVerifying(true);
       try {
         await storeApi.requestEarlyWithdrawal(currentStore.slug, amountNum, shabaNumber, currentStore.id);
@@ -158,7 +185,7 @@ export const SellerWalletTab: React.FC = () => {
         try {
         setServerBalance(await storeApi.getOwnedBalance(currentStore.slug));
         setServerPayouts(await storeApi.getPayouts(currentStore.slug));
-        setWalletBreakdown(await storeApi.getWalletBreakdown(currentStore.slug));
+        await refreshBreakdown?.();
         setEarlyWithdrawals(await storeApi.getEarlyWithdrawals(currentStore.slug));
         } catch { info('درخواست ثبت شد؛ برای دیدن مانده و وضعیت تازه، صفحه را دوباره بارگذاری کن.'); }
       }
@@ -371,7 +398,22 @@ export const SellerWalletTab: React.FC = () => {
       )}
 
       {/* 3. Section 8: Withdrawal Request Form with Sheba Name Matching */}
-      <form onSubmit={handleWithdraw} className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
+      {breakdownFailed && (
+        <p role="status" className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-xs text-rose-700">
+          دریافت تنظیمات برداشت انجام نشد.
+        </p>
+      )}
+      {(!balanceLoaded || !breakdownLoaded) && !balanceLoadFailed && !breakdownFailed && (
+        <p role="status" className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-xs text-slate-600">
+          در حال دریافت موجودی…
+        </p>
+      )}
+      {balanceLoaded && breakdownLoaded && !breakdownFailed && availableBalance < minimum && (
+        <p className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-xs leading-relaxed text-slate-600">
+          موجودی قابل برداشت شما {formatPrice(availableBalance)} تومان است. حداقل مبلغ برداشت زودهنگام {formatPrice(minimum)} تومان است؛ برداشت زودهنگام فعلاً ممکن نیست.
+        </p>
+      )}
+      {balanceLoaded && breakdownLoaded && !breakdownFailed && availableBalance >= minimum && <form onSubmit={handleWithdraw} className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center gap-1.5 text-brand-deep">
           <ArrowDownToLine className="w-4 h-4"  strokeWidth={1.5}/>
           <h3 className="text-xs font-bold text-slate-800">برداشت پول به حساب بانکی‌ات</h3>
@@ -406,7 +448,7 @@ export const SellerWalletTab: React.FC = () => {
           </label>
           <input
             type="number"
-            min={isMockMode() ? 500000 : 1000000}
+            min={minimum}
             max={availableBalance}
             value={withdrawAmount}
             onChange={(e) => setWithdrawAmount(e.target.value)}
@@ -414,16 +456,18 @@ export const SellerWalletTab: React.FC = () => {
             required
           />
           <span className="text-[9px] text-slate-400 mt-0.5 block">
-            {isMockMode() ? 'کمترین برداشت: ۵۰۰٬۰۰۰ تومان' : walletBreakdown?.settlementSettings?.earlyWithdrawalFeePct != null ? `حداقل مبلغ برداشت زودهنگام: ۱,۰۰۰,۰۰۰ تومان (کارمزد ${toPersianDigits(walletBreakdown.settlementSettings.earlyWithdrawalFeePct)}٪)` : 'حداقل مبلغ برداشت زودهنگام: ۱,۰۰۰,۰۰۰ تومان (کارمزد طبق تنظیمات مدیر)'}
+            {mockMode
+              ? `کمترین برداشت: ${formatPrice(minimum)} تومان`
+              : `حداقل مبلغ برداشت زودهنگام: ${formatPrice(minimum)} تومان (${earlyWithdrawalFeePct != null ? `کارمزد ${toPersianDigits(earlyWithdrawalFeePct)}٪` : 'کارمزد طبق تنظیمات مدیر'})`}
           </span>
-          {availableBalance >= (isMockMode() ? 500000 : 1000000) && (
+          {availableBalance >= minimum && (
             <button type="button" onClick={() => setWithdrawAmount(String(availableBalance))} className="text-[11px] font-bold text-brand-deep bg-brand-soft px-2.5 py-1.5 rounded-lg">
               برداشت همه موجودی ({formatPrice(availableBalance)} تومان)
             </button>
           )}
-          {!isMockMode() && walletBreakdown?.settlementSettings?.earlyWithdrawalFeePct != null && Number(withdrawAmount) >= 1000000 && (
+          {!mockMode && earlyWithdrawalFeePct != null && Number(withdrawAmount) >= minimum && (
             <span className="text-[11px] text-slate-600 mt-1 block">
-              کارمزد برداشت زودهنگام ({toPersianDigits(walletBreakdown.settlementSettings.earlyWithdrawalFeePct)}٪): {formatPrice(Math.round(Number(withdrawAmount) * walletBreakdown.settlementSettings.earlyWithdrawalFeePct / 100))} تومان — مبلغ خالص دریافتی: {formatPrice(Number(withdrawAmount) - Math.round(Number(withdrawAmount) * walletBreakdown.settlementSettings.earlyWithdrawalFeePct / 100))} تومان
+              کارمزد برداشت زودهنگام ({toPersianDigits(earlyWithdrawalFeePct)}٪): {formatPrice(Math.round(Number(withdrawAmount) * earlyWithdrawalFeePct / 100))} تومان — مبلغ خالص دریافتی: {formatPrice(Number(withdrawAmount) - Math.round(Number(withdrawAmount) * earlyWithdrawalFeePct / 100))} تومان
             </span>
           )}
         </div>
@@ -447,7 +491,7 @@ export const SellerWalletTab: React.FC = () => {
             </>
           )}
         </button>
-      </form>
+      </form>}
 
       {/* Requirement 7: Wallet Services (Plan renewal, SMS recharge directly from available wallet balance) */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">

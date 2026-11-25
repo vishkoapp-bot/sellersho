@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
 )
@@ -105,6 +106,7 @@ CREATE TABLE platform_settings (
  DEFAULT 2 ,
 	-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 	early_withdrawal_fee_pct NUMERIC,
+	early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 	platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
 	settlement_day INTEGER,
 	-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
@@ -206,8 +208,11 @@ func supplierGapsRepoSetup(t *testing.T) (*sql.DB, context.Context) {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier-gaps repository tests")
 	}
-	// The reduced fixture drops and recreates canonical table names.
-	db := openPrivateFinanceFixture(t, dsn)
+	db, err := testdb.Open(t, dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, supplierGapsRepoDDL); err != nil {
 		t.Fatalf("ddl: %v", err)

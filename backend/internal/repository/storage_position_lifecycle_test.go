@@ -25,6 +25,7 @@ func storagePositionSeed(t *testing.T, db *sql.DB) {
 		`CREATE TABLE platform_settings (id INT  DEFAULT 1 PRIMARY KEY, storage_fee_enabled BOOLEAN NOT NULL DEFAULT false, storage_fee_free_days INT NOT NULL DEFAULT 30, storage_fee_per_kg_day BIGINT NOT NULL DEFAULT 2000, storage_fee_per_m3_day BIGINT NOT NULL DEFAULT 8000,
 			-- TEST-02: shape-compatible columns (shared-DB pollution repair)
 			early_withdrawal_fee_pct NUMERIC,
+			early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 			platform_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
 			settlement_day INTEGER,
 			supplier_contract_version INTEGER NOT NULL DEFAULT 2,

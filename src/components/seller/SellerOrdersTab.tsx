@@ -35,7 +35,7 @@ const formatOrderDate = (value: string): string => {
 // Live order normalizer is a light camelCase pass-through (the live API
 // already serves camelCase); accept snake_case defensively so a raw
 // backend row still renders, without changing any field semantics.
-const normalizeOrder = (raw: any): any => {
+export const normalizeOrder = (raw: any): any => {
   const ci = raw.customerInfo || {};
   return {
     ...raw,
@@ -51,11 +51,14 @@ const normalizeOrder = (raw: any): any => {
       province: ci.province ?? raw.customerProvince ?? raw.customer_province ?? '',
       city: ci.city ?? raw.customerCity ?? raw.customer_city ?? '',
     },
-    items: (raw.items || []).map((it: any) => ({
-      ...it,
-      product: it.product || (it.product_title ? { title: it.product_title } : undefined),
-      variantName: it.variant?.name ?? it.variant_name ?? it.variantName ?? '',
-    })),
+    items: (raw.items || []).map((it: any) => {
+      const title = it.product?.title || it.productTitle || it.product_title;
+      return {
+        ...it,
+        product: title ? { ...it.product, title } : undefined,
+        variantName: it.variant?.name ?? it.variant_name ?? it.variantName ?? '',
+      };
+    }),
   };
 };
 

@@ -3,9 +3,11 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +102,79 @@ func TestSaveStoreSettingsAddonSectionTitle(t *testing.T) {
 	}
 	if got := column(); got != "" {
 		t.Fatalf("cleared column = %q, want empty", got)
+	}
+}
+
+func TestSaveStoreSettingsSelectedNicheIDs(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	repo := NewStoreRepository(db)
+	owner := uuid.NewString()
+	prefix := "drp31-" + uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role) VALUES ($1,$2,'Niche settings test','seller')`, owner, "09"+owner[:13]); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM users WHERE id=$1`, owner) })
+	if _, err := db.Exec(`INSERT INTO stores (id, name, slug, owner_name, owner_user_id, tagline, panel_config)
+		VALUES ($1,'Niche settings test',$1,'Owner',$2,'Preserved tagline',
+		'{"tagline":"Preserved tagline","builderConfig":{"selectedTheme":"home","accentColor":"#112233"},"shortDescription":"Preserved description","otherKey":{"enabled":true}}')`, prefix, owner); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM stores WHERE id=$1`, prefix) })
+	if _, err := db.Exec(`INSERT INTO niches (id,slug,title)
+		SELECT $1 || '-' || i, $1 || '-' || i, 'Fixture niche' FROM generate_series(1,101) AS g(i)`, prefix); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM niches WHERE left(id,length($1)+1)=$1 || '-'`, prefix) })
+	var tooMany []any
+	for i := 1; i <= 101; i++ {
+		tooMany = append(tooMany, fmt.Sprintf("%s-%d", prefix, i))
+	}
+	for _, tc := range []struct {
+		name string
+		ids  []any
+	}{
+		{"unknown", []any{prefix + "-missing"}},
+		{"too many", tooMany},
+		{"duplicate", []any{tooMany[0], tooMany[0]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := repo.SaveStoreSettings(ctx, owner, prefix, map[string]any{"selectedNicheIds": tc.ids})
+			if !errors.Is(err, ErrStoreInput) {
+				t.Fatalf("SaveStoreSettings = %v, want ErrStoreInput", err)
+			}
+		})
+	}
+	if err := repo.SaveStoreSettings(ctx, owner, prefix, map[string]any{"selectedNicheIds": tooMany[:2]}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := repo.GetStoreBySlug(ctx, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{prefix + "-1", prefix + "-2"}
+	if !slices.Equal(store.SelectedNicheIDs, want) {
+		t.Fatalf("selectedNicheIds = %v, want %v", store.SelectedNicheIDs, want)
+	}
+	var config struct {
+		Tagline string `json:"tagline"`
+		Other   struct {
+			Enabled bool `json:"enabled"`
+		} `json:"otherKey"`
+	}
+	var builder map[string]string
+	if err := json.Unmarshal(store.PanelConfig, &config); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(store.BuilderConfig, &builder); err != nil {
+		t.Fatal(err)
+	}
+	if store.Tagline != "Preserved tagline" || config.Tagline != store.Tagline ||
+		store.ShortDescription != "Preserved description" || !config.Other.Enabled ||
+		builder["selectedTheme"] != "home" || builder["accentColor"] != "#112233" {
+		t.Fatalf("niche save altered existing settings: %s", store.PanelConfig)
 	}
 }

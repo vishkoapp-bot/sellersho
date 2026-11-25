@@ -200,6 +200,123 @@ func TestSupplierFinanceCommandReplay(t *testing.T) {
 	}
 }
 
+func TestSellerEarlyWithdrawalFloorFeesAndReplay(t *testing.T) {
+	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	owner := uuid.NewString()
+	storeID := "early-floor-" + uuid.NewString()
+	otherID := "early-floor-" + uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO users(id,mobile,full_name,role) VALUES($1,$2,'Early withdrawal fixture','seller')`, owner, "f"+owner[:12]); err != nil {
+		t.Fatal(err)
+	}
+	stores := repository.NewStoreRepository(db)
+	fin := repository.NewFinanceRepository(db)
+	for _, id := range []string{storeID, otherID} {
+		if err := stores.CreateStore(ctx, domain.Store{ID: id, Name: "Early withdrawal fixture", Slug: id, OwnerType: "dropshipper", OwnerUserID: &owner, ActivePlanID: "trial", ReferralCode: uuid.NewString()[:8]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const funded int64 = 3000000
+	if _, err := db.Exec(`INSERT INTO referral_bonuses(id,referrer_store_id,referred_store_id,amount,status,released_at) VALUES($1,$2,$3,$4,'released',NOW())`, uuid.NewString(), storeID, otherID, funded); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := fin.GetSettlementSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setFloor := func(floor int64) {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE platform_settings SET early_withdrawal_minimum_toman=$1 WHERE id=1`, floor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if settings.EarlyWithdrawalMinimumToman == nil || *settings.EarlyWithdrawalMinimumToman != 1000000 {
+		t.Fatal("expected the migration's default withdrawal floor")
+	}
+	t.Cleanup(func() { setFloor(*settings.EarlyWithdrawalMinimumToman) })
+	setFee := func(fee any) {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE platform_settings SET early_withdrawal_fee_pct=$1 WHERE id=1`, fee); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { setFee(settings.EarlyWithdrawalFeePct) })
+	setFee(nil)
+
+	const iban = "IR060170000000000000000000"
+	post := func(key string, amount int64, shaba string, status int, message string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest("POST", "/api/v1/stores/"+storeID+"/early-withdrawals", strings.NewReader(fmt.Sprintf(`{"amount":%d,"shaba":"%s"}`, amount, shaba)))
+		r.Header.Set("Idempotency-Key", key)
+		r = r.WithContext(context.WithValue(ctx, userClaimsKey, &auth.UserClaims{UserID: owner, Role: "seller"}))
+		w := httptest.NewRecorder()
+		handleSellerStore(w, r, stores, fin, storeID, "early-withdrawals", "")
+		if w.Code != status || !strings.Contains(w.Body.String(), message) {
+			t.Fatalf("%s status=%d body=%s, want %d with %q", key, w.Code, w.Body.String(), status, message)
+		}
+		return w
+	}
+	assertHolds := func(wantCount int, wantGross int64) {
+		t.Helper()
+		rows, err := fin.ListEarlyWithdrawals(ctx, storeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		balance, err := fin.GetStoreBalance(ctx, storeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != wantCount || balance.EarlyWithdrawalPendingGross != wantGross || balance.AvailableAmount != funded-wantGross {
+			t.Fatalf("count=%d pending=%d available=%d, want %d, %d, %d", len(rows), balance.EarlyWithdrawalPendingGross, balance.AvailableAmount, wantCount, wantGross, funded-wantGross)
+		}
+	}
+	readWithdrawal := func(w *httptest.ResponseRecorder) repository.EarlyWithdrawal {
+		t.Helper()
+		var row repository.EarlyWithdrawal
+		if err := json.Unmarshal(w.Body.Bytes(), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row.ID == "" || row.StoreID != storeID || row.Status != "pending" {
+			t.Fatalf("invalid withdrawal acknowledgment: id=%q store=%q status=%q", row.ID, row.StoreID, row.Status)
+		}
+		return row
+	}
+
+	post("below-floor", 999999, iban, 400, "حداقل مبلغ برداشت زودهنگام ۱٬۰۰۰٬۰۰۰ تومان است.")
+	post("over-balance", funded+1, iban, 400, "موجودی کیف پول برای این درخواست کافی نیست.")
+	post("invalid-iban", 1000000, "IR000000000000000000000000", 400, "Invalid IBAN")
+	post("unset-fee", 1000000, iban, 400, "کارمزد برداشت زودهنگام هنوز توسط مدیر تنظیم نشده است.")
+	assertHolds(0, 0)
+
+	setFee(0)
+	first := readWithdrawal(post("at-floor", 1000000, iban, 201, ""))
+	if first.GrossAmount != 1000000 || first.FeePct != 0 || first.FeeAmount != 0 || first.NetAmount != 1000000 {
+		t.Fatalf("zero fee: gross=%d pct=%g fee=%d net=%d", first.GrossAmount, first.FeePct, first.FeeAmount, first.NetAmount)
+	}
+	assertHolds(1, 1000000)
+
+	setFee(5.25)
+	setFloor(2000000)
+	post("below-raised-floor", 1500000, iban, 400, "حداقل مبلغ برداشت زودهنگام ۲٬۰۰۰٬۰۰۰ تومان است.")
+	assertHolds(1, 1000000)
+	replay := readWithdrawal(post("at-floor", 1000000, iban, 201, ""))
+	if replay.ID != first.ID || replay.GrossAmount != first.GrossAmount || replay.FeePct != first.FeePct || replay.FeeAmount != first.FeeAmount || replay.NetAmount != first.NetAmount {
+		t.Fatal("same-key replay changed the original withdrawal")
+	}
+	post("at-floor", 1000001, iban, 409, "")
+	assertHolds(1, 1000000)
+
+	setFloor(1000000)
+	fractional := readWithdrawal(post("fractional-fee", 1000019, iban, 201, ""))
+	if fractional.GrossAmount != 1000019 || fractional.FeePct != 5.25 || fractional.FeeAmount != 52500 || fractional.NetAmount != 947519 {
+		t.Fatalf("fractional fee: gross=%d pct=%g fee=%d net=%d", fractional.GrossAmount, fractional.FeePct, fractional.FeeAmount, fractional.NetAmount)
+	}
+	assertHolds(2, 2000019)
+}
+
 func TestFinanceTreasuryDoesNotOmitUnreadSellerLiabilities(t *testing.T) {
 	db, err := testdb.Open(t, os.Getenv("SELLERSHO_TEST_DATABASE_URL"))
 	if err != nil {

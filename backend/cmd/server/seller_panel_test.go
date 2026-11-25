@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 
@@ -175,5 +176,61 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 	raw, _ := json.Marshal(payouts)
 	if len(raw) == 0 {
 		t.Fatal("empty payout response")
+	}
+}
+
+func TestSellerSettingsSelectedNichesRoundTrip(t *testing.T) {
+	db := setupTestPostgresDB(t)
+	ctx := context.Background()
+	repo := repository.NewStoreRepository(db)
+	owner := uuid.NewString()
+	mobile := "09" + owner[:13]
+	if _, err := db.Exec(`INSERT INTO users (id,mobile,full_name,role) VALUES ($1,$2,'Seller niche test','seller')`, owner, mobile); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM users WHERE id=$1`, owner) })
+	storeID := "drp31-" + uuid.NewString()
+	if err := repo.CreateStore(ctx, domain.Store{ID: storeID, Name: "Niche test", Slug: storeID,
+		OwnerType: "dropshipper", OwnerUserID: &owner, ActivePlanID: "trial", ReferralCode: uuid.NewString()[:8]}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM stores WHERE id=$1`, storeID) })
+	nicheID := "niche-" + uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO niches (id, slug, title) VALUES ($1,$1,'Fixture niche')`, nicheID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM niches WHERE id=$1`, nicheID) })
+
+	jwt := auth.NewJWTService("seller-niche-settings-test-secret")
+	fixture := supplierNotificationsFixture{jwtService: jwt}
+	token := fixture.token(t, owner, mobile, "seller")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/stores/", handleStoresBlock(jwt, repo, nil, nil, nil, nil))
+	mux.HandleFunc("/api/v1/stores/mine", RequireRoles(jwt, "customer", "seller", "supplier", "admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleOwnedStoresList(w, r, r.Context(), repo)
+	}))
+	request := func(method, path, body string, status int) string {
+		t.Helper()
+		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s %s: status %d, want %d, body %s", method, path, w.Code, status, w.Body.String())
+		}
+		return w.Body.String()
+	}
+	path := "/api/v1/stores/" + storeID + "/settings"
+	body := request(http.MethodPut, path, `{"selectedNicheIds":["`+nicheID+`"]}`, http.StatusOK)
+	var saved domain.Store
+	if err := json.Unmarshal([]byte(body), &saved); err != nil || saved.ID != storeID || !slices.Equal(saved.SelectedNicheIDs, []string{nicheID}) {
+		t.Fatalf("settings PUT response = %s, decode error %v", body, err)
+	}
+	request(http.MethodPut, path, `{"selectedNicheIds":["missing-`+nicheID+`"]}`, http.StatusBadRequest)
+	body = request(http.MethodGet, "/api/v1/stores/mine", "", http.StatusOK)
+	var owned []domain.Store
+	if err := json.Unmarshal([]byte(body), &owned); err != nil || len(owned) != 1 ||
+		owned[0].ID != storeID || !slices.Equal(owned[0].SelectedNicheIDs, []string{nicheID}) {
+		t.Fatalf("GET /stores/mine response = %s, decode error %v", body, err)
 	}
 }

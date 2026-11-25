@@ -1,13 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  addedProductIds,
   buildCatalogCostPresence,
   catalogRowCostMissing,
   catalogVariantCost,
+  removedProductIds,
   resolveScopedCatalogOutcome,
   shouldRefetchCatalogAfterConfirm,
+  staleAddedIds,
+  unionUndoProductIds,
 } from './SellerCatalogTab';
 import type { ProductDto } from '../../services/catalogApi';
+import { buildProductCandidatesQuery } from '../../services/storeApi';
 
 // C5 (Batch 4b): the tab must never render 0 as a price. The tab itself
 // cannot render in this harness (useStore throws without the provider
@@ -148,4 +153,35 @@ test('shouldRefetchCatalogAfterConfirm: refetch only after a resolved product PU
   assert.equal(shouldRefetchCatalogAfterConfirm(1, null), false);
   assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: true }), false);
   assert.equal(shouldRefetchCatalogAfterConfirm(0, { ok: false }), false);
+});
+
+test('addedProductIds returns only draft additions in draft order', () => {
+  assert.deepEqual(addedProductIds(['new-b', 'keep', 'new-a'], ['keep', 'removed']), ['new-b', 'new-a']);
+  assert.deepEqual(addedProductIds(['keep'], ['keep']), []);
+});
+
+test('removedProductIds returns only saved ids missing from the draft in saved order', () => {
+  assert.deepEqual(removedProductIds(['old-b', 'keep', 'old-a'], ['keep', 'new']), ['old-b', 'old-a']);
+  assert.deepEqual(removedProductIds([], ['new']), []);
+});
+
+test('unionUndoProductIds dedupes both lists and keeps fresh ids first', () => {
+  assert.deepEqual(unionUndoProductIds(['fresh', 'shared', 'fresh'], ['old-b', 'shared', 'old-a', 'old-b']),
+    ['fresh', 'shared', 'old-b', 'old-a']);
+});
+
+test('staleAddedIds returns the additions missing from the eligible response', () => {
+  assert.deepEqual(staleAddedIds(['stale-b', 'eligible', 'stale-a'], ['eligible', 'other']), ['stale-b', 'stale-a']);
+  assert.deepEqual(staleAddedIds([], ['eligible']), []);
+});
+
+test('buildProductCandidatesQuery includes only supplied options and joins ids in one value', () => {
+  assert.equal(buildProductCandidatesQuery({ storeSlug: 'mone' }), 'storeSlug=mone');
+  assert.equal(buildProductCandidatesQuery({ storeSlug: 'mone', ids: [], q: '' }), 'storeSlug=mone&q=');
+  const query = buildProductCandidatesQuery({
+    storeSlug: 'mone', q: 'هدفون & اسپیکر', cursor: 'a+b=', limit: 2, ids: ['one', 'two'],
+  });
+  assert.deepEqual([...new URLSearchParams(query)], [
+    ['storeSlug', 'mone'], ['q', 'هدفون & اسپیکر'], ['cursor', 'a+b='], ['limit', '2'], ['ids', 'one,two'],
+  ]);
 });

@@ -9,9 +9,8 @@ import (
 // Seller / admin / warehouse notification read paths (Phase 2, W2).
 //
 // All three roles read the SAME notification_outbox table through the
-// shared helpers in supplier_notifications_handlers.go
-// (listNotificationsForUser / markNotificationsReadForUser), with the
-// SAME envelope as the customer and supplier routes:
+// shared helpers in supplier_notifications_handlers.go with the same
+// envelope as the customer and supplier routes:
 // {success, notifications, unreadCount} on GET, {success, updated}
 // on POST read. No new notification infra, no new kinds, no new
 // migration — these endpoints only expose rows W1 writers address to
@@ -91,14 +90,55 @@ func handleRoleNotificationsRead(w http.ResponseWriter, r *http.Request, db *sql
 // handleSellerNotifications serves GET /api/v1/seller/notifications:
 // outbox rows addressed to the calling store owner.
 func handleSellerNotifications(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	handleRoleNotifications(w, r, db)
+	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
+		return
+	}
+	userID := t01ClaimsUserID(r)
+	if userID == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	items, unreadCount, exists, err := listSellerNotifications(notificationContext(r), db, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !exists {
+		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": []interface{}{}, "unreadCount": 0})
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "notifications": items, "unreadCount": unreadCount})
 }
 
 // handleSellerNotificationsRead serves POST
 // /api/v1/seller/notifications/read. Accepts {id}, {ids}, or an
 // empty body (= mark-all), scoped to the caller.
 func handleSellerNotificationsRead(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	handleRoleNotificationsRead(w, r, db)
+	if !t01MethodOnly(w, r, http.MethodPost) || t01DBNil(w, db) {
+		return
+	}
+	userID := t01ClaimsUserID(r)
+	if userID == "" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		ID  string   `json:"id"`
+		IDs []string `json:"ids"`
+	}
+	if r.ContentLength != 0 && !t01DecodeJSON(w, r, &req) {
+		return
+	}
+	ids := req.IDs
+	if req.ID != "" {
+		ids = append(ids, req.ID)
+	}
+	updated, err := markSellerNotificationsRead(notificationContext(r), db, userID, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "updated": updated})
 }
 
 // handleAdminNotifications serves GET /api/v1/admin/notifications:

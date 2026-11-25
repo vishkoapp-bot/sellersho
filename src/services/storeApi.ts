@@ -3,6 +3,17 @@ import { Store, Order } from '../types';
 import { recordVerifiedAdEvent } from './adProof';
 import { financeOperation } from './financeOperation';
 
+export interface SellerVariantEffectiveMargin {
+  productId: string;
+  variantId: string;
+  marginPct: number;
+  tier: string;
+  locked: boolean;
+  ceilingPct: number;
+  referenceCost: number;
+  finalPrice: number;
+}
+
 export interface RegisterStorePayload {
   storeName: string;
   slug: string;
@@ -61,7 +72,7 @@ export interface WalletBreakdownResponse {
   releasedProfit: number;
   availableAmount: number;
   pendingEarlyGross: number;
-  settlementSettings?: { settlementDay?: number; earlyWithdrawalFeePct?: number };
+  settlementSettings?: { settlementDay?: number; earlyWithdrawalFeePct?: number; earlyWithdrawalMinimumToman?: number };
 }
 
 export interface EarlyWithdrawalResponse {
@@ -197,6 +208,37 @@ export interface StoreSubscriber {
   status?: string;
 }
 
+export interface SellerProductCandidate {
+  id: string;
+  title: string;
+  imageUrl: string;
+  isActive: boolean;
+}
+
+export interface SellerProductCandidatesResponse {
+  success: boolean;
+  products: SellerProductCandidate[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+interface SellerProductCandidatesParams {
+  storeSlug: string;
+  q?: string;
+  cursor?: string;
+  limit?: number;
+  ids?: string[];
+}
+
+export function buildProductCandidatesQuery({ storeSlug, q, cursor, limit, ids }: SellerProductCandidatesParams): string {
+  const query = new URLSearchParams({ storeSlug });
+  if (q !== undefined) query.set('q', q);
+  if (cursor !== undefined) query.set('cursor', cursor);
+  if (limit !== undefined) query.set('limit', String(limit));
+  if (ids?.length) query.set('ids', ids.join(','));
+  return query.toString();
+}
+
 export const storeApi = {
   saveAdWidget: (slug: string, config: NonNullable<Store['sellerDealsWidgetConfig']>) => apiRequest<NonNullable<Store['sellerDealsWidgetConfig']>>(`/stores/${encodeURIComponent(slug)}/ad-widget`, { method: 'PUT', auth: true, body: JSON.stringify(config) }),
   getSellerCampaigns: async (slug: string): Promise<SellerCampaign[]> => apiRequest<SellerCampaign[]>(`/stores/${encodeURIComponent(slug)}/campaigns`, { auth: true }),
@@ -232,6 +274,22 @@ export const storeApi = {
       auth: true,
       body: JSON.stringify(payload),
     });
+  },
+
+  getSellerVariantEffectiveMargins: async (storeId: string, signal?: AbortSignal): Promise<SellerVariantEffectiveMargin[]> => {
+    const rows: SellerVariantEffectiveMargin[] = [];
+    const query = new URLSearchParams({ storeId });
+    let cursor: string | undefined;
+    do {
+      if (cursor) query.set('cursor', cursor);
+      const page: { items: SellerVariantEffectiveMargin[]; nextCursor?: string } = await apiRequest(
+        '/seller/variant-effective-margins?' + query, { auth: true, signal },
+      );
+      rows.push(...page.items);
+      if (page.nextCursor && page.nextCursor === cursor) throw new Error('Unchanged variant pricing cursor');
+      cursor = page.nextCursor;
+    } while (cursor);
+    return rows;
   },
 
   // Seller variant margins (percent-only, D28).
@@ -309,6 +367,8 @@ export const storeApi = {
 
   saveStoreSettings: async (slug: string, config: Record<string, unknown>): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/settings`, { method: 'PUT', auth: true, body: JSON.stringify(config) }),
   saveStoreProducts: async (slug: string, productIds: string[]): Promise<Store> => apiRequest<Store>(`/stores/${encodeURIComponent(slug)}/products`, { method: 'PUT', auth: true, body: JSON.stringify({ productIds }) }),
+  getSellerProductCandidates: async (params: SellerProductCandidatesParams): Promise<SellerProductCandidatesResponse> =>
+    apiRequest<SellerProductCandidatesResponse>(`/seller/product-candidates?${buildProductCandidatesQuery(params)}`, { method: 'GET', auth: true }),
   purchaseService: async (slug: string, service: string, storeId: string): Promise<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}> => financeOperation<{id:string;activePlanId:string;planExpiresAt:string;amount:number;durationDays:number}>(`/stores/${encodeURIComponent(slug)}/services`, { service }, `seller:${storeId}:service`, value => typeof value.id === 'string' && !!value.id && value.id === storeId && typeof value.activePlanId === 'string' && !!value.activePlanId && Number.isSafeInteger(value.amount) && value.amount > 0 && Number.isSafeInteger(value.durationDays) && value.durationDays > 0 && typeof value.planExpiresAt === 'string' && Number.isFinite(Date.parse(value.planExpiresAt))),
   getOwnedBalance: async (slug: string, { signal }: { signal?: AbortSignal } = {}): Promise<StoreBalanceResponse> => apiRequest<StoreBalanceResponse>(`/stores/${encodeURIComponent(slug)}/balance`, { auth: true, signal }),
   // PERF-02 Step 9: payouts now page (envelope with `payouts`).

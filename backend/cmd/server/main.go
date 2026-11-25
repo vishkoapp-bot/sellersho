@@ -1248,6 +1248,10 @@ func run(signalCtx context.Context) (result error) {
 		handleSellerVariantOverrides(w, r, pricingRepo, storeRepo)
 	}))
 
+	mux.HandleFunc("/api/v1/seller/variant-effective-margins", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) {
+		handleSellerVariantEffectiveMargins(w, r, pricingRepo, storeRepo, catalogRepo)
+	}))
+
 	// P2(a)/P2(c): seller per-store variant visibility + default variant.
 	// The literal segments ("visibility", "default-variant") sit AFTER
 	// {variantId}/{productId}, never a {param} directly after a literal
@@ -2085,6 +2089,9 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/auth/logout", AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) { handleT01Logout(w, r, db.DB) }))
 	// Seller insight (D09) and store templates (D04).
 	mux.HandleFunc("/api/v1/seller/analytics", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerAnalytics(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/seller/product-candidates", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) {
+		handleSellerProductCandidates(w, r, storeRepo)
+	}))
 	mux.HandleFunc("/api/v1/seller/search-insight", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerSearchInsight(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/seller/store/template", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerStoreTemplate(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/seller/store/template/publish", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerStoreTemplatePublish(w, r, db.DB) }))

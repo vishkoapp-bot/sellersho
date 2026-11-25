@@ -15,12 +15,13 @@ import { adminApi } from '../../services/adminApi';
 // - The sweep is free and creates payout_requests in status 'pending'
 //   for finance/bank execution; this system performs no automatic
 //   bank transfer.
-// - Early withdrawal: minimum 1,000,000 تومان, fee from the setting
-//   below, finance review within 24 hours. (Minimum and SLA are the
-//   user-approved Phase 3 rules, not verified live behaviour.)
+// - Early withdrawal uses the admin-configured minimum and fee,
+//   with finance review within 24 hours.
 export const AdminSettlementSettingsTab: React.FC = () => {
   const [day, setDay] = useState('');
   const [fee, setFee] = useState('');
+  const [minimum, setMinimum] = useState('');
+  const [loadedMinimum, setLoadedMinimum] = useState<number | null>(null);
   const [dayUnset, setDayUnset] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -42,6 +43,9 @@ export const AdminSettlementSettingsTab: React.FC = () => {
       } else {
         setFee('');
       }
+      const floor = typeof s.earlyWithdrawalMinimumToman === 'number' ? s.earlyWithdrawalMinimumToman : null;
+      setMinimum(floor === null ? '' : String(floor));
+      setLoadedMinimum(floor);
     } catch (e: any) {
       setError(e?.message || 'دریافت تنظیمات تسویه انجام نشد.');
     }
@@ -65,9 +69,19 @@ export const AdminSettlementSettingsTab: React.FC = () => {
       setError('کارمزد برداشت زودهنگام باید عددی بین ۰ تا کمتر از ۱۰۰ باشد.');
       return;
     }
+    const minimumDigits = minimum.trim().replace(/[۰-۹]/g, digit => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
+    const minimumNum = Number(minimumDigits);
+    if (!/^\d+$/.test(minimumDigits) || !Number.isSafeInteger(minimumNum) || minimumNum < 1) {
+      setError('حداقل مبلغ برداشت زودهنگام باید عدد صحیح بین ۱ تا ۹٬۰۰۷٬۱۹۹٬۲۵۴٬۷۴۰٬۹۹۱ تومان باشد.');
+      return;
+    }
     setBusy(true);
     try {
-      await adminApi.saveSettlementSettings({ settlementDay: dayNum, earlyWithdrawalFeePct: feeNum });
+      await adminApi.saveSettlementSettings({
+        settlementDay: dayNum,
+        earlyWithdrawalFeePct: feeNum,
+        earlyWithdrawalMinimumToman: minimumNum,
+      });
       setNotice('تنظیمات تسویه ذخیره شد.');
       await load();
     } catch (e: any) {
@@ -117,6 +131,17 @@ export const AdminSettlementSettingsTab: React.FC = () => {
             dir="ltr"
           />
         </label>
+        <label className="block text-xs font-semibold">
+          حداقل مبلغ برداشت زودهنگام (تومان)
+          <input
+            value={minimum}
+            onChange={(e) => setMinimum(e.target.value)}
+            inputMode="numeric"
+            placeholder="مثلاً ۱۰۰۰۰۰۰"
+            className="mt-1 w-full rounded-lg border p-2 text-xs"
+            dir="ltr"
+          />
+        </label>
         <p className="text-xs text-slate-500">
           توجه: سامانه مقدار تنظیم‌نشده را در خواندن، ۰ نشان می‌دهد؛ پس «۰» برای کارمزد می‌تواند به‌معنای تنظیم‌نشده هم باشد. پس از ذخیره، مقدار واقعی اعمال می‌شود.
         </p>
@@ -130,7 +155,7 @@ export const AdminSettlementSettingsTab: React.FC = () => {
           <li>در روز تسویه، موجودی قابل‌برداشت هر فروشگاه به‌صورت خودکار و بدون کارمزد تسویه می‌شود.</li>
           <li>تسویه خودکار فقط یک درخواست پرداخت با وضعیت «در انتظار» برای اجرا توسط مالی/بانک می‌سازد؛ انتقال بانکی خودکار در سامانه انجام نمی‌شود.</li>
           <li>فروشگاهی که شبا ندارد، «بدون اطلاعات بانکی» رد می‌شود و موجودی‌اش برای چرخه بعد باقی می‌ماند.</li>
-          <li>برداشت زودهنگام حداقل ۱٬۰۰۰٬۰۰۰ تومان است، با کارمزد تنظیم‌شده بالا، و باید حداکثر ظرف ۲۴ ساعت توسط مالی بررسی شود؛ تا وقتی در انتظار است، مبلغ آن از موجودی قابل‌برداشت قفل می‌شود.</li>
+          <li>برداشت زودهنگام حداقل {loadedMinimum?.toLocaleString('fa-IR') ?? '۱٬۰۰۰٬۰۰۰'} تومان است، با کارمزد تنظیم‌شده بالا، و باید حداکثر ظرف ۲۴ ساعت توسط مالی بررسی شود؛ تا وقتی در انتظار است، مبلغ آن از موجودی قابل‌برداشت قفل می‌شود.</li>
         </ul>
       </div>
       {error && <div className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{error}</div>}

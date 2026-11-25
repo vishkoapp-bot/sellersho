@@ -47,6 +47,7 @@ func TestGetPlatformPricingSettingsNullEarlyWithdrawalFee(t *testing.T) {
 			referral_commission_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
 			settlement_day INT,
 			early_withdrawal_fee_pct NUMERIC(5,2),
+			early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991),
 			wallet_min_withdrawal BIGINT NOT NULL DEFAULT 0,
 			wallet_spend_enabled BOOLEAN NOT NULL DEFAULT TRUE,
 			wallet_withdraw_enabled BOOLEAN NOT NULL DEFAULT TRUE

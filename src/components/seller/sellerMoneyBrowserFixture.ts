@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
 
-export function sellerMoneyBrowserFixture(view: 'overview' | 'wallet' | 'analytics') {
+export function sellerMoneyBrowserFixture(view: 'overview' | 'wallet' | 'analytics', mock = false) {
   let server: ViteDevServer;
   let browser: Browser;
   let url: string;
@@ -11,9 +11,9 @@ export function sellerMoneyBrowserFixture(view: 'overview' | 'wallet' | 'analyti
     server = await createServer({
       configFile: false,
       logLevel: 'error',
-      cacheDir: `releases/.vite-seller-money-${view}`,
+      cacheDir: `releases/.vite-seller-money-${view}${mock ? '-mock' : ''}`,
       esbuild: { jsx: 'automatic' },
-      define: { 'import.meta.env.VITE_USE_MOCK': '"false"' },
+      define: { 'import.meta.env.VITE_USE_MOCK': JSON.stringify(String(mock)) },
       optimizeDeps: { entries: ['scripts/fixtures/seller-money/index.html'] },
       resolve: {
         alias: { '../../context/StoreContext': resolve('scripts/fixtures/seller-money/storeContext.ts') },

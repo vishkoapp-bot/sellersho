@@ -85,6 +85,7 @@ if (drp33) {
   });
 }
 let drp33Override = ['override', 'locked', 'failure', 'missing'].includes(drp33 ?? '') ? 15 : undefined;
+let drp33Visible = false;
 const user = { id: 'fixture-user', mobile: '09120000000', fullName: 'کاربر نمونه', role: role, capabilities };
 
 let release: ((outcome: 'success' | 'error') => void) | undefined;
@@ -295,6 +296,22 @@ const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = String(input);
   if (!url.includes('/api/')) return nativeFetch(input, init);
+  if (drp33 === 'workspace' && url.includes('/seller/variant-effective-margins?') && url.includes('workspace=1')) {
+    const variant = variantProduct.variants![0];
+    const margin = drp33Override ?? 35;
+    return Response.json({ workItems: [{
+      productId: variantProduct.id, title: variantProduct.title, needsAttention: !drp33Visible,
+      variants: [{
+        id: variant.id, name: variant.name, spnc: variant.spnc, active: true, visible: drp33Visible, available: true,
+        price: 100000 + margin * 1000, effectiveMargin: margin, margin: drp33Override ?? null,
+        minimumMargin: 5, maximumMargin: 35, marginLocked: false,
+      }],
+    }] });
+  }
+  if (drp33 === 'workspace' && url.includes('/seller/stores/') && url.endsWith('/visibility')) {
+    drp33Visible = JSON.parse(String(init?.body)).isVisible;
+    return Response.json({ isVisible: drp33Visible });
+  }
   if (drp33 && url.includes('/seller/variant-effective-margins?')) {
     fixture.effectiveMarginReads += 1;
     if (drp33 === 'failure') return Response.json({ error: 'Fixture pricing unavailable' }, { status: 503 });
@@ -311,7 +328,8 @@ window.fetch = async (input, init) => {
   }
   if (drp33 && url.includes('/seller/variant-overrides')) {
     if (init?.method === 'PUT') {
-      drp33Override = JSON.parse(String(init.body)).value;
+      const body = JSON.parse(String(init.body));
+      drp33Override = url.includes('workspace=1') ? body.margin ?? undefined : body.value;
     } else if (init?.method === 'DELETE') {
       drp33Override = undefined;
       fixture.variantOverrideClears += 1;

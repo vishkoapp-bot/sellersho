@@ -425,21 +425,23 @@ type ShippingAddress struct {
 
 // SupplierShipment represents vendor-direct fulfillment consignment
 type SupplierShipment struct {
-	ID              string          `json:"id" db:"id"`
-	OrderID         string          `json:"orderId" db:"order_id"`
-	OrderNumber     string          `json:"orderNumber,omitempty"`
-	SupplierID      string          `json:"supplierId" db:"supplier_id"`
-	ShippingAddress ShippingAddress `json:"shippingAddress" db:"shipping_address"`
-	CustomerPhone   string          `json:"customerPhone" db:"customer_phone"` // Contact phone for delivery courier
-	CustomerName    string          `json:"customerName" db:"customer_name"`   // Recipient name
-	Carrier         *string         `json:"carrier,omitempty" db:"carrier"`
-	TrackingNumber  *string         `json:"trackingNumber,omitempty" db:"tracking_number"`
-	ShippedAt       *time.Time      `json:"shippedAt,omitempty" db:"shipped_at"`
-	DeliveredAt     *time.Time      `json:"deliveredAt,omitempty" db:"delivered_at"`
-	Status          string          `json:"status" db:"status"` // pending, shipped, in_transit, delivered, failed
-	SupplierNotes   *string         `json:"supplierNotes,omitempty" db:"supplier_notes"`
-	CreatedAt       time.Time       `json:"createdAt" db:"created_at"`
-	UpdatedAt       time.Time       `json:"updatedAt" db:"updated_at"`
+	ID               string          `json:"id" db:"id"`
+	OrderID          string          `json:"orderId" db:"order_id"`
+	OrderNumber      string          `json:"orderNumber,omitempty"`
+	SupplierID       string          `json:"supplierId" db:"supplier_id"`
+	ShippingAddress  ShippingAddress `json:"shippingAddress" db:"shipping_address"`
+	CustomerPhone    string          `json:"customerPhone" db:"customer_phone"` // Contact phone for delivery courier
+	CustomerName     string          `json:"customerName" db:"customer_name"`   // Recipient name
+	Carrier          *string         `json:"carrier,omitempty" db:"carrier"`
+	TrackingNumber   *string         `json:"trackingNumber,omitempty" db:"tracking_number"`
+	ShippedAt        *time.Time      `json:"shippedAt,omitempty" db:"shipped_at"`
+	DeliveredAt      *time.Time      `json:"deliveredAt,omitempty" db:"delivered_at"`
+	DispatchDueAt    *time.Time      `json:"dispatchDueAt,omitempty" db:"dispatch_due_at"`
+	DispatchEstimate bool            `json:"dispatchEstimate,omitempty"`
+	Status           string          `json:"status" db:"status"` // pending, shipped, in_transit, delivered, failed
+	SupplierNotes    *string         `json:"supplierNotes,omitempty" db:"supplier_notes"`
+	CreatedAt        time.Time       `json:"createdAt" db:"created_at"`
+	UpdatedAt        time.Time       `json:"updatedAt" db:"updated_at"`
 }
 
 // SupplierShipmentAuditLog tracks privacy access and status changes

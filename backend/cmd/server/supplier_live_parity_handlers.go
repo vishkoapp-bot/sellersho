@@ -1524,10 +1524,11 @@ func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *
 		return
 	}
 	var body struct {
-		SupplierBaseCost    *int64 `json:"supplierBaseCost"`
-		NewSupplierBaseCost *int64 `json:"new_supplier_base_cost"`
-		Clear               bool   `json:"clear"`
-		Reason              string `json:"reason"`
+		SupplierBaseCost    *int64                              `json:"supplierBaseCost"`
+		NewSupplierBaseCost *int64                              `json:"new_supplier_base_cost"`
+		Clear               bool                                `json:"clear"`
+		Reason              string                              `json:"reason"`
+		Expected            *repository.VariantCostPrecondition `json:"expected"`
 	}
 	if err := decodeMoneyJSON(r.Body, &body, true); err != nil {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
@@ -1543,6 +1544,20 @@ func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *
 	}
 	if cost != nil && *cost <= 0 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Expected != nil {
+		if h.pricingRepo == nil {
+			http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		result, err := h.pricingRepo.ApplyWorkspaceVariantCost(r.Context(), supplierID, productID, variantID, cost, body.Reason, *body.Expected)
+		if errors.Is(err, repository.ErrVariantWorkspaceConflict) {
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"error":"variant_workspace_conflict"}`, http.StatusConflict)
+			return
+		}
+		h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
 		return
 	}
 	if cost != nil {

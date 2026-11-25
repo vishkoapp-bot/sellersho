@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
@@ -457,7 +458,15 @@ func handleGetSupplierOrders(
 		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
 		return
 	}
-	page, err := shipmentRepo.GetShipmentsPage(ctx, supplierID, "", opts)
+	work := r.URL.Query().Get("work")
+	if work == "" {
+		work = "all"
+	}
+	if work != "all" && work != "ready" && work != "overdue" {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "فیلتر سفارش معتبر نیست."})
+		return
+	}
+	page, err := shipmentRepo.GetSupplierOrderWorkPage(ctx, supplierID, work, opts)
 	if err != nil {
 		if isInvalidCursorError(err) {
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
@@ -480,19 +489,21 @@ func handleGetSupplierOrders(
 	}
 
 	type OrderItemView struct {
-		ID             string                               `json:"id"`
-		OrderID        string                               `json:"orderId"`
-		OrderNumber    string                               `json:"orderNumber"`
-		CustomerName   string                               `json:"customerName"`
-		CustomerPhone  string                               `json:"customerPhone"`
-		Status         string                               `json:"status"`
-		StatusText     string                               `json:"statusText"`
-		Carrier        string                               `json:"carrier,omitempty"`
-		TrackingNumber string                               `json:"trackingNumber,omitempty"`
-		ShippedAt      string                               `json:"shippedAt,omitempty"`
-		CreatedAt      string                               `json:"createdAt"`
-		ItemCount      int                                  `json:"itemCount"`
-		Items          []repository.SupplierFulfillmentLine `json:"items"`
+		ID               string                               `json:"id"`
+		OrderID          string                               `json:"orderId"`
+		OrderNumber      string                               `json:"orderNumber"`
+		CustomerName     string                               `json:"customerName"`
+		CustomerPhone    string                               `json:"customerPhone"`
+		Status           string                               `json:"status"`
+		StatusText       string                               `json:"statusText"`
+		Carrier          string                               `json:"carrier,omitempty"`
+		TrackingNumber   string                               `json:"trackingNumber,omitempty"`
+		ShippedAt        string                               `json:"shippedAt,omitempty"`
+		CreatedAt        string                               `json:"createdAt"`
+		DispatchDueAt    *time.Time                           `json:"dispatchDueAt,omitempty"`
+		DispatchEstimate bool                                 `json:"dispatchEstimate,omitempty"`
+		ItemCount        int                                  `json:"itemCount"`
+		Items            []repository.SupplierFulfillmentLine `json:"items"`
 	}
 
 	ordersView := make([]OrderItemView, 0)
@@ -524,19 +535,21 @@ func handleGetSupplierOrders(
 			itemCount += line.Quantity
 		}
 		ordersView = append(ordersView, OrderItemView{
-			ID:             s.ID,
-			OrderID:        s.OrderID,
-			OrderNumber:    s.OrderNumber,
-			CustomerName:   s.CustomerName,
-			CustomerPhone:  s.CustomerPhone,
-			Status:         s.Status,
-			StatusText:     statusText,
-			Carrier:        carrierStr,
-			TrackingNumber: trackingStr,
-			ShippedAt:      shippedAtStr,
-			CreatedAt:      s.CreatedAt.Format("2006/01/02 15:04"),
-			ItemCount:      itemCount,
-			Items:          lines,
+			ID:               s.ID,
+			OrderID:          s.OrderID,
+			OrderNumber:      s.OrderNumber,
+			CustomerName:     s.CustomerName,
+			CustomerPhone:    s.CustomerPhone,
+			Status:           s.Status,
+			StatusText:       statusText,
+			Carrier:          carrierStr,
+			TrackingNumber:   trackingStr,
+			ShippedAt:        shippedAtStr,
+			CreatedAt:        s.CreatedAt.Format("2006/01/02 15:04"),
+			DispatchDueAt:    s.DispatchDueAt,
+			DispatchEstimate: s.DispatchEstimate,
+			ItemCount:        itemCount,
+			Items:            lines,
 		})
 	}
 

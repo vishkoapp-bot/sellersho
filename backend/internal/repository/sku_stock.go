@@ -14,10 +14,10 @@ import (
 // and return lots retain their physical quantities; an aggregate edit cannot
 // silently remove units held elsewhere or change another SKU/legacy pool.
 func SetTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, total int, reason, actor string) error {
-	return setTrackedSKUStockTx(ctx, tx, productID, supplierID, variantID, total, reason, actor, nil, nil)
+	return setTrackedSKUStockTx(ctx, tx, productID, supplierID, variantID, total, reason, actor, nil, nil, nil)
 }
 
-func setTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, total int, reason, actor string, holds *RedisClient, result *StockAdjustmentResult) error {
+func setTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID, variantID string, total int, reason, actor string, holds *RedisClient, result *StockAdjustmentResult, expected *StockWorkspacePrecondition) error {
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return ErrStockAdjustmentInput
 	}
@@ -63,6 +63,9 @@ func setTrackedSKUStockTx(ctx context.Context, tx *sql.Tx, productID, supplierID
 	err = tx.QueryRowContext(ctx, `SELECT id,quantity FROM inventory_balances WHERE product_id=$1 AND variant_id=$2 AND owner_type='supplier' AND location_type='supplier' AND location_key=$3 AND status='sellable' FOR UPDATE`, productID, variantID, location).Scan(&balanceID, &previous)
 	if err != nil && err != sql.ErrNoRows {
 		return err
+	}
+	if expected != nil && expected.Stock != previous+int(held) {
+		return ErrVariantWorkspaceConflict
 	}
 	delta := target - previous
 	if result != nil {

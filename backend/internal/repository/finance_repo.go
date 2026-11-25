@@ -141,7 +141,9 @@ func (r *FinanceRepository) GetDisputes(ctx context.Context) ([]domain.Dispute, 
 // mismatch and also fails closed. The dispute type is stored as given;
 // handlers validate it against the disputes CHECK values.
 func (r *FinanceRepository) CreateDispute(ctx context.Context, d domain.Dispute) error {
- if d.ClaimAmount<=0||validateSignedFinanceMoney(d.ClaimAmount)!=nil{return ErrDisputeInput}
+	if d.ClaimAmount <= 0 || validateSignedFinanceMoney(d.ClaimAmount) != nil {
+		return ErrDisputeInput
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -311,6 +313,7 @@ type StatementEntry struct {
 	Type      string    `json:"type"` // credit / debit
 	Amount    int64     `json:"amount"`
 	Reason    string    `json:"reason"`
+	ReasonKey string    `json:"reasonKey,omitempty"`
 	Reference string    `json:"reference"`
 }
 
@@ -868,7 +871,8 @@ func (r *FinanceRepository) GetStoreStatement(ctx context.Context, storeID, mont
 			rows.Close()
 			return nil, err
 		}
-		e.Reason = statementReasonLabels[e.Reason]
+		e.ReasonKey = e.Reason
+		e.Reason = statementReasonLabels[e.ReasonKey]
 		e.Reference = e.ID
 		result.Entries = append(result.Entries, e)
 		if e.Type == "credit" {
@@ -973,6 +977,7 @@ func (r *FinanceRepository) GetStoreStatementPage(ctx context.Context, storeID, 
 			break
 		}
 		e.Reason = statementReasonLabels[rawReason]
+		e.ReasonKey = rawReason
 		e.Reference = rawReason
 		result.Entries = append(result.Entries, e)
 	}

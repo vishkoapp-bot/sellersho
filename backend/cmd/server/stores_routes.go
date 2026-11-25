@@ -98,7 +98,7 @@ func handleStoresBlock(jwtService *auth.JWTService, storeRepo *repository.StoreR
 		}
 		if len(parts) == 2 {
 			switch parts[1] {
-			case "settings", "products", "report", "balance", "wallet", "payouts", "early-withdrawals", "discount-codes", "change-requests", "services":
+			case "settings", "products", "report", "balance", "wallet", "statement", "payouts", "early-withdrawals", "discount-codes", "change-requests", "services":
 				RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) {
 					handleSellerStore(w, r, storeRepo, finRepo, slug, parts[1], "")
 				})(w, r)
@@ -157,6 +157,23 @@ func handleStoresBlock(jwtService *auth.JWTService, storeRepo *repository.StoreR
 			return
 		}
 
+		if len(parts) == 2 && parts[1] == "work-queue" {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w)
+				return
+			}
+			if !authorizeStoreRead(w, r, jwtService, storeRepo, slug) {
+				return
+			}
+			store, err := storeRepo.GetStoreBySlug(ctx, slug)
+			if err != nil || store == nil {
+				http.NotFound(w, r)
+				return
+			}
+			handleSellerWorkCounts(w, r, orderRepo, store.ID)
+			return
+		}
+
 		if len(parts) > 1 && parts[1] == "orders" {
 			if !authorizeStoreRead(w, r, jwtService, storeRepo, slug) {
 				return
@@ -171,7 +188,12 @@ func handleStoresBlock(jwtService *auth.JWTService, storeRepo *repository.StoreR
 				http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
 				return
 			}
-			page, err := orderRepo.GetOrdersByStoreIDPage(ctx, store.ID, opts)
+			work := r.URL.Query().Get("work")
+			if work != "" && work != "follow-up" {
+				t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "فیلتر سفارش معتبر نیست."})
+				return
+			}
+			page, err := orderRepo.GetOrdersByStoreIDPage(ctx, store.ID, opts, work)
 			if err != nil {
 				if isInvalidCursorError(err) {
 					http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)

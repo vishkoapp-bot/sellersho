@@ -2,9 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { TrendingUp, DollarSign, ShoppingBag, Clock, ArrowUpRight, Package, ExternalLink, Flame, Layers, Award, ChevronDown, Check, ChevronLeft, Rocket } from 'lucide-react';
 import { storeApi, type SellerReportResponse } from '../../services/storeApi';
+import { isMockMode } from '../../services/apiClient';
+import { getSellerWorkCounts } from '../../services/panelWorkApi';
+import { countSellerVariantAttention } from '../../services/variantWorkspaceApi';
+import { PanelWorkQueue } from '../common/PanelWorkQueue';
 
 interface Props {
-  onNavigateTab: (tab: string) => void;
+  onNavigateTab: (tab: string, work?: 'attention' | 'follow-up') => void;
   onOpenStorefront: () => void;
 }
 
@@ -163,6 +167,28 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
   const [balance, setBalance] = useState<OverviewRead<number>>();
   const [pending, setPending] = useState<OverviewRead<number>>();
   const [rewardOpen, setRewardOpen] = useState(false);
+  const [workAttempt, setWorkAttempt] = useState(0);
+  const [work, setWork] = useState<{ store: string; orders?: number; products?: number; failed?: boolean }>();
+  const mockMode = isMockMode();
+  useEffect(() => {
+    if (mockMode || !slug || !currentStore.id) return;
+    const controller = new AbortController();
+    const store = currentStore.id;
+    setWork(undefined);
+    void Promise.allSettled([
+      getSellerWorkCounts(slug, controller.signal),
+      countSellerVariantAttention(store, controller.signal),
+    ]).then(([orders, variants]) => {
+      if (controller.signal.aborted) return;
+      setWork({ store,
+        orders: orders.status === 'fulfilled' ? orders.value.orderFollowUp : undefined,
+        products: variants.status === 'fulfilled' ? variants.value : undefined,
+        failed: orders.status === 'rejected' || variants.status === 'rejected',
+      });
+    });
+    return () => controller.abort();
+  }, [slug, currentStore.id, mockMode, workAttempt]);
+  const activeWork = work?.store === currentStore.id ? work : undefined;
   useEffect(() => {
     if (!slug) return;
     const controller = new AbortController();
@@ -189,6 +215,15 @@ export const SellerOverviewTab: React.FC<Props> = ({ onNavigateTab, onOpenStoref
 
   return (
     <div className="space-y-3 pb-6">
+      {!mockMode && <PanelWorkQueue
+        loading={Boolean(slug && !activeWork)}
+        error={activeWork?.failed ? 'دریافت بخشی از شمارنده‌ها انجام نشد.' : undefined}
+        retry={() => setWorkAttempt(value => value + 1)}
+        items={[
+          { icon: ShoppingBag, label: 'سفارش‌های نیازمند پیگیری', action: 'دیدن سفارش‌ها', count: activeWork?.orders, urgent: true, open: () => onNavigateTab('orders', 'follow-up') },
+          { icon: Package, label: 'کالاهای غیرفعال یا ناموجود', action: 'بررسی کالاهای ویترین', count: activeWork?.products, open: () => onNavigateTab('catalog', 'attention') },
+        ]}
+      />}
       {/* 1. Header Card */}
       <div className="bg-white border border-slate-200 rounded-2xl p-4">
         <div className="flex items-center justify-between gap-2">

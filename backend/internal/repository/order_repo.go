@@ -297,9 +297,12 @@ func (r *OrderRepository) GetOrderByTrackingCode(ctx context.Context, code strin
 // order list alone does not fix item loading: a 50-order page used to
 // seq-scan all order_items; the Step-0 (order_id) index brings that to
 // ~0.3 ms). PERF-02 Step 3.
-func (r *OrderRepository) GetOrdersByStoreIDPage(ctx context.Context, storeID string, opts ListPageOptions) (ListPage[domain.Order], error) {
+func (r *OrderRepository) GetOrdersByStoreIDPage(ctx context.Context, storeID string, opts ListPageOptions, work ...string) (ListPage[domain.Order], error) {
 	limit := NormalizeListLimit(opts.Limit)
 	query := "SELECT " + orderSelectColumns + " FROM orders WHERE store_id = $1"
+	if len(work) != 0 && work[0] == "follow-up" {
+		query += " AND " + sellerOrderFollowUpSQL
+	}
 	args := []interface{}{storeID}
 	if opts.Cursor != "" {
 		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)

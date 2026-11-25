@@ -195,7 +195,7 @@ func gap14Repos(t *testing.T) (*sql.DB, *repository.SupplierShipmentRepository) 
 			total_products integer DEFAULT 0,
 			warehouse_city_confirmed boolean NOT NULL DEFAULT false,
 			warehouse_city_source character varying(20))`,
-		`CREATE TABLE supplier_shipments (id VARCHAR(255) PRIMARY KEY, order_id VARCHAR(255) NOT NULL, supplier_id VARCHAR(255) NOT NULL, carrier VARCHAR(100), tracking_number VARCHAR(255), shipped_at TIMESTAMPTZ, delivered_at TIMESTAMPTZ, status VARCHAR(50) DEFAULT 'pending', shipping_address JSONB NOT NULL DEFAULT '{}', customer_phone TEXT NOT NULL DEFAULT '', customer_name TEXT NOT NULL DEFAULT '', supplier_notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+		`CREATE TABLE supplier_shipments (id VARCHAR(255) PRIMARY KEY, order_id VARCHAR(255) NOT NULL, supplier_id VARCHAR(255) NOT NULL, carrier VARCHAR(100), tracking_number VARCHAR(255), shipped_at TIMESTAMPTZ, delivered_at TIMESTAMPTZ, dispatch_due_at TIMESTAMPTZ, status VARCHAR(50) DEFAULT 'pending', shipping_address JSONB NOT NULL DEFAULT '{}', customer_phone TEXT NOT NULL DEFAULT '', customer_name TEXT NOT NULL DEFAULT '', supplier_notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
 			-- TEST-02 round 4: full demanded set (shared-DB pollution repair)
 			packaging_height_mm integer,
 			packaging_length_mm integer,

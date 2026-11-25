@@ -4,6 +4,7 @@ import { useToast } from '../../context/ToastContext';
 import { storeApi, StoreBalanceResponse, WalletBreakdownResponse, EarlyWithdrawalResponse } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { isValidIranianSheba } from '../../utils/validators';
+import { AccountStatement } from '../common/AccountStatement';
 import { Wallet, ArrowDownToLine, Clock, CheckCircle2, AlertCircle, Eye, ShieldCheck, X, Crown, Sparkles, Info } from 'lucide-react';
 
 export const SellerWalletTab: React.FC = () => {
@@ -24,6 +25,7 @@ export const SellerWalletTab: React.FC = () => {
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [statementRefresh, setStatementRefresh] = useState(0);
   const [breakdownType, setBreakdownType] = useState<'pending' | 'reserved' | null>(null);
   const [serverBalance, setServerBalance] = useState<StoreBalanceResponse | null>(null);
   const [balanceLoadFailed, setBalanceLoadFailed] = useState(false);
@@ -208,6 +210,7 @@ export const SellerWalletTab: React.FC = () => {
     const ok = requestPayout(currentStore.id, amountNum, shabaNumber, result.bankName);
     if (ok) {
       setSubmitted(true);
+      setStatementRefresh(value => value + 1);
       success(`استعلام تطبیق شبا به نام «${result.ownerName}» (${result.bankName}) تایید شد و درخواست واریز به صف مالی رفت.`);
       setTimeout(() => setSubmitted(false), 3000);
     }
@@ -371,6 +374,7 @@ export const SellerWalletTab: React.FC = () => {
         </div>
       )}
 
+      {!mockMode && currentStore?.slug && currentStore.id && <AccountStatement key={currentStore.id} role="seller" slug={currentStore.slug} storeId={currentStore.id} refresh={statementRefresh} />}
       {/* FIX 14: wallet breakdown (pending vs released profit) + early-withdrawal list, from the settlement endpoints. */}
       {!isMockMode() && walletBreakdown && (
         <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">

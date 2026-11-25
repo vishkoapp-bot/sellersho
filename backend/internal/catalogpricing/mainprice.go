@@ -215,7 +215,7 @@ func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant,
 	var cheapest, first string
 	var best int64
 	for _, v := range variants {
-		if (v.InventoryMode != "" && !v.IsActive) || (p.ProductType == "variable" && normalizedDefaultName(DisplayVariantName(p, v, len(variants))) == "پیشفرض") {
+		if (v.InventoryMode != "" && !v.IsActive) || !DisplayWorkspaceVariant(p, v, len(variants)) {
 			continue
 		}
 		vp, ok := prices[v.ID]
@@ -225,13 +225,7 @@ func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant,
 		if first == "" {
 			first = v.ID
 		}
-		minimum := max(v.MinCartQty, 1)
-		stock := v.Stock
-		if v.InventoryMode != "tracked" && p.ProductType != "variable" && p.SchemaVersion != 2 && stock <= 0 {
-			stock = p.Stock
-		}
-		purchasable := p.IsActive && stock >= minimum && (v.MaxCartQty == nil || *v.MaxCartQty >= minimum)
-		if !purchasable {
+		if !WorkspaceVariantPurchasable(p, v) {
 			continue
 		}
 		if v.ID == storeDefault && (!(p.ProductType == "variable" || p.SchemaVersion == 2) || vp.Price > 0) {
@@ -245,6 +239,19 @@ func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant,
 		return cheapest
 	}
 	return first
+}
+
+func DisplayWorkspaceVariant(p domain.Product, v domain.ProductVariant, variantCount int) bool {
+	return p.ProductType != "variable" || normalizedDefaultName(DisplayVariantName(p, v, variantCount)) != "پیشفرض"
+}
+
+func WorkspaceVariantPurchasable(p domain.Product, v domain.ProductVariant) bool {
+	minimum := max(v.MinCartQty, 1)
+	stock := v.Stock
+	if v.InventoryMode != "tracked" && p.ProductType != "variable" && p.SchemaVersion != 2 && stock <= 0 {
+		stock = p.Stock
+	}
+	return p.IsActive && (v.InventoryMode == "" || v.IsActive) && stock >= minimum && (v.MaxCartQty == nil || *v.MaxCartQty >= minimum)
 }
 
 // earliestBoundary returns the nearest future instant at which the

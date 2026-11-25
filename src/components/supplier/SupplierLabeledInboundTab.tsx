@@ -7,23 +7,12 @@ import { createCartonDraftOperation } from '../../services/cartonDraft';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { normalizePersianText } from '../../utils/routing';
+import { ContextSupportButton } from '../support/ContextSupportButton';
+import { SupplierCartonDetails } from './SupplierCartonDetails';
 import { Package, Truck, CheckCircle2, Printer, RefreshCw, X, Tag } from 'lucide-react';
 
-// FIX 46: built from the live bundle SupplierDashboardView-MERGED.js (ln component).
-// Labelled inbound flow: pick a product, pick its variants one by one
-// with quantities, submit for a carton code, print the carton label (sn),
-// and list previous code shipments with refresh. Live's ln shows no
-// xe loading/error block: load failures surface only as toasts, and the
-// shipments section shows «در حال دریافت…» while loading.
-// NOTES: lucide icons are approximations (live's wa/il/ve/Nt/ca/Se/Re
-// identities are bundle-internal). The print label mirrors live's sn
-// layout (title, mono code, item count + date, stick-on instruction)
-// but WITHOUT the QR code: no QR library exists in the pinned
-// node_modules and a fresh install is forbidden (it pulls incompatible
-// lucide-react), so the QR is a known print-output gap, not fabricated.
-// Live's shipment-code format is unproven; the backend generates an
-// 8-character code from an unambiguous alphabet (see repo comment).
 const SHIPMENT_STATUS_LABELS: Record<string, string> = { draft: "پیش‌نویس", created: "ثبت‌شده", sent: "ارسال‌شده", partially_received: "بخشی رسیده", in_transit: "در راه انبار", received: "به انبار رسید", qc_passed: "کنترل کیفیت: قبول شد", qc_failed: "کنترل کیفیت: رد شد", cancelled: "لغو شده" };
+const OPEN_SHIPMENT_STATUSES = new Set(['draft', 'created', 'sent', 'in_transit', 'partially_received']);
 const fieldClass = 'mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:ring-2 focus-visible:ring-brand';
 type ShipmentLabel = { id: string; shipment_code: string; item_count?: number; created_at?: string };
 
@@ -40,20 +29,45 @@ const printCartonLabel = (shipment: ShipmentLabel) => {
   const created = shipment.created_at ? new Date(shipment.created_at).toLocaleDateString("fa-IR") : "";
   const win = window.open("", "_blank");
   if (!win) return false;
-  win.document.write(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>لیبل کارتن محموله — سلرشو</title></head><body style="padding:8mm 6mm;text-align:center;font-family:inherit"><div style="border:3px solid #000;padding:14px 12px"><div style="font-size:14px;font-weight:700;margin-bottom:6px">لیبل کارتن محموله — سلرشو</div><div dir="ltr" style="font-size:40px;font-weight:800;letter-spacing:0.12em">${shipment.shipment_code}</div><div style="font-size:12px;color:#333;margin-top:10px">${shipment.item_count ?? 0} قلم${created ? ` • ${created}` : ""}</div><div style="font-size:11px;color:#555;margin-top:4px">این لیبل را روی کارتن بچسبانید</div></div><script>window.onload = () => window.print();<\/script></body></html>`);
-  win.document.close();
-  return true;
+  try {
+    win.opener = null;
+    const doc = win.document;
+    doc.documentElement.lang = 'fa';
+    doc.documentElement.dir = 'rtl';
+    doc.title = 'برچسب کارتن محموله — سلرشو';
+    doc.body.style.cssText = 'padding: 8mm 6mm; text-align: center; font-family: Tahoma, sans-serif';
+    const label = doc.createElement('main');
+    label.style.cssText = 'border: 3px solid #000; padding: 14px 12px';
+    const heading = doc.createElement('h1');
+    heading.style.fontSize = '16px';
+    heading.textContent = 'کد کارتن محموله';
+    const code = doc.createElement('strong');
+    code.dir = 'ltr';
+    code.style.cssText = 'font: 800 40px monospace; letter-spacing: 0.1em; overflow-wrap: anywhere';
+    code.textContent = shipment.shipment_code;
+    const meta = doc.createElement('p');
+    meta.textContent = `${(shipment.item_count ?? 0).toLocaleString('fa-IR')} تنوع${created ? ` · ${created}` : ''}`;
+    const instruction = doc.createElement('p');
+    instruction.textContent = 'این برچسب را روی سطح بیرونی کارتن بچسبانید.';
+    label.append(heading, code, meta, instruction);
+    doc.body.append(label);
+    win.focus();
+    win.print();
+    return true;
+  } catch {
+    win.close();
+    return false;
+  }
 };
 
 interface ShipmentFlowProps {
   stage?: 'prepare' | 'track';
   selectedProductId?: string;
   onShipmentCreated?: () => void;
-  onUnitLabels?: () => void;
-  unitLabels?: React.ReactNode;
+  openOnly?: boolean;
 }
 
-export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, selectedProductId, onShipmentCreated, onUnitLabels, unitLabels }) => {
+export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, selectedProductId, onShipmentCreated, openOnly }) => {
   const { toPersianDigits, supplierSession } = useStore();
   const { success, error } = useToast();
   const products = useSupplierResource(supplierApi.getProducts);
@@ -75,6 +89,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   const shipments = useSupplierResource(supplierApi.getShipments);
   const [shipmentQuery, setShipmentQuery] = useState('');
   const [shipmentStatus, setShipmentStatus] = useState('');
+  const [detailsId, setDetailsId] = useState('');
   const [actionError, setActionError] = useState('');
   const [pendingShipmentId, setPendingShipmentId] = useState<string | null>(null);
   const shipmentActionRef = useRef(false);
@@ -88,6 +103,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
     draftOperation.current.reset();
     setLines([]);
     setCreated(null);
+    setDetailsId('');
     setProductId('');
     setWarehouseId('');
     setSourceId('');
@@ -102,8 +118,13 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   useEffect(() => {
     if (stage === 'prepare') setCancelTarget(null);
   }, [stage]);
+  useEffect(() => {
+    setShipmentStatus('');
+    setShipmentQuery('');
+  }, [openOnly]);
   const normalizedQuery = normalizePersianText(shipmentQuery.trim()).toUpperCase();
-  const visibleShipments = (shipments.data ?? []).filter(shipment => (!shipmentStatus || shipment.status === shipmentStatus)
+  const visibleShipments = (shipments.data ?? []).filter(shipment => (!openOnly || OPEN_SHIPMENT_STATUSES.has(shipment.status))
+    && (!shipmentStatus || shipment.status === shipmentStatus)
     && String(shipment.shipment_code ?? '').toUpperCase().includes(normalizedQuery));
   const print = (shipment: ShipmentLabel) => {
     if (!printCartonLabel(shipment)) error('پنجره چاپ باز نشد. اجازه باز شدن پنجره‌های چاپ را در مرورگر بده و دوباره تلاش کن.');
@@ -164,6 +185,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
       const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId, source });
       draftOperation.current.reset();
       setCreated(shipment);
+      setDetailsId(shipment.id);
       setShipmentQuery('');
       setShipmentStatus('');
       onShipmentCreated?.();
@@ -246,7 +268,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
         )}
         {lines.length > 0 && (
           <div className="space-y-2">
-            <p className="text-sm font-bold">تنوع‌های داخل محموله ({toPersianDigits(lines.length)})</p>
+            <p className="text-sm font-bold">محتویات این کارتن ({toPersianDigits(lines.length)} تنوع)</p>
             {lines.map((l) => (
               <div key={l.variant.id} className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200 p-2">
                 <div className="flex-1 min-w-0">
@@ -273,19 +295,14 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
           <button type="button" onClick={() => void shipments.reload()} disabled={shipments.loading || pendingShipmentId !== null} className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 text-slate-600 hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50" aria-label="به‌روزرسانی محموله‌ها" title="به‌روزرسانی"><RefreshCw className={`size-4 ${shipments.loading ? 'animate-spin' : ''}`} strokeWidth={1.5}/></button>
         </div>
         {stage === 'track' && (
-          <>
-            <div className="flex flex-wrap items-start gap-2">
-              {onUnitLabels && <button type="button" aria-expanded={!!unitLabels} aria-controls={unitLabels ? 'supplier-unit-labels' : undefined} onClick={onUnitLabels} className="min-h-11 rounded-xl border border-[#dfd8ef] bg-brand-bg px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">{unitLabels ? 'بستن برچسب‌های واحد' : 'دیدن کدهای واحد کالا'}</button>}
-              <details className="min-w-0 flex-1 rounded-xl bg-slate-50 px-3 text-xs leading-6 text-slate-700">
-                <summary className="min-h-11 cursor-pointer py-2.5 font-bold text-[#261b41]">راهنمای چاپ</summary>
-                <div className="space-y-1 pb-3">
-                  <p><strong>برچسب کارتن</strong> را روی کارتن بچسبان و هنگام تحویل بار، «ثبت ارسال» را بزن.</p>
-                  <p><strong>برچسب واحد (SPNCX)</strong> روی بسته‌بندی هر واحد کالا می‌چسبد. برای کالای جدید، انبار با ثبت دریافت این کدها را صادر می‌کند.</p>
-                </div>
-              </details>
-            </div>
-            {unitLabels}
-          </>
+          <details className="rounded-xl bg-slate-50 px-3 text-xs leading-6 text-slate-700">
+            <summary className="min-h-11 cursor-pointer py-2.5 font-bold text-[#261b41]">راهنمای کد و برچسب</summary>
+            <ul className="space-y-1 pb-3">
+              <li><strong>کد کارتن</strong> برای شناسایی محموله است. برچسب آن را روی کارتن بچسبان و هنگام تحویل بار، «ثبت ارسال» را بزن.</li>
+              <li><strong>SPNC</strong> کد مشترک همه واحدهای یک تنوع کالا است.</li>
+              <li><strong>SPNCX</strong> کد یکتای هر واحد است. برچسب‌های قابل چاپ همین کارتن در جزئیات آن نشان داده می‌شوند.</li>
+            </ul>
+          </details>
         )}
         {actionError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{actionError}</p>}
         <SupplierResourceState loading={shipments.loading} error={shipments.error} retry={shipments.reload} />
@@ -296,38 +313,48 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
             </label>
             <label className="block min-w-0 text-xs font-bold sm:text-sm">وضعیت محموله
               <select value={shipmentStatus} onChange={event => setShipmentStatus(event.target.value)} className={fieldClass}>
-                <option value="">همه وضعیت‌ها</option>
-                {Object.entries(SHIPMENT_STATUS_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                <option value="">{openOnly ? 'محموله‌های باز' : 'همه وضعیت‌ها'}</option>
+                {Object.entries(SHIPMENT_STATUS_LABELS).filter(([key]) => !openOnly || OPEN_SHIPMENT_STATUSES.has(key)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>
             </label>
           </div>
         )}
         {!shipments.loading && !shipments.error && (visibleShipments.length === 0 ? (
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-            <p role="status">{shipments.data?.length ? 'محموله‌ای با این کد یا وضعیت پیدا نشد.' : 'هنوز محموله‌ای ثبت نشده. برای ساخت اولین محموله، به «آماده‌سازی محموله» برو.'}</p>
+            <p role="status">{shipmentQuery || shipmentStatus ? 'محموله‌ای با این کد یا وضعیت پیدا نشد.' : openOnly ? 'محمولهٔ بازی وجود ندارد.' : 'هنوز محموله‌ای ثبت نشده. برای ساخت اولین محموله، به «آماده‌سازی محموله» برو.'}</p>
             {(shipmentQuery || shipmentStatus) && <button type="button" onClick={() => { setShipmentStatus(''); setShipmentQuery(''); }} className="mt-2 min-h-11 rounded-lg bg-white px-3 font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن فیلترها</button>}
           </div>
-        ) : visibleShipments.map(s => (
-          <article key={s.id} className="space-y-2 rounded-2xl border border-[#e6e2f0] bg-[#f9f7fc] p-3 sm:flex sm:items-center sm:justify-between sm:gap-3 sm:space-y-0">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <bdi dir="ltr" className="break-all text-sm font-black tracking-wider text-[#261b41]">{s.shipment_code}</bdi>
-                <span className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand-deep">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>
+        ) : visibleShipments.map(shipment => (
+          <article key={shipment.id} className="space-y-3 rounded-2xl border border-[#e6e2f0] bg-[#f9f7fc] p-3">
+            <div className="space-y-2 sm:flex sm:items-center sm:justify-between sm:gap-3 sm:space-y-0">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-600">کد کارتن</span>
+                  <bdi dir="ltr" className="break-all text-sm font-black tracking-wider text-[#261b41]">{shipment.shipment_code}</bdi>
+                  <span className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand-deep">{SHIPMENT_STATUS_LABELS[shipment.status] || shipment.status}</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">{toPersianDigits(shipment.item_count ?? 0)} تنوع{shipment.created_at ? ` · ${new Date(shipment.created_at).toLocaleDateString('fa-IR')}` : ''}</p>
               </div>
-              <p className="mt-1 text-xs text-slate-600">{toPersianDigits(s.item_count ?? 0)} تنوع{s.created_at ? ` · ${new Date(s.created_at).toLocaleDateString('fa-IR')}` : ''}</p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button type="button" aria-expanded={detailsId === shipment.id}
+                  onClick={() => setDetailsId(current => current === shipment.id ? '' : shipment.id)}
+                  className="min-h-11 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">
+                  {detailsId === shipment.id ? 'بستن جزئیات' : 'محتویات و رسید'}
+                </button>
+                {shipment.status !== 'cancelled' && <button type="button" onClick={() => print(shipment)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#dfd8ef] bg-white px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
+                  <Printer aria-hidden="true" className="size-4" strokeWidth={1.75} /> چاپ برچسب کارتن
+                </button>}
+                {shipment.status === 'draft' && (
+                  <>
+                    <button type="button" disabled={pendingShipmentId !== null} onClick={() => void changeDispatch(shipment.id, 'dispatch')} className="min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-60">ثبت ارسال</button>
+                    <button type="button" disabled={pendingShipmentId !== null} onClick={() => setCancelTarget(shipment)} className="min-h-11 rounded-xl px-2 text-xs font-bold text-rose-700 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-700 disabled:opacity-60">لغو محموله</button>
+                    {pendingShipmentId === shipment.id && <span role="status" className="text-xs text-slate-600">در حال ثبت…</span>}
+                  </>
+                )}
+                <ContextSupportButton role="supplier" kind="shipment" referenceType="carton" referenceId={shipment.id} />
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" onClick={() => print(s)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#dfd8ef] bg-white px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
-                <Printer aria-hidden="true" className="size-4" strokeWidth={1.75} /> چاپ برچسب کارتن
-              </button>
-              {s.status === 'draft' && (
-                <>
-                  <button type="button" disabled={pendingShipmentId !== null} onClick={() => void changeDispatch(s.id, 'dispatch')} className="min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-60">ثبت ارسال</button>
-                  <button type="button" disabled={pendingShipmentId !== null} onClick={() => setCancelTarget(s)} className="min-h-11 rounded-xl px-2 text-xs font-bold text-rose-700 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-700 disabled:opacity-60">لغو محموله</button>
-                  {pendingShipmentId === s.id && <span role="status" className="text-xs text-slate-600">در حال ثبت…</span>}
-                </>
-              )}
-            </div>
+            {detailsId === shipment.id && stage !== 'prepare' && <SupplierCartonDetails shipmentId={shipment.id} />}
           </article>
         )))}
         {cancelTarget && stage !== 'prepare' && <SupplierDialog titleId="supplier-cancel-heading" descriptionId="supplier-cancel-message" onDismiss={() => setCancelTarget(null)}>

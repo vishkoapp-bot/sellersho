@@ -3,11 +3,11 @@ import { useStore } from '../../context/StoreContext';
 import { supplierApi, isSupplierProductActive } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
-import { ArrowLeft, Boxes, Check, ChevronLeft, CircleAlert, Flag, Package, PackagePlus, RotateCcw, ShoppingBag, Truck, Wallet } from 'lucide-react';
-import { isReadyOrder } from './SupplierOrdersTab';
-import { canRespondToDiscrepancy } from './SupplierDiscrepanciesTab';
+import { Boxes, Check, ChevronLeft, CircleAlert, Clock, Flag, Package, PackagePlus, RotateCcw, ShoppingBag, Truck, Wallet } from 'lucide-react';
+import { PanelWorkQueue } from '../common/PanelWorkQueue';
+import { getSupplierWorkCounts } from '../../services/panelWorkApi';
 
-type Destination = 'ready' | 'track' | 'prepare' | 'propose' | 'proposals';
+type Destination = 'ready' | 'overdue' | 'open' | 'awaiting-response' | 'track' | 'prepare' | 'propose' | 'proposals';
 type Navigate = (tab: string, destination?: Destination) => void;
 type Resource<T> = ReturnType<typeof useSupplierResource<T>>;
 
@@ -91,24 +91,20 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: Navigate }> = ({ onN
   const loading = products.loading || report.loading;
   const error = products.error || report.error;
   const shipments = useSupplierResource(supplierApi.getShipments);
-  const orders = useSupplierResource(supplierApi.getOrders);
-  const discrepancies = useSupplierResource(supplierApi.getDiscrepancies);
+  const counts = useSupplierResource(getSupplierWorkCounts);
   const balance = useSupplierResource(supplierApi.getSettlementBalance);
-  const readyOrders = orders.data?.orders.filter(order => isReadyOrder(order.status)).length;
-  const openShipments = shipments.data?.filter(shipment => ['draft', 'created', 'sent', 'in_transit', 'partially_received'].includes(shipment.status)).length;
-  const needsResponse = discrepancies.data?.filter(item => !item.responded_at && canRespondToDiscrepancy(item)).length;
   const workItems = [
-    { icon: ShoppingBag, label: orders.data?.hasMore ? 'منتظر ارسال در سفارش‌های اخیر' : 'سفارش‌های منتظر ارسال', count: readyOrders, action: 'رسیدگی به سفارش‌ها', open: () => onNavigateTab('orders', 'ready') },
-    { icon: Truck, label: 'محموله‌های باز', count: openShipments, action: 'پیگیری محموله‌ها', open: () => onNavigateTab('inbound', 'track') },
-    { icon: CircleAlert, label: 'مغایرت‌های نیازمند پاسخ', count: needsResponse, action: 'پاسخ به مغایرت‌ها', open: () => onNavigateTab('discrepancies') },
+    { icon: Clock, label: 'سفارش‌های عبورکرده از موعد', count: counts.data?.overdue, urgent: true, action: 'رسیدگی به سفارش‌های دیرکرده', open: () => onNavigateTab('orders', 'overdue') },
+    { icon: ShoppingBag, label: 'سفارش‌های منتظر ارسال', count: counts.data?.ready, action: 'رسیدگی به سفارش‌ها', open: () => onNavigateTab('orders', 'ready') },
+    { icon: Truck, label: 'محموله‌های باز', count: counts.data?.openCartons, action: 'پیگیری محموله‌ها', open: () => onNavigateTab('inbound', 'open') },
+    { icon: CircleAlert, label: 'مغایرت‌های نیازمند پاسخ', count: counts.data?.discrepancies, action: 'پاسخ به مغایرت‌ها', open: () => onNavigateTab('discrepancies', 'awaiting-response') },
   ];
-  const workError = orders.error || shipments.error || discrepancies.error;
-  const workLoading = orders.loading || shipments.loading || discrepancies.loading;
   const totalRevenue = report.data?.total_revenue || 0;
   const ordersCount = report.data?.orders_count || 0;
   const lowStock = (products.data ?? []).filter(isSupplierProductActive).sort((x, y) => (x.stock ?? 0) - (y.stock ?? 0)).slice(0, 5);
   return (
     <div className="space-y-4 sm:space-y-5">
+      <PanelWorkQueue items={workItems} loading={counts.loading} error={counts.error} retry={counts.reload} />
       <section className="relative isolate overflow-hidden rounded-[26px] bg-[#2c2050] px-5 py-6 text-white shadow-lg shadow-[#2c2050]/15 sm:px-8 sm:py-8">
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_0%_0%,#57408d_0%,transparent_66%)]" />
         <div className="flex max-w-3xl flex-col items-start">
@@ -147,19 +143,8 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: Navigate }> = ({ onN
 
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
-          <h3 className="mb-2 text-base font-extrabold text-[#261b41]">کارهای پیگیری</h3>
-          <SupplierResourceState loading={workLoading} error={workError} retry={() => { void orders.reload(); void shipments.reload(); void discrepancies.reload(); }} />
+          <h3 className="mb-2 text-base font-extrabold text-[#261b41]">حساب و مرجوعی‌ها</h3>
           <ul className="divide-y divide-[#eeebf4]">
-            {workItems.map(({ icon: Icon, label, count, action, open }) => (
-              <li key={action} className="flex flex-wrap items-center justify-between gap-x-3 py-2">
-                <span className="flex min-w-0 items-center gap-2 text-xs font-semibold leading-6 text-slate-700 sm:text-sm">
-                  <Icon aria-hidden="true" className="size-4 shrink-0 text-[#5a428b]" />
-                  <span>{label}</span>
-                  {count !== undefined && <strong className={`grid min-h-6 min-w-6 shrink-0 place-items-center rounded-md px-1 tabular-nums ${count ? 'bg-[#eee7ff] text-[#3b2767]' : 'bg-slate-100 text-slate-600'}`}>{toPersianDigits(count)}</strong>}
-                </span>
-                <button type="button" onClick={open} className="ms-auto inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">{action}<ArrowLeft aria-hidden="true" className="size-3.5" /></button>
-              </li>
-            ))}
             <li className="flex flex-wrap items-center justify-between gap-x-3 py-2">
               <span className="flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold leading-6 text-slate-700 sm:text-sm"><Wallet aria-hidden="true" className="size-4 text-[#5a428b]" /> موجودی قابل برداشت{balance.data && <strong className="tabular-nums text-[#261b41]">{formatPrice(balance.data.available)} تومان</strong>}</span>
               <button type="button" onClick={() => onNavigateTab('settlement')} className="ms-auto min-h-11 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">برداشت و سوابق</button>

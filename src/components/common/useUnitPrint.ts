@@ -42,7 +42,8 @@ export function useUnitPrint() {
       if (result.units.length) window.print();
       return result.units;
     } catch (cause) {
-      if (!(cause instanceof ApiError && cause.status === 0)) retry.current = null;
+      const uncertainResponse = cause instanceof ApiError && (cause.status === 0 || cause.status === 408 || cause.status >= 500);
+      if (!uncertainResponse) retry.current = null;
       if (!mounted.current) return;
       const body = cause instanceof ApiError ? cause.body : null;
       const errors: { code: string; error: string; status?: UnitStatus }[] = Array.isArray(body?.errors) ? body.errors : [];

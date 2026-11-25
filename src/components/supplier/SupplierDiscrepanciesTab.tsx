@@ -10,7 +10,7 @@ import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceSta
 export function canRespondToDiscrepancy(item: { status: string; escalated_at?: string; responded_at?: string; response_due_at: string }) {
   return item.status === 'open' && !item.escalated_at && Date.parse(item.response_due_at) > Date.now();
 }
-export const SupplierDiscrepanciesTab: React.FC = () => {
+export const SupplierDiscrepanciesTab: React.FC<{ initialAwaitingOnly?: boolean }> = ({ initialAwaitingOnly = false }) => {
   const resource = useSupplierResource(supplierApi.getDiscrepancies);
   const { success, error } = useToast();
   const { toPersianDigits } = useStore();
@@ -18,6 +18,7 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
   const [response, setResponse] = useState('');
   const [resolution, setResolution] = useState('');
   const [saving, setSaving] = useState(false);
+  const [awaitingOnly, setAwaitingOnly] = useState(initialAwaitingOnly);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!response.trim() || !selectedId || saving) return;
@@ -37,14 +38,15 @@ export const SupplierDiscrepanciesTab: React.FC = () => {
   };
   const items = resource.data ?? [];
   const needsResponse = (item: typeof items[number]) => !item.responded_at && canRespondToDiscrepancy(item);
-  const sortedItems = [...items].sort((a, b) => Number(needsResponse(b)) - Number(needsResponse(a)));
+  const sortedItems = items.filter(item => !awaitingOnly || needsResponse(item)).sort((a, b) => Number(needsResponse(b)) - Number(needsResponse(a)));
 
   return (
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="مغایرت‌های تحویل انبار" description="اختلاف تعداد یا خرابیِ ثبت‌شده را بررسی کن و تا پایان مهلت پاسخ بده." icon={<AlertTriangle />} />
+      <label className="inline-flex min-h-11 items-center gap-2 text-sm font-bold"><input type="checkbox" checked={awaitingOnly} onChange={event => setAwaitingOnly(event.target.checked)} className="size-4 accent-brand-deep" /> فقط نیازمند پاسخ</label>
       <SupplierResourceState loading={resource.loading} error={resource.error} retry={resource.reload} />
-      {!resource.loading && !resource.error && !(resource.data || []).length && (
-        <SupplierEmptyState icon={<AlertTriangle />} title="مغایرتی ثبت نشده است." description="اگر انبار اختلاف تعداد یا خرابی ثبت کند، جزئیات آن همین‌جا نمایش داده می‌شود." />
+      {!resource.loading && !resource.error && sortedItems.length === 0 && (
+        <SupplierEmptyState icon={<AlertTriangle />} title={awaitingOnly ? 'مغایرتی منتظر پاسخ تو نیست.' : 'مغایرتی ثبت نشده است.'} description={awaitingOnly ? 'برای دیدن سابقه، فیلتر «فقط نیازمند پاسخ» را بردار.' : 'اگر انبار اختلاف تعداد یا خرابی ثبت کند، جزئیات آن همین‌جا نمایش داده می‌شود.'} />
       )}
       {!resource.error && sortedItems.map((item) => (
         <section key={item.id} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm">

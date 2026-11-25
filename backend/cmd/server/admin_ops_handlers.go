@@ -705,22 +705,36 @@ func handleT01AdminTicketReply(w http.ResponseWriter, r *http.Request, db *sql.D
 		Body       string `json:"body"`
 		IsInternal bool   `json:"isInternal"`
 	}
-	if !t01DecodeJSON(w, r, &req) {
+	if !decodeSupportJSON(w, r, &req) {
 		return
 	}
-	if strings.TrimSpace(req.Body) == "" {
-		http.Error(w, `{"error":"body is required"}`, http.StatusBadRequest)
+	req.Body = strings.TrimSpace(req.Body)
+	if req.Body == "" || len([]rune(req.Body)) > 10000 || strings.ContainsRune(req.Body, '\x00') {
+		writeSupportError(w, repository.ErrStoreInput)
 		return
 	}
 	author := t01ClaimsUserID(r)
-	if _, err := db.ExecContext(r.Context(),
+	ctx := r.Context()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRowContext(ctx, `UPDATE support_tickets SET updated_at=NOW(),
+		status=CASE WHEN status='open' AND NOT $2 THEN 'assigned' ELSE status END
+		WHERE id=$1 AND (NOT $3 OR section='finance') RETURNING status`, ticketID, req.IsInternal, supportStaffFinanceOnly(r)).Scan(&status); err != nil {
+		writeSupportError(w, err)
+		return
+	}
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO support_ticket_messages (ticket_id, author_user_id, body, is_internal)
 		VALUES ($1, $2::uuid, $3, $4)`, ticketID, author, req.Body, req.IsInternal); err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if _, err := db.ExecContext(r.Context(),
-		`UPDATE support_tickets SET updated_at = NOW() WHERE id = $1`, ticketID); err != nil {
+	if err := tx.Commit(); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -728,7 +742,7 @@ func handleT01AdminTicketReply(w http.ResponseWriter, r *http.Request, db *sql.D
 	// when an admin replied, admins when the requester replied.
 	// Internal notes notify nobody. (The false SMS copy is W3's.)
 	repository.NotifyTicketReply(r.Context(), db, ticketID, author, req.IsInternal, req.Body)
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "ticketId": ticketID})
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "ticketId": ticketID, "status": status})
 }
 
 func handleT01AdminReviewByID(w http.ResponseWriter, r *http.Request, db *sql.DB, id string) {

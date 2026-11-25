@@ -24,6 +24,7 @@ import {
   Users,
   Wallet,
   Bell,
+  CircleHelp,
   ChevronLeft,
   ChevronDown
 } from 'lucide-react';
@@ -36,6 +37,7 @@ import { SupplierDiscrepanciesTab } from './SupplierDiscrepanciesTab';
 import { SupplierAdsCampaignTab } from './SupplierAdsCampaignTab';
 import { SupplierSettlementTab } from './SupplierSettlementTab';
 import { SupplierOrdersTab } from './SupplierOrdersTab';
+import { SellerSupportTab } from '../seller/SellerSupportTab';
 import { SupplierTeamTab } from './SupplierTeamTab';
 import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesTab, SupplierShippingMethodsTab, SupplierDemandInsightTab, SupplierContractTab } from './SupplierNewTabs';
 import { SupplierProfileTab } from './SupplierProfileTab';
@@ -47,15 +49,16 @@ interface Props {
   onBackToCustomerSite: () => void;
 }
 
-type SectionDestination = 'ready' | 'propose' | 'proposals' | ShipmentStage;
+type SectionDestination = 'ready' | 'overdue' | 'open' | 'awaiting-response' | 'propose' | 'proposals' | ShipmentStage;
 
 function readSupplierLocation() {
   const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
   const section = params.get('section') || 'overview';
   const view = params.get('view');
-  const destination = (section === 'orders' && view === 'ready')
+  const destination = (section === 'orders' && (view === 'ready' || view === 'overdue'))
     || (section === 'products' && (view === 'propose' || view === 'proposals'))
-    || (section === 'inbound' && (view === 'products' || view === 'prepare' || view === 'track')) ? view : undefined;
+    || (section === 'inbound' && (view === 'products' || view === 'prepare' || view === 'track' || view === 'open'))
+    || (section === 'discrepancies' && view === 'awaiting-response') ? view : undefined;
   return { section, destination };
 }
 
@@ -147,7 +150,6 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // 17 live tabs in this exact order with live labels. The
   // candidate had 9; 8 are added here. 'pricing' (tiered pricing)
   // is DELIBERATELY omitted per user decision Q12, so the
-  // candidate shows 16 supplier tabs, not 17.
   const menuItems = [
     { id: 'overview', label: 'نمای کلی', icon: LayoutDashboard },
     { id: 'analytics', label: 'تحلیل فروش', icon: BarChart3 },
@@ -165,11 +167,12 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'team', label: 'همکاران من', icon: Users },
     { id: 'profile', label: 'پروفایل', icon: User },
     { id: 'contract', label: 'قرارداد من', icon: FileText },
+    { id: 'support', label: 'پشتیبانی', icon: CircleHelp },
   ];
 
   const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
   const permissions = supplierSession?.permissions || [];
-  const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]) || (item.id === 'inbound' && permissions.includes('products.manage')));
+  const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]) || (item.id === 'inbound' && permissions.includes('products.manage')) || (item.id === 'support' && permissions.length > 0));
   const visibleTab = allowedTabs.some((item) => item.id === location.section) ? location.section : allowedTabs[0]?.id;
   const tabDestination = visibleTab === location.section ? location.destination : undefined;
   const canManageProducts = permissions.includes('supplier.manage') || permissions.includes('products.manage');
@@ -197,7 +200,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
 
   // Desktop sidebar grouping (layout only): the same permission-filtered
   // tabs as the mobile tab bar, partitioned into sidebar groups covering
-  // all 16 tab ids exactly once. A group with no permitted tab disappears
+  // all tab ids exactly once. A group with no permitted tab disappears
   // entirely, so gating is inherited unchanged.
   const menuGroups: { heading: string; ids: string[] }[] = [
     { heading: 'پیشخوان', ids: ['overview', 'analytics', 'demand-insight'] },
@@ -205,7 +208,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { heading: 'کالا و انبار', ids: ['inbound', 'products', 'inventory', 'my-warehouses', 'discrepancies'] },
     { heading: 'مالی', ids: ['settlement'] },
     { heading: 'بازاریابی', ids: ['ads'] },
-    { heading: 'حساب کاربری', ids: ['team', 'profile', 'contract'] },
+    { heading: 'حساب کاربری', ids: ['team', 'profile', 'contract', 'support'] },
   ];
   const sidebarGroups = menuGroups
     .map((group) => ({
@@ -358,20 +361,21 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
           <div className="min-w-0">
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
-            {visibleTab === 'orders' && <SupplierOrdersTab key={tabDestination ?? 'all'} initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
+            {visibleTab === 'orders' && <SupplierOrdersTab key={tabDestination ?? 'all'} initialFilter={tabDestination === 'ready' || tabDestination === 'overdue' ? tabDestination : 'all'} />}
             {visibleTab === 'products' && <SupplierProductsTab key={tabDestination ?? 'catalog'} openProposal={tabDestination === 'propose'} showProposals={tabDestination === 'proposals'} onPrepareShipment={canManageShipments ? (id) => { setWorkflowProductId(id); navigateTab('inbound', 'prepare'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab
               initialProductId={workflowProductId}
-              activeStage={shipmentStage}
+              activeStage={tabDestination === 'open' ? 'track' : shipmentStage}
+              openOnly={tabDestination === 'open'}
               onStageChange={handleShipmentStage}
               onProductConsumed={consumeWorkflowProduct}
               canManageProducts={canManageProducts}
               canManageShipments={canManageShipments}
             />}
-            {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
+            {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab key={tabDestination ?? 'all'} initialAwaitingOnly={tabDestination === 'awaiting-response'} />}
             {visibleTab === 'ads' && <SupplierAdsCampaignTab />}
-            {visibleTab === 'settlement' && <SupplierSettlementTab />}
+            {visibleTab === 'settlement' && <SupplierSettlementTab key={supplierSession?.supplierId} />}
             {visibleTab === 'team' && <SupplierTeamTab />}
             {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
             {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => navigateTab('products', 'propose')} />}
@@ -380,6 +384,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}
             {visibleTab === 'profile' && <SupplierProfileTab />}
             {visibleTab === 'contract' && <SupplierContractTab />}
+            {visibleTab === 'support' && <SellerSupportTab role="supplier" />}
           </div>
         </main>
       </div>

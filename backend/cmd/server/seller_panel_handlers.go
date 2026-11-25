@@ -73,6 +73,13 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 		return
 	}
 	switch action {
+	case "statement":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w)
+			return
+		}
+		handleGetStoreStatement(w, r, r.Context(), store.ID, fin)
+		return
 	case "services":
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w)
@@ -371,42 +378,5 @@ func handleSellerStore(w http.ResponseWriter, r *http.Request, repo *repository.
 }
 
 func handleSellerTickets(w http.ResponseWriter, r *http.Request, repo *repository.StoreRepository) {
-	w.Header().Set("Content-Type", "application/json")
-	claims := r.Context().Value(userClaimsKey).(*auth.UserClaims)
-	if r.Method == http.MethodPost {
-		var payload struct {
-			Subject string `json:"subject"`
-			Message string `json:"message"`
-		}
-		if decodeMoneyJSON(r.Body, &payload) != nil {
-			http.Error(w, `{"error":"Invalid ticket"}`, 400)
-			return
-		}
-		if err := repo.CreateSellerTicket(r.Context(), claims.UserID, payload.Subject, payload.Message); err != nil {
-			sellerError(w, err)
-			return
-		}
-	} else if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w)
-		return
-	}
-	opts, perr := parseListPage(r)
-	if perr != nil {
-		http.Error(w, `{"error":"Invalid limit"}`, http.StatusBadRequest)
-		return
-	}
-	page, err := repo.SellerTicketsPage(r.Context(), claims.UserID, opts)
-	if err != nil {
-		if isInvalidCursorError(err) {
-			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
-			return
-		}
-		sellerError(w, err)
-		return
-	}
-	items := page.Items
-	if items == nil {
-		items = []repository.SellerTicket{}
-	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"tickets": items, "nextCursor": page.NextCursor, "hasMore": page.HasMore, "limit": page.Limit})
+	handleAccountSupportTickets(w, r, repo, nil)
 }

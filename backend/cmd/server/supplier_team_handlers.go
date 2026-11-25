@@ -23,6 +23,8 @@ func supplierPermissionForPath(method, path string) string {
 		return "finance.manage"
 	case strings.Contains(path, "/campaigns"):
 		return "marketing.manage"
+	case strings.HasPrefix(path, "/api/v1/supplier/cartons/"):
+		return "inventory.manage"
 	case strings.Contains(path, "/orders"), strings.Contains(path, "/shipments"), strings.Contains(path, "/warehouse-orders"), strings.Contains(path, "/customer-returns"), strings.Contains(path, "/return-shipping-charges"), strings.Contains(path, "/shipping-methods"), strings.Contains(path, "/shipping-sla"), strings.HasSuffix(path, "/tapin/boxes"):
 		return "orders.manage"
 	case strings.Contains(path, "/inbounds"), strings.Contains(path, "/discrepancies"), strings.Contains(path, "/inventory"), strings.Contains(path, "/returns"), strings.Contains(path, "/warehouses"), strings.HasSuffix(path, "/stock-share"), strings.HasSuffix(path, "/stock"):
@@ -49,6 +51,9 @@ func supplierProductReadPermissions(method, path string) []string {
 	if path == products {
 		return []string{"inventory.manage", "marketing.manage"}
 	}
+	if path == products+"/variant-workspace" {
+		return []string{"inventory.manage"}
+	}
 	if sub, ok := strings.CutPrefix(path, products+"/"); ok {
 		productID, action, _ := strings.Cut(sub, "/")
 		if productID != "" && action == "variants" {
@@ -70,6 +75,10 @@ func RequireSupplierAccess(jwtService *auth.JWTService, repo *repository.Supplie
 			}
 			permission := supplierPermissionForPath(r.Method, r.URL.Path)
 			supplierID, ok := supplierAccess(r, repo, permission)
+			if !ok && r.URL.Path == "/api/v1/supplier/shipments" {
+				// The exact collection is the carton workflow opened from inventory.
+				supplierID, ok = supplierAccess(r, repo, "inventory.manage")
+			}
 			if !ok && permission == "products.manage" {
 				for _, readPermission := range supplierProductReadPermissions(r.Method, r.URL.Path) {
 					if supplierID, ok = supplierAccess(r, repo, readPermission); ok {

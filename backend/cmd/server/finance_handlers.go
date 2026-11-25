@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -105,7 +106,11 @@ func handleGetStoreStatement(w http.ResponseWriter, r *http.Request, ctx context
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, repository.ErrFinancePrincipalUnresolved) {
+			t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "بخشی از حساب نیازمند بررسی تیم مالی است."})
+			return
+		}
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(stmt)

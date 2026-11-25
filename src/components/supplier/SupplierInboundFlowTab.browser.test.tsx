@@ -4,7 +4,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 
-test('supplier can combine different products, resume the draft and reach dispatch after submitting', { timeout: 60000 }, async () => {
+test('supplier can resume a multi-product carton draft and print only that carton’s unit labels', { timeout: 120000 }, async () => {
   const bundle = await build({
     write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
@@ -25,6 +25,7 @@ test('supplier can combine different products, resume the draft and reach dispat
   });
   const shipment = { id: 'shipment', shipment_code: 'CARTON01', item_count: 2, status: 'draft' };
   let submitted: unknown;
+  const printAttempts: Record<string, unknown>[] = [];
   const server = createServer(async (request, response) => {
     const path = request.url?.replace('/api/v1/supplier', '');
     response.setHeader('Content-Type', 'application/json');
@@ -42,7 +43,25 @@ test('supplier can combine different products, resume the draft and reach dispat
       for await (const chunk of request) body += chunk;
       submitted = JSON.parse(body);
       response.end(JSON.stringify({ shipment }));
-    } else if (path === '/shipments') response.end(JSON.stringify(submitted ? [shipment] : []));
+    } else if (path === '/shipments') response.end(JSON.stringify(submitted ? [shipment, { ...shipment, id: 'unrelated', shipment_code: 'OTHER123' }] : []));
+    else if (path === '/cartons/shipment') response.end(JSON.stringify({ ...shipment, warehouse_name: 'Central', lines: [
+      { id: 'line-a', variant_id: 'sku', variant_name: 'Test model', product_title: 'Test product', spnc: 'SKU001', source_kind: 'transfer', expected_qty: 5, received_qty: 2, putaway_qty: 1, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: 1, qc_shortage: 3, units: [{ code: 'SKU001-X0001', print_count: 0 }] },
+      { id: 'line-b', variant_id: 'other-sku', variant_name: 'Other model', product_title: 'Other product', spnc: 'SKU002', source_kind: 'external_replenishment', expected_qty: 3, received_qty: 0, putaway_qty: 0, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: null, qc_shortage: null, units: [] },
+    ] }));
+    else if (path === '/cartons/shipment/print-units' && request.method === 'POST') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      printAttempts.push(JSON.parse(body));
+      if (printAttempts.length === 1) {
+        response.statusCode = 503;
+        response.end(JSON.stringify({ error: 'Print temporarily unavailable' }));
+      } else {
+        response.end(JSON.stringify({ units: [{ title: 'Test product', variant_name: 'Test model', spn: 'P', spnc: 'SKU001', code: 'SKU001-X0001', barcode_value: 'SKU001-X0001' }] }));
+      }
+    }
+    else if (path === '/cartons/unrelated') response.end(JSON.stringify({ ...shipment, id: 'unrelated', shipment_code: 'OTHER123', lines: [
+      { id: 'line-other', variant_id: 'sku', variant_name: 'Test model', product_title: 'Test product', spnc: 'SKU001', source_kind: 'transfer', expected_qty: 1, received_qty: 0, putaway_qty: 0, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: null, qc_shortage: null, units: [{ code: 'SKU001-X0009', print_count: 0 }] },
+    ] }));
     else if (request.url?.startsWith('/api/')) response.end('[]');
     else {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -53,9 +72,11 @@ test('supplier can combine different products, resume the draft and reach dispat
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   try {
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+    const browser = await puppeteer.launch({ headless: true, protocolTimeout: 25000, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
     try {
       const page = await browser.newPage();
+      page.setDefaultTimeout(20000);
+      await page.evaluateOnNewDocument(() => { window.print = () => {}; });
       await page.goto(`http://127.0.0.1:${address.port}/`);
       const click = async (label: string) => {
         const button = await page.waitForFunction(text => [...document.querySelectorAll('button')].find(item => item.offsetWidth && item.innerText.includes(text)), {}, label);
@@ -81,6 +102,23 @@ test('supplier can combine different products, resume the draft and reach dispat
       await click('ثبت محموله و گرفتن کد کارتن');
       await page.waitForFunction(() => document.body.innerText.includes('CARTON01') && document.body.innerText.includes('ثبت ارسال'));
       assert.deepEqual((submitted as { items: unknown }).items, [{ variant_id: 'other-sku', expected_qty: 3 }, { variant_id: 'sku', expected_qty: 5 }]);
+      await page.waitForFunction(() => document.body.innerText.includes('تعداد چیدمان‌شده') && document.body.innerText.includes('Other model') && document.body.innerText.includes('کسری ثبت‌شده'));
+      await click('دیدن برچسب‌های واحد Test model');
+      await page.waitForSelector('input[aria-label="انتخاب SKU001-X0001"]');
+      assert.equal(await page.$('input[aria-label="انتخاب SKU001-X0009"]'), null);
+      await page.click('input[aria-label="انتخاب SKU001-X0001"]');
+      await click('چاپ کدهای انتخاب‌شده');
+      await page.waitForFunction(() => document.body.innerText.includes('Print temporarily unavailable'));
+      await click('چاپ کدهای انتخاب‌شده');
+      await page.waitForSelector('.spncx-print-sheet .spncx-label');
+      assert.deepEqual(printAttempts[0], printAttempts[1]);
+      assert.deepEqual(printAttempts[1].unit_codes, ['SKU001-X0001']);
+      assert.equal(printAttempts[1].line_id, 'line-a');
+      assert.equal(printAttempts[1].reprint, false);
+      await click('محتویات و رسید');
+      await click('دیدن برچسب‌های واحد Test model');
+      await page.waitForSelector('input[aria-label="انتخاب SKU001-X0009"]');
+      assert.equal(await page.$('input[aria-label="انتخاب SKU001-X0001"]'), null);
     } finally { await browser.close(); }
   } finally {
     server.closeAllConnections();

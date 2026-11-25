@@ -658,6 +658,7 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		VariantID string `json:"variantId"`
 		NewStock  *int   `json:"new_stock"`
 		Reason    string `json:"reason"`
+		Expected  *int   `json:"expected_stock"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewStock == nil || *req.NewStock < 0 || int64(*req.NewStock) > 2147483647 || len(req.Reason) > 2000 {
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
@@ -669,7 +670,11 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, *req.NewStock, req.Reason, callerUserID(r))
+	var precondition []repository.StockWorkspacePrecondition
+	if req.Expected != nil {
+		precondition = append(precondition, repository.StockWorkspacePrecondition{Stock: *req.Expected, Key: r.Header.Get("Idempotency-Key")})
+	}
+	result, err := h.supplierRepo.AdjustProductStock(r.Context(), getSupplierIDFromContext(r, h.supplierRepo), productID, req.VariantID, *req.NewStock, req.Reason, callerUserID(r), precondition...)
 	if err != nil {
 		if writeSPNCXMintError(w, err) {
 			return
@@ -678,7 +683,7 @@ func (h *SupplierHandlers) HandleUpdateStock(w http.ResponseWriter, r *http.Requ
 		switch {
 		case errors.Is(err, repository.ErrStockAdjustmentInput), errors.Is(err, repository.ErrStockSKURequired):
 			status = http.StatusBadRequest
-		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrStockProjectionLimit), errors.Is(err, repository.ErrInsufficientInventory):
+		case errors.Is(err, repository.ErrStockBelowHeld), errors.Is(err, repository.ErrStockOriginRequired), errors.Is(err, repository.ErrStockProjectionLimit), errors.Is(err, repository.ErrInsufficientInventory), errors.Is(err, repository.ErrVariantWorkspaceConflict):
 			status = http.StatusConflict
 		case errors.Is(err, repository.ErrStockOwnership), errors.Is(err, sql.ErrNoRows):
 			status = http.StatusNotFound

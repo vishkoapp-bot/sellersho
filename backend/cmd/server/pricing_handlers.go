@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 )
@@ -380,6 +382,10 @@ func handleSellerVariantOverrides(w http.ResponseWriter, r *http.Request, pricin
 		}
 		writePricingJSON(w, map[string]interface{}{"overrides": overrides})
 	case http.MethodPut, http.MethodPost:
+		if r.URL.Query().Get("workspace") == "1" {
+			handleSellerWorkspaceMargin(w, r, pricingRepo, storeRepo, claims.UserID)
+			return
+		}
 		var req pricing.StoreVariantOverride
 		if err := decodeMoneyJSON(r.Body, &req); err != nil || req.StoreID == "" || req.ProductID == "" || req.VariantID == "" {
 			http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
@@ -410,4 +416,47 @@ func handleSellerVariantOverrides(w http.ResponseWriter, r *http.Request, pricin
 	default:
 		writeMethodNotAllowed(w)
 	}
+}
+
+func handleSellerWorkspaceMargin(w http.ResponseWriter, r *http.Request, pricingRepo *repository.PricingRepository, storeRepo *repository.StoreRepository, userID string) {
+	var req struct {
+		pricing.StoreVariantOverride
+		Margin   json.RawMessage                         `json:"margin"`
+		Expected *repository.VariantOverridePrecondition `json:"expected"`
+	}
+	if err := decodeMoneyJSON(http.MaxBytesReader(w, r.Body, 4096), &req); err != nil ||
+		req.StoreID == "" || req.ProductID == "" || req.VariantID == "" || req.Expected == nil || len(req.Margin) == 0 {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	var margin *float64
+	if err := json.Unmarshal(req.Margin, &margin); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+	stores, err := storeRepo.GetStoresByOwner(r.Context(), userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	var store *domain.Store
+	for i := range stores {
+		if stores[i].ID == req.StoreID && stores[i].Slug != "central" {
+			store = &stores[i]
+			break
+		}
+	}
+	if store == nil {
+		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if err = pricingRepo.SetWorkspaceVariantMargin(r.Context(), *store, req.StoreVariantOverride, margin, *req.Expected); err != nil {
+		if errors.Is(err, repository.ErrVariantWorkspaceConflict) {
+			http.Error(w, `{"error":"variant_workspace_conflict"}`, http.StatusConflict)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	writePricingJSON(w, map[string]any{"ok": true})
 }

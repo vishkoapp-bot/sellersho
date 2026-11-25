@@ -113,6 +113,8 @@ export interface SupplierOrderDto {
   shippedAt?: string;
   createdAt: string;
   itemCount: number;
+  dispatchDueAt?: string;
+  dispatchEstimate?: boolean;
 }
 
 export interface SupplierWarehouseOrderItemDto extends SupplierSKUIdentity {
@@ -469,10 +471,11 @@ export const supplierApi = {
   getCampaignStats: (id: string) => apiRequest<SupplierCampaignStatsDto>(`/supplier/campaigns/${encodeURIComponent(id)}/stats`, { method: 'GET', auth: true }),
   // PERF-02 Step 9: cursor pages (default 50, max 100). The handler
   // still returns `success: true`; orders live under `orders`.
-  getOrders: (params?: { limit?: number; cursor?: string }) => {
+  getOrders: (params?: { limit?: number; cursor?: string; work?: 'ready' | 'overdue' }) => {
     const query = new URLSearchParams();
     if (params?.limit) query.set('limit', String(params.limit));
     if (params?.cursor) query.set('cursor', params.cursor);
+    if (params?.work) query.set('work', params.work);
     const suffix = query.toString() ? `?${query}` : '';
     return apiRequest<{ success: boolean; orders: SupplierOrderDto[]; nextCursor: string; hasMore: boolean; limit: number }>(`/supplier/orders${suffix}`, { method: 'GET', auth: true });
   },

@@ -70,7 +70,7 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 		handleSellerStore(w, r, repo, fin, store.Slug, action, "")
 		return w
 	}
-	for _, action := range []string{"settings", "products", "report", "balance", "payouts", "services", "change-requests"} {
+	for _, action := range []string{"settings", "products", "report", "balance", "statement", "payouts", "services", "change-requests"} {
 		if w := request(stranger, action, http.MethodGet, ""); w.Code != 403 {
 			t.Fatalf("%s foreign store: %d %s", action, w.Code, w.Body.String())
 		}
@@ -93,6 +93,9 @@ func TestSellerPanelPersistenceOwnershipAndWallet(t *testing.T) {
 	}
 	if w := request(owner, "report", http.MethodGet, ""); w.Code != 200 {
 		t.Fatalf("report: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(owner, "statement", http.MethodGet, ""); w.Code != http.StatusOK {
+		t.Fatalf("statement: %d %s", w.Code, w.Body.String())
 	}
 	if err := repo.CreateSellerTicket(ctx, owner, "Panel issue", "Persistent message"); err != nil {
 		t.Fatal(err)

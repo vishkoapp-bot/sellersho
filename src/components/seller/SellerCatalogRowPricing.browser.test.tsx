@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { batch8Browser, clickText, fillInput, waitText } from '../../../scripts/fixtures/catalog/batch8-browser';
 
@@ -129,4 +130,23 @@ test('a variable product with all variants hidden never shows its parent margin 
     });
     assert.doesNotMatch(form.text ?? '', /۱۵٪/);
     assert.equal(form.numericInputs, 1);
+  }));
+
+test('seller variant workspace previews native Excel edits and updates the price on mobile', () =>
+  visit('/?panel=seller&tab=catalog&seller&drp33=workspace', 390, async page => {
+    await clickText(page, 'تنوع‌های فروشگاه نمونه');
+    await waitText(page, 'پنهان در فروشگاه');
+    await clickText(page, 'ورود از Excel یا CSV');
+    const workbook = await readFile(new URL('../../../scripts/fixtures/catalog/variant-bulk-upload.xlsx', import.meta.url));
+    await page.$eval('input[type="file"]', (input, bytes) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], 'changes.xlsx'));
+      (input as HTMLInputElement).files = data.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, Array.from(workbook));
+    await waitText(page, 'تنوع در این پنل پیدا نشد.');
+    await clickText(page, 'ثبت ۱ سطر');
+    await waitText(page, 'درصد سود ثبت شد.');
+    await waitText(page, '۱۱۵٬۰۰۰ تومان');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   }));

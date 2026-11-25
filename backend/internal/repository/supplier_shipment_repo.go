@@ -37,7 +37,7 @@ func (r *SupplierShipmentRepository) CreateShipment(ctx context.Context, shipmen
 	query := `
 		INSERT INTO supplier_shipments (
 			id, order_id, supplier_id, shipping_address, customer_phone, customer_name, status, shipped_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 IN ('shipped','in_transit','delivered') THEN NOW() ELSE NULL END, NOW(), NOW())
+		) VALUES ($1, $2, $3, $4, $5, $6, $7::varchar, CASE WHEN $7::varchar IN ('shipped','in_transit','delivered') THEN NOW() ELSE NULL END, NOW(), NOW())
 	`
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -87,7 +87,7 @@ func (r *SupplierShipmentRepository) GetPendingShipmentsPage(ctx context.Context
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
-			COALESCE(o.order_number, '')
+			COALESCE(o.order_number, ''), NULL::timestamptz, false
 		FROM supplier_shipments s
 		LEFT JOIN orders o ON s.order_id = o.id
 		WHERE ($1 = '' OR $1 = 'all' OR s.supplier_id = $1 OR s.supplier_id IN (SELECT id FROM suppliers WHERE owner_user_id::text = $1))
@@ -149,7 +149,7 @@ func (r *SupplierShipmentRepository) scanShipments(ctx context.Context, query st
 			&s.ID, &s.OrderID, &s.SupplierID, &addressJSON, &s.CustomerPhone, &s.CustomerName,
 			&s.Carrier, &s.TrackingNumber, &s.ShippedAt, &s.DeliveredAt, &s.Status, &s.SupplierNotes,
 			&s.CreatedAt, &s.UpdatedAt,
-			&s.OrderNumber,
+			&s.OrderNumber, &s.DispatchDueAt, &s.DispatchEstimate,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan supplier shipment: %w", err)
@@ -168,8 +168,27 @@ func (r *SupplierShipmentRepository) scanShipments(ctx context.Context, query st
 // and optional status, newest first, keyed on (created_at DESC, id DESC).
 // PERF-02 Step 5.
 func (r *SupplierShipmentRepository) GetShipmentsPage(ctx context.Context, supplierID, status string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+	return r.shipmentsPage(ctx, supplierID, status, "", opts)
+}
+
+func (r *SupplierShipmentRepository) GetSupplierOrderWorkPage(ctx context.Context, supplierID, work string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+	return r.shipmentsPage(ctx, supplierID, "", work, opts)
+}
+
+func (r *SupplierShipmentRepository) shipmentsPage(ctx context.Context, supplierID, status, work string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
 	limit := NormalizeListLimit(opts.Limit)
 	whereClauses, args := shipmentWhereClauses(supplierID, status)
+	deadline := "NULL::timestamptz, false"
+	if work != "" {
+		whereClauses, args = []string{"s.supplier_id = $1"}, []interface{}{supplierID}
+		deadline = supplierDispatchDeadlineSQL("s") + ", s.dispatch_due_at IS NULL"
+		if work == "ready" || work == "overdue" {
+			whereClauses = append(whereClauses, supplierOrderReadySQL)
+		}
+		if work == "overdue" {
+			whereClauses = append(whereClauses, supplierDispatchDeadlineSQL("s")+" < now()")
+		}
+	}
 	if opts.Cursor != "" {
 		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
 		if err != nil {
@@ -190,12 +209,12 @@ func (r *SupplierShipmentRepository) GetShipmentsPage(ctx context.Context, suppl
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
 			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
 			s.created_at, s.updated_at,
-			COALESCE(o.order_number, '')
+			COALESCE(o.order_number, ''), %s
 		FROM supplier_shipments s
 		LEFT JOIN orders o ON s.order_id = o.id
 		%s
 		ORDER BY s.created_at DESC, s.id DESC LIMIT $%d
-	`, whereSQL, len(args)+1)
+	`, deadline, whereSQL, len(args)+1)
 	args = append(args, limit+1)
 	shipments, err := r.scanShipments(ctx, query, args...)
 	if err != nil {

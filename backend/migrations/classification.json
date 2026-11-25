@@ -3,14 +3,14 @@
  "generated_by": "scripts/release/build_classification.py (MIG-02 step 1). Regenerate: python3 scripts/release/build_classification.py, then python3 scripts/release/generate_classification_md.py.",
  "repo_commit": "92f9cca",
  "counts": {
-  "EXPAND": 101,
+  "EXPAND": 103,
   "BACKFILL": 54,
   "CONTRACT": 62,
   "DESTRUCTIVE": 1,
-  "total": 218
+  "total": 220
  },
  "verdicts": {
-  "compatible": 196,
+  "compatible": 198,
   "tightening": 18,
   "breaking": 4
  },
@@ -6219,6 +6219,62 @@
    "verdict": "compatible",
    "old_binary_write": "The prior application can continue to create single-line shipments and process existing shipment lines.",
    "notes": "Replaces line-level document uniqueness with a database constraint that allows multiple lines only within one shipment.",
+   "moves_floor": false
+  },
+  {
+   "name": "202611250005_contextual_support.up.sql",
+   "class": "EXPAND",
+   "sha256": "77e5b2c88b431f9e8c49d91321c00e74cde7480f8ae6b220ec4d256524d6852c",
+   "has_down_sql": true,
+   "tables": [
+    "support_tickets"
+   ],
+   "operations": [
+    "ALTER TABLE: structured support context",
+    "CREATE INDEX: support_tickets_supplier_account_idx"
+   ],
+   "runtime_ms_disposable": null,
+   "chunked": false,
+   "timeout_lock_seconds": null,
+   "timeout_statement_seconds": null,
+   "post_conditions": [
+    {
+     "sql": "SELECT count(*) FROM pg_constraint WHERE conrelid='support_tickets'::regclass AND conname='support_tickets_context_check' AND convalidated",
+     "expected": 1
+    }
+   ],
+   "post_condition_status": "verified",
+   "verdict": "compatible",
+   "old_binary_write": "Existing tickets and legacy inserts use the general category and empty context defaults.",
+   "notes": "Adds account-scoped ticket references and a supplier ticket listing index.",
+   "moves_floor": false
+  },
+  {
+   "name": "202611250006_supplier_dispatch_commitment.up.sql",
+   "class": "EXPAND",
+   "sha256": "916962887d1680df92f38ecdc98bb3a0f3b08caa108f291d10f6d71747ec97cc",
+   "has_down_sql": true,
+   "tables": [
+    "supplier_shipments"
+   ],
+   "operations": [
+    "ADD COLUMN: supplier_shipments.dispatch_due_at",
+    "CREATE TRIGGER: supplier_dispatch_commitment_insert"
+   ],
+   "runtime_ms_disposable": null,
+   "chunked": false,
+   "timeout_lock_seconds": null,
+   "timeout_statement_seconds": null,
+   "post_conditions": [
+    {
+     "sql": "SELECT count(*) FROM pg_trigger WHERE tgrelid='supplier_shipments'::regclass AND tgname='supplier_dispatch_commitment_insert' AND NOT tgisinternal",
+     "expected": 1
+    }
+   ],
+   "post_condition_status": "verified",
+   "verdict": "compatible",
+   "old_binary_write": "The insert trigger captures the dispatch estimate for both previous and current application binaries. Earlier shipment rows stay readable.",
+   "notes": "Stores a dispatch commitment for new supplier fulfillment legs and preserves the previous calculation for legacy rows.",
    "moves_floor": false
   }
  ]

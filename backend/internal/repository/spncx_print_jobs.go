@@ -198,16 +198,17 @@ func (r *SupplierRepository) ListProductUnitLabels(ctx context.Context, supplier
 }
 
 type MarkUnitsPrintedRequest struct {
-	SupplierID     string
-	ProductID      string
-	ActorUserID    string
-	VariantID      string
-	Count          *int
-	UnitCodes      []string
-	ReceiptLineID  *string
-	UnprintedOnly  bool
-	Reprint        bool
-	IdempotencyKey string
+	SupplierID       string
+	ProductID        string
+	ActorUserID      string
+	VariantID        string
+	Count            *int
+	UnitCodes        []string
+	ReceiptLineID    *string
+	CartonShipmentID string
+	UnprintedOnly    bool
+	Reprint          bool
+	IdempotencyKey   string
 }
 
 type PrintLabelPayload struct {
@@ -227,7 +228,20 @@ func (req *MarkUnitsPrintedRequest) validate() error {
 	if len(req.IdempotencyKey) != 36 || uuid.Validate(req.IdempotencyKey) != nil {
 		return ErrPrintInvalidKey
 	}
-	if req.ReceiptLineID != nil && req.UnitCodes != nil {
+	if req.CartonShipmentID != "" {
+		if req.SupplierID == "" || req.ReceiptLineID == nil || *req.ReceiptLineID == "" {
+			return ErrPrintReceiptLineNotFound
+		}
+		if len(req.UnitCodes) == 0 {
+			return ErrPrintSelectionRequired
+		}
+		if len(req.UnitCodes) > 500 {
+			return ErrPrintInvalidCount
+		}
+		if req.Count != nil {
+			return ErrPrintConflictingSelection
+		}
+	} else if req.ReceiptLineID != nil && req.UnitCodes != nil {
 		return ErrPrintConflictingSelection
 	}
 	if req.Count != nil {
@@ -278,6 +292,11 @@ func MarkUnitsPrintedTx(ctx context.Context, db *sql.DB, req MarkUnitsPrintedReq
 	}
 	defer tx.Rollback()
 
+	if req.CartonShipmentID != "" {
+		if err := resolveSupplierCartonPrintLine(ctx, tx, &req); err != nil {
+			return nil, err
+		}
+	}
 	if req.SupplierID != "" {
 		err = tx.QueryRowContext(ctx, `SELECT id FROM products WHERE id=$1 AND supplier_id=$2 FOR SHARE`,
 			req.ProductID, req.SupplierID).Scan(&req.ProductID)
@@ -296,7 +315,7 @@ func MarkUnitsPrintedTx(ctx context.Context, db *sql.DB, req MarkUnitsPrintedReq
 		}
 	}
 
-	if req.ReceiptLineID != nil {
+	if req.ReceiptLineID != nil && req.CartonShipmentID == "" {
 		if err := resolvePrintReceiptLine(ctx, tx, &req); err != nil {
 			return nil, err
 		}
@@ -427,6 +446,14 @@ func replayPrintJob(ctx context.Context, tx *sql.Tx, req MarkUnitsPrintedRequest
 		if len(explicit) != len(req.UnitCodes) || !slices.Equal(sortedPrintCodes(codes), sortedPrintCodes(req.UnitCodes)) {
 			return nil, mismatch
 		}
+		if req.CartonShipmentID != "" {
+			if _, err := lockPrintUnits(ctx, tx, req, explicit); err != nil {
+				return nil, err
+			}
+			if err := validateSupplierCartonPrintUnits(ctx, tx, req); err != nil {
+				return nil, err
+			}
+		}
 		if req.SupplierID == "" {
 			hidden, err := hiddenWarehousePrintCodes(ctx, tx, req.UnitCodes)
 			if err != nil {
@@ -543,6 +570,11 @@ func markPrintJobUnits(ctx context.Context, tx *sql.Tx, req MarkUnitsPrintedRequ
 	units, err := lockPrintUnits(ctx, tx, req, explicit)
 	if err != nil {
 		return nil, err
+	}
+	if req.CartonShipmentID != "" {
+		if err := validateSupplierCartonPrintUnits(ctx, tx, req); err != nil {
+			return nil, err
+		}
 	}
 	var hidden map[string]bool
 	if req.SupplierID == "" {

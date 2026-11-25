@@ -2,11 +2,28 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+type StockWorkspacePrecondition struct {
+	Stock int
+	Key   string
+}
+
+type workspaceStockReceipt struct {
+	StockAdjustmentResult
+	Total        int    `json:"requested_stock"`
+	Expected     int    `json:"expected_stock"`
+	Reason       string `json:"reason"`
+	ProductStock int    `json:"product_stock"`
+}
 
 func (r *SupplierRepository) UpdateProductStockForVariant(ctx context.Context, supplierID, productID, variantID string, newStock int, reason, actor string) error {
 	_, err := r.AdjustProductStock(ctx, supplierID, productID, variantID, newStock, reason, actor)
@@ -25,7 +42,7 @@ type StockAdjustmentResult struct {
 	ProductStock        int              `json:"-"`
 }
 
-func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, product, variant string, total int, reason, actor string) (StockAdjustmentResult, error) {
+func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, product, variant string, total int, reason, actor string, precondition ...StockWorkspacePrecondition) (StockAdjustmentResult, error) {
 	result := StockAdjustmentResult{ProductID: product, RetiredCodes: []string{}, RetiredPrintedCodes: []string{}}
 	if total < 0 || int64(total) > 2147483647 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
 		return result, ErrStockAdjustmentInput
@@ -59,6 +76,35 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 	if !owned {
 		return result, ErrStockOwnership
 	}
+	var conditional *StockWorkspacePrecondition
+	var receiptID string
+	if len(precondition) > 0 {
+		conditional = &precondition[0]
+		if variant == "" || conditional.Stock < 0 || len(conditional.Key) < 8 || len(conditional.Key) > 100 {
+			return result, ErrStockAdjustmentInput
+		}
+		digest := sha256.Sum256([]byte(supplier + "\x00" + actor + "\x00" + conditional.Key))
+		receiptID = "WS-STOCK-" + hex.EncodeToString(digest[:20])
+		var raw string
+		err = tx.QueryRowContext(ctx, `SELECT details FROM audit_logs
+			WHERE id=$1 AND operator=$2 AND action='supplier_workspace_sku_stock'`,
+			receiptID, "supplier:"+supplier).Scan(&raw)
+		if err == nil {
+			var receipt workspaceStockReceipt
+			if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
+				return result, err
+			}
+			if receipt.ProductID != product || receipt.VariantID != variant || receipt.Total != total ||
+				receipt.Expected != conditional.Stock || receipt.Reason != reason {
+				return result, ErrVariantWorkspaceConflict
+			}
+			receipt.StockAdjustmentResult.ProductStock = receipt.ProductStock
+			return receipt.StockAdjustmentResult, nil
+		}
+		if err != sql.ErrNoRows {
+			return result, err
+		}
+	}
 	action := "supplier_stock_update"
 	mode := "legacy"
 	if variant == "" {
@@ -78,6 +124,9 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 		}
 	}
 	if mode != "tracked" {
+		if conditional != nil {
+			return result, ErrStockSKURequired
+		}
 		result.Stock, err = setSupplierSellableTotalTx(ctx, tx, product, supplier, total, reason, actor)
 		if err != nil {
 			return result, err
@@ -99,7 +148,7 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 			}
 		}
 	} else {
-		if err = setTrackedSKUStockTx(ctx, tx, product, supplier, variant, total, reason, actor, r.inventoryHolds, &result); err != nil {
+		if err = setTrackedSKUStockTx(ctx, tx, product, supplier, variant, total, reason, actor, r.inventoryHolds, &result, conditional); err != nil {
 			return result, err
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT pv.stock,p.stock FROM product_variants pv JOIN products p ON p.id=pv.product_id WHERE pv.id=$1 AND p.id=$2`, variant, product).Scan(&result.Stock, &result.ProductStock); err != nil {
@@ -109,6 +158,18 @@ func (r *SupplierRepository) AdjustProductStock(ctx context.Context, supplier, p
 	}
 	if err = insertSupplierAuditTx(ctx, tx, supplier, action, map[string]interface{}{"product_id": product, "variant_id": variant, "new_stock": result.Stock, "product_stock": result.ProductStock, "reason": strings.TrimSpace(reason), "actor_user_id": actor}); err != nil {
 		return result, err
+	}
+	if conditional != nil {
+		receipt := workspaceStockReceipt{StockAdjustmentResult: result, Total: total, Expected: conditional.Stock, Reason: reason, ProductStock: result.ProductStock}
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			return result, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_logs(id,operator,action,category,details)
+			VALUES($1,$2,'supplier_workspace_sku_stock','supplier',$3)`,
+			receiptID, "supplier:"+supplier, string(raw)); err != nil {
+			return result, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return StockAdjustmentResult{}, err

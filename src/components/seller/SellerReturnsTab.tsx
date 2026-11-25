@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
+import { ContextSupportButton } from '../support/ContextSupportButton';
 import { RotateCcw, Search, RefreshCw, AlertCircle, Info, Loader2, CheckCircle2, Clock, XCircle, Package } from 'lucide-react';
 
 // W5 (live parity): seller returns tab rebuilt to the live component
@@ -80,7 +81,7 @@ const bearerLine = (bearer: string | undefined): string | null => {
 // Accept the live snake_case record first, with camelCase fallbacks.
 const normalizeReturn = (raw: any): any => ({
   ...raw,
-  id: raw.id ?? raw.return_code ?? '',
+  id: raw.id ?? raw.returnId ?? raw.return_id ?? '',
   returnCode: raw.return_code ?? raw.returnCode ?? '',
   orderNumber: raw.order_number ?? raw.orderNumber ?? raw.orderId ?? raw.order_id ?? '',
   createdAt: raw.created_at ?? raw.createdAt ?? '',
@@ -201,6 +202,7 @@ export const SellerReturnsTab: React.FC = () => {
                   سفارش {r.orderNumber} · {formatReturnDate(r.createdAt)}
                 </p>
               </div>
+              <ContextSupportButton role="seller" kind="return" referenceId={r.id} storeId={currentStore.id} />
             </div>
 
             <div className="space-y-1">

@@ -256,10 +256,10 @@ func refreshSupplierSLACandidate(ctx context.Context, db *sql.DB, supplierID str
 	}
 	_, err = tx.ExecContext(ctx, `WITH samples AS (
  SELECT ss.supplier_id,COUNT(*)::int AS n,
- COUNT(*) FILTER(WHERE ss.shipped_at IS NOT NULL AND ss.shipped_at<=ss.created_at+make_interval(days=>GREATEST(1,LEAST(30,COALESCE((SELECT MAX(p.preparation_days) FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ss.order_id AND p.supplier_id=ss.supplier_id),1)))) AND ss.status<>'failed')::int AS good
+ COUNT(*) FILTER(WHERE ss.shipped_at IS NOT NULL AND ss.shipped_at<=`+supplierDispatchDeadlineSQL("ss")+` AND ss.status<>'failed')::int AS good
  FROM supplier_shipments ss JOIN orders o ON o.id=ss.order_id
  WHERE ss.supplier_id=$1 AND ss.created_at>=NOW()-INTERVAL '90 days' AND o.payment_status='paid' AND o.status<>'cancelled'
- AND (ss.shipped_at IS NOT NULL OR ss.status='failed' OR ss.created_at+make_interval(days=>GREATEST(1,LEAST(30,COALESCE((SELECT MAX(p.preparation_days) FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ss.order_id AND p.supplier_id=ss.supplier_id),1))))<=NOW()) GROUP BY ss.supplier_id)
+ AND (ss.shipped_at IS NOT NULL OR ss.status='failed' OR `+supplierDispatchDeadlineSQL("ss")+`<=NOW()) GROUP BY ss.supplier_id)
  INSERT INTO supplier_sla_metrics(supplier_id,samples,on_time,score,eligible)
  SELECT s.id,COALESCE(n,0),COALESCE(good,0),CASE WHEN n>0 THEN good*100.0/n ELSE 0 END,
  COALESCE(n>0 AND good*100.0/n>98 AND s.approval_status='approved' AND u.is_active,FALSE)

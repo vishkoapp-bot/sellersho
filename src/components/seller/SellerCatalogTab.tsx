@@ -4,6 +4,7 @@ import type { Product } from '../../types';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SellerProductPricingModal } from './SellerProductPricingModal';
+import { SellerVariantWorkspace } from './SellerVariantWorkspace';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { resolvePricing, resolvePlatformPct } from '../../utils/pricingEngine';
 import { storeApi, type SellerProductCandidate, type SellerVariantEffectiveMargin } from '../../services/storeApi';
@@ -105,7 +106,7 @@ export function staleAddedIds(addedIds: string[], eligibleIds: string[]): string
 }
 
 // Product changes stay in the draft until the seller confirms or cancels.
-export const SellerCatalogTab: React.FC = () => {
+export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = ({ initialWorkFilter }) => {
   const {
     products,
     currentStore,
@@ -122,6 +123,8 @@ export const SellerCatalogTab: React.FC = () => {
   const [extraSearch, setExtraSearch] = useState('');
   const [showExtraSection, setShowExtraSection] = useState(false);
   const [pricingProduct, setPricingProduct] = useState<Product | null>(null);
+  const [workFilter, setWorkFilter] = useState(initialWorkFilter);
+  useEffect(() => { setWorkFilter(initialWorkFilter); }, [initialWorkFilter]);
   const [showNicheHelp, setShowNicheHelp] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nicheSaving, setNicheSaving] = useState(false);
@@ -647,8 +650,16 @@ export const SellerCatalogTab: React.FC = () => {
     );
   };
 
+  const refreshVariantRows = () => setWalkRetry(value => value + 1);
+  const storeForWork = storeSlug ? { id: storeId, slug: storeSlug, name: currentStore.name } : undefined;
+  if (storeForWork && workFilter === 'attention') {
+    return <SellerVariantWorkspace key={storeId + '-attention'} store={storeForWork} attentionOnly
+      onBack={() => setWorkFilter(undefined)} onChanged={refreshVariantRows} />;
+  }
+
   return (
     <div className={`space-y-3.5 ${hasChanges ? 'pb-32' : 'pb-6'}`}>
+      {storeForWork && <SellerVariantWorkspace key={storeId} store={storeForWork} onChanged={refreshVariantRows} />}
       {/* Live intro + niche help. */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
         <p className="text-[11px] text-slate-600 leading-6">

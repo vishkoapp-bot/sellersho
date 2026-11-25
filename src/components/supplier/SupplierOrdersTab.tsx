@@ -1,7 +1,8 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
 import { SupplierDialog } from './SupplierDialog';
+import { ContextSupportButton } from '../support/ContextSupportButton';
 import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import {
@@ -40,6 +41,8 @@ interface SupplierOrder {
   trackingNumber?: string;
   shippedAt?: string;
   createdAt: string;
+  dispatchDueAt?: string;
+  dispatchEstimate?: boolean;
   itemCount: number;
 }
 
@@ -99,7 +102,7 @@ export function directOrderChip(status: string) {
 // approximations. Live's createdAt formatter (Ka) is not reimplemented:
 // the backend already returns a Persian-formatted date string, which the
 // browser observed as 2026/10/28 on staging.
-export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = ({ initialFilter = 'all' }) => {
+export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'overdue' }> = ({ initialFilter = 'all' }) => {
   const {
     toPersianDigits
   } = useStore();
@@ -111,6 +114,8 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>(initialFilter);
+  const orderRequest = useRef(0);
+  const workFilter = filterStatus === 'ready' || filterStatus === 'overdue' ? filterStatus : undefined;
 
   // Gap 14: view toggle — direct shipments to fulfil vs warehouse-routed
   // orders (read-only visibility), plus the accept-step in-flight marker.
@@ -182,23 +187,28 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
   // Fetch from backend API — PERF-02 Step 9: cursor pages (50 rows);
   // a cursor appends, a fresh load replaces.
   const fetchSupplierOrders = async (cursor?: string) => {
+    const request = ++orderRequest.current;
     setLoading(true);
     setLoadError('');
     try {
-      const res = await supplierApi.getOrders({ limit: 50, cursor });
+      const res = await supplierApi.getOrders({ limit: 50, cursor, work: workFilter });
+      if (request !== orderRequest.current) return;
       setBackendOrders((prev) => (cursor ? [...prev, ...(res.orders || [])] : (res.orders || [])));
       setOrdersNextCursor(res.nextCursor || '');
       setOrdersHasMore(!!res.hasMore);
     } catch (err: any) {
-      setLoadError(err?.message || 'دریافت سفارش‌ها انجام نشد.');
+      if (request === orderRequest.current) setLoadError(err?.message || 'دریافت سفارش‌ها انجام نشد.');
     } finally {
-      setLoading(false);
+      if (request === orderRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    setOrdersHasMore(false);
+    setBackendOrders([]);
     fetchSupplierOrders();
-  }, []);
+    return () => { orderRequest.current += 1; };
+  }, [workFilter]);
 
   const fetchWarehouseOrders = async () => {
     setWarehouseLoading(true);
@@ -245,7 +255,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
   const allOrders: SupplierOrder[] = backendOrders;
 
   const filteredOrders = allOrders.filter((ord) => {
-    if (filterStatus === 'ready') {
+    if (filterStatus === 'ready' || filterStatus === 'overdue') {
       if (!isReadyOrder(ord.status)) return false;
     } else if (filterStatus === 'shipped') {
       if (ord.status !== 'shipped' && ord.status !== 'in_transit') return false;
@@ -398,6 +408,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                       <MapPin className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.5} />
                       <span>مقصد: {ord.province}، {ord.city}</span>
                     </div>
+                    <ContextSupportButton role="supplier" kind="order" referenceId={ord.orderId} />
                   </div>
                 );
               })}
@@ -445,7 +456,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            همه ({toPersianDigits(allOrders.length)})
+            همه
           </button>
           <button
             type="button"
@@ -457,7 +468,10 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            منتظر ارسال ({toPersianDigits(allOrders.filter(o => isReadyOrder(o.status)).length)})
+            منتظر ارسال
+          </button>
+          <button type="button" aria-pressed={filterStatus === 'overdue'} onClick={() => setFilterStatus('overdue')} className={`min-h-11 rounded-xl px-3 focus-visible:ring-2 focus-visible:ring-brand ${filterStatus === 'overdue' ? 'bg-rose-700 text-white' : 'bg-rose-50 text-rose-800'}`}>
+            عبورکرده از موعد
           </button>
           <button
             type="button"
@@ -469,7 +483,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            ارسال شده ({toPersianDigits(allOrders.filter(o => o.status === 'shipped' || o.status === 'in_transit').length)})
+            ارسال شده
           </button>
           <button
             type="button"
@@ -481,12 +495,13 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            به دست مشتری رسیده ({toPersianDigits(allOrders.filter(o => o.status === 'delivered' || o.status === 'delivered_confirmed').length)})
+            به دست مشتری رسیده
           </button>
         </div>
       </div>
 
       {/* Orders List */}
+      {filterStatus === 'overdue' && <p className="text-xs leading-6 text-slate-600">موعد ارسال سفارش‌های قدیمی، بر اساس زمان آماده‌سازی کالا برآورد شده است.</p>}
       {loading && <div role="status" className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت سفارش‌ها…</div>}
       {loadError && (
         <div role="alert" className="space-y-2 rounded-2xl bg-rose-50 p-4 text-xs text-rose-800">
@@ -535,6 +550,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                   </span>
                 </div>
 
+                {isReadyOrder(ord.status) && ord.dispatchDueAt && <p className={`text-xs font-bold ${Date.parse(ord.dispatchDueAt) < Date.now() ? 'text-rose-800' : 'text-slate-700'}`}>{ord.dispatchEstimate ? 'موعد برآوردی ارسال' : 'مهلت ارسال'} · <time dateTime={ord.dispatchDueAt}>{new Date(ord.dispatchDueAt).toLocaleString('fa-IR', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Tehran' })}</time></p>}
                 <div className="grid gap-2 rounded-xl bg-[#f6f3fb] p-3 text-sm text-slate-700 sm:grid-cols-2">
                   <div className="flex items-center gap-1.5">
                     <User className="w-3.5 h-3.5 text-slate-400"  strokeWidth={1.5}/>
@@ -556,6 +572,11 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                     <span>کد رهگیری: <bdi dir="ltr" className="break-all font-bold">{ord.trackingNumber}</bdi></span>
                   </div>
                 )}
+
+                <div className="flex flex-wrap gap-2">
+                  <ContextSupportButton role="supplier" kind="order" referenceId={ord.orderId} />
+                  <ContextSupportButton role="supplier" kind="shipment" referenceType="direct_shipment" referenceId={ord.id} />
+                </div>
 
                 <div className="border-t border-slate-100 pt-2">
                   <button

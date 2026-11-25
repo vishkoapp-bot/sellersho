@@ -53,7 +53,7 @@ func TestSupplierTeamPermissions(t *testing.T) {
 				})(w, req)
 				return w.Code
 			}
-			for _, path := range []string{"/api/v1/supplier/products", "/api/v1/supplier/settlement/history", "/api/v1/supplier/team", "/api/v1/supplier/orders", "/api/v1/supplier/inbounds", "/api/v1/supplier/campaigns/create"} {
+			for _, path := range []string{"/api/v1/supplier/products", "/api/v1/supplier/settlement/history", "/api/v1/supplier/team", "/api/v1/supplier/orders", "/api/v1/supplier/inbounds", "/api/v1/supplier/campaigns/create", "/api/v1/supplier/shipments", "/api/v1/supplier/cartons/example", "/api/v1/supplier/inventory/storage-aging"} {
 				want := http.StatusForbidden
 				for _, permission := range member.Permissions {
 					if permission == "supplier.manage" || permission == supplierPermissionForPath(http.MethodGet, path) {

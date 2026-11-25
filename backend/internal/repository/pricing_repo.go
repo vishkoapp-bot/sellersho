@@ -1051,7 +1051,19 @@ func (r *PricingRepository) ApplyGovernedVariantClear(ctx context.Context, suppl
 	return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, 0, true, reason)
 }
 
-func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, supplierID, productID, variantID string, newCost int64, clearOnApprove bool, reason string) (*GovernedIncreaseResult, error) {
+type VariantCostPrecondition struct {
+	Cost        *int64 `json:"cost"`
+	ProductCost int64  `json:"productCost"`
+}
+
+func (r *PricingRepository) ApplyWorkspaceVariantCost(ctx context.Context, supplierID, productID, variantID string, cost *int64, reason string, expected VariantCostPrecondition) (*GovernedIncreaseResult, error) {
+	if cost == nil {
+		return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, 0, true, reason, expected)
+	}
+	return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, *cost, false, reason, expected)
+}
+
+func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, supplierID, productID, variantID string, newCost int64, clearOnApprove bool, reason string, precondition ...VariantCostPrecondition) (*GovernedIncreaseResult, error) {
 	settings, serr := r.GetPlatformPricingSettings(ctx)
 	if serr != nil || settings == nil {
 		settings = pricing.DefaultPlatformPricingSettings()
@@ -1089,6 +1101,17 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 	oldCost := productCost
 	if variantCost.Valid {
 		oldCost = variantCost.Int64
+	}
+	if len(precondition) > 0 {
+		expected := precondition[0]
+		alreadyApplied := (!variantCost.Valid && clearOnApprove) || (variantCost.Valid && !clearOnApprove && variantCost.Int64 == newCost)
+		if alreadyApplied {
+			return &GovernedIncreaseResult{Applied: true, OldReference: oldCost}, nil
+		}
+		matching := (!variantCost.Valid && expected.Cost == nil) || (variantCost.Valid && expected.Cost != nil && variantCost.Int64 == *expected.Cost)
+		if !matching || expected.ProductCost != productCost {
+			return nil, ErrVariantWorkspaceConflict
+		}
 	}
 	if clearOnApprove {
 		// The governed "increase" is the raise the clear itself would
@@ -1138,6 +1161,19 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 		return nil, err
 	}
 	if hasPending {
+		if len(precondition) > 0 {
+			var existing GovernedIncreaseResult
+			err := tx.QueryRowContext(ctx, `SELECT id,pct FROM supplier_price_increases
+				WHERE product_id=$1 AND variant_id=$2 AND status='pending' AND new_reference=$3 AND clear_on_approve=$4 LIMIT 1`,
+				productID, variantID, newCost, clearOnApprove).Scan(&existing.RequestID, &existing.Pct)
+			if err == nil {
+				existing.OldReference = oldCost
+				return &existing, nil
+			}
+			if err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
 		return nil, ErrPriceIncreaseDuplicatePending
 	}
 

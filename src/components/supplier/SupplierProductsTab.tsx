@@ -16,6 +16,7 @@ import { SupplierFeedbackModal } from './SupplierFeedbackModal';
 import { SupplierAddonsWidget } from './SupplierAddonsWidget';
 import { SupplierProposeForm } from './SupplierProposeForm';
 import { SupplierSKUSelect, useSupplierVariants } from './SupplierSKUSelect';
+import { SupplierVariantWorkspace } from './SupplierVariantWorkspace';
 
 // Reject-notification deep-link decision (DESIGN.md §4.3-4.4), extracted
 // as a pure function so the guard / consume-once semantics are
@@ -283,6 +284,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
       {subTab === 'active_products' && (
         <div className="space-y-2.5">
+          <SupplierVariantWorkspace onChanged={() => {
+            void productsResource.reload();
+            reloadPriceIncreases();
+          }} onRetired={codes => setRetiredPrintedCodes(previous => [...new Set([...previous, ...codes])])} />
           {supplierProducts.length > 0 && (
             <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4">
               <label className="block text-sm font-bold text-[#261b41]">جستجوی کالاها

@@ -7,6 +7,7 @@ import { tokenStore } from '../../services/apiClient';
 import { newUuid } from '../../services/uuid';
 import { ProvinceCityPicker } from '../ProvinceCityPicker';
 import { SupplierSLACard } from './SupplierSLACard';
+import { ContextSupportButton } from '../support/ContextSupportButton';
 
 import { useToast } from "../../context/ToastContext";import { authApi } from '../../services/authApi';
 import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Warehouse, Truck, User, Info, Plus, Pencil, CheckCircle2, Clock, XCircle, Send, FileText, Loader2 } from 'lucide-react';
@@ -363,6 +364,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">{RETURN_STATUS_LABELS[ret.status] || ret.status}</span>
             {ret.returnCode && (<span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] text-violet-700">کد مرجوعی: {toPersianDigits(ret.returnCode)}</span>)}
             <span className="text-[10px] text-slate-400">{formatFaDate(ret.createdAt)}</span>
+            <ContextSupportButton role="supplier" kind="return" referenceId={ret.returnId} className="ms-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand-border px-2.5 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand" />
           </div>
           {ret.reason && (<p className="text-slate-600">دلیل مرجوعی مشتری: {ret.reason}</p>)}
           {(ret.destinationName || ret.warehouseName) && (<p className="text-slate-600">انبار مقصد: <b>{ret.destinationName || ret.warehouseName}</b>{ret.destinationType === "supplier" ? " (انبار تأمین‌کننده)" : ret.destinationType === "central" ? " (انبار مرکزی)" : ""}{ret.warehouseCity ? ` — ${ret.warehouseCity}` : ""}</p>)}

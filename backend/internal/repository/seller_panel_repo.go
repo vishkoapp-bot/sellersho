@@ -517,6 +517,7 @@ func (r *StoreRepository) SellerReport(ctx context.Context, ownerID, slug, start
 }
 
 type SellerTicket struct {
+	SupportReference
 	ID        string    `json:"id"`
 	Subject   string    `json:"subject"`
 	Status    string    `json:"status"`
@@ -537,18 +538,26 @@ const MaxSellerTicketMessages = 50
 // at most MaxSellerTicketMessages messages (the latest, in chronological
 // order) plus the full MessageTotal. PERF-02 Step 6.
 func (r *StoreRepository) SellerTicketsPage(ctx context.Context, userID string, opts ListPageOptions) (ListPage[SellerTicket], error) {
+	return r.SupportTicketsPage(ctx, SupportActor{UserID: userID, Role: "seller"}, opts)
+}
+
+func (r *StoreRepository) SupportTicketsPage(ctx context.Context, actor SupportActor, opts ListPageOptions) (ListPage[SellerTicket], error) {
 	limit := NormalizeListLimit(opts.Limit)
-	query := `SELECT t.id,t.subject,t.status,t.created_at,
-		COALESCE((SELECT ARRAY_AGG(body ORDER BY created_at) FROM (SELECT body,created_at FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal ORDER BY created_at DESC LIMIT 50) m),'{}'),
+	query := `SELECT t.id,t.subject,t.status,t.created_at,t.category,t.reference_type,t.reference_id,t.reference_label,
+		COALESCE((SELECT ARRAY_AGG(body ORDER BY created_at,id) FROM (SELECT body,created_at,id FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal ORDER BY created_at DESC,id DESC LIMIT 50) m),'{}'),
 		(SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id=t.id AND NOT is_internal)
-		FROM support_tickets t WHERE requester_user_id=$1`
-	args := []interface{}{userID}
+		FROM support_tickets t WHERE requester_user_id=$1 AND requester_role=$2`
+	args := []interface{}{actor.UserID, actor.Role}
+	if actor.Role == "supplier" {
+		query += " AND requester_account_id=$3"
+		args = append(args, actor.AccountID)
+	}
 	if opts.Cursor != "" {
 		cursorAt, cursorID, err := DecodeCreatedAtCursor(opts.Cursor)
 		if err != nil {
 			return ListPage[SellerTicket]{}, err
 		}
-		query += " AND (t.created_at, t.id) < ($2::timestamptz, $3::text)"
+		query += fmt.Sprintf(" AND (t.created_at, t.id) < ($%d::timestamptz, $%d::text)", len(args)+1, len(args)+2)
 		args = append(args, cursorAt, cursorID)
 	}
 	query += fmt.Sprintf(" ORDER BY t.created_at DESC, t.id DESC LIMIT $%d", len(args)+1)
@@ -562,7 +571,8 @@ func (r *StoreRepository) SellerTicketsPage(ctx context.Context, userID string, 
 	for rows.Next() {
 		var item SellerTicket
 		var msgs pq.StringArray
-		if err := rows.Scan(&item.ID, &item.Subject, &item.Status, &item.CreatedAt, &msgs, &item.MessageTotal); err != nil {
+		if err := rows.Scan(&item.ID, &item.Subject, &item.Status, &item.CreatedAt, &item.Category, &item.ReferenceType,
+			&item.ReferenceID, &item.Label, &msgs, &item.MessageTotal); err != nil {
 			return ListPage[SellerTicket]{}, err
 		}
 		item.Messages = []string(msgs)
@@ -594,22 +604,8 @@ func (r *StoreRepository) SellerTickets(ctx context.Context, userID string) ([]S
 	return page.Items, nil
 }
 func (r *StoreRepository) CreateSellerTicket(ctx context.Context, userID, subject, message string) error {
-	if strings.TrimSpace(subject) == "" || len(subject) > 200 || strings.TrimSpace(message) == "" || len(message) > 10000 {
-		return ErrStoreInput
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	id := "ticket-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO support_tickets(id,requester_user_id,requester_role,subject) VALUES($1,$2,'seller',$3)`, id, userID, subject); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO support_ticket_messages(ticket_id,author_user_id,body) VALUES($1,$2,$3)`, id, userID, message); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := r.CreateSupportTicket(ctx, SupportActor{UserID: userID, Role: "seller"}, SupportReferenceInput{}, subject, message)
+	return err
 }
 
 func (r *StoreRepository) RequestStoreChange(ctx context.Context, userID, slug, kind, value string) error {

@@ -296,7 +296,7 @@ func (r *SupplierRepository) decodeStoredTapinToken(stored string) (string, erro
 func (r *SupplierRepository) OwnsSupplierResource(ctx context.Context, supplierID, path string) bool {
 	// This exact collection route has no product identifier. Its handler
 	// reads only the supplier scope already established by the middleware.
-	if path == "/api/v1/supplier/products/implicit-agreements" {
+	if path == "/api/v1/supplier/products/implicit-agreements" || path == "/api/v1/supplier/products/variant-workspace" {
 		return true
 	}
 	if strings.HasPrefix(path, "/api/v1/supplier/orders/") {

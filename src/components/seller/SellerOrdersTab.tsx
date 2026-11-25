@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { storeApi } from '../../services/storeApi';
+import { getSellerOrderPage } from '../../services/panelWorkApi';
 import { isMockMode } from '../../services/apiClient';
 import { OrderDetailModal } from '../common/OrderDetailModal';
+import { ContextSupportButton } from '../support/ContextSupportButton';
 import { Package, Truck, CheckCircle2, Clock, Search, Eye, AlertCircle, Info, RefreshCw, XCircle, Loader2 } from 'lucide-react';
 
 // W5 (live parity): seller orders tab rebuilt to the live component
@@ -96,17 +97,22 @@ const PaymentStatusBadge: React.FC<{ status: string | null | undefined }> = ({ s
 interface SellerOrdersTabProps {
   onNavigateTab?: (tab: string) => void;
   onOpenStorefront?: () => void;
+  initialWorkFilter?: 'follow-up';
 }
 
-export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab, onOpenStorefront }) => {
+export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab, onOpenStorefront, initialWorkFilter }) => {
   const { orders, currentStore, formatPrice, toPersianDigits } = useStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [list, setList] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState('');
+  const [followUpOnly, setFollowUpOnly] = useState(initialWorkFilter === 'follow-up');
+  const request = useRef(0);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (cursor?: string) => {
+    const generation = ++request.current;
     // Mock mode has no backend: keep the previous context-orders source.
     if (isMockMode()) {
       setList(
@@ -124,24 +130,30 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await storeApi.getStoreOrders(slug);
-      setList((Array.isArray(data) ? data : []).map((o: any) => normalizeOrder(o)));
+      const page = await getSellerOrderPage(slug, followUpOnly ? 'follow-up' : undefined, cursor);
+      if (request.current !== generation) return;
+      const received = (page.orders ?? []).map(normalizeOrder);
+      setList(previous => cursor ? [...previous, ...received] : received);
+      setNextCursor(page.hasMore ? page.nextCursor ?? '' : '');
     } catch (err: any) {
-      setLoadError(err?.message || 'دریافت سفارش‌های فروشگاه انجام نشد.');
+      if (request.current === generation) setLoadError(err?.message || 'دریافت سفارش‌های فروشگاه انجام نشد.');
     } finally {
-      setLoading(false);
+      if (request.current === generation) setLoading(false);
     }
-  }, [currentStore?.slug, currentStore?.id, currentStore?.ownerType, orders]);
+  }, [currentStore?.slug, currentStore?.id, currentStore?.ownerType, orders, followUpOnly]);
 
   useEffect(() => {
+    setNextCursor('');
     reload();
+    return () => { request.current += 1; };
   }, [reload]);
 
   const filteredOrders = list.filter(
     (o) =>
+      (!isMockMode() || !followUpOnly || ['delivery_disputed', 'delivered_unconfirmed'].includes(o.status)) && (
       (o.orderNumber || '').includes(searchTerm) ||
       (o.trackingCode || '').includes(searchTerm) ||
-      (o.customerInfo?.city || '').includes(searchTerm)
+      (o.customerInfo?.city || '').includes(searchTerm))
   );
 
   // Live order status badges, verbatim (text-[10px], informal copy).
@@ -214,6 +226,7 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
         />
       </div>
 
+      <label className="inline-flex min-h-11 items-center gap-2 text-sm font-bold"><input type="checkbox" checked={followUpOnly} onChange={event => setFollowUpOnly(event.target.checked)} className="size-4 accent-brand-deep" /> فقط نیازمند پیگیری</label>
       {loading ? (
         <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 flex flex-col items-center gap-2">
           <Loader2 className="w-6 h-6 text-brand-deep animate-spin" />
@@ -235,7 +248,7 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
       ) : filteredOrders.length === 0 ? (
         <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 space-y-2.5">
           <Package className="w-8 h-8 text-slate-300 mx-auto" strokeWidth={1.5} />
-          {searchTerm ? (
+          {followUpOnly && !searchTerm ? <p className="text-xs font-bold text-slate-700">سفارشی در صف پیگیری نیست.</p> : searchTerm ? (
             <>
               <p className="text-xs font-bold text-slate-600">با این جستجو سفارشی پیدا نشد.</p>
               <p className="text-[11px] text-slate-400 leading-6">کلمه دیگری امتحان کن یا جستجو را پاک کن تا همه سفارش‌ها را ببینی.</p>
@@ -362,10 +375,18 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
                   <span>چاپ فاکتور</span>
                 </button>
               </div>
+              {!isMockMode() && (
+                <div className="flex flex-wrap gap-2">
+                  <ContextSupportButton role="seller" kind="order" referenceId={order.id} storeId={currentStore.id} />
+                  {order.trackingCode && <ContextSupportButton role="seller" kind="shipment" referenceType="order_fulfillment" referenceId={order.id} storeId={currentStore.id} />}
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
+
+      {!loading && nextCursor && <button type="button" onClick={() => void reload(nextCursor)} className="min-h-11 rounded-xl border border-brand-border bg-brand-soft px-4 text-sm font-bold text-brand-deep">بارگذاری سفارش‌های قدیمی‌تر</button>}
 
       <OrderDetailModal
         isOpen={!!selectedOrder}

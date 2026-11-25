@@ -7,6 +7,7 @@ import { useStore } from '../../context/StoreContext';
 import { isValidIranianSheba } from '../../utils/validators';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
+import { AccountStatement } from '../common/AccountStatement';
 
 // Live settlement tab (on): supplier balance, manual bank-transfer
 // withdrawal requests, storage-fee charges (separate endpoint), payout
@@ -46,6 +47,7 @@ export const SupplierSettlementTab: React.FC = () => {
   const [holder, setHolder] = useState('');
   const [amount, setAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const [statementRefresh, setStatementRefresh] = useState(0);
   const [fieldError, setFieldError] = useState<{ name: 'holder' | 'shaba' | 'amount'; message: string } | null>(null);
 
   const editField = (name: 'holder' | 'shaba' | 'amount', value: string) => {
@@ -78,6 +80,7 @@ export const SupplierSettlementTab: React.FC = () => {
       await supplierApi.requestSettlement(value, iban, '', holder.trim());
       success('درخواست برداشتت ثبت شد؛ تیم مالی بررسی می‌کند.');
       setAmount('');
+      setStatementRefresh(value => value + 1);
       await Promise.all([balance.reload(), history.reload()]);
     } catch (cause: unknown) {
       error(cause instanceof Error ? cause.message : 'ثبت تسویه انجام نشد.');
@@ -190,6 +193,7 @@ export const SupplierSettlementTab: React.FC = () => {
           )}
         </div>
       )}
+      <AccountStatement role="supplier" refresh={statementRefresh} />
       {!fees.error && charges.length > 0 && (
         <>
           <h3 className="text-base font-extrabold text-[#261b41]">هزینه انبارداری</h3>

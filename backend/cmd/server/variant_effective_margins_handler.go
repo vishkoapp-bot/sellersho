@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/domain"
@@ -43,6 +44,7 @@ func handleSellerVariantEffectiveMargins(w http.ResponseWriter, r *http.Request,
 
 	query := r.URL.Query()
 	storeID := query.Get("storeId")
+	workspace := query.Get("workspace")
 	stores, err := storeRepo.GetStoresByOwner(ctx, claims.UserID)
 	if err != nil {
 		unavailable()
@@ -72,12 +74,26 @@ func handleSellerVariantEffectiveMargins(w http.ResponseWriter, r *http.Request,
 		Items      []sellerVariantEffectiveMargin `json:"items"`
 		NextCursor string                         `json:"nextCursor,omitempty"`
 	}{Items: []sellerVariantEffectiveMargin{}}
+	workPage := struct {
+		WorkItems      []sellerVariantWorkProduct `json:"workItems,omitempty"`
+		NextCursor     string                     `json:"nextCursor,omitempty"`
+		AttentionCount *int                       `json:"attentionCount,omitempty"`
+	}{}
+	attentionCount := 0
+	if workspace == "count" {
+		workPage.AttentionCount = &attentionCount
+	}
 	if len(ids) > pageSize {
 		ids = ids[:pageSize]
 		page.NextCursor = ids[pageSize-1]
+		workPage.NextCursor = page.NextCursor
 	}
 	if len(ids) == 0 {
-		writePricingJSON(w, page)
+		if workspace == "1" || workspace == "count" {
+			writePricingJSON(w, workPage)
+		} else {
+			writePricingJSON(w, page)
+		}
 		return
 	}
 
@@ -111,6 +127,38 @@ func handleSellerVariantEffectiveMargins(w http.ResponseWriter, r *http.Request,
 	for i := range overrides {
 		o := &overrides[i]
 		byVariant[variantKey{o.ProductID, o.VariantID}] = o
+	}
+
+	if workspace == "1" || workspace == "count" {
+		hidden, err := storeRepo.HiddenWorkspaceVariants(ctx, store.ID, ids)
+		if err != nil {
+			unavailable()
+			return
+		}
+		campaigns, err := storeRepo.ListActiveDiscountCampaignsForStore(ctx, store.ID)
+		if err != nil {
+			unavailable()
+			return
+		}
+		workspaceOverrides := make(map[string]pricing.StoreVariantOverride, len(overrides))
+		for _, override := range overrides {
+			workspaceOverrides[override.ProductID+"/"+override.VariantID] = override
+		}
+		asOf := time.Now()
+		for _, product := range products {
+			row, err := buildSellerWorkspaceProduct(product, variants[product.ID], *store, settings, locks, workspaceOverrides, hidden, campaigns, asOf)
+			if err != nil {
+				unavailable()
+				return
+			}
+			if workspace == "1" {
+				workPage.WorkItems = append(workPage.WorkItems, row)
+			} else if row.NeedsAttention {
+				attentionCount++
+			}
+		}
+		writePricingJSON(w, workPage)
+		return
 	}
 
 	for _, product := range products {

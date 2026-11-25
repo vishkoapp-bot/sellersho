@@ -661,8 +661,9 @@ func handleT01AdminSupportTickets(w http.ResponseWriter, r *http.Request, db *sq
 	}
 	rows, err := db.QueryContext(r.Context(),
 		`SELECT id, requester_user_id, requester_role, subject, status, priority,
-			related_order_number, created_at, updated_at
-		FROM support_tickets ORDER BY created_at DESC LIMIT $1`, t01Limit(r))
+			related_order_number, created_at, updated_at, requester_account_id, category,
+			reference_type, reference_id, reference_label
+		FROM support_tickets WHERE NOT $2 OR section='finance' ORDER BY created_at DESC,id DESC LIMIT $1`, t01Limit(r), supportStaffFinanceOnly(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -671,15 +672,19 @@ func handleT01AdminSupportTickets(w http.ResponseWriter, r *http.Request, db *sq
 	out := []map[string]interface{}{}
 	for rows.Next() {
 		var id, role, subject, status, priority string
+		var account, category, referenceType, referenceID, referenceLabel string
 		var requester sql.NullString
 		var orderNo sql.NullString
 		var created, updated time.Time
-		if err := rows.Scan(&id, &requester, &role, &subject, &status, &priority, &orderNo, &created, &updated); err != nil {
+		if err := rows.Scan(&id, &requester, &role, &subject, &status, &priority, &orderNo, &created, &updated,
+			&account, &category, &referenceType, &referenceID, &referenceLabel); err != nil {
 			writeInternalError(w, err)
 			return
 		}
 		out = append(out, map[string]interface{}{
 			"id": id, "requesterUserId": requester.String, "requesterRole": role,
+			"requesterAccountId": account, "category": category, "referenceType": referenceType,
+			"referenceId": referenceID, "referenceLabel": referenceLabel,
 			"subject": subject, "status": status, "priority": priority,
 			"relatedOrderNumber": orderNo.String,
 			"createdAt":          created.Format(time.RFC3339), "updatedAt": updated.Format(time.RFC3339),

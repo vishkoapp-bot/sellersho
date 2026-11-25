@@ -7,7 +7,7 @@
 > this file. `validate_release.py` fails a release when any `*.up.sql`
 > file is missing from the classification.
 
-Repo commit classified: `92f9cca`. Counts: EXPAND 100 / BACKFILL 54 / CONTRACT 62 / DESTRUCTIVE 1 (total 217). Verdicts: compatible 195 / tightening 18 / breaking 4.
+Repo commit classified: `92f9cca`. Counts: EXPAND 103 / BACKFILL 54 / CONTRACT 62 / DESTRUCTIVE 1 (total 220). Verdicts: compatible 198 / tightening 18 / breaking 4.
 
 ## Verdict vocabulary
 
@@ -1013,3 +1013,6 @@ JSON for tables, operations and runtimes.
 - `202611230002_spncx_product_units.up.sql`
 - `202611230004_spncx_inbound_storage_receipt.up.sql`
 - `202611240001_seller_early_withdrawal_minimum.up.sql`
+- `202611250001_inbound_document_per_shipment.up.sql`
+- `202611250005_contextual_support.up.sql`
+- `202611250006_supplier_dispatch_commitment.up.sql`

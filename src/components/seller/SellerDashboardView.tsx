@@ -92,12 +92,21 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
   // Team 08 (D47): tab state lives in the router context so tab URLs
   // (?panel=seller&tab=<tab>) survive back/forward and deep links.
   const activeTab = sellerDashboardTab;
+  const [workFilter, setWorkFilter] = useState(() => typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('work'));
+  useEffect(() => {
+    const readWork = () => setWorkFilter(new URLSearchParams(window.location.search).get('work'));
+    window.addEventListener('popstate', readWork);
+    return () => window.removeEventListener('popstate', readWork);
+  }, []);
   const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  const setActiveTab = (tab: string) => {
+  const setActiveTab = (tab: string, work?: 'attention' | 'follow-up') => {
     if (!isSellerDashboardTab(tab)) return;
     setSellerDashboardTab(tab);
+    setWorkFilter(work ?? null);
     if (typeof window !== 'undefined') {
-      window.history.replaceState(null, '', `/?panel=seller&tab=${tab}`);
+      const href = `/?panel=seller&tab=${tab}${work ? `&work=${work}` : ''}`;
+      if (work) window.history.pushState(window.history.state, '', href);
+      else window.history.replaceState(window.history.state, '', href);
     }
   };
   useEffect(() => {
@@ -571,17 +580,17 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({
           />
         )}
         {activeTab === 'store-setup' && currentStore && <SellerStoreSetupTab key={currentStore.id} />}
-        {activeTab === 'catalog' && <SellerCatalogTab />}
+        {activeTab === 'catalog' && <SellerCatalogTab key={`${currentStore.id}:${workFilter ?? ''}`} initialWorkFilter={workFilter === 'attention' ? 'attention' : undefined} />}
         {activeTab === 'pricing' && <SellerPricingTab />}
         {activeTab === 'builder' && <SellerBuilderTab onOpenStorefront={onOpenStorefront} onNavigateTab={setActiveTab} />}
-        {activeTab === 'orders' && <SellerOrdersTab onNavigateTab={setActiveTab} onOpenStorefront={onOpenStorefront} />}
+        {activeTab === 'orders' && <SellerOrdersTab key={`${currentStore.id}:${workFilter ?? ''}`} initialWorkFilter={workFilter === 'follow-up' ? 'follow-up' : undefined} onNavigateTab={setActiveTab} onOpenStorefront={onOpenStorefront} />}
         {activeTab === 'returns' && <SellerReturnsTab />}
         {activeTab === 'links' && <SellerLinksTab />}
         {activeTab === 'wallet' && <SellerWalletTab />}
         {activeTab === 'referral' && <SellerReferralTab />}
         {activeTab === 'subscription' && <SellerSubscriptionTab onManageStores={() => { setActiveTab('overview'); if (canCreateStore) setShowStoreForm(true); }} />}
         {activeTab === 'ads' && currentStore && <SellerAdsWidgetTab key={currentStore.id} />}
-        {activeTab === 'support' && <SellerSupportTab />}
+        {activeTab === 'support' && <SellerSupportTab key={currentStore.id} storeId={currentStore.id} />}
         {activeTab === 'template' && <SellerTemplateTab />}
         {activeTab === 'analytics' && <SellerAnalyticsTab />}
         {activeTab === 'search-insight' && <SellerSearchInsightTab />}

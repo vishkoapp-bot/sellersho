@@ -522,6 +522,9 @@ func run(signalCtx context.Context) (result error) {
 
 	// 5. Stores Listing & Registration
 	mux.HandleFunc("/api/v1/seller/tickets", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerTickets(w, r, storeRepo) }))
+	mux.HandleFunc("/api/v1/seller/tickets/context", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerTicketContext(w, r, storeRepo) }))
+	mux.HandleFunc("/api/v1/supplier/tickets", RequireRoles(jwtService, "supplier")(func(w http.ResponseWriter, r *http.Request) { handleSupplierTickets(w, r, storeRepo, supplierRepo) }))
+	mux.HandleFunc("/api/v1/supplier/tickets/context", RequireRoles(jwtService, "supplier")(func(w http.ResponseWriter, r *http.Request) { handleSupplierTicketContext(w, r, storeRepo, supplierRepo) }))
 	// Existing identities may inspect their own stores while completing seller
 	// onboarding; seller capability is granted only after store creation.
 	mux.HandleFunc("/api/v1/stores/mine", RequireRoles(jwtService, "customer", "seller", "supplier", "admin")(func(w http.ResponseWriter, r *http.Request) {
@@ -1466,6 +1469,9 @@ func run(signalCtx context.Context) (result error) {
 		}
 		http.NotFound(w, r)
 	}))
+	mux.HandleFunc("/api/v1/supplier/cartons/", RequireSupplierAccess(jwtService, supplierRepo)(supplierHandlers.HandleSupplierCartonDetails))
+	mux.HandleFunc("/api/v1/supplier/products/variant-workspace", RequireSupplierAccess(jwtService, supplierRepo)(supplierHandlers.HandleVariantWorkspace))
+	mux.HandleFunc("/api/v1/supplier/inventory/storage-aging", RequireSupplierAccess(jwtService, supplierRepo)(supplierHandlers.HandleSupplierStorageAging))
 	mux.HandleFunc("/api/v1/supplier/inventory", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			handleGetSupplierInventory(w, r, r.Context(), supplierRepo)
@@ -1702,6 +1708,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		supplierHandlers.HandleGetCampaigns(w, r)
 	}))
+	mux.HandleFunc("/api/v1/supplier/settlement/statement", RequireSupplierAccess(jwtService, supplierRepo)(supplierHandlers.HandleSupplierStatement))
 	mux.HandleFunc("/api/v1/supplier/settlement/balance", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w)
@@ -1905,6 +1912,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		supplierHandlers.HandleGetSupplierStorageFees(w, r)
 	}))
+	mux.HandleFunc("/api/v1/supplier/work-queue", RequireSupplierAccess(jwtService, supplierRepo)(supplierHandlers.HandleSupplierWorkCounts))
 	mux.HandleFunc("/api/v1/supplier/analytics", RequireSupplierAccess(jwtService, supplierRepo)(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w)
@@ -2134,7 +2142,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		handleT01AdminGrowth(w, r, db.DB, sub)
 	}))
-	mux.HandleFunc("/api/v1/admin/support/tickets", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSupportTickets(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/support/tickets", RequireRoles(jwtService, "admin", "support_specialist", "finance")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSupportTickets(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/admin/support/metrics/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/support/metrics/")
 		if sub == "" || strings.Contains(sub, "/") {
@@ -2211,14 +2219,14 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/admin/warranties", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT01AdminGenericList(w, r, db.DB, "warranty_property_requests", "warranties", "")
 	}))
-	mux.HandleFunc("/api/v1/admin/tickets", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSupportTickets(w, r, db.DB) }))
-	mux.HandleFunc("/api/v1/admin/tickets/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/tickets", RequireRoles(jwtService, "admin", "support_specialist", "finance")(func(w http.ResponseWriter, r *http.Request) { handleT01AdminSupportTickets(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/admin/tickets/", RequireRoles(jwtService, "admin", "support_specialist", "finance")(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/tickets/")
 		if strings.HasSuffix(sub, "/reply") {
 			handleT01AdminTicketReply(w, r, db.DB, strings.TrimSuffix(sub, "/reply"))
 			return
 		}
-		http.NotFound(w, r)
+		handleAdminSupportTicket(w, r, db.DB, strings.Trim(sub, "/"))
 	}))
 	mux.HandleFunc("/api/v1/admin/disputes", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
 		handleT01AdminGenericList(w, r, db.DB, "disputes", "disputes", "")

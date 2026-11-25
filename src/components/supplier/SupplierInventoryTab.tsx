@@ -1,5 +1,6 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
 import { SupplierDialog } from './SupplierDialog';
+import { ContextSupportButton } from '../support/ContextSupportButton';
 import { Boxes, Search } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
@@ -13,6 +14,8 @@ import { ApiError } from '../../services/apiClient';
 import { extractSpncxErrorCode } from '../../services/spncxAdminApi';
 import { unitsApi, type ListUnitsParams, type ListUnitsResponse } from '../../services/unitsApi';
 import { UNIT_STATUS_LABELS } from '../../utils/unitStatus';
+import { SupplierVariantWorkspace } from './SupplierVariantWorkspace';
+import { SupplierStorageAging } from './SupplierStorageAging';
 
 // FIX 42: rebuilt to the live bundle SupplierDashboardView-MERGED.js (Zl component).
 // Divergences fixed vs the previous candidate tab: wrong h2 (it even said
@@ -521,9 +524,10 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                     {formatReturnDate(item.createdAt) && <span> · {formatReturnDate(item.createdAt)}</span>}
                   </p>
                 </div>
-                {product && (
-                  <a href={`#inventory-${item.productId}`} className="shrink-0 rounded-lg bg-brand-soft px-2.5 py-1.5 text-[11px] font-bold text-brand-deep">مشاهده کالا</a>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {product && <a href={`#inventory-${item.productId}`} className="shrink-0 rounded-lg bg-brand-soft px-2.5 py-1.5 text-[11px] font-bold text-brand-deep">مشاهده کالا</a>}
+                  <ContextSupportButton role="supplier" kind="return" referenceType="stock_return" referenceId={item.id} />
+                </div>
               </div>
             );
           })}
@@ -898,8 +902,10 @@ const newUuid = (): string => {
   const productsById = Object.fromEntries(allProducts.map(item => [item.id, item]));
 
   return (
-    <>
+    <div className="space-y-3">
       {retiredPrintedCodes.length > 0 && <RetiredPrintedCodesPanel codes={retiredPrintedCodes} onAcknowledge={() => setRetiredPrintedCodes([])} />}
+      <SupplierVariantWorkspace onChanged={retryAll} onRetired={codes => setRetiredPrintedCodes(previous => [...new Set([...previous, ...codes])])} />
+      <SupplierStorageAging />
       <SupplierInventoryView
       items={items}
       totalCount={allProducts.length}
@@ -941,6 +947,6 @@ const newUuid = (): string => {
       onCancelReturn={() => setReturning(null)}
       returnableOf={canonicalSellable}
       />
-    </>
+    </div>
   );
 };

@@ -44,18 +44,31 @@ export const SupplierSettlementTab: React.FC = () => {
   const [holder, setHolder] = useState('');
   const [amount, setAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const [fieldError, setFieldError] = useState<{ name: 'holder' | 'shaba' | 'amount'; message: string } | null>(null);
 
-  const submit = async (event: React.FormEvent) => {
+  const editField = (name: 'holder' | 'shaba' | 'amount', value: string) => {
+    if (fieldError?.name === name) setFieldError(null);
+    if (name === 'holder') setHolder(value);
+    else if (name === 'shaba') setShaba(value);
+    else setAmount(value);
+  };
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (saving) return;
+    if (saving || balance.loading || !balance.data || balance.error) return;
     const value = Number(parseAmount(amount));
-    if (!Number.isSafeInteger(value) || value <= 0 || value > (balance.data?.available || 0)) {
-      error('مبلغ را درست وارد کن؛ بیشتر از پولی که می‌توانی برداشت کنی نباشد.');
-      return;
-    }
-    const iban = shaba.replace(/\s/g, '').toUpperCase();
-    if (!isValidIranianSheba(iban) || !holder.trim()) {
-      error('شماره شبا یا نام صاحب حساب درست نیست؛ دوباره نگاه کن.');
+    const iban = shaba.replace(/[\s-]/g, '').toUpperCase()
+      .replace(/[۰-۹٠-٩]/g, digit => String('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩'.indexOf(digit) % 10));
+    const invalid = !holder.trim()
+      ? { name: 'holder', message: 'نام صاحب حساب را وارد کن.' } as const
+      : !isValidIranianSheba(iban)
+        ? { name: 'shaba', message: 'شماره شبا را با IR و ۲۴ رقم بعد از آن وارد کن.' } as const
+        : !Number.isSafeInteger(value) || value <= 0 || value > balance.data.available
+          ? { name: 'amount', message: `مبلغ باید بین ۱ و ${formatPrice(balance.data.available)} تومان باشد.` } as const
+          : null;
+    setFieldError(invalid);
+    if (invalid) {
+      (event.currentTarget.elements.namedItem(invalid.name) as HTMLInputElement | null)?.focus();
       return;
     }
     setSaving(true);
@@ -81,18 +94,16 @@ export const SupplierSettlementTab: React.FC = () => {
   return (
     <div className="space-y-3 pb-6">
       <h2 className="text-sm font-bold">تسویه‌حساب و برداشت پول</h2>
-      <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">
-        <p>پول فروش کالاهایت اینجاست. موجودی پس از تحویل سفارش قابل برداشت است؛ یعنی مبلغ هر سفارش به‌محض اینکه پرداخت شود و به دست مشتری برسد، وارد درآمدت می‌شود و لازم نیست منتظر پایان مهلت مرجوعی بمانی.</p>
-        <p className="mt-2"><b>چرا موجودی قابل برداشت از کل درآمدت کمتر است؟</b> مبلغ درخواست‌های برداشتی که هنوز در انتظار بررسی‌اند و مبالغی که قبلاً برایت واریز شده‌اند از درآمدت کم شده‌اند. ریز هر بخش را در کارت زیر می‌بینی.</p>
-      </div>
       <SupplierResourceState loading={balance.loading || history.loading} error={balance.error || history.error} retry={() => { void balance.reload(); void history.reload(); }} />
-      {!balance.error && (
+      {b && !balance.error && (
         <>
           <section className="rounded-2xl bg-slate-900 p-4 text-white">
             <span className="text-xs text-slate-300">موجودی قابل برداشت</span>
             <strong className="mt-1 block text-xl text-emerald-300">{formatPrice(b?.available || 0)} تومان</strong>
             <p className="mt-1 text-[10px] leading-relaxed text-slate-400">موجودی پس از تحویل سفارش قابل برداشت است.</p>
-            <div className="mt-3 space-y-2.5 border-t border-white/10 pt-3">
+            <details className="mt-3 border-t border-white/10 pt-2">
+              <summary className="cursor-pointer rounded-md py-2 text-xs font-bold focus-visible:ring-2 focus-visible:ring-white">جزئیات درآمد، برداشت‌ها و کسورات</summary>
+              <div className="space-y-2.5 pt-2">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="text-[11px] font-bold text-slate-100">درآمد قطعی‌شده از سفارش‌های تحویل‌شده</p>
@@ -150,22 +161,31 @@ export const SupplierSettlementTab: React.FC = () => {
                   <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(storageFees)} تومان</span>
                 </div>
               )}
-            </div>
+              </div>
+            </details>
           </section>
-          <form onSubmit={submit} className="space-y-2 rounded-2xl border bg-white p-3">
+          {b.available <= 0 ? (
+            <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">فعلاً موجودی قابل برداشت نداری. با قطعی‌شدن درآمد و افزایش موجودی، فرم درخواست برداشت همین‌جا ظاهر می‌شود.</p>
+          ) : (
+          <form onSubmit={submit} noValidate className="space-y-3 rounded-2xl border bg-white p-4">
+            <h3 className="text-sm font-bold">درخواست برداشت</h3>
             <label className="block text-[11px] font-bold text-slate-600">نام صاحب حساب
-              <input required value={holder} onChange={(event) => setHolder(event.target.value)} placeholder="مثلاً: علی رضایی" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              <input required name="holder" value={holder} onChange={event => editField('holder', event.target.value)} aria-invalid={fieldError?.name === 'holder'} aria-describedby={fieldError?.name === 'holder' ? 'supplier-payout-holder-error' : undefined} placeholder="مثلاً: علی رضایی" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              {fieldError?.name === 'holder' && <span id="supplier-payout-holder-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-[11px] font-bold text-slate-600">شماره شبا
               <span className="block mt-1 text-[10px] font-normal text-slate-500 leading-relaxed">شماره ۲۴ رقمی حساب بانکی که با IR شروع می‌شود؛ روی کارت بانکی یا در اپ بانک می‌توانی پیدایش کنی.</span>
-              <input required value={shaba} onChange={(event) => setShaba(event.target.value)} placeholder="IR…" dir="ltr" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              <input required name="shaba" value={shaba} onChange={event => editField('shaba', event.target.value)} aria-invalid={fieldError?.name === 'shaba'} aria-describedby={fieldError?.name === 'shaba' ? 'supplier-payout-shaba-error' : undefined} placeholder="IR…" dir="ltr" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              {fieldError?.name === 'shaba' && <span id="supplier-payout-shaba-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-[11px] font-bold text-slate-600">مبلغ برداشت (تومان)
-              <input required min="1" type="text" inputMode="numeric" value={formatAmount(amount)} onChange={(event) => setAmount(event.target.value)} placeholder="چقدر می‌خواهی برداشت کنی؟" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              <input required min="1" type="text" inputMode="numeric" name="amount" value={formatAmount(amount)} onChange={event => editField('amount', event.target.value)} aria-invalid={fieldError?.name === 'amount'} aria-describedby={fieldError?.name === 'amount' ? 'supplier-payout-amount-error' : undefined} placeholder="چقدر می‌خواهی برداشت کنی؟" className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs font-normal" />
+              {fieldError?.name === 'amount' && <span id="supplier-payout-amount-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
-            <button disabled={saving} className="w-full rounded-xl bg-emerald-600 p-2.5 min-h-[44px] text-xs font-bold text-white">{saving ? 'ثبت…' : 'درخواست برداشت'}</button>
+            <button disabled={saving || balance.loading} className="w-full rounded-xl bg-emerald-600 p-2.5 min-h-[44px] text-xs font-bold text-white">{saving ? 'در حال ثبت…' : 'ثبت درخواست برداشت'}</button>
             <p className="text-[10px] text-slate-500 leading-relaxed">واریز دستی است و با انتقال بانکی انجام می‌شود: بعد از تأیید درخواستت، تیم مالی پول را واریز می‌کند و شماره پیگیری همین‌جا ثبت می‌شود.</p>
           </form>
+          )}
         </>
       )}
       {!fees.error && charges.length > 0 && (

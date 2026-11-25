@@ -3,46 +3,29 @@ import { useStore } from '../../context/StoreContext';
 import { supplierApi, isSupplierProductActive } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
-import { Check, ChevronLeft, Flag } from 'lucide-react';
+import { Check, ChevronLeft, Flag, PackagePlus, ShoppingBag } from 'lucide-react';
+import { isReadyOrder } from './SupplierOrdersTab';
+import { canRespondToDiscrepancy } from './SupplierDiscrepanciesTab';
 
-// FIX 35: supplier overview rebuilt to the live overview spec
-// (component Cl plus getting-started checklist Sl in the live
-// supplier bundle): header, four paid-only stat cards, unpaid note,
-// nav buttons, five lowest-stock products, pending and settlement
-// rows. The contract checklist step is omitted: live omits it when
-// the signed version is unknown, and the candidate supplier session
-// carries no signed contract version. The shipment step counts
-// inbounds only: live also adds warehouse shipments, which are not
-// visible in supplier scope here.
+type Navigate = (tab: string, destination?: 'ready' | 'track') => void;
 
-type PendingData = {
-  inbounds: any[] | null;
-  orders: any | null;
-  returns: any[] | null;
-  discrepancies: any[] | null;
-  balance: any | null;
-  history: any[] | null;
-};
-
-const GettingStarted: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ onNavigateTab }) => {
+const GettingStarted: React.FC<{ onNavigateTab: Navigate; shipmentDone: boolean | null }> = ({ onNavigateTab, shipmentDone }) => {
   const { toPersianDigits } = useStore();
   const [proposalCount, setProposalCount] = useState<number | null>(null);
   const [productCount, setProductCount] = useState<number | null>(null);
   const [shippingReady, setShippingReady] = useState<boolean | null>(null);
-  const [shipmentCount, setShipmentCount] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     supplierApi.getProposals().then((d) => { if (!cancelled) setProposalCount((d || []).length); }).catch(() => {});
     supplierApi.getProducts().then((d) => { if (!cancelled) setProductCount((d || []).filter(isSupplierProductActive).length); }).catch(() => {});
     supplierApi.getShippingMethods().then((d: any) => { if (!cancelled) setShippingReady(((d.methods || d) || []).some((m: any) => m.status === 'enabled' || m.status === 'requested')); }).catch(() => {});
-    supplierApi.getInbounds().then((d) => { if (!cancelled) setShipmentCount((d || []).length); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
   const steps: { id: string; title: string; hint: string; done: boolean; tab?: string; action?: string }[] = [];
-  if (proposalCount !== null) steps.push({ id: 'proposal', title: 'اولین کالایت را پیشنهاد بده', hint: 'از تب «کالاها و تنوع‌ها» کالایت را بفرست تا مدیر بررسی کند.', done: proposalCount > 0, tab: 'products', action: 'پیشنهاد کالا' });
+  if (proposalCount !== null) steps.push({ id: 'proposal', title: 'اولین کالایت را پیشنهاد بده', hint: 'اطلاعات کالا را در مسیر ثبت کالا وارد کن تا بررسی شود.', done: proposalCount > 0 || (productCount ?? 0) > 0, tab: 'inbound', action: 'پیشنهاد کالا' });
   if (productCount !== null) steps.push({ id: 'approved', title: 'کالایت تأیید شود و به فروش برسد', hint: 'بعد از تأیید مدیر، کالایت در فروشگاه‌ها نمایش داده می‌شود.', done: productCount > 0, tab: 'products', action: 'دیدن کالاها' });
   if (shippingReady !== null) steps.push({ id: 'shipping', title: 'روش فرستادن کالا را انتخاب کن', hint: 'مشخص کن سفارش‌ها را خودت می‌فرستی یا کالا را به انبار مرکزی می‌دهی.', done: shippingReady, tab: 'shipping-methods', action: 'انتخاب روش ارسال' });
-  if (shipmentCount !== null) steps.push({ id: 'shipment', title: 'اولین بار را به انبار بفرست', hint: 'وقتی بار را می‌فرستی، اول همین‌جا ثبتش کن تا انبار آماده تحویل باشد.', done: shipmentCount > 0, tab: 'inbound', action: 'فرستادن بار' });
+  if (shipmentDone !== null) steps.push({ id: 'shipment', title: 'اولین بار را به انبار بفرست', hint: 'وقتی بار را می‌فرستی، اول همین‌جا ثبتش کن تا انبار آماده تحویل باشد.', done: shipmentDone, tab: 'inbound', action: 'فرستادن بار' });
   if (steps.length === 0) return null;
   const doneCount = steps.filter((s) => s.done).length;
   if (doneCount === steps.length) {
@@ -87,39 +70,63 @@ const GettingStarted: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ on
   );
 };
 
-export const SupplierOverviewTab: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ onNavigateTab }) => {
+export const SupplierOverviewTab: React.FC<{ onNavigateTab: Navigate }> = ({ onNavigateTab }) => {
   const { formatPrice, toPersianDigits } = useStore();
   const products = useSupplierResource(supplierApi.getProducts);
   const report = useSupplierResource(supplierApi.getSalesReport);
   const loading = products.loading || report.loading;
   const error = products.error || report.error;
-  const [pending, setPending] = useState<PendingData | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    Promise.allSettled([supplierApi.getInbounds(), supplierApi.getOrders(), supplierApi.getCustomerReturns(), supplierApi.getDiscrepancies(), supplierApi.getSettlementBalance(), supplierApi.getSettlementHistory()]).then(([a, b, c, d, e, f]) => {
-      if (cancelled) return;
-      setPending({
-        inbounds: a.status === 'fulfilled' ? (a.value as any) : null,
-        orders: b.status === 'fulfilled' ? (b.value as any) : null,
-        returns: c.status === 'fulfilled' ? (c.value as any) : null,
-        discrepancies: d.status === 'fulfilled' ? (d.value as any) : null,
-        balance: e.status === 'fulfilled' ? (e.value as any) : null,
-        history: f.status === 'fulfilled' ? (f.value as any) : null,
-      });
-    });
-    return () => { cancelled = true; };
-  }, []);
+  const shipments = useSupplierResource(supplierApi.getShipments);
+  const orders = useSupplierResource(supplierApi.getOrders);
+  const discrepancies = useSupplierResource(supplierApi.getDiscrepancies);
+  const balance = useSupplierResource(supplierApi.getSettlementBalance);
+  const readyOrders = orders.data?.orders.filter(order => isReadyOrder(order.status)).length;
+  const openShipments = shipments.data?.filter(shipment => ['draft', 'created', 'sent', 'in_transit', 'partially_received'].includes(shipment.status)).length;
+  const needsResponse = discrepancies.data?.filter(item => !item.responded_at && canRespondToDiscrepancy(item)).length;
+  const workItems = [
+    { label: orders.data?.hasMore ? 'منتظر ارسال در سفارش‌های اخیر' : 'سفارش‌های منتظر ارسال', count: readyOrders, action: 'رسیدگی به سفارش‌ها', open: () => onNavigateTab('orders', 'ready') },
+    { label: 'محموله‌های باز', count: openShipments, action: 'پیگیری محموله‌ها', open: () => onNavigateTab('inbound', 'track') },
+    { label: 'مغایرت‌های نیازمند پاسخ', count: needsResponse, action: 'پاسخ به مغایرت‌ها', open: () => onNavigateTab('discrepancies') },
+  ];
+  const workError = orders.error || shipments.error || discrepancies.error;
+  const workLoading = orders.loading || shipments.loading || discrepancies.loading;
   const totalRevenue = report.data?.total_revenue || 0;
   const ordersCount = report.data?.orders_count || 0;
   const lowStock = [...(products.data || [])].sort((x, y) => (x.stock ?? 0) - (y.stock ?? 0)).slice(0, 5);
-  const hasPending = !!pending && (pending.inbounds !== null || pending.orders !== null || pending.returns !== null || pending.discrepancies !== null || pending.balance !== null || pending.history !== null);
   return (
     <div className="space-y-3 pb-6">
-      <section className="rounded-2xl bg-slate-900 p-4 text-white">
-        <h2 className="text-sm font-bold">نمای کلی کار تو</h2>
-        <p className="mt-1 text-xs text-slate-300">این‌ها عددهای واقعی کالاها و فروش توست؛ از خود سامانه خوانده می‌شود.</p>
+      <section className="rounded-2xl bg-slate-900 p-4 text-white sm:p-5">
+        <h2 className="text-base font-bold">از کجا شروع کنم؟</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" onClick={() => onNavigateTab('inbound')} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-slate-900 hover:bg-slate-100">
+            <PackagePlus aria-hidden="true" className="size-4" /> ثبت کالا و ارسال به انبار
+          </button>
+          <button type="button" onClick={() => onNavigateTab('orders')} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/30 px-3 text-sm font-bold hover:bg-white/10">
+            <ShoppingBag aria-hidden="true" className="size-4" /> سفارش‌های من
+          </button>
+        </div>
       </section>
-      <GettingStarted onNavigateTab={onNavigateTab} />
+      <section className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
+        <h3 className="text-sm font-bold text-slate-900">کارهای پیگیری</h3>
+        <SupplierResourceState loading={workLoading} error={workError} retry={() => { void orders.reload(); void shipments.reload(); void discrepancies.reload(); }} />
+        <ul className="divide-y divide-slate-100">
+          {workItems.map(({ label, count, action, open }) => (
+            <li key={action} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-1.5">
+              <span className="text-sm text-slate-700">{label}{count !== undefined && <strong className="ms-2 tabular-nums text-slate-900">{toPersianDigits(count)}</strong>}</span>
+              <button type="button" onClick={open} className="min-h-11 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft">{action}</button>
+            </li>
+          ))}
+          <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-1.5">
+            <span className="text-sm text-slate-700">موجودی قابل برداشت{balance.data && <strong className="ms-2 tabular-nums text-slate-900">{formatPrice(balance.data.available)} تومان</strong>}</span>
+            <button type="button" onClick={() => onNavigateTab('settlement')} className="min-h-11 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft">برداشت و سوابق</button>
+          </li>
+          <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-1.5">
+            <span className="text-sm text-slate-700">مرجوعی‌های مشتریان</span>
+            <button type="button" onClick={() => onNavigateTab('customer-returns')} className="min-h-11 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft">پیگیری مرجوعی‌ها</button>
+          </li>
+        </ul>
+      </section>
+      <GettingStarted onNavigateTab={onNavigateTab} shipmentDone={shipments.data ? shipments.data.some(shipment => !['draft', 'cancelled'].includes(shipment.status)) : null} />
       <SupplierResourceState loading={loading} error={error} retry={() => { void products.reload(); void report.reload(); }} />
       {!loading && !error && (<>
         <div className="grid grid-cols-2 gap-2">
@@ -133,10 +140,6 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: (tab: string) => voi
           ))}
         </div>
         {totalRevenue === 0 && ordersCount === 0 && (<p className="text-[11px] leading-5 text-slate-500 bg-white rounded-2xl border border-slate-100 p-3">هنوز فروش پرداخت‌شده‌ای ثبت نشده است؛ سفارش‌های در انتظار پرداخت در این عددها نیستند.</p>)}
-        <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => onNavigateTab('products')} className="rounded-xl bg-brand-deep p-3 min-h-[44px] text-xs font-bold text-white">کالاهای من</button>
-          <button type="button" onClick={() => onNavigateTab('orders')} className="rounded-xl bg-slate-100 p-3 min-h-[44px] text-xs font-bold">سفارش‌های من</button>
-        </div>
         <section className="bg-white rounded-2xl border border-slate-100 p-4">
           <h3 className="text-xs font-extrabold text-slate-800 mb-3">کم‌موجودی‌ترین کالاها</h3>
           {(products.data || []).length === 0 ? (<p className="text-[11px] text-slate-400">کالایی ثبت نشده است.</p>) : (
@@ -151,49 +154,6 @@ export const SupplierOverviewTab: React.FC<{ onNavigateTab: (tab: string) => voi
             </div>
           )}
         </section>
-        {hasPending && pending && (
-          <section className="bg-white rounded-2xl border border-slate-100 p-4">
-            <h3 className="text-xs font-extrabold text-slate-800 mb-3">کارهای در انتظار و تسویه</h3>
-            <div className="space-y-1.5">
-              {pending.inbounds !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">بارهای در انتظار تحویل</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{toPersianDigits(pending.inbounds.filter((x: any) => ['pending', 'scheduled', 'in_transit', 'receiving'].includes(x.status)).length)} مورد</span><button type="button" onClick={() => onNavigateTab('inbound')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-              {pending.orders !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">سفارش‌های منتظر ارسال</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{toPersianDigits((pending.orders.orders || []).filter((x: any) => x.status !== 'shipped' && x.status !== 'in_transit' && x.status !== 'delivered').length)} مورد</span><button type="button" onClick={() => onNavigateTab('orders')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-              {pending.returns !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">مرجوعی‌های مشتریان</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{toPersianDigits(pending.returns.length)} مورد</span><button type="button" onClick={() => onNavigateTab('customer-returns')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-              {pending.discrepancies !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">مغایرت‌های باز</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{toPersianDigits(pending.discrepancies.filter((x: any) => x.status === 'open').length)} مورد</span><button type="button" onClick={() => onNavigateTab('discrepancies')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-              {pending.balance !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">موجودی قابل برداشت</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{formatPrice(pending.balance.available ?? 0)} تومان</span><button type="button" onClick={() => onNavigateTab('settlement')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-              {pending.history !== null && (
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-bold text-slate-800">برداشت‌های قبلی</span>
-                  <span className="flex items-center gap-2"><span className="font-bold text-slate-500">{toPersianDigits(pending.history.length)} مورد</span><button type="button" onClick={() => onNavigateTab('settlement')} className="font-bold text-brand-deep">دیدن</button></span>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
       </>)}
     </div>
   );

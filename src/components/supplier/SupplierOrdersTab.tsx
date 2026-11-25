@@ -96,7 +96,7 @@ export function directOrderChip(status: string) {
 // approximations. Live's createdAt formatter (Ka) is not reimplemented:
 // the backend already returns a Persian-formatted date string, which the
 // browser observed as 2026/10/28 on staging.
-export const SupplierOrdersTab: React.FC = () => {
+export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = ({ initialFilter = 'all' }) => {
   const {
     toPersianDigits
   } = useStore();
@@ -107,7 +107,7 @@ export const SupplierOrdersTab: React.FC = () => {
   const [ordersHasMore, setOrdersHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>(initialFilter);
 
   // Gap 14: view toggle — direct shipments to fulfil vs warehouse-routed
   // orders (read-only visibility), plus the accept-step in-flight marker.
@@ -444,17 +444,19 @@ export const SupplierOrdersTab: React.FC = () => {
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5"  strokeWidth={1.5}/>
           <input
-            type="text"
+            type="search"
+            aria-label="جستجوی سفارش‌ها"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="جستجوی شماره سفارش، کد رهگیری یا نام خریدار…"
-            className="w-full text-xs pr-8 pl-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-hidden"
+            className="w-full text-xs pr-8 pl-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus-visible:ring-2 focus-visible:ring-brand"
           />
         </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar text-xs font-bold">
+        <div className="flex items-center gap-1.5 flex-wrap text-xs font-bold">
           <button
             type="button"
+            aria-pressed={filterStatus === 'all'}
             onClick={() => setFilterStatus('all')}
             className={`px-3.5 min-h-[44px] rounded-xl transition-all shrink-0 ${
               filterStatus === 'all'
@@ -466,6 +468,7 @@ export const SupplierOrdersTab: React.FC = () => {
           </button>
           <button
             type="button"
+            aria-pressed={filterStatus === 'ready'}
             onClick={() => setFilterStatus('ready')}
             className={`px-3.5 min-h-[44px] rounded-xl transition-all shrink-0 ${
               filterStatus === 'ready'
@@ -477,6 +480,7 @@ export const SupplierOrdersTab: React.FC = () => {
           </button>
           <button
             type="button"
+            aria-pressed={filterStatus === 'shipped'}
             onClick={() => setFilterStatus('shipped')}
             className={`px-3.5 min-h-[44px] rounded-xl transition-all shrink-0 ${
               filterStatus === 'shipped'
@@ -488,6 +492,7 @@ export const SupplierOrdersTab: React.FC = () => {
           </button>
           <button
             type="button"
+            aria-pressed={filterStatus === 'delivered'}
             onClick={() => setFilterStatus('delivered')}
             className={`px-3.5 min-h-[44px] rounded-xl transition-all shrink-0 ${
               filterStatus === 'delivered'
@@ -522,8 +527,9 @@ export const SupplierOrdersTab: React.FC = () => {
             </>
           ) : (
             <>
-              <h4 className="text-xs font-bold text-slate-700">سفارشی در این وضعیت نیست.</h4>
-              <p className="text-[10px] text-slate-400">سفارش‌های دیگر را از دکمه‌های بالای همین صفحه ببین.</p>
+              <h4 className="text-sm font-bold text-slate-700">{searchQuery.trim() ? 'سفارشی با این جستجو پیدا نشد.' : 'سفارشی در این وضعیت نیست.'}</h4>
+              <button type="button" onClick={() => { setSearchQuery(''); setFilterStatus('all'); }}
+                className="min-h-11 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep">پاک کردن فیلترها و دیدن همه سفارش‌ها</button>
             </>
           )}
         </div>
@@ -641,14 +647,14 @@ export const SupplierOrdersTab: React.FC = () => {
               </div>
             );
           })}
-          {ordersHasMore && (
-            <div className="pt-2 text-center">
-              <button type="button" onClick={() => void fetchSupplierOrders(ordersNextCursor)} disabled={loading} className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">نمایش بیشتر</button>
-              <p className="mt-1 text-[10px] text-slate-500">جستجو و فیلتر روی سفارش‌های بارگذاری‌شده اعمال می‌شود.</p>
-            </div>
-          )}
         </div>
       )}
+          {!loading && !loadError && ordersHasMore && (
+            <div className="pt-2 text-center">
+              <button type="button" onClick={() => void fetchSupplierOrders(ordersNextCursor)} disabled={loading} className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">بارگذاری سفارش‌های قدیمی‌تر</button>
+              <p className="mt-1 text-[10px] text-slate-500">جستجو و فیلتر روی سفارش‌هایی اعمال می‌شود که تا حالا بارگذاری شده‌اند.</p>
+            </div>
+          )}
 
         </>
       )}

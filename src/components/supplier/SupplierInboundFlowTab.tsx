@@ -46,13 +46,14 @@ function ProductUnitLabels({ initialProductId }: { initialProductId: string }) {
 
 interface Props {
   initialProductId: string;
+  initialStage?: 'track';
   onProductConsumed: () => void;
   canManageProducts: boolean;
   canManageShipments: boolean;
 }
 
-export function SupplierInboundFlowTab({ initialProductId, onProductConsumed, canManageProducts, canManageShipments }: Props) {
-  const [stage, setStage] = useState<Stage>(initialProductId || !canManageProducts ? 'prepare' : 'products');
+export function SupplierInboundFlowTab({ initialProductId, initialStage, onProductConsumed, canManageProducts, canManageShipments }: Props) {
+  const [stage, setStage] = useState<Stage>(initialProductId ? 'prepare' : initialStage ?? (canManageProducts ? 'products' : 'prepare'));
   const [selectedProductId, setSelectedProductId] = useState(initialProductId);
   const [shipmentsOpened, setShipmentsOpened] = useState(stage !== 'products');
   const [labelsOpen, setLabelsOpen] = useState(false);

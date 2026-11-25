@@ -48,6 +48,11 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
+  const [tabDestination, setTabDestination] = useState<'ready' | 'track'>();
+  const navigateTab = (tab: string, destination?: 'ready' | 'track') => {
+    setTabDestination(destination);
+    setActiveTab(tab);
+  };
   // Reject-notification bell (DESIGN.md §4.3): unread count lives here,
   // NOT in StoreContext.setUnreadNotificationCount — that counter feeds
   // the customer/storefront header bell and would leak supplier counts
@@ -91,7 +96,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const menuItems = [
     { id: 'overview', label: 'نمای کلی', icon: LayoutDashboard },
     { id: 'analytics', label: 'تحلیل فروش', icon: BarChart3 },
-    { id: 'demand-insight', label: 'اینسایت تقاضا', icon: TrendingUp },
+    { id: 'demand-insight', label: 'تقاضای بازار', icon: TrendingUp },
     { id: 'orders', label: 'سفارش‌های من', icon: ShoppingBag },
     { id: 'customer-returns', label: 'مرجوعی‌های مشتریان', icon: RotateCcw },
     { id: 'products', label: 'کالاها و تنوع‌ها', icon: Package },
@@ -99,7 +104,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'my-warehouses', label: 'انبارهای من', icon: Warehouse },
     { id: 'inbound', label: 'ثبت کالا و ارسال به انبار', icon: PackagePlus },
     { id: 'shipping-methods', label: 'روش‌های ارسال', icon: Truck },
-    { id: 'discrepancies', label: 'اختلاف‌های تحویل', icon: AlertTriangle },
+    { id: 'discrepancies', label: 'مغایرت‌های تحویل انبار', icon: AlertTriangle },
     { id: 'settlement', label: 'تسویه‌حساب', icon: Receipt },
     { id: 'ads', label: 'تبلیغات', icon: Megaphone },
     { id: 'team', label: 'همکاران من', icon: Users },
@@ -122,7 +127,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const isPanelHome = visibleTab === panelHomeTab;
   const handleHeaderBack = () => {
     if (!isPanelHome && panelHomeTab) {
-      setActiveTab(panelHomeTab);
+      navigateTab(panelHomeTab);
     } else {
       onBackToCustomerSite();
     }
@@ -135,7 +140,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const menuGroups: { heading: string; icon: typeof LayoutDashboard; ids: string[] }[] = [
     { heading: 'پیشخوان', icon: LayoutDashboard, ids: ['overview', 'analytics', 'demand-insight'] },
     { heading: 'سفارش و ارسال', icon: Truck, ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
-    { heading: 'کالا و انبار', icon: Warehouse, ids: ['products', 'inventory', 'my-warehouses', 'inbound'] },
+    { heading: 'کالا و انبار', icon: Warehouse, ids: ['inbound', 'products', 'inventory', 'my-warehouses'] },
     { heading: 'مالی', icon: Wallet, ids: ['settlement'] },
     { heading: 'بازاریابی', icon: Megaphone, ids: ['ads'] },
     { heading: 'حساب کاربری', icon: User, ids: ['team', 'profile', 'contract'] },
@@ -197,6 +202,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
           </div>
         </div>
       )}
+      <a href="#supplier-main" className="sr-only focus:not-sr-only focus:absolute focus:z-40 focus:rounded-lg focus:bg-white focus:p-3">رفتن به محتوای پنل</a>
       {/* Top Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 py-2.5">
         <div className="max-w-7xl mx-auto w-full px-3.5 lg:px-6 flex items-center justify-between">
@@ -254,36 +260,20 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </div>
       </header>
 
-      {/* Horizontal Tabs */}
-      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar lg:hidden">
-        {allowedTabs.map((item) => {
-          const Icon = item.icon;
-          const isActive = visibleTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
-                isActive
-                  ? 'bg-brand text-white shadow-xs'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      {!!sidebarGroups.length && (
+        <nav aria-label="منوی موبایل تأمین‌کننده" className="border-b border-slate-200 bg-white px-3.5 py-2.5 lg:hidden">
+          <label htmlFor="supplier-section" className="block text-xs font-bold text-slate-700">بخش پنل</label>
+          <select id="supplier-section" value={visibleTab} onChange={event => navigateTab(event.target.value)}
+            className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 focus-visible:ring-2 focus-visible:ring-brand">
+            {sidebarGroups.map(group => (
+              <optgroup key={group.heading} label={group.heading}>
+                {group.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </nav>
+      )}
 
-      {/* Desktop workspace (sidebar + content), following the admin
-          workspace geometry (max-w-7xl row, w-72 aside, white rounded-2xl
-          cards) and the seller panel's brand accent. Below lg the wrapper
-          is a plain flex column, the sidebar is hidden and the content
-          keeps its exact mobile padding, so mobile is pixel-unchanged.
-          Content width: tab content inside <main> is intentionally
-          uncapped (unlike admin's max-w-3xl tab cap) because the
-          supplier tabs are data-table-heavy and need the full row width. */}
       <div className="flex-1 w-full min-w-0 max-w-7xl mx-auto flex flex-col lg:flex-row lg:gap-6 lg:p-6">
         {/* Sidebar Navigation (desktop only; same permission-filtered tabs as the mobile bar) */}
         <aside className="hidden lg:block w-72 shrink-0 space-y-4 lg:sticky lg:top-[73px] lg:self-start lg:max-h-[calc(100vh-97px)] lg:overflow-y-auto">
@@ -316,9 +306,6 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
                     <div className="flex items-center gap-2.5 px-2 py-1.5">
                       <GroupIcon className="w-4 h-4 shrink-0 text-slate-400" strokeWidth={1.5} />
                       <span className="flex-1 text-xs font-extrabold text-slate-900">{group.heading}</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                        {toPersianDigits(group.items.length)}
-                      </span>
                     </div>
                     <div className="border-r-2 border-slate-100 pr-2 space-y-1">
                       {group.items.map((item) => {
@@ -327,7 +314,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
                         return (
                           <button
                             key={item.id}
-                            onClick={() => setActiveTab(item.id)}
+                            onClick={() => navigateTab(item.id)}
                             aria-current={isActive ? 'page' : undefined}
                             title={item.label}
                             className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all w-full text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 ${
@@ -350,15 +337,16 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </aside>
 
         {/* Main Tab Content */}
-        <main className="flex-1 min-w-0">
+        <main id="supplier-main" tabIndex={-1} className="flex-1 min-w-0 scroll-mt-20">
           <div className="p-3.5 lg:p-0">
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
-            {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={setActiveTab} />}
-            {visibleTab === 'orders' && <SupplierOrdersTab />}
-            {visibleTab === 'products' && <SupplierProductsTab onPrepareShipment={permissions.includes('supplier.manage') || permissions.includes('inventory.manage') ? (id) => { setWorkflowProductId(id); setActiveTab('inbound'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
+            {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
+            {visibleTab === 'orders' && <SupplierOrdersTab initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
+            {visibleTab === 'products' && <SupplierProductsTab onPrepareShipment={permissions.includes('supplier.manage') || permissions.includes('inventory.manage') ? (id) => { setWorkflowProductId(id); navigateTab('inbound'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab
               initialProductId={workflowProductId}
+              initialStage={tabDestination === 'track' ? 'track' : undefined}
               onProductConsumed={() => setWorkflowProductId('')}
               canManageProducts={permissions.includes('supplier.manage') || permissions.includes('products.manage')}
               canManageShipments={permissions.includes('supplier.manage') || permissions.includes('inventory.manage')}

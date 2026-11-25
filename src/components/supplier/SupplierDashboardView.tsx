@@ -56,6 +56,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // highlight + SupplierFeedbackModal).
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [workflowProductId, setWorkflowProductId] = useState('');
   const [focusProposalId, setFocusProposalId] = useState<string | null>(null);
   const refreshUnreadNotifCount = useCallback(() => {
     supplierApi.getNotifications().then((res) => setUnreadNotifCount(res.unreadCount)).catch(() => {});
@@ -96,7 +97,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     { id: 'products', label: 'کالاها و تنوع‌ها', icon: Package },
     { id: 'inventory', label: 'موجودی کالاها', icon: Boxes },
     { id: 'my-warehouses', label: 'انبارهای من', icon: Warehouse },
-    { id: 'inbound', label: 'فرستادن بار به انبار', icon: PackagePlus },
+    { id: 'inbound', label: 'ثبت کالا و ارسال به انبار', icon: PackagePlus },
     { id: 'shipping-methods', label: 'روش‌های ارسال', icon: Truck },
     { id: 'discrepancies', label: 'اختلاف‌های تحویل', icon: AlertTriangle },
     { id: 'settlement', label: 'تسویه‌حساب', icon: Receipt },
@@ -108,7 +109,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
 
   const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
   const permissions = supplierSession?.permissions || [];
-  const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]));
+  const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]) || (item.id === 'inbound' && permissions.includes('products.manage')));
   const visibleTab = allowedTabs.some((item) => item.id === activeTab) ? activeTab : allowedTabs[0]?.id;
 
   // Header back button: from inside any tab it first returns to the
@@ -354,9 +355,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={setActiveTab} />}
             {visibleTab === 'orders' && <SupplierOrdersTab />}
-            {visibleTab === 'products' && <SupplierProductsTab focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
+            {visibleTab === 'products' && <SupplierProductsTab onPrepareShipment={permissions.includes('supplier.manage') || permissions.includes('inventory.manage') ? (id) => { setWorkflowProductId(id); setActiveTab('inbound'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
-            {visibleTab === 'inbound' && <SupplierInboundFlowTab />}
+            {visibleTab === 'inbound' && <SupplierInboundFlowTab
+              initialProductId={workflowProductId}
+              onProductConsumed={() => setWorkflowProductId('')}
+              canManageProducts={permissions.includes('supplier.manage') || permissions.includes('products.manage')}
+              canManageShipments={permissions.includes('supplier.manage') || permissions.includes('inventory.manage')}
+            />}
             {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
             {visibleTab === 'ads' && <SupplierAdsCampaignTab />}
             {visibleTab === 'settlement' && <SupplierSettlementTab />}

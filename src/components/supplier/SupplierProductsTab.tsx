@@ -99,7 +99,7 @@ export function ProductUnitChip({ unitCount, stock }: { unitCount: number | null
   );
 }
 
-export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void }> = ({ focusProposalId, onFocusConsumed }) => {
+export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void; onPrepareShipment?: (productId: string) => void }> = ({ focusProposalId, onFocusConsumed, onPrepareShipment }) => {
   const {
     supplierSession,
     formatPrice,
@@ -451,6 +451,11 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
                   <span>{product.supplierWarranty}</span>
                   <div className="flex items-center gap-1.5">
+                    {onPrepareShipment && (
+                      <button type="button" onClick={() => onPrepareShipment(product.id)} className="rounded-md bg-brand-soft px-2 py-1 font-bold text-brand-deep">
+                        افزودن به محموله
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setGalleryProduct(product)}

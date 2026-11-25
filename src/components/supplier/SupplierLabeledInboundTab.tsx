@@ -49,7 +49,14 @@ const printCartonLabel = (shipment: any) => {
   win.document.close();
 };
 
-export const SupplierLabeledInboundTab: React.FC = () => {
+interface ShipmentFlowProps {
+  stage?: 'prepare' | 'track';
+  selectedProductId?: string;
+  onShipmentCreated?: () => void;
+  onUnitLabels?: () => void;
+}
+
+export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, selectedProductId, onShipmentCreated, onUnitLabels }) => {
   const { toPersianDigits, supplierSession } = useStore();
   const { success, error } = useToast();
   const [products, setProducts] = useState<any[]>([]);
@@ -79,6 +86,9 @@ export const SupplierLabeledInboundTab: React.FC = () => {
     setProductId('');
     setWarehouseId('');
   }, [supplierSession?.supplierId, supplierSession?.token]);
+  useEffect(() => {
+    if (selectedProductId) setProductId(selectedProductId);
+  }, [selectedProductId, supplierSession?.supplierId, supplierSession?.token]);
   const loadProducts = useCallback(async () => {
     setProductsLoading(true);
     try { setProducts(await supplierApi.getProducts()); }
@@ -93,12 +103,15 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   }, [error]);
   useEffect(() => { loadProducts(); loadShipments(); }, [loadProducts, loadShipments]);
   useEffect(() => {
-    if (!productId) { setVariants([]); return; }
+    if (!productId) { setVariants([]); setVariantsLoading(false); return; }
     setVariantsLoading(true);
+    let current = true;
+    setVariants([]);
     supplierApi.getVariants(productId)
-      .then(setVariants)
-      .catch(() => { error("مدل‌های کالا نیامدند."); })
-      .finally(() => { setVariantsLoading(false); });
+      .then(rows => { if (current) setVariants(rows); })
+      .catch(() => { if (current) error("مدل‌های کالا نیامدند."); })
+      .finally(() => { if (current) setVariantsLoading(false); });
+    return () => { current = false; };
   }, [productId, error]);
   const sourceStock = new Map<string, number>();
   for (const row of sourceInventory.data?.inventory ?? []) {
@@ -131,6 +144,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId, source });
       draftOperation.current.reset();
       setCreated(shipment);
+      onShipmentCreated?.();
       setLines([]);
       success("محموله ثبت شد. کدش را روی کارتن بنویس.");
       await loadShipments();
@@ -143,7 +157,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
   };
   return (
     <div className="space-y-3.5 pb-6">
-      {created && (
+      {stage !== 'prepare' && created && (
         <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4 text-center space-y-2">
           <div className="flex items-center justify-center gap-1.5 text-emerald-700 text-xs font-extrabold"><CheckCircle2 className="w-4 h-4"  strokeWidth={1.5}/><span>ثبت شد! این کد را روی کارتن بنویس</span></div>
           <div className="font-mono text-3xl font-black text-emerald-800 tracking-widest" dir="ltr">{created.shipment_code}</div>
@@ -153,7 +167,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
           </div>
         </div>
       )}
-      <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
+      <section hidden={stage === 'track'} className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-3">
         <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><Package className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/><span>محموله تازه با کد کارتن</span></h3>
         <p className="text-[10px] leading-5 text-slate-500">این راه برای کالاهایی است که هر مدلشان کد جدا دارد: کالا و مدلش را انتخاب کن، تعداد را بنویس؛ سامانه یک کد می‌دهد. آن کد را روی کارتن بچسبان و بار را بفرست. </p>
         <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود کالای جدید با فاکتور یا مدرک</option></select></label>
@@ -205,7 +219,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
                   <span className="text-[11px] font-bold text-slate-800 block truncate">{l.variant.variant_name}</span>
                   <span className="font-mono text-[10px] text-slate-400" dir="ltr">{l.variant.spnc}</span>
                 </div>
-                <input type="text" inputMode="numeric" min="1" value={formatNumber(l.expectedQty, toPersianDigits)} onChange={(e) => setLines((prev) => prev.map((x) => x.variant.id === l.variant.id ? { ...x, expectedQty: parseDigits(e.target.value) } : x))} placeholder="تعداد" className="w-20 rounded-lg border border-slate-200 p-2 text-xs text-center font-bold font-mono" />
+                <input type="text" inputMode="numeric" min="1" value={formatNumber(l.expectedQty, toPersianDigits)} onChange={(e) => setLines((prev) => prev.map((x) => x.variant.id === l.variant.id ? { ...x, expectedQty: parseDigits(e.target.value) } : x))} placeholder="تعداد" aria-label={`تعداد ${l.variant.variant_name}`} className="w-20 rounded-lg border border-slate-200 p-2 text-xs text-center font-bold font-mono" />
                 <button type="button" onClick={() => removeVariant(l.variant.id)} className="p-2 rounded-lg bg-rose-50 text-rose-600" aria-label="حذف"><X className="w-3.5 h-3.5"  strokeWidth={1.5}/></button>
               </div>
             ))}
@@ -217,7 +231,14 @@ export const SupplierLabeledInboundTab: React.FC = () => {
           <span>{submitting ? "در حال ثبت…" : "ثبت محموله و گرفتن کد کارتن"}</span>
         </button>
       </section>
-      <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
+      <section hidden={stage === 'prepare'} className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
+        {stage === 'track' && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-6 text-slate-700">
+            <p><strong>برچسب کارتن</strong> را چاپ کن، روی کارتن بچسبان و هنگام تحویل بار، «ثبت ارسال» را بزن.</p>
+            <p><strong>برچسب واحد (SPNCX)</strong> روی بسته‌بندی هر واحد کالا می‌چسبد. برای کالای جدیدِ بدون کد، این کدها پس از ثبت دریافت انبار صادر می‌شوند.</p>
+            {onUnitLabels && <button type="button" onClick={onUnitLabels} className="font-bold text-brand-deep underline">دیدن کدهای واحد کالا</button>}
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-extrabold text-slate-800">محموله‌های قبلی</h3>
           <button type="button" onClick={() => void loadShipments()} disabled={shipmentsLoading} className="p-1.5 rounded-xl border border-slate-200 text-slate-600 disabled:opacity-50" title="به‌روزرسانی"><RefreshCw className={`w-3.5 h-3.5 ${shipmentsLoading ? "animate-spin" : ""}`}  strokeWidth={1.5}/></button>
@@ -228,7 +249,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
               <span className="font-mono text-sm font-black text-slate-800 tracking-wider" dir="ltr">{s.shipment_code}</span>
               <span className="text-[10px] text-slate-400 block mt-0.5">{toPersianDigits(s.item_count ?? 0)} مدل • {s.created_at ? new Date(s.created_at).toLocaleDateString("fa-IR") : ""}</span>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
               <button type="button" onClick={() => printCartonLabel(s)} className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-brand-deep hover:border-brand-border transition-colors" title="چاپ برچسب کارتن"><Printer className="w-3.5 h-3.5"  strokeWidth={1.5}/></button>
               {s.status === 'draft' && <><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'dispatch'); await loadShipments();} catch {error('ارسال ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">ثبت ارسال</button><button type="button" onClick={async () => {try {await supplierApi.changeShipmentDispatch(s.id, 'cancel'); await loadShipments();} catch {error('لغو ثبت نشد.');}}} className="text-xs p-2 border rounded-lg">لغو و آزادسازی رزرو</button></>}
               <span className="text-[10px] font-bold bg-brand-soft text-brand-deep px-2.5 py-1 rounded-full">{SHIPMENT_STATUS_LABELS[s.status] || s.status}</span>

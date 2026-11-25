@@ -177,6 +177,49 @@ func TestInboundTransferBookingPaymentRace(t *testing.T) {
 	}
 }
 func fmtInt(n int) string { return string(rune('0' + n)) }
+func TestExternalCartonAcceptsMultipleProductsWithOneDocument(t *testing.T) {
+	_, schema, red, _ := skuInventoryFixture(t)
+	db := inboundFixtureDB(t, schema)
+	migration, err := os.ReadFile("../../migrations/202611250001_inbound_document_per_shipment.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+
+	second := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO products VALUES('p-second','s',0,2,'variable','sw1',NOW())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO product_variants(id,product_id,stock,inventory_mode,spnc) VALUES($1,'p-second',0,'tracked','A0C00003')`, second); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewSupplierRepository(db)
+	ctx := context.Background()
+	items := []CartonShipmentItem{{red, 5}, {second, 5}}
+	source := CartonInboundSource{Kind: "external_replenishment", ExternalReference: "multi-product-document", Reason: "purchase"}
+	shipment, err := repo.CreateCartonShipmentFromSource(ctx, "s", items, source, "w1", "multi-product")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shipment.ItemCount != 2 {
+		t.Fatalf("item count = %d, want 2", shipment.ItemCount)
+	}
+	var lines int
+	if err := db.QueryRow(`SELECT count(*) FROM inbound_inventory_lines WHERE shipment_id=$1 AND external_reference=$2 AND quantity=5`, shipment.ID, source.ExternalReference).Scan(&lines); err != nil || lines != 2 {
+		t.Fatalf("document lines = %d, want 2; error: %v", lines, err)
+	}
+	replay, err := repo.CreateCartonShipmentFromSource(ctx, "s", items, source, "w1", "multi-product")
+	if err != nil || replay.ID != shipment.ID {
+		t.Fatalf("replay = %#v, error: %v", replay, err)
+	}
+	if _, err := repo.CreateCartonShipmentFromSource(ctx, "s", items, source, "w1", "another-shipment"); err == nil {
+		t.Fatal("document was accepted for another shipment")
+	}
+}
+
 func TestInboundTransferExternalReferenceAndUnknownSource(t *testing.T) {
 	_, schema, red, _ := skuInventoryFixture(t)
 	db := inboundFixtureDB(t, schema)

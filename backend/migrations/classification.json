@@ -3,14 +3,14 @@
  "generated_by": "scripts/release/build_classification.py (MIG-02 step 1). Regenerate: python3 scripts/release/build_classification.py, then python3 scripts/release/generate_classification_md.py.",
  "repo_commit": "92f9cca",
  "counts": {
-  "EXPAND": 100,
+  "EXPAND": 101,
   "BACKFILL": 54,
   "CONTRACT": 62,
   "DESTRUCTIVE": 1,
-  "total": 217
+  "total": 218
  },
  "verdicts": {
-  "compatible": 195,
+  "compatible": 196,
   "tightening": 18,
   "breaking": 4
  },
@@ -6191,6 +6191,34 @@
    "verdict": "compatible",
    "old_binary_write": "The new column defaults to 1000000 for existing writes; the old binary never references it.",
    "notes": "Admin-configurable early-withdrawal floor for sellers (DRP-20).",
+   "moves_floor": false
+  },
+  {
+   "name": "202611250001_inbound_document_per_shipment.up.sql",
+   "class": "EXPAND",
+   "sha256": "3863f34621aff1c1fb1d90197211229db90592a9c4aac9632708504e56b0b14d",
+   "has_down_sql": true,
+   "tables": [
+    "inbound_inventory_lines"
+   ],
+   "operations": [
+    "EXCLUDE: one shipment per external reference",
+    "DROP INDEX: inbound_external_reference_unique"
+   ],
+   "runtime_ms_disposable": null,
+   "chunked": false,
+   "timeout_lock_seconds": null,
+   "timeout_statement_seconds": null,
+   "post_conditions": [
+    {
+     "sql": "SELECT count(*) FROM pg_constraint WHERE conrelid='inbound_inventory_lines'::regclass AND conname='inbound_external_reference_one_shipment' AND contype='x' AND convalidated",
+     "expected": 1
+    }
+   ],
+   "post_condition_status": "verified",
+   "verdict": "compatible",
+   "old_binary_write": "The prior application can continue to create single-line shipments and process existing shipment lines.",
+   "notes": "Replaces line-level document uniqueness with a database constraint that allows multiple lines only within one shipment.",
    "moves_floor": false
   }
  ]

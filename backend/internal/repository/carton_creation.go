@@ -102,7 +102,7 @@ func (r *SupplierRepository) CreateCartonShipmentFromSource(ctx context.Context,
 	if sourceRequest.Kind == "transfer" && (sourceRequest.ExternalReference != "" || sourceRequest.Reason != "") {
 		return nil, ErrInboundProvenance
 	}
-	if sourceRequest.Kind == "external_replenishment" && (len(lines) != 1 || sourceRequest.ExternalReference == "" || sourceRequest.Reason == "" || sourceRequest.SupplierWarehouseID != "") {
+	if sourceRequest.Kind == "external_replenishment" && (sourceRequest.ExternalReference == "" || sourceRequest.Reason == "" || sourceRequest.SupplierWarehouseID != "") {
 		return nil, ErrInboundProvenance
 	}
 	sourceCanonical, _ := json.Marshal(sourceRequest)

@@ -126,7 +126,6 @@ export const SupplierLabeledInboundTab: React.FC = () => {
       if (sourceKind === 'external_replenishment') {
         if (!externalReference.trim()) throw new Error('شماره فاکتور خرید یا شماره مدرک ورود کالا را وارد کن.');
         if (!sourceReason.trim()) throw new Error('دلیل ورود کالا را بنویس، مثلاً خرید از تولیدکننده.');
-        if (items.length !== 1) throw new Error('برای هر محموله ورود جدید فقط یک مدل کالا انتخاب کن.');
       }
       const source = sourceKind === 'transfer' ? {source_kind: sourceKind, supplier_warehouse_id: sourceId} : {source_kind: sourceKind, external_reference: externalReference.trim(), reason: sourceReason.trim()};
       const shipment = await draftOperation.current.submit({ items, warehouse_id: warehouseId, source });
@@ -160,7 +159,7 @@ export const SupplierLabeledInboundTab: React.FC = () => {
         <label className="block text-xs">نوع مبدأ<select value={sourceKind} onChange={e => setSourceKind(e.target.value)} className="w-full border rounded-xl p-2"><option value="transfer">انتقال موجودی رزروشده</option><option value="external_replenishment">ورود کالای جدید با فاکتور یا مدرک</option></select></label>
         {sourceKind === 'transfer' ? <label className="block text-xs">انبار مبدأ<select value={sourceId} onChange={e => setSourceId(e.target.value)} className="w-full border rounded-xl p-2"><option value="">انتخاب مبدأ</option>{(sourceWarehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label> : (
           <div className="space-y-3">
-            <p className="text-xs leading-5 text-slate-600">این گزینه برای کالایی است که به‌تازگی تأمین کرده‌ای. برای هر محموله یک مدل کالا انتخاب کن.</p>
+            <p className="text-xs leading-5 text-slate-600">کالاها و مدل‌های همین محموله را یکی‌یکی اضافه کن. همه با یک شماره مدرک و یک کد محموله ثبت می‌شوند.</p>
             <label className="block text-xs">
               شماره فاکتور خرید یا شماره مدرک ورود
               <input placeholder="مثلاً شماره فاکتور ۱۴۰۵-۲۵۸" aria-describedby="carton-document-help" value={externalReference} onChange={e => setExternalReference(e.target.value)} className="mt-1 w-full border rounded-xl p-2"/>

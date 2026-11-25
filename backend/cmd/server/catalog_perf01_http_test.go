@@ -727,7 +727,7 @@ func TestPerf01HTTPCampaignUsesOneTimeAndSnapshot(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	price := priceVariantsForResponseAt(p[0], variants[p[0].ID], inputs.Store, inputs.Settings, inputs.Locks, inputs.Overrides, activeCatalogCampaignsAt(inputs, inputs.AsOf), inputs.AsOf)[variant]
+	price := priceVariantsForResponse(p[0], variants[p[0].ID], inputs.Store, inputs.Settings, inputs.Locks, inputs.Overrides, activeCatalogCampaignsAt(inputs, inputs.AsOf))[variant]
 	if price.CampaignName != "Snapshot campaign" {
 		t.Fatalf("same response lost its selected campaign after external write: %+v", price)
 	}

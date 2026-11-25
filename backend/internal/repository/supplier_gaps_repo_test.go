@@ -6,8 +6,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/drup/platform/internal/testdb"
-
 	_ "github.com/lib/pq"
 )
 
@@ -208,11 +206,8 @@ func supplierGapsRepoSetup(t *testing.T) (*sql.DB, context.Context) {
 	if dsn == "" {
 		t.Skip("set TEAM04_TEST_DATABASE_URL to run the supplier-gaps repository tests")
 	}
-	db, err := testdb.Open(t, dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	// The reduced fixture drops and recreates canonical table names.
+	db := openPrivateFinanceFixture(t, dsn)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, supplierGapsRepoDDL); err != nil {
 		t.Fatalf("ddl: %v", err)

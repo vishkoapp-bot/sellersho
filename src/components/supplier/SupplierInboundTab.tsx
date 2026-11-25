@@ -66,7 +66,7 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const warehouseList = warehouses.data || [];
-  const hasWarehouses = warehouseList.length > 0;
+  const hasWarehouses = warehouseList.some(warehouse => warehouse.isReceivingOpen !== false);
   const capacityLine = (w: any): string => {
     const units = w.remainingUnits == null ? "نامحدود" : `${toPersianDigits(w.remainingUnits)} قلم`;
     let volume = w.remainingVolumeM3 == null ? "نامحدود" : `${toPersianDigits(Number(w.remainingVolumeM3).toFixed(3))} مترمکعب${w.unknownDimensionUnits > 0 ? " (حداقل)" : ""}`;
@@ -84,7 +84,7 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
     const cartonCount = Number(cartons);
     if (!productId || !Number.isSafeInteger(units) || units < 1 || !Number.isSafeInteger(cartonCount) || cartonCount < 1 || !carrier.trim()) { error('کالا را انتخاب کن و تعداد، کارتن و نام حامل را کامل وارد کن.'); return; }
     if (!sourceId) { error('انبار مبدأ را انتخاب کن.'); return; }
-    if (!warehouseId) { error('انبار مرکزی مقصد را انتخاب کن.'); return; }
+    if (!warehouseList.some(warehouse => (warehouse.warehouseId || warehouse.id) === warehouseId && warehouse.isReceivingOpen !== false)) { error('انبار مقصدی را انتخاب کن که پذیرش محموله دارد.'); return; }
     if (!dispatchAt.trim()) { error('زمان اعزام را وارد کن.'); return; }
     setSaving(true);
     try {
@@ -113,7 +113,7 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
       {!products.loading && !products.error && (
         <form onSubmit={submit} className="space-y-2 rounded-2xl border bg-white p-3">
           {(products.data || []).length === 0 && (<p className="text-[11px] leading-5 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">هنوز کالای تأییدشده‌ای نداری؛ اول از تب «کالاها و تنوع‌ها» کالایت را پیشنهاد بده.</p>)}
-          {!hasWarehouses && !warehouses.loading && (<p className="text-[11px] leading-5 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">هنوز انبار مرکزی تعیین نشده است؛ تا وقتی مدیر انبار مرکزی را ثبت کند، نمی‌توانی بار بفرستی. کالاها را نگه دار و بعداً برگرد.</p>)}
+          {!hasWarehouses && !warehouses.loading && !warehouses.error && (<p className="text-[11px] leading-5 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">فعلاً هیچ انبار مرکزی برای پذیرش محموله باز نیست.</p>)}
           <select required value={productId} onChange={event => setProductId(event.target.value)} className="w-full rounded-xl border p-2.5 min-h-[44px] text-xs">
             <option value="">انتخاب کالا</option>
             {(products.data || []).map((item: any) => (<option key={item.id} value={item.id}>{item.title}</option>))}
@@ -128,7 +128,7 @@ export const SupplierInboundTab: React.FC<{ embedded?: boolean }> = ({ embedded 
           <label className="block text-[11px] font-bold text-slate-600">انبار مرکزی مقصد
             <select required value={warehouseId} onChange={event => setWarehouseId(event.target.value)} disabled={!hasWarehouses} className="mt-1 w-full rounded-xl border p-2.5 min-h-[44px] text-xs">
               <option value="">انتخاب انبار مرکزی</option>
-              {warehouseList.map((w: any) => (<option key={w.warehouseId || w.id} value={w.warehouseId || w.id} disabled={!w.isReceivingOpen}>{w.warehouseName || w.name} — {w.cityName} · {capacityLine(w)}{w.isReceivingOpen ? "" : " · پذیرش بسته"}</option>))}
+              {warehouseList.map((w: any) => (<option key={w.warehouseId || w.id} value={w.warehouseId || w.id} disabled={w.isReceivingOpen === false}>{w.warehouseName || w.name} — {w.cityName} · {capacityLine(w)}{w.isReceivingOpen === false ? " · پذیرش بسته" : ""}</option>))}
             </select>
           </label>
           <label className="block text-[11px] font-bold text-slate-600">زمان اعزام

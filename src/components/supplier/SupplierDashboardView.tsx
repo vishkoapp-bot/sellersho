@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SupplierAuthGuard } from './SupplierAuthGuard';
+import { ApiError, apiRequest } from '../../services/apiClient';
 import { 
   ArrowRight, 
   LayoutDashboard, 
@@ -69,7 +70,7 @@ function supplierSectionHref(section: string, destination?: SectionDestination) 
 }
 
 export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) => {
-  const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, toPersianDigits } = useStore();
+  const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, updateContracts, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
   const [location, setLocation] = useState(readSupplierLocation);
   const mainRef = useRef<HTMLElement>(null);
@@ -103,8 +104,11 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     supplierApi.getNotifications().then((res) => setUnreadNotifCount(res.unreadCount)).catch(() => {});
   }, []);
   useEffect(() => { refreshUnreadNotifCount(); }, [refreshUnreadNotifCount]);
-  const [contractChecked, setContractChecked] = useState(false);
+  const [reviewedContractVersion, setReviewedContractVersion] = useState<number | null>(null);
+  const [contractSaving, setContractSaving] = useState(false);
+  useEffect(() => { setReviewedContractVersion(null); }, [supplierSession?.token]);
   const latestContractVersion = platformSettings.contracts?.supplierContractVersion || 0;
+  const contractChecked = reviewedContractVersion === latestContractVersion;
   const signedContractVersion = supplierSession?.signedContractVersion ?? 0;
   const canAcceptContract = supplierSession?.permissions?.includes('supplier.manage') ?? false;
   // Live parity (SupplierDashboardView-MERGED.js header, both occurrences): the header shows
@@ -114,13 +118,28 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const warehouseCityConfirmed = (supplierSession as typeof supplierSession & { warehouseCityConfirmed?: boolean })?.warehouseCityConfirmed;
   const showContractModal = !!supplierSession && canAcceptContract && latestContractVersion > 0 && signedContractVersion < latestContractVersion;
   const acceptContract = async () => {
-    if (!contractChecked || !supplierSession) return;
+    if (!contractChecked || !supplierSession || contractSaving) return;
+    setContractSaving(true);
     try {
-      await supplierApi.acceptContract(latestContractVersion);
-      setSupplierSession({ ...supplierSession, signedContractVersion: latestContractVersion });
-      success(`قرارداد جدید (نسخه ${toPersianDigits(latestContractVersion)}) قبول و ثبت شد.`);
-    } catch (err: any) {
-      error(err.message || 'ثبت قبول قرارداد انجام نشد.');
+      const { signedContractVersion: acceptedVersion } = await supplierApi.acceptContract(latestContractVersion);
+      setSupplierSession(current => current?.token === supplierSession.token ? { ...current, signedContractVersion: acceptedVersion } : current);
+      success(`نسخهٔ ${toPersianDigits(acceptedVersion)} قرارداد تأیید و ثبت شد.`);
+    } catch (cause: unknown) {
+      if (cause instanceof ApiError && cause.status === 409 && cause.body?.code === 'contract_version_changed') {
+        setReviewedContractVersion(null);
+        try {
+          const contracts = await apiRequest<{ supplierContractVersion: number; supplierContractText: string }>('/platform/contracts', { method: 'GET' });
+          if (!Number.isInteger(contracts.supplierContractVersion) || !contracts.supplierContractText?.trim()) throw new Error('Contract version or text missing');
+          updateContracts(contracts);
+          info('متن تازهٔ قرارداد بارگذاری شد. آن را بخوان و دوباره تأیید کن.');
+        } catch {
+          error('دریافت متن تازهٔ قرارداد انجام نشد. برای دیدن نسخهٔ جدید صفحه را تازه کن.');
+        }
+      } else {
+        error(cause instanceof Error ? cause.message : 'ثبت تأیید قرارداد انجام نشد.');
+      }
+    } finally {
+      setContractSaving(false);
     }
   };
 
@@ -228,11 +247,11 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
               {platformSettings.contracts?.supplierContractText}
             </div>
             <label className="flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-              <input type="checkbox" checked={contractChecked} onChange={(e) => setContractChecked(e.target.checked)} className="w-4 h-4 accent-brand-deep rounded mt-0.5" />
+              <input type="checkbox" checked={contractChecked} disabled={contractSaving} onChange={e => setReviewedContractVersion(e.target.checked ? latestContractVersion : null)} className="w-4 h-4 accent-brand-deep rounded mt-0.5" />
               <span className="text-[11px] text-slate-800 leading-relaxed font-bold">متن تازه قرارداد را خواندم و قبول دارم.</span>
             </label>
-            <button disabled={!contractChecked} onClick={() => void acceptContract()} className={`w-full py-2.5 min-h-[44px] font-bold text-xs rounded-xl shadow-xs transition-all ${contractChecked ? 'bg-brand-deep hover:bg-brand-deep text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
-              قبول دارم، ادامه بده
+            <button disabled={!contractChecked || contractSaving} onClick={() => void acceptContract()} className="min-h-11 w-full rounded-xl bg-brand-deep py-2.5 text-xs font-bold text-white shadow-xs transition-all disabled:opacity-50">
+              {contractSaving ? 'در حال ثبت…' : 'قبول دارم، ادامه بده'}
             </button>
           </div>
         </div>

@@ -16,6 +16,7 @@ import (
 )
 
 var ErrCartonCreationConflict = errors.New("carton creation key belongs to a different payload")
+var ErrCartonDestinationUnavailable = errors.New("carton destination is unavailable for receiving")
 var errCartonDiscoveryChanged = errors.New("carton product discovery changed")
 
 func normalizeCartonRequest(items []CartonShipmentItem, destination []string) ([]CartonShipmentItem, string, string, string, error) {
@@ -167,12 +168,12 @@ func (r *SupplierRepository) createCartonShipmentAttempt(ctx context.Context, su
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	var active bool
-	if err := tx.QueryRowContext(ctx, `SELECT is_active FROM warehouses WHERE id=$1 FOR SHARE`, warehouse).Scan(&active); err != nil {
+	var destination string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM warehouses WHERE id=$1 AND is_active AND is_receiving_open FOR SHARE`, warehouse).Scan(&destination); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCartonDestinationUnavailable
+		}
 		return nil, err
-	}
-	if !active {
-		return nil, fmt.Errorf("destination warehouse is inactive")
 	}
 	source := ""
 	for _, line := range lines {

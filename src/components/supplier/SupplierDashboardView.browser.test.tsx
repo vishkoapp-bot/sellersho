@@ -19,7 +19,16 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       build.onResolve({ filter: /context\/StoreContext$/ }, () => ({ path: 'store', namespace: 'fixture' }));
       build.onResolve({ filter: /^\.\/SupplierAuthGuard$/ }, () => ({ path: 'guard', namespace: 'fixture' }));
       build.onLoad({ filter: /^store$/, namespace: 'fixture' }, () => ({
-        contents: 'export const useStore=()=>({supplierSession:{supplierId:"supplier",token:"fixture",permissions:["supplier.manage"]},platformSettings:{},formatPrice:String,toPersianDigits:String});',
+        resolveDir: process.cwd(),
+        contents: `
+          import { useState } from 'react';
+          export const useStore = () => {
+            const [supplierSession, setSupplierSession] = useState({ supplierId: 'supplier', token: 'fixture', permissions: ['supplier.manage'], signedContractVersion: 1 });
+            const [contracts, updateContracts] = useState(() => new URLSearchParams(location.search).has('contract-check')
+              ? { supplierContractVersion: 2, supplierContractText: 'متن قرارداد قبلی' } : undefined);
+            return { supplierSession, setSupplierSession, platformSettings: { contracts }, updateContracts, formatPrice: String, toPersianDigits: String };
+          };
+        `,
       }));
       build.onLoad({ filter: /^guard$/, namespace: 'fixture' }, () => ({
         contents: 'export const SupplierAuthGuard=({children})=>children;',
@@ -39,6 +48,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
   let directStatus = 'requested';
   let shipmentStatus = 'draft';
   let deletedPhotos = 0;
+  const contractVersions: number[] = [];
   const shipmentUpdates: unknown[] = [];
   const server = createServer(async (request, response) => {
     const { pathname: path, searchParams } = new URL(request.url ?? '/', 'http://fixture');
@@ -46,6 +56,19 @@ test('supplier sections, navigation history and daily workflows work on mobile a
     const font = path.endsWith('.woff2') ? assets.find(asset => `/${asset.fileName}` === path) : undefined;
     if (font) { response.setHeader('Content-Type', 'font/woff2'); response.end(font.source); }
     else if (path === '/supplier-test.css') { response.setHeader('Content-Type', 'text/css'); response.end(css.source); }
+    else if (path === '/api/v1/platform/contracts') response.end(JSON.stringify({ supplierContractVersion: 3, supplierContractText: 'متن قرارداد به‌روزشده' }));
+    else if (path === '/api/v1/supplier/contract/accept' && request.method === 'POST') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const { version } = JSON.parse(body);
+      contractVersions.push(version);
+      if (version !== 3) {
+        response.statusCode = 409;
+        response.end('{"code":"contract_version_changed"}');
+      } else {
+        response.end('{"signedContractVersion":3,"platformContractVersion":3,"success":true}');
+      }
+    }
     else if (path === '/api/v1/supplier/orders') response.end(JSON.stringify({ orders, hasMore: true }));
     else if (path === '/api/v1/supplier/analytics') response.end('{"orderCount":0,"totalBaseAmount":0,"totalQuantity":0,"returns":{"totalReturned":0}}');
     else if (path === '/api/v1/supplier/shipping-methods') response.end(JSON.stringify([{ method: 'direct', status: directStatus }, { method: 'warehouse', status: 'disabled' }]));
@@ -88,6 +111,23 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       page.on('pageerror', cause => pageErrors.push(String(cause)));
       await page.setViewport({ width: 360, height: 800, isMobile: true, hasTouch: true });
       const base = `http://127.0.0.1:${address.port}/supplier`;
+      await page.goto(`${base}?contract-check=stale`);
+      const contractCheckbox = await page.waitForSelector('label input[type="checkbox"]', { visible: true });
+      assert.ok(contractCheckbox);
+      assert.ok(await page.evaluate(() => [...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'قبول دارم، ادامه بده' && button.disabled)));
+      const submitContract = async () => {
+        const button = await page.waitForFunction(() => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === 'قبول دارم، ادامه بده' && !item.disabled));
+        await button.asElement()!.click();
+      };
+      await contractCheckbox.click();
+      await submitContract();
+      await page.waitForFunction(() => document.body.innerText.includes('متن قرارداد به‌روزشده') && [...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'قبول دارم، ادامه بده' && button.disabled));
+      assert.deepEqual(contractVersions, [2]);
+      assert.equal(await contractCheckbox.evaluate(input => (input as HTMLInputElement).checked), false);
+      await contractCheckbox.click();
+      await submitContract();
+      await page.waitForSelector('label input[type="checkbox"]', { hidden: true });
+      assert.deepEqual(contractVersions, [2, 3]);
       await page.goto(base);
       await page.waitForFunction(() => {
         const counts = [...document.querySelectorAll('main li')].map(row => row.textContent ?? '');

@@ -31,7 +31,10 @@ test('supplier can combine different products, resume the draft and reach dispat
     if (path === '/products') response.end(JSON.stringify([{ id: 'product', title: 'Test product' }, { id: 'other', title: 'Other product' }]));
     else if (path === '/products/product/variants') response.end(JSON.stringify([{ id: 'sku', variant_name: 'Test model', spnc: 'SKU001' }]));
     else if (path === '/products/other/variants') response.end(JSON.stringify([{ id: 'other-sku', variant_name: 'Other model', spnc: 'SKU002' }]));
-    else if (path === '/warehouses/central') response.end(JSON.stringify([{ id: 'central', name: 'Central' }]));
+    else if (path === '/warehouses/central') response.end(JSON.stringify([
+      { id: 'closed', name: 'Closed destination', isReceivingOpen: false },
+      { id: 'central', name: 'Central', isReceivingOpen: true },
+    ]));
     else if (path === '/warehouses') response.end(JSON.stringify([{ id: 'active', name: 'Active source', isActive: true }, { id: 'inactive', name: 'Inactive source', isActive: false }]));
     else if (path === '/inventory') response.end('{"inventory":[]}');
     else if (path === '/shipments' && request.method === 'POST') {
@@ -73,6 +76,7 @@ test('supplier can combine different products, resume the draft and reach dispat
       await page.select('label select', 'external_replenishment');
       await page.type('input[aria-describedby="carton-document-help"]', 'INV-1');
       await page.type('input[placeholder="مثلاً خرید از تولیدکننده برای شارژ موجودی"]', 'Purchase');
+      assert.equal(await page.$eval('select[aria-label="انبار مرکزی مقصد"] option[value="closed"]', option => (option as HTMLOptionElement).disabled), true);
       await page.select('select[aria-label="انبار مرکزی مقصد"]', 'central');
       await click('ثبت محموله و گرفتن کد کارتن');
       await page.waitForFunction(() => document.body.innerText.includes('CARTON01') && document.body.innerText.includes('ثبت ارسال'));

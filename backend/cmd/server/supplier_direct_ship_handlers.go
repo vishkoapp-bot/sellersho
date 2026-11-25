@@ -467,16 +467,11 @@ func handleGetSupplierOrders(
 		return
 	}
 	shipments := page.Items
-	// PERF-02 Step 5: one batched counts query + one batched lines query
-	// for the whole page — the old code ran both per shipment (2N queries).
+	// Fetch direct fulfillment lines once for the whole page. Use their
+	// quantities for the card totals so warehouse units are excluded.
 	var orderIDs []string
 	for _, s := range shipments {
 		orderIDs = append(orderIDs, s.OrderID)
-	}
-	itemCounts, err := shipmentRepo.SupplierItemCounts(ctx, orderIDs, supplierID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
 	}
 	fulfillmentLines, err := shipmentRepo.ListSupplierFulfillmentLinesForOrders(ctx, supplierID, orderIDs)
 	if err != nil {
@@ -520,10 +515,13 @@ func handleGetSupplierOrders(
 		if s.TrackingNumber != nil {
 			trackingStr = *s.TrackingNumber
 		}
-		itemCount := itemCounts[s.OrderID]
 		lines := fulfillmentLines[s.OrderID]
 		if lines == nil {
 			lines = []repository.SupplierFulfillmentLine{}
+		}
+		itemCount := 0
+		for _, line := range lines {
+			itemCount += line.Quantity
 		}
 		ordersView = append(ordersView, OrderItemView{
 			ID:             s.ID,
@@ -790,6 +788,10 @@ func handleSupplierAcceptOrder(
 		}
 		if errors.Is(err, repository.ErrShipmentNotPending) {
 			http.Error(w, `{"error":"این سفارش دیگر در وضعیت انتظار نیست؛ قبلاً قبول شده یا ارسال شده است."}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, repository.ErrShipmentState) {
+			http.Error(w, `{"error":"فقط سفارش پرداخت‌شده و لغونشده را می‌توان پذیرفت."}`, http.StatusConflict)
 			return
 		}
 		writeInternalError(w, err)

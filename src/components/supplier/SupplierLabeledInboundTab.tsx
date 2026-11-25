@@ -59,6 +59,8 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   const products = useSupplierResource(supplierApi.getProducts);
   const [productId, setProductId] = useState('');
   const warehouses = useSupplierResource(supplierApi.getCentralWarehouses);
+  const destinations = warehouses.data ?? [];
+  const hasOpenDestination = destinations.some(warehouse => warehouse.isReceivingOpen !== false);
   const sourceWarehouses = useSupplierResource(supplierApi.getMyWarehouses);
   const activeSources = (sourceWarehouses.data ?? []).filter(warehouse => warehouse.isActive !== false);
   const sourceInventory = useSupplierResource(supplierApi.getInventoryLocations);
@@ -141,7 +143,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   const submit = async () => {
     if (submittingRef.current) return;
     setSubmitError('');
-    if (!warehouseId || !(warehouses.data || []).some((w: any) => w.id === warehouseId)) { setSubmitError('انبار مقصد را انتخاب کن.'); return; }
+    if (!destinations.some(warehouse => warehouse.id === warehouseId && warehouse.isReceivingOpen !== false)) { setSubmitError('انبار مقصدی را انتخاب کن که پذیرش محموله دارد.'); return; }
     const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) }));
     if (items.length === 0) { setSubmitError('حداقل یک تنوع کالا به محموله اضافه کن.'); return; }
     const invalidLine = items.findIndex(item => !Number.isSafeInteger(item.expected_qty) || item.expected_qty <= 0 || item.expected_qty > 2147483647);
@@ -215,10 +217,11 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
           <SupplierResourceState loading={sourceInventory.loading} error={sourceInventory.error} retry={sourceInventory.reload} />
         )}
         <SupplierResourceState loading={warehouses.loading} error={warehouses.error} retry={warehouses.reload} />
+        {!warehouses.loading && !warehouses.error && !hasOpenDestination && <p className="rounded-xl bg-brand-bg p-3 text-sm leading-6 text-slate-700">فعلاً هیچ انبار مرکزی برای پذیرش محموله باز نیست.</p>}
         <label className="block text-sm font-bold">انبار مرکزی مقصد
           <select aria-label="انبار مرکزی مقصد" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className={fieldClass}>
             <option value="">انبار مقصد را انتخاب کن</option>
-            {(warehouses.data || []).map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            {destinations.map(warehouse => <option key={warehouse.id} value={warehouse.id} disabled={warehouse.isReceivingOpen === false}>{warehouse.name}{warehouse.isReceivingOpen === false ? ' · پذیرش بسته' : ''}</option>)}
           </select>
         </label>
         <SupplierResourceState loading={products.loading} error={products.error} retry={products.reload} />
@@ -258,7 +261,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
         )}
         </fieldset>
         {submitError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{submitError}</p>}
-        <button type="button" onClick={submit} disabled={submitting || warehouses.loading || !!warehouses.error} className="w-full py-2.5 min-h-12 rounded-xl bg-brand-deep text-white text-sm font-bold hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
+        <button type="button" onClick={submit} disabled={submitting || warehouses.loading || !!warehouses.error || !hasOpenDestination} className="w-full py-2.5 min-h-12 rounded-xl bg-brand-deep text-white text-sm font-bold hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
           {submitting && (<RefreshCw className="w-4 h-4 animate-spin"  strokeWidth={1.5}/>)}
           <Truck className="w-4 h-4"  strokeWidth={1.5}/>
           <span>{submitting ? "در حال ثبت…" : "ثبت محموله و گرفتن کد کارتن"}</span>

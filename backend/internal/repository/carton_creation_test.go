@@ -3,12 +3,47 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestCartonCreationHonorsWarehouseReceivingGate(t *testing.T) {
+	db, repo, red, blue := cartonFixture(t)
+	ctx := context.Background()
+	items := []CartonShipmentItem{{red, 1}}
+	booked, err := repo.CreateCartonShipment(ctx, "s", items, "w1", "existing-before-close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE warehouses SET is_receiving_open=FALSE, province_name='Province', city_name='City' WHERE id='w1'`); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := repo.CreateCartonShipment(ctx, "s", items, "w1", "existing-before-close")
+	if err != nil || replayed.ID != booked.ID || replayed.Status != booked.Status {
+		t.Fatalf("replay after closure = %+v, %v", replayed, err)
+	}
+	if _, err := repo.CreateCartonShipment(ctx, "s", []CartonShipmentItem{{blue, 1}}, "w1", "new-while-closed"); !errors.Is(err, ErrCartonDestinationUnavailable) {
+		t.Fatalf("new carton at closed warehouse should be rejected, got %v", err)
+	}
+	assertCartonCounts(t, db, 1, 1)
+	if _, err := db.Exec(`UPDATE warehouses SET province_name='Province', city_name='City' WHERE id='w2'`); err != nil {
+		t.Fatal(err)
+	}
+	warehouses, err := repo.ListCentralWarehouses(ctx)
+	if err != nil || len(warehouses) != 2 {
+		t.Fatalf("warehouse list = %+v, %v", warehouses, err)
+	}
+	if closed := warehouses[0]; closed.ID != "w1" || !closed.IsActive || closed.IsReceivingOpen {
+		t.Fatalf("active closed warehouse incorrectly advertised: %+v", closed)
+	}
+	if _, err := repo.CreateCartonShipment(ctx, "s", []CartonShipmentItem{{blue, 1}}, "w2", "new-open"); err != nil {
+		t.Fatalf("new carton at open warehouse failed: %v", err)
+	}
+}
 
 func cartonFixture(t *testing.T) (*sql.DB, *SupplierRepository, string, string) {
 	t.Helper()

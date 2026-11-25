@@ -4,7 +4,7 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ToastProvider } from '../../context/ToastContext';
 import { supplierApi } from '../../services/supplierApi';
-import { SupplierTapinCard } from './SupplierNewTabs';
+import { createSupplierReturnBackSubmitter, SupplierTapinCard } from './SupplierNewTabs';
 
 // E6: the Tapin card must NOT auto-test on mount, and the manual test must
 // be bounded and cancellable (AbortController + 15 s client timeout).
@@ -40,6 +40,32 @@ const stubFetch = (payload: unknown, opts: { throwOnAbort?: boolean } = {}) => {
   };
   return { calls, restore: () => { (globalThis as any).fetch = prev; } };
 };
+
+it('replays an uncertain return-back request and rearms its key after success', async () => {
+  const keys: string[] = [];
+  const originalRequest = supplierApi.requestCustomerReturnBack;
+  supplierApi.requestCustomerReturnBack = async (returnItemId, quantity, reason, key) => {
+    keys.push(key);
+    if (keys.length === 1) throw new Error('response lost');
+    if (keys.length === 2 || keys.length === 5) return {};
+    return { id: 'persisted-request', returnItemId, quantity, reason };
+  };
+  try {
+    const submit = createSupplierReturnBackSubmitter();
+    await assert.rejects(submit('item-1', 1, 'send back'), /response lost/);
+    await assert.rejects(submit('item-1', 1, 'send back'), /پاسخ ثبت درخواست عودت کامل نبود/);
+    await submit('item-1', 1, 'send back');
+    assert.deepEqual(keys.slice(0, 3), [keys[0], keys[0], keys[0]]);
+
+    await submit('item-1', 1, 'send back');
+    assert.notEqual(keys[3], keys[0]);
+    await assert.rejects(submit('item-1', 1, 'send back'), /پاسخ ثبت درخواست عودت کامل نبود/);
+    await submit('item-1', 1, 'different reason');
+    assert.notEqual(keys[5], keys[4]);
+  } finally {
+    supplierApi.requestCustomerReturnBack = originalRequest;
+  }
+});
 
 it('testTapinConnection posts an empty body to /supplier/tapin/test with a bounded signal', async () => {
   const { calls, restore } = stubFetch({ ok: true, serviceActive: true, message: 'سرویس فعال است.' });

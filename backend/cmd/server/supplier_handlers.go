@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/bank"
@@ -907,16 +908,30 @@ func (h *SupplierHandlers) HandleGetInbounds(w http.ResponseWriter, r *http.Requ
 
 // 12. GET /api/v1/supplier/inbounds/:id
 func (h *SupplierHandlers) HandleGetInboundByID(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	parts := strings.Split(r.URL.Path, "/")
-	inboundID := parts[len(parts)-1]
-
-	inb, err := h.supplierRepo.GetInboundByID(r.Context(), inboundID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
 		return
 	}
-	json.NewEncoder(w).Encode(inb)
+	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
+	if !ok {
+		return
+	}
+	inboundID, ok := strings.CutPrefix(r.URL.Path, "/api/v1/supplier/inbounds/")
+	if !ok || inboundID == "" || strings.Contains(inboundID, "/") {
+		t01WriteJSON(w, http.StatusNotFound, map[string]string{"error": "محموله یافت نشد."})
+		return
+	}
+
+	inb, err := h.supplierRepo.GetSupplierInboundByID(r.Context(), supplierID, inboundID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if inb == nil {
+		t01WriteJSON(w, http.StatusNotFound, map[string]string{"error": "محموله یافت نشد."})
+		return
+	}
+	t01WriteJSON(w, http.StatusOK, inb)
 }
 
 // POST /api/v1/supplier/inbounds/:id/dispatch (FIX 45, live tn
@@ -1129,6 +1144,10 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 	verification := bank.VerifySheba(req.Shaba)
 	if req.Amount <= 0 || !verification.IsValid || strings.TrimSpace(req.AccountHolder) == "" {
 		http.Error(w, `{"error":"Positive amount, valid IBAN and account holder required"}`, http.StatusBadRequest)
+		return
+	}
+	if utf8.RuneCountInString(req.AccountHolder) > 100 {
+		http.Error(w, `{"error":"Account holder must be at most 100 characters"}`, http.StatusBadRequest)
 		return
 	}
 	req.Shaba = strings.ToUpper(strings.TrimSpace(req.Shaba))

@@ -376,6 +376,65 @@ func gap14ShipmentStatus(t *testing.T, db *sql.DB, shipmentID string) string {
 	return status
 }
 
+func TestGap14SupplierAcceptRejectsUnpaidAndCancelledOrders(t *testing.T) {
+	db, repo := gap14Repos(t)
+	for _, tc := range []struct {
+		name, orderID, shipmentID, payment, status string
+	}{
+		{"unpaid", "ord-direct", "ship-1", "pending", "processing"},
+		{"cancelled", "ord-direct2", "ship-2", "paid", "cancelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE orders SET payment_status=$2, status=$3 WHERE id=$1`, tc.orderID, tc.payment, tc.status); err != nil {
+				t.Fatal(err)
+			}
+			rec := gap14Accept(t, repo, "sup-a", tc.orderID)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("accept status = %d, want 409, body %s", rec.Code, rec.Body.String())
+			}
+			if got := gap14ShipmentStatus(t, db, tc.shipmentID); got != "pending" {
+				t.Fatalf("accept changed shipment to %q, want unchanged pending state", got)
+			}
+			var events int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM supplier_shipment_audit_logs WHERE shipment_id=$1 AND action='accepted'`, tc.shipmentID).Scan(&events); err != nil || events != 0 {
+				t.Fatalf("unexpected acceptance audit count %d, error %v", events, err)
+			}
+		})
+	}
+}
+
+func TestGap14DirectOrderCountOnlyIncludesSupplierDispatchUnits(t *testing.T) {
+	db, repo := gap14Repos(t)
+	if _, err := db.Exec(`INSERT INTO order_items (id, order_id, product_id, quantity, wholesale_cost)
+		VALUES ('it-extra-warehouse','ord-direct','prod-a-wh',3,1000)`); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := gap14GetSupplierOrders(t, repo, gap14Ctx("sup-a", "supplier"), "/api/v1/supplier/orders")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("orders status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Orders []struct {
+			OrderID   string                               `json:"orderId"`
+			ItemCount int                                  `json:"itemCount"`
+			Items     []repository.SupplierFulfillmentLine `json:"items"`
+		} `json:"orders"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range result.Orders {
+		if order.OrderID != "ord-direct" {
+			continue
+		}
+		if len(order.Items) != 1 || order.Items[0].ProductID != "prod-a-direct" || order.ItemCount != order.Items[0].Quantity {
+			t.Fatalf("direct order count and lines disagree: %+v", order)
+		}
+		return
+	}
+	t.Fatal("mixed dispatch order not returned")
+}
+
 func TestGap14AcceptThenShipStillWorks(t *testing.T) {
 	db, repo := gap14Repos(t)
 	ctx := context.Background()

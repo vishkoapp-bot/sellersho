@@ -540,7 +540,7 @@ export const supplierApi = {
     return Array.isArray(data) ? data : (data?.warehouses ?? data?.data ?? []);
   },
   getProfile: () => apiRequest<any>('/supplier/profile', { method: 'GET', auth: true }),
-  acceptContract: (version: number) => apiRequest('/supplier/contract/accept', { method: 'POST', auth: true, body: JSON.stringify({ version }) }),
+  acceptContract: (version: number) => apiRequest<{ signedContractVersion: number }>('/supplier/contract/accept', { method: 'POST', auth: true, body: JSON.stringify({ version }) }),
   updateProductOrigin: (id: string, warehouseId: string) => apiRequest(`/supplier/products/${encodeURIComponent(id)}/origin`, { method: 'PUT', auth: true, body: JSON.stringify({ supplierWarehouseId: warehouseId }) }),
   // G4 — bulk origin assign: omitted productIds assigns ALL NULL-origin
   // supplier_direct products of the caller; JSON drops undefined, so an

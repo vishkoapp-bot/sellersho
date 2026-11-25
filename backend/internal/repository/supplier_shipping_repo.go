@@ -82,18 +82,30 @@ func (r *SupplierShipmentRepository) AcceptShipment(ctx context.Context, supplie
 		return err
 	}
 	defer tx.Rollback()
-	var shipmentID, status string
-	if err := tx.QueryRowContext(ctx, `SELECT id, status FROM supplier_shipments WHERE (id = $1 OR order_id = $1) AND supplier_id = $2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, id, supplierID).Scan(&shipmentID, &status); err != nil {
+	var shipmentID, orderID string
+	if err := tx.QueryRowContext(ctx, `SELECT id, order_id FROM supplier_shipments WHERE (id = $1 OR order_id = $1) AND supplier_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, id, supplierID).Scan(&shipmentID, &orderID); err != nil {
+		return err
+	}
+	// Cancellation and dispatch acquire the order guard before any shipment.
+	// Check payment and cancellation while holding that same guard.
+	if err := lockFulfillmentOrderTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	var orderStatus, paymentStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status, payment_status FROM orders WHERE id = $1`, orderID).Scan(&orderStatus, &paymentStatus); err != nil {
+		return err
+	}
+	if paymentStatus != "paid" || orderStatus == "cancelled" {
+		return ErrShipmentState
+	}
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM supplier_shipments WHERE id = $1 AND supplier_id = $2 FOR UPDATE`, shipmentID, supplierID).Scan(&status); err != nil {
 		return err
 	}
 	if status != "pending" {
 		return ErrShipmentNotPending
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE supplier_shipments SET status = 'processing', updated_at = NOW() WHERE id = $1 AND supplier_id = $2`, shipmentID, supplierID); err != nil {
-		return err
-	}
-	var acceptOrderID string
-	if err := tx.QueryRowContext(ctx, `SELECT order_id FROM supplier_shipments WHERE id = $1`, shipmentID).Scan(&acceptOrderID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipment_audit_logs (id, shipment_id, actor_user_id, action, timestamp) VALUES ($1, $2, $3, 'accepted', NOW())`, uuid.NewString(), shipmentID, actor); err != nil {
@@ -103,32 +115,8 @@ func (r *SupplierShipmentRepository) AcceptShipment(ctx context.Context, supplie
 		return err
 	}
 	// P1-5 (best-effort): supplier accepted the order - customer.
-	notifySupplierAccepted(ctx, r.db, acceptOrderID, "")
+	notifySupplierAccepted(ctx, r.db, orderID, "")
 	return nil
-}
-
-// SupplierItemCounts returns the supplier item quantity per order for a set
-// of orders in ONE query. PERF-02 Step 5: the supplier orders tab used to
-// call SupplierItemCount once per shipment (N+1).
-func (r *SupplierShipmentRepository) SupplierItemCounts(ctx context.Context, orderIDs []string, supplierID string) (map[string]int, error) {
-	out := map[string]int{}
-	if len(orderIDs) == 0 {
-		return out, nil
-	}
-	rows, err := r.db.QueryContext(ctx, `SELECT oi.order_id, COALESCE(SUM(oi.quantity), 0) FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ANY($1::text[]) AND p.supplier_id = $2 GROUP BY oi.order_id`, pq.Array(orderIDs), supplierID)
-	if err != nil {
-		return nil, fmt.Errorf("count supplier items: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var orderID string
-		var count int
-		if err := rows.Scan(&orderID, &count); err != nil {
-			return nil, err
-		}
-		out[orderID] = count
-	}
-	return out, rows.Err()
 }
 
 func (r *SupplierShipmentRepository) SupplierItemCount(ctx context.Context, orderID, supplierID string) (int, error) {

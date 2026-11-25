@@ -902,24 +902,41 @@ func (r *SupplierRepository) GetSupplierContractVersion(ctx context.Context) (in
 	return v, nil
 }
 
-// UpdateSignedContractVersion records the platform supplier contract version
-// the supplier accepted (registration sets it implicitly; this is used by the
-// re-confirmation flow when the platform publishes a newer contract).
-func (r *SupplierRepository) UpdateSignedContractVersion(ctx context.Context, supplierID string, version int) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE suppliers SET signed_contract_version = $2 WHERE id = $1
-	`, supplierID, version)
+var ErrSupplierContractVersionChanged = errors.New("supplier contract version changed")
+
+type SupplierContractAcceptance struct {
+	SignedVersion   int
+	PlatformVersion int
+	AlreadyCurrent  bool
+}
+
+// AcceptSupplierContractVersion records only the version the supplier reviewed.
+// The shared settings lock prevents a new version from being published between
+// the version check and the write to the supplier record.
+func (r *SupplierRepository) AcceptSupplierContractVersion(ctx context.Context, supplierID string, version int) (SupplierContractAcceptance, error) {
+	var result SupplierContractAcceptance
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return result, err
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
+	defer tx.Rollback()
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(supplier_contract_version, 2) FROM platform_settings WHERE id = 1 FOR SHARE`).Scan(&result.PlatformVersion); err != nil {
+		return result, err
 	}
-	if affected == 0 {
-		return sql.ErrNoRows
+	if version != result.PlatformVersion || version <= 0 {
+		return result, ErrSupplierContractVersionChanged
 	}
-	return nil
+	if err := tx.QueryRowContext(ctx, `SELECT signed_contract_version FROM suppliers WHERE id = $1 FOR UPDATE`, supplierID).Scan(&result.SignedVersion); err != nil {
+		return result, err
+	}
+	result.AlreadyCurrent = result.SignedVersion >= version
+	if !result.AlreadyCurrent {
+		if _, err := tx.ExecContext(ctx, `UPDATE suppliers SET signed_contract_version = $2 WHERE id = $1`, supplierID, version); err != nil {
+			return result, err
+		}
+		result.SignedVersion = version
+	}
+	return result, tx.Commit()
 }
 
 // GetSuppliersByIDs fetches many suppliers in ONE query (P2-9 N+1 fix):
@@ -2604,14 +2621,6 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 		warehouseID, _ = data["warehouse_id"].(string)
 	}
 	warehouseName := "انبار مرکزی تهران"
-	if warehouseID != "" {
-		if qerr := r.db.QueryRowContext(ctx, `SELECT name FROM warehouses WHERE id = $1 AND is_active=TRUE`, warehouseID).Scan(&warehouseName); qerr != nil {
-			if errors.Is(qerr, sql.ErrNoRows) {
-				return "", fmt.Errorf("%w: انبار مرکزی انتخاب‌شده موجود یا فعال نیست", ErrInboundInput)
-			}
-			return "", qerr
-		}
-	}
 	dispatchStr, _ := data["dispatchAt"].(string)
 	if dispatchStr == "" {
 		dispatchStr, _ = data["dispatch_at"].(string)
@@ -2649,6 +2658,14 @@ func (r *SupplierRepository) CreateInbound(ctx context.Context, supplierID strin
 	}
 	if err := lockInventoryParentsTx(ctx, tx, parents); err != nil {
 		return "", err
+	}
+	if warehouseID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM warehouses WHERE id=$1 AND is_active AND is_receiving_open FOR SHARE`, warehouseID).Scan(&warehouseName); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", fmt.Errorf("%w: انبار مرکزی انتخاب‌شده فعلاً پذیرش محموله ندارد", ErrInboundInput)
+			}
+			return "", err
+		}
 	}
 	_, err = tx.ExecContext(ctx, query, inboundID, supplierID, supName, sql.NullString{String: warehouseID, Valid: warehouseID != ""}, warehouseName, itemsCount, cartonsCount, carrier, plate, notes, itemsBytes, dispatchAt, sourceWarehouse)
 	if err != nil {
@@ -3314,6 +3331,46 @@ func (r *SupplierRepository) supplierOwnsProduct(ctx context.Context, supplierID
 	return ok, err
 }
 
+const supplierProductGalleryQuery = `SELECT id, image_url, sort_order FROM product_images WHERE product_id = $1 ORDER BY sort_order ASC, created_at ASC, id ASC`
+const supplierVariantGalleryQuery = `SELECT id, image_url, sort_order FROM product_variant_images WHERE variant_id = $1 ORDER BY sort_order ASC, created_at ASC, id ASC`
+
+func (r *SupplierRepository) beginOwnedGalleryTx(ctx context.Context, supplierID, productID, variantID string) (*sql.Tx, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Serialize gallery changes before reading their current contents. Keep
+	// the product-before-variant lock order used by SKU inventory writes.
+	var locked string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM products WHERE id = $1 AND supplier_id = $2 FOR NO KEY UPDATE`, productID, supplierID).Scan(&locked); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if variantID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM product_variants WHERE id = $1 AND product_id = $2 FOR NO KEY UPDATE`, variantID, productID).Scan(&locked); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+	return tx, nil
+}
+
+func readSupplierGalleryImages(rows *sql.Rows, err error) ([]SupplierProductImage, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	images := []SupplierProductImage{}
+	for rows.Next() {
+		var im SupplierProductImage
+		if err := rows.Scan(&im.ID, &im.ImageURL, &im.SortOrder); err != nil {
+			return nil, err
+		}
+		images = append(images, im)
+	}
+	return images, rows.Err()
+}
+
 func (r *SupplierRepository) ListProductImages(ctx context.Context, supplierID, productID string) ([]SupplierProductImage, error) {
 	owns, err := r.supplierOwnsProduct(ctx, supplierID, productID)
 	if err != nil {
@@ -3322,51 +3379,80 @@ func (r *SupplierRepository) ListProductImages(ctx context.Context, supplierID, 
 	if !owns {
 		return nil, sql.ErrNoRows
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT id, image_url, sort_order FROM product_images WHERE product_id = $1 ORDER BY sort_order ASC, created_at ASC`, productID)
+	return readSupplierGalleryImages(r.db.QueryContext(ctx, supplierProductGalleryQuery, productID))
+}
+
+func (r *SupplierRepository) CheckProductGalleryRoom(ctx context.Context, supplierID, productID string, newCount int) error {
+	owns, err := r.supplierOwnsProduct(ctx, supplierID, productID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
-	out := []SupplierProductImage{}
-	for rows.Next() {
-		var im SupplierProductImage
-		if err := rows.Scan(&im.ID, &im.ImageURL, &im.SortOrder); err != nil {
-			return nil, err
-		}
-		out = append(out, im)
+	if !owns {
+		return sql.ErrNoRows
 	}
-	return out, rows.Err()
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_images WHERE product_id = $1`, productID).Scan(&count); err != nil {
+		return err
+	}
+	if count+newCount > 8 {
+		return ErrGalleryFull
+	}
+	return nil
 }
 
 func (r *SupplierRepository) AddProductImages(ctx context.Context, supplierID, productID string, urls []string) ([]SupplierProductImage, error) {
-	owns, err := r.supplierOwnsProduct(ctx, supplierID, productID)
-	if err != nil {
-		return nil, err
-	}
-	if !owns {
-		return nil, sql.ErrNoRows
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, "")
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_images WHERE product_id = $1`, productID).Scan(&count); err != nil {
+	images, err := readSupplierGalleryImages(tx.QueryContext(ctx, supplierProductGalleryQuery, productID))
+	if err != nil {
 		return nil, err
 	}
-	if count+len(urls) > 8 {
+	if len(images)+len(urls) > 8 {
 		return nil, ErrGalleryFull
 	}
+	nextOrder := nextSupplierGalleryOrder(images)
 	for k, u := range urls {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO product_images (product_id, image_url, sort_order) VALUES ($1, $2, $3)`, productID, u, count+k); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product_images (product_id, image_url, sort_order) VALUES ($1, $2, $3)`, productID, u, nextOrder+k); err != nil {
+			return nil, err
+		}
+	}
+	if len(urls) > 0 {
+		if err := syncSupplierGalleryCoverTx(ctx, tx, productID); err != nil {
+			return nil, err
+		}
+		images, err = readSupplierGalleryImages(tx.QueryContext(ctx, supplierProductGalleryQuery, productID))
+		if err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.ListProductImages(ctx, supplierID, productID)
+	return images, nil
+}
+
+func nextSupplierGalleryOrder(images []SupplierProductImage) int {
+	if len(images) == 0 {
+		return 0
+	}
+	return images[len(images)-1].SortOrder + 1
+}
+
+// Listing cards read products.image_url, while gallery previews read
+// product_images. Both must publish the same cover at commit time.
+func syncSupplierGalleryCoverTx(ctx context.Context, tx *sql.Tx, productID string) error {
+	_, err := tx.ExecContext(ctx, `
+		WITH cover AS (
+			SELECT COALESCE((SELECT image_url FROM product_images
+				WHERE product_id = $1 ORDER BY sort_order, created_at, id LIMIT 1), '') AS url
+		)
+		UPDATE products SET image_url = cover.url, updated_at = NOW()
+		FROM cover WHERE products.id = $1 AND image_url IS DISTINCT FROM cover.url
+	`, productID)
+	return err
 }
 
 func (r *SupplierRepository) resequenceGalleryTx(ctx context.Context, tx *sql.Tx, productID string, orderedIDs []string) error {
@@ -3375,11 +3461,11 @@ func (r *SupplierRepository) resequenceGalleryTx(ctx context.Context, tx *sql.Tx
 			return err
 		}
 	}
-	return nil
+	return syncSupplierGalleryCoverTx(ctx, tx, productID)
 }
 
-func (r *SupplierRepository) galleryOrderedIDs(ctx context.Context, supplierID, productID string) ([]string, error) {
-	imgs, err := r.ListProductImages(ctx, supplierID, productID)
+func supplierGalleryOrderedIDsTx(ctx context.Context, tx *sql.Tx, query, id string) ([]string, error) {
+	imgs, err := readSupplierGalleryImages(tx.QueryContext(ctx, query, id))
 	if err != nil {
 		return nil, err
 	}
@@ -3391,7 +3477,12 @@ func (r *SupplierRepository) galleryOrderedIDs(ctx context.Context, supplierID, 
 }
 
 func (r *SupplierRepository) DeleteProductImage(ctx context.Context, supplierID, productID, imageID string) error {
-	ids, err := r.galleryOrderedIDs(ctx, supplierID, productID)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, "")
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids, err := supplierGalleryOrderedIDsTx(ctx, tx, supplierProductGalleryQuery, productID)
 	if err != nil {
 		return err
 	}
@@ -3407,11 +3498,6 @@ func (r *SupplierRepository) DeleteProductImage(ctx context.Context, supplierID,
 	if !found {
 		return sql.ErrNoRows
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM product_images WHERE id = $1 AND product_id = $2`, imageID, productID); err != nil {
 		return err
 	}
@@ -3422,7 +3508,12 @@ func (r *SupplierRepository) DeleteProductImage(ctx context.Context, supplierID,
 }
 
 func (r *SupplierRepository) SetProductCoverImage(ctx context.Context, supplierID, productID, imageID string) error {
-	ids, err := r.galleryOrderedIDs(ctx, supplierID, productID)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, "")
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids, err := supplierGalleryOrderedIDsTx(ctx, tx, supplierProductGalleryQuery, productID)
 	if err != nil {
 		return err
 	}
@@ -3438,11 +3529,6 @@ func (r *SupplierRepository) SetProductCoverImage(ctx context.Context, supplierI
 	if !found {
 		return sql.ErrNoRows
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if err := r.resequenceGalleryTx(ctx, tx, productID, append([]string{imageID}, rest...)); err != nil {
 		return err
 	}
@@ -3450,7 +3536,12 @@ func (r *SupplierRepository) SetProductCoverImage(ctx context.Context, supplierI
 }
 
 func (r *SupplierRepository) ReorderProductImages(ctx context.Context, supplierID, productID string, orderedIDs []string) error {
-	ids, err := r.galleryOrderedIDs(ctx, supplierID, productID)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, "")
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids, err := supplierGalleryOrderedIDsTx(ctx, tx, supplierProductGalleryQuery, productID)
 	if err != nil {
 		return err
 	}
@@ -3466,11 +3557,9 @@ func (r *SupplierRepository) ReorderProductImages(ctx context.Context, supplierI
 			return fmt.Errorf("ordered ids do not match gallery")
 		}
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	if len(ids) == 0 {
+		return tx.Commit()
 	}
-	defer tx.Rollback()
 	if err := r.resequenceGalleryTx(ctx, tx, productID, orderedIDs); err != nil {
 		return err
 	}
@@ -3507,20 +3596,7 @@ func (r *SupplierRepository) ListVariantImages(ctx context.Context, supplierID, 
 	if !owns {
 		return nil, sql.ErrNoRows
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT id, image_url, sort_order FROM product_variant_images WHERE variant_id = $1 ORDER BY sort_order ASC, created_at ASC`, variantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []SupplierProductImage{}
-	for rows.Next() {
-		var im SupplierProductImage
-		if err := rows.Scan(&im.ID, &im.ImageURL, &im.SortOrder); err != nil {
-			return nil, err
-		}
-		out = append(out, im)
-	}
-	return out, rows.Err()
+	return readSupplierGalleryImages(r.db.QueryContext(ctx, supplierVariantGalleryQuery, variantID))
 }
 
 // CheckVariantGalleryRoom verifies, BEFORE any file is written to
@@ -3549,46 +3625,34 @@ func (r *SupplierRepository) CheckVariantGalleryRoom(ctx context.Context, suppli
 }
 
 func (r *SupplierRepository) AddVariantImages(ctx context.Context, supplierID, productID, variantID string, urls []string) ([]SupplierProductImage, error) {
-	owns, err := r.variantOwnsCheck(ctx, supplierID, productID, variantID)
-	if err != nil {
-		return nil, err
-	}
-	if !owns {
-		return nil, sql.ErrNoRows
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, variantID)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_variant_images WHERE variant_id = $1`, variantID).Scan(&count); err != nil {
+	images, err := readSupplierGalleryImages(tx.QueryContext(ctx, supplierVariantGalleryQuery, variantID))
+	if err != nil {
 		return nil, err
 	}
-	if count+len(urls) > MaxVariantImages {
+	if len(images)+len(urls) > MaxVariantImages {
 		return nil, ErrVariantGalleryFull
 	}
+	nextOrder := nextSupplierGalleryOrder(images)
 	for k, u := range urls {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO product_variant_images (variant_id, image_url, sort_order) VALUES ($1, $2, $3)`, variantID, u, count+k); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product_variant_images (variant_id, image_url, sort_order) VALUES ($1, $2, $3)`, variantID, u, nextOrder+k); err != nil {
+			return nil, err
+		}
+	}
+	if len(urls) > 0 {
+		images, err = readSupplierGalleryImages(tx.QueryContext(ctx, supplierVariantGalleryQuery, variantID))
+		if err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.ListVariantImages(ctx, supplierID, productID, variantID)
-}
-
-func (r *SupplierRepository) variantGalleryOrderedIDs(ctx context.Context, supplierID, productID, variantID string) ([]string, error) {
-	imgs, err := r.ListVariantImages(ctx, supplierID, productID, variantID)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(imgs))
-	for _, im := range imgs {
-		ids = append(ids, im.ID)
-	}
-	return ids, nil
+	return images, nil
 }
 
 func (r *SupplierRepository) resequenceVariantGalleryTx(ctx context.Context, tx *sql.Tx, variantID string, orderedIDs []string) error {
@@ -3601,7 +3665,12 @@ func (r *SupplierRepository) resequenceVariantGalleryTx(ctx context.Context, tx 
 }
 
 func (r *SupplierRepository) DeleteVariantImage(ctx context.Context, supplierID, productID, variantID, imageID string) error {
-	ids, err := r.variantGalleryOrderedIDs(ctx, supplierID, productID, variantID)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids, err := supplierGalleryOrderedIDsTx(ctx, tx, supplierVariantGalleryQuery, variantID)
 	if err != nil {
 		return err
 	}
@@ -3617,11 +3686,6 @@ func (r *SupplierRepository) DeleteVariantImage(ctx context.Context, supplierID,
 	if !found {
 		return sql.ErrNoRows
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM product_variant_images WHERE id = $1 AND variant_id = $2`, imageID, variantID); err != nil {
 		return err
 	}
@@ -3632,7 +3696,12 @@ func (r *SupplierRepository) DeleteVariantImage(ctx context.Context, supplierID,
 }
 
 func (r *SupplierRepository) ReorderVariantImages(ctx context.Context, supplierID, productID, variantID string, orderedIDs []string) error {
-	ids, err := r.variantGalleryOrderedIDs(ctx, supplierID, productID, variantID)
+	tx, err := r.beginOwnedGalleryTx(ctx, supplierID, productID, variantID)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids, err := supplierGalleryOrderedIDsTx(ctx, tx, supplierVariantGalleryQuery, variantID)
 	if err != nil {
 		return err
 	}
@@ -3648,11 +3717,6 @@ func (r *SupplierRepository) ReorderVariantImages(ctx context.Context, supplierI
 			return fmt.Errorf("ordered ids do not match gallery")
 		}
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if err := r.resequenceVariantGalleryTx(ctx, tx, variantID, orderedIDs); err != nil {
 		return err
 	}
@@ -4133,27 +4197,30 @@ func (r *SupplierRepository) GetProductLabels(ctx context.Context, supplierID, p
 	return spn.String, labels, nil
 }
 
-// GetInboundByID retrieves a specific inbound
-func (r *SupplierRepository) GetInboundByID(ctx context.Context, inboundID string) (*InboundShipment, error) {
+// GetSupplierInboundByID retrieves a single inbound owned by the supplier.
+func (r *SupplierRepository) GetSupplierInboundByID(ctx context.Context, supplierID, inboundID string) (*InboundShipment, error) {
 	query := `
 		SELECT id, supplier_id, supplier_name, warehouse_name, items_count, cartons_count,
 		       COALESCE(carrier, ''), COALESCE(truck_plate, ''), status, created_at, received_at,
 		       COALESCE(items, '[]'::jsonb), dispatch_at, dispatched_at
 		FROM inbound_shipments
-		WHERE id = $1
+		WHERE id = $1 AND supplier_id = $2
 	`
-	row := r.db.QueryRowContext(ctx, query, inboundID)
+	row := r.db.QueryRowContext(ctx, query, inboundID, supplierID)
 	var s InboundShipment
 	if err := row.Scan(
 		&s.ID, &s.SupplierID, &s.SupplierName, &s.WarehouseName, &s.ItemsCount, &s.CartonsCount,
 		&s.Carrier, &s.TruckPlate, &s.Status, &s.CreatedAt, &s.ReceivedAt,
+		&s.Items, &s.DispatchAt, &s.DispatchedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &s, nil
+	list := []InboundShipment{s}
+	r.enrichInboundItems(ctx, list)
+	return &list[0], nil
 }
 
 // UpdateProductSupplyOption updates only the supplier fulfillment option.
@@ -4239,17 +4306,20 @@ func (r *SupplierRepository) GetCampaignStats(ctx context.Context, supplierID, c
 	return &stats, nil
 }
 
-// GetSalesReport calculates total revenue and sales for supplier
+const supplierPaidSalesRows = `
+	FROM order_items oi
+	JOIN products p ON p.id = oi.product_id
+	JOIN orders o ON o.id = oi.order_id
+	WHERE p.supplier_id = $1 AND o.payment_status = 'paid' AND o.status <> 'cancelled'`
+
+// GetSalesReport calculates total revenue and sales for supplier.
 func (r *SupplierRepository) GetSalesReport(ctx context.Context, supplierID, startDate, endDate string) (*SupplierSalesReport, error) {
 	var report SupplierSalesReport
 	query := `
 		SELECT COALESCE(SUM(oi.wholesale_cost * oi.quantity), 0),
 		       COALESCE(SUM(oi.quantity), 0),
 		       COALESCE(COUNT(DISTINCT oi.order_id), 0)
-		FROM order_items oi
-		JOIN products p ON oi.product_id = p.id
-		JOIN orders o ON oi.order_id = o.id
-		WHERE p.supplier_id = $1 AND o.payment_status = 'paid' AND o.status <> 'cancelled'
+	` + supplierPaidSalesRows + `
 		AND ($2 = '' OR o.created_at >= NULLIF($2, '')::date)
 		AND ($3 = '' OR o.created_at < NULLIF($3, '')::date + INTERVAL '1 day')
 	`
@@ -5021,7 +5091,7 @@ type CentralWarehouse struct {
 
 func (r *SupplierRepository) ListCentralWarehouses(ctx context.Context) ([]CentralWarehouse, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, province_name, city_name, priority, is_active
+		SELECT id, name, province_name, city_name, priority, is_active, is_receiving_open
 		FROM warehouses WHERE is_active = TRUE ORDER BY priority ASC, id ASC
 	`)
 	if err != nil {
@@ -5031,12 +5101,11 @@ func (r *SupplierRepository) ListCentralWarehouses(ctx context.Context) ([]Centr
 	out := []CentralWarehouse{}
 	for rows.Next() {
 		var w CentralWarehouse
-		if err := rows.Scan(&w.ID, &w.Name, &w.ProvinceName, &w.CityName, &w.Priority, &w.IsActive); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.ProvinceName, &w.CityName, &w.Priority, &w.IsActive, &w.IsReceivingOpen); err != nil {
 			return nil, err
 		}
 		w.WarehouseID = w.ID
 		w.WarehouseName = w.Name
-		w.IsReceivingOpen = w.IsActive
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -5453,52 +5522,61 @@ func (r *SupplierRepository) CreateSupplierReturnBack(ctx context.Context, suppl
 	if quantity <= 0 || strings.TrimSpace(reason) == "" {
 		return nil, ErrSupplierReturnBackBadQuantity
 	}
-	var itemQty int
-	var qcStatus string
-	var receivedAt sql.NullTime
-	var returnID, productID, ownerID string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT ri.qty, ri.qc_status, ri.received_at, ri.return_id, p.id, p.supplier_id
-		FROM return_items ri
-		JOIN order_items oi ON oi.id::text = ri.order_item_id
-		JOIN products p ON p.id = oi.product_id
-		WHERE ri.id = $1
-	`, returnItemID).Scan(&itemQty, &qcStatus, &receivedAt, &returnID, &productID, &ownerID)
+	if idemKey == "" {
+		idemKey = "rb-" + uuid.NewString()
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	if ownerID != supplierID {
-		return nil, sql.ErrNoRows
+	defer tx.Rollback()
+	var itemQty int
+	var qcStatus string
+	var receivedAt sql.NullTime
+	var returnID, productID, ownedItemID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT ri.qty, ri.qc_status, ri.received_at, ri.return_id, p.id, ri.id
+		FROM return_items ri
+		JOIN order_items oi ON oi.id::text = ri.order_item_id
+		JOIN products p ON p.id = oi.product_id
+		WHERE ri.id = $1 AND p.supplier_id = $2
+	`, returnItemID, supplierID).Scan(&itemQty, &qcStatus, &receivedAt, &returnID, &productID, &ownedItemID)
+	if err != nil {
+		return nil, err
+	}
+	// Serialize new requests for a returned item without locking the receipt
+	// rows ahead of the foreign-key checks on the supplier and product.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('supplier-return-back:' || $1::text, 0))`, ownedItemID); err != nil {
+		return nil, err
+	}
+	existing, err := scanSupplierReturnBack(tx.QueryRowContext(ctx, `
+		SELECT `+supplierReturnBackColumns+` FROM supplier_return_back_requests
+		WHERE supplier_id = $1 AND idempotency_key = $2
+	`, supplierID, idemKey))
+	if err == nil {
+		if existing.ReturnItemID != ownedItemID || existing.Quantity != quantity || existing.Reason != reason {
+			return nil, ErrSupplierReturnBackBadState
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
 	}
 	if !receivedAt.Valid {
 		return nil, ErrSupplierReturnBackNotReceived
 	}
-	var activeCount int
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM supplier_return_back_requests
-		WHERE return_item_id = $1 AND status IN ('requested', 'approved', 'shipped_back')
-	`, returnItemID).Scan(&activeCount); err != nil {
+	var activeCount, completedQty int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FILTER (WHERE status IN ('requested', 'approved', 'shipped_back')),
+			COALESCE(SUM(quantity) FILTER (WHERE status = 'completed'), 0)
+		FROM supplier_return_back_requests WHERE return_item_id = $1
+	`, ownedItemID).Scan(&activeCount, &completedQty); err != nil {
 		return nil, err
 	}
 	if activeCount > 0 {
 		return nil, ErrSupplierReturnBackActive
 	}
-	var completedQty, otherQty int
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN status = 'completed' THEN quantity ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status NOT IN ('rejected', 'cancelled', 'completed') THEN quantity ELSE 0 END), 0)
-		FROM supplier_return_back_requests WHERE return_item_id = $1
-	`, returnItemID).Scan(&completedQty, &otherQty); err != nil {
-		return nil, err
-	}
-	// Live's form max: after a completed request the remaining units
-	// (quantity minus non-rejected/non-cancelled) cap a re-request;
-	// otherwise the full item quantity caps it.
-	maxQty := itemQty
-	if completedQty > 0 {
-		maxQty = itemQty - completedQty - otherQty
-	}
-	if quantity > maxQty {
+	if quantity > itemQty-completedQty {
 		return nil, ErrSupplierReturnBackBadQuantity
 	}
 	source := "legacy"
@@ -5506,117 +5584,134 @@ func (r *SupplierRepository) CreateSupplierReturnBack(ctx context.Context, suppl
 		source = "none"
 	} else {
 		var balanceCount int
-		if err := r.db.QueryRowContext(ctx, `
+		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM inventory_balances
 			WHERE product_id = $1 AND location_key = $2 AND quantity > 0
-		`, productID, "inbound:"+returnID).Scan(&balanceCount); err == nil && balanceCount > 0 {
+		`, productID, "inbound:"+returnID).Scan(&balanceCount); err != nil {
+			return nil, err
+		} else if balanceCount > 0 {
 			source = "canonical"
 		}
 	}
-	if idemKey == "" {
-		idemKey = "rb-" + uuid.NewString()
-	}
 	id := "srb-" + uuid.NewString()
-	_, err = r.db.ExecContext(ctx, `
+	result, err := scanSupplierReturnBack(tx.QueryRowContext(ctx, `
 		INSERT INTO supplier_return_back_requests
 			(id, customer_return_id, return_item_id, supplier_id, product_id,
 			 quantity, status, reason, inventory_source, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, 'requested', $7, $8, $9)
-	`, id, returnID, returnItemID, supplierID, productID, quantity, reason, source, idemKey)
+		ON CONFLICT (idempotency_key) DO NOTHING
+		RETURNING `+supplierReturnBackColumns, id, returnID, ownedItemID, supplierID, productID, quantity, reason, source, idemKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSupplierReturnBackBadState
+	}
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			var existing SupplierCustomerReturnBackRequest
-			qerr := r.db.QueryRowContext(ctx, `
-				SELECT id, return_item_id, quantity, status, reason, review_reason,
-					reviewed_at, shipped_at, completed_at, carrier_code,
-					tracking_number, created_at
-				FROM supplier_return_back_requests WHERE idempotency_key = $1
-			`, idemKey).Scan(&existing.ID, &existing.ReturnItemID, &existing.Quantity,
-				&existing.Status, &existing.Reason, &existing.ReviewReason,
-				&existing.ReviewedAt, &existing.ShippedAt, &existing.CompletedAt,
-				&existing.CarrierCode, &existing.TrackingNumber, &existing.CreatedAt)
-			if qerr != nil {
-				return nil, err
-			}
-			return &existing, nil
+		var pgErr *pq.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.Constraint == "uq_supplier_return_back_active_item" {
+			return nil, ErrSupplierReturnBackActive
 		}
 		return nil, err
 	}
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO supplier_return_back_events
-			(id, back_request_id, from_status, to_status, reason, idempotency_key)
-		VALUES ($1, $2, NULL, 'requested', $3, $4)
-	`, "srbe-"+uuid.NewString(), id, reason, idemKey); err != nil {
+	if err := insertSupplierReturnBackEvent(ctx, tx, id, nil, "requested", reason, idemKey); err != nil {
 		return nil, err
 	}
-	return r.GetSupplierReturnBack(ctx, supplierID, id)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
-func (r *SupplierRepository) GetSupplierReturnBack(ctx context.Context, supplierID, backID string) (*SupplierCustomerReturnBackRequest, error) {
+const supplierReturnBackColumns = `id, return_item_id, quantity, status, reason, review_reason,
+	reviewed_at, shipped_at, completed_at, carrier_code, tracking_number, created_at`
+
+func scanSupplierReturnBack(row *sql.Row) (*SupplierCustomerReturnBackRequest, error) {
 	var b SupplierCustomerReturnBackRequest
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, return_item_id, quantity, status, reason, review_reason,
-			reviewed_at, shipped_at, completed_at, carrier_code,
-			tracking_number, created_at
-		FROM supplier_return_back_requests
-		WHERE id = $1 AND supplier_id = $2
-	`, backID, supplierID).Scan(&b.ID, &b.ReturnItemID, &b.Quantity, &b.Status,
+	if err := row.Scan(&b.ID, &b.ReturnItemID, &b.Quantity, &b.Status,
 		&b.Reason, &b.ReviewReason, &b.ReviewedAt, &b.ShippedAt, &b.CompletedAt,
-		&b.CarrierCode, &b.TrackingNumber, &b.CreatedAt)
-	if err != nil {
+		&b.CarrierCode, &b.TrackingNumber, &b.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &b, nil
 }
 
-// transitionSupplierReturnBack moves a back-request between two states
-// with an idempotent event row: a replayed key returns the current row.
-func (r *SupplierRepository) transitionSupplierReturnBack(ctx context.Context, supplierID, backID, from, to, reason, idemKey string) (*SupplierCustomerReturnBackRequest, error) {
-	cur, err := r.GetSupplierReturnBack(ctx, supplierID, backID)
-	if err != nil {
-		return nil, err
-	}
-	if cur.Status != from {
-		// A replayed transition (event key already recorded) returns the
-		// current row instead of failing on the state guard.
-		var eventCount int
-		if idemKey != "" {
-			if qerr := r.db.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM supplier_return_back_events
-				WHERE back_request_id = $1 AND idempotency_key = $2
-			`, backID, idemKey).Scan(&eventCount); qerr == nil && eventCount > 0 {
-				return cur, nil
-			}
-		}
-		return nil, ErrSupplierReturnBackBadState
-	}
-	var stampCol string
-	switch to {
-	case "cancelled":
-		stampCol = ""
-	case "completed":
-		stampCol = "completed_at = NOW(), "
-	default:
-		return nil, ErrSupplierReturnBackBadState
-	}
-	if _, err := r.db.ExecContext(ctx, `
-		UPDATE supplier_return_back_requests SET status = $1, `+stampCol+`updated_at = NOW()
-		WHERE id = $2
-	`, to, backID); err != nil {
-		return nil, err
-	}
-	if idemKey == "" {
-		idemKey = to + "-back-" + backID
-	}
-	if _, err := r.db.ExecContext(ctx, `
+func (r *SupplierRepository) GetSupplierReturnBack(ctx context.Context, supplierID, backID string) (*SupplierCustomerReturnBackRequest, error) {
+	return scanSupplierReturnBack(r.db.QueryRowContext(ctx, `
+		SELECT `+supplierReturnBackColumns+` FROM supplier_return_back_requests WHERE id = $1 AND supplier_id = $2
+	`, backID, supplierID))
+}
+
+func insertSupplierReturnBackEvent(ctx context.Context, tx *sql.Tx, backID string, from *string, to, reason, idemKey string) error {
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO supplier_return_back_events
 			(id, back_request_id, from_status, to_status, reason, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (idempotency_key) DO NOTHING
-	`, "srbe-"+uuid.NewString(), backID, from, to, reason, idemKey); err != nil {
+	`, "srbe-"+uuid.NewString(), backID, from, to, reason, idemKey)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrSupplierReturnBackBadState
+	}
+	return nil
+}
+
+// transitionSupplierReturnBack moves a back-request between two states
+// with an idempotent event row: a replayed key returns the current row.
+func (r *SupplierRepository) transitionSupplierReturnBack(ctx context.Context, supplierID, backID, from, to, reason, idemKey string) (*SupplierCustomerReturnBackRequest, error) {
+	if to != "cancelled" && to != "completed" {
+		return nil, ErrSupplierReturnBackBadState
+	}
+	if idemKey == "" {
+		idemKey = to + "-back-" + backID
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, err
 	}
-	return r.GetSupplierReturnBack(ctx, supplierID, backID)
+	defer tx.Rollback()
+	cur, err := scanSupplierReturnBack(tx.QueryRowContext(ctx, `
+		SELECT `+supplierReturnBackColumns+` FROM supplier_return_back_requests
+		WHERE id = $1 AND supplier_id = $2 FOR UPDATE
+	`, backID, supplierID))
+	if err != nil {
+		return nil, err
+	}
+	var priorTarget, priorReason string
+	err = tx.QueryRowContext(ctx, `
+		SELECT to_status, COALESCE(reason, '') FROM supplier_return_back_events
+		WHERE back_request_id = $1 AND idempotency_key = $2
+	`, backID, idemKey).Scan(&priorTarget, &priorReason)
+	if err == nil {
+		if priorTarget != to || priorReason != reason {
+			return nil, ErrSupplierReturnBackBadState
+		}
+		return cur, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if cur.Status != from {
+		return nil, ErrSupplierReturnBackBadState
+	}
+	if err := insertSupplierReturnBackEvent(ctx, tx, backID, &from, to, reason, idemKey); err != nil {
+		return nil, err
+	}
+	updated, err := scanSupplierReturnBack(tx.QueryRowContext(ctx, `
+		UPDATE supplier_return_back_requests
+		SET status = $1::varchar, completed_at = CASE WHEN $1::varchar = 'completed' THEN NOW() ELSE completed_at END, updated_at = NOW()
+		WHERE id = $2 AND supplier_id = $3
+		RETURNING `+supplierReturnBackColumns, to, backID, supplierID))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (r *SupplierRepository) CancelSupplierReturnBack(ctx context.Context, supplierID, backID, reason, idemKey string) (*SupplierCustomerReturnBackRequest, error) {
@@ -5930,26 +6025,26 @@ type SupplierAnalyticsSummary struct {
 
 func (r *SupplierRepository) GetSupplierAnalytics(ctx context.Context, supplierID string) (*SupplierAnalyticsSummary, error) {
 	s := &SupplierAnalyticsSummary{SupplierID: supplierID}
-	paid := "paid"
 	okStatus := "ok"
 	defectiveStatus := "defective"
-	// Totals over paid orders only.
-	err := r.db.QueryRowContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// The overview and analytics both report the same paid, noncancelled sales.
+	err = tx.QueryRowContext(ctx, `
 		SELECT
 		  COALESCE(SUM(oi.wholesale_cost * oi.quantity), 0),
 		  COALESCE(SUM(oi.quantity), 0),
 		  COALESCE(COUNT(DISTINCT oi.order_id), 0)
-		FROM order_items oi
-		JOIN products p ON p.id = oi.product_id
-		JOIN orders o ON o.id = oi.order_id
-		WHERE p.supplier_id = $1 AND o.payment_status = $2
-	`, supplierID, paid).Scan(&s.TotalBaseAmount, &s.TotalQuantity, &s.OrderCount)
+	`+supplierPaidSalesRows, supplierID).Scan(&s.TotalBaseAmount, &s.TotalQuantity, &s.OrderCount)
 	if err != nil {
 		return nil, err
 	}
 	// Returns: QC-decided items linked to this supplier products.
-	qcRows, err := r.db.QueryContext(ctx, `
-		SELECT ri.qc_status, COUNT(*)
+	qcRows, err := tx.QueryContext(ctx, `
+		SELECT ri.qc_status, SUM(ri.qty)
 		FROM return_items ri
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
 		JOIN products p ON p.id = oi.product_id
@@ -5979,15 +6074,15 @@ func (r *SupplierRepository) GetSupplierAnalytics(ctx context.Context, supplierI
 	qcRows.Close()
 	s.Returns.TotalReturned = s.Returns.QcOk + s.Returns.QcDefective
 	// Top return reasons among QC-decided items.
-	reasonRows, err := r.db.QueryContext(ctx, `
-		SELECT cr.reason, COUNT(*)
+	reasonRows, err := tx.QueryContext(ctx, `
+		SELECT cr.reason, SUM(ri.qty)
 		FROM customer_returns cr
 		JOIN return_items ri ON ri.return_id = cr.id
 		JOIN order_items oi ON oi.id::text = ri.order_item_id
 		JOIN products p ON p.id = oi.product_id
 		WHERE p.supplier_id = $1 AND ri.qc_status IN ($2, $3) AND cr.reason <> ''
 		GROUP BY cr.reason
-		ORDER BY COUNT(*) DESC
+		ORDER BY SUM(ri.qty) DESC, cr.reason
 		LIMIT 5
 	`, supplierID, okStatus, defectiveStatus)
 	if err != nil {
@@ -6008,17 +6103,17 @@ func (r *SupplierRepository) GetSupplierAnalytics(ctx context.Context, supplierI
 	}
 	reasonRows.Close()
 	// Daily series, last 30 days including today, zero-filled.
-	dailyRows, err := r.db.QueryContext(ctx, `
-		SELECT d.day,
-		  COALESCE(SUM(oi.wholesale_cost * oi.quantity), 0),
-		  COALESCE(COUNT(DISTINCT oi.order_id), 0)
+	dailyRows, err := tx.QueryContext(ctx, `
+		SELECT d.day, COALESCE(sales.revenue, 0), COALESCE(sales.orders, 0)
 		FROM generate_series(CURRENT_DATE - 29, CURRENT_DATE, '1 day'::interval) AS d(day)
-		LEFT JOIN orders o ON o.created_at::date = d.day AND o.payment_status = $2
-		LEFT JOIN order_items oi ON oi.order_id = o.id
-		LEFT JOIN products p ON p.id = oi.product_id AND p.supplier_id = $1
-		GROUP BY d.day
+		LEFT JOIN (
+			SELECT o.created_at::date AS day, SUM(oi.wholesale_cost * oi.quantity) AS revenue, COUNT(DISTINCT oi.order_id) AS orders
+			`+supplierPaidSalesRows+`
+			AND o.created_at >= CURRENT_DATE - 29 AND o.created_at < CURRENT_DATE + 1
+			GROUP BY o.created_at::date
+		) sales ON sales.day = d.day
 		ORDER BY d.day ASC
-	`, supplierID, paid)
+	`, supplierID)
 	if err != nil {
 		return nil, err
 	}
@@ -6039,28 +6134,25 @@ func (r *SupplierRepository) GetSupplierAnalytics(ctx context.Context, supplierI
 	}
 	dailyRows.Close()
 	// Per-product table: all supplier products, best sellers first.
-	prodRows, err := r.db.QueryContext(ctx, `
+	prodRows, err := tx.QueryContext(ctx, `
 		SELECT p.id, p.title, COALESCE(p.stock, 0),
-		  COALESCE(sq.qty, 0), COALESCE(sq.base, 0), COALESCE(mq.qty30, 0), COALESCE(rq.ret, 0)
+		  COALESCE(sq.qty, 0), COALESCE(sq.base, 0), COALESCE(sq.qty30, 0), COALESCE(rq.ret, 0)
 		FROM products p
 		LEFT JOIN (
-			SELECT oi.product_id, SUM(oi.quantity) AS qty, SUM(oi.wholesale_cost * oi.quantity) AS base
-			FROM order_items oi JOIN orders o ON o.id = oi.order_id
-			WHERE o.payment_status = $2 GROUP BY oi.product_id
+			SELECT oi.product_id, SUM(oi.quantity) AS qty, SUM(oi.wholesale_cost * oi.quantity) AS base,
+				SUM(oi.quantity) FILTER (WHERE o.created_at >= CURRENT_DATE - 29 AND o.created_at < CURRENT_DATE + 1) AS qty30
+			`+supplierPaidSalesRows+`
+			GROUP BY oi.product_id
 		) sq ON sq.product_id = p.id
-		LEFT JOIN (
-			SELECT oi.product_id, SUM(oi.quantity) AS qty30
-			FROM order_items oi JOIN orders o ON o.id = oi.order_id
-			WHERE o.payment_status = $2 AND o.created_at >= CURRENT_DATE - 29 GROUP BY oi.product_id
-		) mq ON mq.product_id = p.id
 		LEFT JOIN (
 			SELECT oi.product_id, SUM(ri.qty) AS ret
 			FROM return_items ri JOIN order_items oi ON oi.id::text = ri.order_item_id
-			WHERE ri.qc_status IN ($3, $4) GROUP BY oi.product_id
+			JOIN products returned_product ON returned_product.id = oi.product_id
+			WHERE returned_product.supplier_id = $1 AND ri.qc_status IN ($2, $3) GROUP BY oi.product_id
 		) rq ON rq.product_id = p.id
 		WHERE p.supplier_id = $1
 		ORDER BY COALESCE(sq.qty, 0) DESC, p.title ASC
-	`, supplierID, paid, okStatus, defectiveStatus)
+	`, supplierID, okStatus, defectiveStatus)
 	if err != nil {
 		return nil, err
 	}
@@ -6087,6 +6179,9 @@ func (r *SupplierRepository) GetSupplierAnalytics(ctx context.Context, supplierI
 		return nil, err
 	}
 	prodRows.Close()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -6280,34 +6375,36 @@ func (r *SupplierRepository) ResubmitCatalogReview(ctx context.Context, supplier
 	return tx.Commit()
 }
 
+const (
+	SupplierProfileDescriptionLimit = 2000
+	SupplierWarehouseCityLimit      = 50
+)
+
 // FIX 49 — live supplier profile tab (Tn): partial update. Only keys the
 // caller passes are changed. A changed warehouse city resets confirmation
 // (the server decides confirmation; the client only displays the flag).
 func (r *SupplierRepository) UpdateSupplierProfile(ctx context.Context, supplierID string, description *string, warehouseCity *string, logoURL *string) (*domain.Supplier, error) {
-	var currentCity string
-	var currentConfirmed bool
-	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(warehouse_city, ''), COALESCE(warehouse_city_confirmed, false) FROM suppliers WHERE id = $1`, supplierID).Scan(&currentCity, &currentConfirmed)
-	if err != nil {
-		return nil, err
-	}
 	sets := []string{}
 	args := []interface{}{}
 	if description != nil {
-		if len(*description) > 2000 {
+		if utf8.RuneCountInString(*description) > SupplierProfileDescriptionLimit {
 			return nil, fmt.Errorf("description too long")
 		}
 		args = append(args, *description)
 		sets = append(sets, fmt.Sprintf("description = $%d", len(args)))
 	}
 	if warehouseCity != nil {
-		if *warehouseCity == "" {
+		city := strings.TrimSpace(*warehouseCity)
+		if city == "" {
 			return nil, fmt.Errorf("warehouse city required")
 		}
-		args = append(args, *warehouseCity)
-		sets = append(sets, fmt.Sprintf("warehouse_city = $%d", len(args)))
-		if *warehouseCity != currentCity {
-			sets = append(sets, "warehouse_city_confirmed = false")
+		if utf8.RuneCountInString(city) > SupplierWarehouseCityLimit {
+			return nil, fmt.Errorf("warehouse city too long")
 		}
+		args = append(args, city)
+		cityArg := len(args)
+		sets = append(sets, fmt.Sprintf("warehouse_city = $%d::text", cityArg),
+			fmt.Sprintf("warehouse_city_confirmed = CASE WHEN warehouse_city IS DISTINCT FROM $%d::text THEN false ELSE warehouse_city_confirmed END", cityArg))
 	}
 	if logoURL != nil {
 		args = append(args, *logoURL)
@@ -6320,7 +6417,6 @@ func (r *SupplierRepository) UpdateSupplierProfile(ctx context.Context, supplier
 			return nil, err
 		}
 	}
-	_ = currentConfirmed
 	return r.GetSupplierByID(ctx, supplierID)
 }
 

@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/repository"
 )
 
 // FIX 49 — live supplier profile tab (Tn): PUT /api/v1/supplier/profile.
@@ -37,42 +40,47 @@ func (h *SupplierHandlers) HandleUpdateSupplierProfile(w http.ResponseWriter, r 
 		return
 	}
 	var body map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
 		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	var description, warehouseCity, logoURL *string
 	if raw, ok := body["description"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
+		var v *string
+		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
 			http.Error(w, `{"error":"Invalid description"}`, http.StatusBadRequest)
 			return
 		}
-		if len(v) > 2000 {
+		if utf8.RuneCountInString(*v) > repository.SupplierProfileDescriptionLimit {
 			http.Error(w, `{"error":"Description too long"}`, http.StatusBadRequest)
 			return
 		}
-		description = &v
+		description = v
 	}
 	if raw, ok := body["warehouse_city"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
+		var v *string
+		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
 			http.Error(w, `{"error":"Invalid warehouse city"}`, http.StatusBadRequest)
 			return
 		}
-		if v == "" {
+		city := strings.TrimSpace(*v)
+		if city == "" {
 			http.Error(w, `{"error":"Warehouse city required"}`, http.StatusBadRequest)
 			return
 		}
-		warehouseCity = &v
+		if utf8.RuneCountInString(city) > repository.SupplierWarehouseCityLimit {
+			http.Error(w, `{"error":"Warehouse city must be at most 50 characters"}`, http.StatusBadRequest)
+			return
+		}
+		warehouseCity = &city
 	}
 	if raw, ok := body["logo_url"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
+		var v *string
+		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
 			http.Error(w, `{"error":"Invalid logo url"}`, http.StatusBadRequest)
 			return
 		}
-		logoURL = &v
+		logoURL = v
 	}
 	updated, err := h.supplierRepo.UpdateSupplierProfile(r.Context(), supID, description, warehouseCity, logoURL)
 	if err != nil {

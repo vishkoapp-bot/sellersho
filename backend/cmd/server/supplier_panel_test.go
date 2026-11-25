@@ -88,7 +88,7 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	if err != nil || inbounds == nil || len(inbounds) != 0 {
 		t.Fatalf("empty inbounds: %v %v", inbounds, err)
 	}
-	if _, err := repo.GetInboundByID(ctx, "missing"); err != nil {
+	if _, err := repo.GetSupplierInboundByID(ctx, supplier.ID, "missing"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.CreateInbound(ctx, supplier.ID, map[string]interface{}{}); err == nil {
@@ -105,6 +105,18 @@ func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	inbound["warehouseId"], inbound["supplierWarehouseId"] = destination, source
 	if _, err := repo.CreateInbound(ctx, "foreign", inbound); err == nil {
 		t.Fatal("foreign inbound accepted")
+	}
+	if _, err := db.Exec(`UPDATE warehouses SET is_receiving_open=FALSE WHERE id=$1`, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateInbound(ctx, supplier.ID, inbound); err == nil {
+		t.Fatal("new inbound accepted by a closed destination")
+	}
+	if result, err := repo.GetSupplierInbounds(ctx, supplier.ID); err != nil || len(result) != 0 {
+		t.Fatalf("rejected inbound left persisted rows: %v %v", result, err)
+	}
+	if _, err := db.Exec(`UPDATE warehouses SET is_receiving_open=TRUE WHERE id=$1`, destination); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := repo.CreateInbound(ctx, supplier.ID, inbound); err != nil {
 		t.Fatal(err)

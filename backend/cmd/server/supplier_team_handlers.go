@@ -14,7 +14,8 @@ import (
 
 const supplierIDKey contextKey = "supplierID"
 
-func supplierPermissionForPath(path string) string {
+func supplierPermissionForPath(method, path string) string {
+	path = strings.TrimSuffix(path, "/")
 	switch {
 	case strings.Contains(path, "/team"):
 		return "supplier.manage"
@@ -28,26 +29,37 @@ func supplierPermissionForPath(path string) string {
 		return "inventory.manage"
 	case strings.Contains(path, "/products"), strings.Contains(path, "/upload/"), strings.Contains(path, "/addons"), strings.Contains(path, "/catalog/review"), strings.Contains(path, "/price-increases"), strings.Contains(path, "/warranties"), strings.Contains(path, "/exclusivity-challenges"):
 		return "products.manage"
-	case strings.HasSuffix(path, "/profile"):
+	case method == http.MethodGet && path == "/api/v1/supplier/profile":
 		return "profile.view"
+	case method == http.MethodGet && path == "/api/v1/supplier/tapin/settings":
+		// Dispatchers need connection metadata, while updating credentials
+		// still requires management permission.
+		return "orders.manage"
 	default:
 		return "supplier.manage"
 	}
 }
 
-// D54 pending_approval policy (Team 06, Phase 2) — ASSUMPTION, TODO (U06/D54):
-// No explicit approval_status check is added here, deliberately. In
-// practice a pending supplier is already gated: registration creates
-// the user with is_active = FALSE, and GetSupplierAccess (owner path)
-// requires users.is_active = TRUE, while ApproveSupplier flips both
-// approval_status and is_active together. So a pending supplier's
-// registration JWT does NOT open supplier routes today — it fails the
-// access check — but that gate is is_active, not approval_status, and
-// the exact live pending_approval policy is still a user decision.
-// If live policy differs (e.g. pending suppliers may view their own
-// profile), add an explicit approval_status check here instead of
-// relying on is_active. Do NOT silently grant pending suppliers full
-// panel access: any change here must be a conscious policy decision.
+func supplierProductReadPermissions(method, path string) []string {
+	if method != http.MethodGet {
+		return nil
+	}
+	const products = "/api/v1/supplier/products"
+	path = strings.TrimSuffix(path, "/")
+	if path == products {
+		return []string{"inventory.manage", "marketing.manage"}
+	}
+	if sub, ok := strings.CutPrefix(path, products+"/"); ok {
+		productID, action, _ := strings.Cut(sub, "/")
+		if productID != "" && action == "variants" {
+			return []string{"inventory.manage"}
+		}
+	}
+	return nil
+}
+
+// GetSupplierAccess checks account and membership activity and supplier
+// suspension on every request before applying the route's permission.
 func RequireSupplierAccess(jwtService *auth.JWTService, repo *repository.SupplierRepository) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return RequireRoles(jwtService, "supplier", "admin")(func(w http.ResponseWriter, r *http.Request) {
@@ -56,15 +68,10 @@ func RequireSupplierAccess(jwtService *auth.JWTService, repo *repository.Supplie
 				next(w, r)
 				return
 			}
-			permission := supplierPermissionForPath(r.URL.Path)
-			// Dispatchers need connection metadata, never permission to replace
-			// the business's write-only carrier credential.
-			if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/api/v1/supplier/tapin/settings" {
-				permission = "orders.manage"
-			}
+			permission := supplierPermissionForPath(r.Method, r.URL.Path)
 			supplierID, ok := supplierAccess(r, repo, permission)
-			if !ok && r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/api/v1/supplier/products" {
-				for _, readPermission := range []string{"inventory.manage", "marketing.manage"} {
+			if !ok && permission == "products.manage" {
+				for _, readPermission := range supplierProductReadPermissions(r.Method, r.URL.Path) {
 					if supplierID, ok = supplierAccess(r, repo, readPermission); ok {
 						break
 					}
@@ -97,7 +104,7 @@ func supplierAccess(r *http.Request, repo *repository.SupplierRepository, permis
 	if repo == nil {
 		return "", false
 	}
-	if claims.HasCapability("admin") {
+	if claims.HasDirectCapability("admin") {
 		return r.URL.Query().Get("supplierId"), true
 	}
 	supplierID, permissions, active, err := repo.GetSupplierAccess(r.Context(), claims.UserID)

@@ -56,7 +56,7 @@ func TestSupplierTeamPermissions(t *testing.T) {
 			for _, path := range []string{"/api/v1/supplier/products", "/api/v1/supplier/settlement/history", "/api/v1/supplier/team", "/api/v1/supplier/orders", "/api/v1/supplier/inbounds", "/api/v1/supplier/campaigns/create"} {
 				want := http.StatusForbidden
 				for _, permission := range member.Permissions {
-					if permission == "supplier.manage" || permission == supplierPermissionForPath(path) {
+					if permission == "supplier.manage" || permission == supplierPermissionForPath(http.MethodGet, path) {
 						want = http.StatusOK
 					}
 				}

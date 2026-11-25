@@ -3,6 +3,8 @@ import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceSta
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
+import { tokenStore } from '../../services/apiClient';
+import { newUuid } from '../../services/uuid';
 import { ProvinceCityPicker } from '../ProvinceCityPicker';
 import { SupplierSLACard } from './SupplierSLACard';
 
@@ -254,13 +256,27 @@ const RETURN_STATUS_LABELS: Record<string, string> = { requested: "در انتظ
 const QC_BADGES: Record<string, { text: string; cls: string }> = { pending: { text: "در انتظار تحویل", cls: "bg-slate-100 text-slate-600" }, ok: { text: "سالم — قابل فروش مجدد", cls: "bg-emerald-50 text-emerald-700" }, defective: { text: "معیوب", cls: "bg-red-50 text-red-700" } };
 const BACK_STATUS_LABELS: Record<string, string> = { requested: "در انتظار بررسی انبار", approved: "تأیید شد — در انتظار ارسال", rejected: "رد شد", shipped_back: "ارسال شد به سمت شما", completed: "تحویل گرفتید", cancelled: "لغو شد" };
 const BACK_STATUS_CLASSES: Record<string, string> = { requested: "bg-amber-50 text-amber-700", approved: "bg-sky-50 text-sky-700", rejected: "bg-red-50 text-red-700", shipped_back: "bg-violet-50 text-violet-700", completed: "bg-emerald-50 text-emerald-700", cancelled: "bg-slate-100 text-slate-500" };
-// Live's In() idempotency helper, secure-context-safe (same shape as
-// Fix 43's newUuid): crypto.randomUUID only exists on HTTPS/localhost.
-const newBackIdempotencyKey = () => {
-  const c = (globalThis as any).crypto;
-  if (c && c.randomUUID) return c.randomUUID();
-  return `rb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-};
+export function createSupplierReturnBackSubmitter() {
+  let pending: { payload: string; generation: number; key: string } | undefined;
+  return async (returnItemId: string, quantity: number, reason: string) => {
+    const generation = tokenStore.getGeneration();
+    const payload = JSON.stringify([returnItemId, quantity, reason]);
+    if (!pending || pending.payload !== payload || pending.generation !== generation) {
+      pending = { payload, generation, key: newUuid() };
+    }
+    const operation = pending;
+    const result = await supplierApi.requestCustomerReturnBack(returnItemId, quantity, reason, operation.key);
+    if (tokenStore.getGeneration() !== generation) throw new Error("حساب کاربری در زمان ثبت درخواست تغییر کرد.");
+    if (!result || typeof result !== 'object' || !('id' in result)
+      || typeof result.id !== 'string' || !result.id
+      || !('returnItemId' in result) || result.returnItemId !== returnItemId
+      || !('quantity' in result) || result.quantity !== quantity
+      || !('reason' in result) || result.reason !== reason) {
+      throw new Error("پاسخ ثبت درخواست عودت کامل نبود. دوباره تلاش کن.");
+    }
+    if (pending === operation) pending = undefined;
+  };
+}
 export const SupplierCustomerReturnsTab: React.FC = () => {
   const { toPersianDigits, formatPrice } = useStore();
   const { success, error } = useToast();
@@ -272,6 +288,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
   const [formQty, setFormQty] = useState("");
   const [formReason, setFormReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [requestReturnBack] = useState(createSupplierReturnBackSubmitter);
   const [busyBackId, setBusyBackId] = useState("");
   const load = () => {
     setLoading(true);
@@ -304,7 +321,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
     }
     setSubmitting(true);
     try {
-      await supplierApi.requestCustomerReturnBack(item.returnItemId, qty, formReason.trim(), newBackIdempotencyKey());
+      await requestReturnBack(item.returnItemId, qty, formReason.trim());
       setOpenFormId("");
       setFormQty("");
       setFormReason("");

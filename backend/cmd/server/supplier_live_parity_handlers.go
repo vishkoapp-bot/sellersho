@@ -14,10 +14,6 @@ import (
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/repository"
 	"github.com/drup/platform/internal/tapin"
-	"github.com/google/uuid"
-	"io"
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -58,41 +54,15 @@ func supplierLiveParityClaimsUserID(r *http.Request) string {
 	return ""
 }
 
-// POST /api/v1/supplier/contract/accept (D11).
-// Records the platform's current supplier contract version as the
-// supplier's signed version, using the existing repo functions whose
-// comments describe exactly this re-confirmation flow.
 func (h *SupplierHandlers) HandleSupplierContractAccept(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
-	supplierID, ok := supplierLiveParitySupplierID(w, r, h)
-	if !ok {
-		return
-	}
-	platformVersion, err := h.supplierRepo.GetSupplierContractVersion(r.Context())
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if err := h.supplierRepo.UpdateSignedContractVersion(r.Context(), supplierID, platformVersion); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":                 true,
-		"supplierId":              supplierID,
-		"signedContractVersion":   platformVersion,
-		"platformContractVersion": platformVersion,
-	})
+	h.acceptSupplierContract(w, r, false)
 }
 
-// POST /api/v1/supplier/contract/reconfirm (D11).
-// Same recording as accept, but a no-op success when the supplier already
-// signed the current platform version (re-confirmation has nothing to do).
 func (h *SupplierHandlers) HandleSupplierContractReconfirm(w http.ResponseWriter, r *http.Request) {
+	h.acceptSupplierContract(w, r, true)
+}
+
+func (h *SupplierHandlers) acceptSupplierContract(w http.ResponseWriter, r *http.Request, reconfirm bool) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w)
@@ -102,41 +72,43 @@ func (h *SupplierHandlers) HandleSupplierContractReconfirm(w http.ResponseWriter
 	if !ok {
 		return
 	}
-	sup, err := h.supplierRepo.GetSupplierByID(r.Context(), supplierID)
-	if err != nil {
-		writeInternalError(w, err)
+	var body struct {
+		Version int `json:"version"`
+	}
+	if !t01DecodeJSON(w, r, &body) {
 		return
 	}
-	if sup == nil {
-		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+	if body.Version <= 0 {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "نسخهٔ قرارداد را مشخص کن."})
 		return
 	}
-	platformVersion, err := h.supplierRepo.GetSupplierContractVersion(r.Context())
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if sup.SignedContractVersion >= platformVersion {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":                 true,
-			"supplierId":              supplierID,
-			"signedContractVersion":   sup.SignedContractVersion,
-			"platformContractVersion": platformVersion,
-			"alreadyCurrent":          true,
+	accepted, err := h.supplierRepo.AcceptSupplierContractVersion(r.Context(), supplierID, body.Version)
+	if errors.Is(err, repository.ErrSupplierContractVersionChanged) {
+		t01WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":                   "نسخهٔ قرارداد تغییر کرده است. متن جدید را بخوان و دوباره تأیید کن.",
+			"code":                    "contract_version_changed",
+			"platformContractVersion": accepted.PlatformVersion,
 		})
 		return
 	}
-	if err := h.supplierRepo.UpdateSignedContractVersion(r.Context(), supplierID, platformVersion); err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]any{
 		"success":                 true,
 		"supplierId":              supplierID,
-		"signedContractVersion":   platformVersion,
-		"platformContractVersion": platformVersion,
-		"alreadyCurrent":          false,
-	})
+		"signedContractVersion":   accepted.SignedVersion,
+		"platformContractVersion": accepted.PlatformVersion,
+	}
+	if reconfirm {
+		response["alreadyCurrent"] = accepted.AlreadyCurrent
+	}
+	t01WriteJSON(w, http.StatusOK, response)
 }
 
 // GET /api/v1/supplier/tapin/settings (D11).
@@ -895,6 +867,10 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 	}
 	out, err := h.supplierRepo.CreateCartonShipmentFromSource(r.Context(), supplierID, body.Items, body.Source, body.WarehouseID, body.CreationKey)
 	if err != nil {
+		if errors.Is(err, repository.ErrCartonDestinationUnavailable) {
+			t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "انبار مرکزی انتخاب‌شده فعلاً پذیرش محموله ندارد.", "code": "shipment_destination_unavailable"})
+			return
+		}
 		if errors.Is(err, repository.ErrCartonCreationConflict) {
 			http.Error(w, `{"error":"creation_key belongs to a different shipment payload"}`, http.StatusConflict)
 			return
@@ -1003,78 +979,7 @@ func (h *SupplierHandlers) HandleUploadProductImages(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	if uploadDir == "" {
-		uploadDir = "./static/uploads/products"
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 48*1024*1024)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, `{"error":"خطا در پردازش فرم یا حجم بیش از حد مجاز"}`, http.StatusBadRequest)
-		return
-	}
-	files := r.MultipartForm.File["images"]
-	if len(files) == 0 {
-		http.Error(w, `{"error":"فایل تصویر یافت نشد"}`, http.StatusBadRequest)
-		return
-	}
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	urls := make([]string, 0, len(files))
-	for _, fh := range files {
-		if fh.Size > 5*1024*1024 {
-			http.Error(w, `{"error":"حجم هر فایل نباید بیشتر از ۵ مگابایت باشد."}`, http.StatusBadRequest)
-			return
-		}
-		f, err := fh.Open()
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		head := make([]byte, 512)
-		n, _ := io.ReadFull(f, head)
-		head = head[:n]
-		safeExt, valid := fix47ImageExt(head, fh.Filename)
-		if !valid {
-			f.Close()
-			http.Error(w, `{"error":"فرمت نامعتبر. فقط JPG، PNG و WEBP مجاز است."}`, http.StatusBadRequest)
-			return
-		}
-		if seeker, ok := f.(io.Seeker); ok {
-			_, _ = seeker.Seek(0, io.SeekStart)
-		}
-		filename := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), safeExt)
-		dst, err := os.Create(filepath.Join(uploadDir, filename))
-		if err != nil {
-			f.Close()
-			writeInternalError(w, err)
-			return
-		}
-		if _, err := io.Copy(dst, f); err != nil {
-			dst.Close()
-			f.Close()
-			writeInternalError(w, err)
-			return
-		}
-		dst.Close()
-		f.Close()
-		urls = append(urls, "/static/uploads/products/"+filename)
-	}
-	list, err := h.supplierRepo.AddProductImages(r.Context(), supplierID, productID, urls)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, `{"error":"product not found"}`, http.StatusNotFound)
-			return
-		}
-		if err == repository.ErrGalleryFull {
-			http.Error(w, `{"error":"حداکثر ۸ تصویر برای هر محصول مجاز است."}`, http.StatusBadRequest)
-			return
-		}
-		writeInternalError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+	h.uploadSupplierGallery(w, r, uploadDir, supplierID, productID, "")
 }
 
 // DELETE /api/v1/supplier/products/{id}/images/{imageId}
@@ -1170,99 +1075,7 @@ func (h *SupplierHandlers) HandleUploadVariantImages(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	if uploadDir == "" {
-		uploadDir = "./static/uploads/products"
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 48*1024*1024)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, `{"error":"خطا در پردازش فرم یا حجم بیش از حد مجاز"}`, http.StatusBadRequest)
-		return
-	}
-	files := r.MultipartForm.File["images"]
-	if len(files) == 0 {
-		http.Error(w, `{"error":"فایل تصویر یافت نشد"}`, http.StatusBadRequest)
-		return
-	}
-	// Cap + ownership are checked BEFORE any file is written to disk:
-	// a rejected upload (full gallery, or a variant the supplier does
-	// not own) must leave no orphan files behind.
-	if err := h.supplierRepo.CheckVariantGalleryRoom(r.Context(), supplierID, productID, variantID, len(files)); err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
-			return
-		}
-		if err == repository.ErrVariantGalleryFull {
-			http.Error(w, `{"error":"حداکثر ۴ تصویر برای هر تنوع مجاز است."}`, http.StatusBadRequest)
-			return
-		}
-		writeInternalError(w, err)
-		return
-	}
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	urls := make([]string, 0, len(files))
-	for _, fh := range files {
-		if fh.Size > 5*1024*1024 {
-			http.Error(w, `{"error":"حجم هر فایل نباید بیشتر از ۵ مگابایت باشد."}`, http.StatusBadRequest)
-			return
-		}
-		f, err := fh.Open()
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		head := make([]byte, 512)
-		n, _ := io.ReadFull(f, head)
-		head = head[:n]
-		safeExt, valid := fix47ImageExt(head, fh.Filename)
-		if !valid {
-			f.Close()
-			http.Error(w, `{"error":"فرمت نامعتبر. فقط JPG، PNG و WEBP مجاز است."}`, http.StatusBadRequest)
-			return
-		}
-		if seeker, ok := f.(io.Seeker); ok {
-			_, _ = seeker.Seek(0, io.SeekStart)
-		}
-		filename := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), safeExt)
-		dst, err := os.Create(filepath.Join(uploadDir, filename))
-		if err != nil {
-			f.Close()
-			writeInternalError(w, err)
-			return
-		}
-		if _, err := io.Copy(dst, f); err != nil {
-			dst.Close()
-			f.Close()
-			writeInternalError(w, err)
-			return
-		}
-		dst.Close()
-		f.Close()
-		urls = append(urls, "/static/uploads/products/"+filename)
-	}
-	list, err := h.supplierRepo.AddVariantImages(r.Context(), supplierID, productID, variantID, urls)
-	if err != nil {
-		// Best-effort cleanup: the pre-check above normally prevents
-		// this, but a concurrent upload can still fill the gallery
-		// between the check and the insert — never leave orphans.
-		for _, u := range urls {
-			_ = os.Remove(filepath.Join(uploadDir, filepath.Base(u)))
-		}
-		if err == sql.ErrNoRows {
-			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
-			return
-		}
-		if err == repository.ErrVariantGalleryFull {
-			http.Error(w, `{"error":"حداکثر ۴ تصویر برای هر تنوع مجاز است."}`, http.StatusBadRequest)
-			return
-		}
-		writeInternalError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"images": list})
+	h.uploadSupplierGallery(w, r, uploadDir, supplierID, productID, variantID)
 }
 
 // DELETE /api/v1/supplier/products/{id}/variants/{vid}/images/{imageId}

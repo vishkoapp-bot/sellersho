@@ -326,10 +326,8 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     const list = restoredDraft?.images;
     return Array.isArray(list) ? list.filter((u) => typeof u === 'string') : [];
   });
-  const [firstImage, setFirstImage] = useState<string | null>(() => {
-    const list = restoredDraft?.images;
-    return Array.isArray(list) && typeof list[0] === 'string' ? list[0] : null;
-  });
+  const firstImage = images[0];
+  const imageUploadGeneration = useRef(0);
   const [imageLink, setImageLink] = useState(restoredDraft?.imageLink ?? '');
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -541,6 +539,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     }
   };
   const clearDraft = () => {
+    imageUploadGeneration.current++;
     try { localStorage.removeItem(DRAFT_KEY); } catch { /* storage unavailable */ }
     setStep(1);
     setFieldErrors({});
@@ -568,7 +567,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     setPackHeightCm('');
     setIsOriginal(true);
     setImages([]);
-    setFirstImage(null);
     setImageLink('');
     setSelectedNicheIds(visibleNiches.length > 0 ? [visibleNiches[0].id] : []);
     setNicheManual(false);
@@ -594,6 +592,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         return;
       }
     }
+    const generation = imageUploadGeneration.current;
     setUploading(true);
     try {
       const uploaded: string[] = [];
@@ -614,9 +613,8 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         if (data.success && data.imageUrl) uploaded.push(data.imageUrl);
         else throw new Error((data as { error?: string }).error || 'خطا در آپلود تصویر');
       }
-      const next = [...images, ...uploaded];
-      setImages(next);
-      setFirstImage(next[0] || null);
+      if (generation !== imageUploadGeneration.current) return;
+      setImages(current => [...current, ...uploaded]);
       success(`${toPersianDigits(uploaded.length)} تصویر با موفقیت بارگذاری شد.`);
     } catch (cause: unknown) {
       const name = (cause as { name?: string })?.name;
@@ -634,9 +632,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   };
 
   const removeImage = (index: number) => {
-    const next = images.filter((_, i) => i !== index);
-    setImages(next);
-    setFirstImage(next[0] || null);
+    setImages(current => current.filter((_, i) => i !== index));
   };
 
   const submit = async () => {
@@ -728,7 +724,6 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       setPackHeightCm('');
       setIsOriginal(true);
       setImages([]);
-      setFirstImage(null);
       setImageLink('');
       setSelectedNicheIds(visibleNiches.length > 0 ? [visibleNiches[0].id] : []);
       setNicheManual(false);
@@ -793,7 +788,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       return;
     }
     try {
-      await supplierApi.requestWarranty({ name: warrantyRequestName.trim(), description: description.trim(), images: [images[0] || firstImage] });
+      await supplierApi.requestWarranty({ name: warrantyRequestName.trim(), description: description.trim(), images: [firstImage] });
       success('درخواست گارانتی برای بررسی مدیر ثبت شد.');
       setRequestingWarranty(false);
       setWarranty(warrantyRequestName.trim());

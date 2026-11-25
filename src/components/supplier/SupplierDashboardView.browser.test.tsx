@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
+import tailwindcss from '@tailwindcss/vite';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
+import { build as buildStyles } from 'vite';
 
-test('mobile supplier navigation exposes each section and overview shortcuts and withdrawal guidance work', { timeout: 60000 }, async () => {
+test('supplier sections, navigation history and daily workflows work on mobile and desktop', { timeout: 90000 }, async () => {
+  const cssBuild = await buildStyles({ configFile: false, plugins: [tailwindcss()], logLevel: 'silent', build: { write: false, rollupOptions: { input: 'src/index.css' } } });
+  const assets = (Array.isArray(cssBuild) ? cssBuild : [cssBuild]).flatMap(result => 'output' in result ? result.output : [])
+    .filter(asset => asset.type === 'asset');
+  const css = assets.find(asset => asset.fileName.endsWith('.css'));
+  assert.ok(css);
   const bundle = await build({
     write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
@@ -27,30 +34,53 @@ test('mobile supplier navigation exposes each section and overview shortcuts and
   });
   const statuses = ['pending', 'processing', 'cancelled', 'delivered_confirmed'];
   const orders = statuses.map((status, index) => ({ id: String(index), orderNumber: String(index), status, items: [] }));
-  const server = createServer((request, response) => {
+  let failNextProfileRead = false;
+  let shipmentStatus = 'draft';
+  const shipmentUpdates: unknown[] = [];
+  const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? '/', 'http://fixture').pathname;
     response.setHeader('Content-Type', 'application/json');
-    if (path === '/api/v1/supplier/orders') response.end(JSON.stringify({ orders, hasMore: true }));
-    else if (path === '/api/v1/supplier/shipments') response.end(JSON.stringify([
-      { id: 'a', shipment_code: 'DRAFT', status: 'draft' },
+    const font = path.endsWith('.woff2') ? assets.find(asset => `/${asset.fileName}` === path) : undefined;
+    if (font) { response.setHeader('Content-Type', 'font/woff2'); response.end(font.source); }
+    else if (path === '/supplier-test.css') { response.setHeader('Content-Type', 'text/css'); response.end(css.source); }
+    else if (path === '/api/v1/supplier/orders') response.end(JSON.stringify({ orders, hasMore: true }));
+    else if (path === '/api/v1/supplier/analytics') response.end('{"orderCount":0,"totalBaseAmount":0,"totalQuantity":0,"returns":{"totalReturned":0}}');
+    else if (path === '/api/v1/supplier/search-insight') response.end('{"unmetInScope":[{"term":"کیف چرمی","searches":12,"zeroResultSearches":10}]}');
+    else if (path === '/api/v1/supplier/profile' && failNextProfileRead) { failNextProfileRead = false; response.statusCode = 503; response.end('{"error":"خطای دریافت پروفایل"}'); }
+    else if (path === '/api/v1/supplier/profile') response.end('{"name":"تأمین‌کننده نمونه","warehouse_city":"تهران"}');
+    else if (path === '/api/v1/supplier/products') response.end(JSON.stringify([
+      { id: 'a', title: 'کیف دستی', brand: 'آبی', stock: 5, supplierBaseCost: 50 },
+      { id: 'b', title: 'کفش سفید', stock: 2, supplierBaseCost: 80 },
+    ]));
+    else if (path === '/api/v1/supplier/shipments' && request.method === 'POST') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      shipmentUpdates.push(JSON.parse(body));
+      shipmentStatus = 'cancelled';
+      response.end('{"success":true}');
+    } else if (path === '/api/v1/supplier/shipments') response.end(JSON.stringify([
+      { id: 'a', shipment_code: 'DRAFT', status: shipmentStatus },
       { id: 'b', shipment_code: 'RECEIVED', status: 'received' },
     ]));
     else if (path === '/api/v1/supplier/settlement/balance') response.end('{"available":100000}');
     else if (path.startsWith('/api/')) response.end('[]');
     else {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
-      response.end('<div id="root"></div><script>' + bundle.outputFiles[0].text + '</script>');
+      response.end('<!doctype html><html lang="fa" dir="rtl"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/supplier-test.css"><div id="root"></div><script>' + bundle.outputFiles[0].text + '</script>');
     }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   try {
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
     try {
       const page = await browser.newPage();
-      await page.setViewport({ width: 390, height: 844 });
-      await page.goto(`http://127.0.0.1:${address.port}/`);
+      const pageErrors: string[] = [];
+      page.on('pageerror', cause => pageErrors.push(String(cause)));
+      await page.setViewport({ width: 360, height: 800, isMobile: true, hasTouch: true });
+      const base = `http://127.0.0.1:${address.port}/supplier`;
+      await page.goto(base);
       await page.waitForFunction(() => {
         const counts = [...document.querySelectorAll('main li')].map(row => row.textContent ?? '');
         return counts.some(row => row.includes('منتظر ارسال در سفارش‌های اخیر') && row.includes('2'))
@@ -66,6 +96,17 @@ test('mobile supplier navigation exposes each section and overview shortcuts and
       };
       await click('رسیدگی به سفارش‌ها');
       await page.waitForFunction(() => document.querySelector('main [aria-label="وضعیت سفارش"] button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
+      assert.equal(new URL(page.url()).searchParams.get('section'), 'orders');
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('main [aria-label="وضعیت سفارش"] button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
+      await page.goBack();
+      await page.waitForFunction(() => (document.querySelector('#supplier-section') as HTMLSelectElement)?.value === 'overview');
+      await page.goForward();
+      await page.waitForFunction(() => (document.querySelector('#supplier-section') as HTMLSelectElement)?.value === 'orders');
+      await click('ثبت اطلاعات ارسال');
+      await page.waitForSelector('dialog[open] #supplier-shipping-tracking', { visible: true });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
       await page.type('input[aria-label="جستجوی سفارش‌ها"]', 'no matching order');
       await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('بارگذاری سفارش‌های قدیمی‌تر'));
       await click('پاک کردن فیلترها');
@@ -73,6 +114,34 @@ test('mobile supplier navigation exposes each section and overview shortcuts and
       await page.select('#supplier-section', 'overview');
       await click('پیگیری محموله‌ها');
       await page.waitForFunction(() => document.querySelector('main [aria-current="step"]')?.textContent?.includes('ارسال و برچسب‌ها'));
+      await click('آماده‌سازی محموله');
+      assert.equal(new URL(page.url()).searchParams.get('view'), 'prepare');
+      await page.goBack();
+      await page.waitForFunction(() => document.querySelector('main [aria-current="step"]')?.textContent?.includes('ارسال و برچسب‌ها'));
+      await click('دیدن کدهای واحد کالا');
+      await page.waitForSelector('#supplier-unit-labels', { visible: true, timeout: 3000 });
+      await click('بستن برچسب‌های واحد');
+      await page.waitForSelector('#supplier-unit-labels', { hidden: true });
+      await page.type('input[aria-label="جستجوی کد محموله"]', 'draft');
+      await page.waitForFunction(() => [...document.querySelectorAll('main article bdi')].map(element => element.textContent).join(',') === 'DRAFT');
+      await click('لغو محموله');
+      await page.waitForSelector('dialog[open]', { visible: true });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
+      assert.deepEqual(shipmentUpdates, []);
+      await click('لغو محموله');
+      await page.waitForSelector('dialog[open]', { visible: true });
+      await click('تأیید لغو محموله');
+      await page.waitForFunction(() => document.querySelector('main article')?.textContent?.includes('لغو شده'));
+      assert.deepEqual(shipmentUpdates, [{ shipment_id: 'a', action: 'cancel' }]);
+      await page.select('#supplier-section', 'products');
+      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('کفش سفید'));
+      await page.type('input[placeholder="نام یا برند کالا"]', 'كيف');
+      await page.waitForFunction(() => { const content = document.querySelector('main')?.innerText ?? ''; return content.includes('کیف دستی') && !content.includes('کفش سفید'); });
+      await page.select('#supplier-section', 'demand-insight');
+      await click('پیشنهاد کالای جدید');
+      assert.equal(new URL(page.url()).searchParams.get('view'), 'propose');
+      await page.waitForSelector('section[aria-label="فرم پیشنهاد کالای جدید"]', { visible: true });
       await page.select('#supplier-section', 'settlement');
       await click('ثبت درخواست برداشت');
       assert.equal(await page.$eval('input[name="holder"]', input => input.getAttribute('aria-invalid')), 'true');
@@ -80,6 +149,34 @@ test('mobile supplier navigation exposes each section and overview shortcuts and
       await page.type('input[name="holder"]', 'Test holder');
       await click('ثبت درخواست برداشت');
       assert.equal(await page.$eval('input[name="shaba"]', input => input.getAttribute('aria-invalid')), 'true');
+      failNextProfileRead = true;
+      await page.select('#supplier-section', 'profile');
+      await page.waitForSelector('main [role="alert"]');
+      assert.equal(await page.$('main input'), null);
+      await click('تلاش دوباره');
+      await page.waitForFunction(() => [...document.querySelectorAll<HTMLInputElement>('main input')].some(input => input.value === 'تهران'));
+
+      await page.select('#supplier-section', 'inventory');
+      await click('عوض‌کردن موجودی');
+      await page.waitForSelector('dialog[open] form', { visible: true, timeout: 3000 });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog[open]', { hidden: true });
+      assert.ok(await page.evaluate(() => document.activeElement?.textContent?.includes('عوض‌کردن موجودی')));
+
+      const sections = await page.$$eval('#supplier-section option', options => options.map(option => ({ id: (option as HTMLOptionElement).value, label: option.textContent })));
+      assert.equal(sections.length, 16);
+      for (const viewport of [{ width: 360, height: 800, isMobile: true, hasTouch: true }, { width: 1440, height: 900 }]) {
+        await page.setViewport(viewport);
+        for (const { id, label } of sections) {
+          if (viewport.isMobile) await page.select('#supplier-section', id);
+          else await page.click(`aside a[data-section="${id}"]`);
+          await page.waitForFunction(expected => document.querySelector('header h1')?.textContent === expected, { timeout: 4000 }, label)
+            .catch(cause => { throw new Error(`Unable to open ${id} at ${viewport.width}px (${pageErrors.join(', ')})`, { cause }); });
+          await page.waitForNetworkIdle({ idleTime: 60 });
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${id} overflows at ${viewport.width}px`);
+        }
+      }
+      assert.deepEqual(pageErrors, []);
     } finally { await browser.close(); }
   } finally {
     server.closeAllConnections();

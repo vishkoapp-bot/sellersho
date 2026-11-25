@@ -4,7 +4,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 
-test('supplier can prepare a selected product, resume the draft and reach dispatch after submitting', { timeout: 60000 }, async () => {
+test('supplier can combine different products, resume the draft and reach dispatch after submitting', { timeout: 60000 }, async () => {
   const bundle = await build({
     write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
@@ -23,13 +23,14 @@ test('supplier can prepare a selected product, resume the draft and reach dispat
       );
     ` },
   });
-  const shipment = { id: 'shipment', shipment_code: 'CARTON01', item_count: 1, status: 'draft' };
+  const shipment = { id: 'shipment', shipment_code: 'CARTON01', item_count: 2, status: 'draft' };
   let submitted: unknown;
   const server = createServer(async (request, response) => {
     const path = request.url?.replace('/api/v1/supplier', '');
     response.setHeader('Content-Type', 'application/json');
-    if (path === '/products') response.end(JSON.stringify([{ id: 'product', title: 'Test product' }]));
+    if (path === '/products') response.end(JSON.stringify([{ id: 'product', title: 'Test product' }, { id: 'other', title: 'Other product' }]));
     else if (path === '/products/product/variants') response.end(JSON.stringify([{ id: 'sku', variant_name: 'Test model', spnc: 'SKU001' }]));
+    else if (path === '/products/other/variants') response.end(JSON.stringify([{ id: 'other-sku', variant_name: 'Other model', spnc: 'SKU002' }]));
     else if (path === '/warehouses/central') response.end(JSON.stringify([{ id: 'central', name: 'Central' }]));
     else if (path === '/inventory') response.end('{"inventory":[]}');
     else if (path === '/shipments' && request.method === 'POST') {
@@ -48,7 +49,7 @@ test('supplier can prepare a selected product, resume the draft and reach dispat
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   try {
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
     try {
       const page = await browser.newPage();
       await page.goto(`http://127.0.0.1:${address.port}/`);
@@ -60,6 +61,9 @@ test('supplier can prepare a selected product, resume the draft and reach dispat
       };
       await click('Test model');
       await page.type('input[aria-label="تعداد Test model"]', '5');
+      await page.select('#carton-product', 'other');
+      await click('Other model');
+      await page.type('input[aria-label="تعداد Other model"]', '3');
       await click('ارسال و برچسب‌ها');
       await click('آماده‌سازی محموله');
       assert.equal(await page.$eval('input[aria-label="تعداد Test model"]', input => (input as HTMLInputElement).value), '5');
@@ -69,7 +73,7 @@ test('supplier can prepare a selected product, resume the draft and reach dispat
       await page.select('select[aria-label="انبار مرکزی مقصد"]', 'central');
       await click('ثبت محموله و گرفتن کد کارتن');
       await page.waitForFunction(() => document.body.innerText.includes('CARTON01') && document.body.innerText.includes('ثبت ارسال'));
-      assert.deepEqual((submitted as { items: unknown }).items, [{ variant_id: 'sku', expected_qty: 5 }]);
+      assert.deepEqual((submitted as { items: unknown }).items, [{ variant_id: 'other-sku', expected_qty: 3 }, { variant_id: 'sku', expected_qty: 5 }]);
     } finally { await browser.close(); }
   } finally {
     server.closeAllConnections();

@@ -10,6 +10,7 @@ import { SupplierGalleryModal } from './SupplierGalleryModal';
 import { SupplierVariantsModal, unitCountDiscrepancy } from './SupplierVariantsModal';
 import { RetiredPrintedCodesPanel, retiredPrintedCodesOf, stockAdjustmentErrorMessage, type StockAdjustResponse } from './SupplierInventoryTab';
 import { toPersianDigits } from '../../utils/formatters';
+import { normalizePersianText } from '../../utils/routing';
 import { SupplierReviewsModal } from './SupplierReviewsModal';
 import { SupplierFeedbackModal } from './SupplierFeedbackModal';
 import { SupplierAddonsWidget } from './SupplierAddonsWidget';
@@ -100,7 +101,7 @@ export function ProductUnitChip({ unitCount, stock }: { unitCount: number | null
   );
 }
 
-export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void; onPrepareShipment?: (productId: string) => void }> = ({ focusProposalId, onFocusConsumed, onPrepareShipment }) => {
+export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; onFocusConsumed?: () => void; onPrepareShipment?: (productId: string) => void; openProposal?: boolean }> = ({ focusProposalId, onFocusConsumed, onPrepareShipment, openProposal }) => {
   const {
     supplierSession,
     formatPrice,
@@ -110,7 +111,15 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const productsResource = useSupplierResource(supplierApi.getProducts);
   const proposalsResource = useSupplierResource(supplierApi.getProposals);
   const [saving, setSaving] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(!!openProposal);
+  const [productQuery, setProductQuery] = useState('');
+  const proposalFormRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (showAddForm) {
+      proposalFormRef.current?.focus({ preventScroll: true });
+      proposalFormRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [showAddForm]);
   const [subTab, setSubTab] = useState<'active_products' | 'proposed_offers' | 'my_challenges'>('active_products');
   const [challenges, setChallenges] = useState<any[]>([]);
   const [challengesLoading, setChallengesLoading] = useState(false);
@@ -177,6 +186,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const [editingSupplyProduct, setEditingSupplyProduct] = useState<SupplierProductDto | null>(null);
   const [editedSupplyOption, setEditedSupplyOption] = useState<'3hour_local' | '1day' | '3day'>('1day');
   const supplierProducts = productsResource.error ? [] : productsResource.data || [];
+  const query = normalizePersianText(productQuery.trim().toLowerCase());
+  const visibleProducts = query ? supplierProducts.filter(product => [product.title, product.brand, product.slug].some(value => value && normalizePersianText(value.toLowerCase()).includes(query))) : supplierProducts;
   // E1: the header counts ACTIVE products only (same predicate as Overview).
   const activeSupplierProducts = supplierProducts.filter(isSupplierProductActive);
   const inactiveSupplierProductsCount = supplierProducts.length - activeSupplierProducts.length;
@@ -243,9 +254,22 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
       <SupplierSectionHeading title="کالاها و تنوع‌ها" description="مدل‌ها و وضعیت کالاها را ببین یا کالای جدیدی برای بررسی پیشنهاد بده." icon={<Package />}
         action={<button type="button" aria-expanded={showAddForm} onClick={() => setShowAddForm(open => !open)}
           className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
-          <Plus aria-hidden="true" className="size-4" /> پیشنهاد کالای جدید
+          {!showAddForm && <Plus aria-hidden="true" className="size-4" />} {showAddForm ? 'بستن فرم پیشنهاد' : 'پیشنهاد کالای جدید'}
         </button>} />
       <SupplierResourceState loading={productsResource.loading || proposalsResource.loading} error={productsResource.error || proposalsResource.error} retry={() => { void productsResource.reload(); void proposalsResource.reload(); }} />
+      {showAddForm && (
+        <section ref={proposalFormRef} tabIndex={-1} aria-label="فرم پیشنهاد کالای جدید" className="scroll-mt-20">
+          <SupplierProposeForm
+            warranties={warranties}
+            myWarehouses={myWarehouses}
+            profileCity={profileCity}
+            profileCityConfirmed={profileCityConfirmed}
+            sessionToken={supplierSession?.token}
+            onSubmitted={async () => { setShowAddForm(false); setSubTab('proposed_offers'); await proposalsResource.reload(); await productsResource.reload(); }}
+            onChallengeSubmitted={() => { setShowAddForm(false); setSubTab('my_challenges'); }}
+          />
+        </section>
+      )}
       <div role="group" aria-label="بخش‌های کالاها" className="grid gap-2 rounded-[20px] border border-[#e6e2f0] bg-white p-2 shadow-sm sm:grid-cols-3">
         {([
           { id: 'active_products', label: `کالاهای تأییدشده (${toPersianDigits(activeSupplierProducts.length)})`, note: inactiveSupplierProductsCount > 0 ? `${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : '' },
@@ -263,20 +287,15 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
         <p className="mt-2">قیمت عمده مبلغی است که برای فروش هر واحد از کالایت دریافت می‌کنی. قیمت فروش به مشتری جدا تعیین می‌شود.</p>
       </details>
 
-      {showAddForm && (
-        <SupplierProposeForm
-          warranties={warranties}
-          myWarehouses={myWarehouses}
-          profileCity={profileCity}
-          profileCityConfirmed={profileCityConfirmed}
-          sessionToken={supplierSession?.token}
-          onSubmitted={async () => { setShowAddForm(false); setSubTab('proposed_offers'); await proposalsResource.reload(); await productsResource.reload(); }}
-          onChallengeSubmitted={() => { setShowAddForm(false); setSubTab('my_challenges'); }}
-        />
-      )}
-
       {subTab === 'active_products' && (
         <div className="space-y-2.5">
+          {supplierProducts.length > 0 && (
+            <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4">
+              <label className="block text-sm font-bold text-[#261b41]">جستجوی کالاها
+                <input type="search" value={productQuery} onChange={event => setProductQuery(event.target.value)} placeholder="نام یا برند کالا" className="mt-1 block min-h-11 w-full rounded-xl border border-slate-300 px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand sm:max-w-md" />
+              </label>
+            </div>
+          )}
           {(nullOriginDirectCount > 0 || bulkResult) && myWarehouses.some(w => w.isActive) && (
             <div className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-2">
               <p className="text-[11px] font-bold text-slate-700">مبدأ پیش‌فرض برای کالاهای بدون مبدأ</p>
@@ -314,7 +333,13 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             <p className="text-[11px] leading-5 text-slate-400">اول کالایت را پیشنهاد بده؛ مدیر بررسی می‌کند و وقتی تأیید شد، اینجا می‌آید و به فروش می‌رسد.</p>
             <button type="button" onClick={() => setShowAddForm(true)} className="min-h-[44px] px-4 rounded-xl bg-brand-deep text-white text-xs font-bold">پیشنهاد کالای جدید</button>
           </div>}
-          {supplierProducts.map((product) => {
+          {query && supplierProducts.length > 0 && visibleProducts.length === 0 && (
+            <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4 text-sm">
+              <p role="status">کالایی با این نام یا برند پیدا نشد.</p>
+              <button type="button" onClick={() => setProductQuery('')} className="mt-2 min-h-11 rounded-lg bg-brand-bg px-3 font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">پاک کردن جستجو</button>
+            </div>
+          )}
+          {visibleProducts.map((product) => {
             const effectiveCost = product.supplierBaseCost;
             const effectiveStock = product.stock;
       const effectiveSupplyOption = product.supplyOption || '1day';

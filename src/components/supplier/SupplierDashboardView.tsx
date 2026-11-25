@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SupplierAuthGuard } from './SupplierAuthGuard';
@@ -30,7 +30,7 @@ import {
 import { SupplierOverviewTab } from './SupplierOverviewTab';
 import { SupplierProductsTab } from './SupplierProductsTab';
 import { SupplierInventoryTab } from './SupplierInventoryTab';
-import { SupplierInboundFlowTab } from './SupplierInboundFlowTab';
+import { SupplierInboundFlowTab, type ShipmentStage } from './SupplierInboundFlowTab';
 import { SupplierDiscrepanciesTab } from './SupplierDiscrepanciesTab';
 import { SupplierAdsCampaignTab } from './SupplierAdsCampaignTab';
 import { SupplierSettlementTab } from './SupplierSettlementTab';
@@ -46,15 +46,48 @@ interface Props {
   onBackToCustomerSite: () => void;
 }
 
+type SectionDestination = 'ready' | 'propose' | ShipmentStage;
+
+function readSupplierLocation() {
+  const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
+  const section = params.get('section') || 'overview';
+  const view = params.get('view');
+  const destination = (section === 'orders' && view === 'ready')
+    || (section === 'products' && view === 'propose')
+    || (section === 'inbound' && (view === 'products' || view === 'prepare' || view === 'track')) ? view : undefined;
+  return { section, destination };
+}
+
+function supplierSectionHref(section: string, destination?: SectionDestination) {
+  const params = new URLSearchParams(window.location.search);
+  if (section === 'overview') params.delete('section');
+  else params.set('section', section);
+  if (destination) params.set('view', destination);
+  else params.delete('view');
+  const search = params.toString();
+  return `${window.location.pathname}${search ? `?${search}` : ''}`;
+}
+
 export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) => {
   const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
-  const [activeTab, setActiveTab] = useState('overview');
-  const [tabDestination, setTabDestination] = useState<'ready' | 'track'>();
-  const navigateTab = useCallback((tab: string, destination?: 'ready' | 'track') => {
-    setTabDestination(destination);
-    setActiveTab(tab);
-    window.scrollTo({ top: 0, behavior: 'instant' });
+  const [location, setLocation] = useState(readSupplierLocation);
+  const mainRef = useRef<HTMLElement>(null);
+  const navigateTab = useCallback((tab: string, destination?: SectionDestination, focusContent = true) => {
+    const href = supplierSectionHref(tab, destination);
+    if (href !== window.location.pathname + window.location.search) {
+      window.history.pushState(window.history.state, '', href);
+    }
+    setLocation(readSupplierLocation());
+    if (focusContent) {
+      mainRef.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  }, []);
+  useEffect(() => {
+    const syncLocation = () => setLocation(readSupplierLocation());
+    window.addEventListener('popstate', syncLocation);
+    return () => window.removeEventListener('popstate', syncLocation);
   }, []);
   // Reject-notification bell (DESIGN.md §4.3): unread count lives here,
   // NOT in StoreContext.setUnreadNotificationCount — that counter feeds
@@ -118,7 +151,14 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
   const permissions = supplierSession?.permissions || [];
   const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]) || (item.id === 'inbound' && permissions.includes('products.manage')));
-  const visibleTab = allowedTabs.some((item) => item.id === activeTab) ? activeTab : allowedTabs[0]?.id;
+  const visibleTab = allowedTabs.some((item) => item.id === location.section) ? location.section : allowedTabs[0]?.id;
+  const tabDestination = visibleTab === location.section ? location.destination : undefined;
+  const canManageProducts = permissions.includes('supplier.manage') || permissions.includes('products.manage');
+  const canManageShipments = permissions.includes('supplier.manage') || permissions.includes('inventory.manage');
+  const shipmentStage = tabDestination === 'products' || tabDestination === 'prepare' || tabDestination === 'track'
+    ? tabDestination : canManageProducts ? 'products' : 'prepare';
+  const consumeWorkflowProduct = useCallback(() => setWorkflowProductId(''), []);
+  const handleShipmentStage = useCallback((stage: ShipmentStage) => navigateTab('inbound', stage, false), [navigateTab]);
 
   // Header back button: from inside any tab it first returns to the
   // panel's own main view (the overview tab; for team accounts without
@@ -142,8 +182,8 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // entirely, so gating is inherited unchanged.
   const menuGroups: { heading: string; ids: string[] }[] = [
     { heading: 'پیشخوان', ids: ['overview', 'analytics', 'demand-insight'] },
-    { heading: 'سفارش و ارسال', ids: ['orders', 'shipping-methods', 'discrepancies', 'customer-returns'] },
-    { heading: 'کالا و انبار', ids: ['inbound', 'products', 'inventory', 'my-warehouses'] },
+    { heading: 'سفارش و ارسال', ids: ['orders', 'customer-returns', 'shipping-methods'] },
+    { heading: 'کالا و انبار', ids: ['inbound', 'products', 'inventory', 'my-warehouses', 'discrepancies'] },
     { heading: 'مالی', ids: ['settlement'] },
     { heading: 'بازاریابی', ids: ['ads'] },
     { heading: 'حساب کاربری', ids: ['team', 'profile', 'contract'] },
@@ -274,12 +314,17 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
                     {group.items.map(({ id, label, icon: Icon }) => {
                       const isActive = visibleTab === id;
                       return (
-                        <button key={id} type="button" onClick={() => navigateTab(id)} aria-current={isActive ? 'page' : undefined}
+                        <a key={id} href={typeof window === 'undefined' ? `/supplier?section=${id}` : supplierSectionHref(id)} data-section={id}
+                          onClick={event => {
+                            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                            event.preventDefault();
+                            navigateTab(id);
+                          }} aria-current={isActive ? 'page' : undefined}
                           className={`flex min-h-10 w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-start text-xs font-bold transition-colors focus-visible:ring-2 focus-visible:ring-[#e4d9ff] ${isActive ? 'bg-[#e8dfff] text-[#302056]' : 'text-[#f0eafa] hover:bg-white/12'}`}>
                           <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
                           <span className="flex-1 leading-5">{label}</span>
                           {isActive && <ChevronLeft aria-hidden="true" className="size-4 shrink-0" />}
-                        </button>
+                        </a>
                       );
                     })}
                   </div>
@@ -290,26 +335,27 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
         </aside>
 
         {/* Main Tab Content */}
-        <main id="supplier-main" tabIndex={-1} className="flex-1 min-w-0 scroll-mt-20">
+        <main ref={mainRef} id="supplier-main" aria-label={activeTabLabel} tabIndex={-1} className="flex-1 min-w-0 scroll-mt-20">
           <div className="min-w-0">
             {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
             {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
-            {visibleTab === 'orders' && <SupplierOrdersTab initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
-            {visibleTab === 'products' && <SupplierProductsTab onPrepareShipment={permissions.includes('supplier.manage') || permissions.includes('inventory.manage') ? (id) => { setWorkflowProductId(id); navigateTab('inbound'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
+            {visibleTab === 'orders' && <SupplierOrdersTab key={tabDestination ?? 'all'} initialFilter={tabDestination === 'ready' ? 'ready' : 'all'} />}
+            {visibleTab === 'products' && <SupplierProductsTab key={tabDestination ?? 'catalog'} openProposal={tabDestination === 'propose'} onPrepareShipment={canManageShipments ? (id) => { setWorkflowProductId(id); navigateTab('inbound', 'prepare'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
             {visibleTab === 'inbound' && <SupplierInboundFlowTab
               initialProductId={workflowProductId}
-              initialStage={tabDestination === 'track' ? 'track' : undefined}
-              onProductConsumed={() => setWorkflowProductId('')}
-              canManageProducts={permissions.includes('supplier.manage') || permissions.includes('products.manage')}
-              canManageShipments={permissions.includes('supplier.manage') || permissions.includes('inventory.manage')}
+              activeStage={shipmentStage}
+              onStageChange={handleShipmentStage}
+              onProductConsumed={consumeWorkflowProduct}
+              canManageProducts={canManageProducts}
+              canManageShipments={canManageShipments}
             />}
             {visibleTab === 'discrepancies' && <SupplierDiscrepanciesTab />}
             {visibleTab === 'ads' && <SupplierAdsCampaignTab />}
             {visibleTab === 'settlement' && <SupplierSettlementTab />}
             {visibleTab === 'team' && <SupplierTeamTab />}
             {visibleTab === 'analytics' && <SupplierAnalyticsTab />}
-            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => navigateTab('products')} />}
+            {visibleTab === 'demand-insight' && <SupplierDemandInsightTab onPropose={() => navigateTab('products', 'propose')} />}
             {visibleTab === 'customer-returns' && <SupplierCustomerReturnsTab />}
             {visibleTab === 'my-warehouses' && <SupplierMyWarehousesTab />}
             {visibleTab === 'shipping-methods' && <SupplierShippingMethodsTab />}

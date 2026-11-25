@@ -205,5 +205,5 @@ it('warehouse tab mounts with the new picker import and shows create + loading s
   assert.match(html, /ثبت انبار جدید/);
   // loading starts true and the load() effect never runs under
   // renderToStaticMarkup, so the empty state is not reached here.
-  assert.match(html, /در حال بارگذاری…/);
+  assert.match(html, /role="status"[^>]*>در حال دریافت اطلاعات…/);
 });

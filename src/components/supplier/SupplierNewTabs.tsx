@@ -1,4 +1,5 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
+import { SupplierResourceState } from './SupplierResourceState';
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
@@ -141,8 +142,7 @@ export const SupplierAnalyticsTab: React.FC = () => {
         <p className="text-[11px] font-bold text-slate-700">مبلغ پایه یعنی چه؟</p>
         <p className="text-[11px] leading-6 text-slate-500">مبلغ پایه همان قیمت عمده توست که مبنای تسویه‌حساب تو با پلتفرم است؛ قیمت فروش به مشتری در این عددها نیست.</p>
       </div>
-      {loading && (<div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">در حال بارگذاری…</div>)}
-      {loadError && (<div className="bg-white rounded-2xl border border-rose-200 p-4 text-xs text-rose-600 space-y-2"><p>{loadError}</p><button type="button" onClick={load} className="font-bold text-brand-deep">تلاش مجدد</button></div>)}
+      <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && data && !hasSales && (
         <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">
           <div className="w-14 h-14 rounded-2xl bg-brand-soft border border-brand-border flex items-center justify-center mx-auto mb-4"><BarChart3 className="w-7 h-7 text-brand-deep" strokeWidth={1.5} /></div>
@@ -341,8 +341,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="مرجوعی‌های مشتریان" description="وضعیت مرجوعی‌ها را ببین و کالایی را که انبار تحویل گرفته برای بازگشت درخواست کن." icon={<RotateCcw />} />
       <p className="rounded-2xl border border-[#e6e2f0] bg-white p-3 text-sm leading-6 text-slate-700">بعد از تحویل کالا به انبار، درخواست بازگشت را ثبت کن. انبار درخواست را بررسی می‌کند و هزینهٔ ارسال به عهدهٔ توست. این هزینه از کیف پول کسر نمی‌شود.</p>
-      {loading && (<div className="rounded-2xl border bg-white p-6 text-center text-[11px] text-slate-400">در حال دریافت مرجوعی‌ها…</div>)}
-      {!loading && loadError && (<div className="rounded-2xl border bg-white p-6 text-center space-y-2" role="alert"><p className="text-[11px] text-red-600">{loadError}</p><button type="button" onClick={load} className="rounded-xl bg-brand-deep px-3 py-2 min-h-[40px] text-white font-bold text-[11px]">تلاش مجدد</button></div>)}
+      <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && returns.length === 0 && (<div className="rounded-2xl border bg-white p-6 text-center space-y-1.5"><p className="text-xs font-bold text-emerald-700">مرجوعی‌ای برای کالاهای تو ثبت نشده است.</p><p className="text-[11px] leading-5 text-slate-400">وقتی مشتری‌ای کالای تو را مرجوع کند، اینجا نمایش داده می‌شود.</p></div>)}
       {!loadError && returns.map((ret: any, ri: number) => (
         <section key={ret.returnId || ri} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm sm:p-5">
@@ -509,10 +508,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="انبارهای من" description="انبار یا کارخانه‌ای را که مبدأ ارسال مستقیم کالاهایت است اینجا ثبت کن." icon={<Warehouse />}
         action={!formOpen && <button type="button" onClick={openCreate} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><Plus aria-hidden="true" className="size-4" /> ثبت انبار جدید</button>} />
-      {loading && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">در حال بارگذاری…</p>}
-      {loadError && !loading && (
-        <div className="rounded-xl bg-white p-4 text-xs text-rose-600">{loadError} <button type="button" onClick={() => void load()} className="font-bold underline">تلاش مجدد</button></div>
-      )}
+      <SupplierResourceState loading={loading} error={loadError} retry={load} />
       {items.length === 0 && !loading && !loadError && (
         <div className="rounded-2xl border bg-white p-8 text-center space-y-2">
           <Warehouse className="w-8 h-8 mx-auto text-slate-300"  strokeWidth={1.5}/>
@@ -525,8 +521,8 @@ export const SupplierMyWarehousesTab: React.FC = () => {
           <h3 className="text-base font-extrabold text-[#261b41]">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
           <label className="block text-[11px] font-bold text-slate-600">نام انبار *<input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج یا انبار شماره ۲" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
           <div className="grid grid-cols-2 gap-2">
-            <div className="block text-[11px] font-bold text-slate-600">استان *</div>
-            <div className="block text-[11px] font-bold text-slate-600">شهر *</div>
+            <div aria-hidden="true" className="block text-xs font-bold text-slate-700">استان *</div>
+            <div aria-hidden="true" className="block text-xs font-bold text-slate-700">شهر *</div>
             <ProvinceCityPicker
               province={form.provinceName}
               city={form.cityName}
@@ -544,7 +540,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
           </div>
           <div className="flex gap-2">
             <button disabled={saving} className="flex-1 rounded-lg bg-brand-deep px-3 py-2 min-h-[44px] text-xs font-bold text-white">{saving ? "ذخیره…" : "ذخیره انبار"}</button>
-            <button type="button" onClick={() => { setFormOpen(false); setEditing(null); }} className="flex-1 rounded-lg border px-3 py-2 min-h-[44px] text-xs">انصراف</button>
+            <button type="button" disabled={saving} onClick={() => { setFormOpen(false); setEditing(null); }} className="flex-1 rounded-lg border px-3 py-2 min-h-[44px] text-xs disabled:opacity-60">انصراف</button>
           </div>
         </form>
       )}
@@ -881,13 +877,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
           سفارش‌ها را دو جور می‌شود رساند: <strong>ارسال مستقیم</strong> (خودت از انبارت می‌فرستی) یا <strong>ارسال به انبار مرکزی</strong> (کالا را به انبار پلتفرم می‌دهی؛ کنترل کیفیت، بسته‌بندی و فرستادن با پلتفرم است). یکی یا هر دو روش را می‌توانی داشته باشی. فعال‌کردن هر روش با درخواست تو و تأیید مدیر است.
         </p>
       </div>
-      {loading && <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">در حال بارگذاری…</div>}
-      {loadError && (
-        <div className="bg-white rounded-2xl border border-rose-200 p-4 text-xs text-rose-600">
-          {loadError}
-          <button type="button" onClick={load} className="block mt-2 font-bold">تلاش مجدد</button>
-        </div>
-      )}
+      <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && SHIPPING_METHOD_ORDER.map((method) => {
         const row = methods.find((m: any) => m.method === method);
         if (!row) return null;

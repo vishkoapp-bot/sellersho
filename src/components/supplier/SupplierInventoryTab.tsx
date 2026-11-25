@@ -1,4 +1,5 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
+import { SupplierDialog } from './SupplierDialog';
 import { Boxes, Search } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
@@ -634,26 +635,25 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
         );
       })}
       {editing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3">
-          <form onSubmit={onSaveEdit} className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4">
-            <h3 className="text-sm font-bold">تغییر موجودی: {editing.product.title}</h3>
+        <SupplierDialog titleId="supplier-stock-dialog-title" onDismiss={saving ? undefined : onCancelEdit}>
+          <form onSubmit={onSaveEdit} className="space-y-3">
+            <h3 id="supplier-stock-dialog-title" className="text-base font-extrabold">تغییر موجودی {editing.product.title}</h3>
             {editing.product.schemaVersion === 2 && <SupplierSKUSelect product={editing.product} rows={editVariants.rows} selectedId={editing.variantId}
               label="تنوع برای اصلاح موجودی" loading={editVariants.loading} error={editVariants.error} retry={editVariants.reload} disabled={saving}
               onSelect={id => onEditVariantChange(id)} /> }
             <label className="block text-[11px] font-bold text-slate-600">
               موجودی کل قابل فروش (عدد)
               <input
-                autoFocus
                 type="text"
                 inputMode="numeric"
                 min="0"
                 value={formatNumber(editing.stock)}
                 onChange={event => onEditStockChange(parseDigits(event.target.value))}
-                className="mt-1 w-full rounded-lg border p-2 min-h-[40px] text-xs bg-white font-normal"
+                className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand"
               />
             </label>
             <p className="text-[11px] text-slate-500">این تعداد شامل موجودی قابل فروش در انبارهای دیگر هم هست.</p>
-            <label className="block text-[11px] font-bold text-slate-600">علت اصلاح موجودی<input aria-label="علت اصلاح موجودی" value={editing.reason} onChange={event => onEditReasonChange(event.target.value)} maxLength={500} className="mt-1 w-full rounded-lg border p-2 text-xs font-normal" /></label>
+            <label className="block text-xs font-bold text-slate-700">علت اصلاح موجودی<input aria-label="علت اصلاح موجودی" value={editing.reason} onChange={event => onEditReasonChange(event.target.value)} maxLength={500} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
             <div className="flex gap-2">
               <button
                 disabled={saving || (editing.product.schemaVersion === 2 && (!editing.variantId || editVariants.loading || !!editVariants.error))}
@@ -671,12 +671,12 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               </button>
             </div>
           </form>
-        </div>
+        </SupplierDialog>
       )}
       {returning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3">
-          <form onSubmit={onSubmitReturn} className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4">
-            <h3 className="text-sm font-bold">برگرداندن کالا: {returning.title}</h3>
+        <SupplierDialog titleId="supplier-return-dialog-title" onDismiss={returnSaving ? undefined : onCancelReturn}>
+          <form onSubmit={onSubmitReturn} className="space-y-3">
+            <h3 id="supplier-return-dialog-title" className="text-base font-extrabold">برگرداندن {returning.title}</h3>
             {returning.schemaVersion === 2 && variantSellableRows(locations, returning.id).length > 0 && (
               <ul className="divide-y divide-slate-50 rounded-xl border border-slate-100 text-[11px]">
                 {variantSellableRows(locations, returning.id).map(row => (
@@ -730,7 +730,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               <button type="button" disabled={returnSaving} onClick={onCancelReturn} className="flex-1 rounded-lg border p-2 min-h-[44px] text-xs">انصراف</button>
             </div>
           </form>
-        </div>
+        </SupplierDialog>
       )}
     </div>
   );

@@ -7,7 +7,7 @@ import { SupplierResourceState } from './SupplierResourceState';
 import { SupplierUnitPrint } from './SupplierUnitPrint';
 import { useSupplierResource } from './useSupplierResource';
 
-type Stage = 'products' | 'prepare' | 'track';
+export type ShipmentStage = 'products' | 'prepare' | 'track';
 
 const stages = [
   { id: 'products', title: 'کالا و مدل‌ها', detail: 'ثبت کالا، مدل‌ها و پیگیری تأیید', icon: Box },
@@ -22,7 +22,7 @@ function ProductUnitLabels({ initialProductId }: { initialProductId: string }) {
   const loadVariants = useCallback(() => productId ? supplierApi.getVariants(productId) : Promise.resolve([]), [productId]);
   const variants = useSupplierResource(loadVariants);
   return (
-    <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+    <section id="supplier-unit-labels" className="space-y-3 rounded-2xl border border-slate-200 bg-[#f8f6fc] p-4">
       <h3 className="font-bold text-slate-900">چاپ برچسب واحد کالا</h3>
       <p className="text-xs leading-6 text-slate-600">کالا را انتخاب کن تا کدهای صادرشدهٔ آن را ببینی. برای دیدن کدهای قبلاً چاپ‌شده، تیک «فقط چاپ‌نشده» را بردار.</p>
       <SupplierResourceState loading={products.loading} error={products.error} retry={products.reload} />
@@ -46,28 +46,35 @@ function ProductUnitLabels({ initialProductId }: { initialProductId: string }) {
 
 interface Props {
   initialProductId: string;
-  initialStage?: 'track';
+  activeStage?: ShipmentStage;
+  onStageChange?: (stage: ShipmentStage) => void;
   onProductConsumed: () => void;
   canManageProducts: boolean;
   canManageShipments: boolean;
 }
 
-export function SupplierInboundFlowTab({ initialProductId, initialStage, onProductConsumed, canManageProducts, canManageShipments }: Props) {
-  const [stage, setStage] = useState<Stage>(initialProductId ? 'prepare' : initialStage ?? (canManageProducts ? 'products' : 'prepare'));
+export function SupplierInboundFlowTab({ initialProductId, activeStage, onStageChange, onProductConsumed, canManageProducts, canManageShipments }: Props) {
+  const [stage, setStage] = useState<ShipmentStage>(initialProductId || !canManageProducts ? 'prepare' : 'products');
+  const requestedStage = activeStage ?? stage;
   const [selectedProductId, setSelectedProductId] = useState(initialProductId);
   const [shipmentsOpened, setShipmentsOpened] = useState(stage !== 'products');
   const [labelsOpen, setLabelsOpen] = useState(false);
   const stepNavigation = useRef<HTMLElement>(null);
   const availableStages = stages.filter(item => item.id === 'products' ? canManageProducts : canManageShipments);
-  const currentStage = availableStages.some(item => item.id === stage) ? stage : availableStages[0]?.id;
+  const currentStage = availableStages.some(item => item.id === requestedStage) ? requestedStage : availableStages[0]?.id;
 
   useEffect(() => {
     if (initialProductId) onProductConsumed();
   }, [initialProductId, onProductConsumed]);
 
-  const navigate = (next: Stage) => {
+  useEffect(() => {
+    if (currentStage && currentStage !== 'products') setShipmentsOpened(true);
+  }, [currentStage]);
+
+  const navigate = (next: ShipmentStage) => {
     if (next !== 'products') setShipmentsOpened(true);
-    setStage(next);
+    if (onStageChange) onStageChange(next);
+    else setStage(next);
     stepNavigation.current?.scrollIntoView({ block: 'nearest' });
   };
 
@@ -80,16 +87,16 @@ export function SupplierInboundFlowTab({ initialProductId, initialStage, onProdu
     <div className="space-y-4 sm:space-y-5">
       <section ref={stepNavigation} aria-label="مراحل ثبت کالا و ارسال" className="scroll-mt-24 rounded-[24px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
         <p className="mb-4 max-w-2xl text-sm leading-7 text-slate-700">{canManageProducts && canManageShipments ? 'برای کالای جدید از ثبت کالا شروع کن. اگر کالا قبلاً ثبت شده، مستقیم محموله را آماده کن.' : canManageProducts ? 'کالا و مدل‌هایش را ثبت کن و وضعیت تأیید را همین‌جا پیگیری کن.' : 'کالاهای ثبت‌شده را به محموله اضافه کن و ارسالشان را پیگیری کن.'}</p>
-        <nav aria-label="مراحل" className="grid gap-2.5 sm:grid-cols-3">
+        <nav aria-label="مراحل" className={`grid gap-2 ${availableStages.length === 3 ? 'grid-cols-3' : availableStages.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
           {availableStages.map(({ id, title, detail, icon: Icon }) => (
             <button key={id} type="button" aria-current={id === currentStage ? 'step' : undefined} onClick={() => navigate(id)}
-              className={`group flex min-h-18 items-center gap-3 rounded-2xl border px-3 py-2.5 text-start focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${id === currentStage ? 'border-[#382660] bg-[#382660] text-white' : 'border-[#e6e2f0] bg-[#f8f6fc] text-[#302056] hover:border-brand-border hover:bg-brand-soft'}`}>
-              <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${id === currentStage ? 'bg-white/15' : 'bg-[#ede6fa]'}`}>
+              className={`group flex min-h-18 min-w-0 flex-col items-center justify-center gap-1.5 rounded-2xl border px-1.5 py-2 text-center focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 sm:flex-row sm:justify-start sm:gap-3 sm:px-3 sm:text-start ${id === currentStage ? 'border-[#382660] bg-[#382660] text-white' : 'border-[#e6e2f0] bg-[#f8f6fc] text-[#302056] hover:border-brand-border hover:bg-brand-soft'}`}>
+              <span className={`grid size-8 shrink-0 place-items-center rounded-xl sm:size-9 ${id === currentStage ? 'bg-white/15' : 'bg-[#ede6fa]'}`}>
                 <Icon aria-hidden="true" className="size-4.5" strokeWidth={1.75} />
               </span>
               <span className="min-w-0">
-                <strong className="block text-sm leading-6">{title}</strong>
-                <span className={`block text-xs leading-5 ${id === currentStage ? 'text-[#f1e9ff]' : 'text-slate-600'}`}>{detail}</span>
+                <strong className="block text-xs leading-5 sm:text-sm sm:leading-6">{title}</strong>
+                <span className={`hidden text-xs leading-5 sm:block ${id === currentStage ? 'text-[#f1e9ff]' : 'text-slate-600'}`}>{detail}</span>
               </span>
             </button>
           ))}
@@ -111,8 +118,8 @@ export function SupplierInboundFlowTab({ initialProductId, initialStage, onProdu
         <section hidden={currentStage === 'products'} className="space-y-4">
           <SupplierLabeledInboundTab selectedProductId={selectedProductId} stage={currentStage === 'track' ? 'track' : 'prepare'}
             onShipmentCreated={() => navigate('track')}
-            onUnitLabels={canManageProducts ? () => setLabelsOpen(open => !open) : undefined} />
-          {labelsOpen && currentStage === 'track' && canManageProducts && <ProductUnitLabels initialProductId={selectedProductId} />}
+            onUnitLabels={canManageProducts ? () => setLabelsOpen(open => !open) : undefined}
+            unitLabels={labelsOpen && currentStage === 'track' && canManageProducts ? <ProductUnitLabels initialProductId={selectedProductId} /> : undefined} />
         </section>
       )}
     </div>

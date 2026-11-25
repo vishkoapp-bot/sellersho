@@ -1,4 +1,5 @@
 import { SupplierSectionHeading } from './SupplierSectionHeading';
+import { SupplierDialog } from './SupplierDialog';
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -652,17 +653,19 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
 
       {/* Shipping Modal / Drawer */}
       {selectedOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white rounded-2xl max-w-md w-full p-4 shadow-2xl border border-slate-100 space-y-3.5 text-xs">
+        <SupplierDialog titleId="supplier-shipping-dialog-title" onDismiss={submittingShipping ? undefined : () => setSelectedOrder(null)}>
+          <div className="space-y-3.5 text-xs">
             <div className="flex items-center justify-between border-b pb-2">
               <div className="flex items-center gap-1.5 text-brand-deep font-bold">
                 <Truck className="w-4 h-4"  strokeWidth={1.5}/>
-                <span>ثبت اطلاعات ارسال سفارش {selectedOrder.orderNumber}</span>
+                <h3 id="supplier-shipping-dialog-title" className="text-sm font-extrabold">ثبت ارسال سفارش {selectedOrder.orderNumber}</h3>
               </div>
               <button
                 type="button"
+                disabled={submittingShipping}
+                aria-label="بستن فرم ثبت ارسال"
                 onClick={() => setSelectedOrder(null)}
-                className="p-1 rounded-lg text-slate-400 hover:bg-slate-100"
+                className="grid size-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60"
               >
                 <X className="w-4 h-4"  strokeWidth={1.5}/>
               </button>
@@ -773,12 +776,13 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  کد رهگیری مرسوله:
+                <label htmlFor="supplier-shipping-tracking" className="text-xs font-bold text-slate-700 block mb-1">
+                  کد رهگیری مرسوله
                 </label>
                 <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus-within:border-brand focus-within:bg-white">
                   <Hash className="w-4 h-4 text-slate-400 shrink-0 ml-2"  strokeWidth={1.5}/>
                   <input
+                    id="supplier-shipping-tracking"
                     type="text"
                     value={trackingNumber}
                     onChange={(e) => setTrackingNumber(e.target.value)}
@@ -791,12 +795,13 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  تاریخ ارسال:
+                <label htmlFor="supplier-shipping-date" className="text-xs font-bold text-slate-700 block mb-1">
+                  تاریخ ارسال
                 </label>
                 <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
                   <Calendar className="w-4 h-4 text-slate-400 shrink-0 ml-2"  strokeWidth={1.5}/>
                   <input
+                    id="supplier-shipping-date"
                     type="text"
                     value={shippingDate}
                     onChange={(e) => setShippingDate(e.target.value)}
@@ -837,6 +842,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
                 </button>
                 <button
                   type="button"
+                  disabled={submittingShipping}
                   onClick={() => setSelectedOrder(null)}
                   className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl"
                 >
@@ -846,7 +852,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' }> = 
               )}
             </form>
           </div>
-        </div>
+        </SupplierDialog>
       )}
     </div>
   );

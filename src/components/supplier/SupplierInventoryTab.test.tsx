@@ -227,7 +227,8 @@ it('edit form opens pre-filled with the selected variant stock', () => {
       loading: false, error: '', reload: () => {},
     },
   });
-  assert.match(html, /تغییر موجودی: پیراهن/);
+  assert.match(html, /<dialog[^>]*aria-labelledby="supplier-stock-dialog-title"/);
+  assert.match(html, /تغییر موجودی پیراهن/);
   assert.match(html, /value="۷"/);
   assert.match(html, /ذخیره موجودی/);
   assert.match(html, /علت اصلاح موجودی/);
@@ -313,7 +314,8 @@ it('return modal lists per-variant returnable stock before a variant is chosen',
     returnReason: '',
     returnableOf: (productId, variantId) => (variantId === 'v-blue' ? 4 : 0),
   });
-  assert.match(html, /برگرداندن کالا: پیراهن/);
+  assert.match(html, /<dialog[^>]*aria-labelledby="supplier-return-dialog-title"/);
+  assert.match(html, /برگرداندن پیراهن/);
   assert.match(html, /آبی \/ بزرگ · SPNC-A/);
   assert.match(html, /آماده برگشت: <b[^>]*>۴<\/b>/);
   assert.match(html, /آماده برگشت: ۰ عدد/);

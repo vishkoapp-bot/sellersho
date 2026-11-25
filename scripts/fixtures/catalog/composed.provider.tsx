@@ -1,7 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppContent } from '../../../src/App';
-import { AuthProvider } from '../../../src/context/AuthContext';
+import { AuthProvider, useAuth } from '../../../src/context/AuthContext';
 import { ProductProvider } from '../../../src/context/ProductContext';
 import { CartProvider } from '../../../src/context/CartContext';
 import { SellerOnboardingProvider } from '../../../src/context/SellerOnboardingContext';
@@ -88,9 +88,17 @@ let drp33Override = ['override', 'locked', 'failure', 'missing'].includes(drp33 
 const user = { id: 'fixture-user', mobile: '09120000000', fullName: 'کاربر نمونه', role: role, capabilities };
 
 let release: ((outcome: 'success' | 'error') => void) | undefined;
+let holdInitialProfile = routeParams.has('holdInitialProfile');
+let resolveInitialProfile: (() => void) | undefined;
 const fixture = {
   registrations: 0,
   verifications: 0,
+  initialProfilePending: () => resolveInitialProfile !== undefined,
+  finishInitialProfile: () => {
+    const finish = resolveInitialProfile;
+    resolveInitialProfile = undefined;
+    finish?.();
+  },
   rejectRegistration: false,
   pending: false,
   shipping: 0,
@@ -201,7 +209,12 @@ authApi.verifyOTP = async () => {
   return { token: 'fixture-token', user } as Awaited<ReturnType<typeof authApi.verifyOTP>>;
 };
 authApi.getMe = async () => {
-  await new Promise(resolve => setTimeout(resolve, 100));
+  if (holdInitialProfile) {
+    holdInitialProfile = false;
+    await new Promise<void>(resolve => { resolveInitialProfile = resolve; });
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   return { ...user, userId: user.id } as Awaited<ReturnType<typeof authApi.getMe>>;
 };
 if (hasSupplier) {
@@ -358,12 +371,14 @@ if (routeParams.has('fixture-orders')) {
 
 function FixtureControls() {
   const store = useStore();
+  const { currentUser, isSessionReady } = useAuth();
   const toast = useToast();
   const [order, setOrder] = React.useState<Order | null>(null);
   const [showDetails, setShowDetails] = React.useState(false);
   Object.assign(fixture, {
     toast: toast.showToast,
     state: () => ({ view: store.activeView, catalogTotal: store.catalogTotal, productCount: store.products.length,
+      userId: currentUser?.id, isSessionReady,
       stores: store.stores.map(entry => entry.id) }),
     openCheckout: (shipping: number) => {
       fixture.shipping = shipping;

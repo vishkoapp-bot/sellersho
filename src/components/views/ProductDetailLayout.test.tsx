@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { batch8Browser, clickText, waitText } from '../../../scripts/fixtures/catalog/batch8-browser';
 
-const visit = batch8Browser();
+const visit = batch8Browser({ inlineVazirmatn: true });
 const buy = 'button[aria-label="افزایش تعداد"]';
 for (const scope of ['', '/store/batch-eight-store']) {
   test(`${scope || 'central'} PDP shows the floating buy bar on downward scroll and hides it when returning to the tabs`, async () => {
@@ -16,6 +16,11 @@ for (const scope of ['', '/store/batch-eight-store']) {
         window.scrollTo(0, window.scrollY + bar.getBoundingClientRect().bottom + 8);
       });
       await page.waitForSelector(floating, { visible: true });
+      const loaded = await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].some(font => font.family === 'Vazirmatn' && font.status === 'loaded');
+      });
+      assert.ok(loaded, 'PDP geometry must use the bundled Vazirmatn font');
       const geometry = await page.evaluate((selector, tabSelector) => {
         const bar = document.querySelector(selector)!.parentElement!.parentElement!.getBoundingClientRect();
         const specs = [...document.querySelectorAll(tabSelector)].find(node => node.textContent?.trim() === 'مشخصات فنی')!;
@@ -36,7 +41,7 @@ for (const scope of ['', '/store/batch-eight-store']) {
       assert.equal(geometry.bottom, scope ? 0 : 64);
       assert.equal(geometry.navHeight, scope ? 0 : 64);
       assert.equal(geometry.fixedBuyBars, 1);
-      assert.ok(geometry.padding >= geometry.buyBarHeight + geometry.navHeight);
+      assert.ok(geometry.padding >= geometry.buyBarHeight + geometry.navHeight, JSON.stringify(geometry));
       await page.evaluate(() => {
         [...document.querySelectorAll('button')].find(node => node.textContent?.trim() === 'مشخصات فنی')?.scrollIntoView({ block: 'center' });
       });

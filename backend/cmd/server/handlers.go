@@ -839,7 +839,8 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		}
 		scope.Revision = revision
 		var after *catalogpage.Key
-		if token := r.URL.Query().Get("cursor"); token != "" {
+		token := r.URL.Query().Get("cursor")
+		if token != "" {
 			key, err := catalogpage.Decode(token, scope, filter)
 			if err != nil {
 				return err
@@ -867,6 +868,13 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 				if scope.Revision, err = catalogRepo.GetCatalogScopeRevisionTx(ctx, tx, scope.ID); err != nil {
 					return err
 				}
+			}
+			if token != "" && scope.Revision != revision {
+				// Persist refresh so a restart need not repeat the cold work.
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				return catalogpage.ErrRestart
 			}
 			page, err = catalogRepo.GetPricedProductPageTx(ctx, tx, scope, filter, size, after)
 			if err != nil {

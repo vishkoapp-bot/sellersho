@@ -22,19 +22,22 @@ func setupAdminShippingSettings(t *testing.T, charge any) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The handler reads unqualified platform_settings. Shadow it only
+	// for this fixture's connection; other server tests share the migrated
+	// public settings table, including pricing and settlement columns.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err := db.Exec(`
-		DROP TABLE IF EXISTS public.platform_settings;
-		CREATE TABLE public.platform_settings (
+		CREATE TEMP TABLE platform_settings (
 			id INTEGER PRIMARY KEY,
 			supplier_return_postal_charge BIGINT,
 			default_item_weight_grams INTEGER NOT NULL
-			, early_withdrawal_minimum_toman BIGINT NOT NULL DEFAULT 1000000 CONSTRAINT platform_settings_early_withdrawal_minimum_toman_check CHECK (early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991)
 		);
 	`); err != nil {
 		t.Fatalf("create platform_settings fixture: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO public.platform_settings (id, supplier_return_postal_charge, default_item_weight_grams)
+		INSERT INTO pg_temp.platform_settings (id, supplier_return_postal_charge, default_item_weight_grams)
 		VALUES (1, $1, 300)
 	`, charge); err != nil {
 		t.Fatalf("seed platform_settings fixture: %v", err)

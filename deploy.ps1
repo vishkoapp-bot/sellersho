@@ -73,7 +73,7 @@ docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v 
 # budgets and post-conditions. --repo is the install dir (a git
 # checkout; the staged release has no .git). Payment mode is real
 # with no PSP pair (documented live state; FIN-010 still blocked).
-python3 "`$release/scripts/release/make_manifest.py" --stage "`$release" --commit "`$commit" --branch "$branch" --payment-mode real --repo '$Target'
+python3 "`$release/scripts/release/make_manifest.py" --stage "`$release" --commit "$commit" --branch "$branch" --payment-mode real --repo '$Target'
 # REL-02 R-1: fail fast if the manifest step exited 0 without writing
 # release.json. deploy_remote.py would otherwise fail later, after both
 # builds, on the missing file (FileNotFoundError reading release.json).

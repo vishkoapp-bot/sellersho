@@ -138,6 +138,7 @@ function global:docker { throw 'Local Docker forbidden' }
         # lived only inside make_manifest.py and the assertion could never pass.
         # The guard must sit after the make_manifest.py invocation and before
         # deploy_remote.py consumes the manifest.
+        self.assertIn(f'--commit "{COMMIT}" --branch "codex/server-build-fixture"', self.release)
         self.assertIn('release.json', self.release)
         self.assertGreater(self.release.index('test -f "$release/release.json"'),
                            self.release.index('python3 "$release/scripts/release/make_manifest.py"'))

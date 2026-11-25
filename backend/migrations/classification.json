@@ -3,14 +3,14 @@
  "generated_by": "scripts/release/build_classification.py (MIG-02 step 1). Regenerate: python3 scripts/release/build_classification.py, then python3 scripts/release/generate_classification_md.py.",
  "repo_commit": "92f9cca",
  "counts": {
-  "EXPAND": 99,
+  "EXPAND": 100,
   "BACKFILL": 54,
   "CONTRACT": 62,
   "DESTRUCTIVE": 1,
-  "total": 216
+  "total": 217
  },
  "verdicts": {
-  "compatible": 194,
+  "compatible": 195,
   "tightening": 18,
   "breaking": 4
  },
@@ -6168,6 +6168,29 @@
    "verdict": "compatible",
    "old_binary_write": "Existing storage receipt writes keep the same schema and exact provenance checks.",
    "notes": "Recognizes external SKU inbound_receive movements and the immutable QC putaway SKU for variant-less receipts. Preserves physical receipt identity, timing, quantity, and tariff proof.",
+   "moves_floor": false
+  },
+  {
+   "name": "202611240001_seller_early_withdrawal_minimum.up.sql",
+   "class": "EXPAND",
+   "sha256": "85ebe6edc37d0567f7470b9921fd041fa6a7e7d10bf5d0db2d76b7ec0b54bb0b",
+   "has_down_sql": true,
+   "tables": [
+    "platform_settings"
+   ],
+   "operations": [
+    "ALTER TABLE: platform_settings.early_withdrawal_minimum_toman",
+    "EXPAND CHECK: platform_settings.early_withdrawal_minimum_toman BETWEEN 1 AND 9007199254740991"
+   ],
+   "runtime_ms_disposable": null,
+   "chunked": false,
+   "timeout_lock_seconds": null,
+   "timeout_statement_seconds": null,
+   "post_conditions": [],
+   "post_condition_status": "none",
+   "verdict": "compatible",
+   "old_binary_write": "The new column defaults to 1000000 for existing writes; the old binary never references it.",
+   "notes": "Admin-configurable early-withdrawal floor for sellers (DRP-20).",
    "moves_floor": false
   }
  ]

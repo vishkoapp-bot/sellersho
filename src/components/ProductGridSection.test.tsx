@@ -20,7 +20,13 @@ test('mobile homepage offers a short product preview and sends full browsing to 
 test('mobile home has keyboard-accessible product links and does not overflow a narrow viewport', async () => {
   await visit('/', 320, async page => {
     await page.waitForSelector('#products-section .product-title-link');
+    await page.waitForSelector('.central-trust small');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
+    const service = await page.$eval('.central-trust > div', item => {
+      const text = item.querySelector('small')!;
+      return { direction: getComputedStyle(item).flexDirection, font: getComputedStyle(text).fontSize };
+    });
+    assert.deepEqual(service, { direction: 'column', font: '13px' });
     const selector = '#products-section .product-title-link';
     const href = await page.$eval(selector, link => link.getAttribute('href'));
     assert.match(href || '', /^\/product\//);

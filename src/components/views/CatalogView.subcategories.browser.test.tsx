@@ -4,6 +4,21 @@ import { batch8Browser, fillInput, waitText } from '../../../scripts/fixtures/ca
 
 const visit = batch8Browser();
 
+test('desktop sorting and results stay at the top beside the filters', () =>
+  visit('/?category=digital', 1440, async page => {
+    await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
+    await page.evaluate(() => (window as any).batch8Fixture.finish());
+    await page.waitForSelector('.central-catalog-grid [data-testid="product-item"]');
+    const layout = await page.evaluate(() => {
+      const filters = document.querySelector('#catalog-filters')!.getBoundingClientRect();
+      const sort = document.querySelector('.central-catalog-bar select')!.getBoundingClientRect();
+      const card = document.querySelector('.central-catalog-grid [data-testid="product-item"]')!.getBoundingClientRect();
+      return { toolbarGap: sort.top - filters.top, resultsGap: card.top - sort.bottom };
+    });
+    assert.ok(layout.toolbarGap >= 0 && layout.toolbarGap < 12, JSON.stringify(layout));
+    assert.ok(layout.resultsGap >= 0 && layout.resultsGap < 24, JSON.stringify(layout));
+  }));
+
 test('mobile catalog keeps products visible, expands categories in filters and makes selection sharable', async () => {
   await visit('/?category=digital', 390, async page => {
     const rows = '[data-testid="product-item"]';

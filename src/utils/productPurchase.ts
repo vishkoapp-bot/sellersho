@@ -26,9 +26,12 @@ export const activeProductVariants = <V extends { isActive?: boolean }>(product:
   (product.variants ?? []).filter((variant) => variant.isActive !== false);
 
 type PurchaseVariantCandidate = Pick<ProductVariant, 'id'> & Partial<Pick<
-  ProductVariant, 'variantName' | 'name' | 'stock' | 'inventoryMode' | 'minCartQty' | 'maxCartQty' | 'isActive' | 'isDefault'
+  ProductVariant, 'variantName' | 'name' | 'stock' | 'inventoryMode' | 'minCartQty' | 'maxCartQty' | 'isActive' | 'isDefault' | 'attributes' | 'selection'
 >>;
-type PurchaseProductCandidate = Pick<Product, 'schemaVersion' | 'productType' | 'isActive' | 'variantPrices'> & { stock?: number };
+type PurchaseProductCandidate = Pick<Product, 'schemaVersion' | 'productType' | 'isActive' | 'variantPrices'> & { stock?: number; title?: string };
+
+export const requiresProductVariant = (product: { productType?: Product['productType']; variants?: Array<{ isActive?: boolean }> }): boolean =>
+  product.productType === 'variable' || (product.productType !== 'simple' && (product.variants?.length ?? 0) > 1);
 
 export const purchaseLimits = (product: PurchaseProductCandidate, variant?: PurchaseVariantCandidate) => {
   const minQty = variant?.minCartQty != null && Number.isSafeInteger(variant.minCartQty) && variant.minCartQty > 0 ? variant.minCartQty : 1;
@@ -165,8 +168,8 @@ export const variantPurchasable = (product: PurchaseProductCandidate, variant: P
 export const resolvePurchase = (product: Product, variantId?: string): PurchaseResolution | undefined => {
   if (product.isActive === false) return undefined;
   const variants = activeProductVariants(product);
-  if (product.productType === 'variable' && !variantId) return undefined;
-  const candidates = variantId ? variants : variants.filter((variant) => !isHiddenSyntheticVariant(product, variant));
+  if (requiresProductVariant(product) && !variantId) return undefined;
+  const candidates = variants.filter((variant) => !isHiddenSyntheticVariant(product, variant));
   const variant = variantId
     ? candidates.find((candidate) => candidate.id === variantId)
     : cheapestPurchaseVariant(product) ?? (candidates.length === 1 ? candidates[0] : undefined);
@@ -199,11 +202,17 @@ export const resolveStockBadge = (product: Product, variantId?: string): StockBa
 };
 
 export const isHiddenSyntheticVariant = (
-  product: Pick<PurchaseProductCandidate, 'productType'> | undefined,
-  variant: Pick<PurchaseVariantCandidate, 'variantName' | 'name'>,
-): boolean =>
-  product?.productType === 'variable'
-  && (variant.variantName || variant.name || '').replace(/[\u200C\u200D\s]/g, '') === 'پیشفرض';
+  product: Pick<PurchaseProductCandidate, 'productType' | 'title'> & { variants?: Array<{ isActive?: boolean }> } | undefined,
+  variant: PurchaseVariantCandidate,
+): boolean => {
+  if (!product || !requiresProductVariant(product)) return false;
+  const name = (variant.variantName || variant.name || '').trim();
+  const reserved = name.replace(/[\u200C\u200D\s]/g, '') === 'پیشفرض';
+  if (reserved && product.productType === 'variable') return true;
+  const hasOptions = Object.values(variant.attributes ?? {}).some(value => value != null && String(value).trim() !== '')
+    || Object.keys(variant.selection ?? {}).length > 0;
+  return !hasOptions && (reserved || (product.productType !== 'variable' && name === product.title?.trim()));
+};
 
 export const cheapestPurchaseVariant = <V extends PurchaseVariantCandidate>(product: PurchaseProductCandidate & { variants?: V[] }): V | undefined => {
   let cheapest: V | undefined;
@@ -230,6 +239,11 @@ export const initialPurchaseVariant = (product: Product, spnc?: string | null, s
     : undefined;
   return linked ?? storeDefault ?? cheapestPurchaseVariant(product)
     ?? variants.find((variant) => variantPurchasable(product, variant)) ?? variants[0];
+};
+
+export const initialDetailPurchaseVariant = (product: Product, spnc?: string | null): ProductVariant | undefined => {
+  if (!requiresProductVariant(product)) return initialPurchaseVariant(product, spnc, product.storeDefaultVariantId);
+  return spnc ? activeProductVariants(product).find(variant => variant.spnc === spnc && !isHiddenSyntheticVariant(product, variant)) : undefined;
 };
 
 // Earlier axes constrain later axes. Changing an earlier choice selects a

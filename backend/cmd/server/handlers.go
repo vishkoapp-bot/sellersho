@@ -374,6 +374,10 @@ func buildProductResponse(p domain.Product, res pricing.ReferenceResolution, var
 		}
 	}
 	for _, variant := range variants {
+		if catalogpricing.IsParentPlaceholder(p, variant, totalVariants) {
+			delete(availablePrices, variant.ID)
+			continue
+		}
 		if price, ok := variantPrices[variant.ID]; !ok || price.PricingError == "" {
 			availableVariants = append(availableVariants, variant)
 		}

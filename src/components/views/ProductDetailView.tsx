@@ -3,7 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
 import { useToast } from '../../context/ToastContext';
 import { Product } from '../../types';
-import { activeProductVariants, initialPurchaseVariant, isHiddenSyntheticVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../../utils/productPurchase';
+import { activeProductVariants, initialDetailPurchaseVariant, isHiddenSyntheticVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed, requiresProductVariant, variantPurchasable } from '../../utils/productPurchase';
 import { ProductDetailRelated } from './product/ProductDetailRelated';
 import { ProductDetailGallery } from './product/ProductDetailGallery';
 import { ProductDetailAssurances, ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
@@ -194,16 +194,16 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   const manualVariant = variantChoice?.productId === displayBase.id && variantChoice.linkedSpnc === linkedSpnc
     ? visibleVariants.find(variant => variant.id === variantChoice.id)
     : undefined;
-  const selectedVariant = manualVariant ?? initialPurchaseVariant(displayBase, linkedSpnc, displayBase.storeDefaultVariantId);
+  const selectedVariant = manualVariant ?? initialDetailPurchaseVariant(displayBase, linkedSpnc);
+  const requiresChoice = requiresProductVariant(displayBase);
+  const selectionNeeded = requiresChoice && !selectedVariant && visibleVariants.some(variant => variantPurchasable(displayBase, variant));
   useEffect(() => {
     setSelectedAddonIds([]);
     setQty(1);
   }, [product.id]);
 
   const wishlisted = isWishlisted(product.id, pdpStore);
-  const showVariantSelector = central
-    ? visibleVariants.length > 1 || displayBase.productSchema?.attributes.some(attribute => attribute.role === 'axis') === true
-    : variants.length > 1 || displayBase.productType === 'variable';
+  const showVariantSelector = requiresChoice && visibleVariants.length > 0;
   const displayProduct = productForVariant(displayBase, selectedVariant);
   const { minQty, maxQty } = purchaseLimits(displayBase, selectedVariant);
   const qty = Math.max(minQty, Math.min(quantity, maxQty));
@@ -388,7 +388,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       </div>
       {outOfStock ? (
         <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
-          {scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
+          {selectionNeeded ? 'برای خرید، مدل کالا را انتخاب کنید.' : scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
         </div>
       ) : !publishedInCurrentStore ? (
         <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
@@ -435,14 +435,14 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   );
   const selectionControls = (
     <>
-      {showVariantSelector && selectedVariant && (
+      {showVariantSelector && (
         <div className={central ? 'central-pdp-options' : fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
           {central && <h3>انتخاب مدل کالا</h3>}
           <ProductVariantSelector
             product={displayBase}
             variants={variants}
             variantPrices={displayProduct.variantPrices}
-            selectedId={selectedVariant.id}
+            selectedId={selectedVariant?.id ?? null}
             onSelect={handleSelectVariant}
             storeCount={scopedStoreSlug ? 0 : displayProduct.storeCount}
             theme={fashion ? 'fashion' : 'default'}
@@ -543,15 +543,15 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
             >
               <div className="central-pdp-price">
                 <div>
-                  <h2 id={purchaseId}>قیمت کالا</h2>
-                  {displayProduct.originalPrice > displayProduct.price && (
+                  <h2 id={purchaseId}>{selectionNeeded ? 'قیمت از' : 'قیمت کالا'}</h2>
+                  {!selectionNeeded && displayProduct.originalPrice > displayProduct.price && (
                     <del>{formatPrice(displayProduct.originalPrice)} تومان</del>
                   )}
-                  <strong>{formatPrice(displayProduct.price)} <small>تومان</small></strong>
+                  <strong>{formatPrice(selectionNeeded ? displayBase.priceMin ?? displayProduct.price : displayProduct.price)} <small>تومان</small></strong>
                 </div>
-                <div className="central-pdp-stock" data-available={available} role="status">
-                  {available ? <PackageCheck size={16} aria-hidden="true" /> : <PackageX size={16} aria-hidden="true" />}
-                  {available ? 'موجود در انبار' : 'ناموجود'}
+                <div className="central-pdp-stock" data-available={available} data-needs-selection={selectionNeeded || undefined} role="status">
+                  {available ? <PackageCheck size={16} aria-hidden="true" /> : !selectionNeeded && <PackageX size={16} aria-hidden="true" />}
+                  {available ? 'موجود در انبار' : selectionNeeded ? 'مدل انتخاب نشده' : 'ناموجود'}
                 </div>
               </div>
               {selectionControls}
@@ -588,7 +588,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
                     {productIsInCart && <button type="button" className="central-pdp-cart-link" onClick={() => setIsCartOpen(true)}>مشاهدهٔ سبد خرید</button>}
                     {!canAddToCart && <p className="text-sm text-[#9e3434]" role="status">با احتساب تعداد داخل سبد، موجودی برای افزودن این تعداد کافی نیست.</p>}
                   </>
-                ) : <p className="central-pdp-unavailable">در حال حاضر امکان خرید این گزینه وجود ندارد.</p>}
+                ) : <p className="central-pdp-unavailable">{selectionNeeded ? 'برای خرید، یکی از مدل‌های بالا را انتخاب کنید.' : 'در حال حاضر امکان خرید این گزینه وجود ندارد.'}</p>}
               </div>
               <ProductDetailAssurances product={displayProduct} central />
             </section>

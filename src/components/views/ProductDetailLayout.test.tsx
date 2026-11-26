@@ -4,6 +4,18 @@ import { batch8Browser, clickText, waitText } from '../../../scripts/fixtures/ca
 
 const visit = batch8Browser({ inlineVazirmatn: true });
 const buy = 'button[aria-label="افزایش تعداد"]';
+test('a legacy product asks for a real model and ignores links to the parent placeholder', async () => {
+  await visit('/product/batch8-product-0?legacy-parent&spnc=LEGACY-PARENT', 390, async page => {
+    const options = '.central-pdp-options button';
+    await page.waitForSelector(options);
+    assert.deepEqual(await page.$$eval(options, buttons => buttons.map(button => button.textContent?.trim())), ['اسپرت', 'استاندارد']);
+    assert.equal(await page.$(`${options}[aria-pressed="true"]`), null);
+    assert.equal(await page.$('.central-pdp-actions'), null);
+    await clickText(page, 'اسپرت', options);
+    assert.equal(await page.$eval('.central-pdp-subtotal strong', node => node.textContent?.trim()), '۱۵۰٬۰۰۰ تومان');
+    await page.waitForSelector('.central-pdp-actions button:not(:disabled)');
+  });
+});
 test('central PDP shows an accessible mobile purchase shortcut with a live subtotal and no duplicate controls', async () => {
   await visit('/product/batch8-product-0', 390, async page => {
     await page.waitForSelector('.central-pdp-mobile-buy button', { visible: true });

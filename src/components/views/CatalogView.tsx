@@ -275,7 +275,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </div>
       </header>
 
-      <div className={`${pageWidth} pt-4 lg:grid lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-x-6 lg:pt-7`}>
+      <div className={`${pageWidth} pt-4 lg:grid lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-[max-content_1fr] lg:gap-x-6 lg:pt-7`}>
         <div className="central-catalog-bar mb-3 flex flex-wrap items-center gap-2 lg:col-start-2 lg:row-start-1">
           <button ref={filterButton} type="button" aria-expanded={filtersOpen} aria-controls="catalog-filters"
             onClick={() => setFiltersOpen(open => !open)} className={`${control} lg:hidden`}>

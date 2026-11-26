@@ -215,7 +215,7 @@ func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant,
 	var cheapest, first string
 	var best int64
 	for _, v := range variants {
-		if (v.InventoryMode != "" && !v.IsActive) || !DisplayWorkspaceVariant(p, v, len(variants)) {
+		if (v.InventoryMode != "" && !v.IsActive) || IsParentPlaceholder(p, v, len(variants)) || !DisplayWorkspaceVariant(p, v, len(variants)) {
 			continue
 		}
 		vp, ok := prices[v.ID]
@@ -243,6 +243,24 @@ func SelectPublicCardVariant(p domain.Product, variants []domain.ProductVariant,
 
 func DisplayWorkspaceVariant(p domain.Product, v domain.ProductVariant, variantCount int) bool {
 	return p.ProductType != "variable" || normalizedDefaultName(DisplayVariantName(p, v, variantCount)) != "پیشفرض"
+}
+
+// IsParentPlaceholder identifies an unqualified parent row on a product
+// with choices. A legacy default with actual attributes is a real SKU.
+func IsParentPlaceholder(p domain.Product, v domain.ProductVariant, variantCount int) bool {
+	if p.ProductType == "simple" || (p.ProductType != "variable" && variantCount <= 1) || len(v.Selection) > 0 {
+		return false
+	}
+	name := strings.TrimSpace(v.Name)
+	if normalizedDefaultName(name) != "پیشفرض" && (p.ProductType == "variable" || name != strings.TrimSpace(p.Title)) {
+		return false
+	}
+	for _, value := range v.Attributes {
+		if value != nil && strings.TrimSpace(fmt.Sprint(value)) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func WorkspaceVariantPurchasable(p domain.Product, v domain.ProductVariant) bool {

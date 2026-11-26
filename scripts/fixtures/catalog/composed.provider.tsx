@@ -87,6 +87,23 @@ if (routeParams.has('pdp-flow')) {
     },
   });
 }
+if (routeParams.has('legacy-parent')) {
+  const product = products[0];
+  Object.assign(product, {
+    productType: 'legacy',
+    title: 'فیلتر روغن موتور',
+    variants: [
+      { id: 'legacy-parent', name: 'فیلتر روغن موتور', spnc: 'LEGACY-PARENT', isDefault: true, stock: 150, attributes: {} },
+      { id: 'legacy-sport', name: 'اسپرت', spnc: 'LEGACY-SPORT', stock: 60, attributes: { type: 'اسپرت' } },
+      { id: 'legacy-standard', name: 'استاندارد', spnc: 'LEGACY-STANDARD', stock: 90, attributes: { type: 'استاندارد' } },
+    ],
+    variantPrices: {
+      'legacy-parent': { price: 100000, originalPrice: 100000, discountPercent: 0 },
+      'legacy-sport': { price: 150000, originalPrice: 150000, discountPercent: 0 },
+      'legacy-standard': { price: 120000, originalPrice: 120000, discountPercent: 0 },
+    },
+  });
+}
 const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه مرکزی', ownerType: 'central' as const };
 const seller = {
   id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper',
@@ -397,6 +414,7 @@ window.fetch = async (input, init) => {
     ? { sections: [
         { id: 'grid', sectionType: 'product_grid', config: {}, sortOrder: 0, isActive: true },
         { id: 'secondary', sectionType: 'secondary_slider', config: {}, sortOrder: 1, isActive: true },
+        { id: 'trust', sectionType: 'trust_features', config: {}, sortOrder: 2, isActive: true },
       ] }
     : url.endsWith('/static-pages')
     ? { pages: ['about', 'terms', 'privacy', 'faq', 'license'].map((key, sortOrder) => ({

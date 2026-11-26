@@ -1,7 +1,7 @@
 import React from 'react';
 import { Product, ProductVariant, VariantPrice } from '../types';
 import { toPersianDigits } from '../utils/formatters';
-import { axisOptionVariant, isHiddenSyntheticVariant, purchaseLimits } from '../utils/productPurchase';
+import { axisOptionVariant, isHiddenSyntheticVariant, requiresProductVariant, variantPurchasable } from '../utils/productPurchase';
 
 interface ProductVariantSelectorProps {
   product?: Product;
@@ -25,6 +25,7 @@ const LEGACY_ATTRIBUTE_LABELS = new Map([
   ['style', 'سبک'],
   ['color', 'رنگ'],
   ['size', 'سایز'],
+  ['type', 'نوع'],
 ]);
 
 export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
@@ -80,7 +81,7 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
       )}
     </div>;
   }
-  if (visibleVariants.length === 0 || (visibleVariants.length === 1 && product?.productType !== 'simple')) return null;
+  if (visibleVariants.length === 0 || (visibleVariants.length === 1 && product?.productType !== 'simple' && !(product && requiresProductVariant(product)))) return null;
 
   const labelOf = (variant: ProductVariant): string => {
     const attrs = Object.values(variant.attributes || {})
@@ -95,19 +96,18 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   // Live label format (proven from the live product page): the variant
   // attribute key plus the selected value, e.g. "style: ساده" — not a
   // generic "choose model" heading, and buttons carry no price/stock.
-  const selectedVariant =
-    visibleVariants.find((v) => v.id === selectedId) ?? visibleVariants[0];
+  const selectedVariant = visibleVariants.find((v) => v.id === selectedId);
   const attrKey = (() => {
     const keys = visibleVariants.flatMap((v) => Object.keys(v.attributes || {}));
     return keys.find((k) => k) || null;
   })();
   const attrLabel = attrKey ? LEGACY_ATTRIBUTE_LABELS.get(attrKey) ?? attrKey : null;
   const attrValue = selectedVariant && attrKey
-    ? (selectedVariant.attributes as Record<string, unknown>)[attrKey]
+    ? selectedVariant.attributes?.[attrKey]
     : null;
   const label = attrKey && attrValue != null
     ? `${attrLabel}: ${String(attrValue)}`
-    : labelOf(selectedVariant);
+    : selectedVariant ? labelOf(selectedVariant) : null;
   return (
     <div data-testid="variant-selector" className="space-y-3">
       {attrKey && attrValue != null ? (
@@ -115,13 +115,13 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
           <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-700'}>{attrLabel}</span>
           <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>: {String(attrValue)}</span>
         </p>
-      ) : (
+      ) : label && (
         <p className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{label}</p>
       )}
       <div className="flex flex-wrap gap-2">
         {visibleVariants.map((variant) => {
           const selected = variant.id === selectedId;
-          const unavailable = variant.isActive === false || (product ? purchaseLimits(product, variant).maxQty < purchaseLimits(product, variant).minQty : variant.inventoryMode === 'tracked' && variant.stock <= 0);
+          const unavailable = variant.isActive === false || (product ? !variantPurchasable(product, variant) : variant.inventoryMode === 'tracked' && variant.stock <= 0);
           // P0: legacy colour variants get the same thumbnail indicator
           // as the V2 colour axis (only when a colour attribute exists).
           const isColourVariant = Object.keys(variant.attributes || {}).some((k) => k === 'رنگ' || k.toLowerCase() === 'color');

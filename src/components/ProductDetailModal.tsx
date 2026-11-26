@@ -7,7 +7,7 @@ import { ProductInfoRight } from './ProductInfoRight';
 import { ProductVariantSelector } from './ProductVariantSelector';
 import { X, ShoppingCart } from 'lucide-react';
 import { motion } from 'motion/react';
-import { activeProductVariants, initialPurchaseVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../utils/productPurchase';
+import { activeProductVariants, initialDetailPurchaseVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed, requiresProductVariant, isHiddenSyntheticVariant, variantPurchasable } from '../utils/productPurchase';
 
 export const ProductDetailModal: React.FC = () => {
   const { selectedProduct, setSelectedProduct, addToCart, toPersianDigits, formatPrice, currentStore, routeStoreSlug, cart } = useStore();
@@ -37,7 +37,7 @@ export const ProductDetailModal: React.FC = () => {
     try {
       spnc = new URLSearchParams(window.location.search).get('spnc');
     } catch {}
-    const next = initialPurchaseVariant(selectedProduct, spnc, selectedProduct.storeDefaultVariantId);
+    const next = initialDetailPurchaseVariant(selectedProduct, spnc);
     setSelectedVariantId(next?.id ?? null);
     setQuantity(next ? purchaseLimits(selectedProduct, next).minQty : 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,8 +46,11 @@ export const ProductDetailModal: React.FC = () => {
   if (!selectedProduct) return null;
 
   const variants = activeProductVariants(selectedProduct);
-  const showVariantSelector = variants.length > 1 || selectedProduct.productType === 'variable';
-  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(selectedProduct, null, selectedProduct.storeDefaultVariantId);
+  const requiresChoice = requiresProductVariant(selectedProduct);
+  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId && !isHiddenSyntheticVariant(selectedProduct, variant))
+    ?? initialDetailPurchaseVariant(selectedProduct);
+  const selectionNeeded = requiresChoice && !selectedVariant && variants.some(variant =>
+    !isHiddenSyntheticVariant(selectedProduct, variant) && variantPurchasable(selectedProduct, variant));
   const displayProduct = productForVariant(selectedProduct, selectedVariant);
   const published = isProductPublishedInStore(currentStore, displayProduct.id);
   const { minQty, maxQty } = purchaseLimits(selectedProduct, selectedVariant);
@@ -96,12 +99,12 @@ export const ProductDetailModal: React.FC = () => {
             title={displayProduct.title}
           />
 
-          {showVariantSelector && selectedVariant && (
+          {requiresChoice && (
             <ProductVariantSelector
               product={selectedProduct}
               variants={variants}
               variantPrices={selectedProduct.variantPrices}
-              selectedId={selectedVariant.id}
+              selectedId={selectedVariant?.id ?? null}
               onSelect={handleSelectVariant}
             />
           )}
@@ -140,7 +143,7 @@ export const ProductDetailModal: React.FC = () => {
           {/* Add to Cart with Installment Info */}
           {(outOfStock) ? (
             <div className="flex-1 py-2.5 px-4 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center">
-              {inStoreScope ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
+              {selectionNeeded ? 'برای خرید، مدل کالا را انتخاب کنید.' : inStoreScope ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
             </div>
           ) : (
             <button

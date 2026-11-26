@@ -12,10 +12,11 @@ func TestBatch9VariantDefault(t *testing.T) {
 		p1p2Variant("expensive", false, true, 1, nil),
 		p1p2Variant("stored", true, true, 1, nil),
 		p1p2Variant("cheap", false, true, 0, nil),
+		p1p2Variant("parent", false, true, 10, nil),
 	}
 	variants[0].Name = "پیش‌فرض"
 	variants[0].Attributes = map[string]interface{}{"size": 42, "empty": "", "color": "زرد"}
-	variants[2].Name = "پیش‌فرض"
+	variants[3].Name = "پیش‌فرض"
 	for _, tc := range []struct {
 		name   string
 		prices map[string]VariantPriceResponse
@@ -27,25 +28,45 @@ func TestBatch9VariantDefault(t *testing.T) {
 		{"no priced variants", map[string]VariantPriceResponse{"cheap": {Price: 0}}, "stored"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.prices["parent"] = VariantPriceResponse{Price: 1}
 			out := buildProductResponse(p, p1p2Res(300, 300), variants, tc.prices, "stored")
 			if out.StoreDefaultVariantID == nil || *out.StoreDefaultVariantID != "stored" {
 				t.Fatalf("storeDefaultVariantId = %v, want stored", out.StoreDefaultVariantID)
 			}
-			if len(out.Variants) != len(variants) {
-				t.Fatalf("rendered %d variants, want %d", len(out.Variants), len(variants))
+			if len(out.Variants) != 3 {
+				t.Fatalf("rendered %d variants, want 3 real variants", len(out.Variants))
+			}
+			if _, ok := out.VariantPrices["parent"]; ok {
+				t.Fatal("parent placeholder should not have a catalog price")
 			}
 			for i, v := range out.Variants {
 				if v.ID != variants[i].ID || v.IsDefault != (v.ID == tc.winner) {
 					t.Errorf("variant %d = %s, default %t, want %s with default on %s", i, v.ID, v.IsDefault, variants[i].ID, tc.winner)
 				}
 			}
-			for i, name := range []string{"زرد / 42", variants[1].Name, p.Title} {
+			for i, name := range []string{"زرد / 42", variants[1].Name, variants[2].Name} {
 				v := out.Variants[i]
 				if v.Name != name || v.VariantName != name {
 					t.Errorf("variant %s names = %q / %q, want %q", v.ID, v.Name, v.VariantName, name)
 				}
 			}
 		})
+	}
+}
+
+func TestLegacyParentVariantIsHiddenFromBuyerCatalog(t *testing.T) {
+	p := domain.Product{Title: "فیلتر روغن موتور", ProductType: "legacy"}
+	parent := p1p2Variant("parent", true, true, 150, nil)
+	parent.Name = "پیش‌فرض"
+	standard := p1p2Variant("standard", false, true, 90, nil)
+	standard.Name = "استاندارد"
+	sport := p1p2Variant("sport", false, true, 60, nil)
+	sport.Name = "اسپرت"
+	out := buildProductResponse(p, p1p2Res(100, 100), []domain.ProductVariant{parent, standard, sport},
+		map[string]VariantPriceResponse{"parent": {Price: 100}, "standard": {Price: 150}, "sport": {Price: 180}})
+	if len(out.Variants) != 2 || out.Variants[0].ID != standard.ID || out.Variants[1].ID != sport.ID ||
+		out.PriceMin == nil || *out.PriceMin != 150 {
+		t.Fatalf("unexpected buyer variants %+v at minimum %v", out.Variants, out.PriceMin)
 	}
 }
 

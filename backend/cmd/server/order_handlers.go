@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drup/platform/internal/auth"
+	"github.com/drup/platform/internal/catalogpricing"
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/pricing"
 	"github.com/drup/platform/internal/privacy"
@@ -422,7 +423,13 @@ func handleCreateOrder(
 			}
 		}
 
-		if err := repository.ValidateProductSKUSelection(p.SchemaVersion, p.ProductType, itemReq.VariantID); err != nil {
+		variants, verr := catalogRepo.GetProductVariants(ctx, p.ID)
+		if verr != nil {
+			http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := repository.ValidateProductSKUSelection(p.SchemaVersion, p.ProductType, itemReq.VariantID); err != nil ||
+			(p.ProductType != "simple" && len(variants) > 1 && itemReq.VariantID == "") {
 			http.Error(w, `{"error":"A product SKU must be selected"}`, http.StatusBadRequest)
 			return
 		}
@@ -430,13 +437,8 @@ func handleCreateOrder(
 		// no untracked-zero fallback, and repeated addon lines share one cap.
 		var chosenVariant *domain.ProductVariant
 		if strings.TrimSpace(itemReq.VariantID) != "" {
-			variants, verr := catalogRepo.GetProductVariants(ctx, p.ID)
-			if verr != nil {
-				http.Error(w, `{"error":"Store catalog is unavailable"}`, http.StatusInternalServerError)
-				return
-			}
 			for _, v := range variants {
-				if v.ID == itemReq.VariantID {
+				if v.ID == itemReq.VariantID && !catalogpricing.IsParentPlaceholder(*p, v, len(variants)) {
 					vv := v
 					chosenVariant = &vv
 					break

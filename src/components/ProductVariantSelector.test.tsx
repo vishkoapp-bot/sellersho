@@ -76,7 +76,9 @@ it('omits the synthetic chip and presses the cheapest real variant', () => {
   const html = render(variants);
   assert.doesNotMatch(html, /پیش‌?فرض/);
   assert.match(html, /aria-pressed="true"[^>]*><span[^>]*><span[^>]*>cheapest<\/span>/);
-  assert.equal(render([variants[0], variants[2]]), '');
+  const single = render([variants[0], variants[2]]);
+  assert.doesNotMatch(single, /پیش‌?فرض/);
+  assert.equal(single.match(/<button\b/g)?.length, 1);
 });
 
 it('renders the sole پیش‌فرض variant for a simple product', () => {

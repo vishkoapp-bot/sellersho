@@ -27,7 +27,7 @@ export const TrustFeatures: React.FC = () => {
         const Icon = ICONS[item.icon] || ShieldCheck;
         return (
           <div key={item.title}>
-            <span><Icon className="size-5" strokeWidth={1.6} /></span>
+            <span aria-hidden="true"><Icon className="size-5" strokeWidth={1.6} /></span>
             <p><strong>{item.title}</strong><small>{item.description}</small></p>
           </div>
         );

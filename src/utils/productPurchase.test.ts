@@ -192,8 +192,9 @@ describe('cheapest purchase variant', () => {
 
     product.productType = 'legacy';
     product.schemaVersion = 0;
-    assert.equal(initialPurchaseVariant(product)?.id, 'synthetic-zwnj');
-    assert.equal(resolvePurchase(product)?.variant?.id, 'synthetic-zwnj');
+    assert.equal(initialPurchaseVariant(product)?.id, 'red-s');
+    assert.equal(resolvePurchase(product), undefined);
+    assert.equal(resolvePurchase(product, 'synthetic-zwnj'), undefined);
   });
 
   it('honors a deep link before a purchasable per-store default and the cheapest option', () => {
@@ -229,7 +230,7 @@ describe('cheapest purchase variant', () => {
     product.productType = 'legacy';
     product.schemaVersion = 0;
     product.variants = [synthetic, blue];
-    assert.equal(initialPurchaseVariant(product)?.id, 'synthetic');
+    assert.equal(initialPurchaseVariant(product)?.id, 'blue-m');
     assert.equal(resolvePurchase(product)?.variant, undefined);
     product.variants = [blue];
     assert.equal(resolvePurchase(product)?.variant?.id, 'blue-m');

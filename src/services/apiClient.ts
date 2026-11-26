@@ -55,6 +55,7 @@ let onUnauthorizedCallback: (() => void) | null = null;
 let sessionGeneration = 0;
 
 export const tokenStore = {
+  key: TOKEN_KEY,
   getGeneration: (): number => sessionGeneration,
   invalidateRequests: (): void => { sessionGeneration++; },
   getToken: (): string | null => {

@@ -119,7 +119,11 @@ export const SupplierAuthGuard: React.FC<SupplierAuthGuardProps> = ({
         return;
       }
 
-      const res = await authenticate(() => authApi.verifyOTP(mobile.trim(), otp.trim(), 'supplier'));
+      const res = await authenticate(async () => {
+        const response = await authApi.verifyOTP(mobile.trim(), otp.trim(), 'supplier');
+        if (!response.user.capabilities?.includes('supplier')) throw new Error('این شماره مجوز پنل تأمین‌کننده را ندارد.');
+        return response;
+      });
       requestIsCurrent = res.isCurrent;
       if (!requestIsCurrent()) return;
       const profile = await authApi.getSupplierProfile();

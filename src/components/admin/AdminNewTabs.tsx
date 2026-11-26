@@ -52,39 +52,61 @@ const AdminListShell: React.FC<{
   icon: React.ReactNode;
   loading?: boolean;
   loadError?: string | null;
+  onRetry?: () => void;
   children: React.ReactNode;
-}> = ({ title, icon, loading = false, loadError = null, children }) => (
+}> = ({ title, icon, loading = false, loadError = null, onRetry, children }) => (
   <div className="space-y-3">
     <div className="bg-white rounded-2xl border border-slate-200 p-4 flex items-center gap-2">
       {icon}
-      <h3 className="text-xs font-bold text-slate-800">{title}</h3>
+      <h3 className="text-sm font-bold text-slate-800">{title}</h3>
     </div>
-    {loading && <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">در حال بارگذاری…</div>}
-    {loadError && <div className="bg-white rounded-2xl border border-rose-200 p-4 text-xs text-rose-600">{loadError}</div>}
+    {loading && <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">در حال بارگذاری…</p>}
+    {loadError && (
+      <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+        <p role="alert" className="[overflow-wrap:anywhere]">{loadError}</p>
+        {onRetry && <button type="button" onClick={onRetry} className="mt-2 min-h-11 rounded-lg border border-rose-300 px-3 font-bold focus-visible:outline-2 focus-visible:outline-rose-700">تلاش دوباره</button>}
+      </div>
+    )}
     {!loading && !loadError && children}
   </div>
 );
 
-// One-shot GET list fetch (AdminSupportReturnsTab pattern).
-function useAdminList<T>(fetcher: () => Promise<T[]>, errorText: string) {
-  const [items, setItems] = useState<T[]>([]);
+function useAdminRead<T>(fetcher: () => Promise<T>, errorText: string) {
+  const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    let on = true;
-    fetcher()
-      .then((list) => { if (on) setItems(Array.isArray(list) ? list : []); })
-      .catch((err: any) => { if (on) setLoadError(err?.message || errorText); })
-      .finally(() => { if (on) setLoading(false); });
-    return () => { on = false; };
-  }, []);
-  return { items, loading, loadError };
+    let mounted = true;
+    void fetcher()
+      .then(result => { if (mounted) setData(result); })
+      .catch((err: unknown) => { if (mounted) setLoadError(err instanceof Error ? err.message : errorText); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [attempt, errorText, fetcher]);
+  return {
+    data,
+    loading,
+    loadError,
+    onRetry: () => {
+      setLoadError(null);
+      setLoading(true);
+      setAttempt(value => value + 1);
+    },
+  };
+}
+
+function useAdminList<T>(fetcher: () => Promise<T[]>, errorText: string) {
+  const { data, ...state } = useAdminRead(fetcher, errorText);
+  return { items: Array.isArray(data) ? data : [], ...state };
 }
 
 const iconCls = 'w-4 h-4 text-slate-500';
-const rowCls = 'bg-white rounded-2xl border border-slate-200 p-4 space-y-1';
-const badgeCls = 'text-[10px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full';
-const emptyCls = 'bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500';
+const rowCls = 'space-y-1 rounded-2xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-600 [overflow-wrap:anywhere]';
+const rowHeaderCls = 'flex flex-wrap items-start justify-between gap-x-3 gap-y-1';
+const rowTitleCls = 'min-w-0 font-bold text-slate-900';
+const badgeCls = 'max-w-full rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold leading-5 text-slate-700';
+const emptyCls = 'rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600';
 
 // --- stores-list: reuses useStore().stores (same client data as
 // AdminStoresTab); no new endpoint. Client Store objects carry no
@@ -94,12 +116,12 @@ export const AdminStoresListView: React.FC<{ stores: Store[] }> = ({ stores }) =
     {stores.length === 0 && <div className={emptyCls}>فروشگاهی ثبت نشده است.</div>}
     {stores.map((s) => (
       <div key={s.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{s.name}</span>
+        <div className={rowHeaderCls}>
+          <span className={rowTitleCls}>{s.name}</span>
           <span className={badgeCls}>{pick(s, ['status'])}</span>
         </div>
-        <p className="text-[11px] text-slate-500">نامک: {s.slug} • مالک: {s.ownerName || '—'}</p>
-        <p className="text-[11px] text-slate-500">تاریخ ثبت: {formatDate(pick(s, ['createdAt', 'created_at']))}</p>
+        <p>نامک: <bdi>{s.slug}</bdi> • مالک: {s.ownerName || '—'}</p>
+        <p>تاریخ ثبت: {formatDate(pick(s, ['createdAt', 'created_at']))}</p>
       </div>
     ))}
   </>
@@ -120,21 +142,21 @@ export const AdminHomepageSectionsListView: React.FC<{ sections: HomepageSection
     {sections.length === 0 && <div className={emptyCls}>بخشی برای صفحه اصلی ثبت نشده است.</div>}
     {sections.map((s) => (
       <div key={s.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{s.title || s.sectionType}</span>
+        <div className={rowHeaderCls}>
+          <span className={rowTitleCls}>{s.title || s.sectionType}</span>
           <span className={badgeCls}>{s.isActive ? 'فعال' : 'غیرفعال'}</span>
         </div>
-        <p className="text-[11px] text-slate-500">نوع: {s.sectionType} • ترتیب: {s.sortOrder}</p>
+        <p>نوع: {s.sectionType} • ترتیب: {s.sortOrder}</p>
       </div>
     ))}
   </>
 );
 
 export const AdminHomepageTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<HomepageSectionDto>(
+  const { items, ...state } = useAdminList<HomepageSectionDto>(
     adminApi.getAdminHomepageSections, 'خطا در دریافت بخش‌های صفحه اصلی');
   return (
-    <AdminListShell title="صفحه اصلی" icon={<Home className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="صفحه اصلی" icon={<Home className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminHomepageSectionsListView sections={items} />
     </AdminListShell>
   );
@@ -146,13 +168,13 @@ export const AdminBannersListView: React.FC<{ banners: AdminBannerDto[] }> = ({ 
     {banners.length === 0 && <div className={emptyCls}>بنری ثبت نشده است.</div>}
     {banners.map((b) => (
       <div key={b.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{b.title}</span>
+        <div className={rowHeaderCls}>
+          <span className={rowTitleCls}>{b.title}</span>
           <span className={badgeCls}>{b.isActive ? 'فعال' : 'غیرفعال'}</span>
         </div>
-        <p className="text-[11px] text-slate-500">جایگاه: {b.position} • ترتیب: {b.sortOrder}</p>
+        <p>جایگاه: {b.position} • ترتیب: {b.sortOrder}</p>
         {(b.startsAt || b.endsAt) && (
-          <p className="text-[11px] text-slate-500">از {formatDate(b.startsAt)} تا {formatDate(b.endsAt)}</p>
+          <p>از {formatDate(b.startsAt)} تا {formatDate(b.endsAt)}</p>
         )}
       </div>
     ))}
@@ -160,10 +182,10 @@ export const AdminBannersListView: React.FC<{ banners: AdminBannerDto[] }> = ({ 
 );
 
 export const AdminBannersTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<AdminBannerDto>(
+  const { items, ...state } = useAdminList<AdminBannerDto>(
     adminApi.getAdminBanners, 'خطا در دریافت بنرها');
   return (
-    <AdminListShell title="بنرها" icon={<Image className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="بنرها" icon={<Image className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminBannersListView banners={items} />
     </AdminListShell>
   );
@@ -188,8 +210,8 @@ export const AdminSiteContentListView: React.FC<{ content: Record<string, any> }
       {rows.length === 0 && <div className={emptyCls}>محتوایی ثبت نشده است.</div>}
       {rows.map((r) => (
         <div key={r.key} className={rowCls}>
-          <p className="text-[11px] font-bold text-slate-700">{r.key}</p>
-          <p className="text-[11px] text-slate-500 break-words">{r.value}</p>
+          <p className={rowTitleCls}><bdi>{r.key}</bdi></p>
+          <p><bdi>{r.value}</bdi></p>
         </div>
       ))}
     </>
@@ -197,20 +219,10 @@ export const AdminSiteContentListView: React.FC<{ content: Record<string, any> }
 };
 
 export const AdminSiteContentTab: React.FC = () => {
-  const [content, setContent] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  useEffect(() => {
-    let on = true;
-    adminApi.getAdminSiteContent()
-      .then((c) => { if (on) setContent(c || {}); })
-      .catch((err: any) => { if (on) setLoadError(err?.message || 'خطا در دریافت محتوای سایت'); })
-      .finally(() => { if (on) setLoading(false); });
-    return () => { on = false; };
-  }, []);
+  const { data, ...state } = useAdminRead(adminApi.getAdminSiteContent, 'خطا در دریافت محتوای سایت');
   return (
-    <AdminListShell title="محتوای سایت و صفحات" icon={<FileText className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
-      <AdminSiteContentListView content={content} />
+    <AdminListShell title="محتوای سایت و صفحات" icon={<FileText className={iconCls} strokeWidth={1.5} />} {...state}>
+      <AdminSiteContentListView content={data ?? {}} />
     </AdminListShell>
   );
 };
@@ -223,23 +235,23 @@ export const AdminCallbackRetriesListView: React.FC<{ retries: CallbackRetryDto[
     {retries.length === 0 && <div className={emptyCls}>پرداخت ناموفقی ثبت نشده است.</div>}
     {retries.map((r) => (
       <div key={r.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{r.orderNumber || r.pspReference}</span>
+        <div className={rowHeaderCls}>
+          <bdi className={rowTitleCls}>{r.orderNumber || r.pspReference}</bdi>
           <span className={badgeCls}>{r.status}</span>
         </div>
-        <p className="text-[11px] text-slate-500">تلاش‌ها: {r.attemptCount} از {r.maxAttempts} • رویداد: {r.eventStatus || '—'}</p>
-        <p className="text-[11px] text-slate-600">آخرین خطا: {r.lastError || '—'}</p>
-        <p className="text-[11px] text-slate-500">تاریخ: {formatDate(r.createdAt)}</p>
+        <p>تلاش‌ها: {r.attemptCount} از {r.maxAttempts} • رویداد: {r.eventStatus || '—'}</p>
+        <p>آخرین خطا: <bdi>{r.lastError || '—'}</bdi></p>
+        <p>تاریخ: {formatDate(r.createdAt)}</p>
       </div>
     ))}
   </>
 );
 
 export const AdminCallbackRetriesTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<CallbackRetryDto>(
+  const { items, ...state } = useAdminList<CallbackRetryDto>(
     adminApi.getAdminCallbackRetries, 'خطا در دریافت پرداخت‌های ناموفق');
   return (
-    <AdminListShell title="پرداخت‌های ناموفق" icon={<RefreshCw className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="پرداخت‌های ناموفق" icon={<RefreshCw className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminCallbackRetriesListView retries={items} />
     </AdminListShell>
   );
@@ -251,22 +263,22 @@ export const AdminNewsletterSubscribersListView: React.FC<{ subscribers: Newslet
     {subscribers.length === 0 && <div className={emptyCls}>مشترکی ثبت نشده است.</div>}
     {subscribers.map((s) => (
       <div key={s.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800" dir="ltr">{s.mobile}</span>
+        <div className={rowHeaderCls}>
+          <bdi className={rowTitleCls} dir="ltr">{s.mobile}</bdi>
           <span className={badgeCls}>{s.status}</span>
         </div>
-        <p className="text-[11px] text-slate-500">ایمیل: {s.email || '—'} • فروشگاه: {s.storeId}</p>
-        <p className="text-[11px] text-slate-500">تاریخ عضویت: {formatDate(s.createdAt)}</p>
+        <p>ایمیل: <bdi>{s.email || '—'}</bdi> • فروشگاه: <bdi>{s.storeId}</bdi></p>
+        <p>تاریخ عضویت: {formatDate(s.createdAt)}</p>
       </div>
     ))}
   </>
 );
 
 export const AdminNewsletterTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<NewsletterSubscriberDto>(
+  const { items, ...state } = useAdminList<NewsletterSubscriberDto>(
     adminApi.getAdminNewsletterSubscribers, 'خطا در دریافت مشترکان خبرنامه');
   return (
-    <AdminListShell title="مشترکان خبرنامه" icon={<Mail className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="مشترکان خبرنامه" icon={<Mail className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminNewsletterSubscribersListView subscribers={items} />
     </AdminListShell>
   );
@@ -279,24 +291,24 @@ export const AdminReviewsListView: React.FC<{ reviews: AdminReviewRow[] }> = ({ 
     {reviews.length === 0 && <div className={emptyCls}>نظری ثبت نشده است.</div>}
     {reviews.map((r: any, i: number) => (
       <div key={pick(r, ['id']) + '-' + i} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{pick(r, ['customer_display_name', 'customer_name', 'customer_id'])}</span>
+        <div className={rowHeaderCls}>
+          <span className={rowTitleCls}>{pick(r, ['customer_display_name', 'customer_name', 'customer_id'])}</span>
           <span className={badgeCls}>{pick(r, ['status'])}</span>
         </div>
-        <p className="text-[11px] text-slate-500">کالا: {pick(r, ['product_id', 'productId', 'product_title'])} • امتیاز: {pick(r, ['rating'])} از ۵</p>
-        {r.title && <p className="text-[11px] font-bold text-slate-700">{r.title}</p>}
-        {r.body && <p className="text-[11px] text-slate-600">{r.body}</p>}
-        <p className="text-[11px] text-slate-500">تاریخ: {formatDate(pick(r, ['created_at', 'createdAt']))}</p>
+        <p>کالا: {pick(r, ['product_id', 'productId', 'product_title'])} • امتیاز: {pick(r, ['rating'])} از ۵</p>
+        {r.title && <p className="font-bold text-slate-700">{r.title}</p>}
+        {r.body && <p>{r.body}</p>}
+        <p>تاریخ: {formatDate(pick(r, ['created_at', 'createdAt']))}</p>
       </div>
     ))}
   </>
 );
 
 export const AdminReviewsTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<AdminReviewRow>(
+  const { items, ...state } = useAdminList<AdminReviewRow>(
     adminApi.getAdminReviews, 'خطا در دریافت نظرات مشتریان');
   return (
-    <AdminListShell title="نظرات مشتریان" icon={<Star className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="نظرات مشتریان" icon={<Star className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminReviewsListView reviews={items} />
     </AdminListShell>
   );
@@ -310,60 +322,42 @@ export const AdminStaffListView: React.FC<{ staff: AdminStaffDto[] }> = ({ staff
     {staff.length === 0 && <div className={emptyCls}>کارکنی ثبت نشده است.</div>}
     {staff.map((u) => (
       <div key={u.id} className={rowCls}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-slate-800">{u.fullName}</span>
+        <div className={rowHeaderCls}>
+          <span className={rowTitleCls}>{u.fullName}</span>
           <span className={badgeCls}>{u.isActive ? 'فعال' : 'غیرفعال'}</span>
         </div>
-        <p className="text-[11px] text-slate-500" dir="ltr">{u.mobile}</p>
-        <p className="text-[11px] text-slate-500">نقش: {u.role} • تاریخ ثبت: {formatDate(u.createdAt)}</p>
+        <p><bdi dir="ltr">{u.mobile}</bdi></p>
+        <p>نقش: {u.role} • تاریخ ثبت: {formatDate(u.createdAt)}</p>
       </div>
     ))}
   </>
 );
 
 export const AdminStaffTab: React.FC = () => {
-  const { items, loading, loadError } = useAdminList<AdminStaffDto>(
+  const { items, ...state } = useAdminList<AdminStaffDto>(
     adminApi.getAdminStaff, 'خطا در دریافت کارکنان');
   return (
-    <AdminListShell title="کارکنان انبار" icon={<Users className={iconCls} strokeWidth={1.5} />} loading={loading} loadError={loadError}>
+    <AdminListShell title="کارکنان انبار" icon={<Users className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminStaffListView staff={items} />
     </AdminListShell>
   );
 };
 
 export const AdminSupportReturnsTab: React.FC = () => {
-  const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  useEffect(() => {
-    let on = true;
-    adminApi.getAdminReturns()
-      .then((list) => { if (on) setItems(list); })
-      .catch((err: any) => { if (on) setLoadError(err?.message || 'خطا در دریافت مرجوعی‌ها'); })
-      .finally(() => { if (on) setLoading(false); });
-    return () => { on = false; };
-  }, []);
+  const { items, ...state } = useAdminList(adminApi.getAdminReturns, 'خطا در دریافت مرجوعی‌ها');
   return (
-    <div className="space-y-3">
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 flex items-center gap-2">
-        <RotateCcw className="w-4 h-4 text-slate-500"  strokeWidth={1.5}/>
-        <h3 className="text-xs font-bold text-slate-800">مرجوعی‌ها</h3>
-      </div>
-      {loading && <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">در حال بارگذاری…</div>}
-      {loadError && <div className="bg-white rounded-2xl border border-rose-200 p-4 text-xs text-rose-600">{loadError}</div>}
-      {!loading && !loadError && items.length === 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">مرجوعی ثبت‌شده‌ای وجود ندارد.</div>
-      )}
-      {!loading && !loadError && items.map((r: any, i: number) => (
-        <div key={r.id || i} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-1">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold text-slate-800">سفارش {pick(r, ['orderId', 'order_id', 'orderNumber'])}</span>
-            <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full">{pick(r, ['status'])}</span>
+    <AdminListShell title="مرجوعی‌ها" icon={<RotateCcw className={iconCls} strokeWidth={1.5} />} {...state}>
+      {items.length === 0 && <div className={emptyCls}>مرجوعی ثبت‌شده‌ای وجود ندارد.</div>}
+      {items.map((r, i) => (
+        <div key={r.id || i} className={rowCls}>
+          <div className={rowHeaderCls}>
+            <span className={rowTitleCls}>سفارش <bdi>{pick(r, ['orderId', 'order_id', 'orderNumber'])}</bdi></span>
+            <span className={badgeCls}>{pick(r, ['status'])}</span>
           </div>
-          {r.reason && <p className="text-[11px] text-slate-600">دلیل: {r.reason}</p>}
-          {r.trackingNumber && <p className="text-[11px] text-slate-500">کد رهگیری: {r.trackingNumber}</p>}
+          {r.reason && <p>دلیل: {r.reason}</p>}
+          {r.trackingNumber && <p>کد رهگیری: <bdi>{r.trackingNumber}</bdi></p>}
         </div>
       ))}
-    </div>
+    </AdminListShell>
   );
 };

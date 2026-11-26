@@ -66,7 +66,7 @@ func TestSPNCXLookupHTTP(t *testing.T) {
 
 	// No capability reader: token capabilities ([role]) govern, exactly as
 	// the other role-matrix tests in this package do. The supplier tokens
-	// resolve their supplier id through the repo (GetSupplierByUserID).
+	// resolve an active supplier id through the repository.
 	jwtService := auth.NewJWTService(strings.Repeat("s", 32))
 	tokenFor := func(user, role string) string {
 		token, err := jwtService.GenerateToken(user, "09123456789", "Lookup test", role, time.Minute)
@@ -164,4 +164,14 @@ func TestSPNCXLookupHTTP(t *testing.T) {
 		422, `{"error":"invalid_limit"}`)
 	checkSPNCXJSON(t, call(http.MethodGet, "/api/v1/units?cursor=!!!", tokenFor(a.user, "supplier")),
 		422, `{"error":"invalid_cursor"}`)
+
+	if _, err := db.Exec(`UPDATE suppliers SET approval_status='suspended' WHERE id=$1`, a.supplier); err != nil {
+		t.Fatal(err)
+	}
+	checkSPNCXJSON(t, call(http.MethodGet, "/api/v1/units/A0C00001-X0001", tokenFor(a.user, "supplier")),
+		404, `{"error":"unit_not_found"}`)
+	recorder = call(http.MethodGet, "/api/v1/units", tokenFor(a.user, "supplier"))
+	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil || recorder.Code != http.StatusOK || len(list.Units) != 0 {
+		t.Fatalf("suspended supplier list: HTTP %d %s (%v)", recorder.Code, recorder.Body, err)
+	}
 }

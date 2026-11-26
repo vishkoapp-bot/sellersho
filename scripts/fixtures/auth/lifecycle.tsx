@@ -28,7 +28,7 @@ authApi.getMe = async () => {
   }
   const identity = tokenStore.getToken()?.replace('fixture-', '') || 'customer';
   const [role, capability = role] = identity.split(':');
-  const snapshot = claims || { userId: identity, mobile: 'test-' + identity, fullName: 'Same Name', role, capabilities: [capability] };
+  const snapshot = claims?.userId === identity ? claims : { userId: identity, mobile: 'test-' + identity, fullName: 'Same Name', role, capabilities: [capability] };
   if (deferCount > 0) {
     deferCount--;
     return new Promise((resolve, reject) => pending.push({ resolve, reject, snapshot }));
@@ -60,7 +60,7 @@ storeApi.getOwnedStores = async () => [{ id: 'store-fixture' } as any];
 function Probe() {
   const auth = useAuth();
   harness.auth = auth;
-  harness.state = () => ({ user: auth.currentUser, token: auth.authToken, credential: tokenStore.getToken(), admin: auth.adminSession, seller: auth.sellerSession, supplier: auth.supplierSession, warehouse: auth.warehouseSession, customer: auth.customerUser, ready: auth.isSessionReady, error: auth.panelSessionError });
+  harness.state = () => ({ user: auth.currentUser, token: auth.authToken, credential: tokenStore.getToken(), admin: auth.adminSession, seller: auth.sellerSession, supplier: auth.supplierSession, warehouse: auth.warehouseSession, customer: auth.customerUser, ready: auth.isSessionReady, error: auth.panelSessionErrors.supplier_dashboard ?? auth.panelSessionErrors.seller_dashboard ?? null });
   return <div data-authenticated={auth.isAuthenticated}>{auth.currentUser?.id || 'guest'}</div>;
 }
 const root = createRoot(document.getElementById('root')!);

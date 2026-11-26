@@ -59,6 +59,7 @@ test('unpaid orders paginate with gated admin controls and the refund form retai
   await page.waitForFunction(() => document.body.textContent?.includes('UNPAID-2'));
   assert.equal(await page.$('tbody summary'), null);
   assert.equal(await page.$('tbody form'), null);
+  assert.equal(await page.$('input[placeholder="شناسه سفارش (الزامی)"]'), null);
 
   listMode = 'empty';
   await page.goto(fixture);

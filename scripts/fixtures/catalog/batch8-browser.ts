@@ -7,7 +7,10 @@ import puppeteer, { type Browser, type Page } from 'puppeteer';
 import tailwindcss from '@tailwindcss/vite';
 import { createServer, type ViteDevServer } from 'vite';
 
-export function batch8Browser({ inlineVazirmatn = false } = {}) {
+export function batch8Browser({
+  inlineVazirmatn = false,
+  entryPoint = 'scripts/fixtures/catalog/composed.provider.tsx',
+} = {}) {
   let browser: Browser;
   let server: ViteDevServer;
   let cacheDir: string;
@@ -18,7 +21,7 @@ export function batch8Browser({ inlineVazirmatn = false } = {}) {
   before(async () => {
     cacheDir = await mkdtemp(join(tmpdir(), 'batch8-vite-'));
     const bundle = await build({
-      entryPoints: ['scripts/fixtures/catalog/composed.provider.tsx'],
+      entryPoints: [entryPoint],
       write: false,
       bundle: true,
       platform: 'browser',

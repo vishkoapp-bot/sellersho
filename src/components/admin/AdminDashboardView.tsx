@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminLoginPage } from './AdminLoginPage';
 import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
@@ -48,7 +49,7 @@ import { AdminSpncxTab } from './AdminSpncxTab';
 import { PanelWorkspace } from '../common/PanelWorkspace';
 import { ErrorBoundary } from '../ErrorBoundary';
 import {
-  adminDefaultSection, adminNavigationFor, adminSectionHref, findAdminSection, requestedAdminSection,
+  adminDefaultSection, adminNavigationFor, adminSectionAllowed, adminSectionHref, findAdminSection, requestedAdminSection,
 } from './AdminNavigation';
 
 interface AdminOverviewAlert {
@@ -60,6 +61,7 @@ interface AdminOverviewAlert {
 
 export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerSite: () => void }) {
   const { adminSession, logoutAdmin, toPersianDigits } = useStore();
+  const { currentUser } = useAuth();
   const { warning } = useToast();
   const [requested, setRequested] = useState(requestedAdminSection);
   const mainRef = useRef<HTMLElement>(null);
@@ -67,8 +69,10 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [alerts, setAlerts] = useState<AdminOverviewAlert[]>([]);
   const role = adminSession?.role;
+  const roles = adminSession?.roles ?? (role ? [role] : []);
+  const staffScoped = currentUser?.capabilities?.includes('warehouse_staff') === true;
   const requestedItem = findAdminSection(requested);
-  const permittedItem = role && requestedItem?.roles.includes(role) ? requestedItem : undefined;
+  const permittedItem = requestedItem && adminSectionAllowed(requestedItem, roles, staffScoped) ? requestedItem : undefined;
   const activeTab = permittedItem?.id ?? (role ? adminDefaultSection[role] : undefined);
   const previousTab = useRef(activeTab);
 
@@ -110,11 +114,11 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
     return <AdminLoginPage onBackToCustomerSite={onBackToCustomerSite} />;
   }
 
-  const groups = adminNavigationFor(role);
+  const groups = adminNavigationFor(roles, staffScoped);
   const title = findAdminSection(activeTab)?.label ?? 'پیشخوان مدیریت';
   function navigate(value: string) {
     const item = findAdminSection(value);
-    if (!role || !item?.roles.includes(role)) {
+    if (!item || !adminSectionAllowed(item, roles, staffScoped)) {
       warning('این بخش برای حساب شما در دسترس نیست.');
       return;
     }
@@ -140,7 +144,7 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
     'jobs-queue': () => <AdminJobsQueueTab />,
     'sms': () => <AdminSmsTab />,
     'finance-overview': () => <FinanceOverviewTab onNavigateTab={navigate} />,
-    'finance-reconciliation': () => <FinanceReconciliationTab />,
+    'finance-reconciliation': () => <FinanceReconciliationTab onNavigateTab={navigate} />,
     'finance-payouts': () => <FinancePayoutsTab />,
     'settlement-settings': () => <AdminSettlementSettingsTab />,
     'storage-fee-settings': () => <AdminStorageFeeSettingsTab />,
@@ -163,7 +167,10 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
     'audit-logs': () => <AdminAuditLogTab />,
 
   };
-  const linkedAlerts = alerts.filter(alert => findAdminSection(alert.tab)?.roles.includes(role));
+  const linkedAlerts = alerts.filter(alert => {
+    const item = findAdminSection(alert.tab);
+    return item && adminSectionAllowed(item, roles, staffScoped);
+  });
 
   return (
     <>

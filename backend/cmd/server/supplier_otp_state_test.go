@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/drup/platform/internal/testredis"
 
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/phone"
@@ -304,5 +306,79 @@ func TestVerifyOTPSupplierStates(t *testing.T) {
 	code, body = f.verifyOTP(activeMobile, "1234", "supplier")
 	if code != http.StatusOK || !strings.Contains(body, `"token"`) {
 		t.Fatalf("active supplier verify = %d %s, want 200 with token", code, body)
+	}
+}
+
+func TestVerifyOTPPreservesCustomerRevocation(t *testing.T) {
+	f := supplierOTPSetup(t)
+	mobile := "09127000006"
+	userID := f.seedUser(t, "000006", mobile, "seller", true)
+	if err := f.capabilityRepo.Grant(f.ctx, userID, "customer", "admin_grant", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.capabilityRepo.Revoke(f.ctx, userID, "customer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.capabilityRepo.Grant(f.ctx, userID, "support_specialist", "admin_grant", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.seedOTPCode(t, mobile, "1234")
+	status, body := f.verifyOTP(mobile, "1234", "")
+	assertFixtureSession(t, f.jwtService, status, body, "support_specialist", []string{"support_specialist"})
+	var membershipStatus, source string
+	if err := f.db.QueryRow(`SELECT status, source_type FROM user_capabilities WHERE user_id=$1 AND capability='customer'`, userID).Scan(&membershipStatus, &source); err != nil {
+		t.Fatal(err)
+	}
+	if membershipStatus != "revoked" || source != "admin_grant" {
+		t.Fatalf("customer membership = %q (%q), want revoked admin_grant", membershipStatus, source)
+	}
+}
+
+func TestPasswordLoginReturnsActiveCapabilities(t *testing.T) {
+	f := supplierOTPSetup(t)
+	userID := f.seedUser(t, "000007", "09127000007", "seller", true)
+	hash, err := bcrypt.GenerateFromPassword([]byte("fixture-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE users SET username='fixture-login', password_hash=$1 WHERE id=$2`, string(hash), userID); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"finance_specialist", "support_specialist"} {
+		if err := f.capabilityRepo.Grant(f.ctx, userID, capability, "admin_grant", "", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.jwtService.SetCapabilityReader(f.capabilityRepo)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password/login", strings.NewReader(`{"username":"fixture-login","password":"fixture-password"}`))
+	res := httptest.NewRecorder()
+	handlePasswordLogin(res, req, req.Context(), f.userRepo, f.jwtService, f.supplierRepo)
+	assertFixtureSession(t, f.jwtService, res.Code, res.Body.String(), "finance_specialist", []string{"finance_specialist", "support_specialist"})
+}
+
+func assertFixtureSession(t *testing.T, jwtService *auth.JWTService, status int, body string, role string, capabilities []string) {
+	t.Helper()
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", status)
+	}
+	var response struct {
+		Token string
+		User  struct {
+			Role         string
+			Capabilities []string
+		}
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatal("invalid login response")
+	}
+	if response.User.Role != role || !slices.Equal(response.User.Capabilities, capabilities) {
+		t.Fatalf("login role/capabilities = %q/%v, want %q/%v", response.User.Role, response.User.Capabilities, role, capabilities)
+	}
+	claims, err := jwtService.ValidateToken(response.Token)
+	if err != nil {
+		t.Fatal("invalid login token")
+	}
+	if claims.Role != role || !slices.Equal(claims.Capabilities, capabilities) {
+		t.Fatalf("token role/capabilities = %q/%v, want %q/%v", claims.Role, claims.Capabilities, role, capabilities)
 	}
 }

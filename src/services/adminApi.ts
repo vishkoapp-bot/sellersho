@@ -243,11 +243,12 @@ export const adminApi = {
     });
   },
 
-  getAuditLogs: async (category?: string): Promise<AuditLogDto[]> => {
+  getAuditLogs: async (category?: string, signal?: AbortSignal): Promise<AuditLogDto[]> => {
     const qs = category ? `?category=${encodeURIComponent(category)}` : '';
     return apiRequest<AuditLogDto[]>(`/admin/audit-logs${qs}`, {
       method: 'GET',
       auth: true,
+      signal,
     });
   },
 

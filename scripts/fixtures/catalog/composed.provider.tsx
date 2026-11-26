@@ -14,6 +14,7 @@ import { CartOrderSuccess } from '../../../src/components/CartOrderSuccess';
 import { OrderDetailModal } from '../../../src/components/common/OrderDetailModal';
 import { shippingApi } from '../../../src/services/shippingApi';
 import type { Order, Store } from '../../../src/types';
+import type { ActiveView } from '../../../src/context/storeContextTypes';
 import '../../../src/index.css';
 import { authApi } from '../../../src/services/authApi';
 import { ApiError } from '../../../src/services/apiClient';
@@ -24,29 +25,32 @@ import { storeApi, type SellerProductCandidate } from '../../../src/services/sto
 const params = new URLSearchParams(window.location.search);
 history.replaceState(null, '', params.get('route') || '/');
 const routeParams = new URLSearchParams(window.location.search);
+const matrixRole = routeParams.get('access-fixture-role');
+const matrixCaps = matrixRole === null ? undefined : (routeParams.get('access-fixture-caps') ?? '').split(',').filter(Boolean);
 const hasWarehouse = routeParams.has('warehouse');
 const hasAdmin = routeParams.has('admin');
 const staleWarehouseRole = routeParams.has('stale-warehouse-role');
 const adminAccess = routeParams.get('admin');
 const adminRole = adminAccess === 'finance' ? 'finance_specialist' : adminAccess === 'super' ? 'super_admin' : 'admin';
-const role = hasAdmin ? adminRole : hasWarehouse || routeParams.has('warehouse-otp') || staleWarehouseRole ? 'warehouse_staff' : 'customer';
-const hasSeller = routeParams.has('seller');
-const hasSupplier = routeParams.has('supplier');
+const role = matrixRole ?? (hasAdmin ? adminRole : hasWarehouse || routeParams.has('warehouse-otp') || staleWarehouseRole ? 'warehouse_staff' : 'customer');
+const hasSeller = routeParams.has('seller') || matrixCaps?.includes('seller');
+const hasSupplier = routeParams.has('supplier') || matrixCaps?.includes('supplier');
 const fixtureImages = [
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPQkE8GAAEdAKsz/POGAAAAAElFTkSuQmCC',
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOIdfkBAAKbAZrQLohoAAAAAElFTkSuQmCC',
 ];
 
-const capabilities: string[] = staleWarehouseRole ? ['customer', 'seller', 'supplier'] : [role];
+const capabilities: string[] = matrixCaps ?? (staleWarehouseRole ? ['customer', 'seller', 'supplier'] : [role]);
+if (matrixRole && !routeParams.has('access-fixture-otp')) localStorage.setItem('seler_sho_jwt_token', 'fixture-matrix-token');
 if (hasAdmin || staleWarehouseRole) localStorage.setItem('seler_sho_jwt_token', 'fixture-existing-token');
 if (hasWarehouse) localStorage.setItem('seler_sho_jwt_token', 'fixture-warehouse-token');
 if (hasSeller) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-seller-token');
-  capabilities.push('seller');
+  if (!matrixCaps) capabilities.push('seller');
 }
 if (hasSupplier) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-supplier-token');
-  capabilities.push('supplier');
+  if (!matrixCaps) capabilities.push('supplier');
   localStorage.setItem('sellersho:supplier-propose-draft:v1', JSON.stringify({
     version: 1,
     step: 4,
@@ -232,6 +236,7 @@ authApi.verifyOTP = async () => {
   fixture.verifications += 1;
   return { token: 'fixture-token', user } as Awaited<ReturnType<typeof authApi.verifyOTP>>;
 };
+if (matrixRole !== null) authApi.passwordLogin = async () => ({ success: true, token: 'fixture-token', user });
 authApi.getMe = async () => {
   if (holdInitialProfile) {
     holdInitialProfile = false;
@@ -487,12 +492,13 @@ if (hasWarehouse) {
   };
 }
 
-if (hasAdmin) {
+if (hasAdmin || matrixCaps) {
   const originalFetch = window.fetch.bind(window);
   const adminReads: string[] = [];
   Object.assign(fixture, { adminReads });
   window.fetch = async (input, options) => {
     const { pathname, searchParams: query } = new URL(String(input), window.location.href);
+    if (matrixCaps && ['/api/v1/supplier/products', '/api/v1/supplier/products/proposals'].includes(pathname)) return Response.json([]);
     if (!pathname.startsWith('/api/v1/admin/')) return originalFetch(input, options);
     adminReads.push(pathname);
     if (pathname === '/api/v1/admin/notifications') return Response.json({ notifications: [], unreadCount: 0 });
@@ -529,6 +535,7 @@ function FixtureControls() {
   const [showDetails, setShowDetails] = React.useState(false);
   Object.assign(fixture, {
     toast: toast.showToast,
+    openWorkspace: (view: ActiveView) => store.setActiveView(view),
     state: () => ({ view: store.activeView, catalogTotal: store.catalogTotal, productCount: store.products.length,
       userId: currentUser?.id, isSessionReady,
       stores: store.stores.map(entry => entry.id) }),

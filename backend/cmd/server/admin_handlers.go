@@ -75,14 +75,12 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 		return
 	}
 
-	// GAP 20: a proposed_product review must run the SAME pipeline as
-	// the dedicated /admin/products/approve route — one code path, no
-	// fork. Approving here creates the product via ApproveProposal
-	// (whose atomic pending guard keeps a race between the two routes
-	// at exactly one product; the loser gets the guard's conflict),
-	// and rejecting runs the same RejectProposal. Every other entity
-	// type (warranty_property, ...) keeps the generic review below,
-	// byte for byte.
+	if req.Status != "approved" && req.Status != "rejected" {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": repository.ErrInvalidApprovalDecision.Error()})
+		return
+	}
+
+	// Route product proposals through the publication pipeline.
 	entityType, err := adminRepo.GetPendingApprovalEntityType(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -92,7 +90,11 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if entityType == "proposed_product" && supplierRepo != nil {
+	if entityType == "proposed_product" {
+		if supplierRepo == nil {
+			http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
+			return
+		}
 		switch req.Status {
 		case "approved":
 			productID, err := supplierRepo.ApproveProposal(ctx, id, "")
@@ -130,7 +132,16 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 	}
 
 	if err := adminRepo.ReviewPendingApproval(ctx, id, req.Status, req.RejectionReason); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			t01WriteJSON(w, http.StatusNotFound, map[string]string{"error": "Approval not found"})
+		case errors.Is(err, repository.ErrApprovalNotPending), errors.Is(err, repository.ErrApprovalTargetChanged), errors.Is(err, repository.ErrStoreSlugTaken):
+			t01WriteJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		case errors.Is(err, repository.ErrStoreInput):
+			t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		default:
+			writeInternalError(w, err)
+		}
 		return
 	}
 

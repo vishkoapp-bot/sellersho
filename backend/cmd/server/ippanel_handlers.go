@@ -108,12 +108,9 @@ func handleIPPanelSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if baseURL == "" {
 		baseURL = "https://edge.ippanel.com/v1"
 	}
-	if strings.TrimSpace(req.APIKey) == "" {
-		var existing string
-		_ = db.QueryRowContext(r.Context(), `SELECT ippanel_api_key FROM platform_settings WHERE id=1`).Scan(&existing)
-		req.APIKey = existing
-	}
-	_, err := db.ExecContext(r.Context(), `UPDATE platform_settings SET ippanel_enabled=$1, ippanel_base_url=$2, ippanel_api_key=$3, ippanel_sender=$4, ippanel_pattern_code=$5, updated_at=NOW() WHERE id=1`, req.Enabled, baseURL, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.Sender), strings.TrimSpace(req.PatternCode))
+	_, err := db.ExecContext(r.Context(), `UPDATE platform_settings SET ippanel_enabled=$1, ippanel_base_url=$2,
+	  ippanel_api_key=COALESCE(NULLIF($3,''), ippanel_api_key), ippanel_sender=$4, ippanel_pattern_code=$5,
+	  updated_at=NOW() WHERE id=1`, req.Enabled, baseURL, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.Sender), strings.TrimSpace(req.PatternCode))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -122,6 +119,9 @@ func handleIPPanelSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 }
 
 func handleIPPanelTest(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	if !t01MethodOnly(w, r, http.MethodPost) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	client, enabled, loadErr := loadIPPanelClient(r.Context(), db)
 	if loadErr != nil {

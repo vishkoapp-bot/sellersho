@@ -1,11 +1,22 @@
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { isMockMode } from '../../services/apiClient';
 import { SubscriptionPlan } from '../../types';
 import { resolveSubscriptionPlans, resolveTrialQuota } from '../seller/SellerSubscriptionTab';
 import { Crown, Plus, Edit2, Trash2, X, Sparkles, Check, Sliders } from 'lucide-react';
 
 export const AdminCampaignsPlansTab: React.FC = () => {
+  if (isMockMode()) return <SampleCampaignSettings />;
+  return (
+    <section aria-labelledby="campaign-settings-heading" className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
+      <h3 id="campaign-settings-heading" className="text-base font-bold text-slate-900">مدیریت کمپین‌ها و طرح‌ها</h3>
+      <p className="text-sm leading-6 text-slate-700">تغییر طرح‌های اشتراک، سهمیه آزمایشی و بودجه تبلیغاتی در این پنل در دسترس نیست.</p>
+    </section>
+  );
+};
+
+function SampleCampaignSettings() {
   const { platformSettings, updatePlatformSettings, updateSubscriptionPlans, updateTrialCatalogQuota, formatPrice, toPersianDigits } = useStore();
   const { success, error } = useToast();
   const [dealBudget, setDealBudget] = useState((platformSettings.centralCampaignBudget ?? 0).toString());
@@ -251,4 +262,4 @@ export const AdminCampaignsPlansTab: React.FC = () => {
       </div>
     </div>
   );
-};
+}

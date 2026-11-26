@@ -205,38 +205,19 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 			return
 		}
 	}
-	if ceilingTouched {
-		var prodExists bool
-		if err := db.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM products WHERE id = $1)`, id).Scan(&prodExists); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if !prodExists {
+	err := repository.NewPricingRepository(db).UpdateProductPricing(r.Context(), id, repository.ProductPricingUpdate{
+		MarkupType: req.MarkupType, MarkupValue: req.MarkupValue, ClearMarkup: req.Clear,
+		MaxMarginPct: req.MaxMarginPct, ClearMaxMargin: req.ClearMaxMargin,
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
 			http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
 			return
 		}
-		if req.ClearMaxMargin {
-			if _, err := db.ExecContext(r.Context(), `DELETE FROM product_margin_ceilings WHERE product_id = $1`, id); err != nil {
-				writeInternalError(w, err)
-				return
-			}
-		} else if req.MaxMarginPct != nil {
-			if err := repository.NewPricingRepository(db).SetProductMarginCeiling(r.Context(), id, *req.MaxMarginPct); err != nil {
-				writeInternalError(w, err)
-				return
-			}
-		}
+		writeInternalError(w, err)
+		return
 	}
 	if req.Clear {
-		res, err := db.ExecContext(r.Context(), `UPDATE products SET markup_type = NULL, markup_value = NULL, updated_at = NOW() WHERE id = $1`, id)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
-			return
-		}
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": id, "cleared": true})
 		return
 	}
@@ -250,18 +231,5 @@ func wr69AdminProductPricingPut(w http.ResponseWriter, r *http.Request, db *sql.
 		t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": id, "maxMarginPct": mmOut, "clearedMaxMargin": req.ClearMaxMargin})
 		return
 	}
-	var mv interface{}
-	if req.MarkupValue != nil {
-		mv = *req.MarkupValue
-	}
-	res, err := db.ExecContext(r.Context(), `UPDATE products SET markup_type = $1, markup_value = $2, updated_at = NOW() WHERE id = $3`, req.MarkupType, mv, id)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
-		return
-	}
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": id, "markupType": req.MarkupType, "markupValue": mv})
+	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "id": id, "markupType": req.MarkupType, "markupValue": req.MarkupValue})
 }

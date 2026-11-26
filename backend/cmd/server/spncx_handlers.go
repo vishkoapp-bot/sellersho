@@ -82,7 +82,14 @@ func unitLookupScope(r *http.Request, supplierRepo *repository.SupplierRepositor
 		claims.HasCapability("logistics_specialist") {
 		return "", false
 	}
-	return getSupplierIDFromContext(r, supplierRepo), true
+	if supplierRepo == nil {
+		return "", true
+	}
+	supplier, err := supplierRepo.GetSupplierByUserID(r.Context(), claims.UserID)
+	if err != nil || supplier == nil || supplier.ApprovalStatus == "suspended" {
+		return "", true
+	}
+	return supplier.ID, true
 }
 
 func supplierUnitLabelRoute(sub string) (productID, action string) {

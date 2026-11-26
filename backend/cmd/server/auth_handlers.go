@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -307,7 +308,7 @@ func handleVerifyOTP(
 	// No requested role is the explicit customer-access flow. A requested role
 	// only selects an existing active capability; it never grants one.
 	if req.Role == "" {
-		if err := capabilityRepo.Grant(ctx, user.ID, "customer", "otp_customer_login", "", nil); err != nil {
+		if err := capabilityRepo.GrantCustomerAfterOTP(ctx, user.ID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -323,24 +324,15 @@ func handleVerifyOTP(
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	selectedRole := user.Role
-	if req.Role != "" {
-		allowed, checkErr := capabilityRepo.HasActive(ctx, user.ID, req.Role)
-		if req.Role == "admin" && containsCapability(capabilities, accesspolicy.SuperAdminCapability) {
-			allowed = true
-		}
-		if checkErr != nil {
-			http.Error(w, checkErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if !allowed {
+	selectedRole := sessionRole(user.Role, capabilities)
+	if req.Role == "admin" && slices.Contains(capabilities, accesspolicy.SuperAdminCapability) {
+		selectedRole = accesspolicy.SuperAdminCapability
+	} else if req.Role != "" {
+		if !slices.Contains(capabilities, req.Role) {
 			http.Error(w, `{"error":"Requested role is not an active capability"}`, http.StatusForbidden)
 			return
 		}
 		selectedRole = req.Role
-	}
-	if req.Role == "admin" && containsCapability(capabilities, accesspolicy.SuperAdminCapability) {
-		selectedRole = accesspolicy.SuperAdminCapability
 	}
 
 	// Fix83: record buyer signup attribution (buyer -> store) idempotently.
@@ -357,7 +349,27 @@ func handleVerifyOTP(
 			}
 		}
 	}
-	token, err := jwtService.GenerateTokenWithCapabilities(user.ID, user.Mobile, user.FullName, selectedRole, capabilities, 7*24*time.Hour)
+	writeAuthenticatedSession(w, jwtService, user, selectedRole, capabilities)
+}
+
+// Preserve the selected role while it remains active. Older clients can use
+// the role for display, and the full membership list authorizes access.
+func sessionRole(preferred string, capabilities []string) string {
+	if slices.Contains(capabilities, preferred) {
+		return preferred
+	}
+	if slices.Contains(capabilities, "customer") {
+		return "customer"
+	}
+	if len(capabilities) > 0 {
+		return capabilities[0]
+	}
+	return ""
+}
+
+func writeAuthenticatedSession(w http.ResponseWriter, jwtService *auth.JWTService, user *domain.User, role string, capabilities []string) {
+	capabilities = append([]string{}, capabilities...)
+	token, err := jwtService.GenerateTokenWithCapabilities(user.ID, user.Mobile, user.FullName, role, capabilities, 7*24*time.Hour)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -370,19 +382,10 @@ func handleVerifyOTP(
 			"id":           user.ID,
 			"mobile":       user.Mobile,
 			"fullName":     user.FullName,
-			"role":         selectedRole,
+			"role":         role,
 			"capabilities": capabilities,
 		},
 	})
-}
-
-func containsCapability(capabilities []string, wanted string) bool {
-	for _, capability := range capabilities {
-		if capability == wanted {
-			return true
-		}
-	}
-	return false
 }
 
 // GAP 19b: supplier account states on the password-login path. The
@@ -481,19 +484,15 @@ func handlePasswordLogin(
 		return
 	}
 
-	token, err := jwtService.GenerateToken(user.ID, user.Mobile, user.FullName, user.Role, 7*24*time.Hour)
+	claims := &auth.UserClaims{UserID: user.ID}
+	blocked, err := jwtService.RefreshAuthState(ctx, claims)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"token":   token,
-		"user": map[string]interface{}{
-			"id":       user.ID,
-			"mobile":   user.Mobile,
-			"fullName": user.FullName,
-			"role":     user.Role,
-		},
-	})
+	if blocked {
+		http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
+		return
+	}
+	writeAuthenticatedSession(w, jwtService, user, sessionRole(user.Role, claims.Capabilities), claims.Capabilities)
 }

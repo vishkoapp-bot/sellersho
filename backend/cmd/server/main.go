@@ -384,6 +384,9 @@ func run(signalCtx context.Context) (result error) {
 			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
+		if claims.Capabilities != nil {
+			claims.Role = sessionRole(claims.Role, claims.Capabilities)
+		}
 		json.NewEncoder(w).Encode(claims)
 	}))
 
@@ -1129,22 +1132,27 @@ func run(signalCtx context.Context) (result error) {
 
 	// 11. Centralized Approvals Inbox & Audit Logs
 	mux.HandleFunc("/api/v1/admin/approvals/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/approvals/")
-		if strings.HasSuffix(subPath, "/review") && r.Method == http.MethodPost {
-			id := strings.TrimSuffix(subPath, "/review")
-			handleReviewApproval(w, r, ctx, id, adminRepo, supplierRepo)
+		id, action, ok := strings.Cut(subPath, "/")
+		if !ok || id == "" || action != "review" {
+			http.NotFound(w, r)
 			return
 		}
-		handleGetApprovals(w, r, ctx, adminRepo)
+		if !t01MethodOnly(w, r, http.MethodPost) {
+			return
+		}
+		handleReviewApproval(w, r, r.Context(), id, adminRepo, supplierRepo)
 	}))
 
 	mux.HandleFunc("/api/v1/admin/approvals", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodGet:
+			handleGetApprovals(w, r, r.Context(), adminRepo)
+		case http.MethodPost:
 			handleCreateApproval(w, r, r.Context(), adminRepo)
-			return
+		default:
+			writeMethodNotAllowed(w)
 		}
-		handleGetApprovals(w, r, r.Context(), adminRepo)
 	}))
 
 	mux.HandleFunc("/api/v1/admin/audit-logs", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {

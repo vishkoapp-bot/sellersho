@@ -161,6 +161,9 @@ export const SellerAuthGuard: React.FC<SellerAuthGuardProps> = ({
         const res = await authenticate(() => authApi.verifyOTP(cleanMobile, otpCode.trim()));
         requestIsCurrent = res.isCurrent;
         if (!requestIsCurrent()) return;
+        // Account verification leaves first-time applicants in the public
+        // store registration flow until the server grants seller access.
+        if (!res.user.capabilities?.includes('seller')) return;
         token = res.token;
         userFullName = res.user?.fullName || '';
         const owned = await storeApi.getOwnedStores();

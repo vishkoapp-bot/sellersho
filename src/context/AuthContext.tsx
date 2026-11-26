@@ -5,6 +5,7 @@ import {
 } from '../types';
 import { 
   AdminSession, 
+  AdminRole,
   SellerSession 
 } from './storeContextTypes';
 import { authApi } from '../services/authApi';
@@ -17,6 +18,7 @@ export type AuthenticatedPanel =
   | 'supplier_dashboard'
   | 'warehouse_panel'
   | 'admin_panel';
+type ProfilePanel = 'seller_dashboard' | 'supplier_dashboard';
 
 export const panelForRole = (role: string): AuthenticatedPanel => {
   switch (role) {
@@ -39,14 +41,38 @@ export const panelForRole = (role: string): AuthenticatedPanel => {
   }
 };
 
-export const panelsForCapabilities = (capabilities: string[] = []): AuthenticatedPanel[] => {
+export const panelsForCapabilities = (capabilities: readonly string[] = []): AuthenticatedPanel[] => {
   const panels: AuthenticatedPanel[] = [];
   if (capabilities.includes('customer')) panels.push('customer');
   if (capabilities.includes('seller')) panels.push('seller_dashboard');
   if (capabilities.includes('supplier')) panels.push('supplier_dashboard');
   if (warehouseRoleFromCapabilities(capabilities)) panels.push('warehouse_panel');
-  if (capabilities.some((capability) => ['admin', 'super_admin', 'finance', 'finance_specialist', 'support_specialist'].includes(capability))) panels.push('admin_panel');
+  if (adminRolesForCapabilities(capabilities).length > 0) panels.push('admin_panel');
   return panels;
+};
+
+export function defaultPanelForUser(user: Pick<AuthUser, 'role' | 'capabilities'>): AuthenticatedPanel {
+  const available = panelsForCapabilities(user.capabilities);
+  const preferred = panelForRole(user.role);
+  return available.includes(preferred) ? preferred : available[0] ?? 'customer';
+}
+
+export function adminRolesForCapabilities(capabilities: readonly string[] = []): AdminRole[] {
+  const roles: AdminRole[] = [];
+  if (capabilities.includes('super_admin')) roles.push('super_admin');
+  if (capabilities.includes('admin')) roles.push('admin');
+  if (capabilities.includes('finance') || capabilities.includes('finance_specialist')) roles.push('finance_specialist');
+  if (capabilities.includes('support_specialist')) roles.push('support_specialist');
+  if (roles.length > 0 && capabilities.includes('logistics_specialist')) roles.push('logistics_specialist');
+  return roles;
+}
+
+export const adminRoleLabels: Record<AdminRole, string> = {
+  admin: 'مدیر پلتفرم',
+  super_admin: 'مدیر ارشد پلتفرم',
+  finance_specialist: 'کارشناس مالی',
+  support_specialist: 'کارشناس پشتیبانی',
+  logistics_specialist: 'کارشناس لجستیک',
 };
 
 export function warehouseRoleFromCapabilities(capabilities: readonly string[] = []) {
@@ -88,7 +114,7 @@ export interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   isSessionReady: boolean;
-  panelSessionError: string | null;
+  panelSessionErrors: Partial<Record<ProfilePanel, string>>;
   retryPanelSession: () => void;
   customerUser: CustomerUser;
   setCustomerUser: React.Dispatch<React.SetStateAction<CustomerUser>>;
@@ -128,7 +154,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return () => { mounted.current = false; authGeneration.current += 1; };
   }, []);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && tokenStore.getToken()) {
       const saved = localStorage.getItem('drup_current_user');
       if (saved) {
         try { return JSON.parse(saved); } catch {}
@@ -137,12 +163,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return null;
   });
 
-  const [authToken, setAuthToken] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('drup_auth_token') || tokenStore.getToken();
-    }
-    return null;
-  });
+  const [authToken, setAuthToken] = useState(tokenStore.getToken);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSessionReady, setIsSessionReady] = useState<boolean>(!tokenStore.getToken());
@@ -173,8 +194,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     };
     restore();
+    const restoreFromAnotherTab = (event: StorageEvent) => {
+      if (event.storageArea !== localStorage || event.key !== tokenStore.key ||
+        !event.newValue || event.newValue !== tokenStore.getToken()) return;
+      authGeneration.current += 1;
+      tokenStore.invalidateRequests();
+      setIsLoading(false);
+      void restore();
+    };
+    window.addEventListener('storage', restoreFromAnotherTab);
     window.addEventListener('drup-session-changed', restore);
-    return () => { cancelled = true; window.removeEventListener('drup-session-changed', restore); };
+    return () => {
+      cancelled = true;
+      window.removeEventListener('storage', restoreFromAnotherTab);
+      window.removeEventListener('drup-session-changed', restore);
+    };
   }, []);
 
   // Role Sessions
@@ -199,7 +233,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [sellerSession, setSellerSession] = useState<SellerSession | null>(null);
   const [supplierSession, setSupplierSession] = useState<SupplierSession | null>(null);
   const [warehouseSession, setWarehouseSession] = useState<WarehouseSession | null>(null);
-  const [panelSessionError, setPanelSessionError] = useState<string | null>(null);
+  const [panelSessionErrors, setPanelSessionErrors] = useState<Partial<Record<ProfilePanel, string>>>({});
   const [panelRetry, setPanelRetry] = useState(0);
 
   // ISO-E: stale-session guard. The panel effect below only creates a
@@ -227,7 +261,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setAdminSession(null);
       setWarehouseSession(null);
       setCustomerUser({ fullName: '', mobile: '', nationalCode: '', isLoggedIn: false });
-      setPanelSessionError(null);
+      setPanelSessionErrors({});
       return;
     }
     if (supplierSession && supplierSession.token !== authToken) setSupplierSession(null);
@@ -235,7 +269,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (adminSession && adminSession.token !== authToken) setAdminSession(null);
     if (warehouseSession && warehouseSession.token !== authToken) setWarehouseSession(null);
     setCustomerUser({ fullName: '', mobile: '', nationalCode: '', isLoggedIn: false });
-    setPanelSessionError(null);
+    setPanelSessionErrors({});
   }, [currentUser, authToken, supplierSession, sellerSession, adminSession, warehouseSession]);
 
   useEffect(() => {
@@ -243,7 +277,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     let active = true;
     const generation = authGeneration.current;
     const canApply = () => active && ownsRequest(generation, authToken);
-    setPanelSessionError(null);
+    setPanelSessionErrors({});
     if (currentUser.capabilities?.includes('supplier') && !supplierSession) {
       authApi.getSupplierProfile().then((profile) => { if (!canApply()) return; setSupplierSession({
         token: authToken,
@@ -257,10 +291,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         permissions: profile.permissions || [],
         loginAt: new Date().toISOString(),
         signedContractVersion: profile.signedContractVersion ?? 0,
-      }); }).catch((error: Error) => { if (canApply()) setPanelSessionError(error.message || 'بارگذاری پروفایل تأمین‌کننده ناموفق بود.'); });
+      }); }).catch((error: Error) => {
+        if (canApply()) setPanelSessionErrors(previous => ({ ...previous, supplier_dashboard: error.message || 'بارگذاری پروفایل تأمین‌کننده ناموفق بود.' }));
+      });
+    } else if (!currentUser.capabilities?.includes('supplier') && supplierSession && !isMockMode()) {
+      setSupplierSession(null);
     }
     if (currentUser.capabilities?.includes('seller') && !sellerSession) {
-      storeApi.getOwnedStores().then((stores) => { if (!canApply()) return; setSellerSession({ token: authToken, mobile: currentUser.mobile, fullName: currentUser.fullName, status: stores.length ? 'active' : 'onboarding', storeId: stores[0]?.id, loginAt: new Date().toISOString() }); }).catch((error: Error) => { if (canApply()) setPanelSessionError(error.message || 'بارگذاری فروشگاه ناموفق بود.'); });
+      storeApi.getOwnedStores().then((stores) => { if (!canApply()) return; setSellerSession({ token: authToken, mobile: currentUser.mobile, fullName: currentUser.fullName, status: stores.length ? 'active' : 'onboarding', storeId: stores[0]?.id, loginAt: new Date().toISOString() }); }).catch((error: Error) => {
+        if (canApply()) setPanelSessionErrors(previous => ({ ...previous, seller_dashboard: error.message || 'بارگذاری فروشگاه ناموفق بود.' }));
+      });
+    } else if (!currentUser.capabilities?.includes('seller') && sellerSession && !isMockMode()) {
+      setSellerSession(null);
     }
     const warehouseRole = warehouseRoleFromCapabilities(currentUser.capabilities);
     if (warehouseRole && (warehouseSession?.token !== authToken || warehouseSession.staffId !== currentUser.id || warehouseSession.role !== warehouseRole)) {
@@ -268,14 +310,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } else if (!warehouseRole && warehouseSession && !isMockMode()) {
       setWarehouseSession(null);
     }
-    if (currentUser.capabilities?.some((capability) => ['admin', 'super_admin', 'finance', 'finance_specialist', 'support_specialist'].includes(capability)) && !adminSession) {
-      // Live parity: preserve the real role (plain 'admin' stays 'admin');
-      // only a super_admin capability/role upgrades, as in live's role resolution.
-      const role = currentUser.capabilities.includes('super_admin') || currentUser.role === 'super_admin' ? 'super_admin' : currentUser.role === 'finance' ? 'finance_specialist' : currentUser.role as AdminSession['role'];
-      setAdminSession({ token: authToken, username: currentUser.mobile, fullName: currentUser.fullName, role, roleLabel: role, loginAt: new Date().toISOString() });
+    const roles = adminRolesForCapabilities(currentUser.capabilities);
+    const role = roles[0];
+    if (role && (adminSession?.token !== authToken || adminSession.roles?.join() !== roles.join())) {
+      setAdminSession({ token: authToken, username: currentUser.mobile, fullName: currentUser.fullName, role, roles, roleLabel: adminRoleLabels[role], loginAt: new Date().toISOString() });
+    } else if (!role && adminSession && !isMockMode()) {
+      setAdminSession(null);
     }
     if (currentUser.capabilities?.includes('customer')) {
       setCustomerUser((previous) => ({ ...previous, fullName: currentUser.fullName, mobile: currentUser.mobile, isLoggedIn: true }));
+    } else if (!isMockMode()) {
+      setCustomerUser(previous => previous.isLoggedIn ? { fullName: '', mobile: '', nationalCode: '', isLoggedIn: false } : previous);
     }
     return () => { active = false; };
   }, [authToken, currentUser, isSessionReady, supplierSession, sellerSession, warehouseSession, adminSession, panelRetry]);
@@ -314,7 +359,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSellerSession(null);
     setSupplierSession(null);
     setWarehouseSession(null);
-    setPanelSessionError(null);
+    setPanelSessionErrors({});
     setIsLoading(false);
     setIsSessionReady(true);
   }, []);
@@ -323,7 +368,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.storageArea === localStorage &&
-          (event.key === null || event.key === 'seler_sho_jwt_token') && event.newValue === null) {
+          (event.key === null || event.key === tokenStore.key) && event.newValue === null && !tokenStore.getToken()) {
         logoutUser();
       }
     };
@@ -431,6 +476,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return isMockMode() || value === null || value.token === tokenStore.getToken() ? value : previous;
     });
 
+  const capabilities = currentUser?.capabilities ?? [];
+  const activeAdminRoles = adminRolesForCapabilities(capabilities);
+  const currentWarehouseRole = warehouseRoleFromCapabilities(capabilities);
+  const verifiedSession = <T extends { token: string },>(session: T | null, allowed: boolean): T | null => {
+    if (isMockMode()) return session;
+    return allowed && isSessionReady && authToken && session?.token === authToken && authToken === tokenStore.getToken() ? session : null;
+  };
   const value: AuthContextType = {
     authenticate,
     currentUser,
@@ -438,21 +490,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isAuthenticated: !!authToken,
     isLoading,
     isSessionReady,
-    panelSessionError,
+    panelSessionErrors,
     retryPanelSession: () => setPanelRetry((value) => value + 1),
     customerUser,
     setCustomerUser,
     logoutCustomer,
-    adminSession,
+    adminSession: verifiedSession(adminSession, activeAdminRoles.length > 0 && activeAdminRoles.join() === adminSession?.roles?.join()),
     setAdminSession: guardedSessionSetter(setAdminSession),
     logoutAdmin,
-    sellerSession,
+    sellerSession: verifiedSession(sellerSession, capabilities.includes('seller')),
     setSellerSession: guardedSessionSetter(setSellerSession),
     logoutSeller,
-    supplierSession,
+    supplierSession: verifiedSession(supplierSession, capabilities.includes('supplier')),
     setSupplierSession: guardedSessionSetter(setSupplierSession),
     logoutSupplier,
-    warehouseSession,
+    warehouseSession: verifiedSession(warehouseSession, !!currentWarehouseRole && warehouseSession?.role === currentWarehouseRole && warehouseSession?.staffId === currentUser?.id),
     setWarehouseSession: guardedSessionSetter(setWarehouseSession),
     logoutWarehouse,
     loginUser,

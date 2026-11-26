@@ -37,7 +37,8 @@ func (r *OrderRepository) CanReadOperationalTracking(ctx context.Context, orderI
 	if role == "supplier" {
 		err := r.db.QueryRowContext(ctx, `SELECT EXISTS(
 		 SELECT 1 FROM supplier_shipments sh JOIN suppliers s ON s.id=sh.supplier_id
-		 WHERE sh.order_id=$1 AND (s.owner_user_id=$2::uuid OR EXISTS(
+		 JOIN users owner ON owner.id=s.owner_user_id AND owner.is_active
+		 WHERE sh.order_id=$1 AND s.approval_status <> 'suspended' AND (s.owner_user_id=$2::uuid OR EXISTS(
 		 SELECT 1 FROM supplier_members sm WHERE sm.supplier_id=s.id AND sm.user_id=$2::uuid
 		 AND sm.is_active AND (sm.permissions ? 'orders.manage' OR sm.permissions ? 'supplier.manage'))))`, orderID, userID).Scan(&allowed)
 		return allowed, err

@@ -63,7 +63,7 @@ export const AdminApprovalInbox: React.FC = () => {
       status: a.status,
       createdAt: a.createdAt ? new Date(a.createdAt).toLocaleDateString('fa-IR') : 'امروز',
     })),
-    ...unifiedPendingApprovals,
+    ...(isMockMode() ? unifiedPendingApprovals : []),
   ];
 
   const filtered = combinedApprovals.filter((item) => {

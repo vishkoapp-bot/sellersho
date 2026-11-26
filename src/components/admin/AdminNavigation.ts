@@ -8,8 +8,12 @@ import type { AdminRole } from '../../context/storeContextTypes';
 import type { PanelNavigationGroup } from '../common/PanelNavigation';
 import { pathForView } from '../../utils/routing';
 
+type RoleItem<Section extends string> = PanelNavigationGroup<Section>['items'][number] & {
+  roles: readonly AdminRole[];
+  globalWarehouse?: boolean;
+};
 type RoleGroup<Section extends string> = Omit<PanelNavigationGroup<Section>, 'items'> & {
-  items: readonly (PanelNavigationGroup<Section>['items'][number] & { roles: readonly AdminRole[] })[];
+  items: readonly RoleItem<Section>[];
 };
 
 const administrators = ['super_admin', 'admin'] as const;
@@ -25,14 +29,14 @@ const groups = [
     { id: 'overview', label: 'پیشخوان مدیریت', icon: LayoutDashboard, roles: administrators },
   ] },
   { id: 'commerce', label: 'کالا، تأمین و سفارش', icon: Package, items: [
-    { id: 'catalog', label: 'بررسی کالاها', icon: Package, roles: logistics },
-    { id: 'suppliers', label: 'تأمین‌کنندگان', icon: Building2, roles: logistics },
+    { id: 'catalog', label: 'بررسی کالاها', icon: Package, roles: administrators },
+    { id: 'suppliers', label: 'تأمین‌کنندگان', icon: Building2, roles: administrators },
     { id: 'orders', label: 'رهگیری سفارش‌ها', icon: Truck, roles: administrators },
-    { id: 'warehouses', label: 'انبارها و تعرفه‌ها', icon: Warehouse, roles: logistics },
-    { id: 'historical-reconciliation', label: 'تطبیق سوابق انبار', icon: ClipboardCheck, roles: logistics },
+    { id: 'warehouses', label: 'انبارها و تعرفه‌ها', icon: Warehouse, roles: administrators, globalWarehouse: true },
+    { id: 'historical-reconciliation', label: 'تطبیق سوابق انبار', icon: ClipboardCheck, roles: logistics, globalWarehouse: true },
   ] },
   { id: 'storefronts', label: 'فروشگاه‌ها و محتوای سایت', icon: Store, items: [
-    { id: 'stores', label: 'ویترین‌های دراپ‌شیپر', icon: Store, roles: support },
+    { id: 'stores', label: 'ویترین‌های دراپ‌شیپر', icon: Store, roles: administrators },
     { id: 'stores-list', label: 'لیست فروشگاه‌ها', icon: Store, roles: supervisors },
     { id: 'homepage', label: 'صفحه اصلی', icon: Home, roles: administrators },
     { id: 'banners', label: 'بنرها', icon: Image, roles: administrators },
@@ -40,15 +44,15 @@ const groups = [
   ] },
   { id: 'support', label: 'پشتیبانی و مرجوعی', icon: Headphones, items: [
     { id: 'support-tickets', label: 'تیکت‌های پشتیبانی', icon: Headphones, roles: helpdesk },
-    { id: 'support-returns', label: 'مرجوعی‌ها', icon: RotateCcw, roles: caseReviewers },
+    { id: 'support-returns', label: 'مرجوعی‌ها', icon: RotateCcw, roles: administrators },
     { id: 'support-disputes', label: 'داوری و مرجوعی', icon: ShieldAlert, roles: caseReviewers },
-    { id: 'reviews', label: 'نظرات مشتریان', icon: Star, roles: support },
+    { id: 'reviews', label: 'نظرات مشتریان', icon: Star, roles: administrators },
   ] },
   { id: 'finance', label: 'مالی و تسویه', icon: Receipt, items: [
     { id: 'finance-overview', label: 'تراز و دفتر کل', icon: BadgePercent, roles: finance },
     { id: 'finance-pending-payments', label: 'تأیید دستی پرداخت', icon: Clock, roles: finance },
     { id: 'finance-reconciliation', label: 'تطبیق شاپرک', icon: Receipt, roles: finance },
-    { id: 'finance-callback-retries', label: 'پرداخت‌های ناموفق', icon: RefreshCw, roles: finance },
+    { id: 'finance-callback-retries', label: 'پرداخت‌های ناموفق', icon: RefreshCw, roles: administrators },
     { id: 'finance-payouts', label: 'تسویه شبا', icon: ArrowDownToLine, roles: finance },
     { id: 'finance-adjustments', label: 'تعدیل و برگشتی', icon: FileEdit, roles: finance },
     { id: 'commission', label: 'سهم پلتفرم', icon: DollarSign, roles: administrators },
@@ -65,7 +69,7 @@ const groups = [
   ] },
   { id: 'system', label: 'عملیات و دسترسی‌ها', icon: ShieldCheck, items: [
     { id: 'staff', label: 'کارکنان انبار', icon: Users, roles: supervisors },
-    { id: 'operations', label: 'پایش عملیات خودکار', icon: Activity, roles: logistics },
+    { id: 'operations', label: 'پایش عملیات خودکار', icon: Activity, roles: logistics, globalWarehouse: true },
     { id: 'jobs-queue', label: 'صف کارها', icon: Cpu, roles: administrators },
     { id: 'spncx-backfill', label: 'سریال واحد (SPNCX)', icon: Package, roles: supervisors },
     { id: 'audit-logs', label: 'گزارش حسابرسی', icon: ShieldCheck, roles: administrators },
@@ -93,8 +97,13 @@ const aliases: Readonly<Partial<Record<string, AdminSection>>> = {
   tickets: 'support-tickets',
 };
 
-export function adminNavigationFor(role: AdminRole): PanelNavigationGroup<AdminSection>[] {
-  return navigation.map(group => ({ ...group, items: group.items.filter(item => item.roles.includes(role)) }))
+export function adminSectionAllowed(item: RoleItem<AdminSection>, roles: readonly AdminRole[], staffScoped: boolean) {
+  return !(item.globalWarehouse && staffScoped) && item.roles.some(role => roles.includes(role));
+}
+
+export function adminNavigationFor(roles: AdminRole | readonly AdminRole[], staffScoped = false): PanelNavigationGroup<AdminSection>[] {
+  const allowed = typeof roles === 'string' ? [roles] : roles;
+  return navigation.map(group => ({ ...group, items: group.items.filter(item => adminSectionAllowed(item, allowed, staffScoped)) }))
     .filter(group => group.items.length > 0);
 }
 

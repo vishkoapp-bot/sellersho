@@ -1,109 +1,95 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { History } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
-import { ShieldCheck, History, Filter, Search, User, Clock, AlertCircle } from 'lucide-react';
+import { adminApi, type AuditLogDto } from '../../services/adminApi';
+import { isMockMode } from '../../services/apiClient';
+import { SupplierResourceState } from '../supplier/SupplierResourceState';
 
-export const AdminAuditLogTab: React.FC = () => {
+const categories: Record<string, string> = {
+  commission: 'تعرفه و کارمزد',
+  store_status: 'وضعیت فروشگاه',
+  catalog: 'کالا و بارکد',
+  warehouse: 'انبار',
+  finance: 'مالی',
+  dispute: 'داوری',
+  subscription: 'اشتراک',
+  supplier: 'تأمین‌کننده',
+};
+
+export function AdminAuditLogTab() {
   const { auditLogs } = useStore();
-  const [filterCat, setFilterCat] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const mock = isMockMode();
+  const [category, setCategory] = useState('');
+  const [search, setSearch] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{ rows: AuditLogDto[]; error: string } | null>(null);
 
-  const filtered = auditLogs.filter((log) => {
-    const matchCat = filterCat === 'all' || log.category === filterCat;
-    const matchSearch =
-      !searchTerm ||
-      log.action.includes(searchTerm) ||
-      log.operator.includes(searchTerm) ||
-      log.details.includes(searchTerm);
-    return matchCat && matchSearch;
-  });
+  useEffect(() => {
+    if (mock) return;
+    const controller = new AbortController();
+    setResult(null);
+    void adminApi.getAuditLogs(category, controller.signal).then(rows => {
+      if (!Array.isArray(rows)) throw new Error('پاسخ سوابق حسابرسی کامل نیست.');
+      if (!controller.signal.aborted) setResult({ rows, error: '' });
+    }).catch((cause: unknown) => {
+      if (!controller.signal.aborted) {
+        setResult({ rows: [], error: cause instanceof Error ? cause.message : 'دریافت سوابق حسابرسی انجام نشد.' });
+      }
+    });
+    return () => controller.abort();
+  }, [category, attempt, mock]);
 
-  const getCategoryBadge = (cat: string) => {
-    switch (cat) {
-      case 'commission':
-        return <span className="text-[9px] bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded-full">تعرفه‌ها و فرمول</span>;
-      case 'store_status':
-        return <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-2 py-0.5 rounded-full">تعلیق / فعال‌سازی</span>;
-      case 'catalog':
-        return <span className="text-[9px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full">کاتالوگ و بارکد</span>;
-      case 'finance':
-        return <span className="text-[9px] bg-teal-50 text-teal-700 font-bold px-2 py-0.5 rounded-full">اسناد مالی</span>;
-      case 'dispute':
-        return <span className="text-[9px] bg-rose-50 text-rose-700 font-bold px-2 py-0.5 rounded-full">حکم داوری</span>;
-      default:
-        return <span className="text-[9px] bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-full">سیستمی</span>;
-    }
-  };
+  const query = search.trim().toLocaleLowerCase('fa');
+  const rows = mock ? auditLogs : result?.rows ?? [];
+  const filtered = rows.filter(row => (!category || row.category === category)
+    && (!query || [row.id, row.action, row.operator, row.details].some(value => value?.toLocaleLowerCase('fa').includes(query))));
+  const loading = !mock && result === null;
+  const error = result?.error ?? '';
 
   return (
-    <div className="space-y-3.5 pb-6">
-      {/* Header Info */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-blue-600">
-            <History className="w-4 h-4"  strokeWidth={1.5}/>
-            <h3 className="text-xs font-bold text-slate-800">دفتر ثبت سوابق و ممیزی اقدامات حساس (Audit Trail)</h3>
-          </div>
-          <span className="text-[10px] bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded-full">
-            فصل ۳ و ۲۳ پروپوزال
-          </span>
-        </div>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          طبق الزامات امنیتی، هرگونه تعلیق ویترین، تغییر سهم ثابت پلتفرم ($F$)، تأیید کاتالوگ، صدور اسناد تعدیل و احکام داوری با ذکر زمان، شناسه و نام کارشناس ثبت دائمی می‌شود.
+    <section className="space-y-3" aria-label="سوابق حسابرسی">
+      <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[1fr_13rem]">
+        <p className="flex items-center gap-2 text-sm font-bold text-slate-700 sm:col-span-2">
+          <History className="size-5 text-brand-deep" aria-hidden="true" />
+          {mock ? 'سوابق نمونهٔ حسابرسی' : '۱۰۰ رویداد آخر در دستهٔ انتخاب‌شده'}
         </p>
-
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
-          <div className="relative flex-1 min-w-[180px]">
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="جستجو در سوابق، اقدام یا کاربر..."
-              className="w-full text-xs p-2 rounded-xl bg-slate-50 border border-slate-200"
-            />
-          </div>
-          <select
-            value={filterCat}
-            onChange={(e) => setFilterCat(e.target.value)}
-            className="text-xs p-2 rounded-xl bg-slate-50 border border-slate-200"
-          >
-            <option value="all">همه دسته‌ها</option>
-            <option value="commission">تعرفه‌ها و فرمول</option>
-            <option value="store_status">تعلیق / فعال‌سازی</option>
-            <option value="catalog">کاتالوگ و بارکد</option>
-            <option value="finance">اسناد مالی</option>
-            <option value="dispute">حکم داوری</option>
+        <label className="block min-w-0 space-y-1 text-sm font-bold text-slate-700">
+          <span>جست‌وجو در سوابق</span>
+          <input type="search" value={search} onChange={event => setSearch(event.target.value)}
+            className="min-h-11 w-full rounded-xl border border-slate-300 px-3 font-normal focus-visible:outline-2 focus-visible:outline-brand" />
+        </label>
+        <label className="block min-w-0 space-y-1 text-sm font-bold text-slate-700">
+          <span>دستهٔ رویداد</span>
+          <select aria-label="دستهٔ رویداد" value={category} onChange={event => setCategory(event.target.value)}
+            className="min-h-11 w-full rounded-xl border border-slate-300 px-2 font-normal focus-visible:outline-2 focus-visible:outline-brand">
+            <option value="">همهٔ دسته‌ها</option>
+            {Object.entries(categories).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
           </select>
-        </div>
+        </label>
       </div>
-
-      {/* Log Entries List */}
-      <div className="space-y-2">
-        {filtered.map((log) => (
-          <div key={log.id} className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs space-y-1.5 text-xs">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
-              <div className="flex items-center gap-2">
-                <span className="font-mono font-bold text-slate-800 text-[11px]">{log.id}</span>
-                <strong className="text-slate-900 text-xs">{log.action}</strong>
+      <SupplierResourceState loading={loading} error={error} retry={() => setAttempt(value => value + 1)} />
+      {!loading && !error && (filtered.length === 0 ? (
+        <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+          {category || query ? 'سابقه‌ای مطابق فیلتر ثبت نشده است.' : 'هنوز سابقه‌ای ثبت نشده است.'}
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {filtered.map(row => (
+            <li key={row.id} className="min-w-0 space-y-2 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <h2 className="min-w-0 font-extrabold text-slate-900 [overflow-wrap:anywhere]">{row.action}</h2>
+                <span className="rounded-lg bg-brand-soft px-2 py-1 text-xs font-bold text-brand-deep">{categories[row.category] || 'سیستمی'}</span>
               </div>
-              {getCategoryBadge(log.category)}
-            </div>
-
-            <p className="text-[11px] text-slate-700 leading-relaxed">{log.details}</p>
-
-            <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-100">
-              <span className="flex items-center gap-1 text-slate-600">
-                <User className="w-3 h-3 text-slate-400"  strokeWidth={1.5}/>
-                <strong>{log.operator}</strong>
-              </span>
-              <span className="flex items-center gap-1 font-mono">
-                <Clock className="w-3 h-3"  strokeWidth={1.5}/>
-                <span>{log.timestamp}</span>
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+              <p className="whitespace-pre-wrap leading-6 [overflow-wrap:anywhere]">{row.details}</p>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-100 pt-2 text-xs">
+                <bdi className="[overflow-wrap:anywhere]">{row.operator}</bdi>
+                <time dateTime={row.timestamp}>{new Date(row.timestamp).toLocaleString('fa-IR')}</time>
+                <bdi className="font-mono text-slate-500 [overflow-wrap:anywhere]">{row.id}</bdi>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ))}
+    </section>
   );
-};
+}

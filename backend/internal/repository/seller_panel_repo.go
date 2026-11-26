@@ -9,6 +9,7 @@ import (
 	"github.com/drup/platform/internal/customdomain"
 	"github.com/drup/platform/internal/pricing"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -619,6 +620,12 @@ func (r *StoreRepository) RequestStoreChange(ctx context.Context, userID, slug, 
 	if strings.TrimSpace(value) == "" || len(value) > 150 {
 		return ErrStoreInput
 	}
+	if kind != "custom_domain" {
+		value, err = normalizeStoreChangeValue(kind, value)
+		if err != nil {
+			return err
+		}
+	}
 	raw, _ := json.Marshal(map[string]string{"value": value, "storeId": store.ID})
 	_, err = r.db.ExecContext(ctx, `INSERT INTO pending_approvals(id,entity_type,target_id,title,requested_data,requested_by,status) VALUES($1,$2,$3,$4,$5,$6,'pending')`, "req-"+uuid.NewString(), kind, store.ID, fmt.Sprintf("%s: %s", kind, value), raw, userID)
 	if err != nil {
@@ -634,6 +641,31 @@ func (r *StoreRepository) RequestStoreChange(ctx context.Context, userID, slug, 
 		customdomain.DefaultAllowCache.Invalidate(value)
 	}
 	return nil
+}
+
+var validStoreChangeSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+func normalizeStoreChangeValue(kind, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsRune(value, '\x00') {
+		return "", ErrStoreInput
+	}
+	if kind == "store_name" {
+		if utf8.RuneCountInString(value) > 100 {
+			return "", ErrStoreInput
+		}
+		return value, nil
+	}
+	value = strings.ToLower(value)
+	if len(value) < 3 || len(value) > 30 || !validStoreChangeSlug.MatchString(value) {
+		return "", ErrStoreInput
+	}
+	switch value {
+	case "admin", "api", "store", "shop", "main", "central", "root", "login", "auth", "dashboard",
+		"supplier", "warehouse", "finance", "support", "tracking", "checkout":
+		return "", ErrStoreInput
+	}
+	return value, nil
 }
 
 // --- Team 05 (Phase 2, live parity): seller discount campaigns (D48) ---

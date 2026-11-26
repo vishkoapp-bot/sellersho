@@ -1,11 +1,54 @@
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { isMockMode } from '../../services/apiClient';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { AdminApprovalInbox } from './AdminApprovalInbox';
+import { AdminStoresListView } from './AdminNewTabs';
 import { Search, Globe, Check, X, Clock, Store, Lock, Unlock, DollarSign, Package, TrendingUp, Layers, Inbox } from 'lucide-react';
 
 export const AdminStoresTab: React.FC = () => {
+  return isMockMode() ? <SampleStoreManagement /> : <StoreManagement />;
+};
+
+function StoreManagement() {
+  const { stores } = useStore();
+  const [section, setSection] = useState<'stores' | 'inbox'>('stores');
+  const [search, setSearch] = useState('');
+  const query = search.trim().toLowerCase();
+  const filtered = stores.filter(store => store.name.toLowerCase().includes(query) || store.slug.toLowerCase().includes(query));
+
+  return (
+    <div className="space-y-3 pb-6">
+      <div role="group" aria-label="مدیریت ویترین‌ها" className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+        {(['stores', 'inbox'] as const).map(tab => (
+          <button key={tab} type="button" aria-pressed={section === tab} onClick={() => setSection(tab)}
+            className={`min-h-11 rounded-lg px-2 text-sm font-bold focus-visible:outline-2 focus-visible:outline-brand ${section === tab ? 'bg-white text-brand-deep' : 'text-slate-700'}`}>
+            {tab === 'stores' ? 'ویترین‌ها' : 'صندوق تأییدها'}
+          </button>
+        ))}
+      </div>
+      {section === 'inbox' ? <AdminApprovalInbox /> : (
+        <section aria-labelledby="store-management-heading" className="space-y-3">
+          <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 id="store-management-heading" className="text-sm font-bold text-slate-900">ویترین‌های ثبت‌شده</h3>
+            <p className="text-sm leading-6 text-slate-600">تعلیق ویترین و تغییر تنظیمات حاشیه سود از این صفحه در دسترس نیست.</p>
+            <label className="block space-y-1">
+              <span className="block text-sm font-bold text-slate-700">جست‌وجوی نام یا نامک فروشگاه</span>
+              <input type="search" value={search} onChange={event => setSearch(event.target.value)}
+                className="min-h-11 w-full rounded-xl border border-slate-300 px-3 text-base focus-visible:outline-2 focus-visible:outline-brand" />
+            </label>
+          </div>
+          {query && filtered.length === 0
+            ? <p className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">ویترینی با این عبارت پیدا نشد.</p>
+            : <AdminStoresListView stores={filtered} />}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SampleStoreManagement() {
   const {
     stores,
     storeStatuses,
@@ -487,4 +530,4 @@ export const AdminStoresTab: React.FC = () => {
       )}
     </div>
   );
-};
+}

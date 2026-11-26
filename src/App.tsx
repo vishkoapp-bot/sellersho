@@ -24,7 +24,7 @@ import { OrderTrackingModal } from './components/OrderTrackingModal';
 import { BottomNav } from './components/BottomNav';
 import { StorefrontBottomNav } from './components/storefront/SellerStorefrontFooter';
 import { storeApi } from './services/storeApi';
-import { panelsForCapabilities, useAuth } from './context/AuthContext';
+import { defaultPanelForUser, panelsForCapabilities, useAuth, type AuthenticatedPanel } from './context/AuthContext';
 
 // Customer-Facing Priority 1 Views
 import { ProductDetailView } from './components/views/ProductDetailView';
@@ -49,8 +49,16 @@ import { SupplierDashboardView } from './components/supplier/SupplierDashboardVi
 import { WarehouseDashboardView } from './components/warehouse/WarehouseDashboardView';
 import { AdminDashboardView } from './components/admin/AdminDashboardView';
 
+const workspaceLabels: Record<AuthenticatedPanel, string> = {
+  customer: 'فروشگاه',
+  seller_dashboard: 'فروشنده',
+  supplier_dashboard: 'تأمین‌کننده',
+  warehouse_panel: 'انبار',
+  admin_panel: 'مدیریت',
+};
+
 export const AppContent: React.FC = () => {
-  const { currentUser, isSessionReady, panelForRole, supplierSession, sellerSession, warehouseSession, adminSession, panelSessionError, retryPanelSession } = useAuth();
+  const { currentUser, isSessionReady, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
   const {
     activeView,
     setActiveView,
@@ -68,35 +76,31 @@ export const AppContent: React.FC = () => {
     routeStoreSlug,
     openStorefront,
     isSellerModalOpen,
+    setIsSellerModalOpen,
   } = useStore();
 
-  const isProtectedView = ['seller_dashboard', 'supplier_dashboard', 'warehouse_panel', 'admin_panel'].includes(activeView);
-  const isWarehouseView = activeView === 'warehouse_panel';
-  const isOnboardingActive = isSellerModalOpen && !isProtectedView;
+  const customerAccountView = activeView === 'customer_profile' || activeView === 'customer_orders' || activeView === 'customer_wishlist';
+  const protectedPanel = customerAccountView ? 'customer' : (Object.keys(workspaceLabels) as AuthenticatedPanel[])
+    .find(panel => panel !== 'customer' && activeView === panel);
+  const isWarehouseView = protectedPanel === 'warehouse_panel';
+  const isOnboardingActive = isSellerModalOpen && !protectedPanel;
   const routedIdentity = useRef<string | null>(null);
-  useEffect(() => {
-    if (!isSessionReady || !currentUser) return;
-    const requiredView = panelForRole(currentUser.role);
-    const authorizedViews = panelsForCapabilities(currentUser.capabilities?.length ? currentUser.capabilities : [currentUser.role]);
-    const identity = `${currentUser.id}:${currentUser.role}:${(currentUser.capabilities || []).join(',')}`;
-    // An onboarding login resumes the draft before routing the new identity.
-    const identityChanged = !isOnboardingActive && routedIdentity.current !== identity;
-    const activeViewAuthorized = authorizedViews.includes(activeView as any);
-    if (identityChanged || (isProtectedView && !activeViewAuthorized)) {
-      routedIdentity.current = identity;
-      // The warehouse entry form explains a missing assignment and lets the
-      // operator use another number. Its guard still controls the workspace.
-      if (activeView === 'warehouse_panel') return;
-      if (activeView === 'dashboard' || (identityChanged && activeViewAuthorized)) return;
-      setActiveView(identityChanged ? requiredView : (authorizedViews[0] || requiredView));
-    }
-  }, [activeView, currentUser, isSessionReady, isOnboardingActive, isProtectedView, panelForRole, setActiveView]);
+  const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
+  const defaultPanel = currentUser ? defaultPanelForUser(currentUser) : 'customer';
 
   useEffect(() => {
-    if (activeView === 'dashboard' && isSessionReady && currentUser) {
-      setActiveView(panelForRole(currentUser.role));
+    if (!isSessionReady) return;
+    if (!currentUser) {
+      routedIdentity.current = null;
+      return;
     }
-  }, [activeView, isSessionReady, currentUser, panelForRole, setActiveView]);
+    if (isOnboardingActive) return;
+    const identityChanged = routedIdentity.current !== currentUser.id;
+    routedIdentity.current = currentUser.id;
+    if (activeView === 'dashboard' || (identityChanged && activeView === 'customer' && defaultPanel !== 'customer')) {
+      setActiveView(defaultPanel);
+    }
+  }, [activeView, currentUser, isSessionReady, isOnboardingActive, defaultPanel, setActiveView]);
 
   // ISO-A (model a, picked-only showcase): central-home/under-own-store
   // frame guard. The central `customer` view must never render under a
@@ -168,30 +172,57 @@ export const AppContent: React.FC = () => {
       />
     );
   }
-  if (currentUser && !isOnboardingActive && !isWarehouseView) {
-    const panel = panelForRole(currentUser.role);
-    const ready = panel === 'customer' ||
-      (panel === 'supplier_dashboard' && supplierSession) ||
-      (panel === 'seller_dashboard' && sellerSession) ||
-      (panel === 'warehouse_panel' && warehouseSession) ||
-      (panel === 'admin_panel' && adminSession);
+  const workspaceSwitcher = currentUser && authorizedPanels.length > 1 && (
+    <nav dir="rtl" aria-label="پنل‌های مجاز" className="flex flex-wrap items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5">
+      {authorizedPanels.map(panel => (
+        <button key={panel} type="button" aria-pressed={activeView === panel}
+          onClick={() => setActiveView(panel)}
+          className={`min-h-11 rounded-xl px-3 text-xs font-bold focus-visible:outline-2 focus-visible:outline-brand ${activeView === panel ? 'bg-brand-deep text-white' : 'bg-brand-soft text-brand-deep hover:bg-brand-border'}`}>
+          {workspaceLabels[panel]}
+        </button>
+      ))}
+    </nav>
+  );
+
+  if (currentUser && protectedPanel && !isWarehouseView) {
+    if (!authorizedPanels.includes(protectedPanel)) {
+      return (
+        <main dir="rtl" className="grid min-h-dvh w-full content-center justify-items-center bg-[#f7f7fa] p-4">
+          <section aria-labelledby="workspace-access-title" className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+            <h1 id="workspace-access-title" className="text-base font-extrabold text-slate-900">حساب فعلی مجوز پنل {workspaceLabels[protectedPanel]} را ندارد.</h1>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setActiveView(defaultPanel)}
+                className="min-h-11 rounded-xl bg-brand-deep px-3 text-sm font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                {defaultPanel === 'customer' ? 'بازگشت به سایت' : `باز کردن پنل ${workspaceLabels[defaultPanel]}`}
+              </button>
+              <button type="button" onClick={logoutUser} className="min-h-11 rounded-xl border border-slate-200 px-3 text-sm font-bold text-slate-800 focus-visible:outline-2 focus-visible:outline-brand">خروج و ورود با حساب دیگر</button>
+              {protectedPanel === 'seller_dashboard' && authorizedPanels.includes('customer') && (
+                <button type="button" onClick={() => { setActiveView('dropshipper_landing'); setIsSellerModalOpen(true); }}
+                  className="min-h-11 rounded-xl border border-brand-border px-3 text-sm font-bold text-brand-deep focus-visible:outline-2 focus-visible:outline-brand">ثبت فروشگاه جدید</button>
+              )}
+            </div>
+          </section>
+        </main>
+      );
+    }
+    const ready = protectedPanel === 'customer' || (protectedPanel === 'supplier_dashboard' ? supplierSession
+      : protectedPanel === 'seller_dashboard' ? sellerSession : adminSession);
     if (!ready) {
-      return <div className="min-h-screen flex flex-col items-center justify-center gap-4" dir="rtl">
-        {panelSessionError ? <><p role="alert">{panelSessionError}</p><button onClick={retryPanelSession}>تلاش مجدد</button></> : <p role="status">در حال آماده‌سازی پنل…</p>}
+      const panelSessionError = protectedPanel === 'supplier_dashboard' || protectedPanel === 'seller_dashboard'
+        ? panelSessionErrors[protectedPanel] : undefined;
+      return <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4" dir="rtl">
+        {panelSessionError ? <><p role="alert">{panelSessionError}</p><button type="button" className="min-h-11 rounded-xl bg-brand-soft px-4 font-bold text-brand-deep" onClick={retryPanelSession}>تلاش مجدد</button></>
+          : <p role="status">در حال آماده‌سازی پنل…</p>}
       </div>;
     }
   }
-  const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
-  if (currentUser && isProtectedView && !isWarehouseView && !authorizedPanels.includes(activeView as any)) {
-    return <div role="status">در حال انتقال به پنل مجاز…</div>;
-  }
 
-  // Part 1: Standalone Isolated Admin & Finance Portal (/admin) outside the 504px customer mobile shell
   if (activeView === 'admin_panel') {
     return (
-      <AdminDashboardView
-        onBackToCustomerSite={() => setActiveView('customer')}
-      />
+      <>
+        {workspaceSwitcher}
+        <AdminDashboardView onBackToCustomerSite={() => setActiveView('customer')} />
+      </>
     );
   }
 
@@ -238,30 +269,7 @@ export const AppContent: React.FC = () => {
           owner rejected the framed column; storefronts now render
           full-width on desktop like the homepage/static views. */}
       <div className={(activeView === 'warehouse_panel' ? 'w-full min-h-screen relative flex flex-col' : isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-24 ${isStorefront ? 'max-w-[504px] md:max-w-none md:shadow-none md:border-x-0 lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
-        {currentUser && authorizedPanels.length > 1 && (
-          <nav aria-label="Workspace switcher" className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 no-scrollbar">
-            {authorizedPanels.map((panel) => {
-              const labels: Record<string, string> = {
-                customer: 'فروشگاه',
-                seller_dashboard: 'فروشنده',
-                supplier_dashboard: 'تأمین‌کننده',
-                warehouse_panel: 'انبار',
-                admin_panel: 'مدیریت',
-              };
-              return (
-                <button
-                  key={panel}
-                  type="button"
-                  aria-pressed={activeView === panel}
-                  onClick={() => setActiveView(panel)}
-                  className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-bold ${activeView === panel ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}
-                >
-                  {labels[panel]}
-                </button>
-              );
-            })}
-          </nav>
-        )}
+        {workspaceSwitcher}
         {/* Developer & Multi-Role Navigation Bar */}
         <RoleSwitcherBar />
 

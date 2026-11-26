@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { apiRequest } from '../../services/apiClient';
+import { apiRequest, isMockMode } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { ArrowDownToLine, CheckCircle2, XCircle, ShieldCheck, Download } from 'lucide-react';
@@ -13,112 +13,145 @@ interface ApprovedSettlement {
   amount: number;
 }
 
-// Live parity: the approved-settlements manual-transfer section inside the
-// live finance-payouts tab (AdminDashboardView-MERGED.js, Jd component,
-// rendered by the payouts tab after its pending list). It lists GET
-// /finance/settlements/approved and, per item, the button below opens the
-// tracking-number input; the confirm button posts
-// {transfer_reference, transfer_date: now ISO} to POST
-// /admin/payouts/<id>/confirm-manual-transfer, the same body live sends
-// (the live API helper defaults transfer_date to new Date().toISOString()).
-// On success: the live toast, input cleared, form closed, list reloaded.
-// Like live, the section renders nothing until the list is loaded and
-// non-empty. The pre-existing mock cards above are left untouched.
-const ApprovedManualTransfers: React.FC<{ formatPrice: (n: number) => string }> = ({ formatPrice }) => {
-  const { success, error } = useToast();
+function ApprovedManualTransfers() {
+  const { adminSession, formatPrice } = useStore();
+  const { success } = useToast();
+  const canConfirm = adminSession?.role === 'admin' || adminSession?.role === 'super_admin';
   const [settlements, setSettlements] = useState<ApprovedSettlement[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [trackingRef, setTrackingRef] = useState("");
+  const [trackingRef, setTrackingRef] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
+  const heading = useRef<HTMLHeadingElement>(null);
 
-  const load = useCallback(() => {
-    apiRequest<any>("/finance/settlements/approved", { method: "GET", auth: true })
-      .then((data) => {
-        setSettlements(Array.isArray(data?.settlements) ? data.settlements : []);
-        setLoaded(true);
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiRequest<{ settlements: ApprovedSettlement[] }>('/finance/settlements/approved', { auth: true, signal: controller.signal })
+      .then(data => {
+        if (controller.signal.aborted) return;
+        if (!Array.isArray(data?.settlements)) throw new Error('پاسخ فهرست تسویه‌ها کامل دریافت نشد.');
+        setSettlements(data.settlements);
       })
-      .catch(() => setLoaded(true));
-  }, []);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'دریافت تسویه‌ها انجام نشد.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [attempt]);
 
-  useEffect(() => { load(); }, [load]);
+  const reload = () => {
+    setLoading(true);
+    setLoadError('');
+    setAttempt(value => value + 1);
+  };
 
-  const handleConfirm = async (id: string) => {
-    if (!trackingRef.trim()) {
-      error("شماره پیگیری انتقال بانکی الزامی است.");
-      return;
-    }
+  const handleConfirm = async (event: React.FormEvent<HTMLFormElement>, id: string) => {
+    event.preventDefault();
+    const reference = trackingRef.trim();
+    if (!canConfirm || confirming || expandedId !== id || !reference) return;
+    setConfirmError('');
     setConfirming(true);
     try {
       await apiRequest(`/admin/payouts/${encodeURIComponent(id)}/confirm-manual-transfer`, {
-        method: "POST",
+        method: 'POST',
         auth: true,
         body: JSON.stringify({
-          transfer_reference: trackingRef.trim(),
+          transfer_reference: reference,
           transfer_date: new Date().toISOString(),
         }),
       });
-      success("انتقال بانکی تأیید شد و سند حسابداری در دفتر کل ثبت گردید.");
-      setTrackingRef("");
+      success('انتقال بانکی تأیید شد و سند حسابداری در دفتر کل ثبت گردید.');
+      setTrackingRef('');
       setExpandedId(null);
-      load();
-    } catch (err: any) {
-      error(err?.message || "تأیید انتقال انجام نشد.");
+      setSettlements(items => items.filter(item => item.id !== id));
+      heading.current?.focus();
+      reload();
+    } catch (error: unknown) {
+      setConfirmError(error instanceof Error ? error.message : 'تأیید انتقال انجام نشد.');
     } finally {
       setConfirming(false);
     }
   };
 
-  if (!loaded || settlements.length === 0) return null;
-
   return (
-    <div className="space-y-2">
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
-        <p className="text-[11px] font-bold text-amber-800">این تسویه‌ها به‌صورت دستی انجام می‌شود — پس از انتقال بانکی، تأیید کنید</p>
-        <p className="mt-1 text-[10px] text-amber-700 leading-relaxed">این درخواست‌ها تأیید شده‌اند ولی هنوز پولی جابه‌جا نشده است. پس از انجام انتقال بانکی (کارت‌به‌کارت/پایا/ساتنا)، شماره پیگیری را وارد و «تأیید واریز» را بزنید. فقط پس از این تأیید، سند حسابداری در دفتر کل ثبت می‌شود.</p>
+    <section aria-labelledby="approved-transfers-heading" className="space-y-3">
+      <div className="space-y-1 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <h3 id="approved-transfers-heading" ref={heading} tabIndex={-1} className="text-base font-bold text-amber-950">تسویه‌های تأییدشده در انتظار واریز</h3>
+        <p className="text-sm leading-6 text-amber-900">
+          {canConfirm ? 'پس از انجام انتقال بانکی، ثبت شماره پیگیری، سند حسابداری را در دفتر کل ایجاد می‌کند.' : 'مدیر پس از انتقال بانکی، شماره پیگیری واریز را ثبت می‌کند.'}
+        </p>
       </div>
-      {settlements.map((item) => (
-        <div key={item.id} className="p-4 bg-white rounded-2xl border border-amber-200/70 shadow-2xs space-y-2.5 text-xs">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="font-black text-slate-800">{item.recipientName}</span>
-              <span className="text-[10px] text-slate-400 font-mono block mt-0.5" dir="ltr">{item.id}</span>
-            </div>
-            <span className="text-[9px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">تأییدشده — در انتظار واریز دستی</span>
+      {loading && <p role="status" className="rounded-xl bg-white p-3 text-sm text-slate-600">در حال دریافت تسویه‌ها…</p>}
+      {loadError && (
+        <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">
+          <p role="alert" className="[overflow-wrap:anywhere]">{loadError}</p>
+          <button type="button" onClick={reload} className="mt-1 min-h-11 rounded-lg px-2 font-bold focus-visible:outline-2 focus-visible:outline-rose-700">تلاش دوباره</button>
+        </div>
+      )}
+      {!loading && !loadError && settlements.length === 0 && <p className="rounded-xl bg-white p-3 text-sm text-slate-600">تسویه‌ای در انتظار واریز نیست.</p>}
+      {!loading && !loadError && settlements.map(item => (
+        <article key={item.id} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm [overflow-wrap:anywhere]">
+          <div>
+            <h4 className="font-bold text-slate-900">{item.recipientName}</h4>
+            <bdi className="font-mono text-xs text-slate-600" dir="ltr">{item.id}</bdi>
           </div>
           <div>
-            <span className="text-[11px] text-slate-400 block">شماره شبای مقصد:</span>
-            <span className="text-[11px] font-mono text-slate-500 mt-0.5 block tracking-wider" dir="ltr">{item.shaba} ({item.bankName})</span>
+            <span className="block text-slate-600">شماره شبای مقصد</span>
+            <bdi className="font-mono text-slate-900" dir="ltr">{item.shaba}</bdi>
+            {item.bankName && <span className="block text-slate-600">{item.bankName}</span>}
           </div>
-          <div className="flex justify-between text-emerald-700 font-black">
-            <span>مبلغ:</span>
+          <div className="flex flex-wrap justify-between gap-2 font-bold text-emerald-800">
+            <span>مبلغ</span>
             <span>{formatPrice(item.amount)} تومان</span>
           </div>
-          {expandedId === item.id ? (
-            <div className="space-y-2 pt-1 border-t border-slate-100">
-              <input value={trackingRef} onChange={(e) => setTrackingRef(e.target.value)} placeholder="شماره پیگیری انتقال بانکی" dir="ltr" className="w-full min-h-[44px] rounded-xl border px-3 text-xs font-mono" />
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => handleConfirm(item.id)} disabled={confirming} className="min-h-[44px] px-4 bg-brand-deep hover:opacity-90 disabled:opacity-50 text-white font-bold text-xs rounded-xl">
-                  {confirming ? "در حال ثبت…" : "تأیید واریز و ثبت سند"}
-                </button>
-                <button onClick={() => { setExpandedId(null); setTrackingRef(""); }} disabled={confirming} className="min-h-[44px] px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl">
-                  انصراف
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button onClick={() => setExpandedId(item.id)} className="w-full min-h-[44px] px-4 bg-brand-deep hover:opacity-90 text-white font-bold text-xs rounded-xl transition-colors">
-              ثبت انتقال بانکی
-            </button>
+          {canConfirm && (
+            expandedId === item.id ? (
+              <form onSubmit={event => void handleConfirm(event, item.id)} className="space-y-2 border-t border-slate-200 pt-3">
+                <label className="block space-y-1">
+                  <span className="block font-bold">شماره پیگیری انتقال بانکی</span>
+                  <input autoFocus value={trackingRef} onChange={event => setTrackingRef(event.target.value)} placeholder="شماره پیگیری انتقال بانکی" dir="ltr" required disabled={confirming}
+                    className="min-h-11 w-full min-w-0 rounded-xl border border-slate-300 px-3 font-mono text-base focus-visible:outline-2 focus-visible:outline-brand" />
+                </label>
+                {confirmError && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-rose-800">{confirmError}</p>}
+                {confirming && <p role="status" className="text-slate-600">در حال ثبت واریز…</p>}
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="submit" disabled={confirming || !trackingRef.trim()} className="min-h-11 rounded-xl bg-brand-deep px-2 font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50">
+                    تأیید واریز و ثبت سند
+                  </button>
+                  <button type="button" disabled={confirming} onClick={event => {
+                    const card = event.currentTarget.closest('article');
+                    setExpandedId(null);
+                    setTrackingRef('');
+                    requestAnimationFrame(() => card?.querySelector('button')?.focus());
+                  }} className="min-h-11 rounded-xl bg-slate-100 px-2 font-bold text-slate-700 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">
+                    انصراف
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button type="button" disabled={confirming} onClick={() => {
+                setTrackingRef('');
+                setConfirmError('');
+                setExpandedId(item.id);
+              }} className="min-h-11 w-full rounded-xl bg-brand-deep px-3 font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50 sm:w-auto">
+                ثبت انتقال بانکی
+              </button>
+            )
           )}
-        </div>
+        </article>
       ))}
-    </div>
+    </section>
   );
-};
+}
 
+export function FinancePayoutsTab() {
+  return isMockMode() ? <SamplePayouts /> : <ApprovedManualTransfers />;
+}
 
-export const FinancePayoutsTab: React.FC = () => {
+const SamplePayouts: React.FC = () => {
   const { executeSupplierMonthlyPayouts, formatPrice, toPersianDigits } = useStore();
   const { success, warning } = useToast();
   const [approvedMap, setApprovedMap] = useState<{ [key: string]: boolean }>({});
@@ -305,8 +338,6 @@ export const FinancePayoutsTab: React.FC = () => {
           );
         })}
       </div>
-
-      <ApprovedManualTransfers formatPrice={formatPrice} />
 
       <ConfirmDialog
         isOpen={!!rejectingPayout}

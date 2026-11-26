@@ -3,11 +3,26 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { wmsApi, WarehouseBinDto } from '../../services/wmsApi';
 import { adminApi, TapinBoxAdminDto } from '../../services/adminApi';
+import { isMockMode } from '../../services/apiClient';
+import { normalizePersianText } from '../../utils/routing';
 import { Warehouse, Plus, Settings2, CheckCircle2, ShieldCheck, TrendingUp, Boxes } from 'lucide-react';
+
+type CapacityDraft = { volume: string; weight: string; verify: boolean };
+
+function initialCapacity(bin: WarehouseBinDto): CapacityDraft {
+  return {
+    volume: String(bin.capacityVolumeCm3 || ''),
+    weight: String(bin.maxWeightGrams || ''),
+    verify: bin.capacityStatus === 'verified',
+  };
+}
+
+const capacityInput = 'min-h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-base focus-visible:outline-2 focus-visible:outline-indigo-700';
 
 export const AdminWarehousesTab: React.FC = () => {
   const { platformSettings, updateWarehouseTariffs, formatPrice, toPersianDigits } = useStore();
   const { success } = useToast();
+  const mock = isMockMode();
   const [inboundFeePerCarton, setInboundFeePerCarton] = useState(
     (platformSettings.warehouseTariffs?.inboundFeePerCarton || 15000).toString()
   );
@@ -31,15 +46,53 @@ export const AdminWarehousesTab: React.FC = () => {
   );
   const [saved, setSaved] = useState(false);
   const [bins, setBins] = useState<WarehouseBinDto[]>([]);
-  const [capacityDrafts, setCapacityDrafts] = useState<Record<string, { volume: string; weight: string; verify: boolean }>>({});
+  const [capacityDrafts, setCapacityDrafts] = useState<Record<string, CapacityDraft>>({});
   const [capacityBusy, setCapacityBusy] = useState<string | null>(null);
-  React.useEffect(() => { wmsApi.getBins().then(setBins).catch(() => undefined); }, []);
-  const saveBinCapacity = async (bin: WarehouseBinDto) => {
-    const draft = capacityDrafts[bin.binCode] || { volume: String(bin.capacityVolumeCm3 || ''), weight: String(bin.maxWeightGrams || ''), verify: bin.capacityStatus === 'verified' };
-    setCapacityBusy(bin.binCode);
-    try { await wmsApi.updateBinCapacity(bin.binCode, { capacityVolumeCm3: Number(draft.volume), maxWeightGrams: Number(draft.weight) || undefined, verify: draft.verify }); setBins(await wmsApi.getBins()); success(`ظرفیت ${bin.binCode} ذخیره شد.`); }
-    catch (cause) { success(cause instanceof Error ? cause.message : 'ذخیره ظرفیت انجام نشد.'); }
-    finally { setCapacityBusy(null); }
+  const [binsLoading, setBinsLoading] = useState(true);
+  const [binsError, setBinsError] = useState('');
+  const [binsAttempt, setBinsAttempt] = useState(0);
+  const [capacityFeedback, setCapacityFeedback] = useState<{ binCode: string; kind: 'error' | 'success'; text: string }>();
+
+  useEffect(() => {
+    let mounted = true;
+    void wmsApi.getBins()
+      .then(result => { if (mounted) setBins(result); })
+      .catch((cause: unknown) => {
+        if (mounted) setBinsError(cause instanceof Error ? cause.message : 'دریافت ظرفیت جایگاه‌ها انجام نشد.');
+      })
+      .finally(() => { if (mounted) setBinsLoading(false); });
+    return () => { mounted = false; };
+  }, [binsAttempt]);
+
+  const reloadBins = () => {
+    setBinsLoading(true);
+    setBinsError('');
+    setBinsAttempt(value => value + 1);
+  };
+
+  const saveBinCapacity = async (bin: WarehouseBinDto, draft: CapacityDraft) => {
+    if (capacityBusy || binsLoading) return;
+    const { binCode } = bin;
+    setCapacityFeedback(undefined);
+    setCapacityBusy(binCode);
+    try {
+      await wmsApi.updateBinCapacity(binCode, {
+        capacityVolumeCm3: Number(draft.volume),
+        maxWeightGrams: Number(draft.weight) || undefined,
+        verify: draft.verify,
+      });
+      setCapacityDrafts(current => {
+        const next = { ...current };
+        delete next[binCode];
+        return next;
+      });
+      setCapacityFeedback({ binCode, kind: 'success', text: 'ظرفیت جایگاه ذخیره شد.' });
+      reloadBins();
+    } catch (cause: unknown) {
+      setCapacityFeedback({ binCode, kind: 'error', text: cause instanceof Error ? cause.message : 'ذخیره ظرفیت انجام نشد.' });
+    } finally {
+      setCapacityBusy(null);
+    }
   };
 
   const warehouses = [
@@ -93,7 +146,7 @@ export const AdminWarehousesTab: React.FC = () => {
   return (
     <div className="space-y-3.5 pb-6">
       {/* 1. Warehouses List */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
+      {mock && <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-bold text-slate-800">مراکز پردازش و انبارهای متمرکز</h3>
           <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full font-bold">
@@ -123,11 +176,72 @@ export const AdminWarehousesTab: React.FC = () => {
             </div>
           ))}
         </div>
-      </div>
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between"><h3 className="text-xs font-bold text-slate-800">ظرفیت واقعی جایگاه‌ها</h3><span className="text-[10px] text-slate-500">فقط ظرفیت تأییدشده در putaway قابل استفاده است</span></div>
-        {bins.map((bin) => { const draft = capacityDrafts[bin.binCode] || { volume: String(bin.capacityVolumeCm3 || ''), weight: String(bin.maxWeightGrams || ''), verify: bin.capacityStatus === 'verified' }; return <div key={bin.binCode} className="space-y-2 rounded-xl border border-slate-200 p-2.5 text-[10px]"><div className="flex justify-between font-bold"><span>{bin.binCode} · {bin.hallName}</span><span className={bin.capacityStatus === 'verified' ? 'text-emerald-700' : 'text-amber-700'}>{bin.capacityStatus === 'verified' ? 'تأییدشده' : 'نیازمند بازرسی'}</span></div><div className="grid grid-cols-4 gap-1 text-slate-500"><span>کل: {bin.capacityVolumeCm3 || 0} cm³</span><span>اشغال: {bin.occupiedVolumeCm3 || 0}</span><span>رزرو: {bin.reservedVolumeCm3 || 0}</span><span>باقی: {bin.remainingVolumeCm3 || 0}</span></div><div className="grid grid-cols-3 gap-2"><input aria-label={`ظرفیت ${bin.binCode}`} value={draft.volume} onChange={(event)=>setCapacityDrafts((current)=>({...current,[bin.binCode]:{...draft,volume:event.target.value}}))} className="rounded-lg border p-2" placeholder="ظرفیت cm³"/><input aria-label={`وزن ${bin.binCode}`} value={draft.weight} onChange={(event)=>setCapacityDrafts((current)=>({...current,[bin.binCode]:{...draft,weight:event.target.value}}))} className="rounded-lg border p-2" placeholder="حد وزن g"/><button disabled={capacityBusy === bin.binCode} onClick={()=>void saveBinCapacity(bin)} className="rounded-lg bg-indigo-600 p-2 font-bold text-white disabled:opacity-50">{draft.verify ? 'ذخیره verified' : 'تأیید فیزیکی'}</button></div>{bin.unavailableReason && <p className="text-rose-700">{bin.unavailableReason}</p>}</div>; })}</div>
+      </div>}
+      <section aria-labelledby="warehouse-capacity-heading" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3.5">
+        <h3 id="warehouse-capacity-heading" className="text-sm font-bold text-slate-900">ظرفیت واقعی جایگاه‌ها</h3>
+        <p className="text-sm leading-6 text-slate-600">برای جانمایی کالا فقط از ظرفیت جایگاه‌های تأییدشده استفاده می‌شود.</p>
+        {binsLoading && <p role="status" className="text-sm text-slate-600">در حال دریافت جایگاه‌ها…</p>}
+        {binsError && (
+          <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">
+            <p role="alert" className="[overflow-wrap:anywhere]">{binsError}</p>
+            <button type="button" onClick={reloadBins} className="mt-1 min-h-11 rounded-lg px-2 font-bold focus-visible:outline-2 focus-visible:outline-rose-700">تلاش دوباره</button>
+          </div>
+        )}
+        {!binsLoading && !binsError && bins.length === 0 && <p className="text-sm text-slate-600">جایگاهی برای نمایش وجود ندارد.</p>}
+        {!binsError && bins.map(bin => {
+          const { binCode } = bin;
+          const draft = capacityDrafts[binCode] ?? initialCapacity(bin);
+          const patch = (change: Partial<CapacityDraft>) =>
+            setCapacityDrafts(current => ({ ...current, [binCode]: { ...(current[binCode] ?? initialCapacity(bin)), ...change } }));
+          const metrics = [
+            ['کل', bin.capacityVolumeCm3],
+            ['اشغال', bin.occupiedVolumeCm3],
+            ['رزرو', bin.reservedVolumeCm3],
+            ['باقی', bin.remainingVolumeCm3],
+          ] as const;
+          return (
+            <form key={binCode} onSubmit={event => { event.preventDefault(); void saveBinCapacity(bin, draft); }}
+              className="space-y-3 rounded-xl border border-slate-200 p-3 text-sm [overflow-wrap:anywhere]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="font-bold"><bdi>{binCode}</bdi> · {bin.hallName}</h4>
+                <span className={bin.capacityStatus === 'verified' ? 'text-emerald-700' : 'text-amber-800'}>
+                  {bin.capacityStatus === 'verified' ? 'تأییدشده' : 'نیازمند بازرسی'}
+                </span>
+              </div>
+              <dl aria-label="حجم، سانتی‌متر مکعب" className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 text-slate-600 sm:grid-cols-4">
+                {metrics.map(([label, value]) => (
+                  <div key={label}><dt>{label}</dt><dd className="font-bold text-slate-900">{toPersianDigits(value ?? 0)}</dd></div>
+                ))}
+              </dl>
+              <fieldset disabled={!!capacityBusy || binsLoading} className="grid min-w-0 gap-2 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="block">ظرفیت (سانتی‌متر مکعب)</span>
+                  <input aria-label={`ظرفیت ${binCode}`} dir="ltr" type="number" inputMode="numeric" required min="1"
+                    value={draft.volume} onChange={event => patch({ volume: event.target.value })} className={capacityInput} />
+                </label>
+                <label className="space-y-1">
+                  <span className="block">حداکثر وزن (گرم)</span>
+                  <input aria-label={`وزن ${binCode}`} dir="ltr" type="number" inputMode="numeric" min="0"
+                    value={draft.weight} onChange={event => patch({ weight: event.target.value })} className={capacityInput} />
+                </label>
+                <label className="flex min-h-11 items-center gap-2 sm:col-span-2">
+                  <input type="checkbox" checked={draft.verify} onChange={event => patch({ verify: event.target.checked })} />
+                  تأیید ظرفیت پس از بازرسی فیزیکی
+                </label>
+                <button type="submit" className="min-h-11 rounded-lg bg-indigo-700 px-3 font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:opacity-50 sm:col-span-2 sm:justify-self-start">
+                  {capacityBusy === binCode ? 'در حال ذخیره…' : 'ذخیره ظرفیت'}
+                </button>
+              </fieldset>
+              {bin.unavailableReason && <p className="text-rose-800">{bin.unavailableReason}</p>}
+              {capacityFeedback?.binCode === binCode && (
+                <p role={capacityFeedback.kind === 'error' ? 'alert' : 'status'} className={capacityFeedback.kind === 'error' ? 'text-rose-800' : 'text-emerald-800'}>{capacityFeedback.text}</p>
+              )}
+            </form>
+          );
+        })}
+      </section>
 
+      {mock ? <>
       {/* 2. Service Tariffs (Section 11) */}
       <form onSubmit={handleSaveTariff} className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center gap-1.5 text-blue-600">
@@ -324,6 +438,9 @@ export const AdminWarehousesTab: React.FC = () => {
         </div>
       </div>
 
+      </> : <p className="rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">
+        تغییر تعرفه‌های پذیرش، بسته‌بندی و سهمیه دپو در این بخش در دسترس نیست.
+      </p>}
       {/* Tapin box catalogue (gaps 1-3) */}
       <AdminTapinBoxesCard />
     </div>
@@ -338,106 +455,133 @@ export const AdminWarehousesTab: React.FC = () => {
 // settings (tapin_default_box_id) and is shown here read-only.
 const AdminTapinBoxesCard: React.FC = () => {
   const { toPersianDigits } = useStore();
-  const { success, error } = useToast();
   const [boxes, setBoxes] = useState<TapinBoxAdminDto[]>([]);
-  const [defaultBoxId, setDefaultBoxId] = useState('4');
+  const [defaultBoxId, setDefaultBoxId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    adminApi.getTapinBoxes()
-      .then((res) => {
-        setBoxes(res.boxes || []);
-        setDefaultBoxId(res.defaultBoxId || '4');
+    let mounted = true;
+    void adminApi.getTapinBoxes()
+      .then(res => {
+        if (!mounted) return;
+        if (res?.success !== true || !Array.isArray(res.boxes)) {
+          throw new Error('پاسخ کاتالوگ جعبه‌های تاپین کامل دریافت نشد.');
+        }
+        setBoxes(res.boxes);
+        setDefaultBoxId(res.defaultBoxId);
       })
-      .catch((err: any) => { error(err?.message || 'دریافت کاتالوگ جعبه‌های تاپین انجام نشد.'); })
-      .finally(() => { setLoading(false); });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      .catch((cause: unknown) => {
+        if (mounted) setLoadError(cause instanceof Error ? cause.message : 'دریافت کاتالوگ جعبه‌های تاپین انجام نشد.');
+      })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [attempt]);
 
   const patch = (idx: number, part: Partial<TapinBoxAdminDto>) => {
+    setSaved(false);
     setBoxes((prev) => prev.map((b, i) => (i === idx ? { ...b, ...part } : b)));
   };
 
   const addRow = () => {
+    setSaved(false);
     setBoxes((prev) => [...prev, { id: '', title: '', lengthCm: 0, widthCm: 0, heightCm: 0, maxWeightGrams: null, isActive: true, sort: prev.length }]);
   };
 
   const save = async () => {
+    if (loading || loadError || saving) return;
+    setSaveError('');
+    setSaved(false);
     setSaving(true);
     try {
       const res = await adminApi.updateTapinBoxes(boxes);
-      setBoxes(res.boxes || []);
-      setDefaultBoxId(res.defaultBoxId || '4');
-      success('کاتالوگ جعبه‌های تاپین ذخیره شد.');
-    } catch (err: any) {
-      error(err?.message || 'ذخیره کاتالوگ جعبه‌ها انجام نشد.');
+      if (res?.success !== true || !Array.isArray(res.boxes)) {
+        throw new Error('پاسخ ذخیره کاتالوگ کامل دریافت نشد.');
+      }
+      setBoxes(res.boxes);
+      setDefaultBoxId(res.defaultBoxId);
+      setSaved(true);
+    } catch (cause: unknown) {
+      setSaveError(cause instanceof Error ? cause.message : 'ذخیره کاتالوگ جعبه‌ها انجام نشد.');
     } finally {
       setSaving(false);
     }
   };
 
   const num = (v: string) => {
-    const n = parseInt(v.replace(/[^0-9]/g, ''), 10);
+    const n = parseInt(normalizePersianText(v).replace(/[^0-9]/g, ''), 10);
     return Number.isNaN(n) ? 0 : n;
   };
 
   return (
     <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-bold text-slate-800">جعبه‌های پستی تاپین (کاتالوگ پلتفرم)</h3>
-        <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full font-bold">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-bold text-slate-900">جعبه‌های پستی تاپین (کاتالوگ پلتفرم)</h3>
+        {defaultBoxId && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-blue-800">
           جعبه پیش‌فرض پلتفرم: {toPersianDigits(defaultBoxId)}
-        </span>
+        </span>}
       </div>
       <p className="text-[11px] leading-6 text-slate-500">
         تاپین برای جعبه‌ها API ندارد؛ این کاتالوگ را پلتفرم نگه می‌دارد. تأمین‌کننده هنگام ثبت مرسوله تاپین از همین فهرست انتخاب می‌کند و سیستم هم بر اساس ابعاد و وزن بسته، نزدیک‌ترین جعبه را از همین‌ها پیشنهاد می‌دهد. حذف جعبه با غیرفعال‌کردن آن است تا سوابق مرسوله‌ها سالم بماند.
       </p>
-      {loading && <p className="text-[11px] text-slate-500">در حال بارگذاری…</p>}
-      {!loading && (
-        <div className="space-y-2">
+      {loading && <p role="status" className="text-sm text-slate-600">در حال دریافت کاتالوگ جعبه‌ها…</p>}
+      {loadError && (
+        <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">
+          <p role="alert" className="[overflow-wrap:anywhere]">{loadError}</p>
+          <button type="button" onClick={() => { setLoading(true); setLoadError(''); setAttempt(value => value + 1); }}
+            className="mt-1 min-h-11 rounded-lg px-2 font-bold focus-visible:outline-2 focus-visible:outline-rose-700">تلاش دوباره</button>
+        </div>
+      )}
+      {!loading && !loadError && (
+        <fieldset disabled={saving} className="min-w-0 space-y-2">
           {boxes.map((b, idx) => (
-            <div key={idx} className="grid grid-cols-2 md:grid-cols-8 gap-2 items-end rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
+            <div key={idx} className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5 sm:grid-cols-3 xl:grid-cols-7 [&>label]:min-w-0">
               <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">شناسه</span>
-                <input value={b.id} onChange={(e) => patch(idx, { id: e.target.value })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" />
+                <input value={b.id} onChange={(e) => patch(idx, { id: e.target.value })} className={capacityInput} dir="ltr" />
               </label>
-              <label className="block md:col-span-2">
+              <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">عنوان</span>
-                <input value={b.title} onChange={(e) => patch(idx, { title: e.target.value })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" />
+                <input value={b.title} onChange={(e) => patch(idx, { title: e.target.value })} className={capacityInput} />
               </label>
               <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">طول (cm)</span>
-                <input value={b.lengthCm || ''} onChange={(e) => patch(idx, { lengthCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+                <input value={b.lengthCm || ''} onChange={(e) => patch(idx, { lengthCm: num(e.target.value) })} className={capacityInput} dir="ltr" inputMode="numeric" />
               </label>
               <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">عرض (cm)</span>
-                <input value={b.widthCm || ''} onChange={(e) => patch(idx, { widthCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+                <input value={b.widthCm || ''} onChange={(e) => patch(idx, { widthCm: num(e.target.value) })} className={capacityInput} dir="ltr" inputMode="numeric" />
               </label>
               <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">ارتفاع (cm)</span>
-                <input value={b.heightCm || ''} onChange={(e) => patch(idx, { heightCm: num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+                <input value={b.heightCm || ''} onChange={(e) => patch(idx, { heightCm: num(e.target.value) })} className={capacityInput} dir="ltr" inputMode="numeric" />
               </label>
               <label className="block">
                 <span className="text-[10px] text-slate-500 block mb-1">حداکثر وزن (گرم، خالی = نامحدود)</span>
-                <input value={b.maxWeightGrams ?? ''} onChange={(e) => patch(idx, { maxWeightGrams: e.target.value.trim() === '' ? null : num(e.target.value) })} className="w-full text-xs p-2 rounded-lg border border-slate-200 bg-white font-bold" dir="ltr" inputMode="numeric" />
+                <input value={b.maxWeightGrams ?? ''} onChange={(e) => patch(idx, { maxWeightGrams: e.target.value.trim() === '' ? null : num(e.target.value) })} className={capacityInput} dir="ltr" inputMode="numeric" />
               </label>
-              <label className="flex items-center gap-1.5 pb-2">
+              <label className="flex min-h-11 items-center gap-2">
                 <input type="checkbox" checked={b.isActive} onChange={(e) => patch(idx, { isActive: e.target.checked })} />
                 <span className="text-[11px] font-bold text-slate-600">فعال</span>
               </label>
             </div>
           ))}
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={addRow} className="rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold text-slate-700">
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button type="button" onClick={addRow} className="min-h-11 rounded-xl border border-slate-300 px-3 text-sm font-bold text-slate-700 focus-visible:outline-2 focus-visible:outline-brand">
               + جعبه جدید
             </button>
-            <button type="button" disabled={saving} onClick={() => void save()} className="flex-1 rounded-xl bg-brand-deep py-2.5 text-xs font-bold text-white disabled:opacity-50">
+            <button type="button" onClick={() => void save()} className="min-h-11 flex-1 rounded-xl bg-brand-deep px-3 text-sm font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50">
               {saving ? 'در حال ذخیره…' : 'ذخیره کاتالوگ جعبه‌ها'}
             </button>
           </div>
-        </div>
+        </fieldset>
       )}
+      {saved && <p role="status" className="text-sm text-emerald-800">کاتالوگ جعبه‌های تاپین ذخیره شد.</p>}
+      {saveError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800 [overflow-wrap:anywhere]">{saveError}</p>}
     </div>
   );
 };

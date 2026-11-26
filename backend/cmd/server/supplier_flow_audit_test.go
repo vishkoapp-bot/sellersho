@@ -253,6 +253,29 @@ func TestSupplierFlowTrackingConflictRollsBack(t *testing.T) {
 	}
 }
 
+func TestSupplierOperationalTrackingRequiresActiveBusiness(t *testing.T) {
+	db := supplierFlowDB(t)
+	f := supplierFlowSeed(t, db)
+	ctx := context.Background()
+	orderID := "audit-order-" + uuid.NewString()[:8]
+	if _, err := db.Exec(`INSERT INTO orders(id,order_number,store_id,store_name,total_amount,payable_amount,customer_full_name,customer_phone,customer_province,customer_city,customer_address,customer_postal_code,tracking_code,payment_status,status,fulfillment_method) VALUES($1,$1,'store-central','Audit seller',2000,2000,'Audit buyer','09123456789','Tehran','Tehran','Audit address','1234512345',$1,'paid','processing','supplier_direct')`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO supplier_shipments(id,order_id,supplier_id,shipping_address,customer_phone,customer_name,status) VALUES($1,$2,$3,'{}','09123456789','Audit buyer','pending')`, "audit-ship-"+uuid.NewString()[:8], orderID, f.supplier); err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewOrderRepository(db)
+	if allowed, err := repo.CanReadOperationalTracking(ctx, orderID, f.user, "supplier"); err != nil || !allowed {
+		t.Fatalf("active supplier read = %v, error %v", allowed, err)
+	}
+	if _, err := db.Exec(`UPDATE suppliers SET approval_status='suspended' WHERE id=$1`, f.supplier); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := repo.CanReadOperationalTracking(ctx, orderID, f.user, "supplier"); err != nil || allowed {
+		t.Fatalf("suspended supplier read = %v, error %v", allowed, err)
+	}
+}
+
 func TestSupplierFlowInboundValidationHTTP(t *testing.T) {
 	db := supplierFlowDB(t)
 	f, other := supplierFlowSeed(t, db), supplierFlowSeed(t, db)

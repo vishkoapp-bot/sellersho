@@ -1,9 +1,8 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
-import { AdminRole } from '../../context/storeContextTypes';
 import { authApi } from '../../services/authApi';
-import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
+import { adminRoleLabels, adminRolesForCapabilities, AuthRequestSupersededError, useAuth, type AuthenticationResponse } from '../../context/AuthContext';
 import { isValidIranianMobile, normalizeIranianMobile } from '../../utils/validators';
 import {
   ShieldCheck,
@@ -24,7 +23,7 @@ export const normalizeOtpInput = (value: string): string =>
     .slice(0, 4);
 
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomerSite }) => {
-  const { setAdminSession, toPersianDigits } = useStore();
+  const { toPersianDigits } = useStore();
   const { authenticate } = useAuth();
   const { success, error } = useToast();
 
@@ -35,6 +34,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
   const [step, setStep] = useState<'mobile' | 'otp'>('mobile');
   const [countdown, setCountdown] = useState(120);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState('');
 
   useEffect(() => {
     if (step !== 'otp' || countdown <= 0) return;
@@ -52,6 +52,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
     setIsSubmitting(true);
     try {
       const res = await authApi.sendOTP(clean);
+      setOtp('');
+      setLoginError('');
       setStep('otp');
       setCountdown(res.expiresIn || 120);
       success('کد یکبارمصرف ارسال شد.');
@@ -66,6 +68,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
     setIsSubmitting(true);
     try {
       const res = await authApi.sendOTP(normalizeIranianMobile(mobile));
+      setOtp('');
+      setLoginError('');
       setCountdown(res.expiresIn || 120);
       success('کد یکبارمصرف ارسال شد.');
     } catch (err: any) {
@@ -75,91 +79,58 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
     }
   };
 
-  const handlePasswordLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  function withAdminMembership<T extends AuthenticationResponse>(response: T): T {
+    if (!adminRolesForCapabilities(response.user.capabilities).length) {
+      throw new Error('این شماره مجوز ورود به پنل مدیریت را ندارد.');
+    }
+    return response;
+  }
+
+  const handlePasswordLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isSubmitting) return;
     if (!password.trim()) {
-      error('رمز عبور را وارد کنید.');
+      setLoginError('رمز عبور را وارد کنید.');
       return;
     }
+    setLoginError('');
     setIsSubmitting(true);
-    let requestIsCurrent = () => true;
     try {
-      const res = await authenticate(() => authApi.passwordLogin(normalizeIranianMobile(mobile), password));
-      requestIsCurrent = res.isCurrent;
-      if (!requestIsCurrent()) return;
-      const roleMap: Record<string, { role: AdminRole; label: string }> = {
-        admin: { role: 'admin', label: 'مدیر پلتفرم' },
-        super_admin: { role: 'super_admin', label: 'مدیر ارشد پلتفرم' },
-        finance_specialist: { role: 'finance_specialist', label: 'کارشناس ارشد مالی' },
-        finance: { role: 'finance_specialist', label: 'کارشناس ارشد مالی' },
-        logistics_specialist: { role: 'logistics_specialist', label: 'کارشناس لجستیک و انبار' },
-        support_specialist: { role: 'support_specialist', label: 'کارشناس پشتیبانی و نظارت' },
-      };
-      const resolved = res.user.capabilities?.includes('super_admin')
-        ? roleMap.super_admin
-        : roleMap[res.user.role];
-      if (!resolved) {
-        error('این شماره مجوز ورود به مدیریت یا عملیات ندارد.');
-        return;
-      }
-      setAdminSession({ token: res.token, username: res.user.mobile, fullName: res.user.fullName || 'مدیر ارشد پلتفرم', role: resolved.role, roleLabel: resolved.label, loginAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) });
-      success(`ورود با نقش «${resolved.label}» انجام شد.`);
-    } catch (err: any) {
-      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
-      error(err.message || 'نام کاربری یا رمز عبور نادرست است.');
+      const result = await authenticate(async () => withAdminMembership(
+        await authApi.passwordLogin(normalizeIranianMobile(mobile), password),
+      ));
+      const [role] = adminRolesForCapabilities(result.user.capabilities);
+      if (result.isCurrent()) success(`ورود با نقش «${adminRoleLabels[role]}» انجام شد.`);
+    } catch (cause) {
+      if (cause instanceof AuthRequestSupersededError) return;
+      setLoginError(cause instanceof Error ? cause.message : 'رمز عبور یا شمارهٔ موبایل درست نیست.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (otp.trim().length < 4) {
-      error('کد ۴ رقمی را کامل وارد کنید.');
+  const handleVerifyOtp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isSubmitting) return;
+    if (otp.length !== 4 || countdown <= 0) {
+      setLoginError(countdown <= 0 ? 'اعتبار کد تمام شده است. کد تازه بگیرید.' : 'کد ۴ رقمی را کامل وارد کنید.');
       return;
     }
-    const clean = normalizeIranianMobile(mobile);
+    setLoginError('');
     setIsSubmitting(true);
-    let requestIsCurrent = () => true;
     try {
-      const res = await authenticate(() => authApi.verifyOTP(clean, otp.trim()));
-      requestIsCurrent = res.isCurrent;
-      if (!requestIsCurrent()) return;
-
-      const roleMap: Record<string, { role: AdminRole; label: string }> = {
-        admin: { role: 'admin', label: 'مدیر پلتفرم' },
-        super_admin: { role: 'super_admin', label: 'مدیر ارشد پلتفرم' },
-        finance_specialist: { role: 'finance_specialist', label: 'کارشناس ارشد مالی' },
-        finance: { role: 'finance_specialist', label: 'کارشناس ارشد مالی' },
-        logistics_specialist: { role: 'logistics_specialist', label: 'کارشناس لجستیک و انبار' },
-        support_specialist: { role: 'support_specialist', label: 'کارشناس پشتیبانی و نظارت' },
-      };
-
-      const resolved = res.user.capabilities?.includes('super_admin')
-        ? roleMap.super_admin
-        : roleMap[res.user.role];
-      if (!resolved) {
-        error('این شماره مجوز ورود به مدیریت یا عملیات ندارد.');
-        return;
-      }
-
-      setAdminSession({
-        token: res.token,
-        username: res.user.mobile,
-        fullName: res.user.fullName || 'کاربر سیستم',
-        role: resolved.role,
-        roleLabel: resolved.label,
-        loginAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-      });
-      success(`ورود با نقش «${resolved.label}» انجام شد.`);
-    } catch (err: any) {
-      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
-      error(err.message || 'کد تایید نامعتبر یا منقضی شده است.');
+      const result = await authenticate(async () => withAdminMembership(
+        await authApi.verifyOTP(normalizeIranianMobile(mobile), otp),
+      ));
+      const [role] = adminRolesForCapabilities(result.user.capabilities);
+      if (result.isCurrent()) success(`ورود با نقش «${adminRoleLabels[role]}» انجام شد.`);
+    } catch (cause) {
+      if (cause instanceof AuthRequestSupersededError) return;
+      setLoginError(cause instanceof Error ? cause.message : 'کد پیامکی معتبر نیست.');
     } finally {
       setIsSubmitting(false);
     }
   };
-
 
   return (
     <div className="min-h-screen w-full bg-slate-950 text-slate-100 flex flex-col justify-between p-4 md:p-8 select-none relative overflow-hidden" dir="rtl">
@@ -205,9 +176,10 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
 
 
           <div className="flex gap-2 rounded-xl bg-slate-950 p-1">
-            <button type="button" onClick={() => setLoginMode('password')} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'password' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با رمز عبور</button>
-            <button type="button" onClick={() => { setLoginMode('otp'); setStep('mobile'); }} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'otp' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با کد پیامکی</button>
+            <button type="button" aria-pressed={loginMode === 'password'} disabled={isSubmitting} onClick={() => { setLoginError(''); setLoginMode('password'); }} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'password' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با رمز عبور</button>
+            <button type="button" aria-pressed={loginMode === 'otp'} disabled={isSubmitting} onClick={() => { setLoginError(''); setLoginMode('otp'); setStep('mobile'); }} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'otp' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با کد پیامکی</button>
           </div>
+          {loginError && <p role="alert" className="rounded-xl bg-rose-950 p-3 text-sm leading-6 text-rose-200">{loginError}</p>}
           {loginMode === 'password' ? (
             <form onSubmit={handlePasswordLogin} className="space-y-3.5">
               <label className="block text-xs font-bold text-slate-300">شماره موبایل
@@ -232,12 +204,15 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
               <p className="text-[11px] font-bold text-slate-400">قدم ۲ از ۲: کد پیامکی را بنویس</p>
               <div>
                 <div className="flex justify-between items-center mb-1 text-xs">
-                  <label className="font-bold text-slate-300">کد پیامکی</label>
-                  <button type="button" onClick={() => setStep('mobile')} className="text-brand text-[11px] min-h-[44px] px-2 inline-flex items-center hover:underline">عوض کردن شماره</button>
+                  <label htmlFor="admin-otp" className="font-bold text-slate-300">کد پیامکی</label>
+                  <button type="button" disabled={isSubmitting} onClick={() => { setLoginError(''); setStep('mobile'); }} className="text-brand text-[11px] min-h-[44px] px-2 inline-flex items-center hover:underline">عوض کردن شماره</button>
                 </div>
                 <p className="text-[11px] leading-5 text-slate-400 mb-1.5">کد ۴ رقمی به شماره {toPersianDigits(mobile)} پیامک شد؛ همان را اینجا بنویس.</p>
                 <input
+                  id="admin-otp"
                   type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
                   maxLength={4}
                   value={otp}
                   onChange={(e) => setOtp(normalizeOtpInput(e.target.value))}

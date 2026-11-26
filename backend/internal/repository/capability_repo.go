@@ -215,6 +215,17 @@ func (r *CapabilityRepository) Grant(ctx context.Context, userID, capability, so
 	return err
 }
 
+// GrantCustomerAfterOTP provisions first-time shopping access while preserving
+// any existing membership decision and its provenance.
+func (r *CapabilityRepository) GrantCustomerAfterOTP(ctx context.Context, userID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO user_capabilities (user_id, capability, status, source_type)
+		VALUES ($1, 'customer', 'active', 'otp_customer_login')
+		ON CONFLICT (user_id, capability) DO NOTHING
+	`, userID)
+	return err
+}
+
 // GrantSuperAdminAfterOTP is the only grant path for super_admin. It is
 // insert-only so a revoked membership cannot be restored by ordinary login.
 func (r *CapabilityRepository) GrantSuperAdminAfterOTP(ctx context.Context, userID, mobile string) error {

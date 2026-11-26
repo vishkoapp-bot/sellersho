@@ -779,10 +779,10 @@ func handleT01AdminPayouts(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 	rows, err := db.QueryContext(r.Context(),
-		`SELECT id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status,
+		`SELECT id, COALESCE(store_id, ''), COALESCE(supplier_id, ''), recipient_type, recipient_name, shaba, bank_name, amount, status,
 			COALESCE(available_balance, 0), COALESCE(rejection_reason, ''), created_at, processed_at,
 			transfer_reference, transfer_confirmed_by, transfer_confirmed_at
-		FROM payout_requests ORDER BY created_at DESC LIMIT $1`, t01Limit(r))
+		FROM payout_requests ORDER BY created_at DESC, id DESC LIMIT $1`, t01Limit(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -790,19 +790,19 @@ func handleT01AdminPayouts(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	defer rows.Close()
 	out := []map[string]interface{}{}
 	for rows.Next() {
-		var id, storeID, recipientType, recipientName, shaba, bankName, status, rejection string
+		var id, storeID, supplierID, recipientType, recipientName, shaba, bankName, status, rejection string
 		var amount, available int64
 		var created time.Time
 		var processed sql.NullTime
 		var transferRef, transferBy sql.NullString
 		var transferAt sql.NullTime
-		if err := rows.Scan(&id, &storeID, &recipientType, &recipientName, &shaba, &bankName, &amount, &status,
+		if err := rows.Scan(&id, &storeID, &supplierID, &recipientType, &recipientName, &shaba, &bankName, &amount, &status,
 			&available, &rejection, &created, &processed, &transferRef, &transferBy, &transferAt); err != nil {
 			writeInternalError(w, err)
 			return
 		}
 		out = append(out, map[string]interface{}{
-			"id": id, "storeId": storeID, "recipientType": recipientType, "recipientName": recipientName,
+			"id": id, "storeId": storeID, "supplierId": supplierID, "recipientType": recipientType, "recipientName": recipientName,
 			"shaba": shaba, "bankName": bankName, "amount": amount, "status": status,
 			"availableBalance": available, "rejectionReason": rejection,
 			"createdAt": created.Format(time.RFC3339), "processedAt": t01NullTime(processed),

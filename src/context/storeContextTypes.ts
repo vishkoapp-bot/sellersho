@@ -95,6 +95,7 @@ export interface AdminSession {
   username: string;
   fullName: string;
   role: AdminRole;
+  roles?: readonly AdminRole[];
   roleLabel: string;
   loginAt: string;
 }

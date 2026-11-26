@@ -7,7 +7,7 @@ import { Phone, KeyRound, X, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { authApi } from '../../services/authApi';
 import { isMockMode } from '../../services/apiClient';
-import { useAuth } from '../../context/AuthContext';
+import { adminRolesForCapabilities, useAuth } from '../../context/AuthContext';
 import { useStore } from '../../context/StoreContext';
 import { storeApi } from '../../services/storeApi';
 
@@ -138,15 +138,12 @@ export const AuthModal: React.FC<Props> = ({
         // disableAutoNavigate (live checkout / quick-buy / storefront
         // callers pass it). Admin capabilities go to admin_panel; a
         // seller goes to their own storefront (first owned store, when
-        // it has a slug). Other roles are unchanged. The role is also
-        // checked because the onSuccess user type historically carried
-        // role only.
+        // it has a slug). Decisions use the active server memberships.
         if (!disableAutoNavigate) {
           const capabilities = user.capabilities || [];
-          const adminCapabilities = ['admin', 'super_admin', 'finance', 'finance_specialist', 'support_specialist'];
-          if (capabilities.some((c) => adminCapabilities.includes(c)) || adminCapabilities.includes(user.role)) {
+          if (adminRolesForCapabilities(capabilities).length) {
             setActiveView('admin_panel');
-          } else if (capabilities.includes('seller') || user.role === 'seller') {
+          } else if (capabilities.includes('seller')) {
             try {
               const stores = await storeApi.getOwnedStores();
               const firstStore = stores[0];

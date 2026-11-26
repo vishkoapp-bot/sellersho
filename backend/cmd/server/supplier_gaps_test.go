@@ -302,6 +302,7 @@ CREATE TABLE warranty_properties (
 	created_by VARCHAR(50),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE UNIQUE INDEX uq_warranty_properties_name ON warranty_properties (lower(trim(name)));
 CREATE TABLE warranty_property_requests (
 	id VARCHAR(60) PRIMARY KEY,
 	supplier_id VARCHAR(50),

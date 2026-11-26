@@ -184,10 +184,18 @@ func (r *PricingRepository) GetProductMarginCeiling(ctx context.Context, product
 // SetProductMarginCeiling upserts one per-product ceiling (admin only;
 // enforced by the caller). Negative or absurd values are rejected.
 func (r *PricingRepository) SetProductMarginCeiling(ctx context.Context, productID string, pct float64) error {
+	return setProductMarginCeiling(ctx, r.db, productID, pct)
+}
+
+type productPricingExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func setProductMarginCeiling(ctx context.Context, db productPricingExecutor, productID string, pct float64) error {
 	if _, err := pricing.ParsePercent(pct); err != nil {
 		return fmt.Errorf("invalid product margin ceiling %v", pct)
 	}
-	_, err := r.db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO product_margin_ceilings (product_id, max_margin_pct, updated_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (product_id) DO UPDATE SET max_margin_pct = EXCLUDED.max_margin_pct, updated_at = NOW()
@@ -198,8 +206,58 @@ func (r *PricingRepository) SetProductMarginCeiling(ctx context.Context, product
 // DeleteProductMarginCeiling removes a per-product ceiling row; the
 // global MaxProfitMargin binds again afterwards.
 func (r *PricingRepository) DeleteProductMarginCeiling(ctx context.Context, productID string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM product_margin_ceilings WHERE product_id = $1`, productID)
+	return deleteProductMarginCeiling(ctx, r.db, productID)
+}
+
+func deleteProductMarginCeiling(ctx context.Context, db productPricingExecutor, productID string) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM product_margin_ceilings WHERE product_id = $1`, productID)
 	return err
+}
+
+type ProductPricingUpdate struct {
+	MarkupType     string
+	MarkupValue    *float64
+	ClearMarkup    bool
+	MaxMarginPct   *float64
+	ClearMaxMargin bool
+}
+
+// UpdateProductPricing applies the selected markup and ceiling changes as
+// a single transaction. Locking the product also serializes ceiling-only
+// requests with full pricing updates.
+func (r *PricingRepository) UpdateProductPricing(ctx context.Context, id string, update ProductPricingUpdate) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var productID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM products WHERE id=$1 FOR NO KEY UPDATE`, id).Scan(&productID); err != nil {
+		return err
+	}
+	if update.ClearMaxMargin {
+		if err := deleteProductMarginCeiling(ctx, tx, id); err != nil {
+			return err
+		}
+	} else if update.MaxMarginPct != nil {
+		if err := setProductMarginCeiling(ctx, tx, id, *update.MaxMarginPct); err != nil {
+			return err
+		}
+	}
+	if update.ClearMarkup || update.MarkupType != "" {
+		var markupType any
+		markupValue := update.MarkupValue
+		if update.ClearMarkup {
+			markupValue = nil
+		} else {
+			markupType = update.MarkupType
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE products SET markup_type=$1,markup_value=$2,updated_at=NOW() WHERE id=$3`,
+			markupType, markupValue, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *PricingRepository) GetPlatformPct(ctx context.Context, productID, categorySlug string) (float64, string, error) {

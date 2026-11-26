@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/drup/platform/internal/customdomain"
+	"github.com/lib/pq"
 )
 
 type PendingApproval struct {
@@ -35,6 +37,13 @@ type AuditLog struct {
 type AdminRepository struct {
 	db *sql.DB
 }
+
+var (
+	ErrInvalidApprovalDecision = errors.New("approval status must be approved or rejected")
+	ErrApprovalNotPending      = errors.New("approval is not pending")
+	ErrApprovalTargetChanged   = errors.New("approval target no longer matches the request")
+	ErrStoreSlugTaken          = errors.New("store slug is already taken")
+)
 
 func NewAdminRepository(db *sql.DB) *AdminRepository {
 	return &AdminRepository{db: db}
@@ -121,42 +130,48 @@ func (r *AdminRepository) GetPendingApprovalEntityType(ctx context.Context, id s
 
 // ReviewPendingApproval updates status of approval item
 func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status, reason string) error {
-	// Facts for the post-commit notify (P1-2): entity type, title and
-	// requester, read before the tx flips the row.
-	var approvalEntity, approvalTitle, approvalRequester string
-	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(entity_type, ''), COALESCE(title, ''), COALESCE(requested_by, '') FROM pending_approvals WHERE id = $1`, id).Scan(&approvalEntity, &approvalTitle, &approvalRequester)
-	now := time.Now()
+	if status != "approved" && status != "rejected" {
+		return ErrInvalidApprovalDecision
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if status == "approved" {
-		var entity string
+	var entity, title, requester, targetID, currentStatus string
 		var raw []byte
-		if err := tx.QueryRowContext(ctx, `SELECT entity_type, requested_data FROM pending_approvals WHERE id=$1 FOR UPDATE`, id).Scan(&entity, &raw); err != nil {
+	err = tx.QueryRowContext(ctx, `SELECT entity_type,title,requested_by,target_id,status,requested_data
+		FROM pending_approvals WHERE id=$1 FOR UPDATE`, id).
+		Scan(&entity, &title, &requester, &targetID, &currentStatus, &raw)
+	if err != nil {
 			return err
 		}
+	now := time.Now()
+	var domain string
+	switch entity {
+	case "proposed_product":
+		return ErrApprovalTargetChanged
+	case "warranty_property", "store_name", "store_slug":
+		if currentStatus != "pending" {
+			return ErrApprovalNotPending
+		}
+		if status == "approved" {
+			reason = ""
+		}
 		if entity == "warranty_property" {
-			var d struct {
-				Name        string `json:"proposed_name"`
-				Description string `json:"description"`
-				RequestID   string `json:"warranty_request_id"`
-				SupplierID  string `json:"supplier_id"`
+			err = reviewWarrantyProperty(ctx, tx, id, targetID, requester, status, reason, raw, now)
+		} else if status == "approved" {
+			err = applyStoreChangeApproval(ctx, tx, targetID, requester, entity, raw, now)
 			}
-			if err := json.Unmarshal(raw, &d); err != nil {
+		if err != nil {
 				return err
 			}
-			propertyID := "WPROP-" + id
-			if _, err := tx.ExecContext(ctx, `INSERT INTO warranty_properties(id,name,description,status,created_by) VALUES($1,$2,$3,'active',$4) ON CONFLICT DO NOTHING`, propertyID, d.Name, d.Description, d.SupplierID); err != nil {
-				return err
+	case "custom_domain":
+		var requested struct {
+			Value string `json:"value"`
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE warranty_properties SET status='active' WHERE lower(trim(name))=lower(trim($1))`, d.Name); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE warranty_property_requests SET status='approved', approved_property_id=$1, reviewed_at=$2 WHERE id=$3`, propertyID, now, d.RequestID); err != nil {
-				return err
-			}
+		if json.Unmarshal(raw, &requested) == nil {
+			domain = requested.Value
 		}
 	}
 	query := `
@@ -170,28 +185,92 @@ func (r *AdminRepository) ReviewPendingApproval(ctx context.Context, id, status,
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	// EDGE-01 step 4: the status flip is the admin approve/revoke
-	// path for custom domains (handleReviewApproval routes every
-	// non-product entity type here). Invalidate AFTER the commit so
-	// revocation takes effect on the next request (normally
-	// immediate; the 60s allow TTL is only the backstop for a missed
-	// invalidation). The domain lives in requested_data->>'value';
-	// the read is best-effort — a failure here must never fail a
-	// review that already committed, and the TTL still bounds it.
-	// Other entity types never affect the allow check.
-	if approvalEntity == "custom_domain" {
-		var domain string
-		if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(requested_data->>'value', '') FROM pending_approvals WHERE id = $1`, id).Scan(&domain); err == nil && domain != "" {
+	// Custom domain approvals remain revocable. Invalidate after the
+	// commit so subsequent requests pick up the new allow decision.
+	if domain != "" {
 			customdomain.DefaultAllowCache.Invalidate(domain)
 		}
-	}
-	// P1-2 (best-effort): generic (non-product) approval rejection -
-	// the requester. Product proposals are excluded: their rejection
-	// notifies through RejectProposal/notifyProposalRejected.
-	if status == "rejected" && approvalEntity != "proposed_product" {
-		notifyApprovalRejected(ctx, r.db, id, approvalEntity, approvalTitle, approvalRequester, reason)
+	if status == "rejected" && currentStatus != "rejected" {
+		notifyApprovalRejected(ctx, r.db, id, entity, title, requester, reason)
 	}
 	return nil
+}
+
+func reviewWarrantyProperty(ctx context.Context, tx *sql.Tx, approvalID, requestID, supplierID, status, reason string, raw []byte, now time.Time) error {
+	var requested struct {
+		RequestID string `json:"warranty_request_id"`
+	}
+	if err := json.Unmarshal(raw, &requested); err != nil {
+		return ErrApprovalTargetChanged
+	}
+	// Earlier approvals can carry the request ID only in their data.
+	if requested.RequestID != "" {
+		requestID = requested.RequestID
+	}
+	var currentStatus, name, description string
+	err := tx.QueryRowContext(ctx, `SELECT status,proposed_name,description FROM warranty_property_requests
+		WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, requestID, supplierID).Scan(&currentStatus, &name, &description)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrApprovalTargetChanged
+	}
+	if err != nil {
+		return err
+	}
+	if currentStatus != "pending" {
+		return ErrApprovalNotPending
+	}
+	var propertyID string
+	if status == "approved" {
+		err := tx.QueryRowContext(ctx, `INSERT INTO warranty_properties(id,name,description,status,created_by)
+			VALUES($1,$2,$3,'active',$4)
+			ON CONFLICT (lower(trim(name))) DO UPDATE SET status='active' RETURNING id`,
+			"WPROP-"+approvalID, name, description, supplierID).Scan(&propertyID)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE warranty_property_requests
+		SET status=$1, rejection_reason=NULLIF($2,''), approved_property_id=NULLIF($3,''), reviewed_at=$4 WHERE id=$5`,
+		status, reason, propertyID, now, requestID)
+	return err
+}
+
+func applyStoreChangeApproval(ctx context.Context, tx *sql.Tx, storeID, ownerID, kind string, raw []byte, now time.Time) error {
+	var requested struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &requested); err != nil {
+		return ErrStoreInput
+	}
+	value, err := normalizeStoreChangeValue(kind, requested.Value)
+	if err != nil {
+		return err
+	}
+	query := `UPDATE stores SET name=$1, updated_at=$2 WHERE id=$3 AND owner_user_id::text=$4 RETURNING id`
+	if kind == "store_slug" {
+		// The storefront resolves case-insensitively, including legacy
+		// mixed-case slugs. The unique constraint handles concurrent
+		// writes of the same normalized slug.
+		var exists bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stores WHERE lower(slug)=$1 AND id<>$2)`, value, storeID).Scan(&exists)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return ErrStoreSlugTaken
+		}
+		query = `UPDATE stores SET slug=$1, updated_at=$2 WHERE id=$3 AND owner_user_id::text=$4 RETURNING id`
+	}
+	var updatedID string
+	err = tx.QueryRowContext(ctx, query, value, now, storeID, ownerID).Scan(&updatedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrApprovalTargetChanged
+	}
+	var pgErr *pq.Error
+	if kind == "store_slug" && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return ErrStoreSlugTaken
+	}
+	return err
 }
 
 // GetAuditLogs returns enterprise system audit trails
@@ -221,7 +300,7 @@ func (r *AdminRepository) GetAuditLogs(ctx context.Context, category string) ([]
 		}
 		logs = append(logs, l)
 	}
-	return logs, nil
+	return logs, rows.Err()
 }
 
 // InsertAuditLog inserts a new enterprise audit entry

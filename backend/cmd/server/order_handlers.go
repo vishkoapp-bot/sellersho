@@ -1866,7 +1866,7 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 		json.NewEncoder(w).Encode(map[string]interface{}{"return": ret, "returnShipping": settlement})
 		return
 	case "refund":
-		if !claims.HasCapability("admin") && !claims.HasCapability("finance_specialist") {
+		if !claims.HasCapability("admin") && !claims.HasCapability("finance_specialist") && !claims.HasCapability("finance") {
 			http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 			return
 		}

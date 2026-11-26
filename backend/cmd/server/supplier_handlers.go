@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -508,7 +509,12 @@ func (h *SupplierHandlers) HandleApproveProposal(w http.ResponseWriter, r *http.
 		Notes    string `json:"notes"`
 		Reason   string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&req)
+	if err != io.EOF && (err != nil || decoder.Decode(new(any)) != io.EOF) {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
+		return
+	}
 
 	if req.Approved != nil && !*req.Approved {
 		reason := req.Reason

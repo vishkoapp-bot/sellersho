@@ -82,6 +82,50 @@ test('logout removes the session from another open tab', async () => {
   } finally { await context.close(); }
 });
 
+test('signing into a different account in one tab replaces the previous administrative session in the other', async () => {
+  const context = await browser.createBrowserContext();
+  try {
+    const first = await context.newPage();
+    await first.goto(url);
+    await first.waitForFunction(() => !!(window as any).authHarness?.auth);
+    await first.evaluate(() => (window as any).authHarness.auth.loginUser('admin', 'synthetic'));
+    await first.waitForFunction(() => (window as any).authHarness.state().admin?.role === 'admin');
+
+    const second = await context.newPage();
+    await second.goto(url);
+    await second.waitForFunction(() => (window as any).authHarness.state().admin?.role === 'admin');
+    await second.evaluate(() => (window as any).authHarness.auth.loginUser('customer', 'synthetic'));
+    await first.waitForFunction(() => {
+      const state = (window as any).authHarness.state();
+      return state.ready && state.user?.id === 'customer' && state.admin === null;
+    }, { timeout: 3000 });
+    assert.equal(await first.evaluate(() => (window as any).authHarness.state().token), 'fixture-customer');
+  } finally { await context.close(); }
+});
+
+test('refresh replaces an administrative role with the active lower-privilege membership for the same token', async () => {
+  const context = await browser.createBrowserContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    await page.waitForFunction(() => !!(window as any).authHarness?.auth);
+    await page.evaluate(() => (window as any).authHarness.auth.loginUser('admin', 'synthetic'));
+    await page.waitForFunction(() => (window as any).authHarness.state().ready && (window as any).authHarness.state().admin?.role === 'admin');
+    await page.evaluate(() => {
+      const harness = (window as any).authHarness;
+      harness.deferMe();
+      harness.refreshed = harness.auth.refreshToken();
+    });
+    await page.waitForFunction(() => (window as any).authHarness.pendingMe() === 1);
+    await page.evaluate(async () => {
+      const harness = (window as any).authHarness;
+      harness.finishMe(0, false, { capabilities: ['finance'] });
+      await harness.refreshed;
+    });
+    await page.waitForFunction(() => (window as any).authHarness.state().admin?.role === 'finance_specialist', { timeout: 3000 });
+  } finally { await context.close(); }
+});
+
 for (const failure of [false, true]) {
   for (const replacement of ['logout', 'login-B']) {
     test(`obsolete refresh ${failure ? 'failure' : 'success'} after ${replacement} cannot change identity`, async () => {

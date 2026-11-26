@@ -1,9 +1,42 @@
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { isMockMode } from '../../services/apiClient';
+import { adminSectionHref } from '../admin/AdminNavigation';
 import { Receipt, CheckCircle2, Search, RefreshCw, AlertCircle } from 'lucide-react';
 
-export const FinanceReconciliationTab: React.FC = () => {
+const paymentLinks = [
+  { section: 'finance-pending-payments', label: 'سفارش‌های پرداخت‌نشده' },
+  { section: 'finance-callback-retries', label: 'سوابق پرداخت‌های ناموفق' },
+] as const;
+
+export function FinanceReconciliationTab({ onNavigateTab }: { onNavigateTab?: (section: string) => void }) {
+  const { adminSession } = useStore();
+  const canViewCallbackHistory = adminSession?.role === 'admin' || adminSession?.role === 'super_admin';
+  if (isMockMode()) return <SampleReconciliation />;
+  return (
+    <section aria-labelledby="shaparak-heading" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+      <h3 id="shaparak-heading" className="flex items-center gap-2 text-base font-bold text-slate-900">
+        <Receipt aria-hidden="true" className="size-5 shrink-0 text-brand-deep" />
+        تطبیق تراکنش‌های شاپرک
+      </h3>
+      <p className="text-sm leading-6 text-slate-700">استعلام مستقیم شناسه مرجع شاپرک در این پنل در دسترس نیست.</p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        {paymentLinks.filter(({ section }) => section !== 'finance-callback-retries' || canViewCallbackHistory).map(({ section, label }) => (
+          <a key={section} href={adminSectionHref(section)} onClick={event => {
+            if (!onNavigateTab || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+            event.preventDefault();
+            onNavigateTab(section);
+          }} className="inline-flex min-h-11 items-center rounded-lg border border-brand-border px-3 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:outline-2 focus-visible:outline-brand">
+            {label}
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SampleReconciliation() {
   const { formatPrice, toPersianDigits } = useStore();
   const { success, error, info } = useToast();
   const [searchRrn, setSearchRrn] = useState('');
@@ -151,4 +184,4 @@ export const FinanceReconciliationTab: React.FC = () => {
       </div>
     </div>
   );
-};
+}

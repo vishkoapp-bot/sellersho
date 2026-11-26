@@ -4,13 +4,14 @@ import { useToast } from '../../context/ToastContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { financeApi, CommissionDto } from '../../services/financeApi';
 import { adminApi, AdminPriceIncreaseDto } from '../../services/adminApi';
+import { isMockMode } from '../../services/apiClient';
 import { Sparkline } from '../finance/Sparkline';
 import { mockSuppliers } from '../../data/suppliers';
 import { DollarSign, Save, CheckCircle2, ShieldCheck, Sliders, Plus, Trash2, Building2, Package, Search, Sparkles, Gift, Tag, X, TrendingUp } from 'lucide-react';
 
 export const AdminCommissionTab: React.FC = () => {
+  const mock = isMockMode();
   const {
-    products,
     platformSettings,
     updatePlatformSettings,
     createSupplierPromotion,
@@ -199,7 +200,7 @@ export const AdminCommissionTab: React.FC = () => {
           <p className="p-3.5 text-[11px] text-slate-400">در حال محاسبه از داده‌های واقعی…</p>
         )}
       </div>
-      <form onSubmit={handleFormSubmit} className="space-y-3.5">
+      {mock && <form onSubmit={handleFormSubmit} className="space-y-3.5">
         {/* 1. Global Platform Fee Setting (Default F) */}
         <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
           <div className="flex items-center gap-1.5 text-blue-600">
@@ -295,7 +296,7 @@ export const AdminCommissionTab: React.FC = () => {
         onConfirm={handleConfirmSave}
         onCancel={() => setShowConfirm(false)}
       />
-    </form>
+    </form>}
       {/* Gap 11: Price-increase review queue + exception grants */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
@@ -348,6 +349,7 @@ export const AdminCommissionTab: React.FC = () => {
           </div>
         </div>
       </div>
+      {mock ? <>
       {/* Requirement 12: Supplier Promotion Campaigns */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
@@ -542,15 +544,11 @@ export const AdminCommissionTab: React.FC = () => {
       </div>
 
 
-      <ConfirmDialog
-        isOpen={showConfirm}
-        title="تغییر بازه سود مجاز سلرها"
-        message={`آیا از تغییر بازه سود مجاز سلرها به ${toPersianDigits(minProfitMargin)}٪ تا ${toPersianDigits(maxProfitMargin)}٪ اطمینان دارید؟ این تغییر بر روی قیمت مصرف‌کننده تمام ویترین‌ها تأثیرگذار خواهد بود.`}
-        confirmText="تأیید و ذخیره تغییرات"
-        isDanger={false}
-        onConfirm={handleConfirmSave}
-        onCancel={() => setShowConfirm(false)}
-      />
+      </> : (
+        <p className="rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">
+          تغییر قواعد سراسری سود و انتساب، مدیریت پروموشن‌های تأمین‌کنندگان و ویرایش قراردادها در این بخش در دسترس نیست.
+        </p>
+      )}
     </div>
   );
 };

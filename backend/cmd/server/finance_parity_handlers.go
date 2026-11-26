@@ -491,8 +491,8 @@ func handleT01SettlementsApproved(w http.ResponseWriter, r *http.Request, db *sq
 		return
 	}
 	rows, err := db.QueryContext(r.Context(),
-		`SELECT id, store_id, recipient_type, recipient_name, shaba, bank_name, amount, status, created_at
-		FROM payout_requests WHERE status = 'approved' ORDER BY created_at DESC LIMIT $1`, t01Limit(r))
+		`SELECT id, COALESCE(store_id, ''), COALESCE(supplier_id, ''), recipient_type, recipient_name, shaba, bank_name, amount, status, created_at
+		FROM payout_requests WHERE status = 'approved' ORDER BY created_at DESC, id DESC LIMIT $1`, t01Limit(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -500,15 +500,15 @@ func handleT01SettlementsApproved(w http.ResponseWriter, r *http.Request, db *sq
 	defer rows.Close()
 	out := []map[string]interface{}{}
 	for rows.Next() {
-		var id, storeID, recipientType, recipientName, shaba, bankName, status string
+		var id, storeID, supplierID, recipientType, recipientName, shaba, bankName, status string
 		var amount int64
 		var created time.Time
-		if err := rows.Scan(&id, &storeID, &recipientType, &recipientName, &shaba, &bankName, &amount, &status, &created); err != nil {
+		if err := rows.Scan(&id, &storeID, &supplierID, &recipientType, &recipientName, &shaba, &bankName, &amount, &status, &created); err != nil {
 			writeInternalError(w, err)
 			return
 		}
 		out = append(out, map[string]interface{}{
-			"id": id, "storeId": storeID, "recipientType": recipientType, "recipientName": recipientName,
+			"id": id, "storeId": storeID, "supplierId": supplierID, "recipientType": recipientType, "recipientName": recipientName,
 			"shaba": shaba, "bankName": bankName, "amount": amount, "status": status,
 			"createdAt": created.Format(time.RFC3339),
 		})

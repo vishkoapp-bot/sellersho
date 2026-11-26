@@ -1574,12 +1574,17 @@ func authorizeStoreRead(w http.ResponseWriter, r *http.Request, jwtService *auth
 		http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
 		return false
 	}
+	isAdmin := claims.HasDirectCapability("admin")
+	if !isAdmin && !claims.HasDirectCapability("seller") {
+		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
+		return false
+	}
 	store, err := storeRepo.GetStoreBySlug(r.Context(), slug)
 	if err != nil || store == nil {
 		http.Error(w, `{"error":"Store not found"}`, http.StatusNotFound)
 		return false
 	}
-	if !claims.HasDirectCapability("admin") && (store.OwnerUserID == nil || *store.OwnerUserID != claims.UserID) {
+	if !isAdmin && (store.OwnerUserID == nil || *store.OwnerUserID != claims.UserID) {
 		http.Error(w, `{"error":"Forbidden"}`, http.StatusForbidden)
 		return false
 	}

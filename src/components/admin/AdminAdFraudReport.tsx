@@ -40,15 +40,29 @@ export const AdminAdFraudReport: React.FC = () => {
   return <section aria-label="گزارش واقعی تبلیغات و ضدتقلب" aria-busy={loading} className="space-y-3.5">
     <div className="space-y-4 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2"><Megaphone className="h-4 w-4 text-blue-600" strokeWidth={1.5} /><h3 className="text-xs font-bold text-slate-800">آمار تبلیغات و درخواست‌های ردشده</h3></div>
-        <div className="flex items-center gap-2">
-          <label className="text-[10px] text-slate-600">بازهٔ گزارش <select aria-label="بازهٔ گزارش" value={days} onChange={(e) => setDays(Number(e.target.value) as AdReportWindow)} className="mr-1 rounded-lg border border-slate-200 bg-white p-1.5 text-xs">{([7, 30, 90] as const).map((value) => <option key={value} value={value}>{nf.format(value)} روز اخیر</option>)}</select></label>
-          <button type="button" disabled={loading} onClick={() => setRefresh((v) => v + 1)} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[10px] disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />به‌روزرسانی</button>
+        <div className="flex items-center gap-2"><Megaphone className="size-4 shrink-0 text-brand-deep" strokeWidth={1.5} aria-hidden="true" /><h3 className="text-sm font-bold text-slate-900">آمار تبلیغات و درخواست‌های ردشده</h3></div>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="space-y-1 text-sm text-slate-700">
+            <span className="block">بازهٔ گزارش</span>
+            <select aria-label="بازهٔ گزارش" value={days} onChange={event => setDays(Number(event.target.value) as AdReportWindow)}
+              className="min-h-11 rounded-lg border border-slate-300 bg-white px-2 text-base focus-visible:outline-2 focus-visible:outline-brand">
+              {([7, 30, 90] as const).map(value => <option key={value} value={value}>{nf.format(value)} روز اخیر</option>)}
+            </select>
+          </label>
+          <button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}
+            className="flex min-h-11 items-center gap-1 rounded-lg border border-slate-300 px-2 text-sm font-bold focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">
+            <RefreshCw className={`size-4 shrink-0 ${loading ? 'motion-safe:animate-spin' : ''}`} aria-hidden="true" />به‌روزرسانی
+          </button>
         </div>
       </div>
-      <p className="text-[11px] leading-6 text-slate-500">آمار از رویدادهای ثبت‌شدهٔ شبکه محاسبه می‌شود. رد درخواست الزاماً به معنی تقلب قطعی نیست؛ درخواست‌های تکراری و اعتبارسنجی ناموفق هم شمرده می‌شوند.</p>
-      {error && <div role="alert" className="rounded-xl bg-rose-50 p-3 text-xs text-rose-800">{error}<button type="button" onClick={() => setRefresh((v) => v + 1)} className="mr-3 font-bold underline">تلاش دوباره</button></div>}
-      {loading && <p role="status" className="text-xs text-slate-500">در حال دریافت آمار واقعی…</p>}
+      <p className="text-sm leading-6 text-slate-600">آمار رویدادهای شبکه شامل درخواست‌های تکراری، اعتبارسنجی ناموفق و موارد مشکوک به تقلب است.</p>
+      {error && (
+        <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">
+          <p role="alert" className="[overflow-wrap:anywhere]">{error}</p>
+          <button type="button" onClick={() => setRefresh(value => value + 1)} className="mt-1 min-h-11 rounded-lg px-2 font-bold focus-visible:outline-2 focus-visible:outline-rose-700">تلاش دوباره</button>
+        </div>
+      )}
+      {loading && <p role="status" className="text-sm text-slate-600">در حال دریافت آمار تبلیغات…</p>}
       <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-3 xl:grid-cols-5">{metrics.map((metric) => <div key={metric.label} className={`space-y-2 rounded-xl p-3 ${metric.tone}`}><span className="block text-[10px]">{metric.label}</span><strong className="block text-lg tabular-nums">{metric.value === undefined ? '—' : nf.format(metric.value)}</strong></div>)}</div>
       {report && <div className="flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-3 text-[10px] leading-5 text-slate-500"><span>کل ردهای ثبت‌شده: {nf.format(report.summary.totalRejectedEvents)}{report.summary.otherRejectedEvents > 0 && ` · سایر درخواست‌های ردشده: ${nf.format(report.summary.otherRejectedEvents)}`}{clickAttempts > 0 && ` · نرخ رد کلیک: ${new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 1 }).format(report.summary.rejectedClicks * 100 / clickAttempts)}٪`}</span><span>آخرین دریافت: {dateLabel(report.to)}</span></div>}
     </div>

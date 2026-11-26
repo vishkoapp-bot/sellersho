@@ -1,11 +1,21 @@
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { isMockMode } from '../../services/apiClient';
 import { PreMadeWidget } from '../../types';
 import { AdminAdFraudReport } from './AdminAdFraudReport';
 import { Code2, Plus, Edit2, X } from 'lucide-react';
 
 export const AdminAdNetworkTab: React.FC = () => {
+  return (
+    <div className="space-y-3.5 pb-6">
+      <AdminAdFraudReport />
+      {isMockMode() && <SampleWidgetEditor />}
+    </div>
+  );
+};
+
+function SampleWidgetEditor() {
   const { preMadeWidgets, createPreMadeWidget, updatePreMadeWidget } = useStore();
   const { success } = useToast();
   const [showAddModal, setShowAddModal] = useState(false);
@@ -14,9 +24,7 @@ export const AdminAdNetworkTab: React.FC = () => {
   const [newSnippet, setNewSnippet] = useState('');
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <AdminAdFraudReport />
-
+    <>
       {/* 3. Pre-made Widgets & HTML Banners for Sellers (Section 4.2 & 4.6) */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
@@ -182,6 +190,6 @@ export const AdminAdNetworkTab: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
-};
+}

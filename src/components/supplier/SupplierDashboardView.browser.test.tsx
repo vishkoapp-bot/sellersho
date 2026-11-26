@@ -47,6 +47,11 @@ test('supplier sections, navigation history and daily workflows work on mobile a
   const statuses = ['pending', 'processing', 'cancelled', 'delivered_confirmed'];
   const orders = statuses.map((status, index) => ({ id: String(index), orderNumber: String(index), status, items: [], dispatchDueAt: index === 0 ? '2025-01-01T00:00:00Z' : undefined }));
   const workFilters: string[] = [];
+  const orderSearches: string[] = [];
+  const warehousePages: string[] = [];
+  const payoutAttempts: { key: string | string[] | undefined; amount: number }[] = [];
+  let available = 100000;
+  let statementChangesDuringExport = false;
   let failNextProfileRead = false;
   let failNextDemandRead = true;
   let directStatus = 'requested';
@@ -79,8 +84,16 @@ test('supplier sections, navigation history and daily workflows work on mobile a
     else if (path === '/api/v1/supplier/work-queue') response.end(JSON.stringify({ ready: 2, overdue: 1, openCartons: shipmentStatus === 'draft' ? 1 : 0, discrepancies: 0 }));
     else if (path === '/api/v1/supplier/orders') {
       const work = searchParams.get('work') || '';
+      const q = searchParams.get('q') || '';
       workFilters.push(work);
-      response.end(JSON.stringify({ orders: work === 'overdue' ? orders.slice(0, 1) : work === 'ready' ? orders.slice(0, 2) : orders, hasMore: work !== 'overdue' }));
+      if (q) orderSearches.push(q);
+      const found = q === 'OLD-42' ? [{ id: 'old', orderNumber: 'OLD-42', status: 'awaiting_payment', items: [] }] : [];
+      response.end(JSON.stringify({ orders: q ? found : work === 'overdue' ? orders.slice(0, 1) : work === 'ready' ? orders.slice(0, 2) : work === 'delivered' ? orders.slice(3) : orders, hasMore: !q && work !== 'overdue' }));
+    }
+    else if (path === '/api/v1/supplier/warehouse-orders') {
+      const page = searchParams.get('page') || '1';
+      warehousePages.push(page);
+      response.end(JSON.stringify({ page: Number(page), total: 21, orders: [{ orderId: page, orderNumber: `WH-${page}`, status: 'shipped', items: [], itemsTotal: 0 }] }));
     }
     else if (path === '/api/v1/supplier/analytics') response.end('{"orderCount":0,"totalBaseAmount":0,"totalQuantity":0,"returns":{"totalReturned":0}}');
     else if (path === '/api/v1/supplier/shipping-methods') response.end(JSON.stringify([{ method: 'direct', status: directStatus }, { method: 'warehouse', status: 'disabled' }]));
@@ -126,8 +139,21 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       response.end('{"id":"ticket1"}');
     }
     else if (path === '/api/v1/supplier/tickets') response.end('{"tickets":[],"nextCursor":"","hasMore":false}');
-    else if (path === '/api/v1/supplier/settlement/balance') response.end('{"available":100000}');
-    else if (path === '/api/v1/supplier/settlement/statement') response.end(JSON.stringify({ month: searchParams.get('month'), balance: { available: 100000 }, credits: 0, debits: 7000, totalEntries: 1, entries: [{ id: 'fee1', date: '2026-11-25T10:00:00Z', amount: -7000, kind: 'storage', reference: '2026-11-25' }] }));
+    else if (path === '/api/v1/supplier/settlement/balance') response.end(JSON.stringify({ available }));
+    else if (path === '/api/v1/supplier/settlement/request') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      payoutAttempts.push({ key: request.headers['idempotency-key'], amount: JSON.parse(body).amount });
+      if (payoutAttempts.length === 1) {
+        available = 0;
+        response.statusCode = 503;
+        response.end('{"error":"پاسخ برداشت دریافت نشد"}');
+      } else response.end('{"success":true,"id":"pay-original","payout_request_id":"pay-original"}');
+    }
+    else if (path === '/api/v1/supplier/settlement/statement') {
+      const changed = statementChangesDuringExport && searchParams.get('limit') === '200';
+      response.end(JSON.stringify({ month: searchParams.get('month'), balance: { available }, credits: 0, debits: changed ? 0 : 7000, totalEntries: changed ? 0 : 1, entries: changed ? [] : [{ id: 'fee1', date: '2026-11-25T10:00:00Z', amount: -7000, kind: 'storage', reference: '2026-11-25' }] }));
+    }
     else if (path.startsWith('/api/')) response.end('[]');
     else {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -139,7 +165,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
   assert.ok(address && typeof address === 'object');
   try {
     checkpoint = 'launching Chrome';
-    const browser = await puppeteer.launch({ headless: true, protocolTimeout: 30000, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
+    const browser = await puppeteer.launch({ headless: true, pipe: true, protocolTimeout: 30000, args: ['--no-sandbox', `--explicitly-allowed-ports=${address.port}`], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) });
     try {
       const page = await browser.newPage();
       page.setDefaultTimeout(15000);
@@ -210,9 +236,19 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.keyboard.press('Escape');
       await page.waitForSelector('dialog[open]', { hidden: true });
       await page.type('input[aria-label="جستجوی سفارش‌ها"]', 'no matching order');
-      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('بارگذاری سفارش‌های قدیمی‌تر'));
+      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('سفارشی با این جستجو پیدا نشد'));
+      assert.equal(orderSearches.at(-1), 'no matching order');
       await click('پاک کردن فیلترها');
       assert.equal(await page.$eval('input[aria-label="جستجوی سفارش‌ها"]', input => (input as HTMLInputElement).value), '');
+      await page.type('input[aria-label="جستجوی سفارش‌ها"]', 'OLD-42');
+      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('OLD-42'));
+      assert.ok((await page.$eval('main', element => element.innerText)).includes('پرداخت تکمیل نشده'));
+      assert.ok(!(await page.$eval('main', element => element.innerText)).includes('قبول سفارش'));
+      await click('ارسال از انبار مرکزی');
+      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('WH-1'));
+      await click('صفحه بعد');
+      await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('WH-2'));
+      assert.deepEqual(warehousePages, ['1', '2']);
       checkpoint = 'opening the carton workflow from the work queue';
       directStatus = 'enabled';
       await page.select('#supplier-section', 'overview');
@@ -308,6 +344,30 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.click('#account-statement > summary');
       await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('هزینهٔ انبارداری'));
       assert.ok((await page.$eval('#account-statement[open]', detail => detail.textContent))?.includes('2026-11-25'));
+      statementChangesDuringExport = true;
+      await click('دریافت CSV دوره');
+      await page.waitForFunction(() => document.querySelector('#account-statement [role="alert"]')?.textContent?.includes('گردش حساب هنگام دریافت تغییر کرد'));
+      await click('تلاش دوباره');
+      await page.waitForFunction(() => !document.querySelector('#account-statement [role="alert"]'));
+      await page.type('input[name="shaba"]', 'IR820540102680020817909002');
+      await page.type('input[name="amount"]', '-۱٬۰۰۰');
+      await click('ثبت درخواست برداشت');
+      assert.equal(await page.$eval('input[name="amount"]', input => input.getAttribute('aria-invalid')), 'true');
+      assert.equal(payoutAttempts.length, 0);
+      await page.$eval('input[name="amount"]', element => (element as HTMLInputElement).select());
+      await page.type('input[name="amount"]', '۱۰۰٬۰۰۰');
+      await click('ثبت درخواست برداشت');
+      await page.waitForFunction(() => document.body.innerText.includes('پاسخ برداشت دریافت نشد'));
+      await page.reload();
+      await page.waitForSelector('input[name="holder"]');
+      await page.type('input[name="holder"]', 'Test holder');
+      await page.type('input[name="shaba"]', 'IR820540102680020817909002');
+      await page.type('input[name="amount"]', '١٠٠٬٠٠٠');
+      await click('ثبت درخواست برداشت');
+      await page.waitForFunction(() => document.body.innerText.includes('درخواست برداشتت ثبت شد'));
+      assert.deepEqual(payoutAttempts.map(attempt => attempt.amount), [100000, 100000]);
+      assert.ok(payoutAttempts[0].key);
+      assert.equal(payoutAttempts[1].key, payoutAttempts[0].key);
       checkpoint = 'retrying the supplier profile';
       failNextProfileRead = true;
       await page.select('#supplier-section', 'profile');

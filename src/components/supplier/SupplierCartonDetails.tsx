@@ -64,7 +64,7 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
     if (codes.length !== selected.length) return;
     const lineId = line.id;
     const reprint = job.failure?.conflict === true || line.units.some(unit => unit.print_count > 0 && codes.includes(unit.code));
-    const intent = JSON.stringify([shipmentId, lineId, codes, reprint]);
+    const intent = JSON.stringify([shipmentId, lineId, codes]);
     setPrintNote('');
     const result = await job.print(intent, key => supplierCartonApi.printUnits(shipmentId, {
       line_id: lineId, unit_codes: codes, idempotency_key: key, reprint,
@@ -88,7 +88,7 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
               {carton.received_at && <span>اولین ثبت دریافت {new Date(carton.received_at).toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })}</span>}
             </p>}
           </div>
-          <button type="button" disabled={job.busy} onClick={() => { job.clear(); setPrintNote(''); void detail.reload(); }} className={buttonClass}>به‌روزرسانی رسید</button>
+          <button type="button" disabled={job.busy} onClick={() => { job.hideSheet(); setPrintNote(''); void detail.reload(); }} className={buttonClass}>به‌روزرسانی رسید</button>
         </div>
         {!carton.lines.length && <p className="text-sm text-slate-600">اقلام این کارتن در سوابق ثبت نشده‌اند.</p>}
         {carton.lines.map(line => {
@@ -97,6 +97,9 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
           const expanded = !!line.id && line.id === printLineId;
           const variantTitle = line.variant_name || line.product_title;
           const reprint = expanded && (job.failure?.conflict || line.units.some(unit => unit.print_count > 0 && selected.includes(unit.code)));
+          const availableCodes = expanded ? new Set(line.units.map(unit => unit.code)) : null;
+          const staleSelection = !!availableCodes && selected.some(code => !availableCodes.has(code));
+          const resetSelection = () => { job.clear(); setSelected([]); setPrintNote(''); };
           return (
             <div key={line.variant_id} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
               <div className="flex flex-wrap items-baseline justify-between gap-1.5">
@@ -140,7 +143,10 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
                           const nextChecked = event.target.checked;
                           job.clear();
                           setPrintNote('');
-                          setSelected(previous => nextChecked ? [...previous, unit.code] : previous.filter(code => code !== unit.code));
+                          setSelected(previous => {
+                            const current = previous.filter(code => code !== unit.code && availableCodes?.has(code));
+                            return nextChecked ? [...current, unit.code] : current;
+                          });
                         }} />
                       <bdi dir="ltr" className="break-all font-mono font-bold">{unit.code}</bdi>
                       {unit.print_count > 0 && <span className="text-slate-600">چاپ‌شده</span>}
@@ -148,12 +154,16 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
                   })}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className={buttonClass} onClick={() => void print(line)} disabled={job.busy || !selected.length}>
-                    {job.busy ? 'در حال ثبت چاپ…' : reprint ? 'چاپ مجدد کدهای انتخاب‌شده' : 'چاپ کدهای انتخاب‌شده'}
+                  <button type="button" className={buttonClass} onClick={() => void print(line)} disabled={job.busy || !selected.length || staleSelection}>
+                    {job.busy ? 'در حال ثبت چاپ…' : job.failure?.retryable && !staleSelection ? 'تلاش دوباره برای چاپ' : reprint ? 'چاپ مجدد کدهای انتخاب‌شده' : 'چاپ کدهای انتخاب‌شده'}
                     {selected.length > 0 && <span>({format(selected.length)})</span>}
                   </button>
                   {line.units.length > visibleUnits && <button type="button" className={buttonClass} onClick={() => setVisibleUnits(current => current + unitPageSize)}>کدهای بیشتر</button>}
                 </div>
+                {staleSelection && <div className="flex flex-wrap items-center gap-2">
+                  <p role="status" className="text-xs leading-5 text-slate-700">بعضی کدهای انتخاب‌شده دیگر برای این کارتن قابل چاپ نیستند.</p>
+                  <button type="button" className={buttonClass} onClick={resetSelection}>پاک کردن انتخاب</button>
+                </div>}
                 {selected.length === maxPrint && <p className="text-xs leading-5 text-slate-600">در هر درخواست می‌توانی حداکثر {format(maxPrint)} برچسب چاپ کنی.</p>}
                 {job.failure && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-sm text-rose-800">{job.failure.message}</p>}
                 {printNote && <p role="status" className="text-xs leading-6 text-slate-700">{printNote}</p>}

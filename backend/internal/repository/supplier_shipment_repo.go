@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drup/platform/internal/domain"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // SupplierShipmentRepository manages supplier direct drop-shipments
@@ -168,25 +170,46 @@ func (r *SupplierShipmentRepository) scanShipments(ctx context.Context, query st
 // and optional status, newest first, keyed on (created_at DESC, id DESC).
 // PERF-02 Step 5.
 func (r *SupplierShipmentRepository) GetShipmentsPage(ctx context.Context, supplierID, status string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
-	return r.shipmentsPage(ctx, supplierID, status, "", opts)
+	return r.shipmentsPage(ctx, supplierID, status, "", "", opts)
 }
 
-func (r *SupplierShipmentRepository) GetSupplierOrderWorkPage(ctx context.Context, supplierID, work string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
-	return r.shipmentsPage(ctx, supplierID, "", work, opts)
+func (r *SupplierShipmentRepository) GetSupplierOrderWorkPage(ctx context.Context, supplierID, work, search string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+	return r.shipmentsPage(ctx, supplierID, "", work, search, opts)
 }
 
-func (r *SupplierShipmentRepository) shipmentsPage(ctx context.Context, supplierID, status, work string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
+func (r *SupplierShipmentRepository) shipmentsPage(ctx context.Context, supplierID, status, work, search string, opts ListPageOptions) (ListPage[domain.SupplierShipment], error) {
 	limit := NormalizeListLimit(opts.Limit)
 	whereClauses, args := shipmentWhereClauses(supplierID, status)
 	deadline := "NULL::timestamptz, false"
+	shipmentStatus := "s.status"
 	if work != "" {
 		whereClauses, args = []string{"s.supplier_id = $1"}, []interface{}{supplierID}
-		deadline = supplierDispatchDeadlineSQL("s") + ", s.dispatch_due_at IS NULL"
+		shipmentStatus = `CASE WHEN s.status IN ('pending','processing') THEN
+			CASE WHEN o.status='cancelled' THEN 'cancelled'
+			WHEN o.payment_status IS DISTINCT FROM 'paid' THEN 'awaiting_payment' ELSE s.status END
+			ELSE s.status END`
+		deadline = "CASE WHEN " + supplierOrderReadySQL + " THEN " + supplierDispatchDeadlineSQL("s") + " END, s.dispatch_due_at IS NULL"
 		if work == "ready" || work == "overdue" {
 			whereClauses = append(whereClauses, supplierOrderReadySQL)
 		}
 		if work == "overdue" {
 			whereClauses = append(whereClauses, supplierDispatchDeadlineSQL("s")+" < now()")
+		}
+		if work == "shipped" {
+			whereClauses = append(whereClauses, "s.status IN ('shipped','in_transit')")
+		}
+		if work == "delivered" {
+			whereClauses = append(whereClauses, "s.status IN ('delivered','delivered_confirmed')")
+		}
+		if search != "" {
+			const normalize = "translate(lower(%s), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩يك', '01234567890123456789یک')"
+			parameter := fmt.Sprintf(normalize, fmt.Sprintf("$%d", len(args)+1))
+			fields := []string{"o.order_number", "s.order_id", "s.customer_name", "s.tracking_number"}
+			for i, field := range fields {
+				fields[i] = "strpos(" + fmt.Sprintf(normalize, field) + ", " + parameter + ") > 0"
+			}
+			whereClauses = append(whereClauses, "("+strings.Join(fields, " OR ")+")")
+			args = append(args, search)
 		}
 	}
 	if opts.Cursor != "" {
@@ -207,14 +230,14 @@ func (r *SupplierShipmentRepository) shipmentsPage(ctx context.Context, supplier
 	query := fmt.Sprintf(`
 		SELECT
 			s.id, s.order_id, s.supplier_id, s.shipping_address, s.customer_phone, s.customer_name,
-			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, s.status, s.supplier_notes,
+			s.carrier, s.tracking_number, s.shipped_at, s.delivered_at, %s, s.supplier_notes,
 			s.created_at, s.updated_at,
 			COALESCE(o.order_number, ''), %s
 		FROM supplier_shipments s
 		LEFT JOIN orders o ON s.order_id = o.id
 		%s
 		ORDER BY s.created_at DESC, s.id DESC LIMIT $%d
-	`, deadline, whereSQL, len(args)+1)
+	`, shipmentStatus, deadline, whereSQL, len(args)+1)
 	args = append(args, limit+1)
 	shipments, err := r.scanShipments(ctx, query, args...)
 	if err != nil {
@@ -550,35 +573,37 @@ type SupplierWarehouseOrder struct {
 	ItemsTotal  int64                        `json:"itemsTotal"`
 }
 
-// GetSupplierWarehouseOrders returns the page of paid orders routed to the
-// central warehouse that contain at least one of the caller's products.
-// "Warehouse-routed" follows order creation's own truth: supplier_shipments
-// rows are created only for direct-fulfilled items, so an order where the
-// caller has NO supplier_shipments row has none of the caller's items in
-// the direct flow. Only the caller's own items are returned; the only
-// customer data exposed is the destination province/city (no name, phone
-// or street address), and items carry wholesale cost only — never the
-// retail price or the seller's margin.
+// Only the warehouse-origin units of the supplier's own lines are visible.
+// Older orders without origin snapshots keep the original ownership check.
+const supplierWarehouseLinesSQL = `
+	FROM order_items oi JOIN products p ON p.id=oi.product_id
+	JOIN LATERAL (
+		SELECT CASE WHEN count(*)=0 THEN CASE WHEN p.supplier_id=$1 AND NOT EXISTS (
+			SELECT 1 FROM supplier_shipments ss WHERE ss.order_id=oi.order_id AND ss.supplier_id=$1
+		) THEN oi.quantity ELSE 0 END
+		ELSE COALESCE(sum(x.quantity) FILTER (WHERE x.origin_type='warehouse' AND x.order_id=oi.order_id AND x.supplier_id=$1), 0)
+		END AS quantity
+		FROM order_item_origins x WHERE x.order_item_id=oi.id
+	) warehouse ON warehouse.quantity > 0 AND warehouse.quantity <= oi.quantity
+`
+
 func (r *SupplierShipmentRepository) GetSupplierWarehouseOrders(ctx context.Context, supplierID string, limit, offset int) ([]SupplierWarehouseOrder, int, error) {
-	var total int
-	err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM orders o
-		WHERE o.payment_status = 'paid'
-		  AND EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = o.id AND p.supplier_id = $1)
-		  AND NOT EXISTS (SELECT 1 FROM supplier_shipments ss WHERE ss.order_id = o.id AND ss.supplier_id = $1)
-	`, supplierID).Scan(&total)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback()
+	const visible = `FROM orders o WHERE o.payment_status='paid'
+		AND EXISTS (SELECT 1 ` + supplierWarehouseLinesSQL + ` WHERE oi.order_id=o.id)`
+	var total int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) "+visible, supplierID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count supplier warehouse orders: %w", err)
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT o.id, o.order_number, o.status, o.customer_province, o.customer_city, o.created_at
-		FROM orders o
-		WHERE o.payment_status = 'paid'
-		  AND EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = o.id AND p.supplier_id = $1)
-		  AND NOT EXISTS (SELECT 1 FROM supplier_shipments ss WHERE ss.order_id = o.id AND ss.supplier_id = $1)
-		ORDER BY o.created_at DESC
+		`+visible+`
+		ORDER BY o.created_at DESC, o.id DESC
 		LIMIT $2 OFFSET $3
 	`, supplierID, limit, offset)
 	if err != nil {
@@ -587,37 +612,41 @@ func (r *SupplierShipmentRepository) GetSupplierWarehouseOrders(ctx context.Cont
 	defer rows.Close()
 
 	orders := make([]SupplierWarehouseOrder, 0)
+	ids := make([]string, 0)
+	positions := make(map[string]int)
 	for rows.Next() {
 		var o SupplierWarehouseOrder
 		if err := rows.Scan(&o.OrderID, &o.OrderNumber, &o.Status, &o.Province, &o.City, &o.CreatedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan supplier warehouse order: %w", err)
 		}
 		o.Items = []SupplierWarehouseOrderItem{}
+		positions[o.OrderID] = len(orders)
+		ids = append(ids, o.OrderID)
 		orders = append(orders, o)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterate supplier warehouse orders: %w", err)
 	}
-
-	for i := range orders {
-		itemRows, err := r.db.QueryContext(ctx, `
-			SELECT oi.product_id, p.title, oi.quantity, oi.wholesale_cost, oi.id::text,
+	if len(ids) > 0 {
+		itemRows, err := tx.QueryContext(ctx, `
+			SELECT oi.order_id, oi.product_id, COALESCE(NULLIF(oi.product_title_snapshot,''), p.title), warehouse.quantity, oi.wholesale_cost, oi.id::text,
 			       COALESCE(oi.variant_id::text,''), COALESCE(oi.variant_name,''), COALESCE(oi.variant_spnc,'')
-			FROM order_items oi
-			JOIN products p ON p.id = oi.product_id
-			WHERE oi.order_id = $1 AND p.supplier_id = $2
-			ORDER BY p.title
-		`, orders[i].OrderID, supplierID)
+			`+supplierWarehouseLinesSQL+`
+			WHERE oi.order_id = ANY($2::text[])
+			ORDER BY oi.id
+		`, supplierID, pq.Array(ids))
 		if err != nil {
 			return nil, 0, fmt.Errorf("query supplier warehouse order items: %w", err)
 		}
 		for itemRows.Next() {
 			var item SupplierWarehouseOrderItem
-			if err := itemRows.Scan(&item.ProductID, &item.ProductTitle, &item.Quantity, &item.WholesaleCost, &item.OrderItemID, &item.VariantID, &item.VariantName, &item.VariantSPNC); err != nil {
+			var orderID string
+			if err := itemRows.Scan(&orderID, &item.ProductID, &item.ProductTitle, &item.Quantity, &item.WholesaleCost, &item.OrderItemID, &item.VariantID, &item.VariantName, &item.VariantSPNC); err != nil {
 				itemRows.Close()
 				return nil, 0, fmt.Errorf("scan supplier warehouse order item: %w", err)
 			}
 			item.LineTotal = item.WholesaleCost * int64(item.Quantity)
+			i := positions[orderID]
 			orders[i].ItemsTotal += item.LineTotal
 			orders[i].Items = append(orders[i].Items, item)
 		}
@@ -626,6 +655,9 @@ func (r *SupplierShipmentRepository) GetSupplierWarehouseOrders(ctx context.Cont
 		if err != nil {
 			return nil, 0, fmt.Errorf("iterate supplier warehouse order items: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, err
 	}
 	return orders, total, nil
 }

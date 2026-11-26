@@ -24,7 +24,8 @@ func (r *SupplierRepository) GetSupplierWorkCounts(ctx context.Context, supplier
 	var out SupplierWorkCounts
 	err := r.db.QueryRowContext(ctx, `SELECT
 		COUNT(*), COUNT(*) FILTER (WHERE `+supplierDispatchDeadlineSQL("s")+` < now()),
-		(SELECT COUNT(*) FROM shipments WHERE supplier_id=$1 AND status IN ('draft','created','sent','in_transit','partially_received')),
+		(SELECT COUNT(*) FROM shipments s`+cartonStatusReadJoin+` WHERE s.supplier_id=$1
+			AND carton_state.status IN ('draft','created','sent','in_transit','partially_received')),
 		(SELECT COUNT(*) FROM qc_discrepancies WHERE supplier_id=$1 AND status='open' AND responded_at IS NULL AND escalated_at IS NULL AND response_due_at > now())
 		FROM supplier_shipments s JOIN orders o ON o.id=s.order_id WHERE s.supplier_id=$1 AND `+supplierOrderReadySQL, supplierID).
 		Scan(&out.Ready, &out.Overdue, &out.OpenCartons, &out.Discrepancies)

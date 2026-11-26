@@ -82,8 +82,8 @@ func TestInboundTransferCumulativeReceiptAndCancel(t *testing.T) {
 	if _, err := repo.ReceiveWarehouseShipment(ctx, shipment.ShipmentCode, []WarehouseReceiveItem{{VariantID: red, ReceivedQty: 6, QCStatus: "pass"}}); err == nil {
 		t.Fatal("over-receipt accepted")
 	}
-	if err := repo.ChangeCartonDispatch(ctx, "s", shipment.ID, true); err != nil {
-		t.Fatal(err)
+	if err := repo.ChangeCartonDispatch(ctx, "s", shipment.ID, true); err != ErrCartonNotCancellable {
+		t.Fatalf("cancel after receipt: %v", err)
 	}
 	var total, sellable int
 	if err := db.QueryRow(`SELECT SUM(quantity),COALESCE(SUM(quantity) FILTER(WHERE status='sellable'),0) FROM inventory_balances WHERE variant_id=$1`, red).Scan(&total, &sellable); err != nil {

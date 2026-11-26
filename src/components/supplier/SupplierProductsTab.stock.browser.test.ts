@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 
-test('stock form requires reason and exact SKU, retains a conflict draft, accepts zero and refreshes actual total', { timeout: 90000 }, async () => {
+test('stock form requires reason and exact SKU, retains a conflict draft, accepts zero and refreshes actual total', { timeout: 120000 }, async () => {
   const bundle = await build({ write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', plugins: [{ name: 'supplier-session', setup(build) {
     build.onResolve({ filter: /context\/StoreContext$/ }, args => ['SupplierProductsTab.tsx', 'SupplierAddonsWidget.tsx', 'useSupplierResource.ts'].some(name => args.importer.endsWith(name)) ? { path: 'supplier-session', namespace: 'test' } : undefined);
     build.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: 'export const useStore=()=>({supplierSession:{supplierId:"sup",token:"fixture",permissions:["supplier.manage"]},formatPrice:v=>String(v),toPersianDigits:v=>String(v)});', loader: 'js' }));
@@ -25,7 +25,7 @@ test('stock form requires reason and exact SKU, retains a conflict draft, accept
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
+  const browser = await puppeteer.launch({ headless: true, pipe: true, args: ['--no-sandbox', '--disable-setuid-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
   try {
     const page = await browser.newPage(); const errors: string[] = []; page.on('pageerror', error => errors.push(error instanceof Error ? error.stack || error.message : String(error))); await page.goto(`http://127.0.0.1:${address.port}/__inv07`);
     const clickText = async (text: string) => { const buttons = await page.$$('button'); for (const button of buttons) if ((await button.evaluate(el => el.textContent))?.includes(text)) { await button.click(); return; } throw new Error('button missing: ' + text); };
@@ -54,7 +54,7 @@ test('stock form requires reason and exact SKU, retains a conflict draft, accept
   } finally { await browser.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
-test('G4: NULL-origin supplier_direct product shows inline origin guidance before submit, origin save unblocks the stock edit', { timeout: 90000 }, async () => {
+test('G4: NULL-origin supplier_direct product shows inline origin guidance before submit, origin save unblocks the stock edit', { timeout: 120000 }, async () => {
   const bundle = await build({ write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', plugins: [{ name: 'supplier-session', setup(build) {
     build.onResolve({ filter: /context\/StoreContext$/ }, args => ['SupplierProductsTab.tsx', 'SupplierAddonsWidget.tsx', 'useSupplierResource.ts'].some(name => args.importer.endsWith(name)) ? { path: 'supplier-session', namespace: 'test' } : undefined);
     build.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: 'export const useStore=()=>({supplierSession:{supplierId:"sup",token:"fixture",permissions:["supplier.manage"]},formatPrice:v=>String(v),toPersianDigits:v=>String(v)});', loader: 'js' }));
@@ -77,7 +77,7 @@ test('G4: NULL-origin supplier_direct product shows inline origin guidance befor
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
+  const browser = await puppeteer.launch({ headless: true, pipe: true, args: ['--no-sandbox', '--disable-setuid-sandbox'], ...(process.platform === 'win32' ? { channel: 'chrome' as const } : {}) }).catch(async e => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); throw e; });
   try {
     const page = await browser.newPage(); const errors: string[] = []; page.on('pageerror', error => errors.push(error instanceof Error ? error.stack || error.message : String(error))); await page.goto(`http://127.0.0.1:${address.port}/__inv07`);
     const clickText = async (text: string) => { const buttons = await page.$$('button'); for (const button of buttons) if ((await button.evaluate(el => el.textContent))?.includes(text)) { await button.click(); return; } throw new Error('button missing: ' + text); };

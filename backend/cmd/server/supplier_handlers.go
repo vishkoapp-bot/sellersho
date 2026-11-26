@@ -1148,11 +1148,11 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 
 	verification := bank.VerifySheba(req.Shaba)
 	if req.Amount <= 0 || !verification.IsValid || strings.TrimSpace(req.AccountHolder) == "" {
-		http.Error(w, `{"error":"Positive amount, valid IBAN and account holder required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"مبلغ، شماره شبای معتبر و نام صاحب حساب را وارد کن."}`, http.StatusBadRequest)
 		return
 	}
 	if utf8.RuneCountInString(req.AccountHolder) > 100 {
-		http.Error(w, `{"error":"Account holder must be at most 100 characters"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"نام صاحب حساب حداکثر ۱۰۰ نویسه است."}`, http.StatusBadRequest)
 		return
 	}
 	req.Shaba = strings.ToUpper(strings.TrimSpace(req.Shaba))
@@ -1175,11 +1175,11 @@ func (h *SupplierHandlers) HandleRequestSettlement(w http.ResponseWriter, r *htt
 		// Gap 12: new settlement requests are frozen while the
 		// supplier is suspended (409, like the balance conflict).
 		if errors.Is(err, repository.ErrSupplierSuspended) {
-			http.Error(w, `{"error":"Supplier is suspended"}`, http.StatusConflict)
+			http.Error(w, `{"error":"ثبت برداشت برای این حساب موقتاً غیرفعال است. برای پیگیری به پشتیبانی پیام بده."}`, http.StatusConflict)
 			return
 		}
 		if strings.Contains(err.Error(), "insufficient settlement balance") {
-			http.Error(w, `{"error":"Insufficient settlement balance"}`, http.StatusConflict)
+			http.Error(w, `{"error":"مبلغ درخواست بیشتر از موجودی قابل برداشت است."}`, http.StatusConflict)
 			return
 		}
 		writeInternalError(w, err)

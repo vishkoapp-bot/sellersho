@@ -128,6 +128,7 @@ BEGIN
 		END;
 	END IF;
 END $$;
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS requester_account_id TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS pending_approvals (
 	id VARCHAR(50) PRIMARY KEY,
 	target_id VARCHAR(50) NOT NULL,
@@ -478,6 +479,12 @@ func TestSupplierNotificationsSupplierKindFilter(t *testing.T) {
 
 	f := supplierNotificationsSetup(t)
 	want := map[string]seed{}
+	const legacyTicketID = "ntf-legacy-supplier-kind"
+	if _, err := f.db.Exec(`INSERT INTO support_tickets(id,requester_role,requester_user_id,subject)
+		VALUES ($1,'supplier',$2,'Legacy request')`, legacyTicketID, f.ownerA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = f.db.Exec(`DELETE FROM support_tickets WHERE id=$1`, legacyTicketID) })
 	for _, group := range [][]seed{keep, dual} {
 		for _, row := range group {
 			want[row.title] = row
@@ -485,7 +492,11 @@ func TestSupplierNotificationsSupplierKindFilter(t *testing.T) {
 	}
 	for _, group := range [][]seed{keep, dual, absent, otherCopies} {
 		for _, row := range group {
-			f.seedOutboxWithBody(t, f.ownerA, row.kind, row.title, row.body, map[string]interface{}{})
+			payload := map[string]interface{}{}
+			if row.kind == repository.NotifKindTicketReply {
+				payload["ticket_id"] = legacyTicketID
+			}
+			f.seedOutboxWithBody(t, f.ownerA, row.kind, row.title, row.body, payload)
 		}
 	}
 	var seeded int
@@ -515,6 +526,82 @@ func TestSupplierNotificationsSupplierKindFilter(t *testing.T) {
 	}
 	for title := range want {
 		t.Errorf("missing row %q", title)
+	}
+}
+
+func TestSupplierNotificationTicketRepliesAreScopedToActiveMembership(t *testing.T) {
+	f := supplierNotificationsSetup(t)
+	var member string
+	if err := f.db.QueryRow(`INSERT INTO users(mobile,full_name,role)
+		VALUES('09120000104','Member','supplier') RETURNING id`).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO supplier_members(supplier_id,user_id,role_key,permissions)
+		VALUES('sup-ntf-a',$1,'products','["products.manage"]')`, member); err != nil {
+		t.Fatal(err)
+	}
+	seedReply := func(id, role, account, requester, recipient string) string {
+		t.Helper()
+		if _, err := f.db.Exec(`INSERT INTO support_tickets(id,requester_role,requester_account_id,requester_user_id,subject)
+			VALUES ($1,$2,$3,$4,'Support fixture')`, id, role, account, requester); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = f.db.Exec(`DELETE FROM support_tickets WHERE id=$1`, id) })
+		return f.seedOutboxFull(t, recipient, repository.NotifKindTicketReply, id, `{"ticket_id":"`+id+`"}`, "pending")
+	}
+	own := seedReply("ntf-member-own", "supplier", "sup-ntf-a", member, member)
+	other := seedReply("ntf-member-other", "supplier", "sup-ntf-b", member, member)
+	seller := seedReply("ntf-member-seller", "seller", "", member, member)
+	wrongRequester := seedReply("ntf-member-wrong-requester", "supplier", "sup-ntf-a", f.ownerA, member)
+	legacyOwner := seedReply("ntf-owner-legacy", "supplier", "", f.ownerA, f.ownerA)
+	ownerSeller := seedReply("ntf-owner-seller", "seller", "", f.ownerA, f.ownerA)
+
+	for _, entry := range []struct {
+		user, mobile, allowedID string
+		hiddenIDs               []string
+	}{
+		{member, "09120000104", own, []string{other, seller, wrongRequester}},
+		{f.ownerA, "09120000101", legacyOwner, []string{ownerSeller}},
+	} {
+		token := f.token(t, entry.user, entry.mobile, "supplier")
+		code, body := f.callSupplier(t, http.MethodGet, "/api/v1/supplier/notifications", token, "")
+		if code != http.StatusOK {
+			t.Errorf("%s inbox status=%d body=%s", entry.mobile, code, body)
+			continue
+		}
+		var inbox notificationsEnvelope
+		if err := json.Unmarshal([]byte(body), &inbox); err != nil || inbox.UnreadCount != 1 ||
+			len(inbox.Notifications) != 1 || inbox.Notifications[0].ID != entry.allowedID {
+			t.Errorf("%s inbox body=%s (%v)", entry.mobile, body, err)
+		}
+		ids := append([]string{entry.allowedID}, entry.hiddenIDs...)
+		request, err := json.Marshal(map[string][]string{"ids": ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, body = f.callSupplier(t, http.MethodPost, "/api/v1/supplier/notifications/read", token, string(request))
+		var marked struct {
+			Updated int `json:"updated"`
+		}
+		if err := json.Unmarshal([]byte(body), &marked); code != http.StatusOK || err != nil || marked.Updated != 1 {
+			t.Errorf("%s mark scoped inbox status=%d body=%s (%v)", entry.mobile, code, body, err)
+		}
+		for _, id := range entry.hiddenIDs {
+			var status string
+			if err := f.db.QueryRow(`SELECT status FROM notification_outbox WHERE id=$1`, id).Scan(&status); err != nil || status != "pending" {
+				t.Errorf("out-of-scope reply status=%q (%v)", status, err)
+			}
+		}
+	}
+	if _, err := f.db.Exec(`UPDATE supplier_members SET is_active=FALSE WHERE user_id=$1`, member); err != nil {
+		t.Fatal(err)
+	}
+	token := f.token(t, member, "09120000104", "supplier")
+	if code, _ := f.callSupplier(t, http.MethodGet, "/api/v1/supplier/notifications", token, ""); code != http.StatusForbidden {
+		t.Errorf("inactive member inbox status=%d", code)
+	}
+	if code, _ := f.callSupplier(t, http.MethodPost, "/api/v1/supplier/notifications/read", token, ""); code != http.StatusForbidden {
+		t.Errorf("inactive member mark-all status=%d", code)
 	}
 }
 

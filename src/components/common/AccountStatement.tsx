@@ -31,6 +31,13 @@ export function statementCsv(rows: StatementRow[]) {
   return '\uFEFFتاریخ,نوع,مرجع,وضعیت,مبلغ (تومان)\r\n' + rows.map(row => [csvField(row.date), csvField(row.label), csvField(row.reference), csvField(statuses[row.status ?? ''] ?? ''), row.amount].join(',')).join('\r\n');
 }
 
+function sameStatementTotals(previous: StatementPage, next: StatementPage): boolean {
+  return previous.month === next.month && previous.totalEntries === next.totalEntries &&
+    previous.credits === next.credits && previous.debits === next.debits;
+}
+
+const changedStatement = 'گردش حساب هنگام دریافت تغییر کرد. گزارش را دوباره دریافت کن.';
+
 type Props = { role: 'seller'; slug: string; storeId: string; refresh?: number } | { role: 'supplier'; refresh?: number };
 
 export function AccountStatement(props: Props) {
@@ -56,6 +63,9 @@ export function AccountStatement(props: Props) {
     try {
       const next = await getPanelStatement(source, month, cursor, request.signal);
       if (request.signal.aborted) return;
+      if (next.month !== month || (cursor && page && !sameStatementTotals(page, next))) {
+        throw new Error(changedStatement);
+      }
       setPage(previous => cursor && previous ? { ...next, entries: [...previous.entries, ...next.entries] } : next);
     } catch (cause) {
       if (!request.signal.aborted) setError(cause instanceof Error ? cause.message : 'دریافت گردش حساب انجام نشد.');
@@ -72,6 +82,7 @@ export function AccountStatement(props: Props) {
   }, [open, slug, month, props.refresh]);
 
   async function exportPeriod() {
+    if (!page || page.month !== month || download.current) return;
     const request = new AbortController();
     download.current = request;
     setExporting(true);
@@ -80,14 +91,22 @@ export function AccountStatement(props: Props) {
       const rows: StatementRow[] = [];
       let cursor = '';
       const cursors = new Set<string>();
+      const identities = new Set<string>();
       do {
         const next = await getPanelStatement(source, month, cursor, request.signal, 200);
         if (request.signal.aborted) return;
-        rows.push(...next.entries);
+        if (!sameStatementTotals(page, next)) throw new Error(changedStatement);
+        for (const row of next.entries) {
+          const identity = JSON.stringify([row.id, row.kind]);
+          if (identities.has(identity)) throw new Error(changedStatement);
+          identities.add(identity);
+          rows.push(row);
+        }
         cursor = next.nextCursor ?? '';
         if (cursor && cursors.has(cursor)) throw new Error('بخشی از گزارش تکراری بود. دوباره تلاش کن.');
         if (cursor) cursors.add(cursor);
       } while (cursor);
+      if (rows.length !== page.totalEntries) throw new Error(changedStatement);
       const url = URL.createObjectURL(new Blob([statementCsv(rows)], { type: 'text/csv;charset=utf-8' }));
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -97,6 +116,7 @@ export function AccountStatement(props: Props) {
     } catch (cause) {
       if (!request.signal.aborted) setError(cause instanceof Error ? cause.message : 'دریافت فایل انجام نشد.');
     } finally {
+      if (download.current === request) download.current = null;
       if (!request.signal.aborted) setExporting(false);
     }
   }
@@ -107,11 +127,11 @@ export function AccountStatement(props: Props) {
       {open && <div className="space-y-4 pt-2">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <label className="grid gap-1 text-sm font-bold text-slate-700">ماه گزارش (میلادی)<select className="min-h-11 rounded-xl border border-slate-300 bg-white px-3 text-sm" value={month} onChange={event => setMonth(event.target.value)}>{months.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-          <button type="button" disabled={!page || busy || exporting} onClick={() => void exportPeriod()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-brand-border bg-brand-soft px-3 text-sm font-bold text-brand-deep disabled:opacity-60"><Download aria-hidden="true" className="size-4" />{exporting ? 'در حال ساخت فایل…' : 'دریافت CSV دوره'}</button>
+          <button type="button" disabled={page?.month !== month || busy || exporting || !!error} onClick={() => void exportPeriod()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-brand-border bg-brand-soft px-3 text-sm font-bold text-brand-deep disabled:opacity-60"><Download aria-hidden="true" className="size-4" />{exporting ? 'در حال ساخت فایل…' : 'دریافت CSV دوره'}</button>
         </div>
         {busy && <p role="status" className="text-sm text-slate-600">در حال دریافت گردش حساب…</p>}
         {error && <div className="flex flex-wrap items-center gap-3 text-sm text-rose-800"><p role="alert">{error}</p><button type="button" onClick={() => void load()} className="min-h-11 rounded-lg px-2 font-bold underline">تلاش دوباره</button></div>}
-        {page && <>
+        {page?.month === month && <>
           <dl className="grid grid-cols-2 gap-2 lg:grid-cols-5">
             {([
               ['موجودی قابل برداشت امروز', page.available], ['بستانکار دوره', page.credits], ['بدهکار دوره', page.debits],
@@ -129,7 +149,7 @@ export function AccountStatement(props: Props) {
               {props.role === 'seller' ? <ContextSupportButton role="seller" kind="financial" referenceType="statement" referenceCode={row.kind} referenceId={row.id} storeId={props.storeId} /> : <ContextSupportButton role="supplier" kind="financial" referenceType={row.kind} referenceId={row.id} />}
             </li>)}
           </ul>
-          {page.nextCursor && <button type="button" disabled={busy} onClick={() => void load(page.nextCursor)} className="min-h-11 rounded-xl bg-brand-soft px-4 text-sm font-bold text-brand-deep">نمایش ردیف‌های بیشتر</button>}
+          {page.nextCursor && <button type="button" disabled={busy || !!error} onClick={() => void load(page.nextCursor)} className="min-h-11 rounded-xl bg-brand-soft px-4 text-sm font-bold text-brand-deep disabled:opacity-60">نمایش ردیف‌های بیشتر</button>}
         </>}
       </div>}
     </details>

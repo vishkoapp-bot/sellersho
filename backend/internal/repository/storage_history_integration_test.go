@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -623,4 +624,18 @@ func TestFIN006IncompleteActiveSourceKeepsAccrualPending(t *testing.T) {
 	if err := db.QueryRow(`SELECT p.qty=1 AND p.last_assessed_date IS NULL AND p.last_fee_date IS NULL AND p.closed_at IS NULL AND (SELECT SUM(quantity) FROM warehouse_storage_lot_departures WHERE position_id=p.id)=1 AND storage_receipt_is_blocked(p.id) FROM warehouse_storage_positions p WHERE p.id=$1`, position).Scan(&preserved); err != nil || !preserved {
 		t.Fatalf("incomplete source guessed units or discarded pending days: %v %v", preserved, err)
 	}
+	aging, err := repo.GetSupplierStorageAging(ctx, f.supplier, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range aging.Rows {
+		if row.ID == position {
+			record, err := json.Marshal(row)
+			if err != nil || !strings.Contains(string(record), `"quantity":null`) || row.ReceivedOn == "" || row.FeeStartsOn != "" {
+				t.Fatalf("unreconciled movement presented a current quantity or fee date: %s (%v)", record, err)
+			}
+			return
+		}
+	}
+	t.Fatal("aging omitted the known historical receipt")
 }

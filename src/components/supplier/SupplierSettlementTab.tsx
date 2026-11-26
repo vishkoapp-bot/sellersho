@@ -1,6 +1,6 @@
 import { Wallet } from 'lucide-react';
 import { SupplierSectionHeading } from './SupplierSectionHeading';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
@@ -15,14 +15,14 @@ import { AccountStatement } from '../common/AccountStatement';
 // AND delivered) - reserved (payout requests still pending review)
 // - paid - return charges - storage fees = available. Supplier money has NO
 // return-window hold; it becomes withdrawable once the order is delivered.
-const formatAmount = (raw: string): string => {
-  const digits = raw.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
-  if (digits === '') return '';
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, '٬').replace(/\d/g, (ch) => '۰۱۲۳۴۵۶۷۸۹'[parseInt(ch, 10)]);
-};
+const latinDigits = (raw: string) =>
+  raw.replace(/[۰-۹٠-٩]/g, digit => String('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩'.indexOf(digit) % 10));
 
-const parseAmount = (raw: string): string =>
-  raw.replace(/[۰-۹]/g, (ch) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch))).replace(/[^0-9]/g, '');
+function parseSupplierSettlementAmount(raw: string): number {
+  const text = latinDigits(raw.trim());
+  if (!/^(?:\d+|\d{1,3}(?:[٬, ]\d{3})+)$/.test(text)) return NaN;
+  return Number(text.replace(/[٬, ]/g, ''));
+}
 
 const statusLabel = (status: string): string => {
   switch (status) {
@@ -47,6 +47,7 @@ export const SupplierSettlementTab: React.FC = () => {
   const [holder, setHolder] = useState('');
   const [amount, setAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const submitting = useRef(false);
   const [statementRefresh, setStatementRefresh] = useState(0);
   const [fieldError, setFieldError] = useState<{ name: 'holder' | 'shaba' | 'amount'; message: string } | null>(null);
 
@@ -59,22 +60,22 @@ export const SupplierSettlementTab: React.FC = () => {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (saving || balance.loading || !balance.data || balance.error) return;
-    const value = Number(parseAmount(amount));
-    const iban = shaba.replace(/[\s-]/g, '').toUpperCase()
-      .replace(/[۰-۹٠-٩]/g, digit => String('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩'.indexOf(digit) % 10));
+    if (submitting.current || balance.loading || !balance.data || balance.error) return;
+    const value = parseSupplierSettlementAmount(amount);
+    const iban = latinDigits(shaba.replace(/[\s-]/g, '').toUpperCase());
     const invalid = !holder.trim()
       ? { name: 'holder', message: 'نام صاحب حساب را وارد کن.' } as const
       : !isValidIranianSheba(iban)
         ? { name: 'shaba', message: 'شماره شبا را با IR و ۲۴ رقم بعد از آن وارد کن.' } as const
-        : !Number.isSafeInteger(value) || value <= 0 || value > balance.data.available
-          ? { name: 'amount', message: `مبلغ باید بین ۱ و ${formatPrice(balance.data.available)} تومان باشد.` } as const
+        : !Number.isSafeInteger(value) || value <= 0
+          ? { name: 'amount', message: 'مبلغ برداشت را به‌صورت عدد صحیح و مثبت وارد کن.' } as const
           : null;
     setFieldError(invalid);
     if (invalid) {
       (event.currentTarget.elements.namedItem(invalid.name) as HTMLInputElement | null)?.focus();
       return;
     }
+    submitting.current = true;
     setSaving(true);
     try {
       await supplierApi.requestSettlement(value, iban, '', holder.trim());
@@ -85,6 +86,7 @@ export const SupplierSettlementTab: React.FC = () => {
     } catch (cause: unknown) {
       error(cause instanceof Error ? cause.message : 'ثبت تسویه انجام نشد.');
     } finally {
+      submitting.current = false;
       setSaving(false);
     }
   };
@@ -169,13 +171,12 @@ export const SupplierSettlementTab: React.FC = () => {
               </div>
             </details>
           </section>
-          {b.available <= 0 ? (
-            <p className="rounded-[22px] border border-[#e6e2f0] bg-white p-5 text-sm leading-7 text-slate-700 shadow-sm">فعلاً موجودی قابل برداشت نداری. با قطعی‌شدن درآمد و افزایش موجودی، فرم درخواست برداشت همین‌جا ظاهر می‌شود.</p>
-          ) : (
           <form onSubmit={submit} noValidate className="min-w-0 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
             <h3 className="text-base font-extrabold text-[#261b41]">درخواست برداشت</h3>
+            {b.available <= 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-700">فعلاً موجودی قابل برداشت نداری. اگر نتیجهٔ درخواست قبلی را ندیدی، همان مبلغ و مشخصات حساب را دوباره وارد کن.</p>}
+            <fieldset disabled={saving} className="min-w-0 space-y-3">
             <label className="block text-sm font-bold text-slate-700">نام صاحب حساب
-              <input required name="holder" value={holder} onChange={event => editField('holder', event.target.value)} aria-invalid={fieldError?.name === 'holder'} aria-describedby={fieldError?.name === 'holder' ? 'supplier-payout-holder-error' : undefined} placeholder="مثلاً: علی رضایی" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
+              <input required maxLength={100} name="holder" value={holder} onChange={event => editField('holder', event.target.value)} aria-invalid={fieldError?.name === 'holder'} aria-describedby={fieldError?.name === 'holder' ? 'supplier-payout-holder-error' : undefined} placeholder="مثلاً: علی رضایی" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
               {fieldError?.name === 'holder' && <span id="supplier-payout-holder-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-sm font-bold text-slate-700">شماره شبا
@@ -184,13 +185,13 @@ export const SupplierSettlementTab: React.FC = () => {
               {fieldError?.name === 'shaba' && <span id="supplier-payout-shaba-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-sm font-bold text-slate-700">مبلغ برداشت (تومان)
-              <input required min="1" type="text" inputMode="numeric" name="amount" value={formatAmount(amount)} onChange={event => editField('amount', event.target.value)} aria-invalid={fieldError?.name === 'amount'} aria-describedby={fieldError?.name === 'amount' ? 'supplier-payout-amount-error' : undefined} placeholder="چقدر می‌خواهی برداشت کنی؟" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
+              <input required type="text" inputMode="numeric" name="amount" value={amount} onChange={event => editField('amount', event.target.value)} aria-invalid={fieldError?.name === 'amount'} aria-describedby={fieldError?.name === 'amount' ? 'supplier-payout-amount-error' : undefined} placeholder="چقدر می‌خواهی برداشت کنی؟" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
               {fieldError?.name === 'amount' && <span id="supplier-payout-amount-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
+            </fieldset>
             <button disabled={saving || balance.loading} className="min-h-12 w-full rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50">{saving ? 'در حال ثبت…' : 'ثبت درخواست برداشت'}</button>
             <p className="text-[10px] text-slate-500 leading-relaxed">واریز دستی است و با انتقال بانکی انجام می‌شود: بعد از تأیید درخواستت، تیم مالی پول را واریز می‌کند و شماره پیگیری همین‌جا ثبت می‌شود.</p>
           </form>
-          )}
         </div>
       )}
       <AccountStatement role="supplier" refresh={statementRefresh} />

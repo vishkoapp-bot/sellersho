@@ -16,7 +16,18 @@ const supplierIDKey contextKey = "supplierID"
 
 func supplierPermissionForPath(method, path string) string {
 	path = strings.TrimSuffix(path, "/")
+	// Product identifiers are path data. Their text cannot select a role.
+	const products = "/api/v1/supplier/products"
+	if path == products || strings.HasPrefix(path, products+"/") {
+		_, action, _ := strings.Cut(strings.TrimPrefix(path, products+"/"), "/")
+		if action == "stock" {
+			return "inventory.manage"
+		}
+		return "products.manage"
+	}
 	switch {
+	case path == "/api/v1/supplier/notifications", path == "/api/v1/supplier/notifications/read":
+		return "profile.view"
 	case strings.Contains(path, "/team"):
 		return "supplier.manage"
 	case strings.Contains(path, "/settlement"), strings.Contains(path, "/sales-report"):
@@ -29,7 +40,7 @@ func supplierPermissionForPath(method, path string) string {
 		return "orders.manage"
 	case strings.Contains(path, "/inbounds"), strings.Contains(path, "/discrepancies"), strings.Contains(path, "/inventory"), strings.Contains(path, "/returns"), strings.Contains(path, "/warehouses"), strings.HasSuffix(path, "/stock-share"), strings.HasSuffix(path, "/stock"):
 		return "inventory.manage"
-	case strings.Contains(path, "/products"), strings.Contains(path, "/upload/"), strings.Contains(path, "/addons"), strings.Contains(path, "/catalog/review"), strings.Contains(path, "/price-increases"), strings.Contains(path, "/warranties"), strings.Contains(path, "/exclusivity-challenges"):
+	case strings.Contains(path, "/upload/"), strings.Contains(path, "/addons"), strings.Contains(path, "/catalog/review"), strings.Contains(path, "/price-increases"), strings.Contains(path, "/warranties"), strings.Contains(path, "/exclusivity-challenges"):
 		return "products.manage"
 	case method == http.MethodGet && path == "/api/v1/supplier/profile":
 		return "profile.view"

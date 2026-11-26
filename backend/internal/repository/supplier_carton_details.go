@@ -41,6 +41,25 @@ type SupplierCartonDetails struct {
 	Lines         []SupplierCartonLine `json:"lines"`
 }
 
+// Older exact-line receipts recorded stock without updating the carton header.
+// Use the canonical counters when every declared SKU has its exact source line.
+const cartonStatusReadJoin = `
+	LEFT JOIN LATERAL (
+		SELECT CASE
+			WHEN COUNT(l.id)=0 OR COUNT(l.id)<>COUNT(*) THEN s.status
+			WHEN BOOL_AND(l.cancelled_quantity=l.quantity) THEN 'cancelled'
+			WHEN BOOL_OR(l.received_quantity>0) THEN
+				CASE WHEN BOOL_AND(l.received_quantity::bigint+l.cancelled_quantity>=l.quantity)
+					THEN 'received' ELSE 'partially_received' END
+			WHEN s.status='partially_received' THEN
+				CASE WHEN BOOL_OR(l.dispatched_quantity>0) THEN 'in_transit' ELSE 'draft' END
+			ELSE s.status END AS status
+		FROM shipment_items i JOIN product_variants v ON v.id=i.variant_id
+		LEFT JOIN inbound_inventory_lines l ON l.shipment_id=s.id::text AND l.supplier_id=s.supplier_id
+			AND l.product_id=v.product_id AND l.variant_id=i.variant_id::text AND l.quantity=i.expected_qty
+		WHERE i.shipment_id=s.id
+	) carton_state ON TRUE`
+
 // This predicate is shared by the supplier's preview and the print job. An
 // exact putaway event is only usable while the unit still occupies its recorded
 // bin and the latest putaway still points to this receipt. Reservations and
@@ -84,8 +103,19 @@ func (r *SupplierRepository) GetSupplierCartonDetails(ctx context.Context, suppl
 	defer tx.Rollback()
 	out := &SupplierCartonDetails{Lines: []SupplierCartonLine{}}
 	err = tx.QueryRowContext(ctx, `
-		SELECT s.id,s.shipment_code,s.status,s.created_at,s.received_at,COALESCE(w.name,'')
-		FROM shipments s LEFT JOIN warehouses w ON w.id=s.warehouse_id
+		SELECT s.id,s.shipment_code,carton_state.status,s.created_at,
+			CASE WHEN carton_state.status IN ('received','partially_received','qc_passed','qc_failed')
+				THEN COALESCE(first_receipt.received_at,s.received_at) END,
+			COALESCE(w.name,'')
+		FROM shipments s LEFT JOIN warehouses w ON w.id=s.warehouse_id`+cartonStatusReadJoin+`
+		LEFT JOIN LATERAL (
+			SELECT MIN(m.created_at) AS received_at FROM inbound_inventory_lines l
+			JOIN inventory_movements m ON m.reference_id=l.id AND m.product_id=l.product_id
+				AND m.supplier_id=l.supplier_id AND m.variant_id::text=l.variant_id
+				AND m.reference_type IN ('inbound_receive','inbound_transfer') AND m.to_status='quarantine'
+				AND m.to_location_key='inbound-line:'||l.id AND m.quantity>0
+			WHERE l.shipment_id=s.id::text AND l.supplier_id=s.supplier_id AND l.received_quantity>0
+		) first_receipt ON TRUE
 		WHERE s.id=$1 AND s.supplier_id=$2`, id, supplierID).
 		Scan(&out.ID, &out.ShipmentCode, &out.Status, &out.CreatedAt, &out.ReceivedAt, &out.WarehouseName)
 	if err != nil {

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -276,11 +277,54 @@ func gap14Ctx(supplierID, role string) context.Context {
 }
 
 type gap14WarehouseItem struct {
+	OrderItemID   string `json:"orderItemId"`
+	VariantSPNC   string `json:"variantSpnc"`
 	ProductID     string `json:"productId"`
 	ProductTitle  string `json:"productTitle"`
 	Quantity      int    `json:"quantity"`
 	WholesaleCost int64  `json:"wholesaleCost"`
 	LineTotal     int64  `json:"lineTotal"`
+}
+
+func TestGap14WarehouseOrdersIncludeWarehouseUnitsInMixedOriginOrder(t *testing.T) {
+	db, repo := gap14Repos(t)
+	if _, err := db.Exec(`UPDATE order_items SET quantity=4,variant_spnc='SNAPSHOT' WHERE id='it-4';
+		INSERT INTO order_item_origins (order_item_id,order_id,leg_index,origin_type,supplier_id,quantity)
+		VALUES ('it-4','ord-direct',0,'supplier','sup-a',1),('it-4','ord-direct',1,'warehouse','sup-a',3)`); err != nil {
+		t.Fatal(err)
+	}
+	rec, orders, total := gap14GetWarehouseOrders(t, repo, "sup-a")
+	if rec.Code != http.StatusOK || total != 3 {
+		t.Fatalf("warehouse orders = %d, total %d, %s", rec.Code, total, rec.Body.String())
+	}
+	for _, order := range orders {
+		if order.OrderID == "ord-direct" {
+			if len(order.Items) != 1 || order.Items[0].OrderItemID != "it-4" || order.Items[0].VariantSPNC != "SNAPSHOT" ||
+				order.Items[0].Quantity != 3 || order.ItemsTotal != 15000 {
+				t.Fatalf("mixed origin warehouse lines = %+v", order)
+			}
+			return
+		}
+	}
+	t.Fatal("warehouse units of mixed origin order were omitted")
+}
+
+func TestGap14DirectOrderSearchFiltersBeforePagination(t *testing.T) {
+	db, repo := gap14Repos(t)
+	if _, err := db.Exec(`UPDATE supplier_shipments SET status='shipped', tracking_number='ZX-42' WHERE id='ship-1';
+		UPDATE orders SET payment_status='pending' WHERE id='ord-direct2'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"ZX-42", "ZX-۴۲"} {
+		rec, _ := gap14GetSupplierOrders(t, repo, gap14Ctx("sup-a", "supplier"), "/api/v1/supplier/orders?work=shipped&limit=1&q="+url.QueryEscape(q))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"orderId":"ord-direct"`) || strings.Contains(rec.Body.String(), `"orderId":"ord-direct2"`) {
+			t.Fatalf("search %q: %d %s", q, rec.Code, rec.Body.String())
+		}
+	}
+	rec, _ := gap14GetSupplierOrders(t, repo, gap14Ctx("sup-a", "supplier"), "/api/v1/supplier/orders?q=ord-direct2")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"awaiting_payment"`) {
+		t.Fatalf("unpaid order action state: %d %s", rec.Code, rec.Body.String())
+	}
 }
 
 type gap14WarehouseOrder struct {

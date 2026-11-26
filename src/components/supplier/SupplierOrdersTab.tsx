@@ -2,7 +2,7 @@ import { SupplierSectionHeading } from './SupplierSectionHeading';
 import { SupplierDialog } from './SupplierDialog';
 import { ContextSupportButton } from '../support/ContextSupportButton';
 import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import {
@@ -80,6 +80,9 @@ export function directOrderChip(status: string) {
   if (status === 'pending') {
     return { text: 'منتظر ارسال', cls: 'bg-amber-50 text-amber-700 border-amber-200', Icon: Clock };
   }
+  if (status === 'awaiting_payment') {
+    return { text: 'پرداخت تکمیل نشده', cls: 'bg-slate-50 text-slate-700 border-slate-200', Icon: Clock };
+  }
   return { text: 'وضعیت نامشخص', cls: 'bg-slate-50 text-slate-600 border-slate-200', Icon: Info };
 }
 
@@ -113,19 +116,22 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
   const [ordersHasMore, setOrdersHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>(initialFilter);
+  const [filterStatus, setFilterStatus] = useState<'all' | 'ready' | 'overdue' | 'shipped' | 'delivered'>(initialFilter);
   const orderRequest = useRef(0);
-  const workFilter = filterStatus === 'ready' || filterStatus === 'overdue' ? filterStatus : undefined;
 
   // Gap 14: view toggle — direct shipments to fulfil vs warehouse-routed
   // orders (read-only visibility), plus the accept-step in-flight marker.
   const [ordersView, setOrdersView] = useState<'direct' | 'warehouse'>('direct');
   const [warehouseOrders, setWarehouseOrders] = useState<SupplierWarehouseOrderDto[]>([]);
+  const [warehousePage, setWarehousePage] = useState(1);
+  const [warehouseTotal, setWarehouseTotal] = useState(0);
   const [warehouseLoading, setWarehouseLoading] = useState(false);
   const [warehouseError, setWarehouseError] = useState('');
   const [warehouseLoaded, setWarehouseLoaded] = useState(false);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const search = searchQuery.trim();
+  const warehousePageSize = 20;
 
   // Addons expand state (live's Pe toggle per order card).
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
@@ -136,7 +142,6 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
   const [selectedOrder, setSelectedOrder] = useState<SupplierOrder | null>(null);
   const [carrier, setCarrier] = useState('پست پیشتاز');
   const [trackingNumber, setTrackingNumber] = useState('');
-  const [shippingDate, setShippingDate] = useState(new Date().toLocaleDateString('fa-IR'));
   const [submittingShipping, setSubmittingShipping] = useState(false);
 
   // Tapin ship mode (gaps 1-3).
@@ -186,12 +191,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
   // Fetch from backend API — PERF-02 Step 9: cursor pages (50 rows);
   // a cursor appends, a fresh load replaces.
-  const fetchSupplierOrders = async (cursor?: string) => {
+  const fetchSupplierOrders = useCallback(async (cursor?: string) => {
     const request = ++orderRequest.current;
     setLoading(true);
     setLoadError('');
     try {
-      const res = await supplierApi.getOrders({ limit: 50, cursor, work: workFilter });
+      const res = await supplierApi.getOrders({ limit: 50, cursor, work: filterStatus === 'all' ? undefined : filterStatus, search });
       if (request !== orderRequest.current) return;
       setBackendOrders((prev) => (cursor ? [...prev, ...(res.orders || [])] : (res.orders || [])));
       setOrdersNextCursor(res.nextCursor || '');
@@ -201,21 +206,29 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
     } finally {
       if (request === orderRequest.current) setLoading(false);
     }
-  };
+  }, [filterStatus, search]);
 
   useEffect(() => {
     setOrdersHasMore(false);
+    setOrdersNextCursor('');
     setBackendOrders([]);
-    fetchSupplierOrders();
-    return () => { orderRequest.current += 1; };
-  }, [workFilter]);
+    setLoadError('');
+    setLoading(true);
+    const timer = window.setTimeout(() => void fetchSupplierOrders(), search ? 250 : 0);
+    return () => {
+      window.clearTimeout(timer);
+      orderRequest.current += 1;
+    };
+  }, [fetchSupplierOrders, search]);
 
-  const fetchWarehouseOrders = async () => {
+  const fetchWarehouseOrders = async (page = warehousePage) => {
     setWarehouseLoading(true);
     setWarehouseError('');
     try {
-      const res = await supplierApi.getWarehouseOrders();
+      const res = await supplierApi.getWarehouseOrders(page, warehousePageSize);
       setWarehouseOrders(res.orders || []);
+      setWarehousePage(res.page);
+      setWarehouseTotal(res.total);
       setWarehouseLoaded(true);
     } catch (err: any) {
       setWarehouseError(err?.message || 'دریافت سفارش‌های انبار مرکزی انجام نشد.');
@@ -251,28 +264,6 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
     if (status === 'cancelled') return { text: 'لغو شده', cls: 'bg-rose-50 text-rose-700 border-rose-200' };
     return { text: 'در حال پردازش در انبار', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
   };
-
-  const allOrders: SupplierOrder[] = backendOrders;
-
-  const filteredOrders = allOrders.filter((ord) => {
-    if (filterStatus === 'ready' || filterStatus === 'overdue') {
-      if (!isReadyOrder(ord.status)) return false;
-    } else if (filterStatus === 'shipped') {
-      if (ord.status !== 'shipped' && ord.status !== 'in_transit') return false;
-    } else if (filterStatus === 'delivered') {
-      if (ord.status !== 'delivered' && ord.status !== 'delivered_confirmed') return false;
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      const matchNumber = ord.orderNumber?.toLowerCase().includes(q) || ord.orderId?.toLowerCase().includes(q);
-      const matchCustomer = ord.customerName?.toLowerCase().includes(q);
-      const matchTracking = ord.trackingNumber?.toLowerCase().includes(q);
-      return matchNumber || matchCustomer || matchTracking;
-    }
-
-    return true;
-  });
 
   const toggleAddons = async (ord: SupplierOrder) => {
     if (expandedOrderId === ord.id) {
@@ -322,7 +313,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
     setSubmittingShipping(true);
     try {
-      await supplierApi.submitShipping(selectedOrder.orderId, { carrier, trackingNumber: trackingNumber.trim(), shippingDate });
+      await supplierApi.submitShipping(selectedOrder.orderId, { carrier, trackingNumber: trackingNumber.trim() });
 
       success(`اطلاعات ارسال سفارش ${selectedOrder.orderNumber} با کد رهگیری «${trackingNumber}» ثبت شد.`);
       setSelectedOrder(null);
@@ -363,12 +354,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
             </div>
             <div className="flex items-center gap-1.5 bg-brand-soft px-2.5 py-1 rounded-xl text-brand-deep font-bold text-[11px]">
               <Warehouse className="w-3.5 h-3.5" strokeWidth={1.5} />
-              <span>{toPersianDigits(warehouseOrders.length)} سفارش</span>
+              <span>{toPersianDigits(warehouseTotal)} سفارش</span>
             </div>
           </div>
 
-          <SupplierResourceState loading={warehouseLoading} error={warehouseError || ''} retry={fetchWarehouseOrders} />
-          {!warehouseLoading && !warehouseError && warehouseOrders.length === 0 ? (
+          <SupplierResourceState loading={warehouseLoading} error={warehouseError} retry={() => fetchWarehouseOrders()} />
+          {warehouseLoaded && !warehouseLoading && !warehouseError && warehouseTotal === 0 ? (
             <SupplierEmptyState icon={<Warehouse />} title="هنوز سفارشی از انبار مرکزی ثبت نشده است." description="سفارش‌های پرداخت‌شدهٔ کالاهای موجود در انبار مرکزی اینجا نمایش داده می‌شوند." />
           ) : (
             <div className="space-y-2.5">
@@ -414,6 +405,13 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
               })}
             </div>
           )}
+          {warehouseLoaded && (warehousePage > 1 || warehouseTotal > warehousePageSize) && (
+            <nav aria-label="صفحه‌های سفارش انبار مرکزی" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-2 text-sm">
+              <button type="button" disabled={warehouseLoading || warehousePage <= 1} onClick={() => void fetchWarehouseOrders(warehousePage - 1)} className="min-h-11 rounded-lg px-3 font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">صفحه قبل</button>
+              <span role="status" className="text-slate-600">صفحه {toPersianDigits(warehousePage)}</span>
+              <button type="button" disabled={warehouseLoading || warehousePage * warehousePageSize >= warehouseTotal} onClick={() => void fetchWarehouseOrders(warehousePage + 1)} className="min-h-11 rounded-lg px-3 font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">صفحه بعد</button>
+            </nav>
+          )}
         </>
       ) : (
         <>
@@ -427,7 +425,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
         </div>
         <div className="flex items-center gap-1.5 bg-brand-soft px-2.5 py-1 rounded-xl text-brand-deep font-bold text-[11px]">
           <Truck className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-          <span>{toPersianDigits(allOrders.length)} سفارش</span>
+          <span>{toPersianDigits(backendOrders.length)} سفارش نمایش داده شده</span>
         </div>
       </div>
 
@@ -438,6 +436,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
           <input
             type="search"
             aria-label="جستجوی سفارش‌ها"
+            maxLength={100}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="جستجوی شماره سفارش، کد رهگیری یا نام خریدار…"
@@ -513,8 +512,8 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
           )}
         </div>
       )}
-      {!loading && !loadError && filteredOrders.length === 0 ? (
-        filterStatus === 'all' && allOrders.length === 0 ? (
+      {!loading && !loadError && backendOrders.length === 0 ? (
+        filterStatus === 'all' && !search ? (
           <SupplierEmptyState icon={<Package />} title="هنوز سفارش ارسال مستقیم نداری." description="سفارش‌های ارسال مستقیم و فرم ثبت کد رهگیری آن‌ها اینجا نمایش داده می‌شوند." />
         ) : (
           <SupplierEmptyState icon={<Package />} title={searchQuery.trim() ? 'سفارشی با این جستجو پیدا نشد.' : 'سفارشی در این وضعیت نیست.'}
@@ -522,10 +521,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
         )
       ) : (
         <div className="space-y-2.5">
-          {filteredOrders.map((ord) => {
-            const isShipped = ord.status === 'shipped' || ord.status === 'in_transit';
-            const isDelivered = ord.status === 'delivered' || ord.status === 'delivered_confirmed';
-            const isPending = !isShipped && !isDelivered;
+          {backendOrders.map((ord) => {
             const { text: chipText, cls: chipClasses, Icon: ChipIcon } = directOrderChip(ord.status);
 
             return (
@@ -613,14 +609,14 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   )}
                 </div>
 
-                {isPending && !isTerminalOrderStatus(ord.status) && (
+                {isReadyOrder(ord.status) && (
                   <div className="space-y-2">
                     {ord.status === 'pending' && (
                       <button
                         type="button"
-                        disabled={acceptingId === ord.id}
+                        disabled={!!acceptingId}
                         onClick={() => void handleAcceptOrder(ord)}
-                        className="w-full py-2 bg-white border border-brand-deep text-brand-deep hover:bg-brand-soft disabled:opacity-50 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
+                        className="min-h-11 w-full py-2 bg-white border border-brand-deep text-brand-deep hover:bg-brand-soft disabled:opacity-50 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                         <span>{acceptingId === ord.id ? 'در حال ثبت…' : 'قبول سفارش'}</span>
@@ -632,7 +628,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                         setSelectedOrder(ord);
                         setTrackingNumber(ord.trackingNumber || '');
                       }}
-                      className="w-full py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
+                      className="min-h-11 w-full py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
                     >
                       <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>ثبت اطلاعات ارسال</span>
@@ -646,8 +642,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
       )}
           {!loading && !loadError && ordersHasMore && (
             <div className="pt-2 text-center">
-              <button type="button" onClick={() => void fetchSupplierOrders(ordersNextCursor)} disabled={loading} className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">بارگذاری سفارش‌های قدیمی‌تر</button>
-              <p className="mt-1 text-[10px] text-slate-500">جستجو و فیلتر روی سفارش‌هایی اعمال می‌شود که تا حالا بارگذاری شده‌اند.</p>
+              <button type="button" onClick={() => void fetchSupplierOrders(ordersNextCursor)} disabled={loading} className="min-h-11 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">نمایش سفارش‌های بیشتر</button>
             </div>
           )}
 
@@ -763,10 +758,11 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
               {shipMode === 'manual' && (
               <>
               <div>
-                <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  شرکت پستی:
+                <label htmlFor="supplier-shipping-carrier" className="text-[11px] font-bold text-slate-700 block mb-1">
+                  شرکت ارسال
                 </label>
                 <select
+                  id="supplier-shipping-carrier"
                   value={carrier}
                   onChange={(e) => setCarrier(e.target.value)}
                   className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
@@ -797,27 +793,10 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                 </div>
               </div>
 
-              <div>
-                <label htmlFor="supplier-shipping-date" className="text-xs font-bold text-slate-700 block mb-1">
-                  تاریخ ارسال
-                </label>
-                <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
-                  <Calendar className="w-4 h-4 text-slate-400 shrink-0 ml-2"  strokeWidth={1.5}/>
-                  <input
-                    id="supplier-shipping-date"
-                    type="text"
-                    value={shippingDate}
-                    onChange={(e) => setShippingDate(e.target.value)}
-                    className="w-full bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-hidden"
-                    dir="ltr"
-                  />
-                </div>
-              </div>
-
               <div className="p-2.5 bg-brand-soft border border-brand-border rounded-xl text-[10px] text-brand-deep flex items-start gap-1.5">
                 <AlertCircle className="w-4 h-4 text-brand-deep shrink-0 mt-0.5"  strokeWidth={1.5}/>
                 <span>
-                  با ثبت اطلاعات ارسال، وضعیت سفارش به «ارسال شده» تغییر می‌کند.
+                  زمان ثبت خودکار ذخیره می‌شود و وضعیت مرسوله به «ارسال شده» تغییر می‌کند.
                 </span>
               </div>
               </>

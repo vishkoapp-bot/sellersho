@@ -19,6 +19,8 @@ var (
 	ErrInboundLineNotFound         = errors.New("inbound_line_not_found")
 	ErrIncompleteReturnReceipt     = errors.New("incomplete_return_receipt")
 	ErrUnitCodesRequireReceiptLine = errors.New("unit_codes_require_receipt_line")
+	ErrCartonNotReceivable         = errors.New("carton_not_receivable")
+	ErrDuplicateCartonReceiptItem  = errors.New("duplicate_carton_receipt_item")
 )
 
 type UnitMismatch struct {
@@ -166,11 +168,18 @@ func lockUnitsByCodesTx(ctx context.Context, tx *sql.Tx, codes []string) (map[st
 	return byCode, rows.Err()
 }
 
-func sortedLotCodesTx(ctx context.Context, tx *sql.Tx, balanceID string) ([]string, error) {
-	if balanceID == "" {
+func receiptLineUnitCodesTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, quarantineID string) ([]string, error) {
+	if l.Variant == "" {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT code FROM product_units WHERE balance_id=$1 ORDER BY sequence`, balanceID)
+	// A unit remains part of a cumulative receipt after QC moves it out of
+	// quarantine. Only the exact receipt event or exact quarantine lot counts.
+	rows, err := tx.QueryContext(ctx, `SELECT u.code FROM product_units u
+		WHERE u.product_id=$1 AND u.variant_id=$2::uuid AND (u.balance_id=$4 OR EXISTS (
+			SELECT 1 FROM product_unit_events e WHERE e.unit_id=u.id AND e.reference_id=$3
+				AND ((e.reference_type='inbound_receive' AND e.event_type='minted')
+					OR (e.reference_type='inbound_transfer' AND e.from_status='reserved' AND e.to_status='quarantined'))
+		)) ORDER BY u.sequence`, l.Product, l.Variant, l.ID, quarantineID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,18 +193,6 @@ func sortedLotCodesTx(ctx context.Context, tx *sql.Tx, balanceID string) ([]stri
 		codes = append(codes, code)
 	}
 	return codes, rows.Err()
-}
-
-func codesForQuarantineLotTx(ctx context.Context, tx *sql.Tx, balanceID string) (map[string]bool, error) {
-	codes, err := sortedLotCodesTx(ctx, tx, balanceID)
-	if err != nil {
-		return nil, err
-	}
-	set := make(map[string]bool, len(codes))
-	for _, code := range codes {
-		set[code] = true
-	}
-	return set, nil
 }
 
 func inboundLineLotTx(ctx context.Context, tx *sql.Tx, l inboundPersistedLine, status string) (string, error) {
@@ -268,6 +265,7 @@ func (r *SupplierRepository) ReceiveInboundLine(ctx context.Context, lineID stri
 	if err = lockInboundShipmentTx(ctx, tx, shipment); err != nil {
 		return UnitReceiptResult{}, err
 	}
+	isCarton := uuid.Validate(shipment) == nil
 	lines, err := inboundLinesTx(ctx, tx, shipment)
 	if err != nil {
 		return UnitReceiptResult{}, err
@@ -279,9 +277,22 @@ func (r *SupplierRepository) ReceiveInboundLine(ctx context.Context, lineID stri
 		if err := lockWarehouseQCReceiptScopeTx(ctx, tx, shipment, l.Product, lineID, l.Supplier); err != nil {
 			return UnitReceiptResult{}, err
 		}
+		if isCarton {
+			if err := requireOpenCartonReceiptTx(ctx, tx, shipment); err != nil {
+				return UnitReceiptResult{}, err
+			}
+		}
 		result, err := receiveInboundLineResultTx(ctx, tx, l, cumulativeReceived, codes, actor)
 		if err != nil {
 			return UnitReceiptResult{}, err
+		}
+		if isCarton {
+			if err := recordShipmentItemReceiptTx(ctx, tx, shipment, l.Variant, cumulativeReceived, ""); err != nil {
+				return UnitReceiptResult{}, err
+			}
+			if _, err := syncCartonReceiptStatusTx(ctx, tx, shipment); err != nil {
+				return UnitReceiptResult{}, err
+			}
 		}
 		return result, tx.Commit()
 	}
@@ -300,7 +311,7 @@ func inboundLineReceiptEchoTx(ctx context.Context, tx *sql.Tx, l inboundPersiste
 	if err != nil {
 		return UnitReceiptResult{}, err
 	}
-	echo, err := sortedLotCodesTx(ctx, tx, lot)
+	echo, err := receiptLineUnitCodesTx(ctx, tx, l, lot)
 	return unitReceipt(l.ID, cumulative, echo), err
 }
 
@@ -326,9 +337,13 @@ func validateInboundArrivalsTx(ctx context.Context, tx *sql.Tx, l inboundPersist
 	if err != nil {
 		return arrivals, err
 	}
-	previous, err := codesForQuarantineLotTx(ctx, tx, arrivals.quarantine)
+	receivedCodes, err := receiptLineUnitCodesTx(ctx, tx, l, arrivals.quarantine)
 	if err != nil {
 		return arrivals, err
+	}
+	previous := make(map[string]bool, len(receivedCodes))
+	for _, code := range receivedCodes {
+		previous[code] = true
 	}
 	var transit, spnc string
 	if l.Kind == "external_replenishment" {
@@ -346,7 +361,7 @@ func validateInboundArrivalsTx(ctx context.Context, tx *sql.Tx, l inboundPersist
 	start := len(mismatches.Errors)
 	for _, code := range codes {
 		u := byCode[code]
-		if previous[code] && u.status == "quarantined" && u.variant == l.Variant {
+		if previous[code] && u.variant == l.Variant {
 			continue
 		}
 		arrivals.codes = append(arrivals.codes, code)
@@ -369,7 +384,7 @@ func validateInboundArrivalsTx(ctx context.Context, tx *sql.Tx, l inboundPersist
 	}
 	if len(arrivals.codes) != cumulative-l.Received && len(mismatches.Errors) == start {
 		if len(arrivals.codes) > cumulative-l.Received {
-			mismatches.rejectCodes(l.ID, arrivals.codes, "quarantined or new arrival for this receipt", "cumulative set omits previously received units")
+			mismatches.rejectCodes(l.ID, arrivals.codes, "already received or new arrival for this receipt", "cumulative set omits previously received units")
 		} else {
 			mismatches.add(l.ID, "", fmt.Sprintf("%d new arrivals", cumulative-l.Received), fmt.Sprintf("%d new arrivals", len(arrivals.codes)))
 		}
@@ -448,8 +463,59 @@ func moveSelectedInboundUnitsTx(ctx context.Context, tx *sql.Tx, units []lockedP
 }
 
 func recordShipmentItemReceiptTx(ctx context.Context, tx *sql.Tx, shipmentID, variantID string, receivedQty int, qcStatus string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE shipment_items SET received_qty=$3,inventory_received_qty=$3,qc_status=$4 WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID, receivedQty, qcStatus)
+	res, err := tx.ExecContext(ctx, `UPDATE shipment_items SET received_qty=$3,inventory_received_qty=$3,qc_status=COALESCE(NULLIF($4,''),qc_status)
+		WHERE shipment_id=$1 AND variant_id=$2`, shipmentID, variantID, receivedQty, qcStatus)
+	if err != nil {
+		return err
+	}
+	count, err := res.RowsAffected()
+	if err == nil && count != 1 {
+		return ErrInboundProvenance
+	}
 	return err
+}
+
+func requireOpenCartonReceiptTx(ctx context.Context, tx *sql.Tx, shipmentID string) error {
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT carton_state.status FROM shipments s`+cartonStatusReadJoin+` WHERE s.id=$1`, shipmentID).Scan(&status); err != nil {
+		return err
+	}
+	switch status {
+	case "sent", "in_transit", "partially_received", "received":
+		return nil
+	default:
+		return ErrCartonNotReceivable
+	}
+}
+
+func syncCartonReceiptStatusTx(ctx context.Context, tx *sql.Tx, shipmentID string) (string, error) {
+	var total, complete int
+	var anyReceived bool
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),
+		COUNT(*) FILTER(WHERE COALESCE(l.received_quantity,i.received_qty)::bigint+COALESCE(l.cancelled_quantity,0)>=i.expected_qty),
+		COALESCE(BOOL_OR(COALESCE(l.received_quantity,i.received_qty)>0),FALSE)
+		FROM shipment_items i JOIN shipments s ON s.id=i.shipment_id
+		JOIN product_variants v ON v.id=i.variant_id
+		LEFT JOIN inbound_inventory_lines l ON l.shipment_id=s.id::text AND l.supplier_id=s.supplier_id
+			AND l.product_id=v.product_id AND l.variant_id=i.variant_id::text
+		WHERE i.shipment_id=$1`, shipmentID).Scan(&total, &complete, &anyReceived)
+	if err != nil {
+		return "", err
+	}
+	if total == 0 {
+		return "", ErrInboundProvenance
+	}
+	var status string
+	if !anyReceived {
+		err := tx.QueryRowContext(ctx, `SELECT status FROM shipments WHERE id=$1`, shipmentID).Scan(&status)
+		return status, err
+	}
+	status = "partially_received"
+	if complete == total {
+		status = "received"
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE shipments SET status=$1,received_at=COALESCE(received_at,NOW()) WHERE id=$2`, status, shipmentID)
+	return status, err
 }
 
 type inboundDispositionCounts struct {

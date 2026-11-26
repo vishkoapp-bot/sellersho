@@ -31,6 +31,17 @@ func handleAccountSupportTickets(w http.ResponseWriter, r *http.Request, stores 
 	if r.Method == http.MethodPost && !decodeSupportJSON(w, r, &input) {
 		return
 	}
+	requestKey := ""
+	if r.Method == http.MethodPost {
+		keys := r.Header.Values("Idempotency-Key")
+		if len(keys) > 1 || (len(keys) == 1 && len(keys[0]) != 36) {
+			writeSupportError(w, repository.ErrStoreInput)
+			return
+		}
+		if len(keys) == 1 {
+			requestKey = keys[0]
+		}
+	}
 	actor, ok := supportActor(w, r, suppliers, input.SupportReferenceInput)
 	if !ok {
 		return
@@ -40,7 +51,7 @@ func handleAccountSupportTickets(w http.ResponseWriter, r *http.Request, stores 
 	// subject and message. New clients request a category and get the new ID.
 	legacySellerPost := r.Method == http.MethodPost && actor.Role == "seller" && input.Kind == ""
 	if r.Method == http.MethodPost && !legacySellerPost {
-		id, err := stores.CreateSupportTicket(r.Context(), actor, input.SupportReferenceInput, input.Subject, input.Message)
+		id, err := stores.CreateSupportTicketWithKey(r.Context(), actor, input.SupportReferenceInput, input.Subject, input.Message, requestKey)
 		if err != nil {
 			writeSupportError(w, err)
 			return
@@ -60,7 +71,7 @@ func handleAccountSupportTickets(w http.ResponseWriter, r *http.Request, stores 
 		}
 	}
 	if legacySellerPost {
-		if _, err := stores.CreateSupportTicket(r.Context(), actor, input.SupportReferenceInput, input.Subject, input.Message); err != nil {
+		if _, err := stores.CreateSupportTicketWithKey(r.Context(), actor, input.SupportReferenceInput, input.Subject, input.Message, requestKey); err != nil {
 			writeSupportError(w, err)
 			return
 		}
@@ -152,6 +163,8 @@ func writeSupportError(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"این مورد برای حساب شما پیدا نشد."}`, http.StatusNotFound)
 	case errors.Is(err, repository.ErrStoreInput):
 		http.Error(w, `{"error":"اطلاعات درخواست پشتیبانی معتبر نیست."}`, http.StatusBadRequest)
+	case errors.Is(err, repository.ErrSupportRequestConflict):
+		http.Error(w, `{"error":"این درخواست با متن یا مرجع دیگری ثبت شده است. پیام‌های بخش پشتیبانی را بررسی کن."}`, http.StatusConflict)
 	default:
 		writeInternalError(w, err)
 	}

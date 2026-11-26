@@ -72,3 +72,31 @@ test('marks stale rows as requiring a new preview and still applies later rows',
   assert.equal(canRunVariantEdit(result[0]), false);
   assert.equal(result[1].outcomes?.stock?.state, 'saved');
 });
+
+test('reads Excel CSV with a localized semicolon delimiter', () => {
+  const rows = parseVariantCSV('variant_id;stock;base_cost;reason\r\nsku-1;۸;1,500;"aisle; shelf 2"', 'supplier');
+  assert.deepEqual(rows, [{ line: 2, id: 'sku-1', edit: { stock: 8, cost: 1500, reason: 'aisle; shelf 2' } }]);
+});
+
+test('checkpoints acknowledged fields before interruption and resumes uncertain fields with the original attempt', async () => {
+  const rows = previewVariantEdits(parseVariantCSV('variant_id,stock,base_cost,reason\nsku-1,8,1500,count\nsku-2,6,,count', 'supplier'), supplierRows, 'supplier');
+  const interrupt = new AbortController();
+  const written: string[] = [];
+  const checkpoints = new Map<number, typeof rows[number]>();
+  await runVariantEdits(rows, 'original', async (_row, field, attempt) => {
+    written.push(attempt);
+    if (field === 'cost') {
+      interrupt.abort();
+      throw new Error('connection closed');
+    }
+    return { message: 'saved', retired: ['retired-unit'] };
+  }, { signal: interrupt.signal, onProgress: (index, row) => { checkpoints.set(index, row); } });
+  assert.deepEqual(written, ['original-2-stock', 'original-2-cost']);
+  assert.equal(checkpoints.get(0)?.outcomes?.stock?.retired?.[0], 'retired-unit');
+  assert.equal(checkpoints.get(0)?.outcomes?.cost, undefined);
+  await runVariantEdits(rows.map((row, index) => checkpoints.get(index) ?? row), 'original', async (_row, _field, attempt) => {
+    written.push(attempt);
+    return { message: 'retried' };
+  });
+  assert.deepEqual(written, ['original-2-stock', 'original-2-cost', 'original-2-cost', 'original-3-stock']);
+});

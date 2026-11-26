@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -714,6 +716,7 @@ var (
 	// ErrPriceIncreaseDuplicatePending: a pending row already exists for
 	// the product; a second governed increase is refused with HTTP 409.
 	ErrPriceIncreaseDuplicatePending = errors.New("a pending price increase already exists for this product")
+	ErrVariantWorkspacePriceRejected = errors.New("variant_workspace_price_rejected")
 	// ErrGovernedProductNotFound: the product does not belong to the supplier.
 	ErrGovernedProductNotFound = errors.New("product not found for supplier")
 	// ErrProductNotFound: no product with the id exists at all.
@@ -1019,10 +1022,8 @@ func (r *PricingRepository) ApplyGovernedPriceIncrease(ctx context.Context, supp
 // its own supplier_base_cost when set, else the product's current
 // cost (the inheritance every pricing read applies). A new cost at
 // or below the effective cost degrades to the direct-apply path with
-// no row (mirroring a product decrease). Clear-to-inherit reaches
-// this path ONLY through ApplyGovernedVariantClear: a clear lowers
-// or matches the effective cost (and stays on the direct
-// UpdateVariantPricing path) unless the variant's own cost sits
+// no row (mirroring a product decrease). A clear likewise applies
+// directly unless the variant's own cost sits
 // BELOW the product's, where clearing would RAISE the effective cost
 // to the product's — that raise is governed like any other increase,
 // with the clear intent recorded on the row (clear_on_approve,
@@ -1035,10 +1036,9 @@ func (r *PricingRepository) ApplyGovernedVariantPriceIncrease(ctx context.Contex
 	return r.applyGovernedVariantIncrease(ctx, supplierID, productID, variantID, newCost, false, reason)
 }
 
-// ApplyGovernedVariantClear is the governed half of a variant
-// clear-to-inherit (migration 202611050010): the handler routes a
-// clear here when the variant's own cost sits below the product's,
-// so clearing would raise the effective cost to the product's cost.
+// ApplyGovernedVariantClear evaluates restoration of a variant's inherited
+// cost. A clear raises the effective cost only when the variant's own cost
+// sits below the product's.
 // The increase the matrix evaluates is own cost -> product cost,
 // derived from the locked rows inside the transaction (never from a
 // caller-side read); an approval — auto or reviewed — applies AS A
@@ -1054,6 +1054,56 @@ func (r *PricingRepository) ApplyGovernedVariantClear(ctx context.Context, suppl
 type VariantCostPrecondition struct {
 	Cost        *int64 `json:"cost"`
 	ProductCost int64  `json:"productCost"`
+	Key         string `json:"-"`
+	Actor       string `json:"-"`
+}
+
+type workspaceVariantPriceReceipt struct {
+	PayloadHash string                 `json:"payloadHash"`
+	Outcome     GovernedIncreaseResult `json:"outcome"`
+}
+
+func readWorkspaceVariantPriceReceipt(ctx context.Context, tx *sql.Tx, supplierID, receiptID, payloadHash string) (*GovernedIncreaseResult, error) {
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT details FROM audit_logs
+		WHERE id=$1 AND operator=$2 AND action='supplier_workspace_variant_price'`, receiptID, "supplier:"+supplierID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var receipt workspaceVariantPriceReceipt
+	if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+		return nil, err
+	}
+	if receipt.PayloadHash != payloadHash {
+		return nil, ErrVariantWorkspaceConflict
+	}
+	result := &receipt.Outcome
+	if result.Applied || result.RequestID == "" {
+		return result, nil
+	}
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM supplier_price_increases WHERE id=$1 AND supplier_id=$2`, result.RequestID, supplierID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return nil, ErrVariantWorkspaceConflict
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case "pending":
+		return result, nil
+	case "approved":
+		result.Applied = true
+		result.Reason = ""
+		return result, nil
+	case "rejected":
+		return nil, ErrVariantWorkspacePriceRejected
+	default:
+		return nil, ErrVariantWorkspaceConflict
+	}
 }
 
 func (r *PricingRepository) ApplyWorkspaceVariantCost(ctx context.Context, supplierID, productID, variantID string, cost *int64, reason string, expected VariantCostPrecondition) (*GovernedIncreaseResult, error) {
@@ -1073,6 +1123,30 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	var receiptID, payloadHash string
+	if len(precondition) > 0 && precondition[0].Key != "" {
+		expected := precondition[0]
+		keyDigest := sha256.Sum256([]byte(supplierID + "\x00" + expected.Actor + "\x00" + expected.Key))
+		receiptID = "WS-PRICE-" + hex.EncodeToString(keyDigest[:20])
+		payload, err := json.Marshal(struct {
+			ProductID string
+			VariantID string
+			Cost      int64
+			Clear     bool
+			Reason    string
+			Expected  VariantCostPrecondition
+		}{productID, variantID, newCost, clearOnApprove, reason, expected})
+		if err != nil {
+			return nil, err
+		}
+		digest := sha256.Sum256(payload)
+		payloadHash = hex.EncodeToString(digest[:])
+		// Serialize reuse of one operation key, including requests for different products.
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, receiptID); err != nil {
+			return nil, err
+		}
+	}
 
 	var productCost int64
 	var implicitAgreement bool
@@ -1098,6 +1172,27 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 	if err != nil {
 		return nil, err
 	}
+	if receiptID != "" {
+		if replay, err := readWorkspaceVariantPriceReceipt(ctx, tx, supplierID, receiptID, payloadHash); replay != nil || err != nil {
+			return replay, err
+		}
+	}
+	finish := func(result GovernedIncreaseResult) (*GovernedIncreaseResult, error) {
+		if receiptID != "" {
+			raw, err := json.Marshal(workspaceVariantPriceReceipt{PayloadHash: payloadHash, Outcome: result})
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(id,operator,action,category,details)
+				VALUES($1,$2,'supplier_workspace_variant_price','supplier',$3)`, receiptID, "supplier:"+supplierID, string(raw)); err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}
 	oldCost := productCost
 	if variantCost.Valid {
 		oldCost = variantCost.Int64
@@ -1106,7 +1201,7 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 		expected := precondition[0]
 		alreadyApplied := (!variantCost.Valid && clearOnApprove) || (variantCost.Valid && !clearOnApprove && variantCost.Int64 == newCost)
 		if alreadyApplied {
-			return &GovernedIncreaseResult{Applied: true, OldReference: oldCost}, nil
+			return finish(GovernedIncreaseResult{Applied: true, OldReference: oldCost})
 		}
 		matching := (!variantCost.Valid && expected.Cost == nil) || (variantCost.Valid && expected.Cost != nil && variantCost.Int64 == *expected.Cost)
 		if !matching || expected.ProductCost != productCost {
@@ -1143,10 +1238,7 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 				return nil, err
 			}
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		return &GovernedIncreaseResult{Applied: true, OldReference: oldCost}, nil
+		return finish(GovernedIncreaseResult{Applied: true, OldReference: oldCost})
 	}
 
 	if newCost <= oldCost {
@@ -1161,7 +1253,7 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 		return nil, err
 	}
 	if hasPending {
-		if len(precondition) > 0 {
+		if len(precondition) > 0 && receiptID == "" {
 			var existing GovernedIncreaseResult
 			err := tx.QueryRowContext(ctx, `SELECT id,pct FROM supplier_price_increases
 				WHERE product_id=$1 AND variant_id=$2 AND status='pending' AND new_reference=$3 AND clear_on_approve=$4 LIMIT 1`,
@@ -1213,13 +1305,10 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 		if err != nil {
 			return nil, err
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		return &GovernedIncreaseResult{
+		return finish(GovernedIncreaseResult{
 			Applied: false, RequestID: id, OldReference: oldCost,
 			Pct: pct, CapPct: decision.CapPct, Reason: decision.Reason,
-		}, nil
+		})
 	}
 
 	row.Status = "approved"
@@ -1247,13 +1336,10 @@ func (r *PricingRepository) applyGovernedVariantIncrease(ctx context.Context, su
 	if err := insertSupplierAuditTx(ctx, tx, supplierID, "supplier_variant_pricing_update", auditDetails); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &GovernedIncreaseResult{
+	return finish(GovernedIncreaseResult{
 		Applied: true, AutoApproved: true, RequestID: id, OldReference: oldCost,
 		Pct: pct, CapPct: decision.CapPct,
-	}, nil
+	})
 }
 
 // insertPricingAuditTx appends one audit_logs row inside the caller's
@@ -1347,7 +1433,7 @@ func (r *PricingRepository) ReviewPriceIncrease(ctx context.Context, requestID s
 			if variantCost.Valid {
 				current = variantCost.Int64
 			}
-			if current != row.OldReference {
+			if current != row.OldReference || (row.ClearOnApprove && productCost != row.NewReference) {
 				return nil, ErrPriceIncreaseStaleCost
 			}
 			if row.ClearOnApprove {

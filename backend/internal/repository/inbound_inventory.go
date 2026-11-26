@@ -15,6 +15,7 @@ import (
 
 var ErrInboundProvenance = errors.New("inbound provenance conflict or reconciliation required")
 var ErrInboundLifecycleClosed = errors.New("use cumulative receipt-line QC disposition instead of the obsolete fail-only operation")
+var ErrCartonNotCancellable = errors.New("carton_not_cancellable")
 
 type InventoryOrigin struct{ Type, SupplierID, WarehouseID, SupplierWarehouseID string }
 type InboundTransferLine struct {
@@ -603,17 +604,20 @@ func (r *SupplierRepository) ChangeCartonDispatch(ctx context.Context, supplier,
 	if owner != supplier {
 		return ErrInboundProvenance
 	}
-	if !cancel {
-		var pending, cancelled int
-		if err := tx.QueryRowContext(ctx, `SELECT SUM(quantity-dispatched_quantity-cancelled_quantity),SUM(cancelled_quantity) FROM inbound_inventory_lines WHERE shipment_id=$1`, shipment).Scan(&pending, &cancelled); err != nil {
-			return err
+	var pending, cancelled, dispatched int
+	if err := tx.QueryRowContext(ctx, `SELECT SUM(quantity-dispatched_quantity-cancelled_quantity),
+		SUM(cancelled_quantity),SUM(dispatched_quantity) FROM inbound_inventory_lines WHERE shipment_id=$1`,
+		shipment).Scan(&pending, &cancelled, &dispatched); err != nil {
+		return err
+	}
+	if !cancel && cancelled > 0 {
+		return ErrInboundProvenance
+	}
+	if pending == 0 {
+		if cancel && cancelled == 0 {
+			return ErrCartonNotCancellable
 		}
-		if cancelled > 0 {
-			return ErrInboundProvenance
-		}
-		if pending == 0 {
-			return tx.Commit()
-		}
+		return tx.Commit()
 	}
 	if cancel {
 		err = cancelInboundTransferTx(ctx, tx, shipment)
@@ -625,15 +629,13 @@ func (r *SupplierRepository) ChangeCartonDispatch(ctx context.Context, supplier,
 	}
 	status := "in_transit"
 	if cancel {
-		var dispatched int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(dispatched_quantity),0) FROM inbound_inventory_lines WHERE shipment_id=$1`, shipment).Scan(&dispatched); err != nil {
-			return err
-		}
-		if dispatched == 0 {
-			status = "cancelled"
-		} else {
+		if dispatched > 0 {
+			if _, err := syncCartonReceiptStatusTx(ctx, tx, shipment); err != nil {
+				return err
+			}
 			return tx.Commit()
 		}
+		status = "cancelled"
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status=$2 WHERE id=$1`, shipment, status); err != nil {
 		return err

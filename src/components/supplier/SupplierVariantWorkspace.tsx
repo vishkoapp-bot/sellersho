@@ -1,5 +1,9 @@
+import { useMemo } from 'react';
+import type { SupplierSession } from '../../types';
 import { loadSupplierVariantWorkspace, saveSupplierVariantWork } from '../../services/variantWorkspaceApi';
+import { supplierVariantBatchRecovery } from '../../services/supplierVariantBatch';
 import { VariantWorkspace, type WorkspaceRow } from '../VariantWorkspace';
+import { RetiredPrintedCodesPanel } from './RetiredPrintedCodesPanel';
 
 async function load(signal: AbortSignal): Promise<WorkspaceRow[]> {
   const rows = await loadSupplierVariantWorkspace(signal);
@@ -11,11 +15,13 @@ async function load(signal: AbortSignal): Promise<WorkspaceRow[]> {
 }
 
 export function SupplierVariantWorkspace({
-  onChanged, onRetired,
+  session, onChanged,
 }: {
+  session?: Pick<SupplierSession, 'supplierId' | 'token'> | null;
   onChanged: () => void;
-  onRetired: (codes: string[]) => void;
 }) {
-  return <VariantWorkspace role="supplier" title="موجودی و قیمت عمده تنوع‌ها" load={load} save={saveSupplierVariantWork}
-    onChanged={onChanged} onRetired={onRetired} />;
+  const recovery = useMemo(() => supplierVariantBatchRecovery(session), [session]);
+  return <VariantWorkspace key={recovery?.scope} role="supplier" title="موجودی و قیمت عمده تنوع‌ها"
+    load={load} save={saveSupplierVariantWork} recovery={recovery} onChanged={onChanged}
+    renderRetired={(codes, acknowledge) => <RetiredPrintedCodesPanel codes={codes} onAcknowledge={acknowledge} />} />;
 }

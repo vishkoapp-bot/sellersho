@@ -854,6 +854,12 @@ func (h *SupplierHandlers) HandleCreateCartonShipment(w http.ResponseWriter, r *
 			return
 		}
 		if err := h.supplierRepo.ChangeCartonDispatch(r.Context(), supplierID, body.ShipmentID, body.Action == "cancel"); err != nil {
+			if errors.Is(err, repository.ErrCartonNotCancellable) {
+				t01WriteJSON(w, http.StatusConflict, map[string]string{
+					"error": "این کارتن ارسال شده و امکان لغو آن وجود ندارد.", "code": "carton_not_cancellable",
+				})
+				return
+			}
 			http.Error(w, `{"error":"inbound provenance or physical state conflict"}`, 409)
 			return
 		}
@@ -1546,95 +1552,35 @@ func (h *SupplierHandlers) HandleUpdateVariantPricing(w http.ResponseWriter, r *
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
-	if body.Expected != nil {
-		if h.pricingRepo == nil {
-			http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
-			return
-		}
-		result, err := h.pricingRepo.ApplyWorkspaceVariantCost(r.Context(), supplierID, productID, variantID, cost, body.Reason, *body.Expected)
-		if errors.Is(err, repository.ErrVariantWorkspaceConflict) {
-			w.Header().Set("Content-Type", "application/json")
-			http.Error(w, `{"error":"variant_workspace_conflict"}`, http.StatusConflict)
-			return
-		}
-		h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
-		return
-	}
-	if cost != nil {
-		_, effective, err := h.supplierRepo.GetVariantEffectiveBaseCost(r.Context(), supplierID, productID, variantID)
-		if err != nil {
-			if err == sql.ErrNoRows {
+	if h.pricingRepo == nil {
+		if body.Expected == nil && h.supplierRepo != nil {
+			if _, _, err := h.supplierRepo.GetVariantEffectiveBaseCost(r.Context(), supplierID, productID, variantID); errors.Is(err, sql.ErrNoRows) {
 				http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
 				return
 			}
-			writeInternalError(w, err)
-			return
 		}
-		if *cost > effective {
-			h.applyGovernedVariantIncrease(w, r, supplierID, productID, variantID, *cost, body.Reason)
-			return
-		}
-	}
-	if cost == nil && body.Clear {
-		own, productCost, err := h.supplierRepo.GetVariantOwnAndProductCost(r.Context(), supplierID, productID, variantID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
-				return
-			}
-			writeInternalError(w, err)
-			return
-		}
-		// A clear only escapes governance when it cannot raise the
-		// effective cost: nothing to clear, or the own cost already
-		// meets/exceeds the product's (clearing lowers or matches).
-		// Below the product's cost, clearing is a governed increase.
-		if own != nil && *own < productCost {
-			h.applyGovernedVariantClear(w, r, supplierID, productID, variantID, body.Reason)
-			return
-		}
-	}
-	out, err := h.supplierRepo.UpdateVariantPricing(r.Context(), supplierID, productID, variantID, cost, body.Clear, body.Reason)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
-			return
-		}
-		writeInternalError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
-}
-
-// applyGovernedVariantIncrease answers a variant cost INCREASE the
-// way HandleUpdatePricing answers a product one: applied -> the
-// variant's post-write shape plus applied/autoApproved/requestId;
-// queued -> 202 pending_review with the Persian explanation; a
-// duplicate pending row for the same variant -> 409.
-func (h *SupplierHandlers) applyGovernedVariantIncrease(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, newCost int64, reason string) {
-	// Without a pricing repository the increase cannot be evaluated,
-	// so it is refused rather than applied ungated (mirrors the
-	// product pricing handler).
-	if h.pricingRepo == nil {
 		http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
 		return
 	}
-	result, err := h.pricingRepo.ApplyGovernedVariantPriceIncrease(r.Context(), supplierID, productID, variantID, newCost, reason)
-	h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
-}
 
-// applyGovernedVariantClear answers a clear-to-inherit that would
-// RAISE the variant's effective cost (own cost below the product's)
-// with the same governed responses as an increase; approval applies
-// as a clear (see PricingRepository.ApplyGovernedVariantClear).
-func (h *SupplierHandlers) applyGovernedVariantClear(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, reason string) {
-	if h.pricingRepo == nil {
-		http.Error(w, `{"error":"Pricing governance unavailable"}`, http.StatusInternalServerError)
-		return
+	// Classify every edit against the current costs while both rows are locked.
+	var result *repository.GovernedIncreaseResult
+	var err error
+	switch {
+	case body.Expected != nil:
+		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if key != "" && (len(key) < 8 || len(key) > 100) {
+			http.Error(w, `{"error":"Invalid Idempotency-Key"}`, http.StatusBadRequest)
+			return
+		}
+		body.Expected.Key, body.Expected.Actor = key, callerUserID(r)
+		result, err = h.pricingRepo.ApplyWorkspaceVariantCost(r.Context(), supplierID, productID, variantID, cost, body.Reason, *body.Expected)
+	case cost == nil:
+		result, err = h.pricingRepo.ApplyGovernedVariantClear(r.Context(), supplierID, productID, variantID, body.Reason)
+	default:
+		result, err = h.pricingRepo.ApplyGovernedVariantPriceIncrease(r.Context(), supplierID, productID, variantID, *cost, body.Reason)
 	}
-	result, err := h.pricingRepo.ApplyGovernedVariantClear(r.Context(), supplierID, productID, variantID, reason)
-	h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, result, err)
+	h.writeGovernedVariantResult(w, r, supplierID, productID, variantID, body.Expected != nil, result, err)
 }
 
 // writeGovernedVariantResult renders one governed variant-pricing
@@ -1642,8 +1588,14 @@ func (h *SupplierHandlers) applyGovernedVariantClear(w http.ResponseWriter, r *h
 // shapes: applied -> the variant's post-write shape plus
 // applied/autoApproved/requestId; queued -> 202 pending_review with
 // the Persian explanation; duplicate pending -> 409.
-func (h *SupplierHandlers) writeGovernedVariantResult(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, result *repository.GovernedIncreaseResult, err error) {
+func (h *SupplierHandlers) writeGovernedVariantResult(w http.ResponseWriter, r *http.Request, supplierID, productID, variantID string, workspace bool, result *repository.GovernedIncreaseResult, err error) {
 	if err != nil {
+		if errors.Is(err, repository.ErrVariantWorkspaceConflict) || errors.Is(err, repository.ErrVariantWorkspacePriceRejected) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, repository.ErrPriceIncreaseDuplicatePending) {
 			http.Error(w, `{"error":"برای این کالا یک درخواست افزایش قیمت در حال بررسی وجود دارد."}`, http.StatusConflict)
 			return
@@ -1660,6 +1612,10 @@ func (h *SupplierHandlers) writeGovernedVariantResult(w http.ResponseWriter, r *
 		out, err := h.supplierRepo.GetSupplierVariant(r.Context(), supplierID, productID, variantID)
 		if err != nil {
 			writeInternalError(w, err)
+			return
+		}
+		if !workspace && result.RequestID == "" {
+			json.NewEncoder(w).Encode(out)
 			return
 		}
 		raw, _ := json.Marshal(out)

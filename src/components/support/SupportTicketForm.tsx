@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type FormEvent } from 'react';
 import { CheckCircle2, Send } from 'lucide-react';
 import { supportApi, type SupportCategory, type SupportReferenceInput, type SupportRole, type SupportStatus } from '../../services/supportApi';
+import { newUuid } from '../../services/uuid';
 
 export const supportCategoryLabels: Record<SupportCategory, string> = {
   general: 'عمومی',
@@ -37,6 +38,7 @@ export function SupportTicketForm({ role, context, initialSubject = '', onCreate
   const [createdId, setCreatedId] = useState('');
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
+  const requestKey = useRef<string | null>(null);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -46,7 +48,8 @@ export function SupportTicketForm({ role, context, initialSubject = '', onCreate
     onBusyChange?.(true);
     setError('');
     try {
-      const result = await supportApi.create(role, { ...context, subject: subject.trim(), message: message.trim() });
+      requestKey.current ??= newUuid();
+      const result = await supportApi.create(role, { ...context, subject: subject.trim(), message: message.trim() }, requestKey.current);
       setCreatedId(result.id);
       onCreated?.(result.id);
     } catch (err: unknown) {
@@ -70,7 +73,7 @@ export function SupportTicketForm({ role, context, initialSubject = '', onCreate
           </div>
         </div>
         {context.kind === 'general' && (
-          <button type="button" className={supportPrimaryButtonClass} onClick={() => { setCreatedId(''); setSubject(''); setMessage(''); }}>
+          <button type="button" className={supportPrimaryButtonClass} onClick={() => { requestKey.current = null; setCreatedId(''); setSubject(''); setMessage(''); }}>
             پیام تازه به پشتیبانی
           </button>
         )}

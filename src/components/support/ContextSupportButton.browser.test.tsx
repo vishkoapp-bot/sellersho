@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer';
 
-test('contextual support previews an owned row and writes only on submit', { timeout: 120000 }, async () => {
+test('contextual support previews without writing and keeps the same key when submission is retried', { timeout: 120000 }, async () => {
   const bundle = await build({
     write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
@@ -14,7 +14,7 @@ test('contextual support previews an owned row and writes only on submit', { tim
       createRoot(document.getElementById('root')).render(<ContextSupportButton role="supplier" kind="shipment" referenceType="carton" referenceId="shipment-id" />);
     ` },
   });
-  const writes: unknown[] = [];
+  const writes: { key: string | string[] | undefined; body: unknown }[] = [];
   const previews: URLSearchParams[] = [];
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://fixture');
@@ -25,8 +25,12 @@ test('contextual support previews an owned row and writes only on submit', { tim
     } else if (url.pathname === '/api/v1/supplier/tickets' && request.method === 'POST') {
       let body = '';
       for await (const chunk of request) body += chunk;
-      writes.push(JSON.parse(body));
+      writes.push({ key: request.headers['idempotency-key'], body: JSON.parse(body) });
       response.setHeader('Content-Type', 'application/json');
+      if (writes.length === 1) {
+        response.writeHead(502).end('{"error":"نتیجه ارسال مشخص نیست؛ دوباره تلاش کنید."}');
+        return;
+      }
       response.writeHead(201).end('{"id":"ticket-1"}');
     } else {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -58,9 +62,14 @@ test('contextual support previews an owned row and writes only on submit', { tim
       await page.waitForSelector('dialog textarea');
       await page.type('dialog textarea', 'Please check this delivery');
       await page.click('dialog [type=submit]');
+      await page.waitForSelector('dialog [role="alert"]');
+      await page.click('dialog [type=submit]');
       await page.waitForFunction(() => document.querySelector('dialog [role="status"]')?.textContent?.includes('ticket-1'));
       assert.equal(previews[0].get('referenceId'), 'shipment-id');
-      assert.deepEqual(writes, [{ kind: 'shipment', referenceType: 'carton', referenceId: 'shipment-id', subject: 'پیگیری ارسال و محموله - CARTON-4321', message: 'Please check this delivery' }]);
+      assert.equal(writes.length, 2);
+      assert.match(String(writes[0].key), /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i);
+      assert.deepEqual(writes[0].body, { kind: 'shipment', referenceType: 'carton', referenceId: 'shipment-id', subject: 'پیگیری ارسال و محموله - CARTON-4321', message: 'Please check this delivery' });
+      assert.deepEqual(writes[1], writes[0]);
     } finally {
       await browser.close();
     }

@@ -1,10 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Download, FileUp, Filter, Layers, Pencil, Search } from 'lucide-react';
+import { tokenStore } from '../services/apiClient';
+import type { VariantBatchRecovery } from '../services/supplierVariantBatch';
 import { newUuid } from '../services/uuid';
 import { formatPrice, toPersianDigits } from '../utils/formatters';
 import {
   canRunVariantEdit, parseVariantCSV, parseVariantEdit, parseVariantWorkbookRows, previewVariantEdits, runVariantEdits,
-  VARIANT_BATCH_LIMIT, writeVariantCSV,
+  VARIANT_BATCH_LIMIT, variantBatchRetiredCodes, writeVariantCSV,
   type VariantBaseline, type VariantEditPreview, type VariantField, type VariantWorkspaceRole,
 } from '../utils/variantWorkspace';
 
@@ -21,6 +23,7 @@ export interface WorkspaceRow extends VariantBaseline {
   effectiveMargin?: number | null;
   pendingCost?: number;
   pendingClear?: boolean;
+  stockOriginRequired?: boolean;
   summary?: boolean;
 }
 
@@ -53,7 +56,7 @@ function formatEditValue(field: VariantField, value: WorkspaceRow[VariantField])
 }
 
 export function VariantWorkspace({
-  role, load, save, onChanged, initiallyOpen = false, attentionOnly = false, onBack, onRetired, title,
+  role, load, save, onChanged, initiallyOpen = false, attentionOnly = false, onBack, recovery, renderRetired, title,
 }: {
   role: VariantWorkspaceRole;
   load: (signal: AbortSignal) => Promise<WorkspaceRow[]>;
@@ -62,18 +65,20 @@ export function VariantWorkspace({
   initiallyOpen?: boolean;
   attentionOnly?: boolean;
   onBack?: () => void;
-  onRetired?: (codes: string[]) => void;
+  recovery?: VariantBatchRecovery;
+  renderRetired?: (codes: string[], acknowledge: () => void) => ReactNode;
   title: string;
 }) {
-  const [open, setOpen] = useState(initiallyOpen);
+  const [recovered] = useState(() => recovery?.load());
+  const [open, setOpen] = useState(initiallyOpen || !!recovered);
   const [filter, setFilter] = useState(attentionOnly ? 'attention' : 'all');
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState<WorkspaceRow[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [target, setTarget] = useState<string[]>([]);
   const [form, setForm] = useState<FormFields>({});
-  const [preview, setPreview] = useState<VariantEditPreview[]>([]);
-  const [batch, setBatch] = useState('');
+  const [preview, setPreview] = useState<VariantEditPreview[]>(recovered?.rows ?? []);
+  const [batch, setBatch] = useState(recovered?.id ?? '');
   const [showImport, setShowImport] = useState(false);
   const [revision, setRevision] = useState(0);
   const [rowLimit, setRowLimit] = useState(50);
@@ -138,6 +143,7 @@ export function VariantWorkspace({
 
   const showEdit = (ids: string[]) => {
     fileRequest.current++;
+    recovery?.clear(batch);
     setTarget(ids);
     setForm({});
     setShowImport(false);
@@ -187,29 +193,44 @@ export function VariantWorkspace({
     }
   };
   const apply = async () => {
+    if (saveController.current) return;
     setSaving(true);
     const controller = new AbortController();
+    const generation = tokenStore.getGeneration();
     saveController.current = controller;
+    const checkpoint = [...preview];
+    recovery?.save({ id: batch, rows: checkpoint }, true);
     const result = await runVariantEdits(preview, batch, (row, field, attempt) => {
       const source = rowsById.get(row.id);
+      if (tokenStore.getGeneration() !== generation) controller.abort();
       if (!source || controller.signal.aborted) return Promise.reject(new Error('تنوع در دسترس نیست.'));
       return save(source, row, field, attempt, controller.signal);
+    }, {
+      signal: controller.signal,
+      onProgress: recovery ? (index, row) => {
+        checkpoint[index] = row;
+        recovery.save({ id: batch, rows: [...checkpoint] });
+      } : undefined,
     });
-    if (controller.signal.aborted) return;
-    const retired = new Set<string>();
-    for (let index = 0; index < result.length; index++) {
-      if (preview[index].outcomes?.stock?.state === 'saved') continue;
-      for (const code of result[index].outcomes?.stock?.retired ?? []) retired.add(code);
-    }
-    if (retired.size) onRetired?.([...retired]);
-    setPreview(result);
+    saveController.current = null;
     setSaving(false);
+    setPreview(result);
+    if (controller.signal.aborted) return;
     setRevision(value => value + 1);
     onChanged?.();
+  };
+  const retired = !saving ? variantBatchRetiredCodes(preview) : [];
+  const acknowledgeRetired = () => {
+    const rows = preview.map(row => row.outcomes?.stock?.retired?.length
+      ? { ...row, outcomes: { ...row.outcomes, stock: { ...row.outcomes.stock, retired: [] } } }
+      : row);
+    recovery?.save({ id: batch, rows });
+    setPreview(rows);
   };
 
   return (
     <section dir="rtl" className="rounded-2xl border border-slate-200 bg-white shadow-2xs">
+      {retired.length > 0 && renderRetired?.(retired, acknowledgeRetired)}
       <div className="flex flex-wrap items-center gap-2 p-3.5 sm:p-4">
         <button type="button" aria-controls={panelId} aria-expanded={open} disabled={saving}
           onClick={() => setOpen(value => !value)}
@@ -317,6 +338,7 @@ export function VariantWorkspace({
           {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
           {preview.length > 0 && (
             <div className="space-y-2 rounded-xl border border-blue-100 bg-slate-50 p-3">
+              {batch === recovered?.id && validRows > 0 && <p className="text-xs text-slate-700">ویرایش ناتمام بازیابی شد. می‌توانید ثبت سطرهای باقی‌مانده را ادامه دهید.</p>}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-bold text-slate-900">پیش‌نمایش تغییرات · {count(preview.length)} سطر</h3>
                 <button type="button" className="min-h-11 rounded-xl bg-blue-700 px-4 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50"
@@ -370,6 +392,9 @@ export function VariantWorkspace({
                       <p className="col-span-full text-xs font-bold text-amber-800">
                         در انتظار بررسی · {row.pendingClear ? 'ارث‌بری از قیمت کالا' : money(row.pendingCost)}
                       </p>
+                    )}
+                    {role === 'supplier' && row.stockOriginRequired && (
+                      <p className="col-span-full text-xs text-amber-800">برای اصلاح موجودی، انبار مبدأ فعال لازم است.</p>
                     )}
                   </dl>
                   <button type="button" className={buttonClass + ' col-start-3 row-start-1 inline-flex items-center gap-1 self-center sm:col-start-auto sm:row-start-auto'}

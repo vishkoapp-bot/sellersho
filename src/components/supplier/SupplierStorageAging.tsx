@@ -11,7 +11,7 @@ interface StorageAgingRow {
   variant_name: string;
   spnc: string;
   warehouse_name: string;
-  quantity: number;
+  quantity: number | null;
   received_on: string;
   age_days: number;
   fee_starts_on?: string;
@@ -81,7 +81,7 @@ export function SupplierStorageAging() {
                           <span className="block font-normal text-slate-600">{[row.variant_name, row.warehouse_name].filter(Boolean).join(' · ')}</span>
                           {row.spnc && <bdi dir="ltr" className="font-mono text-[11px]">{row.spnc}</bdi>}
                         </th>
-                        <td className="px-2 py-2">{toPersianDigits(row.quantity)}</td>
+                        <td className="px-2 py-2">{row.quantity === null ? 'نامشخص' : toPersianDigits(row.quantity)}</td>
                         <td className="px-2 py-2">{localDate(row.received_on)}</td>
                         <td className="px-2 py-2">{toPersianDigits(row.age_days)} روز</td>
                         {report.fees_enabled && <td className={`rounded-e-lg px-2 py-2 ${row.fee_starts_on && row.fee_starts_on <= report.as_of ? 'font-bold text-amber-900' : ''}`}>

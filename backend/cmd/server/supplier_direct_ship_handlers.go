@@ -462,11 +462,16 @@ func handleGetSupplierOrders(
 	if work == "" {
 		work = "all"
 	}
-	if work != "all" && work != "ready" && work != "overdue" {
+	if work != "all" && work != "ready" && work != "overdue" && work != "shipped" && work != "delivered" {
 		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "فیلتر سفارش معتبر نیست."})
 		return
 	}
-	page, err := shipmentRepo.GetSupplierOrderWorkPage(ctx, supplierID, work, opts)
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(search)) > 100 {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "عبارت جست‌وجو حداکثر ۱۰۰ نویسه است."})
+		return
+	}
+	page, err := shipmentRepo.GetSupplierOrderWorkPage(ctx, supplierID, work, search, opts)
 	if err != nil {
 		if isInvalidCursorError(err) {
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
@@ -513,6 +518,10 @@ func handleGetSupplierOrders(
 			statusText = "ارسال شده"
 		} else if s.Status == "delivered" {
 			statusText = "تحویل داده شده"
+		} else if s.Status == "cancelled" {
+			statusText = "لغو شده"
+		} else if s.Status == "awaiting_payment" {
+			statusText = "پرداخت تکمیل نشده"
 		}
 		shippedAtStr := ""
 		if s.ShippedAt != nil {
@@ -626,7 +635,7 @@ func handleSupplierSubmitShipping(
 	}
 
 	if strings.TrimSpace(req.Carrier) == "" || strings.TrimSpace(req.TrackingNumber) == "" {
-		http.Error(w, `{"error":"Carrier and trackingNumber are required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"نام شرکت ارسال و کد رهگیری را وارد کن."}`, http.StatusBadRequest)
 		return
 	}
 	if err := shipmentRepo.SubmitShipping(ctx, supplierID, orderID, strings.TrimSpace(req.Carrier), strings.TrimSpace(req.TrackingNumber), claims.UserID); err != nil {
@@ -639,7 +648,7 @@ func handleSupplierSubmitShipping(
 			return
 		}
 		if errors.Is(err, repository.ErrShipmentState) {
-			http.Error(w, `{"error":"Shipment is not ready for shipping"}`, http.StatusConflict)
+			http.Error(w, `{"error":"سفارش آمادهٔ ارسال نیست. وضعیت سفارش را دوباره بررسی کن."}`, http.StatusConflict)
 			return
 		}
 		writeInternalError(w, err)
@@ -701,6 +710,10 @@ func handleGetSupplierWarehouseOrders(
 	if pageSize > 100 {
 		pageSize = 100
 	}
+	if page-1 > int(^uint(0)>>1)/pageSize {
+		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "شمارهٔ صفحه معتبر نیست."})
+		return
+	}
 
 	orders, total, err := shipmentRepo.GetSupplierWarehouseOrders(ctx, supplierID, pageSize, (page-1)*pageSize)
 	if err != nil {
@@ -708,13 +721,6 @@ func handleGetSupplierWarehouseOrders(
 		return
 	}
 
-	type WarehouseOrderItemView struct {
-		ProductID     string `json:"productId"`
-		ProductTitle  string `json:"productTitle"`
-		Quantity      int    `json:"quantity"`
-		WholesaleCost int64  `json:"wholesaleCost"`
-		LineTotal     int64  `json:"lineTotal"`
-	}
 	type WarehouseOrderView struct {
 		OrderID     string                   `json:"orderId"`
 		OrderNumber string                   `json:"orderNumber"`
@@ -722,32 +728,22 @@ func handleGetSupplierWarehouseOrders(
 		Province    string                   `json:"province"`
 		City        string                   `json:"city"`
 		CreatedAt   string                   `json:"createdAt"`
-		Items       []WarehouseOrderItemView `json:"items"`
+		Items       []repository.SupplierWarehouseOrderItem `json:"items"`
 		ItemsTotal  int64                    `json:"itemsTotal"`
 	}
 
 	views := make([]WarehouseOrderView, 0, len(orders))
 	for _, o := range orders {
-		view := WarehouseOrderView{
+		views = append(views, WarehouseOrderView{
 			OrderID:     o.OrderID,
 			OrderNumber: o.OrderNumber,
 			Status:      o.Status,
 			Province:    o.Province,
 			City:        o.City,
 			CreatedAt:   o.CreatedAt.Format("2006/01/02 15:04"),
-			Items:       make([]WarehouseOrderItemView, 0, len(o.Items)),
+			Items:       o.Items,
 			ItemsTotal:  o.ItemsTotal,
-		}
-		for _, item := range o.Items {
-			view.Items = append(view.Items, WarehouseOrderItemView{
-				ProductID:     item.ProductID,
-				ProductTitle:  item.ProductTitle,
-				Quantity:      item.Quantity,
-				WholesaleCost: item.WholesaleCost,
-				LineTotal:     item.LineTotal,
-			})
-		}
-		views = append(views, view)
+		})
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

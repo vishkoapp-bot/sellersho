@@ -892,7 +892,8 @@ func handleReceiveWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx 
 		return
 	}
 	status, items, err := repo.ReceiveWarehouseShipmentWithUnits(ctx, code, req.Items)
-	if errors.Is(err, repository.ErrUnitMismatch) || errors.Is(err, repository.ErrUnitCapExceeded) {
+	if errors.Is(err, repository.ErrUnitMismatch) || errors.Is(err, repository.ErrUnitCapExceeded) ||
+		errors.Is(err, repository.ErrCartonNotReceivable) || errors.Is(err, repository.ErrDuplicateCartonReceiptItem) {
 		writeSPNCXError(w, err)
 		return
 	}

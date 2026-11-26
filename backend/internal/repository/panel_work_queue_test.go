@@ -35,18 +35,18 @@ func TestPanelWorkCountsMatchScopedCursorPages(t *testing.T) {
 	if err != nil || counts.Ready != 2 || counts.Overdue != 1 {
 		t.Fatalf("supplier counts = %+v, %v", counts, err)
 	}
-	first, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "ready", ListPageOptions{Limit: 1})
+	first, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "ready", "", ListPageOptions{Limit: 1})
 	if err != nil || len(first.Items) != 1 || !first.HasMore {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
-	second, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "ready", ListPageOptions{Limit: 1, Cursor: first.NextCursor})
+	second, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "ready", "", ListPageOptions{Limit: 1, Cursor: first.NextCursor})
 	if err != nil || len(second.Items) != 1 || second.HasMore || second.Items[0].ID == first.Items[0].ID {
 		t.Fatalf("second = %+v, %v", second, err)
 	}
 	if due := first.Items[0].DispatchDueAt; due == nil || due.Sub(first.Items[0].CreatedAt) > 2*24*time.Hour {
 		t.Fatalf("product edit moved saved dispatch commitment: %v", due)
 	}
-	page, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "overdue", ListPageOptions{})
+	page, err := repo.GetSupplierOrderWorkPage(ctx, owner.supplier, "overdue", "", ListPageOptions{})
 	if err != nil || len(page.Items) != counts.Overdue || page.Items[0].DispatchDueAt == nil || !page.Items[0].DispatchDueAt.Before(time.Now()) {
 		t.Fatalf("overdue = %+v, %v", page, err)
 	}

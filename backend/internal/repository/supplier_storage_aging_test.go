@@ -34,7 +34,7 @@ func TestSupplierStorageAgingUsesCertifiedReceiptCalendar(t *testing.T) {
 	if !report.FeesEnabled || report.AsOf != "2026-10-01" || report.WarningCount != 2 || len(report.Rows) != 3 {
 		t.Fatalf("aging report: %+v", report)
 	}
-	if report.Rows[0].ID != due || report.Rows[0].FeeStartsOn != "2026-09-29" || report.Rows[0].Quantity != 2 ||
+	if report.Rows[0].ID != due || report.Rows[0].FeeStartsOn != "2026-09-29" || report.Rows[0].Quantity == nil || *report.Rows[0].Quantity != 2 ||
 		report.Rows[1].ID != near || report.Rows[1].FeeStartsOn != "2026-10-04" || report.Rows[1].AgeDays != 27 ||
 		report.Rows[2].ID != far {
 		t.Fatalf("aging rows: %+v", report.Rows)

@@ -10,7 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrSupportContextNotFound = errors.New("support reference not found for this account")
+var (
+	ErrSupportContextNotFound = errors.New("support reference not found for this account")
+	ErrSupportRequestConflict = errors.New("support request key already used with a different payload")
+)
 
 type SupportActor struct {
 	UserID    string
@@ -121,9 +124,11 @@ func resolveSupplierSupportReference(ctx context.Context, db supportQueryer, ref
 	switch {
 	case input.Kind == "order" && input.ReferenceType == "":
 		ref.ReferenceType = "order"
-		query = `SELECT o.id,o.order_number,o.order_number FROM orders o WHERE o.id=$1 AND (
-			EXISTS (SELECT 1 FROM supplier_shipments ss WHERE ss.order_id=o.id AND ss.supplier_id=$2) OR
-			(o.payment_status='paid' AND EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=o.id AND p.supplier_id=$2)))`
+		err := db.QueryRowContext(ctx, `SELECT o.id,o.order_number,o.order_number FROM orders o WHERE o.id=$2 AND (
+			EXISTS (SELECT 1 FROM supplier_shipments ss WHERE ss.order_id=o.id AND ss.supplier_id=$1) OR
+			(o.payment_status='paid' AND EXISTS (SELECT 1 `+supplierWarehouseLinesSQL+` WHERE oi.order_id=o.id)))`, ref.accountID, input.ReferenceID).
+			Scan(&ref.ReferenceID, &ref.Label, &ref.orderNumber)
+		return ref, supportReferenceError(err)
 	case input.Kind == "shipment" && input.ReferenceType == "direct_shipment":
 		query = `SELECT ss.id,o.order_number,o.order_number FROM supplier_shipments ss JOIN orders o ON o.id=ss.order_id WHERE ss.id=$1 AND ss.supplier_id=$2`
 	case input.Kind == "shipment" && input.ReferenceType == "carton":
@@ -192,10 +197,22 @@ func supportReferenceError(err error) error {
 }
 
 func (r *StoreRepository) CreateSupportTicket(ctx context.Context, actor SupportActor, input SupportReferenceInput, subject, message string) (string, error) {
+	return r.CreateSupportTicketWithKey(ctx, actor, input, subject, message, "")
+}
+
+func (r *StoreRepository) CreateSupportTicketWithKey(ctx context.Context, actor SupportActor, input SupportReferenceInput, subject, message, requestKey string) (string, error) {
 	subject, message = strings.TrimSpace(subject), strings.TrimSpace(message)
 	if subject == "" || message == "" || utf8.RuneCountInString(subject) > 200 || utf8.RuneCountInString(message) > 10000 ||
 		strings.ContainsRune(subject, '\x00') || strings.ContainsRune(message, '\x00') {
 		return "", ErrStoreInput
+	}
+	var key uuid.UUID
+	if requestKey != "" {
+		var err error
+		key, err = uuid.Parse(requestKey)
+		if err != nil || key == uuid.Nil {
+			return "", ErrStoreInput
+		}
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -210,12 +227,41 @@ func (r *StoreRepository) CreateSupportTicket(ctx context.Context, actor Support
 	if ref.Category == "financial" {
 		section = "finance"
 	}
-	id := "ticket-" + uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO support_tickets
+	ticketID := uuid.New()
+	if key != uuid.Nil {
+		// Keep the same ticket ID for a retried operation while isolating a
+		// reused client key across requesters and their accounts.
+		name := strings.Join([]string{"sellersho/support_ticket/v1", actor.Role, actor.UserID, ref.accountID, key.String()}, "\x00")
+		ticketID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(name))
+	}
+	id := "ticket-" + ticketID.String()
+	insert, err := tx.ExecContext(ctx, `INSERT INTO support_tickets
 		(id,requester_user_id,requester_role,requester_account_id,subject,section,category,reference_type,reference_id,reference_label,related_order_number)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''))`, id, actor.UserID, actor.Role, ref.accountID, subject, section,
-		ref.Category, ref.ReferenceType, ref.ReferenceID, ref.Label, ref.orderNumber); err != nil {
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,'')) ON CONFLICT (id) DO NOTHING`, id, actor.UserID, actor.Role, ref.accountID, subject, section,
+		ref.Category, ref.ReferenceType, ref.ReferenceID, ref.Label, ref.orderNumber)
+	if err != nil {
 		return "", err
+	}
+	inserted, err := insert.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if inserted == 0 {
+		var sameRequest bool
+		// The insert waits for the winning transaction. Its initial message
+		// is committed together with the ticket before this lookup can see it.
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM support_tickets t WHERE t.id=$1 AND t.requester_user_id=$2 AND t.requester_role=$3
+			AND t.requester_account_id=$4 AND t.subject=$5 AND t.category=$6 AND t.reference_type=$7 AND t.reference_id=$8
+			AND (SELECT m.body FROM support_ticket_messages m WHERE m.ticket_id=t.id AND NOT m.is_internal
+				ORDER BY m.created_at,m.id LIMIT 1)=$9
+		)`, id, actor.UserID, actor.Role, ref.accountID, subject, ref.Category, ref.ReferenceType, ref.ReferenceID, message).Scan(&sameRequest); err != nil {
+			return "", err
+		}
+		if !sameRequest || key == uuid.Nil {
+			return "", ErrSupportRequestConflict
+		}
+		return id, tx.Commit()
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO support_ticket_messages(ticket_id,author_user_id,body) VALUES($1,$2,$3)`, id, actor.UserID, message); err != nil {
 		return "", err

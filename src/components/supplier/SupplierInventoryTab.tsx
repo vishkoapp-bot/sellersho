@@ -2,7 +2,7 @@ import { SupplierSectionHeading } from './SupplierSectionHeading';
 import { SupplierDialog } from './SupplierDialog';
 import { ContextSupportButton } from '../support/ContextSupportButton';
 import { Boxes, Search } from 'lucide-react';
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { supplierApi, SupplierProductDto, SupplierReturnRequestDto, SupplierInventoryLocationDto, SupplierProductVariantDto } from '../../services/supplierApi';
 import { useSupplierResource } from './useSupplierResource';
@@ -16,6 +16,10 @@ import { unitsApi, type ListUnitsParams, type ListUnitsResponse } from '../../se
 import { UNIT_STATUS_LABELS } from '../../utils/unitStatus';
 import { SupplierVariantWorkspace } from './SupplierVariantWorkspace';
 import { SupplierStorageAging } from './SupplierStorageAging';
+import { RetiredPrintedCodesPanel } from './RetiredPrintedCodesPanel';
+import { useStore } from '../../context/StoreContext';
+
+export { RetiredPrintedCodesPanel } from './RetiredPrintedCodesPanel';
 
 // FIX 42: rebuilt to the live bundle SupplierDashboardView-MERGED.js (Zl component).
 // Divergences fixed vs the previous candidate tab: wrong h2 (it even said
@@ -202,59 +206,6 @@ export function stockAdjustmentErrorMessage(cause: unknown, fallback: string): s
   }
   if (code) return `${fallback} (${code})`;
   return cause instanceof Error ? cause.message : fallback;
-}
-
-export function RetiredPrintedCodesPanel({ codes, onAcknowledge }: { codes: string[]; onAcknowledge: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
-  const [copyStatus, setCopyStatus] = useState('');
-  useEffect(() => {
-    const panel = dialog.current;
-    panel?.showModal();
-    return () => panel?.close();
-  }, []);
-
-  const copyAll = async () => {
-    if (typeof document === 'undefined' || typeof navigator === 'undefined') return;
-    const text = codes.join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopyStatus('کدها کپی شدند.');
-      return;
-    } catch {
-      // Plain HTTP and denied clipboard permissions can still use selection-based copying.
-    }
-    const previousFocus = document.activeElement;
-    const input = document.createElement('textarea');
-    input.value = text;
-    input.readOnly = true;
-    input.className = 'fixed opacity-0 pointer-events-none';
-    dialog.current?.appendChild(input);
-    try {
-      input.select();
-      setCopyStatus(document.execCommand('copy') ? 'کدها کپی شدند.' : 'کپی کدها انجام نشد.');
-    } catch {
-      setCopyStatus('کپی کدها انجام نشد.');
-    } finally {
-      input.remove();
-      if (previousFocus instanceof HTMLElement) previousFocus.focus();
-    }
-  };
-
-  return (
-    <dialog ref={dialog} onCancel={event => event.preventDefault()} aria-labelledby={titleId} dir="rtl"
-      className="m-auto w-[calc(100%-2rem)] max-w-lg space-y-3 rounded-2xl bg-white p-4 text-slate-900 backdrop:bg-slate-950/60">
-      <h3 id={titleId} className="text-sm font-bold text-amber-800">این برچسب‌های چاپ‌شده دیگر معتبر نیستند — آن‌ها را از قفسه/کارتن جدا و معدوم کنید:</h3>
-      <ul className="max-h-64 space-y-1 overflow-auto rounded-lg bg-amber-50 p-3">
-        {codes.map((code, index) => <li key={index} dir="ltr" className="font-mono break-all text-xs">{code}</li>)}
-      </ul>
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <button type="button" onClick={copyAll} className="rounded-lg border px-3 py-2 font-bold">کپی همه کدها</button>
-        <button type="button" onClick={onAcknowledge} className="rounded-lg bg-brand-deep px-3 py-2 font-bold text-white">متوجه شدم</button>
-        <span role="status">{copyStatus}</span>
-      </div>
-    </dialog>
-  );
 }
 
 // The stock-save contract, extracted so tests can pin the exact
@@ -738,6 +689,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
 // --- Container: data + state, unchanged API surface -------------------------
 
 export const SupplierInventoryTab: React.FC = () => {
+  const { supplierSession } = useStore();
   const { success, error } = useToast();
   const resource = useSupplierResource(supplierApi.getProducts);
   const [query, setQuery] = useState('');
@@ -904,7 +856,7 @@ const newUuid = (): string => {
   return (
     <div className="space-y-3">
       {retiredPrintedCodes.length > 0 && <RetiredPrintedCodesPanel codes={retiredPrintedCodes} onAcknowledge={() => setRetiredPrintedCodes([])} />}
-      <SupplierVariantWorkspace onChanged={retryAll} onRetired={codes => setRetiredPrintedCodes(previous => [...new Set([...previous, ...codes])])} />
+      <SupplierVariantWorkspace session={supplierSession} onChanged={retryAll} />
       <SupplierStorageAging />
       <SupplierInventoryView
       items={items}

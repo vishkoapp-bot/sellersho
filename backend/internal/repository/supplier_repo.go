@@ -2491,12 +2491,9 @@ func (r *SupplierRepository) GetSupplierProductBaseCost(ctx context.Context, sup
 var ErrExceptionTicketProductNotFound = errors.New("product not found for supplier")
 
 // CreatePriceIncreaseExceptionTicket files the supplier's reference-price
-// exception request as a finance-section support ticket (migration
-// 202610310003 routes these by section = 'finance'). Only the columns the
-// existing ticket inserts use are written (id, requester_user_id,
-// requester_role, subject) plus that section column; the requested
-// newReference and free-text message are validated by the handler but
-// have no sanctioned column and are not persisted.
+// exception request as a finance-section support ticket for the active
+// supplier account. The handler validates the requested new reference and
+// message for this legacy route.
 func (r *SupplierRepository) CreatePriceIncreaseExceptionTicket(ctx context.Context, supplierID, requesterUserID, productID string) (string, error) {
 	var title string
 	err := r.db.QueryRowContext(ctx, `
@@ -2524,9 +2521,9 @@ func (r *SupplierRepository) CreatePriceIncreaseExceptionTicket(ctx context.Cont
 	id := "ticket-" + uuid.NewString()
 	subject := "درخواست استثنای افزایش قیمت — " + title
 	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO support_tickets (id, requester_user_id, requester_role, subject, section)
-		VALUES ($1, $2, 'supplier', $3, 'finance')
-	`, id, requesterUserID, subject); err != nil {
+		INSERT INTO support_tickets (id, requester_user_id, requester_role, requester_account_id, subject, section)
+		VALUES ($1, $2, 'supplier', $3, $4, 'finance')
+	`, id, requesterUserID, supplierID, subject); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -2891,8 +2888,8 @@ func (r *SupplierRepository) ListCartonShipments(ctx context.Context, supplierID
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT s.id, s.shipment_code,
 			(SELECT COUNT(*) FROM shipment_items WHERE shipment_id = s.id),
-			s.status, s.created_at
-		FROM shipments s WHERE s.supplier_id = $1
+			carton_state.status, s.created_at
+		FROM shipments s`+cartonStatusReadJoin+` WHERE s.supplier_id = $1
 		ORDER BY s.created_at DESC
 	`, supplierID)
 	if err != nil {
@@ -2935,21 +2932,17 @@ type WarehouseShipmentDto struct {
 // hand-written code, for the warehouse receive tab. Codes match
 // case-insensitively because staff type or scan them by hand.
 func (r *SupplierRepository) GetWarehouseShipmentByCode(ctx context.Context, code string) (*WarehouseShipmentDto, error) {
-	if staffID := WarehouseStaffID(ctx); staffID != "" {
-		// Both queries must see the same snapshot. Do not fetch the items
-		// on a separate connection after checking the carton destination.
-		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-		if err != nil {
-			return nil, err
-		}
-		defer tx.Rollback()
-		out, err := readWarehouseShipment(ctx, tx, code, staffID)
-		if err != nil {
-			return nil, err
-		}
-		return out, tx.Commit()
+	// The carton header, staff's site scope and item counters describe a single receipt snapshot.
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
 	}
-	return readWarehouseShipment(ctx, r.db, code, "")
+	defer tx.Rollback()
+	out, err := readWarehouseShipment(ctx, tx, code, WarehouseStaffID(ctx))
+	if err != nil {
+		return nil, err
+	}
+	return out, tx.Commit()
 }
 
 func readWarehouseShipment(ctx context.Context, db interface {
@@ -2959,8 +2952,8 @@ func readWarehouseShipment(ctx context.Context, db interface {
 	var out WarehouseShipmentDto
 	var shipmentID, supplierID string
 	query := `
-		SELECT s.id, s.shipment_code, s.status, s.supplier_id
-		FROM shipments s`
+		SELECT s.id, s.shipment_code, carton_state.status, s.supplier_id
+		FROM shipments s` + cartonStatusReadJoin
 	args := []any{code}
 	where := ` WHERE UPPER(s.shipment_code) = UPPER($1)`
 	if staffID != "" {
@@ -2976,13 +2969,16 @@ func readWarehouseShipment(ctx context.Context, db interface {
 		out.SupplierName = ""
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT si.variant_id, pv.variant_name, p.title, pv.spnc, si.expected_qty, si.received_qty, si.qc_status
+		SELECT si.variant_id, COALESCE(pv.variant_name,''), COALESCE(p.title,''), COALESCE(pv.spnc,''), si.expected_qty,
+			COALESCE(l.received_quantity,si.received_qty),si.qc_status
 		FROM shipment_items si
 		JOIN product_variants pv ON pv.id = si.variant_id
 		JOIN products p ON p.id = pv.product_id
+		LEFT JOIN inbound_inventory_lines l ON l.shipment_id=si.shipment_id::text AND l.supplier_id=$2
+			AND l.product_id=p.id AND l.variant_id=pv.id::text
 		WHERE si.shipment_id = $1
 		ORDER BY pv.variant_name ASC
-	`, shipmentID)
+	`, shipmentID, supplierID)
 	if err != nil {
 		return nil, err
 	}
@@ -3020,6 +3016,13 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 	defer done()
 	if len(items) == 0 {
 		return "", nil, fmt.Errorf("at least one received item is required")
+	}
+	variants := make(map[string]bool, len(items))
+	for _, item := range items {
+		if variants[item.VariantID] {
+			return "", nil, ErrDuplicateCartonReceiptItem
+		}
+		variants[item.VariantID] = true
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -3086,6 +3089,9 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 		}
 		return status, results, tx.Commit()
 	}
+	if err := requireOpenCartonReceiptTx(ctx, tx, shipmentID); err != nil {
+		return "", nil, err
+	}
 	lines, err := inboundLinesTx(ctx, tx, shipmentID)
 	if err != nil {
 		return "", nil, err
@@ -3097,7 +3103,6 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 	arrivals := make([]inboundUnitArrivals, len(items))
 	var mismatches UnitMismatchError
 	seen := map[string]bool{}
-	explicitVariants := map[string]bool{}
 	// A scan mismatch invalidates the entire shipment receipt. Check every
 	// supplied line before applying any inventory changes so a 422 is retryable.
 	for i, item := range items {
@@ -3108,7 +3113,6 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 		if !ok {
 			return "", nil, ErrInboundProvenance
 		}
-		explicitVariants[item.VariantID] = true
 		arrivals[i], err = validateInboundArrivalsTx(ctx, tx, l, item.ReceivedQty, item.UnitCodes, seen, &mismatches)
 		if err != nil {
 			return "", nil, err
@@ -3117,7 +3121,6 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 	if err := mismatches.err(); err != nil {
 		return "", nil, err
 	}
-	visited := map[string]bool{}
 	for i, item := range items {
 		var stored string
 		switch item.QCStatus {
@@ -3135,12 +3138,6 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 		if !ok {
 			return "", nil, ErrInboundProvenance
 		}
-		// An explicit selection was validated against the original cumulative
-		// state. A second entry for the same line would invalidate that selection.
-		if visited[item.VariantID] && explicitVariants[item.VariantID] {
-			return "", nil, ErrInboundProvenance
-		}
-		visited[item.VariantID] = true
 		if item.ReceivedQty < l.Received || item.ReceivedQty > l.Dispatched {
 			return "", nil, ErrInboundProvenance
 		}
@@ -3158,15 +3155,8 @@ func (r *SupplierRepository) ReceiveWarehouseShipmentWithUnits(ctx context.Conte
 		}
 		results = append(results, result)
 	}
-	var total, fully int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE received_qty >= expected_qty) FROM shipment_items WHERE shipment_id = $1`, shipmentID).Scan(&total, &fully); err != nil {
-		return "", nil, err
-	}
-	newStatus := "partially_received"
-	if total > 0 && fully == total {
-		newStatus = "received"
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE shipments SET status = $1, received_at = COALESCE(received_at,NOW()) WHERE id = $2`, newStatus, shipmentID); err != nil {
+	newStatus, err := syncCartonReceiptStatusTx(ctx, tx, shipmentID)
+	if err != nil {
 		return "", nil, err
 	}
 	if err := tx.Commit(); err != nil {

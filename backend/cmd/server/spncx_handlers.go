@@ -200,6 +200,10 @@ func writeSPNCXError(w http.ResponseWriter, err error) {
 		t01WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, repository.ErrIncompleteReturnReceipt), errors.Is(err, repository.ErrUnitCapExceeded):
 		t01WriteJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+	case errors.Is(err, repository.ErrCartonNotReceivable):
+		t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "دریافت این کارتن باز نیست.", "code": err.Error()})
+	case errors.Is(err, repository.ErrDuplicateCartonReceiptItem):
+		t01WriteJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "هر تنوع کالا را فقط یک بار در دریافت کارتن وارد کنید.", "code": err.Error()})
 	case errors.Is(err, repository.ErrInboundProvenance), errors.Is(err, repository.ErrInboundLifecycleClosed):
 		t01WriteJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.As(err, &invalid):

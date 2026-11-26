@@ -8,7 +8,7 @@ import { useSupplierResource } from './useSupplierResource';
 import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
 
 export function canRespondToDiscrepancy(item: { status: string; escalated_at?: string; responded_at?: string; response_due_at: string }) {
-  return item.status === 'open' && !item.escalated_at && Date.parse(item.response_due_at) > Date.now();
+  return item.status === 'open' && !item.responded_at && !item.escalated_at && Date.parse(item.response_due_at) > Date.now();
 }
 export const SupplierDiscrepanciesTab: React.FC<{ initialAwaitingOnly?: boolean }> = ({ initialAwaitingOnly = false }) => {
   const resource = useSupplierResource(supplierApi.getDiscrepancies);
@@ -37,7 +37,7 @@ export const SupplierDiscrepanciesTab: React.FC<{ initialAwaitingOnly?: boolean 
     }
   };
   const items = resource.data ?? [];
-  const needsResponse = (item: typeof items[number]) => !item.responded_at && canRespondToDiscrepancy(item);
+  const needsResponse = canRespondToDiscrepancy;
   const sortedItems = items.filter(item => !awaitingOnly || needsResponse(item)).sort((a, b) => Number(needsResponse(b)) - Number(needsResponse(a)));
 
   return (

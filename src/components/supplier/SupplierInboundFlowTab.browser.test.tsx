@@ -26,6 +26,7 @@ test('supplier can resume a multi-product carton draft and print only that carto
   const shipment = { id: 'shipment', shipment_code: 'CARTON01', item_count: 2, status: 'draft' };
   let submitted: unknown;
   const printAttempts: Record<string, unknown>[] = [];
+  let unitStillInCarton = true;
   const server = createServer(async (request, response) => {
     const path = request.url?.replace('/api/v1/supplier', '');
     response.setHeader('Content-Type', 'application/json');
@@ -45,7 +46,7 @@ test('supplier can resume a multi-product carton draft and print only that carto
       response.end(JSON.stringify({ shipment }));
     } else if (path === '/shipments') response.end(JSON.stringify(submitted ? [shipment, { ...shipment, id: 'unrelated', shipment_code: 'OTHER123' }] : []));
     else if (path === '/cartons/shipment') response.end(JSON.stringify({ ...shipment, warehouse_name: 'Central', lines: [
-      { id: 'line-a', variant_id: 'sku', variant_name: 'Test model', product_title: 'Test product', spnc: 'SKU001', source_kind: 'transfer', expected_qty: 5, received_qty: 2, putaway_qty: 1, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: 1, qc_shortage: 3, units: [{ code: 'SKU001-X0001', print_count: 0 }] },
+      { id: 'line-a', variant_id: 'sku', variant_name: 'Test model', product_title: 'Test product', spnc: 'SKU001', source_kind: 'transfer', expected_qty: 5, received_qty: 2, putaway_qty: 1, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: 1, qc_shortage: 3, units: unitStillInCarton ? [{ code: 'SKU001-X0001', print_count: printAttempts.length ? 1 : 0 }] : [{ code: 'SKU001-X0002', print_count: 0 }] },
       { id: 'line-b', variant_id: 'other-sku', variant_name: 'Other model', product_title: 'Other product', spnc: 'SKU002', source_kind: 'external_replenishment', expected_qty: 3, received_qty: 0, putaway_qty: 0, cancelled_qty: 0, qc_status: 'pending', qc_failed_qty: null, qc_shortage: null, units: [] },
     ] }));
     else if (path === '/cartons/shipment/print-units' && request.method === 'POST') {
@@ -99,6 +100,17 @@ test('supplier can resume a multi-product carton draft and print only that carto
       await page.type('input[placeholder="مثلاً خرید از تولیدکننده برای شارژ موجودی"]', 'Purchase');
       assert.equal(await page.$eval('select[aria-label="انبار مرکزی مقصد"] option[value="closed"]', option => (option as HTMLOptionElement).disabled), true);
       await page.select('select[aria-label="انبار مرکزی مقصد"]', 'central');
+      const quantity = 'input[aria-label="تعداد Test model"]';
+      for (const invalid of ['-5', '1.5']) {
+        await page.$eval(quantity, input => (input as HTMLInputElement).select());
+        await page.type(quantity, invalid);
+        assert.equal(await page.$eval(quantity, input => (input as HTMLInputElement).value), invalid);
+        await click('ثبت محموله و گرفتن کد کارتن');
+        await page.waitForSelector('[role="alert"]', { visible: true });
+        assert.equal(submitted, undefined);
+      }
+      await page.$eval(quantity, input => (input as HTMLInputElement).select());
+      await page.type(quantity, '5');
       await click('ثبت محموله و گرفتن کد کارتن');
       await page.waitForFunction(() => document.body.innerText.includes('CARTON01') && document.body.innerText.includes('ثبت ارسال'));
       assert.deepEqual((submitted as { items: unknown }).items, [{ variant_id: 'other-sku', expected_qty: 3 }, { variant_id: 'sku', expected_qty: 5 }]);
@@ -109,12 +121,18 @@ test('supplier can resume a multi-product carton draft and print only that carto
       await page.click('input[aria-label="انتخاب SKU001-X0001"]');
       await click('چاپ کدهای انتخاب‌شده');
       await page.waitForFunction(() => document.body.innerText.includes('Print temporarily unavailable'));
-      await click('چاپ کدهای انتخاب‌شده');
+      await click('به‌روزرسانی رسید');
+      await page.waitForFunction(() => document.querySelector('[aria-label="جزئیات کارتن"]')?.textContent?.includes('چاپ‌شده'));
+      await click('تلاش دوباره برای چاپ');
       await page.waitForSelector('.spncx-print-sheet .spncx-label');
       assert.deepEqual(printAttempts[0], printAttempts[1]);
       assert.deepEqual(printAttempts[1].unit_codes, ['SKU001-X0001']);
       assert.equal(printAttempts[1].line_id, 'line-a');
       assert.equal(printAttempts[1].reprint, false);
+      unitStillInCarton = false;
+      await click('به‌روزرسانی رسید');
+      await page.waitForSelector('input[aria-label="انتخاب SKU001-X0002"]');
+      await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('چاپ کدهای انتخاب‌شده') && button.disabled));
       await click('محتویات و رسید');
       await click('دیدن برچسب‌های واحد Test model');
       await page.waitForSelector('input[aria-label="انتخاب SKU001-X0009"]');

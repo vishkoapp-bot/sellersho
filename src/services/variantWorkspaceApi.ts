@@ -15,6 +15,7 @@ export interface SupplierVariantWorkRow {
   pendingCost?: number;
   pendingClear?: boolean;
   canEditStock: boolean;
+  stockOriginRequired?: boolean;
   canEditCost: boolean;
 }
 
@@ -80,12 +81,16 @@ export async function countSellerVariantAttention(storeId: string, signal?: Abor
 
 export async function loadSupplierVariantWorkspace(signal?: AbortSignal): Promise<SupplierVariantWorkRow[]> {
   const data = await apiRequest<{ items: SupplierVariantWorkRow[] }>('/supplier/products/variant-workspace', { auth: true, signal });
+  if (!Array.isArray(data?.items)) throw new Error('فهرست تنوع‌ها به‌طور کامل دریافت نشد.');
   return data.items;
 }
 
 function localizedVariantWriteError(cause: unknown): never {
   if (cause instanceof ApiError && cause.status === 409 && cause.body?.error === 'variant_workspace_conflict') {
     throw new VariantEditConflict('وضعیت تنوع تغییر کرده است. اطلاعات را تازه و پیش‌نمایش را دوباره تهیه کنید.');
+  }
+  if (cause instanceof ApiError && cause.status === 409 && cause.body?.error === 'variant_workspace_price_rejected') {
+    throw new VariantEditConflict('درخواست تغییر قیمت رد شده است. وضعیت آن را در بخش قیمت‌ها بررسی کنید.');
   }
   if (cause instanceof ApiError && cause.status === 409 && cause.body?.error === 'stock_below_held') {
     throw new Error('موجودی واردشده کمتر از تعداد نگهداری‌شده در محل‌های دیگر است.');
@@ -101,23 +106,31 @@ export async function saveSupplierVariantWork(
   const variant = product + '/variants/' + encodeURIComponent(source.id);
   try {
     if (field === 'stock') {
-      const result = await apiRequest<{ retired_printed_codes: string[] }>(product + '/stock', {
+      if (row.current?.stock === undefined || row.edit.stock === undefined) throw new VariantEditConflict('موجودی اولیه یا مقدار جدید مشخص نیست. پیش‌نمایش را دوباره تهیه کنید.');
+      const result = await apiRequest<{ product_id?: string; variant_id?: string; stock?: number; retired_printed_codes?: string[] }>(product + '/stock', {
         method: 'PUT', auth: true, signal, headers: { 'Idempotency-Key': attempt },
         body: JSON.stringify({ variantId: source.id, expected_stock: row.current?.stock, new_stock: row.edit.stock, reason: row.edit.reason }),
       });
+      if (result?.product_id !== source.productId || result.variant_id !== source.id || result.stock !== row.edit.stock ||
+        !Array.isArray(result.retired_printed_codes) || result.retired_printed_codes.some(code => typeof code !== 'string')) {
+        throw new Error('رسید ثبت موجودی کامل نیست. همین تغییر را دوباره بررسی کنید.');
+      }
       return { message: 'موجودی ثبت شد.', retired: result.retired_printed_codes };
     }
     if (field !== 'cost') throw new Error('عملیات ویرایش معتبر نیست.');
-    const result = await apiRequest<{ status?: string }>(variant + '/pricing', {
-      method: 'PUT', auth: true, signal,
+    if (row.current?.productCost === undefined || row.edit.cost === undefined) throw new VariantEditConflict('قیمت اولیه یا مقدار جدید مشخص نیست. پیش‌نمایش را دوباره تهیه کنید.');
+    const result = await apiRequest<{ status?: string; id?: string; applied?: boolean; requestId?: string }>(variant + '/pricing', {
+      method: 'PUT', auth: true, signal, headers: { 'Idempotency-Key': attempt },
       body: JSON.stringify({
         supplierBaseCost: row.edit.cost ?? undefined, clear: row.edit.cost === null, reason: row.edit.reason,
         expected: { cost: row.current?.cost ?? null, productCost: row.current?.productCost },
       }),
     });
-    return result.status === 'pending_review'
-      ? { state: 'pending' as const, message: 'افزایش قیمت برای بررسی ثبت شد.' }
-      : { message: 'قیمت عمده ثبت شد.' };
+    if (result?.status === 'pending_review' && typeof result.requestId === 'string' && result.requestId) {
+      return { state: 'pending' as const, message: 'افزایش قیمت برای بررسی ثبت شد.' };
+    }
+    if (result?.applied === true && result.id === source.id) return { message: 'قیمت عمده ثبت شد.' };
+    throw new Error('رسید ثبت قیمت کامل نیست. همین تغییر را دوباره بررسی کنید.');
   } catch (cause) {
     return localizedVariantWriteError(cause);
   }

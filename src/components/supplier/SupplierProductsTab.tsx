@@ -284,10 +284,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
       {subTab === 'active_products' && (
         <div className="space-y-2.5">
-          <SupplierVariantWorkspace onChanged={() => {
+          <SupplierVariantWorkspace session={supplierSession} onChanged={() => {
             void productsResource.reload();
             reloadPriceIncreases();
-          }} onRetired={codes => setRetiredPrintedCodes(previous => [...new Set([...previous, ...codes])])} />
+          }} />
           {supplierProducts.length > 0 && (
             <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4">
               <label className="block text-sm font-bold text-[#261b41]">جستجوی کالاها

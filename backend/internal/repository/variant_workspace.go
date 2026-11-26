@@ -15,20 +15,21 @@ import (
 var ErrVariantWorkspaceConflict = errors.New("variant_workspace_conflict")
 
 type SupplierWorkspaceVariant struct {
-	ID           string `json:"id"`
-	ProductID    string `json:"productId"`
-	Title        string `json:"title"`
-	Name         string `json:"name"`
-	SPNC         string `json:"spnc"`
-	Sellable     int    `json:"sellable"`
-	Reserved     int    `json:"reserved"`
-	Cost         *int64 `json:"cost"`
-	ProductCost  int64  `json:"productCost"`
-	PendingCost  *int64 `json:"pendingCost,omitempty"`
-	PendingClear bool   `json:"pendingClear,omitempty"`
-	Active       bool   `json:"active"`
-	CanEditStock bool   `json:"canEditStock"`
-	CanEditCost  bool   `json:"canEditCost"`
+	ID                  string `json:"id"`
+	ProductID           string `json:"productId"`
+	Title               string `json:"title"`
+	Name                string `json:"name"`
+	SPNC                string `json:"spnc"`
+	Sellable            int    `json:"sellable"`
+	Reserved            int    `json:"reserved"`
+	Cost                *int64 `json:"cost"`
+	ProductCost         int64  `json:"productCost"`
+	PendingCost         *int64 `json:"pendingCost,omitempty"`
+	PendingClear        bool   `json:"pendingClear,omitempty"`
+	Active              bool   `json:"active"`
+	CanEditStock        bool   `json:"canEditStock"`
+	StockOriginRequired bool   `json:"stockOriginRequired,omitempty"`
+	CanEditCost         bool   `json:"canEditCost"`
 }
 
 func (r *SupplierRepository) ListWorkspaceVariants(ctx context.Context, supplierID string, canStock, canPrice bool) ([]SupplierWorkspaceVariant, error) {
@@ -44,7 +45,8 @@ func (r *SupplierRepository) ListWorkspaceVariants(ctx context.Context, supplier
 		       COALESCE(q.sellable,0),COALESCE(q.reserved,0),v.supplier_base_cost,p.supplier_base_cost,
 		       pi.new_reference,COALESCE(pi.clear_on_approve,FALSE),
 		       p.is_active AND v.is_active,
-		       $2 AND v.inventory_mode='tracked' AND (p.fulfillment_method IS DISTINCT FROM 'supplier_direct' OR COALESCE(origin.is_active,FALSE))
+		       $2 AND v.inventory_mode='tracked' AND COALESCE(origin.is_active,FALSE),
+		       $2 AND v.inventory_mode='tracked' AND NOT COALESCE(origin.is_active,FALSE)
 		FROM products p JOIN product_variants v ON v.product_id=p.id
 		LEFT JOIN supplier_warehouses origin ON origin.id=p.origin_supplier_warehouse_id AND origin.supplier_id=p.supplier_id
 		LEFT JOIN quantity q ON q.product_id=p.id AND q.variant_id=v.id
@@ -63,7 +65,7 @@ func (r *SupplierRepository) ListWorkspaceVariants(ctx context.Context, supplier
 		var row SupplierWorkspaceVariant
 		if err := rows.Scan(&row.ID, &row.ProductID, &row.Title, &row.Name, &row.SPNC,
 			&row.Sellable, &row.Reserved, &row.Cost, &row.ProductCost,
-			&row.PendingCost, &row.PendingClear, &row.Active, &row.CanEditStock); err != nil {
+			&row.PendingCost, &row.PendingClear, &row.Active, &row.CanEditStock, &row.StockOriginRequired); err != nil {
 			return nil, err
 		}
 		row.CanEditCost = canPrice

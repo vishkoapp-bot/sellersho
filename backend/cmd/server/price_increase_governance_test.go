@@ -394,12 +394,12 @@ func TestPriceIncreaseExceptionTicket(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.TicketID == "" {
 		t.Fatalf("bad ticket response %q: %v", w.Body.String(), err)
 	}
-	var section, role, subject string
-	if err := f.db.QueryRow(`SELECT section, requester_role, subject FROM support_tickets WHERE id = $1`, resp.TicketID).Scan(&section, &role, &subject); err != nil {
+	var section, role, account, subject string
+	if err := f.db.QueryRow(`SELECT section, requester_role, requester_account_id, subject FROM support_tickets WHERE id = $1`, resp.TicketID).Scan(&section, &role, &account, &subject); err != nil {
 		t.Fatal(err)
 	}
-	if section != "finance" || role != "supplier" {
-		t.Fatalf("ticket routing wrong: section=%q role=%q", section, role)
+	if section != "finance" || role != "supplier" || account != f.supplierID {
+		t.Fatalf("ticket routing wrong: section=%q role=%q account=%q", section, role, account)
 	}
 	if subject != "درخواست استثنای افزایش قیمت — Gov product" {
 		t.Fatalf("unexpected subject: %q", subject)

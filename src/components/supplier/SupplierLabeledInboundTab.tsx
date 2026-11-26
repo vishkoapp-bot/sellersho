@@ -3,6 +3,7 @@ import { useSupplierResource } from './useSupplierResource';
 import { SupplierResourceState } from './SupplierResourceState';
 import { SupplierDialog } from './SupplierDialog';
 import { supplierApi, type SupplierProductVariantDto } from '../../services/supplierApi';
+import { ApiError } from '../../services/apiClient';
 import { createCartonDraftOperation } from '../../services/cartonDraft';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
@@ -14,16 +15,13 @@ import { Package, Truck, CheckCircle2, Printer, RefreshCw, X, Tag } from 'lucide
 const SHIPMENT_STATUS_LABELS: Record<string, string> = { draft: "پیش‌نویس", created: "ثبت‌شده", sent: "ارسال‌شده", partially_received: "بخشی رسیده", in_transit: "در راه انبار", received: "به انبار رسید", qc_passed: "کنترل کیفیت: قبول شد", qc_failed: "کنترل کیفیت: رد شد", cancelled: "لغو شده" };
 const OPEN_SHIPMENT_STATUSES = new Set(['draft', 'created', 'sent', 'in_transit', 'partially_received']);
 const fieldClass = 'mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:ring-2 focus-visible:ring-brand';
-type ShipmentLabel = { id: string; shipment_code: string; item_count?: number; created_at?: string };
+type ShipmentLabel = { id: string; shipment_code: string; item_count?: number; created_at?: string; status?: string };
 
-// Persian-digit helpers reproducing live's __sepF/__sepW (same shape as
-// Fix 42's inventory helpers).
-const formatNumber = (digits: string, toPersianDigits: (n: number | string) => string): string => {
-  if (digits === '') return '';
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, '٬');
-  return toPersianDigits(grouped);
+const parseQuantity = (value: string) => {
+  const digits = normalizePersianText(value.trim());
+  if (!/^(?:\d+|\d{1,3}(?:[,٬]\d{3})+)$/.test(digits)) return NaN;
+  return Number(digits.replace(/[,٬]/g, ''));
 };
-const parseDigits = (value: string) => normalizePersianText(value).replace(/[^0-9]/g, '');
 
 const printCartonLabel = (shipment: ShipmentLabel) => {
   const created = shipment.created_at ? new Date(shipment.created_at).toLocaleDateString("fa-IR") : "";
@@ -126,6 +124,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   const visibleShipments = (shipments.data ?? []).filter(shipment => (!openOnly || OPEN_SHIPMENT_STATUSES.has(shipment.status))
     && (!shipmentStatus || shipment.status === shipmentStatus)
     && String(shipment.shipment_code ?? '').toUpperCase().includes(normalizedQuery));
+  const createdStatus = (shipments.data ?? []).find(shipment => shipment.id === created?.id)?.status ?? created?.status ?? 'draft';
   const print = (shipment: ShipmentLabel) => {
     if (!printCartonLabel(shipment)) error('پنجره چاپ باز نشد. اجازه باز شدن پنجره‌های چاپ را در مرورگر بده و دوباره تلاش کن.');
   };
@@ -142,6 +141,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
       void sourceInventory.reload();
     } catch (cause: unknown) {
       setActionError(cause instanceof Error ? cause.message : action === 'dispatch' ? 'ارسال ثبت نشد.' : 'لغو ثبت نشد.');
+      if (cause instanceof ApiError && cause.status === 409) await shipments.reload();
     } finally {
       shipmentActionRef.current = false;
       setPendingShipmentId(null);
@@ -165,7 +165,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
     if (submittingRef.current) return;
     setSubmitError('');
     if (!destinations.some(warehouse => warehouse.id === warehouseId && warehouse.isReceivingOpen !== false)) { setSubmitError('انبار مقصدی را انتخاب کن که پذیرش محموله دارد.'); return; }
-    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: Number(l.expectedQty) }));
+    const items = lines.map((l) => ({ variant_id: l.variant.id, expected_qty: parseQuantity(l.expectedQty) }));
     if (items.length === 0) { setSubmitError('حداقل یک تنوع کالا به محموله اضافه کن.'); return; }
     const invalidLine = items.findIndex(item => !Number.isSafeInteger(item.expected_qty) || item.expected_qty <= 0 || item.expected_qty > 2147483647);
     if (invalidLine !== -1) {
@@ -203,7 +203,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
   };
   return (
     <div className="space-y-3.5 pb-6">
-      {stage !== 'prepare' && created && (
+      {stage !== 'prepare' && created && createdStatus === 'draft' && (
         <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4 text-center space-y-2">
           <div className="flex items-center justify-center gap-1.5 text-emerald-700 text-xs font-extrabold"><CheckCircle2 className="w-4 h-4"  strokeWidth={1.5}/><span>ثبت شد! این کد را روی کارتن بنویس</span></div>
           <div className="font-mono text-3xl font-black text-emerald-800 tracking-widest" dir="ltr">{created.shipment_code}</div>
@@ -275,7 +275,7 @@ export const SupplierLabeledInboundTab: React.FC<ShipmentFlowProps> = ({ stage, 
                   <span className="block break-words text-sm font-bold text-slate-800">{l.variant.variant_name}</span>
                   <span className="block break-words text-xs text-slate-600">{l.productTitle} · <bdi dir="ltr" className="font-mono">{l.variant.spnc}</bdi></span>
                 </div>
-                <input type="text" inputMode="numeric" value={formatNumber(l.expectedQty, toPersianDigits)} onChange={(e) => setLines((prev) => prev.map((x) => x.variant.id === l.variant.id ? { ...x, expectedQty: parseDigits(e.target.value) } : x))} placeholder="تعداد" aria-label={`تعداد ${l.variant.variant_name}`} className="min-h-11 w-16 rounded-lg border border-slate-300 bg-white p-2 text-center font-mono text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand" />
+                <input type="text" inputMode="numeric" dir="ltr" value={l.expectedQty} onChange={(e) => setLines((prev) => prev.map((x) => x.variant.id === l.variant.id ? { ...x, expectedQty: e.target.value } : x))} placeholder="تعداد" aria-label={`تعداد ${l.variant.variant_name}`} className="min-h-11 w-16 rounded-lg border border-slate-300 bg-white p-2 text-center font-mono text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand" />
                 <button type="button" onClick={() => removeVariant(l.variant.id)} className="grid size-11 shrink-0 place-items-center rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 focus-visible:ring-2 focus-visible:ring-rose-700" aria-label={`حذف ${l.variant.variant_name} از محموله`}><X aria-hidden="true" className="size-4" strokeWidth={1.5}/></button>
               </div>
             ))}

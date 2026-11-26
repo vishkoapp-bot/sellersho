@@ -46,6 +46,18 @@ func TestVariantWorkspaceSupplierStockCompareAndReplay(t *testing.T) {
 		row.ProductCost != 1000 || !row.CanEditStock || row.CanEditCost {
 		t.Fatalf("workspace row=%+v", row)
 	}
+	exec(`UPDATE products SET fulfillment_method='warehouse',origin_supplier_warehouse_id=NULL WHERE id=$1`, product)
+	rows, err = repo.ListWorkspaceVariants(ctx, f.supplier, true, false)
+	if err != nil || len(rows) != 1 || rows[0].CanEditStock {
+		t.Fatalf("warehouse SKU without an active mappable origin advertised stock adjustment: %+v err=%v", rows, err)
+	}
+	exec(`UPDATE products SET origin_supplier_warehouse_id=$2 WHERE id=$1`, product, f.warehouse)
+	exec(`UPDATE supplier_warehouses SET is_active=FALSE WHERE id=$1`, f.warehouse)
+	rows, err = repo.ListWorkspaceVariants(ctx, f.supplier, true, false)
+	if err != nil || len(rows) != 1 || rows[0].CanEditStock {
+		t.Fatalf("warehouse SKU with an inactive origin advertised stock adjustment: %+v err=%v", rows, err)
+	}
+	exec(`UPDATE supplier_warehouses SET is_active=TRUE WHERE id=$1`, f.warehouse)
 	h := NewSupplierHandlers(repo, nil, false)
 	request := func(total, expected int, key string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -98,6 +110,19 @@ func TestVariantWorkspaceSupplierStockCompareAndReplay(t *testing.T) {
 	rows, err = repo.ListWorkspaceVariants(ctx, f.supplier, true, true)
 	if err != nil || len(rows) != 1 || rows[0].Cost == nil || *rows[0].Cost != 900 || rows[0].PendingCost == nil || *rows[0].PendingCost != 5000 {
 		t.Fatalf("queued increase changed the current cost: workspace rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestSupplierProductRoleUsesActionRatherThanProductID(t *testing.T) {
+	for _, tc := range []struct{ path, permission string }{
+		{"inventory-legacy/variants/00000000-0000-0000-0000-000000000000/pricing", "products.manage"},
+		{"orders-legacy/stock", "inventory.manage"},
+		{"team-legacy/variants", "products.manage"},
+	} {
+		path := "/api/v1/supplier/products/" + tc.path
+		if got := supplierPermissionForPath(http.MethodPut, path); got != tc.permission {
+			t.Errorf("%s classified as %s, want %s", path, got, tc.permission)
+		}
 	}
 }
 

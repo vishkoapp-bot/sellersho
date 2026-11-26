@@ -50,8 +50,8 @@ export const supportApi = {
     for (const [key, value] of Object.entries(input)) if (value) params.set(key, value);
     return apiRequest<SupportReference>(`/${role}/tickets/context?${params}`, { auth: true, signal });
   },
-  create(role: SupportRole, input: SupportReferenceInput & { subject: string; message: string }) {
-    return apiRequest<{ id: string }>(`/${role}/tickets`, { auth: true, method: 'POST', body: JSON.stringify(input) });
+  create(role: SupportRole, input: SupportReferenceInput & { subject: string; message: string }, requestKey: string) {
+    return apiRequest<{ id: string }>(`/${role}/tickets`, { auth: true, method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify(input) });
   },
   list(role: SupportRole, cursor = '', signal?: AbortSignal) {
     const query = new URLSearchParams({ limit: '25' });

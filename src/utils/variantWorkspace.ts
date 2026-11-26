@@ -33,6 +33,10 @@ export interface VariantEditPreview extends VariantEditInput {
   current?: VariantBaseline;
   outcomes?: Partial<Record<VariantField, VariantEditOutcome>>;
 }
+export interface VariantEditBatch {
+  id: string;
+  rows: VariantEditPreview[];
+}
 
 export const VARIANT_BATCH_LIMIT = 100;
 const headers = {
@@ -51,7 +55,8 @@ export function variantNumericInput(value: string): string {
 
 function csvRecords(text: string) {
   const records: CellRow[] = [];
-  const delimiter = text.split(/\r?\n/, 1)[0].includes('\t') ? '\t' : ',';
+  const header = text.split(/\r\n|\r|\n/, 1)[0];
+  const delimiter = header.includes('\t') ? '\t' : header.includes(';') ? ';' : ',';
   let cells: string[] = [];
   let cell = '';
   let line = 1;
@@ -198,32 +203,41 @@ export function canRunVariantEdit(row: VariantEditPreview): boolean {
     row.edit[field] !== undefined && (row.outcomes?.[field] == null || row.outcomes[field]?.state === 'error'));
 }
 
+export function variantBatchRetiredCodes(rows: VariantEditPreview[]): string[] {
+  return [...new Set(rows.flatMap(row => row.outcomes?.stock?.retired ?? []))];
+}
+
 export async function runVariantEdits(
   rows: VariantEditPreview[],
   batch: string,
   save: (row: VariantEditPreview, field: VariantField, attempt: string) => Promise<Omit<VariantEditOutcome, 'state'> & { state?: 'saved' | 'pending' }>,
+  { signal, onProgress }: { signal?: AbortSignal; onProgress?: (index: number, row: VariantEditPreview) => void } = {},
 ): Promise<VariantEditPreview[]> {
-  const result: VariantEditPreview[] = [];
-  for (const row of rows) {
-    if (!canRunVariantEdit(row)) { result.push(row); continue; }
+  const result = [...rows];
+  for (const [index, row] of rows.entries()) {
+    if (signal?.aborted) break;
+    if (!canRunVariantEdit(row)) continue;
     const outcomes = { ...row.outcomes };
     for (const field of editFields) {
+      if (signal?.aborted) break;
       if (row.edit[field] === undefined || (outcomes[field] && outcomes[field]?.state !== 'error')) continue;
       if (!outcomes[field] && row.edit[field] === row.current?.[field]) {
         outcomes[field] = { state: 'saved', message: 'بدون تغییر' };
-        continue;
+      } else {
+        try {
+          const saved = await save(row, field, batch + '-' + row.line + '-' + field);
+          outcomes[field] = { state: 'saved', ...saved };
+        } catch (cause) {
+          if (signal?.aborted) break;
+          outcomes[field] = {
+            state: cause instanceof VariantEditConflict ? 'conflict' : 'error',
+            message: cause instanceof Error ? cause.message : 'ذخیره انجام نشد.',
+          };
+        }
       }
-      try {
-        const saved = await save(row, field, batch + '-' + row.line + '-' + field);
-        outcomes[field] = { state: 'saved', ...saved };
-      } catch (cause) {
-        outcomes[field] = {
-          state: cause instanceof VariantEditConflict ? 'conflict' : 'error',
-          message: cause instanceof Error ? cause.message : 'ذخیره انجام نشد.',
-        };
-      }
+      result[index] = { ...row, outcomes: { ...outcomes } };
+      onProgress?.(index, result[index]);
     }
-    result.push({ ...row, outcomes });
   }
   return result;
 }

@@ -25,13 +25,22 @@ import (
 // fixed by the table guard in markNotificationsReadForUser below.
 
 // supplierNotificationFilter starts after the recipient argument ($1).
-// These three body templates distinguish rows whose kind is shared across roles.
-func supplierNotificationFilter() (string, []any) {
+// Body templates distinguish legacy shared events. Ticket replies instead use
+// the persisted requester and account; only the supplier owner can attribute
+// a legacy supplier ticket created before account IDs were recorded.
+func supplierNotificationFilter(supplierID string) (string, []any) {
 	return ` AND (
 		kind = ANY($2)
 		OR (kind = $3 AND body LIKE $4)
 		OR (kind = $5 AND body LIKE $6)
 		OR (kind = $7 AND body LIKE $8)
+		OR (kind = $9 AND $10 <> '' AND EXISTS (
+			SELECT 1 FROM support_tickets t WHERE t.id=notification_outbox.payload->>'ticket_id'
+				AND t.requester_role='supplier' AND t.requester_user_id=$1::uuid
+				AND (t.requester_account_id=$10 OR (t.requester_account_id='' AND EXISTS (
+					SELECT 1 FROM suppliers s WHERE s.id=$10 AND s.owner_user_id=$1::uuid
+				)))
+		))
 	)`, []any{
 		pq.Array([]string{
 			repository.NotifKindProposalRejected,
@@ -39,7 +48,6 @@ func supplierNotificationFilter() (string, []any) {
 			repository.NotifKindSupplierApproved,
 			repository.NotifKindSupplierRejected,
 			repository.NotifKindApprovalRejected,
-			repository.NotifKindTicketReply,
 			repository.NotifKindOrderPlaced,
 			repository.NotifKindPaymentConfirmed,
 			repository.NotifKindLowStock,
@@ -56,6 +64,7 @@ func supplierNotificationFilter() (string, []any) {
 		repository.NotifKindDeliveryConfirmed, "%سود فروشنده پس از پایان مهلت مرجوعی آزاد می‌شود%",
 		repository.NotifKindOrderCancelled, "%آماده‌سازی آن را متوقف کنید%",
 		repository.NotifKindDisputeResolved, "%مسئولیت با تأمین‌کننده اعلام شد%",
+		repository.NotifKindTicketReply, supplierID,
 	}
 }
 
@@ -111,13 +120,13 @@ func markSellerNotificationsRead(ctx context.Context, db *sql.DB, userID string,
 	return markNotificationsReadWithFilter(ctx, db, userID, ids, filter, args...)
 }
 
-func listSupplierNotifications(ctx context.Context, db *sql.DB, userID string) ([]map[string]interface{}, int, bool, error) {
-	filter, args := supplierNotificationFilter()
+func listSupplierNotifications(ctx context.Context, db *sql.DB, userID, supplierID string) ([]map[string]interface{}, int, bool, error) {
+	filter, args := supplierNotificationFilter(supplierID)
 	return listNotificationsWithFilter(ctx, db, userID, filter, args...)
 }
 
-func markSupplierNotificationsRead(ctx context.Context, db *sql.DB, userID string, ids []string) (int64, error) {
-	filter, args := supplierNotificationFilter()
+func markSupplierNotificationsRead(ctx context.Context, db *sql.DB, userID, supplierID string, ids []string) (int64, error) {
+	filter, args := supplierNotificationFilter(supplierID)
 	return markNotificationsReadWithFilter(ctx, db, userID, ids, filter, args...)
 }
 
@@ -223,11 +232,20 @@ func markNotificationsReadWithFilter(ctx context.Context, db *sql.DB, userID str
 	return updated, nil
 }
 
-// handleSupplierNotifications serves GET /api/v1/supplier/notifications.
-// The recipient is the caller's JWT user id, which is the supplier
-// owner's id (RejectProposal addresses rows to
-// suppliers.owner_user_id). Team members therefore do not see the
-// owner's notifications through this route.
+func notificationSupplierID(r *http.Request, db *sql.DB, userID string) (string, error) {
+	if supplierID, ok := r.Context().Value(supplierIDKey).(string); ok {
+		return supplierID, nil
+	}
+	// The middleware's admin bypass does not resolve a supplier account.
+	// An admin with supplier membership may use their own supplier inbox.
+	supplierID, _, active, err := repository.NewSupplierRepository(db).GetSupplierAccess(r.Context(), userID)
+	if !active {
+		return "", err
+	}
+	return supplierID, err
+}
+
+// handleSupplierNotifications serves the caller's personal supplier inbox.
 func handleSupplierNotifications(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if !t01MethodOnly(w, r, http.MethodGet) || t01DBNil(w, db) {
 		return
@@ -237,7 +255,12 @@ func handleSupplierNotifications(w http.ResponseWriter, r *http.Request, db *sql
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	items, unreadCount, exists, err := listSupplierNotifications(notificationContext(r), db, userID)
+	supplierID, err := notificationSupplierID(r, db, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	items, unreadCount, exists, err := listSupplierNotifications(notificationContext(r), db, userID, supplierID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -274,7 +297,12 @@ func handleSupplierNotificationsRead(w http.ResponseWriter, r *http.Request, db 
 	if req.ID != "" {
 		ids = append(ids, req.ID)
 	}
-	updated, err := markSupplierNotificationsRead(notificationContext(r), db, userID, ids)
+	supplierID, err := notificationSupplierID(r, db, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	updated, err := markSupplierNotificationsRead(notificationContext(r), db, userID, supplierID, ids)
 	if err != nil {
 		writeInternalError(w, err)
 		return

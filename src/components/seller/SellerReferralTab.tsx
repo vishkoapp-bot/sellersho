@@ -3,11 +3,12 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi, StoreReferralItem } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
-import { Users, Copy, Check, Gift, Share2, Lock, CheckCircle2 } from 'lucide-react';
+import { Users, Copy, Check, Gift, Lock, CheckCircle2 } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
 export const SellerReferralTab: React.FC = () => {
   const { currentStore, stores, platformSettings, formatPrice, toPersianDigits } = useStore();
-  const { success, info } = useToast();
+  const { success, info, error } = useToast();
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [serverReferrals, setServerReferrals] = useState<StoreReferralItem[]>([]);
@@ -80,62 +81,54 @@ export const SellerReferralTab: React.FC = () => {
   const totalNetworkPlatformF = displayStores.reduce((sum, s) => sum + (s.totalPlatformFee || 0), 0);
   const totalEarnedCommission = displayStores.reduce((sum, s) => sum + (s.earnedCommission || 0), 0);
 
+  const copyInvitation = async (value: string, setCopied: (copied: boolean) => void, message: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      success(message);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      error('کپی انجام نشد. متن را انتخاب و دستی کپی کن.');
+    }
+  };
+
   return (
-    <div className="space-y-3 pb-6 select-none">
-      <div className="bg-gradient-to-l from-brand-deep to-brand-deep rounded-2xl p-4 text-white shadow-xs space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Gift className="w-5 h-5 text-indigo-300"  strokeWidth={1.5}/>
-            <h2 className="text-sm font-black">همکار دعوت کن، پاداش بگیر</h2>
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="دعوت از همکاران" description="لینک دعوتت را بفرست و ثبت‌نام همکاران و پاداش معرفی را پیگیری کن." icon={<Gift />} />
+      <section className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <h3 className="text-base font-extrabold text-[#261b41]">لینک و کد دعوت</h3>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.5fr)]">
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-2">
+            <label htmlFor="seller-referral-link" className="block px-1 text-xs font-bold text-slate-700">لینک دعوت</label>
+            <div className="flex items-center gap-2">
+              <input id="seller-referral-link" readOnly value={referralLink} dir="ltr" className="min-w-0 flex-1 rounded-lg bg-transparent px-1 py-2 font-mono text-xs text-slate-800 focus-visible:ring-2 focus-visible:ring-brand" />
+              <button
+                type="button"
+                onClick={() => void copyInvitation(referralLink, setCopiedLink, 'لینک دعوت کپی شد.')}
+                className="flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-brand-deep px-3 text-xs font-bold text-white focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                {copiedLink ? <Check aria-hidden="true" className="size-4" /> : <Copy aria-hidden="true" className="size-4" />}
+                {copiedLink ? 'کپی شد' : 'کپی لینک'}
+              </button>
+            </div>
           </div>
-          <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-bold">پاداش را پلتفرم می‌دهد</span>
-        </div>
-        <p className="text-[11px] text-brand-border/90 leading-relaxed">
-          وقتی کسی با لینک تو فروشگاه بسازد و شروع به فروش کند، از هر فروش او{' '}
-          <strong className="text-amber-300">{toPersianDigits(commissionPercent)}٪ از کارمزد پلتفرم</strong>
-          {' '}به کیف پول تو می‌آید. از جیب آن همکار چیزی کم نمی‌شود؛ پلتفرم از سهم خودش می‌دهد.
-        </p>
-
-        {/* Numerical Formula Explanation Box (Item 2) */}
-        <div className="p-2 bg-white/10 rounded-xl text-[10px] text-brand-border border border-white/10 leading-relaxed">
-          <strong className="text-white">چطور حساب می‌شود؟</strong> پاداش تو {toPersianDigits(commissionPercent)}٪ از کارمزد پلتفرمِ فروش همکارت است، نه از کل مبلغ سفارش.
-          <div className="text-[10px] text-indigo-200 mt-0.5">
-            مثال: در یک سفارش ۵۰۰ هزار تومانی، پاداش تو ۲ هزار تومان می‌شود.
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-brand-deep/60 text-xs">
-          <div className="bg-white/10 p-2 rounded-xl flex items-center justify-between">
-            <span className="font-mono font-bold text-amber-300" dir="ltr">{referralCode}</span>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(referralCode);
-                setCopiedCode(true);
-                success('کد معرف کپی شد.');
-                setTimeout(() => setCopiedCode(false), 2000);
-              }}
-              className="p-1 bg-white/20 rounded-md"
-            >
-              {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400"  strokeWidth={1.5}/> : <Copy className="w-3.5 h-3.5"  strokeWidth={1.5}/>}
-            </button>
-          </div>
-          <div className="bg-white/10 p-2 rounded-xl flex items-center justify-between">
-            <span className="text-[10px] truncate text-brand-border" dir="ltr">{referralLink}</span>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(referralLink);
-                setCopiedLink(true);
-                success('لینک دعوت کپی شد.');
-                setTimeout(() => setCopiedLink(false), 2000);
-              }}
-              className="p-1 bg-brand rounded-md text-[10px] font-bold flex items-center gap-1"
-            >
-              <Share2 className="w-3 h-3"  strokeWidth={1.5}/>
-              <span>{copiedLink ? 'کپی شد' : 'کپی'}</span>
-            </button>
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-2">
+            <label htmlFor="seller-referral-code" className="block px-1 text-xs font-bold text-slate-700">کد معرف</label>
+            <div className="flex items-center gap-2">
+              <input id="seller-referral-code" readOnly value={referralCode} dir="ltr" className="min-w-0 flex-1 rounded-lg bg-transparent px-1 py-2 font-mono text-xs font-bold text-slate-800 focus-visible:ring-2 focus-visible:ring-brand" />
+              <button
+                type="button"
+                onClick={() => void copyInvitation(referralCode, setCopiedCode, 'کد معرف کپی شد.')}
+                className="flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-brand-soft px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                {copiedCode ? <Check aria-hidden="true" className="size-4" /> : <Copy aria-hidden="true" className="size-4" />}
+                {copiedCode ? 'کپی شد' : 'کپی کد'}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+        <p className="text-sm leading-6 text-slate-600">وقتی همکارت فروش را شروع کند، {toPersianDigits(commissionPercent)}٪ از کارمزد پلتفرمِ هر فروش به کیف پولت واریز می‌شود.</p>
+      </section>
 
       <div className="grid grid-cols-3 gap-2 text-center text-xs">
         <div className="bg-white p-2.5 rounded-xl border border-slate-200">

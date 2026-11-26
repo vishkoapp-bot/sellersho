@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi, DiscountCampaign } from '../../services/storeApi';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import {
   Percent,
   Plus,
@@ -13,7 +14,6 @@ import {
   ChevronUp,
   Search,
   CheckCircle2,
-  Sparkles,
   AlertCircle,
   ToggleLeft,
   ToggleRight,
@@ -333,70 +333,62 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
     return 'کل فروشگاه';
   };
 
+  const heading = <SupplierSectionHeading title="کمپین‌های تخفیف" description="برای کالاها یا تنوع‌های انتخابی تخفیف زمان‌دار بساز و وضعیت کمپین را پیگیری کن." icon={<Tag />} />;
+
   if (loading) {
     return (
-      <div className="space-y-3 pb-6 animate-pulse" aria-label="در حال بارگذاری کمپین‌ها">
-        <div className="bg-white rounded-2xl border border-slate-100 h-40" />
-        <div className="bg-white rounded-2xl border border-slate-100 h-24" />
+      <div className="space-y-4">
+        {heading}
+        <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">در حال بارگذاری کمپین‌ها…</p>
       </div>
     );
   }
 
   if (loadFailed) {
     return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-        <p className="text-xs font-bold text-slate-700 mb-1">بارگذاری کمپین‌ها انجام نشد</p>
-        <p className="text-[11px] text-slate-400 mb-4">اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</p>
-        <button
-          type="button"
-          onClick={reload}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white shadow"
-        >
-          <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-          تلاش دوباره
-        </button>
+      <div className="space-y-4">
+        {heading}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 text-center" role="alert">
+          <p className="text-xs font-bold text-slate-700 mb-1">بارگذاری کمپین‌ها انجام نشد</p>
+          <p className="text-[11px] text-slate-400 mb-4">اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</p>
+          <button
+            type="button"
+            onClick={reload}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white shadow"
+          >
+            <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
+            تلاش دوباره
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4 pb-8">
-      {/* Informative Banner */}
-      <section className="bg-gradient-to-l from-indigo-50 to-blue-50/60 rounded-2xl border border-indigo-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="p-2 rounded-xl bg-indigo-600 text-white shadow-xs shrink-0">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-xs font-black text-indigo-950">مدیریت جشنواره و تخفیف‌های هدفمند</h3>
-            <p className="text-[11px] leading-5 text-indigo-900/80">
-              محصولات یا واریانت‌های مدنظر خود (رنگ، سایز، مدل) را انتخاب کرده و درصد تخفیف دلخواه را اعمال کنید. 
-              این تخفیف‌ها به همراه نام جشنواره مستقیماً در ویترین فروشگاه و صفحه محصول به مشتریان نمایش داده می‌شوند.
-            </p>
-          </div>
+      {heading}
+
+      {formError && (
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+          <p className="leading-5">{formError}</p>
         </div>
-      </section>
+      )}
 
-      {/* Main Campaign Builder Form */}
-      <section className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
-        <div className="flex items-center gap-2 mb-4 border-b border-slate-100 pb-3">
-          <Tag className="w-4 h-4 text-brand-deep" />
-          <h3 className="text-xs font-black text-slate-800">ایجاد جشنواره یا کمپین تخفیف جدید</h3>
+      {formSuccess && (
+        <div role="status" className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+          <p className="leading-5">{formSuccess}</p>
         </div>
+      )}
 
-        {formError && (
-          <div className="mb-4 rounded-xl bg-rose-50 border border-rose-200 p-3 flex items-start gap-2 text-rose-800 text-xs">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-            <p className="leading-5">{formError}</p>
-          </div>
-        )}
-
-        {formSuccess && (
-          <div className="mb-4 rounded-xl bg-emerald-50 border border-emerald-200 p-3 flex items-start gap-2 text-emerald-800 text-xs">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <p className="leading-5">{formSuccess}</p>
-          </div>
-        )}
+      <details className="group rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg text-base font-extrabold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">
+          <Plus aria-hidden="true" className="size-5 shrink-0 text-brand-deep" />
+          ساخت کمپین تخفیف
+          <ChevronDown aria-hidden="true" className="ms-auto size-5 shrink-0 text-brand-deep group-open:rotate-180" />
+        </summary>
+        <p className="mb-3 mt-2 border-t border-slate-100 pt-3 text-sm leading-6 text-slate-600">نام کمپین و تخفیف آن در ویترین و صفحه کالا نمایش داده می‌شود.</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Campaign Name */}
@@ -712,20 +704,20 @@ export const SellerDiscountCampaignsTab: React.FC = () => {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 py-3 px-4 font-bold text-xs text-white shadow-md hover:from-indigo-700 hover:to-purple-700 transition disabled:opacity-50"
+            className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-brand-deep/90 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 sm:w-auto"
           >
             <Plus className="w-4 h-4" />
             <span>{submitting ? 'در حال ثبت جشنواره...' : 'ایجاد و فعال‌سازی جشنواره'}</span>
           </button>
         </form>
-      </section>
+      </details>
 
       {/* Existing Active Campaigns List */}
-      <section className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
+      <section className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
         <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
             <Percent className="w-4 h-4 text-emerald-600" />
-            <h3 className="text-xs font-black text-slate-800">لیست جشنواره‌ها و تخفیف‌های ثبت‌شده</h3>
+            <h3 className="text-base font-extrabold text-[#261b41]">کمپین‌های ثبت‌شده</h3>
           </div>
           <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
             {toPersianDigits(campaigns.length)} مورد

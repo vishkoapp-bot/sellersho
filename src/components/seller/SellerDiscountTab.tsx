@@ -4,6 +4,7 @@ import { useToast } from '../../context/ToastContext';
 import { storeApi, DiscountCode } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
 import { Calendar, Tag } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
 // Team Discounts (Phase 3): seller discount-CODE management only.
 // Campaigns are managed in the live-parity 'discount-campaigns' tab
@@ -20,21 +21,31 @@ export const SellerDiscountTab: React.FC = () => {
   const { currentStore, formatPrice } = useStore();
   const { success, error } = useToast();
   const [codes, setCodes] = useState<DiscountCode[]>([]);
+  const [codesLoading, setCodesLoading] = useState(false);
+  const [codesError, setCodesError] = useState(false);
   const [code, setCode] = useState('');
   const [codeMode, setCodeMode] = useState<'percent' | 'fixed'>('percent');
   const [codeValue, setCodeValue] = useState('10');
   const [codeStartsAt, setCodeStartsAt] = useState('');
   const [codeEndsAt, setCodeEndsAt] = useState('');
   const [codeMaxUses, setCodeMaxUses] = useState('');
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
     if (isMockMode() || !currentStore.slug) return;
-    storeApi.getDiscountCodes(currentStore.slug).then(setCodes).catch(() => setCodes([]));
+    setCodesLoading(true);
+    setCodesError(false);
+    void storeApi.getDiscountCodes(currentStore.slug)
+      .then(setCodes)
+      .catch(() => setCodesError(true))
+      .finally(() => setCodesLoading(false));
   }, [currentStore.slug]);
 
   useEffect(() => { load(); }, [load]);
 
   const submitCode = async () => {
+    if (creating) return;
+    setCreating(true);
     try {
       await storeApi.createDiscountCode(currentStore.slug, {
         code, mode: codeMode, value: Number(codeValue) || 0,
@@ -44,18 +55,22 @@ export const SellerDiscountTab: React.FC = () => {
       });
       success('کد تخفیف ساخته شد.');
       load();
-    } catch (e: any) { error(e?.message || 'ساخت کد تخفیف انجام نشد.'); }
+    } catch (e: any) {
+      error(e?.message || 'ساخت کد تخفیف انجام نشد.');
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
-    <div className="space-y-6 p-4">
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-        تخفیف فقط از حاشیه سود خود شما کم می‌شود؛ قیمت خرید از تأمین‌کننده و کارمزد پلتفرم تغییر نمی‌کند و قیمت نهایی هرگز از مجموع آن دو پایین‌تر نمی‌رود. مدیریت کمپین‌های تخفیف در زبانه «کمپین‌های تخفیف» انجام می‌شود.
-      </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-        <h3 className="font-bold text-sm flex items-center gap-2"><Tag className="w-4 h-4"  strokeWidth={1.5}/> کد تخفیف</h3>
-        <input className="w-full border rounded-xl p-2 text-xs" placeholder="کد تخفیف، مثلاً SAVE10" value={code} onChange={(e) => setCode(e.target.value)} />
+    <div className="space-y-4">
+      <SupplierSectionHeading title="کدهای تخفیف" description="کدی بساز که مشتری در پرداخت وارد کند. مبلغ تخفیف از حاشیه سودت کم می‌شود." icon={<Tag />} />
+      <form onSubmit={event => { event.preventDefault(); void submitCode(); }} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <h3 className="text-base font-extrabold text-[#261b41]">کد تخفیف</h3>
+        <div>
+          <label htmlFor="seller-new-discount-code" className="mb-1.5 block text-xs font-bold text-slate-700">کد قابل استفاده در پرداخت</label>
+          <input id="seller-new-discount-code" className="min-h-11 w-full rounded-xl border border-slate-200 p-2 text-sm focus-visible:ring-2 focus-visible:ring-brand" dir="ltr" autoComplete="off" placeholder="SAVE10" value={code} required onChange={(e) => setCode(e.target.value)} />
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div>
             <label htmlFor="discount-code-mode" className="mb-1.5 block text-[11px] font-bold text-slate-700">نوع تخفیف</label>
@@ -89,15 +104,27 @@ export const SellerDiscountTab: React.FC = () => {
             <input id="discount-code-ends-at" type="datetime-local" className="w-full min-w-0 border rounded-xl p-2 text-xs" value={codeEndsAt} onChange={(e) => setCodeEndsAt(e.target.value)} />
           </div>
         </div>
-        <button className="bg-blue-600 text-white rounded-xl px-4 py-2 text-xs font-bold" onClick={submitCode}>ساخت کد تخفیف</button>
+        <p className="text-xs leading-5 text-slate-600">با تاریخ‌های خالی، کد از همین لحظه تا ۳۰ روز فعال است.</p>
+        <button type="submit" disabled={creating} className="min-h-11 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">{creating ? 'در حال ساخت…' : 'ساخت کد تخفیف'}</button>
+      </form>
+      <section className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5" aria-labelledby="seller-discount-codes">
+        <h3 id="seller-discount-codes" className="text-base font-extrabold text-[#261b41]">کدهای ثبت‌شده</h3>
+        {codesLoading && <p role="status" className="text-sm text-slate-600">در حال دریافت کدهای تخفیف…</p>}
+        {codesError && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p role="alert" className="text-sm text-rose-700">دریافت کدهای تخفیف انجام نشد.</p>
+            <button type="button" onClick={load} className="min-h-11 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">تلاش دوباره</button>
+          </div>
+        )}
+        {!codesLoading && !codesError && codes.length === 0 && <p className="text-sm leading-6 text-slate-600">هنوز کد تخفیفی ثبت نکرده‌ای.</p>}
         <div className="space-y-2">
           {codes.map((c) => (
-            <div key={c.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-2 text-xs">
-              <span><strong>{c.code}</strong> · {c.mode === 'percent' ? `${c.value}٪` : `${formatPrice(c.value)} تومان`} · استفاده‌شده: {c.usedCount}{c.maxUses ? `/${c.maxUses}` : ''} · {c.isActive ? 'فعال' : 'غیرفعال'}</span>
-              <span className="flex items-center gap-1">
-                <button className="rounded-lg bg-slate-200 px-2 py-1 text-[10px]" onClick={() => storeApi.setDiscountCodeActive(currentStore.slug, c.id, !c.isActive).then(load).catch((e: any) => error(e?.message || 'خطا'))}>{c.isActive ? 'غیرفعال' : 'فعال'}</button>
+            <div key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 p-3 text-sm">
+              <span className="min-w-0 break-words"><strong><bdi>{c.code}</bdi></strong> · {c.mode === 'percent' ? `${c.value}٪` : `${formatPrice(c.value)} تومان`} · استفاده‌شده: {c.usedCount}{c.maxUses ? `/${c.maxUses}` : ''} · {c.isActive ? 'فعال' : 'غیرفعال'}</span>
+              <span className="flex items-center gap-2">
+                <button type="button" className="min-h-11 rounded-lg bg-brand-soft px-2 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand" onClick={() => storeApi.setDiscountCodeActive(currentStore.slug, c.id, !c.isActive).then(load).catch((e: any) => error(e?.message || 'خطا'))}>{c.isActive ? 'غیرفعال کن' : 'فعال کن'}</button>
                 {canDeleteDiscountCode(c) && (
-                  <button className="rounded-lg bg-rose-100 text-rose-700 px-2 py-1 text-[10px] font-bold" onClick={() => {
+                  <button type="button" className="min-h-11 rounded-lg px-2 text-xs font-bold text-rose-700 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-600" onClick={() => {
                     if (!window.confirm(`کد ${c.code} حذف شود؟ این عمل قابل بازگشت نیست.`)) return;
                     storeApi.deleteDiscountCode(currentStore.slug, c.id)
                       .then(() => { success('کد تخفیف حذف شد.'); load(); })
@@ -108,7 +135,7 @@ export const SellerDiscountTab: React.FC = () => {
             </div>
           ))}
         </div>
-      </div>
+      </section>
     </div>
   );
 };

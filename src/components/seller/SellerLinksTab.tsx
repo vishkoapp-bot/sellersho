@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { buildAdBannerLink, buildStoreReferralLink } from '../../utils/attributionTokens';
-import { Link2, QrCode, Copy, Check, Share2, Info } from 'lucide-react';
+import { Link2, QrCode, Copy, Check, Share2 } from 'lucide-react';
 import { SellerCampaign, storeApi } from '../../services/storeApi';
 import { isMockMode } from '../../services/apiClient';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
 // ---------------------------------------------------------------------------
 // Minimal QR encoder (byte mode, error-correction level M), self-contained:
@@ -320,76 +321,68 @@ export const SellerLinksTab: React.FC = () => {
   };
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <div className="rounded-2xl border border-brand-border bg-brand-soft/50 px-3.5 py-2.5">
-        <div className="flex items-start gap-2">
-          <Info className="w-4 h-4 text-brand-deep shrink-0 mt-0.5" strokeWidth={1.5} />
-          <p className="flex-1 text-xs leading-6 text-slate-700">لینک و کد QR فروشگاهت این‌جاست. برای مشتری‌ها بفرست تا مستقیم وارد فروشگاهت شوند و از تو خرید کنند.</p>
-        </div>
-      </div>
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="لینک و کد QR" description="لینک فروشگاه را برای مشتری بفرست یا کد QR را برای چاپ دانلود کن." icon={<Link2 />} />
 
-      {/* 1. Main Storefront Link */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center gap-1.5 text-brand-deep">
-          <Link2 className="w-4 h-4" strokeWidth={1.5} />
-          <h3 className="text-xs font-bold text-slate-800">لینک فروشگاهت</h3>
-        </div>
-        <p className="text-[11px] text-slate-500 leading-relaxed">
-          این لینک را برای مشتری‌ها بفرست. هر کس با این لینک از فروشگاهت خرید کند، سودش برای تو حساب می‌شود و بعد از تمام‌شدن مهلت مرجوعی، به کیف پولت می‌آید.
-        </p>
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,0.65fr)]">
+        <section className="min-w-0 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+          <h3 className="text-base font-extrabold text-[#261b41]">لینک فروشگاهت</h3>
 
-        <div>
-          <label className="text-xs font-bold text-slate-600 block mb-1">این لینک را کجا می‌گذاری؟</label>
-          <select
-            value={campaignTag}
-            onChange={(e) => setCampaignTag(e.target.value)}
-            className="w-full text-xs p-3 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-          >
-            <option value="instagram-bio">اینستاگرام (در بیو پیج)</option>
-            <option value="telegram-channel">کانال تلگرام</option>
-            <option value="whatsapp-direct">واتساپ و پیام‌رسان‌ها</option>
-            <option value="website-banner">بنر در سایت خودم</option>
-          </select>
-        </div>
+          <div>
+            <label htmlFor="seller-link-channel" className="mb-1 block text-sm font-bold text-slate-700">این لینک را کجا می‌گذاری؟</label>
+            <select
+              id="seller-link-channel"
+              value={campaignTag}
+              onChange={(e) => setCampaignTag(e.target.value)}
+              className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm focus-visible:ring-2 focus-visible:ring-brand"
+            >
+              <option value="instagram-bio">اینستاگرام (در بیو پیج)</option>
+              <option value="telegram-channel">کانال تلگرام</option>
+              <option value="whatsapp-direct">واتساپ و پیام‌رسان‌ها</option>
+              <option value="website-banner">بنر در سایت خودم</option>
+            </select>
+          </div>
 
-        <div className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-200" dir="ltr">
-          <input
-            type="text"
-            readOnly
-            value={mainStoreLink}
-            className="w-full text-[11px] font-mono bg-transparent text-slate-700 outline-hidden"
-          />
+          <div className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-200" dir="ltr">
+            <input
+              type="text"
+              aria-label="لینک اشتراک‌گذاری فروشگاه"
+              readOnly
+              value={mainStoreLink}
+              className="min-w-0 flex-1 rounded-lg bg-transparent px-1 py-2 font-mono text-xs text-slate-700 focus-visible:ring-2 focus-visible:ring-brand"
+            />
+            <button
+              type="button"
+              onClick={copyToClipboard}
+              className="flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-brand-deep px-3 text-xs font-bold text-white focus-visible:ring-2 focus-visible:ring-brand"
+            >
+              {copiedLink ? <Check className="w-4 h-4" strokeWidth={1.5} /> : <Copy className="w-4 h-4" strokeWidth={1.5} />}
+              <span>{copiedLink ? 'کپی شد' : 'کپی'}</span>
+            </button>
+          </div>
+          {!selectedCampaign && isBannerAd && <p className="text-[10px] text-amber-700">برای اینکه کلیک‌های بنرت شمرده شود، اول در بخش «تبلیغات» یک برنامه تبلیغاتی از نوع بنر بساز.</p>}
+        </section>
+
+        {/* 2. QR Code */}
+        <section className="min-w-0 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-center shadow-sm sm:p-5">
+          <div className="flex items-center justify-center gap-2 text-brand-deep">
+            <QrCode aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            <h3 className="text-base font-extrabold text-[#261b41]">کد QR فروشگاهت</h3>
+          </div>
+          <p className="text-sm leading-6 text-slate-600">مشتری با اسکن این کد وارد فروشگاه می‌شود.</p>
+
+          <div className="w-40 h-40 mx-auto bg-white border border-slate-200 rounded-2xl flex items-center justify-center p-2 shadow-inner">
+            <canvas ref={qrCanvasRef} style={{ width: 144, height: 144 }} aria-label={`QR فروشگاه ${currentStore.name}`} />
+          </div>
           <button
-            onClick={copyToClipboard}
-            className="flex items-center gap-1 px-3.5 py-2.5 min-h-[44px] bg-brand-deep text-white rounded-lg shrink-0 transition-colors text-xs font-bold"
+            type="button"
+            onClick={handleDownloadQr}
+            className="mx-auto flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-brand-border px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand"
           >
-            {copiedLink ? <Check className="w-4 h-4" strokeWidth={1.5} /> : <Copy className="w-4 h-4" strokeWidth={1.5} />}
-            <span>{copiedLink ? 'کپی شد' : 'کپی'}</span>
+            <Share2 className="w-4 h-4" strokeWidth={1.5} />
+            <span>دانلود کد QR برای چاپ</span>
           </button>
-        </div>
-        {!selectedCampaign && isBannerAd && <p className="text-[10px] text-amber-700">برای اینکه کلیک‌های بنرت شمرده شود، اول در بخش «تبلیغات» یک برنامه تبلیغاتی از نوع بنر بساز.</p>}
-      </div>
-
-      {/* 2. QR Code */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs text-center space-y-3">
-        <div className="flex items-center justify-center gap-1.5 text-purple-600">
-          <QrCode className="w-4 h-4" strokeWidth={1.5} />
-          <h3 className="text-xs font-bold text-slate-800">کد QR فروشگاهت</h3>
-        </div>
-        <p className="text-[11px] text-slate-500 leading-relaxed">مشتری دوربین گوشی‌اش را روی این کد می‌گیرد و مستقیم وارد فروشگاهت می‌شود. می‌توانی چاپش کنی و در مغازه یا روی کارتت بگذاری.</p>
-
-        <div className="w-40 h-40 mx-auto bg-white border border-slate-200 rounded-2xl flex items-center justify-center p-2 shadow-inner">
-          <canvas ref={qrCanvasRef} style={{ width: 144, height: 144 }} aria-label={`QR فروشگاه ${currentStore.name}`} />
-        </div>
-        <span className="text-[9px] text-slate-400 font-mono block" dir="ltr">sellershow.ir/store/{currentStore.slug}</span>
-
-        <button
-          onClick={handleDownloadQr}
-          className="w-full py-3 min-h-[48px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5"
-        >
-          <Share2 className="w-4 h-4" strokeWidth={1.5} />
-          <span>دانلود کد QR برای چاپ</span>
-        </button>
+        </section>
       </div>
     </div>
   );

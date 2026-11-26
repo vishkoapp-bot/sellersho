@@ -34,6 +34,21 @@ async function openModal(page: Page) {
   await page.waitForSelector(selector, { visible: true });
 }
 
+test('Escape closes the price dialog and returns focus to the product action', () =>
+  withCatalog('unset', async page => {
+    await page.evaluate(title => {
+      const row = [...document.querySelectorAll('h4')].find(heading => heading.textContent === title)
+        ?.parentElement?.parentElement?.parentElement;
+      row?.querySelector<HTMLButtonElement>('button[title="تنظیم سود این کالا"]')?.focus();
+    }, rowTitle);
+    await page.keyboard.press('Enter');
+    await page.waitForSelector(selector, { visible: true });
+    await page.focus(selector);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(selector, { hidden: true });
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('title')), 'تنظیم سود این کالا');
+  }));
+
 test('unset variant uses 35% before discounts while the plain product keeps its 15% override', () =>
   withCatalog('unset', async page => {
     await waitRow(page, '۳۵٪');
@@ -58,7 +73,7 @@ test('explicit variant override displays 15% and saving or clearing it refreshes
     await openModal(page);
     await page.waitForFunction(query => document.querySelector<HTMLInputElement>(query)?.value === '15', {}, selector);
     await fillInput(page, selector, '20');
-    await clickText(page, 'ذخیره تنظیمات تنوع‌ها');
+    await page.keyboard.press('Enter');
     await waitText(page, 'تنظیمات تنوع‌ها ذخیره شد.');
     await clickText(page, 'بستن');
     await waitRow(page, '۲۰٪');

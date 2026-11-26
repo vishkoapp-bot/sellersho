@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Copy, Search, Check } from 'lucide-react';
+import { ChevronDown, Copy, Images, Search, Check } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { storeApi } from '../../services/storeApi';
@@ -70,23 +70,29 @@ export const SellerAdLibrary: React.FC = () => {
     try { await navigator.clipboard.writeText(code); setCopiedId(id); success('کد بنر همین کالا و اندازه کپی شد.'); } catch { error('کپی کد بنر انجام نشد؛ دسترسی مرورگر به حافظه موقت (کلیپ‌بورد) را بررسی کنید.'); }
   };
 
-  return <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3.5">
-    <h3 className="text-sm font-bold text-slate-900">بنرهای آماده برای کالاها</h3>
-    <p className="text-xs leading-6 text-slate-500">بنر کالاهای موضوع‌های فروشگاهت اول فهرست می‌آید. برای هر کالا چهار اندازه بنر آماده است؛ کدش را کپی کن و در سایت یا وبلاگت بگذار. هر کس روی بنر بزند، وارد فروشگاه تو می‌شود و خریدش برای تو حساب می‌شود.</p>
-    <p className="text-[11px] text-emerald-700">موضوع‌های فروشگاهت: {ownNiches.map((id) => taxonomy.find((niche) => niche.id === id)?.title).filter(Boolean).join('، ') || 'هنوز موضوعی انتخاب نشده؛ از بخش «انتخاب کالا» انتخاب کن.'}</p>
-    <div className="grid gap-2 sm:grid-cols-2">
-      <label className="text-xs">نیچ بنر<select aria-label="نیچ بنر" value={nicheFilter} onChange={(event) => { setNicheFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">همه نیچ‌ها؛ نیچ من اول</option><option value="mine">فقط نیچ‌های فروشگاه من</option>{taxonomy.map((niche) => <option key={niche.id} value={niche.id}>{ownNiches.includes(niche.id) ? '★ ' : ''}{niche.title}</option>)}</select></label>
-      <label className="text-xs">اندازه بنر<select aria-label="اندازه بنر" value={sizeFilter} onChange={(event) => { setSizeFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">تمام اندازه‌ها</option>{sizes.map((size) => <option key={size.id} value={size.id}>{size.title} · {size.width}×{size.height}</option>)}</select></label>
-      <label className="text-xs">کالای بنر<select aria-label="کالای بنر" value={productFilter} onChange={(event) => { setProductFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">تمام کالاهای موجود</option>{sortedProducts.map((product) => <option key={product.id} value={product.id}>{product.title}</option>)}</select></label>
-      <label className="text-xs">جست‌وجوی کالا<div className="mt-1 flex items-center gap-2 rounded-xl border bg-slate-50 px-2"><Search className="h-4 w-4 text-slate-400" strokeWidth={1.5} /><input aria-label="جست‌وجوی کالای بنر" value={search} onChange={(event) => { setSearch(event.target.value); setLimit(12); }} className="min-w-0 w-full bg-transparent p-2" /></div></label>
+  return <details className="group rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg text-base font-extrabold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">
+      <Images aria-hidden="true" className="size-5 shrink-0 text-brand-deep" strokeWidth={1.75} />
+      بنرهای آماده برای کالاها
+      <ChevronDown aria-hidden="true" className="ms-auto size-5 shrink-0 text-brand-deep group-open:rotate-180" />
+    </summary>
+    <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+      <p className="text-sm leading-6 text-slate-600">کالا و اندازه را انتخاب کن و کد بنر را برای نمایش در سایت یا وبلاگت کپی کن.</p>
+      <p className="text-[11px] text-emerald-700">موضوع‌های فروشگاهت: {ownNiches.map((id) => taxonomy.find((niche) => niche.id === id)?.title).filter(Boolean).join('، ') || 'هنوز موضوعی انتخاب نشده؛ از بخش «انتخاب کالا» انتخاب کن.'}</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-xs">نیچ بنر<select aria-label="نیچ بنر" value={nicheFilter} onChange={(event) => { setNicheFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">همه نیچ‌ها؛ نیچ من اول</option><option value="mine">فقط نیچ‌های فروشگاه من</option>{taxonomy.map((niche) => <option key={niche.id} value={niche.id}>{ownNiches.includes(niche.id) ? '★ ' : ''}{niche.title}</option>)}</select></label>
+        <label className="text-xs">اندازه بنر<select aria-label="اندازه بنر" value={sizeFilter} onChange={(event) => { setSizeFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">تمام اندازه‌ها</option>{sizes.map((size) => <option key={size.id} value={size.id}>{size.title} · {size.width}×{size.height}</option>)}</select></label>
+        <label className="text-xs">کالای بنر<select aria-label="کالای بنر" value={productFilter} onChange={(event) => { setProductFilter(event.target.value); setLimit(12); }} className="mt-1 w-full rounded-xl border bg-slate-50 p-2"><option value="all">تمام کالاهای موجود</option>{sortedProducts.map((product) => <option key={product.id} value={product.id}>{product.title}</option>)}</select></label>
+        <label className="text-xs">جست‌وجوی کالا<div className="mt-1 flex items-center gap-2 rounded-xl border bg-slate-50 px-2"><Search className="h-4 w-4 text-slate-400" strokeWidth={1.5} /><input aria-label="جست‌وجوی کالای بنر" value={search} onChange={(event) => { setSearch(event.target.value); setLimit(12); }} className="min-w-0 w-full bg-transparent p-2" /></div></label>
+      </div>
+      <div className="flex justify-between text-xs text-slate-500"><span>{toPersianDigits(banners.length)} بنر</span><button type="button" onClick={() => { setNicheFilter('all'); setSizeFilter('all'); setProductFilter('all'); setSearch(''); setLimit(12); }} className="text-brand-deep">پاک‌کردن فیلترها</button></div>
+      {banners.length === 0 && <p className="rounded-xl bg-slate-50 p-6 text-center text-xs">بنری با این فیلترها پیدا نشد.</p>}
+      <div className="grid gap-3 sm:grid-cols-2">{banners.slice(0, limit).map(({ product, size, id }) => { const priced = cardPriceVariantOf(product); return (<article key={id} className="space-y-2 rounded-xl border border-slate-200 p-3">
+        <div className="flex flex-wrap justify-between gap-1 text-[10px]"><span>{size.title} · {size.width}×{size.height}</span>{getProductNicheIds(product).some((niche) => ownNiches.includes(niche)) && <span className="rounded-full bg-emerald-50 px-2 text-emerald-700">مناسب نیچ شما</span>}</div>
+        <div className="flex justify-center rounded-xl bg-slate-100 p-2"><div style={{ aspectRatio: `${size.width}/${size.height}`, width: size.id === 'story' ? '50%' : '100%' }} className={`flex overflow-hidden items-center justify-center gap-1 rounded-lg bg-white p-2 ${size.id === 'leaderboard' ? 'flex-row' : 'flex-col'}`}><img loading="lazy" src={product.image} alt={product.title} className={`${size.id === 'leaderboard' ? 'h-full w-12' : 'h-1/2 w-2/3'} object-contain`} /><span className="line-clamp-2 text-center text-[10px] font-bold">{product.title}</span><span className="text-[9px] text-emerald-700">{priced.variant?.label ? `${priced.variant.label} · ` : ''}{formatPrice(priced.triple.price)} تومان</span></div></div>
+        <button type="button" onClick={() => copy(product, size, id)} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white focus-visible:ring-2 focus-visible:ring-brand">{copiedId === id ? <Check className="h-4 w-4" strokeWidth={1.5} /> : <Copy className="h-4 w-4" strokeWidth={1.5} />}{copiedId === id ? 'کد بنر کپی شد' : 'کپی کد بنر'}</button>
+      </article>); })}</div>
+      {limit < banners.length && <button type="button" onClick={() => setLimit(limit + 12)} className="w-full rounded-xl bg-slate-100 p-2 text-xs font-bold">نمایش بنرهای بیشتر</button>}
     </div>
-    <div className="flex justify-between text-xs text-slate-500"><span>{toPersianDigits(banners.length)} بنر</span><button type="button" onClick={() => { setNicheFilter('all'); setSizeFilter('all'); setProductFilter('all'); setSearch(''); setLimit(12); }} className="text-brand-deep">پاک‌کردن فیلترها</button></div>
-    {banners.length === 0 && <p className="rounded-xl bg-slate-50 p-6 text-center text-xs">بنری با این فیلترها پیدا نشد.</p>}
-    <div className="grid gap-3 sm:grid-cols-2">{banners.slice(0, limit).map(({ product, size, id }) => { const priced = cardPriceVariantOf(product); return (<article key={id} className="space-y-2 rounded-xl border border-slate-200 p-3">
-      <div className="flex flex-wrap justify-between gap-1 text-[10px]"><span>{size.title} · {size.width}×{size.height}</span>{getProductNicheIds(product).some((niche) => ownNiches.includes(niche)) && <span className="rounded-full bg-emerald-50 px-2 text-emerald-700">مناسب نیچ شما</span>}</div>
-      <div className="flex justify-center rounded-xl bg-slate-100 p-2"><div style={{ aspectRatio: `${size.width}/${size.height}`, width: size.id === 'story' ? '50%' : '100%' }} className={`flex overflow-hidden items-center justify-center gap-1 rounded-lg bg-white p-2 ${size.id === 'leaderboard' ? 'flex-row' : 'flex-col'}`}><img loading="lazy" src={product.image} alt={product.title} className={`${size.id === 'leaderboard' ? 'h-full w-12' : 'h-1/2 w-2/3'} object-contain`} /><span className="line-clamp-2 text-center text-[10px] font-bold">{product.title}</span><span className="text-[9px] text-emerald-700">{priced.variant?.label ? `${priced.variant.label} · ` : ''}{formatPrice(priced.triple.price)} تومان</span></div></div>
-      <button type="button" onClick={() => copy(product, size, id)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-deep p-2 text-xs font-bold text-white">{copiedId === id ? <Check className="h-4 w-4" strokeWidth={1.5} /> : <Copy className="h-4 w-4" strokeWidth={1.5} />} کپی کد بنر</button>
-    </article>); })}</div>
-    {limit < banners.length && <button type="button" onClick={() => setLimit(limit + 12)} className="w-full rounded-xl bg-slate-100 p-2 text-xs font-bold">نمایش بنرهای بیشتر</button>}
-  </section>;
+  </details>;
 };

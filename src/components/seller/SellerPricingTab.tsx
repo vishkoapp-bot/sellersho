@@ -1,7 +1,8 @@
 import { markedUpPrice } from '../../utils/money';
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { Calculator, Sparkles } from 'lucide-react';
+import { Calculator, ChevronDown } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
 // "سود من" tab: there is NO store-wide default margin anymore (owner
 // rule) — margins exist only per product / per variant, and wherever the
@@ -12,15 +13,16 @@ import { Calculator, Sparkles } from 'lucide-react';
 export const SellerPricingTab: React.FC = () => {
   const { platformSettings, formatPrice, toPersianDigits } = useStore();
 
-  const [showMarginHelp, setShowMarginHelp] = useState(false);
+  const baseCostId = useId();
+  const profitId = useId();
 
   // Trial calculator (never saved; own local inputs only).
-  const [baseCostR, setBaseCostB] = useState<string>('800000');
+  const [baseCost, setBaseCost] = useState('800000');
   const [profitInput, setProfitInput] = useState<string>('20');
 
   const maxProfit = platformSettings.maxProfitMargin ?? 35;
 
-  const numBase = Number(baseCostR) || 0;
+  const numBase = Number(baseCost) || 0;
   const numProfit = Number(profitInput) || 0;
 
   let finalPriceP = numBase;
@@ -29,89 +31,50 @@ export const SellerPricingTab: React.FC = () => {
   const netProfitToman = finalPriceP - numBase;
 
   return (
-    <div className="space-y-3.5 pb-6">
-      {/* 1. Intro + "what is margin" help (live's Pe block). */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <p className="text-[11px] text-slate-600 leading-6">
-          سود فروشگاه دیگر یک درصد سراسری ندارد؛ برای هر کالا یا هر تنوع، درصد سود همان کالا را جداگانه تعیین می‌کنی. هرجا درصدی تعیین نکرده باشی، به‌صورت خودکار حداکثر سود مجاز پلتفرم ({toPersianDigits(maxProfit)}٪) اعمال می‌شود.
-        </p>
-        <button
-          type="button"
-          onClick={() => setShowMarginHelp((v) => !v)}
-          aria-expanded={showMarginHelp}
-          className="text-[11px] font-bold text-blue-700"
-        >
-          «حاشیه سود» یعنی چه؟
-        </button>
-        {showMarginHelp && (
-          <div className="space-y-1 text-[11px] leading-6 text-slate-600">
-            <p>حاشیه سود یعنی درصدی که روی قیمت کالا می‌گذاری و سود تو می‌شود.</p>
-            <p>کالای ۱۰۰ هزار تومانی با سود ۲۰٪، برای مشتری ۱۲۰ هزار تومان می‌شود و ۲۰ هزار تومانش سود توست.</p>
-          </div>
-        )}
-      </div>
-
-      {/* 2. Trial calculator (live: "فقط برای امتحان است و چیزی را ذخیره نمی‌کند"). */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3 text-xs">
-        <div className="flex items-center gap-1.5 text-slate-500">
-          <Calculator className="w-4 h-4" strokeWidth={1.5} />
-          <h3 className="text-xs font-bold text-slate-700">امتحان کن: با یک کالای فرضی حساب کن</h3>
-        </div>
-        <p className="text-[11px] text-slate-400 leading-5">این بخش فقط برای امتحان است و چیزی را ذخیره نمی‌کند.</p>
-
-        <div>
-          <label className="text-xs font-bold text-slate-700 block mb-1">
-            قیمت خرید کالا از پلتفرم (تومان):
-          </label>
-          <input
-            type="number"
-            value={baseCostR}
-            onChange={(e) => setBaseCostB(e.target.value)}
-            className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 font-bold focus:outline-hidden focus:bg-white focus:border-blue-500"
-            placeholder="مثال: ۸۰۰٬۰۰۰"
-          />
-        </div>
-
-        <div>
-
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="سود من" description="قبل از تنظیم سود هر کالا، قیمت فروش و سودت را حساب کن." icon={<Calculator />} />
+      <section aria-labelledby="seller-price-calculator" className="grid gap-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+        <div className="space-y-4">
           <div>
-            <label className="text-[11px] font-bold text-slate-700 block mb-1">مقدار سود در ماشین‌حساب</label>
-            <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus-within:bg-white focus-within:border-blue-500">
-              <input
-                type="number"
-                value={profitInput}
-                onChange={(e) => setProfitInput(e.target.value)}
-                className="w-full bg-transparent text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
-                placeholder='۲۰'
-              />
-              <span className="text-[10px] text-slate-400 font-bold mr-1 shrink-0">
-                درصد سود
-              </span>
+            <h3 id="seller-price-calculator" className="text-base font-extrabold text-[#261b41]">ماشین‌حساب سود</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">مقدارهای آزمایشی این بخش ذخیره نمی‌شوند.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label htmlFor={baseCostId} className="block text-sm font-bold text-slate-800">قیمت خرید (تومان)</label>
+              <input id={baseCostId} type="number" inputMode="numeric" dir="ltr" value={baseCost}
+                onChange={event => setBaseCost(event.target.value)} placeholder="۸۰۰٬۰۰۰"
+                className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-end text-sm font-bold tabular-nums text-slate-900 focus-visible:ring-2 focus-visible:ring-brand" />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor={profitId} className="block text-sm font-bold text-slate-800">درصد سود</label>
+              <input id={profitId} type="number" inputMode="decimal" dir="ltr" value={profitInput}
+                onChange={event => setProfitInput(event.target.value)} placeholder="۲۰"
+                className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-end text-sm font-bold tabular-nums text-slate-900 focus-visible:ring-2 focus-visible:ring-brand" />
             </div>
           </div>
         </div>
-
-        <div className="p-3.5 bg-gradient-to-r from-blue-50/70 to-emerald-50/70 border border-blue-200/80 rounded-2xl space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-700">قیمتی که مشتری می‌پردازد:</span>
-            <span className="text-base font-black text-blue-800 font-mono">
-              {formatPrice(finalPriceP)} تومان
-            </span>
+        <dl aria-live="polite" className="divide-y divide-brand-border rounded-2xl border border-brand-border bg-brand-bg px-4">
+          <div className="py-3">
+            <dt className="text-sm text-slate-700">قیمت فروش به مشتری</dt>
+            <dd className="mt-1 text-lg font-extrabold tabular-nums text-[#261b41]">{formatPrice(finalPriceP)} تومان</dd>
           </div>
-          <div className="pt-2 border-t border-slate-200/70 text-[11px]">
-            <span className="text-slate-500 text-[10px] block">سود تو از هر فروش:</span>
-            <strong className="text-emerald-700 font-mono">+{formatPrice(netProfitToman)} تومان</strong>
+          <div className="py-3">
+            <dt className="text-sm text-slate-700">سود تو از هر فروش</dt>
+            <dd className="mt-1 text-base font-extrabold tabular-nums text-emerald-800">{formatPrice(netProfitToman)} تومان</dd>
           </div>
-        </div>
-      </div>
-
-      <div className="p-3 bg-amber-50/60 border border-amber-200/70 rounded-2xl text-[10px] text-amber-800 flex items-start gap-2">
-        <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" strokeWidth={1.5} />
-        <p className="leading-relaxed">
-          می‌خواهی سود یک کالای خاص فرق کند؟ در بخش «انتخاب کالا» روی دکمه «سود» همان کالا بزن.
-        </p>
-      </div>
-
+        </dl>
+      </section>
+      <section aria-labelledby="seller-price-rules" className="space-y-2 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <h3 id="seller-price-rules" className="text-base font-extrabold text-[#261b41]">تنظیم سود کالاها</h3>
+        <p className="text-sm leading-6 text-slate-600">در بخش «انتخاب کالا»، روی «تنظیم سود» همان کالا بزن. سود هر کالا یا تنوع جداگانه تنظیم می‌شود. اگر درصدی تعیین نکنی، حداکثر سود مجاز پلتفرم ({toPersianDigits(maxProfit)}٪) اعمال می‌شود.</p>
+        <details className="group">
+          <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-1 rounded-xl px-1 text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand [&::-webkit-details-marker]:hidden">
+            «حاشیه سود» یعنی چه؟ <ChevronDown aria-hidden="true" className="size-4 group-open:rotate-180" />
+          </summary>
+          <p className="rounded-xl bg-brand-bg p-3 text-sm leading-6 text-slate-700">حاشیه سود درصدی است که روی قیمت خرید می‌گذاری. کالایی با قیمت خرید ۱۰۰ هزار تومان و سود ۲۰٪، با قیمت ۱۲۰ هزار تومان فروخته می‌شود و ۲۰ هزار تومان آن سود توست.</p>
+        </details>
+      </section>
     </div>
   );
 };

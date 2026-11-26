@@ -21,7 +21,8 @@ import type {
   TemplateTrustItem,
 } from '../storefront/templates/templateTypes';
 import { TemplatePreviewEmulator } from './TemplatePreviewEmulator';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, LayoutTemplate, Plus, Trash2 } from 'lucide-react';
 
 // «ظاهر فروشگاه» — professional template editor. The seller edits a DRAFT
 // config (sections order/visibility + every section's content) and sees it
@@ -671,20 +672,14 @@ export const SellerTemplateTab: React.FC = () => {
   const blueprint = blueprintFor(selectedId);
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-bold text-slate-900">ظاهر فروشگاه</h2>
-        <p className="text-xs leading-6 text-slate-500">
-          هر تغییری که این‌جا بدهی، همان لحظه در پیش‌نمایش زنده می‌بینی. بخش‌های قالب را روشن یا خاموش کن، ترتیب‌شان را عوض کن و محتوای هر بخش را ویرایش کن؛ وقتی راضی بودی «ذخیره و انتشار» را بزن تا در فروشگاهت دیده شود. پیش‌نویس تغییراتت خودکار نگه داشته می‌شود و با رفرش صفحه از دست نمی‌رود.
-        </p>
-        <p className="text-xs leading-6 text-slate-500">
-          تعویض قالب بلافاصله اعمال می‌شود و محتوای فروشگاهت (متن‌ها، بنرها و رنگ) به قالب تازه منتقل می‌شود؛ چیدمان بخش‌ها از ساختار همان قالب می‌آید و بعد از تعویض هم قابل ویرایش است.
-        </p>
-        <p className="text-xs leading-6 text-slate-500">
-          قالب فعلی: <span className="font-bold text-slate-800">{currentName}</span>
-          {blueprint ? <span className="text-slate-400"> — {blueprint.tagline}</span> : null}
-        </p>
-        {loading && <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">در حال بارگذاری تنظیمات ظاهر فروشگاه…</p>}
+    <div className="space-y-4">
+      <SupplierSectionHeading title="ظاهر فروشگاه" description="رنگ و بخش‌های ویترین را ویرایش کن، پیش‌نمایش را ببین و تغییرات را منتشر کن." icon={<LayoutTemplate />} />
+      <div className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <div>
+          <h3 className="text-base font-extrabold text-[#261b41]">قالب فعلی: {currentName}</h3>
+          {blueprint && <p className="mt-1 text-sm leading-6 text-slate-600">{blueprint.tagline}</p>}
+        </div>
+        {loading && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">در حال بارگذاری تنظیمات ظاهر فروشگاه…</p>}
         {error && <p role="alert" className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700">{error}</p>}
         {error && !loading && (
           <button type="button" onClick={load} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white">تلاش مجدد</button>
@@ -694,35 +689,41 @@ export const SellerTemplateTab: React.FC = () => {
           <p className="rounded-xl border border-dashed p-5 text-xs leading-6 text-slate-500">قالبی برای نمایش وجود ندارد.</p>
         )}
         {!loading && templates.length > 0 && (
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
-            {templates.map((meta) => {
-              const id = meta.id;
-              const preset = TEMPLATE_ACCENTS[id as keyof typeof TEMPLATE_ACCENTS];
-              const tagline = blueprintFor(id)?.tagline || meta.description;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => handleSelectTemplate(id)}
-                  aria-pressed={selectedId === id}
-                  className={`rounded-2xl border p-3 text-right ${selectedId === id ? 'border-blue-600 bg-blue-50' : 'border-slate-200'}`}
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="block text-xs font-bold text-slate-900">{meta.name || id}</span>
-                    {shownTemplateId === id ? (
-                      <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold text-white">قالب فعلی</span>
+          <details className="group rounded-xl border border-slate-200 px-3">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">
+              دیدن قالب‌ها و تغییر قالب
+              <ChevronDown aria-hidden="true" className="size-4 shrink-0 group-open:rotate-180" />
+            </summary>
+            <p className="mb-3 text-sm leading-6 text-slate-600">تغییر قالب پس از تأیید بلافاصله اعمال می‌شود. متن‌ها، بنرها و رنگ به قالب تازه منتقل می‌شوند و چیدمان از قالب تازه می‌آید.</p>
+            <div className="grid grid-cols-2 gap-2 pb-3 md:grid-cols-3 xl:grid-cols-5">
+              {templates.map((meta) => {
+                const id = meta.id;
+                const preset = TEMPLATE_ACCENTS[id as keyof typeof TEMPLATE_ACCENTS];
+                const tagline = blueprintFor(id)?.tagline || meta.description;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleSelectTemplate(id)}
+                    aria-pressed={selectedId === id}
+                    className={`rounded-2xl border p-3 text-start focus-visible:ring-2 focus-visible:ring-brand ${selectedId === id ? 'border-brand-deep bg-brand-soft' : 'border-slate-200'}`}
+                  >
+                    <span className="flex flex-wrap items-center justify-between gap-1">
+                      <span className="block text-xs font-bold text-slate-900">{meta.name || id}</span>
+                      {shownTemplateId === id ? (
+                        <span className="rounded-full bg-brand-deep px-2 py-0.5 text-[10px] font-bold text-white">قالب فعلی</span>
+                      ) : null}
+                    </span>
+                    {tagline ? <span className="mt-1 block text-[11px] leading-5 text-slate-500">{tagline}</span> : null}
+                    {meta.thumbnailUrl ? <img src={meta.thumbnailUrl} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} className="mt-2 h-16 w-full rounded-xl object-cover bg-slate-100" /> : null}
+                    {preset ? (
+                      <span className="mt-2 inline-block h-4 w-4 rounded-full border border-slate-200" style={{ backgroundColor: preset }} />
                     ) : null}
-                  </span>
-                  {tagline ? <span className="mt-1 block text-[11px] leading-5 text-slate-500">{tagline}</span> : null}
-                  <span className="mt-1 block text-[11px] text-slate-400" dir="ltr">{id}</span>
-                  {meta.thumbnailUrl ? <img src={meta.thumbnailUrl} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} className="mt-2 h-16 w-full rounded-xl object-cover bg-slate-100" /> : null}
-                  {preset ? (
-                    <span className="mt-2 inline-block h-4 w-4 rounded-full border border-slate-200" style={{ backgroundColor: preset }} />
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          </details>
         )}
       </div>
 
@@ -730,16 +731,17 @@ export const SellerTemplateTab: React.FC = () => {
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
           <div className="order-2 space-y-3 xl:order-1">
             <div className="space-y-1 rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-bold text-slate-700">رنگ فروشگاه:</label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="seller-template-accent" className="text-sm font-bold text-slate-700">رنگ فروشگاه</label>
                 <input
+                  id="seller-template-accent"
                   type="color"
                   value={/^#[0-9a-fA-F]{6}$/.test(effectiveAccent) ? effectiveAccent : '#5d44f8'}
                   onChange={(e) => handleAccentChange(e.target.value)}
                   className="h-8 w-12 rounded-lg border border-slate-200 bg-white p-1"
                 />
                 <span className="text-[11px] text-slate-500" dir="ltr">{effectiveAccent}</span>
-                <button type="button" onClick={handleResetAccent} className="mr-auto text-[11px] font-bold text-blue-700">بازگشت به رنگ پیش‌فرض</button>
+                <button type="button" onClick={handleResetAccent} className="ms-auto min-h-11 rounded-lg px-2 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">بازگشت به رنگ پیش‌فرض</button>
               </div>
               <p className="text-[11px] leading-5 text-slate-500">
                 {accent ? 'رنگ اصلی فروشگاه شما؛ پیش‌فرض، رنگ اصلی قالب است.' : 'رنگ فعلی، رنگ اصلی قالب است.'}
@@ -748,9 +750,9 @@ export const SellerTemplateTab: React.FC = () => {
 
             <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
               <div>
-                <h3 className="text-xs font-bold text-slate-900">بخش‌های قالب</h3>
-                <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                  با کلید کنار هر بخش، نمایش آن را در ویترین روشن یا خاموش کن؛ با پیکان‌ها ترتیب نمایش را عوض کن و با باز کردن هر بخش، محتوایش را ویرایش کن.
+                <h3 className="text-base font-extrabold text-[#261b41]">بخش‌های ویترین</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  هر بخش را باز کن تا محتوایش را ویرایش کنی. از پیکان‌ها برای جابه‌جایی و از کلید کنار نام برای نمایش بخش استفاده کن.
                 </p>
               </div>
               {sections.length === 0 && (
@@ -788,15 +790,14 @@ export const SellerTemplateTab: React.FC = () => {
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className={`truncate text-xs font-bold ${enabled ? 'text-slate-800' : 'text-slate-400'}`}>{sec.label}</p>
-                        <p className="text-[10px] text-slate-400" dir="ltr">{key}</p>
                       </div>
                       <Switch checked={enabled} onChange={() => toggleSection(idx)} ariaLabel={`نمایش بخش ${sec.label}`} />
                       <button
                         type="button"
                         onClick={() => setExpandedKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
                         aria-expanded={expanded}
-                        aria-label={expanded ? 'بستن ویرایش بخش' : 'ویرایش بخش'}
-                        className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100"
+                        aria-label={expanded ? `بستن ویرایش ${sec.label}` : `ویرایش ${sec.label}`}
+                        className="grid size-11 shrink-0 place-items-center rounded-lg text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand"
                       >
                         {expanded ? <ChevronUp className="h-4 w-4" strokeWidth={1.5} /> : <ChevronDown className="h-4 w-4" strokeWidth={1.5} />}
                       </button>
@@ -826,21 +827,21 @@ export const SellerTemplateTab: React.FC = () => {
       )}
 
       {!loading && draft && (
-        <div className="sticky bottom-3 z-30 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
+        <div className="sticky bottom-3 z-30 flex flex-wrap items-center gap-2 rounded-2xl border border-brand-border bg-white p-3 shadow-sm">
           {dirty ? (
             <span className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600">
               <span className="h-2 w-2 rounded-full bg-amber-500" />
-              تغییرات ذخیره‌نشده دارید
+              پیش‌نویس منتشر نشده است
             </span>
           ) : (
             <span className="text-[11px] font-bold text-emerald-600">همه تغییرات منتشر شده است</span>
           )}
-          <div className="mr-auto flex gap-2">
+          <div className="ms-auto flex flex-wrap gap-2">
             <button
               type="button"
               onClick={handleRevert}
               disabled={!dirty || publishing}
-              className="rounded-xl bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200 disabled:opacity-40"
+              className="min-h-11 rounded-xl bg-slate-100 px-4 text-xs font-bold text-slate-700 hover:bg-slate-200 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40"
             >
               بازگردانی
             </button>
@@ -848,7 +849,7 @@ export const SellerTemplateTab: React.FC = () => {
               type="button"
               onClick={handlePublish}
               disabled={publishing}
-              className="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+              className="min-h-11 rounded-xl bg-brand-deep px-4 text-xs font-bold text-white hover:bg-brand-deep/90 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
             >
               {publishing ? 'در حال انتشار…' : 'ذخیره و انتشار'}
             </button>

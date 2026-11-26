@@ -3,7 +3,6 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SupplierAuthGuard } from './SupplierAuthGuard';
 import { ApiError, apiRequest } from '../../services/apiClient';
-import { ArrowUpLeft, Bell, LogOut, Menu } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
 import { SupplierProductsTab } from './SupplierProductsTab';
@@ -19,8 +18,9 @@ import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesT
 import { SupplierProfileTab } from './SupplierProfileTab';
 import { supplierApi } from '../../services/supplierApi';
 import { SupplierNotificationDrawer } from './SupplierNotificationDrawer';
-import { SupplierDialog, SupplierDialogHeading } from './SupplierDialog';
-import { getSupplierNavigation, SupplierNavigation } from './SupplierNavigation';
+import { SupplierDialog } from './SupplierDialog';
+import { PanelWorkspace } from '../common/PanelWorkspace';
+import { getSupplierNavigation } from './SupplierNavigation';
 
 interface Props {
   onBackToCustomerSite: () => void;
@@ -59,7 +59,6 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, updateContracts, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
   const [location, setLocation] = useState(readSupplierLocation);
-  const [menuOpen, setMenuOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
   const navigateTab = useCallback((tab: string, destination?: SectionDestination, focusContent = true) => {
     const href = supplierSectionHref(tab, destination);
@@ -76,7 +75,6 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   }, []);
   useEffect(() => {
     const syncLocation = () => {
-      setMenuOpen(false);
       setLocation(readSupplierLocation());
       window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
     };
@@ -169,9 +167,12 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
 
   return (
     <SupplierAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
-    <div data-supplier-panel dir="rtl" className="flex min-h-screen flex-1 flex-col bg-[#f7f7fa] text-slate-900">
-      {showContractModal && (
-        <SupplierDialog titleId="supplier-contract-title" descriptionId="supplier-contract-description">
+      <PanelWorkspace id="supplier" label="تأمین‌کننده" name={supplierSession?.companyName || 'پنل تأمین‌کننده'}
+        title={activeTabLabel} current={visibleTab} groups={navigation} href={supplierSectionHref} onNavigate={navigateTab}
+        onBackToSite={onBackToCustomerSite} onLogout={logout} unreadCount={unreadNotifCount} formatCount={toPersianDigits}
+        onOpenNotifications={() => setIsNotifOpen(true)} mainRef={mainRef}
+        modal={showContractModal ? (
+          <SupplierDialog titleId="supplier-contract-title" descriptionId="supplier-contract-description">
           <h2 id="supplier-contract-title" className="text-lg font-extrabold text-slate-900">قرارداد همکاری به‌روز شده است</h2>
           <p id="supplier-contract-description" className="mt-2 text-sm leading-7 text-slate-700">
             برای ادامهٔ کار، نسخهٔ {toPersianDigits(latestContractVersion)} قرارداد را بخوان و تأیید کن.
@@ -190,68 +191,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             <button type="button" disabled={contractSaving} onClick={logout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">خروج از حساب</button>
           </div>
         </SupplierDialog>
-      )}
-      <a href="#supplier-main" className="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-2 focus:z-40 focus:rounded-lg focus:bg-white focus:p-3 focus:text-brand-deep focus:outline-2 focus:outline-brand">رفتن به محتوای پنل</a>
-
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white">
-        <div className="mx-auto flex min-h-16 w-full max-w-[1480px] items-center justify-between gap-2 px-3 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            {navigation.length > 0 && (
-              <button type="button" onClick={() => setMenuOpen(true)} aria-label="باز کردن منوی پنل" aria-haspopup="dialog" aria-expanded={menuOpen}
-                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-soft px-2.5 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand lg:hidden">
-                <Menu aria-hidden="true" className="size-5" strokeWidth={1.8} />
-                منو
-              </button>
-            )}
-            <div className="min-w-0 py-2">
-              <p className="truncate text-xs leading-5 text-slate-600" title={supplierSession?.companyName}>{supplierSession?.companyName || 'پنل تأمین‌کننده'}</p>
-              <h1 id="supplier-page-title" className="break-words text-sm font-extrabold leading-6 sm:text-lg">{activeTabLabel}</h1>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
-            <button type="button" onClick={() => setIsNotifOpen(true)} aria-label={unreadNotifCount ? `اعلان‌ها، ${toPersianDigits(unreadNotifCount)} خوانده‌نشده` : 'اعلان‌ها'} aria-haspopup="dialog"
-              className="relative grid size-11 place-items-center rounded-xl text-slate-700 hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand">
-              <Bell aria-hidden="true" className="size-5" strokeWidth={1.75} />
-              {unreadNotifCount > 0 && (
-                <span aria-hidden="true" className="absolute -start-0.5 -top-0.5 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-700 px-1 text-[10px] font-bold text-white ring-2 ring-white">{toPersianDigits(unreadNotifCount)}</span>
-              )}
-            </button>
-            <button type="button" onClick={logout} aria-label="خروج از حساب تأمین‌کننده"
-              className="hidden min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-800 focus-visible:outline-2 focus-visible:outline-rose-700 lg:flex">
-              <LogOut aria-hidden="true" className="size-4" strokeWidth={1.75} />
-              خروج
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {menuOpen && (
-        <SupplierDialog titleId="supplier-menu-title" onDismiss={() => setMenuOpen(false)}>
-          <SupplierDialogHeading id="supplier-menu-title" title="بخش‌های پنل" onClose={() => setMenuOpen(false)} />
-          <SupplierNavigation groups={navigation} current={visibleTab} href={supplierSectionHref} label="منوی موبایل تأمین‌کننده" onNavigate={section => {
-            setMenuOpen(false);
-            navigateTab(section);
-          }} />
-          <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-2">
-            <button type="button" onClick={onBackToCustomerSite} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand">
-              سایت اصلی <ArrowUpLeft aria-hidden="true" className="size-4" />
-            </button>
-            <button type="button" onClick={logout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-rose-800 hover:bg-rose-50 focus-visible:outline-2 focus-visible:outline-rose-700">خروج از حساب</button>
-          </div>
-        </SupplierDialog>
-      )}
-
-      <div className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-4 px-3 pb-8 pt-4 sm:px-6 lg:flex-row lg:gap-6 lg:pt-6">
-        {navigation.length > 0 && (
-          <aside className="hidden w-[245px] shrink-0 self-start overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-2.5 lg:sticky lg:top-[88px] lg:block lg:max-h-[calc(100dvh-108px)] xl:w-[258px]">
-            <SupplierNavigation groups={navigation} current={visibleTab} href={supplierSectionHref} label="منوی پنل تأمین‌کننده" onNavigate={navigateTab} />
-            <button type="button" onClick={onBackToCustomerSite} className="mt-3 flex min-h-11 w-full items-center justify-between gap-2 rounded-xl border-t border-slate-200 px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand">
-              سایت اصلی <ArrowUpLeft aria-hidden="true" className="size-4" />
-            </button>
-          </aside>
-        )}
-
-        <main ref={mainRef} id="supplier-main" aria-labelledby="supplier-page-title" tabIndex={-1} className="min-w-0 flex-1 scroll-mt-24 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+        ) : null}>
           <div className="min-w-0">
             {!currentTab && (
               <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-7 text-amber-950">
@@ -288,9 +228,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
             {visibleTab === 'contract' && <SupplierContractTab />}
             {visibleTab === 'support' && <SellerSupportTab role="supplier" />}
           </div>
-        </main>
-      </div>
-    </div>
+      </PanelWorkspace>
       <SupplierNotificationDrawer
         isOpen={isNotifOpen}
         onClose={() => setIsNotifOpen(false)}

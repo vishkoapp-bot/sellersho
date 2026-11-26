@@ -11,7 +11,13 @@ import { storeApi, type SellerProductCandidate, type SellerVariantEffectiveMargi
 import { isMockMode } from '../../services/apiClient';
 import { catalogApi, type ProductDto } from '../../services/catalogApi';
 import { mapBackendProduct } from '../../context/ProductContext';
-import { Search, Check, SlidersHorizontal, Sparkles, Layers, ChevronDown } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { SupplierEmptyState } from '../supplier/SupplierResourceState';
+import { Search, Check, SlidersHorizontal, Layers, ChevronDown, Package, X } from 'lucide-react';
+
+const searchBox = 'flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand';
+const searchInput = 'min-h-11 min-w-0 flex-1 bg-transparent text-sm text-slate-800 placeholder:text-slate-500 focus:outline-hidden';
+const secondaryAction = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60';
 
 // C5 (Batch 4b): cost-presence helpers. mapBackendProduct zeroes a
 // missing baseCostB (ProductContext: supplierBaseCost is 0 when
@@ -482,7 +488,7 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
     return () => controller.abort();
   }, [storeId, marginRefresh, walkRetry]);
 
-  const renderRow = (product: Product, purple: boolean) => {
+  const renderRow = (product: Product) => {
     const isPending = pendingProductIds.includes(product.id);
     const isSaved = savedProductIds.includes(product.id);
     const isNew = isPending && !isSaved;
@@ -535,41 +541,31 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
       <div
         key={product.id}
         onClick={() => toggleProductSelect(product.id)}
-        className={`p-2.5 rounded-2xl border transition-all flex items-center justify-between cursor-pointer select-none ${isRemoved ? 'opacity-60' : ''} ${
-          isPending
-            ? purple
-              ? 'bg-purple-50/40 border-purple-400 ring-1 ring-purple-100 shadow-2xs'
-              : 'bg-blue-50/40 border-[#007dfa] ring-1 ring-blue-100 shadow-2xs'
-            : 'bg-white border-slate-200/90 hover:bg-slate-50'
-        }`}
+        className={`flex cursor-pointer flex-wrap items-center gap-3 rounded-2xl border p-3 transition-colors sm:p-4 ${isPending ? 'border-brand-border' : 'border-slate-200'} ${isRemoved ? 'bg-amber-50/50' : 'bg-white hover:border-brand-border'}`}
       >
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex min-w-0 grow basis-full items-start gap-3 sm:basis-64">
           <img
             src={product.image}
-            alt={product.title}
-            className="w-12 h-12 rounded-xl object-contain bg-slate-50 border border-slate-100 p-1 shrink-0"
+            alt=""
+            loading="lazy"
+            className="size-12 shrink-0 rounded-xl border border-slate-100 bg-slate-50 object-contain p-1 sm:size-14"
           />
           <div className="min-w-0">
-            <h4 className="text-xs font-bold text-slate-800 truncate mb-1">
+            <h4 className="mb-1 break-words text-sm font-extrabold leading-6 text-[#261b41]">
               {product.title}
             </h4>
             {costMissing ? (
-              <div className="flex items-center gap-2 text-[10px] text-slate-500">
+              <div className="text-xs leading-5 text-slate-600">
                 <span>قیمت تأمین‌کننده در دسترس نیست</span>
               </div>
             ) : (
-            <div className={`flex items-center gap-2 text-[10px] text-slate-500${isVariantProduct ? ' flex-wrap' : ''}`}>
-              <span>خرید: <strong className="text-slate-800">{formatPrice(baseCostR)}</strong></span>
-              <span>•</span>
-              <span>فروش: <strong className="text-slate-800">{fromPrefix}{formatPrice(displayFinal)}</strong></span>
-              <span>•</span>
-              <span className="text-emerald-600 font-bold">
-                سود تو: +{formatPrice(displayProfit)} ت
-                <span className="text-emerald-700"> ({displayPctText})</span>
-              </span>
-              {isVariantProduct && <span>پیش از تخفیف{unverified ? ' · تأیید نشده' : ''}</span>}
-            </div>
+              <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs leading-5 text-slate-600">
+                <div className="flex gap-1"><dt>خرید</dt><dd className="font-bold text-slate-800">{formatPrice(baseCostR)} تومان</dd></div>
+                <div className="flex gap-1"><dt>فروش</dt><dd className="font-bold text-slate-800">{fromPrefix}{formatPrice(displayFinal)} تومان</dd></div>
+                <div className="flex gap-1 text-emerald-800"><dt>سود تو</dt><dd className="font-bold">{formatPrice(displayProfit)} تومان ({displayPctText})</dd></div>
+              </dl>
             )}
+            {!costMissing && isVariantProduct && <p className="mt-0.5 text-xs leading-5 text-slate-600">پیش از تخفیف{unverified ? ' · تأیید نشده' : ''}</p>}
             {(() => {
               // P2(a)/P2(c) summary only (no controls here): the scoped
               // list omits hidden variants, the central list carries all
@@ -586,7 +582,7 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
               const defaultDiffers = !!storeDefault && !!defaultVariant && storeDefaultId !== defaultVariant.id;
               if (hiddenCount <= 0 && !defaultDiffers) return null;
               return (
-                <p className="text-[10px] text-slate-500 pt-1">
+                <p className="pt-1 text-xs leading-5 text-slate-600">
                   {hiddenCount > 0 ? `${toPersianDigits(hiddenCount)} تنوع از ${toPersianDigits(centralVariants.length)} تنوع در فروشگاهت خاموش است` : ''}
                   {hiddenCount > 0 && defaultDiffers ? ' · ' : ''}
                   {defaultDiffers ? `پیش‌فرض فروشگاه: ${storeDefault.variantName || storeDefault.name}` : ''}
@@ -594,32 +590,34 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
               );
             })()}
             {(isNew || isRemoved) && (
-              <span className="flex w-fit items-center gap-1 mt-1 text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">
-                {isNew ? 'جدید — ذخیره نشده' : 'حذف می‌شود — ذخیره نشده'}
+              <span className="mt-1 inline-block rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-800">
+                {isNew ? 'در انتظار افزودن' : 'در انتظار حذف'}
               </span>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex w-full flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 sm:w-auto sm:justify-start sm:border-0 sm:pt-0">
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               setPricingProduct(product);
             }}
-            className="min-h-[44px] px-2.5 rounded-xl bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-600 flex items-center gap-1 transition-colors"
+            className={secondaryAction}
             title="تنظیم سود این کالا"
+            aria-label={`تنظیم سود ${product.title}`}
+            aria-haspopup="dialog"
           >
-            <SlidersHorizontal className="w-4 h-4" strokeWidth={1.5} />
-            <span className="text-[11px] font-bold">سود</span>
+            <SlidersHorizontal className="size-4" strokeWidth={1.5} aria-hidden="true" />
+            <span>تنظیم سود</span>
           </button>
 
           <button
             type="button"
             role="switch"
             aria-checked={isPending}
-            aria-label={isPending ? `غیرفعال کردن ${product.title} در فروشگاه` : `فعال کردن ${product.title} در فروشگاه`}
+            aria-label={`نمایش ${product.title} در فروشگاه`}
             title={isPending ? 'فعال در فروشگاه — برای غیرفعال کردن بزن' : 'غیرفعال — برای فعال کردن در فروشگاه بزن'}
             onClick={(e) => {
               // Without stopPropagation the click bubbles to the row's own
@@ -627,19 +625,19 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
               e.stopPropagation();
               toggleProductSelect(product.id);
             }}
-            className="min-h-[44px] px-1.5 rounded-xl flex items-center gap-2 transition-colors hover:bg-slate-50"
+            className="flex min-h-11 items-center gap-2 rounded-xl px-2 text-xs font-bold transition-colors hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand"
           >
-            <span className={`text-[11px] font-bold ${isPending ? 'text-emerald-600' : 'text-slate-400'}`}>
+            <span className={isPending ? 'text-brand-deep' : 'text-slate-600'}>
               {isPending ? 'فعال' : 'غیرفعال'}
             </span>
             <span
               dir="ltr"
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
-                isPending ? (purple ? 'bg-purple-600' : 'bg-[#007dfa]') : 'bg-slate-300'
+                isPending ? 'bg-brand-deep' : 'bg-slate-400'
               }`}
             >
               <span
-                className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-5 w-5 rounded-full bg-white shadow motion-safe:transition-transform ${
                   isPending ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
@@ -653,77 +651,61 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
   const refreshVariantRows = () => setWalkRetry(value => value + 1);
   const storeForWork = storeSlug ? { id: storeId, slug: storeSlug, name: currentStore.name } : undefined;
   if (storeForWork && workFilter === 'attention') {
-    return <SellerVariantWorkspace key={storeId + '-attention'} store={storeForWork} attentionOnly
-      onBack={() => setWorkFilter(undefined)} onChanged={refreshVariantRows} />;
+    return <div className="space-y-4">
+      <SupplierSectionHeading title="تنوع‌های نیازمند رسیدگی" description="وضعیت فروش و نمایش هر تنوع را بررسی کن." icon={<Layers />} />
+      <SellerVariantWorkspace key={storeId + '-attention'} store={storeForWork} attentionOnly
+        onBack={() => setWorkFilter(undefined)} onChanged={refreshVariantRows} />
+    </div>;
   }
 
   return (
-    <div className={`space-y-3.5 ${hasChanges ? 'pb-32' : 'pb-6'}`}>
+    <div className={`space-y-4 ${hasChanges ? 'pb-36 [&_button]:scroll-mb-36 [&_input]:scroll-mb-36' : 'pb-6'}`}>
+      <SupplierSectionHeading title="انتخاب کالا برای فروشگاهت" description="کالاهای ویترین، سود و نحوه نمایش تنوع‌ها را مدیریت کن." icon={<Package />}
+        action={<span className="rounded-full border border-brand-border bg-brand-soft px-3 py-1 text-xs font-bold text-brand-deep">
+          {toPersianDigits(savedProductIds.length)} کالا در فروشگاه
+        </span>} />
       {storeForWork && <SellerVariantWorkspace key={storeId} store={storeForWork} onChanged={refreshVariantRows} />}
-      {/* Live intro + niche help. */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <p className="text-[11px] text-slate-600 leading-6">
-          اینجا کالاهایی را انتخاب می‌کنی که در فروشگاهت فروخته شوند. موضوع‌های فروشگاهت (نیچ) با هر لمس همان لحظه ذخیره می‌شوند. روی هر کالا بزن تا انتخاب شود یا از انتخاب دربیاید؛ در پایان دکمه «تأیید و ذخیره» را بزن تا تغییرات کالاها در فروشگاهت اعمال شود.
-        </p>
-        <button
-          type="button"
-          onClick={() => setShowNicheHelp((v) => !v)}
-          aria-expanded={showNicheHelp}
-          className="text-[11px] font-bold text-blue-700"
-        >
-          «نیچ» یعنی چه؟
-        </button>
-        {showNicheHelp && (
-          <div className="space-y-1 text-[11px] leading-6 text-slate-600">
-            <p>نیچ یعنی یک موضوع تخصصی؛ مثلاً «ساعت هوشمند» یا «پاوربانک». وقتی یک نیچ را انتخاب می‌کنی، کالاهای آن موضوع آماده‌اند تا با یک لمس وارد فروشگاهت شوند.</p>
-            <p>اگر فقط ساعت هوشمند می‌فروشی، فقط نیچ «ساعت هوشمند» را روشن کن.</p>
-          </div>
-        )}
-      </div>
 
       {scopedError && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-[11px] leading-6 text-amber-800 space-y-2">
-          <p className="font-bold">{scopedError === 'inactive' ? 'فهرست کالاهای فروشگاه کامل بارگذاری نشد.' : 'دریافت قیمت‌های تأمین‌کننده ناموفق بود — تلاش مجدد'}</p>
+        <div role="alert" className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+          <p className="font-extrabold">{scopedError === 'inactive' ? 'فهرست کالاهای فروشگاه کامل بارگذاری نشد.' : 'دریافت قیمت‌های تأمین‌کننده ناموفق بود'}</p>
           <p>{scopedError === 'inactive'
-            ? 'دسترسی مدیریتی به کالاهای غیرفعال برقرار نشد — ممکن است نشست شما منقضی شده باشد. دوباره وارد شوید؛ تا آن زمان فهرست قبلی (یا هیچ کالایی) نمایش داده می‌شود، نه فهرست مرکزی.'
+            ? 'دسترسی به کالاهای غیرفعال برقرار نشد. اگر نشستت منقضی شده است، دوباره وارد شو.'
             : scopedProducts
               ? 'فهرست قبلی نمایش داده شده است؛ ممکن است تازه‌ترین تغییرات در آن نباشد.'
               : 'کالاها نمایش داده نمی‌شوند تا فهرست فروشگاه دوباره خوانده شود.'}</p>
-          <button type="button" onClick={() => { setScopedError(null); setWalkRetry((n) => n + 1); }} className="font-bold underline">تلاش مجدد</button>
+          <button type="button" onClick={() => { setScopedError(null); setWalkRetry((n) => n + 1); }} className={secondaryAction}>تلاش مجدد</button>
         </div>
       )}
 
       {undoableRemoval && (
-        <div className="flex flex-wrap items-center gap-3 bg-blue-50 border border-blue-200 rounded-2xl p-3.5 text-xs text-blue-800">
-          <span className="grow">{toPersianDigits(undoableRemoval.length)} کالا از فروشگاه حذف شد</span>
-          <button type="button" onClick={handleUndo} disabled={productsBusy || nicheSaving} className="font-bold underline disabled:opacity-60">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-brand-border bg-brand-bg p-3 text-sm text-brand-deep">
+          <span role="status" className="grow">{toPersianDigits(undoableRemoval.length)} کالا از فروشگاه حذف شد</span>
+          <button type="button" onClick={handleUndo} disabled={productsBusy || nicheSaving} className={secondaryAction}>
             بازگردانی
           </button>
-          <button type="button" aria-label="بستن" onClick={() => setUndoableRemoval(null)} className="px-2 text-lg leading-none">
-            ×
+          <button type="button" aria-label="بستن پیام حذف کالا" onClick={() => setUndoableRemoval(null)} className="grid size-11 place-items-center rounded-xl hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
+            <X aria-hidden="true" size={18} />
           </button>
         </div>
       )}
 
-      {/* 1. Header & Active Products Count */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Layers className="w-4 h-4 text-blue-600" strokeWidth={1.5} />
-            <h3 className="text-xs font-bold text-slate-800">انتخاب کالا برای فروشگاهت</h3>
+      <section aria-labelledby="seller-niche-heading" className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 id="seller-niche-heading" className="text-sm font-extrabold text-[#261b41]">موضوع‌های فروشگاه</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">می‌توانی چند موضوع انتخاب کنی. تغییر موضوع‌ها همان لحظه ذخیره می‌شود.</p>
           </div>
-          <span className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
-            {toPersianDigits(savedProductIds.length)} کالا در فروشگاهت هست
-          </span>
+          <button type="button" onClick={() => setShowNicheHelp(value => !value)} aria-expanded={showNicheHelp}
+            aria-controls="seller-niche-help" className={secondaryAction}>
+            «نیچ» یعنی چه؟
+          </button>
         </div>
+        <p id="seller-niche-help" hidden={!showNicheHelp} className="rounded-xl bg-brand-bg p-3 text-sm leading-6 text-slate-700">
+          نیچ یعنی یک موضوع تخصصی مثل ساعت هوشمند یا پاوربانک. با انتخاب موضوع، کالاهای مرتبط را برای افزودن به فروشگاه می‌بینی.
+        </p>
 
-        {/* Section 2.2: Niche Selector Chips (Multi-Select) */}
-        <div>
-          <label className="text-[11px] font-bold text-slate-600 block mb-1.5">
-            نیچ‌های فروشگاهت (موضوع‌هایی که می‌فروشی) — یک یا چند تا:
-            <span className="mr-2 font-normal">با هر لمس، همان لحظه ذخیره می‌شود</span>
-          </label>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2" role="group" aria-labelledby="seller-niche-heading">
             {OFFICIAL_NICHES.map((niche) => {
               const isSelected = pendingNicheIds.includes(niche.id);
               return (
@@ -732,124 +714,89 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
                   type="button"
                   onClick={() => toggleNiche(niche.id)}
                   disabled={nicheSaving || productsBusy}
-                  className={`px-3 py-2.5 min-h-[44px] rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${
+                  aria-pressed={isSelected}
+                  className={`flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-bold transition-colors focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-wait disabled:opacity-60 ${
                     isSelected
-                      ? 'bg-blue-600 text-white shadow-xs scale-102'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      ? 'border-brand bg-brand text-white'
+                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-brand-bg'
                   }`}
                 >
                   <span>{niche.title}</span>
-                  {isSelected && <Check className="w-3.5 h-3.5" strokeWidth={1.5} />}
+                  {isSelected && <Check aria-hidden="true" className="size-4" strokeWidth={1.5} />}
                 </button>
               );
             })}
           </div>
-        </div>
-
-        {/* Niche Search */}
-        <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
-          <Search className="w-3.5 h-3.5 text-slate-400 shrink-0 ml-1.5" strokeWidth={1.5} />
-          <input
-            type="text"
-            placeholder="جستجوی کالا در نیچ‌هایی که انتخاب کردی…"
-            value={nicheSearch}
-            onChange={(e) => setNicheSearch(e.target.value)}
-            className="w-full bg-transparent text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden"
-          />
-        </div>
-      </div>
+      </section>
 
       {scopedLoading ? (
-        <div className="bg-white rounded-2xl p-8 text-center space-y-2">
-          <p className="text-xs font-bold text-slate-700">در حال دریافت قیمت‌های تأمین‌کننده…</p>
-          <p className="text-[11px] text-slate-500 leading-5">فهرست کالاهای فروشگاهت با قیمت‌های تأمین‌کننده در حال خوانده‌شدن است.</p>
-        </div>
+        <p role="status" className="rounded-xl border border-[#e6e2f0] bg-white p-4 text-sm text-slate-700">در حال دریافت قیمت‌های تأمین‌کننده…</p>
       ) : (
         <>
-      {/* 2. Products of Selected Niches */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between px-1 text-[11px]">
-          <span className="font-bold text-slate-700">کالاهای نیچ‌های تو ({toPersianDigits(nicheProducts.length)} کالا)</span>
-          <span className="text-slate-400 text-[10px]">روی کالا بزن تا انتخاب شود یا از انتخاب دربیاید؛ در پایان «تأیید و ذخیره» را بزن</span>
+      <section aria-labelledby="seller-niche-products" className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2 px-0.5">
+          <div>
+            <h3 id="seller-niche-products" className="text-base font-extrabold text-[#261b41]">کالاهای نیچ‌های تو</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">بعد از تغییر وضعیت کالاها، «تأیید و ذخیره» را بزن تا تغییر در ویترین اعمال شود.</p>
+          </div>
+          <span className="text-sm font-bold text-slate-600">{toPersianDigits(nicheProducts.length)} کالا</span>
         </div>
-
-        <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 text-[11px] text-slate-600 leading-relaxed">
-          قیمت خرید هر کالا از پلتفرم، قیمت فروش به مشتری و سود تو از هر فروش زیر هر کالا نوشته شده است؛ برای کالایی که قیمت تأمین‌کننده ندارد هنوز اعلام نشده است.
-        </div>
+        <label className={searchBox}>
+          <Search aria-hidden="true" className="size-4 shrink-0 text-slate-600" strokeWidth={1.75} />
+          <input type="search" aria-label="جست‌وجوی کالاهای موضوع‌های انتخاب‌شده" placeholder="جستجوی کالا در نیچ‌هایی که انتخاب کردی…"
+            value={nicheSearch} onChange={event => setNicheSearch(event.target.value)} className={searchInput} />
+        </label>
 
         {nicheProducts.length === 0 ? (
-          <div className="bg-white rounded-2xl p-8 text-center space-y-2">
-            <p className="text-xs font-bold text-slate-700">کالایی پیدا نشد</p>
-            <p className="text-[11px] text-slate-500 leading-5">
-              {nicheSearch
-                ? 'در نیچ‌هایی که انتخاب کردی، کالایی با این جستجو نیست. جستجو را پاک کن یا یک نیچ دیگر هم انتخاب کن.'
-                : 'یک نیچ دیگر هم از بالا انتخاب کن.'}
-            </p>
-            {nicheSearch && (
-              <button
-                type="button"
-                onClick={() => setNicheSearch('')}
-                className="text-[11px] font-bold text-blue-700"
-              >
-                پاک کردن جستجو
-              </button>
-            )}
-          </div>
+          <SupplierEmptyState icon={<Package />} title="کالایی پیدا نشد"
+            description={nicheSearch ? 'عبارت دیگری جست‌وجو کن یا موضوع دیگری را هم انتخاب کن.' : 'از بخش موضوع‌های فروشگاه، موضوع دیگری را انتخاب کن.'}
+            action={nicheSearch && <button type="button" onClick={() => setNicheSearch('')} className={secondaryAction}>پاک کردن جستجو</button>} />
         ) : (
-          nicheProducts.map((product) => renderRow(product, false))
+          nicheProducts.map(renderRow)
         )}
-      </div>
+      </section>
 
-      {/* Section 2.3: بقیه کالاها (خارج از نیچ‌های تو) */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+      <section className="rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
         <button
           type="button"
-          onClick={() => setShowExtraSection(!showExtraSection)}
-          className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 text-right transition-colors"
+          onClick={() => setShowExtraSection(value => !value)}
+          aria-expanded={showExtraSection}
+          aria-controls="seller-extra-catalog"
+          className="flex w-full items-center justify-between gap-3 rounded-[22px] p-4 text-start transition-colors hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand sm:p-5"
         >
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-purple-600" strokeWidth={1.5} />
-            <div>
-              <span className="text-xs font-bold text-slate-800 block">
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand-deep"><Package aria-hidden="true" size={18} strokeWidth={1.75} /></span>
+            <span className="min-w-0">
+              <span className="block text-sm font-extrabold leading-6 text-[#261b41]">
                 بقیه کالاها (خارج از نیچ‌های تو)
               </span>
-              <span className="text-[10px] text-slate-400">
-                از همه کالاهای پلتفرم، هر کدام را خواستی به فروشگاهت اضافه کن
+              <span className="block text-sm leading-6 text-slate-600">
+                جست‌وجو و افزودن از کاتالوگ پلتفرم
               </span>
-            </div>
-          </div>
-          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showExtraSection ? 'rotate-180' : ''}`} strokeWidth={1.5} />
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className={`size-4 shrink-0 text-slate-600 motion-safe:transition-transform ${showExtraSection ? 'rotate-180' : ''}`} strokeWidth={1.75} />
         </button>
 
         {showExtraSection && (
-          <div className="p-3.5 pt-0 space-y-2.5 border-t border-slate-100">
-            <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 mt-2">
-              <Search className="w-3.5 h-3.5 text-slate-400 shrink-0 ml-1.5" strokeWidth={1.5} />
-              <input
-                type="text"
-                placeholder="جستجو در بقیه کالاها…"
-                value={extraSearch}
-                onChange={(e) => setExtraSearch(e.target.value)}
-                className="w-full bg-transparent text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden"
-              />
-            </div>
-
+          <div id="seller-extra-catalog" className="space-y-5 border-t border-slate-100 p-4 sm:p-5">
             {storeSlug && (
-              <div className="space-y-2 rounded-xl border border-slate-200 p-2.5">
-                <input
-                  type="text"
-                  placeholder="جستجو در همه کالاهای پلتفرم…"
-                  aria-label="جستجوی همه کالاهای پلتفرم"
-                  value={pickerQuery}
-                  onChange={(e) => setPickerQuery(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-800"
-                />
+              <section aria-labelledby="seller-add-platform-product" className="space-y-3 rounded-2xl border border-slate-200 p-3 sm:p-4">
+                <div>
+                  <h4 id="seller-add-platform-product" className="text-sm font-extrabold text-[#261b41]">افزودن کالا از پلتفرم</h4>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">برای ثبت کالاهای افزوده‌شده، «تأیید و ذخیره» را بزن.</p>
+                </div>
+                <label className={searchBox}>
+                  <Search aria-hidden="true" className="size-4 shrink-0 text-slate-600" strokeWidth={1.75} />
+                  <input type="search" aria-label="جستجوی همه کالاهای پلتفرم" placeholder="جستجو در همه کالاهای پلتفرم…"
+                    value={pickerQuery} onChange={event => setPickerQuery(event.target.value)} className={searchInput} />
+                </label>
                 {pickerRows.map((product) => (
-                  <div key={product.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 p-2.5 text-xs">
-                    <div>
-                      <p className="font-bold text-slate-800">{product.title}</p>
+                  <div key={product.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 p-3 text-sm">
+                    <div className="min-w-0 flex-1 basis-36">
+                      <p className="break-words font-bold text-slate-800">{product.title}</p>
                       {!product.isActive && (
-                        <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-800">
+                        <span className="mt-1 inline-block rounded-lg bg-amber-50 px-2 py-1 text-xs leading-5 text-amber-800">
                           غیرفعال — تا فعال نشود در فروشگاه نمایش داده نمی‌شود
                         </span>
                       )}
@@ -859,70 +806,75 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
                       aria-label={`افزودن ${product.title} به فروشگاه`}
                       onClick={() => addPickerProduct(product)}
                       disabled={productsBusy}
-                      className="shrink-0 rounded-xl bg-blue-50 px-3 py-2 font-bold text-blue-700 disabled:opacity-60"
+                      className={secondaryAction}
                     >
                       افزودن
                     </button>
                   </div>
                 ))}
-                {pickerLoading && <p role="status" className="text-xs text-slate-500">در حال جستجو…</p>}
+                {pickerLoading && <p role="status" className="text-sm text-slate-600">در حال جستجو…</p>}
                 {pickerError && (
-                  <p role="alert" className="flex flex-wrap gap-2 text-xs text-rose-800">
+                  <p role="alert" className="flex flex-wrap items-center gap-2 text-sm text-rose-800">
                     {pickerError}
                     <button
                       type="button"
                       onClick={() => void loadPickerPage(storeSlug, pickerQuery, pickerCursor ?? undefined)}
-                      className="font-bold underline"
+                      className={secondaryAction}
                     >
                       تلاش مجدد
                     </button>
                   </p>
                 )}
                 {!pickerLoading && !pickerError && pickerRows.length === 0 && (
-                  <p className="text-xs text-slate-500">در همه کالاهای پلتفرم کالایی با این جستجو پیدا نشد</p>
+                  <p role="status" className="text-sm text-slate-600">در همه کالاهای پلتفرم کالایی با این جستجو پیدا نشد</p>
                 )}
                 {pickerHasMore && (
                   <button
                     type="button"
                     disabled={pickerLoading || !!pickerError || !pickerCursor}
                     onClick={() => { if (pickerCursor) void loadPickerPage(storeSlug, pickerQuery, pickerCursor); }}
-                    className="text-xs font-bold text-blue-700 disabled:opacity-60"
+                    className={secondaryAction}
                   >
                     نمایش بیشتر
                   </button>
                 )}
-              </div>
+              </section>
             )}
 
-            <div className="space-y-2">
+            <section aria-labelledby="seller-outside-niche-products" className="space-y-3">
+              <h4 id="seller-outside-niche-products" className="text-sm font-extrabold text-[#261b41]">کالاهای خارج از موضوع‌های انتخاب‌شده</h4>
+              <label className={searchBox}>
+                <Search aria-hidden="true" className="size-4 shrink-0 text-slate-600" strokeWidth={1.75} />
+                <input type="search" aria-label="جست‌وجوی کالاهای خارج از موضوع‌های انتخاب‌شده" placeholder="جستجو در بقیه کالاها…"
+                  value={extraSearch} onChange={event => setExtraSearch(event.target.value)} className={searchInput} />
+              </label>
               {outsideNicheProducts.length === 0 ? (
-                <p className="text-center text-xs text-slate-400 py-4">کالایی پیدا نشد</p>
+                <p role="status" className="rounded-xl bg-slate-50 px-3 py-4 text-center text-sm text-slate-600">کالایی پیدا نشد</p>
               ) : (
-                outsideNicheProducts.slice(0, 10).map((product) => renderRow(product, true))
+                outsideNicheProducts.slice(0, 10).map(renderRow)
               )}
-            </div>
+            </section>
           </div>
         )}
-      </div>
+      </section>
         </>
       )}
 
       {/* Live's fixed bottom confirm bar, only while the draft differs. */}
       {hasChanges && (
-        <div className="fixed bottom-0 inset-x-0 z-30 px-3.5 pb-3 pointer-events-none">
-          <div className="max-w-[504px] mx-auto pointer-events-auto bg-white border border-amber-200 rounded-2xl shadow-lg p-3 space-y-2.5">
-            <div className="flex items-center gap-1.5 text-amber-800">
-              <span className="text-xs font-bold">
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 px-3 pb-[max(.75rem,env(safe-area-inset-bottom))]">
+          <div className="pointer-events-auto mx-auto max-w-[504px] space-y-2 rounded-2xl border border-amber-200 bg-white p-3 shadow-lg">
+            <div role="status" className="flex flex-wrap items-center gap-x-1.5 text-amber-900">
+              <span className="text-sm font-extrabold">
                 {productDiffCount > 0 ? `${toPersianDigits(productDiffCount)} تغییر در انتظار ذخیره` : 'تغییر در انتظار ذخیره'}
               </span>
-              <span className="text-[10px] text-amber-700">(هنوز در فروشگاهت اعمال نشده)</span>
             </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleConfirm}
                 disabled={productsBusy || nicheSaving}
-                className="flex-1 min-h-[48px] rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-extrabold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60 disabled:cursor-wait"
+                className="flex min-h-12 flex-1 items-center justify-center rounded-xl bg-brand px-3 text-sm font-extrabold text-white transition-colors hover:bg-brand-deep focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
               >
                 {saving ? 'در حال ذخیره…' : 'تأیید و ذخیره'}
               </button>
@@ -930,7 +882,7 @@ export const SellerCatalogTab: React.FC<{ initialWorkFilter?: 'attention' }> = (
                 type="button"
                 onClick={handleCancel}
                 disabled={productsBusy}
-                className="min-h-[48px] px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1 transition-colors disabled:opacity-60"
+                className={secondaryAction + ' min-h-12'}
               >
                 انصراف
               </button>

@@ -10,18 +10,17 @@ import { mapBackendProduct } from '../../context/ProductContext';
 import { resolvePricing } from '../../utils/pricingEngine';
 import type { Product } from '../../types';
 import { isMockMode } from '../../services/apiClient';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import {
   Megaphone,
   MousePointerClick,
-  ShieldCheck,
   Check,
   Copy,
   Clock,
   Flame,
   TrendingUp,
-  Sparkles,
   Code2,
-  Info,
+  ChevronDown,
 } from 'lucide-react';
 
 export const SellerAdsWidgetTab: React.FC = () => {
@@ -221,60 +220,13 @@ export const SellerAdsWidgetTab: React.FC = () => {
   };
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <div className="rounded-2xl border border-brand-border bg-brand-soft/50 px-3.5 py-2.5"><div className="flex items-start gap-2"><Info className="w-4 h-4 text-brand-deep shrink-0 mt-0.5" strokeWidth={1.5} /><p className="flex-1 text-xs leading-6 text-slate-700">این‌جا برای فروشگاهت «پیشنهاد ویژه» می‌سازی، بنر تبلیغاتی آماده می‌گیری و می‌بینی چند نفر روی تبلیغ‌هایت زده‌اند. تازه‌کاری؟ فقط بخش اول کافی است؛ بقیه را بعداً هم می‌توانی یاد بگیری.</p></div></div>
-      <p className="rounded-xl bg-amber-50 p-3 text-xs leading-6 text-amber-900">{hasAnalytics ? 'این آمار از کلیک‌های واقعی روی تبلیغ‌های فروشگاهت حساب شده است.' : 'هنوز کسی روی تبلیغ‌هایت کلیک نکرده است.'}</p>
-      {/* 1. Header Card */}
-      <div className="bg-gradient-to-l from-brand-deep via-brand-deep to-brand rounded-2xl p-4 text-white shadow-xs space-y-2">
-        <div className="flex items-center gap-2">
-          <Megaphone className="w-5 h-5 text-indigo-200"  strokeWidth={1.5}/>
-          <h3 className="text-xs font-bold">تبلیغات فروشگاهت</h3>
-        </div>
-        <p className="text-[10px] text-indigo-100 leading-relaxed">
-          پیشنهاد ویژه بساز، بنر آماده بگیر و ببین تبلیغ‌هایت چقدر دیده و زده شده‌اند.
-        </p>
-      </div>
-
-      {/* 2. Section 4.5: Ad Performance Metrics with Average Click Share */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-bold text-slate-700">تعداد کلیک‌ها</span>
-            <MousePointerClick className="w-3.5 h-3.5 text-blue-600"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-xs font-extrabold text-slate-900">
-            {toPersianDigits(validClicksCount)}
-          </div>
-          <span className="text-[9px] text-slate-400 block mt-1">کلیک واقعی روی تبلیغ‌ها</span>
-        </div>
-
-        <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-bold text-slate-700">هزینه هر کلیک</span>
-            <Sparkles className="w-3.5 h-3.5 text-amber-500"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-xs font-extrabold text-blue-700">
-            هنوز تعیین نشده
-          </div>
-          <span className="text-[9px] text-brand-deep font-bold block mt-1">برای تبلیغ‌های فروش، قیمتی تعیین نشده است</span>
-        </div>
-
-        <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-bold text-slate-700">درآمد از تبلیغات</span>
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-xs font-extrabold text-emerald-600">
-            +{formatPrice(totalAdRevenue)}
-          </div>
-            <span className="text-[9px] text-emerald-600 font-bold block mt-1">هنوز درآمدی ثبت نشده است</span>
-        </div>
-      </div>
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="تبلیغات فروشگاه" description="پیشنهاد ویژه برای ویترین بساز، بنر کالا دریافت کن و کلیک‌ها را ببین." icon={<Megaphone />} />
 
       {/* 3. Section 4.3: Three Distinct Widgets */}
-      <section className="space-y-3 rounded-2xl border border-blue-200 bg-white p-4">
-        <h3 className="text-sm font-bold">شگفت‌انگیز اختصاصی فروشگاه من</h3>
-        <p className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-[11px] text-emerald-800 leading-relaxed">این ویجت پس از ذخیره، در ویترین فروشگاه شما نمایش داده می‌شود (قالب‌های مدرن، الکترونیک و دیجی‌استایل).</p>
+      <section className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <h3 className="text-base font-extrabold text-[#261b41]">شگفت‌انگیز اختصاصی فروشگاه من</h3>
+        <p className="text-sm leading-6 text-slate-600">پیشنهاد ذخیره‌شده در قالب‌های مدرن، الکترونیک و دیجی‌استایل نمایش داده می‌شود.</p>
         <label className="flex items-center gap-2 text-xs font-bold"><input aria-label="نمایش شگفت‌انگیز اختصاصی در پیش‌نمایش پنل" type="checkbox" checked={isSellerDealsActive} onChange={() => toggleWidget('storeDealsWidget')} />نمایش در پیش‌نمایش همین بخش</label>
         <p className="text-xs leading-6 text-slate-500">تصویر، نام و قیمت کالاها را ببینید و انتخاب کنید. فقط کالاهای فعال کاتالوگ فروشگاه در این ویجت قرار می‌گیرند.</p>
         <label className="block text-xs">عنوان ویجت<input aria-label="عنوان ویجت" value={dealTitle} onChange={(event) => setDealTitle(event.target.value)} className="mt-1 w-full rounded-xl border bg-slate-50 p-2" /></label>
@@ -294,7 +246,7 @@ export const SellerAdsWidgetTab: React.FC = () => {
         </div>; })}</div>
         {visibleProducts.length === 0 && <p className="p-4 text-xs text-slate-500">کالایی پیدا نشد. برای افزودن کالا به فروشگاه از تب انتخاب کالا استفاده کنید.</p>}
         {currentStore.sellerDealsWidgetConfig && <div className="rounded-xl bg-emerald-50 p-3 text-xs leading-6 text-emerald-900"><strong>تنظیمات ذخیره‌شده: {currentStore.sellerDealsWidgetConfig.title}</strong><p>{toPersianDigits(currentStore.sellerDealsWidgetConfig.productIds.length)} کالا · پایان: {Number.isNaN(Date.parse(currentStore.sellerDealsWidgetConfig.endsAt)) ? 'ذخیره مجدد زمان لازم است' : new Date(currentStore.sellerDealsWidgetConfig.endsAt).toLocaleString('fa-IR')}</p></div>}
-        <button type="button" disabled={saving} onClick={handleSaveSellerDeals} className="w-full rounded-xl bg-brand-deep p-2 text-xs font-bold text-white disabled:opacity-50">{saving ? 'در حال ذخیره...' : 'ذخیره کالاهای ویجت'}</button>
+        <button type="button" disabled={saving} onClick={handleSaveSellerDeals} className="min-h-11 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">{saving ? 'در حال ذخیره…' : 'ذخیره پیشنهاد ویژه'}</button>
       </section>
       <SellerAdLibrary />
       <section className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-2xs">
@@ -343,13 +295,22 @@ export const SellerAdsWidgetTab: React.FC = () => {
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setShowStatsModal(true)}
-        className="w-full py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs rounded-xl border border-purple-200 flex items-center justify-center gap-1.5 transition-colors"
-      >
-        <span>دیدن گزارش کامل کلیک‌ها</span>
-      </button>
+      <details className="group rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg text-base font-extrabold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">
+          <MousePointerClick aria-hidden="true" className="size-5 shrink-0 text-brand-deep" />
+          عملکرد تبلیغات
+          <ChevronDown aria-hidden="true" className="ms-auto size-5 shrink-0 text-brand-deep group-open:rotate-180" />
+        </summary>
+        <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+          <p className="text-sm leading-6 text-slate-600">{hasAnalytics ? 'آمار براساس کلیک‌های واقعی روی تبلیغ‌هاست.' : 'هنوز کسی روی تبلیغ‌هایت کلیک نکرده است.'}</p>
+          <dl className="grid gap-2 sm:grid-cols-3">
+            <div className="rounded-xl bg-slate-50 p-3"><dt className="text-xs text-slate-600">تعداد کلیک‌ها</dt><dd className="mt-1 text-sm font-extrabold text-slate-900">{toPersianDigits(validClicksCount)}</dd></div>
+            <div className="rounded-xl bg-slate-50 p-3"><dt className="text-xs text-slate-600">هزینه هر کلیک</dt><dd className="mt-1 text-sm font-extrabold text-slate-900">هنوز تعیین نشده</dd></div>
+            <div className="rounded-xl bg-slate-50 p-3"><dt className="text-xs text-slate-600">درآمد از تبلیغات</dt><dd className="mt-1 text-sm font-extrabold text-slate-900">{formatPrice(totalAdRevenue)} تومان</dd></div>
+          </dl>
+          <button type="button" onClick={() => setShowStatsModal(true)} className="min-h-11 rounded-xl border border-brand-border px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">دیدن گزارش کامل کلیک‌ها</button>
+        </div>
+      </details>
 
       <AdCampaignStatsModal
         isOpen={showStatsModal}

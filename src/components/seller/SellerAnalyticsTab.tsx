@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { storeApi } from '../../services/storeApi';
-import { TrendingUp, TrendingDown, Minus, ShoppingBag, DollarSign, Wallet, BarChart3, Package, Star, AlertCircle, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, ShoppingBag, DollarSign, Wallet, BarChart3, Package, Star } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+
+const panelClass = 'min-w-0 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5';
+const summaryClass = 'min-h-11 cursor-pointer rounded-lg py-2.5 text-sm font-extrabold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand';
 
 // Live parity (W1): port of live's seller "آمار فروش" tab (live bundle
 // SellerDashboardView-MERGED.js, component En + helpers On/Wn/Rn/Ln).
@@ -86,16 +91,16 @@ const PeriodComparison: React.FC<{
 }> = ({ current, previous, formatValue, unit, toPersianDigits }) => {
   const delta = percentChange(current, previous);
   const direction = delta === null ? 'none' : delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
-  const color = direction === 'up' ? 'text-emerald-600' : direction === 'down' ? 'text-rose-500' : 'text-slate-400';
+  const color = direction === 'up' ? 'text-emerald-700' : direction === 'down' ? 'text-rose-700' : 'text-slate-600';
   const Icon = direction === 'up' ? TrendingUp : direction === 'down' ? TrendingDown : Minus;
   return (
     <div className="mt-1.5 space-y-0.5">
-      <p className="text-[10px] text-slate-400">
+      <p className="text-xs text-slate-600">
         ۳۰ روز اخیر: <span className="font-bold text-slate-600">{formatValue(current)}</span>
         {unit && <span> {unit}</span>}
       </p>
-      <p className={`flex items-center gap-1 text-[10px] font-bold ${color}`}>
-        <Icon className="w-3 h-3 shrink-0" strokeWidth={1.5} />
+      <p className={`flex items-center gap-1 text-xs font-bold ${color}`}>
+        <Icon aria-hidden="true" className="size-3 shrink-0" strokeWidth={1.5} />
         {delta === null ? (
           <span>دوره قبل فروشی نبود</span>
         ) : (
@@ -117,7 +122,7 @@ const SalesChart: React.FC<{
   const step = width / daily.length;
   const barWidth = Math.max(2, step * 0.62);
   return (
-    <div dir="ltr" className="w-full">
+    <div dir="ltr" className="mx-auto w-full max-w-2xl">
       <svg viewBox="0 0 320 140" className="w-full h-auto" role="img" aria-label="نمودار فروش ۳۰ روز گذشته">
         {[0.25, 0.5, 0.75, 1].map((f) => (
           <line key={f} x1={6} x2={312} y1={10 + height * (1 - f)} y2={10 + height * (1 - f)} stroke="#ede9fe" strokeWidth={1} strokeDasharray="3 3" />
@@ -128,18 +133,18 @@ const SalesChart: React.FC<{
           const y = 10 + height - barHeight;
           return (
             <g key={d.date}>
-              <rect x={x} y={y} width={barWidth} height={Math.max(barHeight, d.revenue > 0 ? 2 : 0)} rx={barWidth / 2} fill={d.revenue > 0 ? '#7c3aed' : '#f1f5f9'} opacity={d.revenue > 0 ? 0.85 : 1}>
+              <rect x={x} y={y} width={barWidth} height={Math.max(barHeight, d.revenue > 0 ? 2 : 0)} rx={barWidth / 2} className={d.revenue > 0 ? 'fill-brand' : 'fill-slate-100'}>
                 <title>{`${formatChartDate(d.date)} — ${formatPrice(d.revenue)} تومان • ${toPersianDigits(d.orders)} سفارش`}</title>
               </rect>
               {j % 6 === 0 && (
-                <text x={x + barWidth / 2} y={134} textAnchor="middle" fontSize={8} fill="#94a3b8">
+                <text x={x + barWidth / 2} y={134} textAnchor="middle" fontSize={8} fill="#475569">
                   {formatChartDate(d.date)}
                 </text>
               )}
             </g>
           );
         })}
-        <text x={312} y={8} textAnchor="end" fontSize={8} fill="#a78bfa">
+        <text x={312} y={8} textAnchor="end" fontSize={8} className="fill-brand-deep">
           {formatPrice(max)}
         </text>
       </svg>
@@ -153,6 +158,7 @@ export const SellerAnalyticsTab: React.FC = () => {
   const sequence = useRef(0);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const storeId = currentStore?.id;
   const data = result?.storeId === storeId ? result?.data : undefined;
 
@@ -180,7 +186,7 @@ export const SellerAnalyticsTab: React.FC = () => {
       cancelled = true;
       controller.abort();
     };
-  }, [storeId]);
+  }, [storeId, attempt]);
 
   const cards = useMemo(() => {
     if (!data) return [];
@@ -193,29 +199,13 @@ export const SellerAnalyticsTab: React.FC = () => {
     ];
   }, [data, formatPrice, toPersianDigits]);
 
-  if (loading || result?.storeId !== storeId) {
+  const heading = <SupplierSectionHeading title="تحلیل فروش" description="روند فروش، بازدید و عملکرد کالاهای فروشگاهت را بررسی کن." icon={<BarChart3 />} />;
+  const pending = loading || result?.storeId !== storeId;
+  if (pending || failed) {
     return (
-      <div className="space-y-3 pb-6 animate-pulse" aria-label="در حال بارگذاری تحلیل">
-        <div className="grid grid-cols-2 gap-2.5">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="bg-white rounded-2xl border border-slate-100 p-4 h-24" />
-          ))}
-        </div>
-        <div className="bg-white rounded-2xl border border-slate-100 h-52" />
-      </div>
-    );
-  }
-
-  if (failed) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-        <AlertCircle className="w-9 h-9 text-rose-300 mx-auto mb-3" strokeWidth={1.5} />
-        <p className="text-xs font-bold text-slate-700 mb-1">بارگذاری تحلیل فروش انجام نشد</p>
-        <p className="text-[11px] text-slate-400 mb-4">اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</p>
-        <button type="button" onClick={() => window.location.reload()} className="inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white hover:bg-brand">
-          <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.5} />
-          تلاش دوباره
-        </button>
+      <div className="space-y-4 pb-6 sm:space-y-5">
+        {heading}
+        <SupplierResourceState loading={pending} error={failed ? 'بارگذاری تحلیل فروش انجام نشد.' : ''} retry={() => { setLoading(true); setAttempt(value => value + 1); }} />
       </div>
     );
   }
@@ -228,12 +218,9 @@ export const SellerAnalyticsTab: React.FC = () => {
 
   if (data && !hasData) {
     return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-brand-soft border border-brand-border flex items-center justify-center mx-auto mb-4">
-          <BarChart3 className="w-7 h-7 text-brand" strokeWidth={1.5} />
-        </div>
-        <p className="text-sm font-extrabold text-slate-800 mb-1.5">هنوز فروشی ثبت نشده</p>
-        <p className="text-[11px] leading-6 text-slate-400 max-w-[240px] mx-auto">به محض ثبت اولین سفارش پرداخت‌شده، آمار فروش، نمودار ۳۰ روزه و پرفروش‌ترین محصولات همین‌جا نمایش داده می‌شود.</p>
+      <div className="space-y-4 pb-6 sm:space-y-5">
+        {heading}
+        <SupplierEmptyState icon={<BarChart3 />} title="هنوز فروشی ثبت نشده است." description="پس از اولین سفارش پرداخت‌شده، نمودار فروش و پرفروش‌ترین محصولات اینجا نمایش داده می‌شوند." />
       </div>
     );
   }
@@ -243,59 +230,74 @@ export const SellerAnalyticsTab: React.FC = () => {
   const statusTotal = statusRows.reduce((sum, row) => sum + row.count, 0);
 
   return (
-    <div className="space-y-3 pb-6">
-      <div className="grid grid-cols-2 gap-2.5">
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      {heading}
+      <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
         {cards.map((card) => (
-          <div key={card.label} className="bg-white rounded-2xl border border-slate-100 p-3.5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-            <div className="flex items-center gap-1.5 mb-2">
+          <div key={card.label} className="min-w-0 rounded-2xl border border-[#e6e2f0] bg-white p-3.5 shadow-sm">
+            <dt className="mb-2 flex items-center gap-1.5">
               <span className="w-7 h-7 rounded-xl bg-brand-soft border border-brand-border flex items-center justify-center shrink-0">
-                <card.icon className="w-3.5 h-3.5 text-brand-deep" strokeWidth={1.5} />
+                <card.icon aria-hidden="true" className="w-3.5 h-3.5 text-brand-deep" strokeWidth={1.5} />
               </span>
-              <span className="text-[10px] font-bold text-slate-500">{card.label}</span>
-            </div>
-            <div className="text-base font-extrabold text-slate-900">
+              <span className="text-xs font-bold text-slate-700">{card.label}</span>
+            </dt>
+            <dd className="break-words text-base font-extrabold tabular-nums text-slate-900">
               {card.value}
-              {card.unit && <span className="text-[10px] font-normal text-slate-400 mr-1">{card.unit}</span>}
-            </div>
+              {card.unit && <span className="ms-1 text-xs font-normal text-slate-600">{card.unit}</span>}
+            </dd>
             {card.period && (
-              <PeriodComparison current={card.period.current} previous={card.period.previous} formatValue={card.period.format} unit={card.period.unit || undefined} toPersianDigits={toPersianDigits} />
+              <dd><PeriodComparison current={card.period.current} previous={card.period.previous} formatValue={card.period.format} unit={card.period.unit || undefined} toPersianDigits={toPersianDigits} /></dd>
             )}
           </div>
         ))}
-      </div>
+      </dl>
 
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className="w-7 h-7 rounded-xl bg-brand-soft border border-brand-border flex items-center justify-center shrink-0">
-            <BarChart3 className="w-3.5 h-3.5 text-brand-deep" strokeWidth={1.5} />
-          </span>
-          <h3 className="text-xs font-extrabold text-slate-800">بازدید و تبدیل — ۳۰ روز اخیر</h3>
+      <section className={panelClass}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-800"><TrendingUp aria-hidden="true" className="size-4 text-brand-deep" strokeWidth={1.5} />فروش ۳۰ روز اخیر</h3>
+          <span className="text-xs text-slate-600">تومان</span>
         </div>
-        <div className="flex items-center gap-6">
-          <div>
-            <p className="text-base font-extrabold text-slate-900">{toPersianDigits(data.views ?? 0)}</p>
-            <p className="text-[10px] text-slate-400">بازدید فروشگاه</p>
-          </div>
-          <div>
-            <p className="text-base font-extrabold text-slate-900">{toPersianDigits((((data.conversionRate ?? 0) * 100).toFixed(1)))}٪</p>
-            <p className="text-[10px] text-slate-400">نرخ تبدیل بازدید به سفارش</p>
-          </div>
-        </div>
-        <p className="text-[10px] text-slate-400 mt-2">هر بازدیدکننده در هر روز فقط یک بار شمرده می‌شود؛ تبدیل یعنی سفارش پرداخت‌شده تقسیم بر بازدید.</p>
+        {daily.length > 0 ? (
+          <>
+            <SalesChart daily={daily} formatPrice={formatPrice} toPersianDigits={toPersianDigits} />
+            <details className="mt-2 border-t border-slate-100">
+              <summary className={summaryClass}>فروش روزانه</summary>
+              <ul className="divide-y divide-slate-100 text-sm text-slate-700">
+                {daily.map(day => (
+                  <li key={day.date} className="flex flex-wrap items-center justify-between gap-x-3 py-2">
+                    <time dateTime={day.date}>{formatChartDate(day.date)}</time>
+                    <span>{formatPrice(day.revenue)} تومان · {toPersianDigits(day.orders)} سفارش</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </>
+        ) : <p className="py-3 text-sm text-slate-600">آمار روزانه‌ای برای این دوره ثبت نشده است.</p>}
       </section>
 
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-extrabold text-slate-800">فروش ۳۰ روز اخیر</h3>
-          <span className="text-[10px] text-slate-400">به تومان</span>
+      <section className={panelClass}>
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="w-7 h-7 rounded-xl bg-brand-soft border border-brand-border flex items-center justify-center shrink-0">
+            <BarChart3 aria-hidden="true" className="w-3.5 h-3.5 text-brand-deep" strokeWidth={1.5} />
+          </span>
+          <h3 className="text-sm font-extrabold text-slate-800">بازدید و تبدیل — ۳۰ روز اخیر</h3>
         </div>
-        {daily.length > 0 && <SalesChart daily={daily} formatPrice={formatPrice} toPersianDigits={toPersianDigits} />}
-        <p className="text-[10px] text-slate-400 mt-2">هر ستون، فروش یک روز است؛ هرچه ستون بلندتر، فروش آن روز بیشتر بوده.</p>
+        <dl className="grid grid-cols-2 gap-3 rounded-xl bg-[#f6f3fb] p-3">
+          <div>
+            <dt className="text-xs text-slate-600">بازدید فروشگاه</dt>
+            <dd className="text-base font-extrabold text-slate-900">{toPersianDigits(data.views ?? 0)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-600">نرخ تبدیل بازدید به سفارش</dt>
+            <dd className="text-base font-extrabold text-slate-900">{toPersianDigits(((data.conversionRate ?? 0) * 100).toFixed(1))}٪</dd>
+          </div>
+        </dl>
+        <p className="mt-2 text-xs leading-6 text-slate-600">هر بازدیدکننده در هر روز یک بار شمرده می‌شود. نرخ تبدیل از تقسیم سفارش‌های پرداخت‌شده بر بازدید به دست می‌آید.</p>
       </section>
 
       {statusRows.length > 0 && (
-        <section className="bg-white rounded-2xl border border-slate-100 p-4">
-          <h3 className="text-xs font-extrabold text-slate-800 mb-3">وضعیت سفارش‌های پرداخت‌شده (همهٔ زمان)</h3>
+        <details className={panelClass}>
+          <summary className={summaryClass}>وضعیت سفارش‌های پرداخت‌شده (همهٔ زمان)</summary>
           <ul className="divide-y divide-slate-50">
             {statusRows.map((row) => (
               <li key={row.status} className="py-2 flex items-center gap-3">
@@ -309,11 +311,11 @@ export const SellerAnalyticsTab: React.FC = () => {
               </li>
             ))}
           </ul>
-        </section>
+        </details>
       )}
 
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-3">پرفروش‌ترین محصولات (همهٔ زمان)</h3>
+      <section className={panelClass}>
+        <h3 className="mb-3 text-sm font-extrabold text-slate-800">پرفروش‌ترین محصولات (همهٔ زمان)</h3>
         {topProducts.length === 0 ? (
           <p className="text-[11px] text-slate-400 text-center py-4">اطلاعات جزئی محصولات هنوز ثبت نشده است.</p>
         ) : (
@@ -336,13 +338,13 @@ export const SellerAnalyticsTab: React.FC = () => {
         )}
       </section>
 
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-1">همه محصولات فعال من</h3>
-        <p className="text-[10px] text-slate-400 mb-3">فروش و سود، مجموع همه سفارش‌های پرداخت‌شده است؛ «روزهای باقی‌مانده» یعنی با سرعت فروش ۳۰ روز اخیر، موجودی چقدر دوام می‌آورد.</p>
+      <details className={panelClass}>
+        <summary id="seller-analytics-products" className={summaryClass}>همه محصولات فعال من</summary>
+        <p className="mb-3 text-xs leading-6 text-slate-600">فروش و سود، مجموع همهٔ سفارش‌های پرداخت‌شده است. روزهای باقی‌ماندهٔ موجودی بر اساس سرعت فروش در ۳۰ روز اخیر برآورد می‌شود.</p>
         {productRows.length === 0 ? (
           <p className="text-[11px] text-slate-400 text-center py-4">محصول فعالی در فروشگاه ثبت نشده است.</p>
         ) : (
-          <div className="overflow-x-auto -mx-4 px-4">
+          <div role="region" aria-labelledby="seller-analytics-products" tabIndex={0} className="overflow-x-auto rounded-md focus-visible:ring-2 focus-visible:ring-brand">
             <table className="w-full min-w-[680px] text-[11px]">
               <thead>
                 <tr className="text-slate-400 text-right border-b border-slate-100">
@@ -413,7 +415,7 @@ export const SellerAnalyticsTab: React.FC = () => {
             </table>
           </div>
         )}
-      </section>
+      </details>
     </div>
   );
 };

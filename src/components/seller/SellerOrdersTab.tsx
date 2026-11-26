@@ -4,25 +4,17 @@ import { getSellerOrderPage } from '../../services/panelWorkApi';
 import { isMockMode } from '../../services/apiClient';
 import { OrderDetailModal } from '../common/OrderDetailModal';
 import { ContextSupportButton } from '../support/ContextSupportButton';
-import { Package, Truck, CheckCircle2, Clock, Search, Eye, AlertCircle, Info, RefreshCw, XCircle, Loader2 } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { Package, Truck, CheckCircle2, Clock, Search, Eye, AlertCircle, XCircle, Printer } from 'lucide-react';
 
-// W5 (live parity): seller orders tab rebuilt to the live component
-// (SellerDashboardView-MERGED.js, orders component ~byte 170700-178300).
-// Live fetches store-scoped orders via GET /stores/{slug}/orders and
-// renders informal second-person copy verbatim; the candidate previously
-// rendered context orders with formal copy and a single stub empty state.
+const ORDER_FILTERS = [
+  { followUp: false, label: 'همه سفارش‌ها' },
+  { followUp: true, label: 'نیازمند پیگیری' },
+] as const;
 
-// Live intro banner (Pe, text-only call): brand-soft box with an info icon.
-const OrdersIntroBanner: React.FC = () => (
-  <div className="rounded-2xl border border-brand-border bg-brand-soft/50 px-3.5 py-2.5">
-    <div className="flex items-start gap-2">
-      <Info className="w-4 h-4 text-brand-deep shrink-0 mt-0.5" strokeWidth={1.5} />
-      <p className="flex-1 text-xs leading-6 text-slate-700">
-        این‌جا سفارش‌های مشتری‌های فروشگاهت را می‌بینی. لازم نیست کاری بکنی؛ بسته را انبار پلتفرم می‌فرستد و سودت خودکار به کیف پولت می‌آید.
-      </p>
-    </div>
-  </div>
-);
+const primaryActionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-brand-deep px-3 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2';
+const secondaryActionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-brand-border px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand';
 
 // Live shared date helper shape (fa-IR, year + long month + day; '—' when
 // missing/invalid), as used for Et(createdAt) in the live row header.
@@ -105,14 +97,16 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [list, setList] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => !isMockMode() && Boolean(currentStore?.slug));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
   const [followUpOnly, setFollowUpOnly] = useState(initialWorkFilter === 'follow-up');
   const request = useRef(0);
 
   const reload = useCallback(async (cursor?: string) => {
     const generation = ++request.current;
+    setLoadError(null);
     // Mock mode has no backend: keep the previous context-orders source.
     if (isMockMode()) {
       setList(
@@ -125,10 +119,12 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
     const slug = currentStore?.slug;
     if (!slug) {
       setList([]);
+      setLoading(false);
+      setLoadingMore(false);
       return;
     }
-    setLoading(true);
-    setLoadError(null);
+    setLoading(!cursor);
+    setLoadingMore(Boolean(cursor));
     try {
       const page = await getSellerOrderPage(slug, followUpOnly ? 'follow-up' : undefined, cursor);
       if (request.current !== generation) return;
@@ -138,22 +134,26 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
     } catch (err: any) {
       if (request.current === generation) setLoadError(err?.message || 'دریافت سفارش‌های فروشگاه انجام نشد.');
     } finally {
-      if (request.current === generation) setLoading(false);
+      if (request.current === generation) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [currentStore?.slug, currentStore?.id, currentStore?.ownerType, orders, followUpOnly]);
 
   useEffect(() => {
     setNextCursor('');
-    reload();
+    void reload();
     return () => { request.current += 1; };
   }, [reload]);
 
+  const search = searchTerm.trim();
   const filteredOrders = list.filter(
     (o) =>
       (!isMockMode() || !followUpOnly || ['delivery_disputed', 'delivered_unconfirmed'].includes(o.status)) && (
-      (o.orderNumber || '').includes(searchTerm) ||
-      (o.trackingCode || '').includes(searchTerm) ||
-      (o.customerInfo?.city || '').includes(searchTerm))
+      o.orderNumber.includes(search) ||
+      o.trackingCode.includes(search) ||
+      String(o.customerInfo.city).includes(search))
   );
 
   // Live order status badges, verbatim (text-[10px], informal copy).
@@ -211,182 +211,119 @@ export const SellerOrdersTab: React.FC<SellerOrdersTabProps> = ({ onNavigateTab,
   };
 
   return (
-    <div className="space-y-3 pb-6">
-      <OrdersIntroBanner />
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      <SupplierSectionHeading title="سفارش‌های من" description="وضعیت ارسال، پرداخت و سود سفارش‌های فروشگاهت را پیگیری کن. ارسال کالا با پلتفرم است." icon={<Truck />} />
 
-      {/* Search Input */}
-      <div className="relative flex items-center bg-white border border-slate-200 rounded-xl px-2.5 py-2 shadow-2xs">
-        <Search className="w-3.5 h-3.5 text-slate-400 shrink-0 ml-1.5" strokeWidth={1.5} />
-        <input
-          type="text"
-          placeholder="جستجو: شماره سفارش، شهر یا کد رهگیری…"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-transparent text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden"
-        />
+      <div className="space-y-3 rounded-[20px] border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+        <div role="group" aria-label="وضعیت سفارش" className="flex flex-wrap gap-1.5">
+          {ORDER_FILTERS.map(({ followUp, label }) => (
+            <button key={label} type="button" aria-pressed={followUpOnly === followUp} onClick={() => setFollowUpOnly(followUp)}
+              className={`min-h-11 rounded-xl px-3 text-sm font-bold transition-colors focus-visible:ring-2 focus-visible:ring-brand ${followUpOnly === followUp ? 'bg-brand-deep text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="relative">
+          <Search aria-hidden="true" className="pointer-events-none absolute inset-s-3 top-3.5 size-4 text-slate-500" strokeWidth={1.5} />
+          <input
+            type="search"
+            aria-label="جستجوی سفارش‌ها"
+            placeholder="شماره سفارش، شهر یا کد رهگیری"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] ps-9 pe-3 text-sm focus:bg-white focus-visible:ring-2 focus-visible:ring-brand"
+          />
+        </div>
       </div>
 
-      <label className="inline-flex min-h-11 items-center gap-2 text-sm font-bold"><input type="checkbox" checked={followUpOnly} onChange={event => setFollowUpOnly(event.target.checked)} className="size-4 accent-brand-deep" /> فقط نیازمند پیگیری</label>
-      {loading ? (
-        <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 flex flex-col items-center gap-2">
-          <Loader2 className="w-6 h-6 text-brand-deep animate-spin" />
-          <p className="text-xs text-slate-500">در حال دریافت سفارش‌های فروشگاه…</p>
-        </div>
-      ) : loadError ? (
-        <div className="bg-white rounded-2xl p-8 text-center border border-rose-100 space-y-2">
-          <AlertCircle className="w-8 h-8 text-rose-400 mx-auto" />
-          <p className="text-xs font-bold text-slate-600">{loadError}</p>
-          <button
-            type="button"
-            onClick={() => void reload()}
-            className="inline-flex items-center gap-1 text-[11px] font-bold text-brand-deep bg-brand-soft hover:bg-brand-border px-4 py-2 rounded-xl transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>تلاش مجدد</span>
-          </button>
-        </div>
-      ) : filteredOrders.length === 0 ? (
-        <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 space-y-2.5">
-          <Package className="w-8 h-8 text-slate-300 mx-auto" strokeWidth={1.5} />
-          {followUpOnly && !searchTerm ? <p className="text-xs font-bold text-slate-700">سفارشی در صف پیگیری نیست.</p> : searchTerm ? (
-            <>
-              <p className="text-xs font-bold text-slate-600">با این جستجو سفارشی پیدا نشد.</p>
-              <p className="text-[11px] text-slate-400 leading-6">کلمه دیگری امتحان کن یا جستجو را پاک کن تا همه سفارش‌ها را ببینی.</p>
-              <button
-                type="button"
-                onClick={() => setSearchTerm('')}
-                className="min-h-[44px] px-4 rounded-xl bg-brand-soft text-brand-deep text-xs font-bold"
-              >
-                پاک کردن جستجو
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="text-xs font-bold text-slate-600">هنوز سفارشی نداری</p>
-              <p className="text-[11px] text-slate-400 leading-6">وقتی مشتری از فروشگاهت خرید کند، سفارشش این‌جا می‌آید. برای اولین فروش، لینک فروشگاهت را برای دوست‌ها و مشتری‌ها بفرست.</p>
-              <div className="flex items-center justify-center gap-2 pt-1">
-                {onNavigateTab && (
-                  <button
-                    type="button"
-                    onClick={() => onNavigateTab('links')}
-                    className="min-h-[44px] px-4 rounded-xl bg-brand-deep text-white text-xs font-bold"
-                  >
-                    گرفتن لینک فروشگاه
-                  </button>
-                )}
-                {onOpenStorefront && (
-                  <button
-                    type="button"
-                    onClick={onOpenStorefront}
-                    className="min-h-[44px] px-4 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold"
-                  >
-                    مشاهده فروشگاه من
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      ) : (
+      <SupplierResourceState loading={loading} error={loadError ?? ''} retry={() => void reload(nextCursor || undefined)} />
+      {!loading && !loadError && filteredOrders.length === 0 && (
+        search ? <SupplierEmptyState icon={<Package />} title="با این جستجو سفارشی پیدا نشد."
+          action={<button type="button" onClick={() => setSearchTerm('')} className={secondaryActionClass}>پاک کردن جستجو</button>} />
+          : followUpOnly ? <SupplierEmptyState icon={<Package />} title="سفارشی در صف پیگیری نیست."
+            action={<button type="button" onClick={() => setFollowUpOnly(false)} className={secondaryActionClass}>دیدن همه سفارش‌ها</button>} />
+            : <SupplierEmptyState icon={<Package />} title="هنوز سفارشی نداری" description="برای اولین فروش، لینک فروشگاهت را با مشتری‌ها به اشتراک بگذار."
+              action={(onNavigateTab || onOpenStorefront) && (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {onNavigateTab && <button type="button" onClick={() => onNavigateTab('links')} className={primaryActionClass}>گرفتن لینک فروشگاه</button>}
+                  {onOpenStorefront && <button type="button" onClick={onOpenStorefront} className={secondaryActionClass}>مشاهده فروشگاه من</button>}
+                </div>
+              )} />
+      )}
+      {!loading && (!loadError || nextCursor) && filteredOrders.length > 0 && (
         <div className="space-y-2.5">
           {filteredOrders.map((order) => (
-            <div
+            <article
               key={order.id}
-              className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2.5"
+              className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5"
             >
-              {/* Row 1: Order ID, Date & Statuses */}
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <div>
-                  <span className="text-xs font-black text-slate-800 font-mono">
-                    {order.orderNumber}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5 font-mono">
-                    {formatOrderDate(order.createdAt)}
-                  </span>
+              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-[#eeebf4] pb-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-extrabold text-brand-deep">سفارش <bdi dir="ltr" className="break-all font-mono">{order.orderNumber}</bdi></h3>
+                  <time dateTime={order.createdAt || undefined} className="mt-1 block text-xs text-slate-600">{formatOrderDate(order.createdAt)}</time>
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                <div className="flex flex-wrap items-start gap-1.5">
                   {getStatusBadge(order.status, order.disputeReason)}
                   <PaymentStatusBadge status={order.paymentStatus} />
                 </div>
               </div>
 
-              {/* Row 2: Shipping Destination & Tracking */}
-              <div className="text-[11px] text-slate-600 space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">می‌رود به شهر:</span>
-                  <span className="font-bold text-slate-800">{order.customerInfo?.province}، {order.customerInfo?.city}</span>
+              <dl className="grid grid-cols-2 gap-3 rounded-xl bg-[#f6f3fb] p-3 text-sm">
+                <div className="min-w-0">
+                  <dt className="text-xs text-slate-600">مبلغ سفارش</dt>
+                  <dd className="break-words font-bold tabular-nums text-slate-800">{formatPrice(order.payableAmount)} تومان</dd>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">کد رهگیری پستی:</span>
-                  <span className="font-mono text-brand-deep font-bold" dir="ltr">
-                    {order.trackingCode}
-                  </span>
+                <div className="min-w-0">
+                  <dt className="text-xs text-slate-600">سود تو از این سفارش</dt>
+                  <dd className="break-words font-extrabold tabular-nums text-emerald-700">{formatPrice(order.dropshipperProfit)} تومان</dd>
                 </div>
-              </div>
+              </dl>
 
-              {/* Row 3: Items preview */}
-              {order.items && order.items.length > 0 && (
-                <div className="bg-slate-50 rounded-xl p-2 text-[10px] text-slate-600 space-y-1">
+              {(order.customerInfo.province || order.customerInfo.city || order.trackingCode) && (
+                <dl className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-600">
+                  {(order.customerInfo.province || order.customerInfo.city) && <div className="flex flex-wrap gap-1"><dt>مقصد</dt><dd className="font-bold text-slate-800">{[order.customerInfo.province, order.customerInfo.city].filter(Boolean).join('، ')}</dd></div>}
+                  {order.trackingCode && <div className="flex min-w-0 flex-wrap gap-1"><dt>کد رهگیری پستی</dt><dd><bdi dir="ltr" className="break-all font-mono font-bold text-brand-deep">{order.trackingCode}</bdi></dd></div>}
+                </dl>
+              )}
+
+              {order.items.length > 0 && (
+                <ul className="divide-y divide-slate-100 text-xs text-slate-600">
                   {order.items.map((item: any, idx: number) => (
-                    <div key={idx} className="flex justify-between truncate">
-                      <span className="truncate">
+                    <li key={idx} className="flex items-start justify-between gap-3 py-1.5">
+                      <span className="min-w-0 break-words">
                         {item.product?.title || 'کالای سفارشی'}
-                        {item.variantName ? <span className="text-slate-400"> — {item.variantName}</span> : null}
+                        {item.variantName ? <span> — {item.variantName}</span> : null}
                       </span>
-                      <span className="shrink-0 mr-2 font-bold">{toPersianDigits(item.quantity)} عدد</span>
-                    </div>
+                      <span className="shrink-0 font-bold">{toPersianDigits(item.quantity)} عدد</span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
 
-              {/* Row 4: Financial Summary */}
-              <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
-                <div>
-                  <span className="text-[10px] text-slate-400 block">مبلغ سفارش:</span>
-                  <span className="font-bold text-slate-800">{formatPrice(order.payableAmount)} تومان</span>
-                </div>
-                <div className="text-left">
-                  <span className="text-[10px] text-emerald-600 block font-medium">سود تو از این سفارش:</span>
-                  <span className="font-black text-emerald-600 text-sm">
-                    +{formatPrice(order.dropshipperProfit)} تومان
-                  </span>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-1 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedOrder(order)}
-                  className="py-2.5 min-h-[44px] bg-brand-soft hover:bg-brand-border text-brand-deep font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1"
-                >
-                  <Eye className="w-4 h-4" strokeWidth={1.5} />
-                  <span>دیدن جزئیات</span>
+              <div className="flex flex-wrap items-start gap-x-3 gap-y-1 border-t border-slate-100 pt-3">
+                <button type="button" onClick={() => setSelectedOrder(order)} className={primaryActionClass}>
+                  <Eye aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                  دیدن جزئیات
                 </button>
-                {/* Live labels this "چاپ فاکتور" and opens its invoice print
-                    modal; the candidate has no invoice print component, so
-                    the label is ported and window.print() is retained
-                    (see report: print-modal behavior left unported). */}
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="py-2.5 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1"
-                >
-                  <span>چاپ فاکتور</span>
-                </button>
+                <details className="min-w-0">
+                  <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-2.5 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">{isMockMode() ? 'چاپ' : 'چاپ و پشتیبانی'}</summary>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => window.print()} className={secondaryActionClass}><Printer aria-hidden="true" className="size-4" /> چاپ فاکتور</button>
+                    {!isMockMode() && (
+                      <>
+                        <ContextSupportButton role="seller" kind="order" referenceId={order.id} storeId={currentStore.id} />
+                        {order.trackingCode && <ContextSupportButton role="seller" kind="shipment" referenceType="order_fulfillment" referenceId={order.id} storeId={currentStore.id} />}
+                      </>
+                    )}
+                  </div>
+                </details>
               </div>
-              {!isMockMode() && (
-                <div className="flex flex-wrap gap-2">
-                  <ContextSupportButton role="seller" kind="order" referenceId={order.id} storeId={currentStore.id} />
-                  {order.trackingCode && <ContextSupportButton role="seller" kind="shipment" referenceType="order_fulfillment" referenceId={order.id} storeId={currentStore.id} />}
-                </div>
-              )}
-            </div>
+            </article>
           ))}
         </div>
       )}
 
-      {!loading && nextCursor && <button type="button" onClick={() => void reload(nextCursor)} className="min-h-11 rounded-xl border border-brand-border bg-brand-soft px-4 text-sm font-bold text-brand-deep">بارگذاری سفارش‌های قدیمی‌تر</button>}
+      {!loading && nextCursor && <button type="button" onClick={() => void reload(nextCursor)} disabled={loadingMore} className={`${secondaryActionClass} disabled:opacity-60`}>{loadingMore ? 'در حال دریافت سفارش‌های قدیمی‌تر…' : 'بارگذاری سفارش‌های قدیمی‌تر'}</button>}
 
       <OrderDetailModal
         isOpen={!!selectedOrder}

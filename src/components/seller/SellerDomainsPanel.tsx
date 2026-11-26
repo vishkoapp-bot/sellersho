@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
+import { ChevronDown, Globe } from 'lucide-react';
 import { apiRequest } from '../../services/apiClient';
 interface Domain { domain: string; storeId: string; verificationToken: string; status: string; approved: boolean; }
 
@@ -30,19 +31,88 @@ export const normalizeDomainRows = (data: unknown): Domain[] => {
   return domains;
 };
 export const SellerDomainsPanel: React.FC<{ slug: string; storeId: string }> = ({ slug, storeId }) => {
+  const domainInputId = useId();
   const [domains, setDomains] = useState<Domain[]>([]);
-  const [name, setName] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
-  const load = async () => setDomains(normalizeDomainRows(await apiRequest<Domain[]>('/seller/domains', { auth: true })));
-  useEffect(() => { let active = true; apiRequest<Domain[]>('/seller/domains', { auth: true }).then((rows) => { if (active) setDomains(normalizeDomainRows(rows)); }).catch((e) => { if (active) setError(e.message); }); return () => { active = false; }; }, [slug]);
-  const run = async (action: () => Promise<unknown>, message: string) => { setBusy(true); setError(''); setNotice(''); try { await action(); await load(); setNotice(message); } catch (e) { setError(e instanceof Error ? e.message : 'درخواست انجام نشد.'); } finally { setBusy(false); } };
-  return <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-xs">
-    <h3 className="font-bold text-slate-900">دامنهٔ اختصاصی و HTTPS</h3>
-    <p className="leading-6 text-slate-500">پس از تأیید مدیر، رکورد TXT مالکیت و رکورد A یا AAAA به سرور پلتفرم را تنظیم و تأیید کنید. گواهی HTTPS با اولین بازدید امن صادر و خودکار تمدید می‌شود.</p>
-    <div className="flex gap-2"><input aria-label="دامنه اختصاصی" dir="ltr" placeholder="shop.example.com" value={name} onChange={(e) => setName(e.target.value)} className="min-w-0 flex-1 rounded-xl border px-3 py-2" /><button type="button" disabled={busy || !name.trim()} onClick={() => void run(async () => { await apiRequest('/seller/domains', { method: 'POST', auth: true, body: JSON.stringify({ slug, domain: name.trim() }) }); setName(''); }, 'درخواست دامنه ثبت شد.')} className="rounded-xl bg-brand-deep px-3 py-2 text-white disabled:opacity-50">ثبت دامنه</button></div>
-    {error && <p role="alert" className="text-rose-700">{error}</p>}{notice && <p role="status" className="text-emerald-700">{notice}</p>}
-    {domains.filter((d) => d.storeId === storeId).map((d) => <div key={d.domain} className="space-y-2 rounded-xl bg-slate-50 p-3">
-      <div className="flex justify-between gap-2"><strong dir="ltr">{d.domain}</strong><span>{d.status === 'disabled' ? 'غیرفعال' : d.status === 'active' ? 'آمادهٔ HTTPS' : d.approved ? 'منتظر تأیید DNS' : 'منتظر تأیید مدیر'}</span></div>
-      {d.status !== 'disabled' && <><p>رکورد TXT زیر را در DNS قرار دهید:</p><code dir="ltr" className="block break-all">_sellersho-verification.{d.domain}</code><code dir="ltr" className="block break-all select-all">{d.verificationToken}</code><div className="flex gap-3"><button type="button" disabled={busy || !d.approved} onClick={() => void run(() => apiRequest(`/seller/domains/${encodeURIComponent(d.domain)}/verify`, { method: 'POST', auth: true }), 'DNS تأیید شد؛ دامنه آمادهٔ دریافت گواهی است.')} className="rounded-lg border px-3 py-2 disabled:opacity-40">بررسی DNS</button><button type="button" disabled={busy} onClick={() => void run(() => apiRequest(`/seller/domains/${encodeURIComponent(d.domain)}`, { method: 'DELETE', auth: true }), 'دامنه غیرفعال شد.')} className="text-rose-700">غیرفعال‌کردن</button></div></>}
-    </div>)}
-  </section>;
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiRequest('/seller/domains', { auth: true, signal: controller.signal })
+      .then(rows => { if (!controller.signal.aborted) setDomains(normalizeDomainRows(rows)); })
+      .catch(err => { if (!controller.signal.aborted) setError(err.message); });
+    return () => controller.abort();
+  }, [slug]);
+
+  const run = async (action: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await action();
+      setDomains(normalizeDomainRows(await apiRequest('/seller/domains', { auth: true })));
+      setNotice(message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'درخواست انجام نشد.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const registerDomain = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy || !name.trim()) return;
+    void run(async () => {
+      await apiRequest('/seller/domains', { method: 'POST', auth: true, body: JSON.stringify({ slug, domain: name.trim() }) });
+      setName('');
+    }, 'درخواست دامنه ثبت شد.');
+  };
+
+  return (
+    <details className="group rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg text-base font-extrabold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">
+        <Globe aria-hidden="true" className="size-5 shrink-0 text-brand-deep" strokeWidth={1.75} />
+        دامنهٔ اختصاصی و HTTPS
+        <ChevronDown aria-hidden="true" className="ms-auto size-5 shrink-0 text-brand-deep group-open:rotate-180" />
+      </summary>
+      <div className="mt-3 space-y-4 border-t border-slate-100 pt-4">
+        <p className="text-sm leading-6 text-slate-600">دامنه‌ای را که خریده‌ای وارد کن. بعد از تأیید مدیر، رکوردهای DNS را تنظیم کن و «بررسی DNS» را بزن.</p>
+        <form onSubmit={registerDomain} className="max-w-xl space-y-1.5">
+          <label htmlFor={domainInputId} className="block text-sm font-bold text-slate-800">نام دامنه</label>
+          <div className="flex flex-wrap items-center gap-2">
+            <input id={domainInputId} dir="ltr" placeholder="shop.example.com" value={name} onChange={e => setName(e.target.value)} required autoComplete="off" className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm focus-visible:ring-2 focus-visible:ring-brand" />
+            <button type="submit" disabled={busy || !name.trim()} className="min-h-11 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">ثبت دامنه</button>
+          </div>
+        </form>
+        {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+        {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
+        {domains.filter(domain => domain.storeId === storeId).map(domain => (
+          <div key={domain.domain} className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <strong><bdi dir="ltr" className="break-all">{domain.domain}</bdi></strong>
+              <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs font-bold text-brand-deep">
+                {domain.status === 'disabled' ? 'غیرفعال' : domain.status === 'active' ? 'آمادهٔ HTTPS' : domain.approved ? 'منتظر تأیید DNS' : 'منتظر تأیید مدیر'}
+              </span>
+            </div>
+            {domain.status !== 'disabled' && (
+              <>
+                <div className="space-y-1 text-xs leading-6 text-slate-600">
+                  <p>در DNS دامنه، رکورد A یا AAAA را به سرور پلتفرم وصل کن و رکورد TXT زیر را اضافه کن.</p>
+                  <code dir="ltr" className="block break-all">_sellersho-verification.{domain.domain}</code>
+                  <code dir="ltr" className="block select-all break-all">{domain.verificationToken}</code>
+                  <p>گواهی HTTPS با اولین بازدید امن صادر و خودکار تمدید می‌شود.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" disabled={busy || !domain.approved} onClick={() => void run(() => apiRequest(`/seller/domains/${encodeURIComponent(domain.domain)}/verify`, { method: 'POST', auth: true }), 'DNS تأیید شد؛ دامنه آمادهٔ دریافت گواهی است.')} className="min-h-11 rounded-xl border border-brand-border px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40">بررسی DNS</button>
+                  <button type="button" disabled={busy} onClick={() => void run(() => apiRequest(`/seller/domains/${encodeURIComponent(domain.domain)}`, { method: 'DELETE', auth: true }), 'دامنه غیرفعال شد.')} className="min-h-11 rounded-xl px-3 text-xs font-bold text-rose-700 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-600 disabled:opacity-40">غیرفعال‌کردن</button>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 };

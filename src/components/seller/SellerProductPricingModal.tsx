@@ -10,8 +10,11 @@ import { activeProductVariants, resolvePurchase, sellerVariantPreview } from '..
 import { isMockMode } from '../../services/apiClient';
 import { OFFICIAL_NICHES, getProductNicheIds } from '../../data/niches';
 import { roundTo100, resolveBaseCostR, resolvePlatformPct, resolvePricing } from '../../utils/pricingEngine';
-import { X, Calculator, Check, ArrowRight, Layers, AlertTriangle } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Layers, AlertTriangle } from 'lucide-react';
+import { SupplierDialog, SupplierDialogHeading } from '../supplier/SupplierDialog';
+
+const secondaryAction = 'inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold text-slate-700 hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const primaryAction = 'inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-3 py-2 text-center font-extrabold text-white hover:bg-brand-deep focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50';
 
 interface Props {
   product: Product | null;
@@ -173,9 +176,10 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
   const handleInitialSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Variant products have no product-level margin: their prices come
-    // from the per-variant percents only (saved by the variant button).
-    if (isVariantProduct) { onClose(); return; }
+    if (isVariantProduct) {
+      if (variantCount > 0) await handleSaveVariantMargins();
+      return;
+    }
     if (!showPlainPricing) return;
     if (isLocked) return;
     if (profitVal === '') {
@@ -389,54 +393,27 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
   })();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white rounded-2xl max-w-[400px] w-full p-4 shadow-2xl border border-slate-100 flex max-h-[calc(100dvh-1.5rem)] flex-col gap-3 overflow-hidden"
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 pb-2">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-              <Calculator className="w-4 h-4"  strokeWidth={1.5}/>
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-slate-900">سود تو از این کالا</h3>
-              <span className="text-[10px] text-slate-400 block truncate max-w-[200px]">{product.title}</span>
-            </div>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
-            <X className="w-4 h-4"  strokeWidth={1.5}/>
-          </button>
-        </div>
+    <SupplierDialog titleId="seller-profit-title" onDismiss={variantSaving ? undefined : onClose} wide={isVariantProduct}>
+        <SupplierDialogHeading id="seller-profit-title" title="تنظیم سود کالا" detail={product.title} onClose={onClose} busy={variantSaving} />
 
         {isLocked && (
-          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] font-bold text-amber-800">
-            قیمت‌گذاری این فروشگاه از طرف مدیریت قفل شده است؛ تغییر سود در حال حاضر ممکن نیست.
+          <div role="status" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+            مدیر پلتفرم قیمت‌گذاری این فروشگاه را قفل کرده است. تغییر سود فعلاً ممکن نیست.
           </div>
         )}
 
-        <form onSubmit={handleInitialSubmit} className="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1 pb-1 text-xs">
+        <form onSubmit={handleInitialSubmit} className="space-y-4 text-sm">
           {/* Section 3.1: Single unified base price (R) */}
           {showPlainPricing && <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
-            <span className="text-slate-600 font-bold text-[11px]">قیمت پایه:</span>
-            <span className="shrink-0 whitespace-nowrap font-extrabold text-slate-900 font-mono text-sm">{baseUnknown ? 'اعلام نشده' : `${formatPrice(baseCostR)} تومان`}</span>
+            <span className="font-bold text-slate-700">قیمت پایه</span>
+            <span className="font-extrabold tabular-nums text-slate-900">{baseUnknown ? 'اعلام نشده' : `${formatPrice(baseCostR)} تومان`}</span>
           </div>}
 
-          {isVariantProduct && (
-            <p className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 text-[11px] leading-5 text-slate-600">
-              این کالا تنوع دارد؛ قیمتش فقط از سود هر تنوع حساب می‌شود و سود جداگانه‌ای در سطح کالا ندارد. درصد هر تنوع را همین‌جا تعیین کن.
-            </p>
-          )}
-
           {variantCount > 0 && (
-            <div className="space-y-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
-              <p className="text-[11px] font-bold text-slate-800">سود هر تنوع (درصد روی قیمت پایه همان تنوع)</p>
-              <p className="text-[10px] leading-5 text-slate-500">
-                قیمت هر تنوع را تأمین‌کننده تعیین می‌کند؛ تو فقط درصد سود همان تنوع را می‌گذاری. برای تنوعی که خالی بماند، حداکثر سود مجاز این کالا ({toPersianDigits(effectiveCeiling)}٪) به‌صورت خودکار اعمال می‌شود.
-              </p>
-              <p className="text-[10px] leading-5 text-slate-500">
-                بازه مجاز سود برای هر تنوع: {rangeText}
+            <div className="space-y-3">
+              <h4 className="text-sm font-extrabold text-[#261b41]">سود و وضعیت نمایش تنوع‌ها</h4>
+              <p className="text-sm leading-6 text-slate-600">
+                بازه مجاز سود هر تنوع {rangeText} است. برای فیلد خالی، حداکثر سود مجاز کالا ({toPersianDigits(effectiveCeiling)}٪) اعمال می‌شود.
               </p>
               {pricingVariants.map((v) => {
                 const typed = variantInputs[v.id] ?? '';
@@ -446,24 +423,24 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 const isVisible = visibilityInputs[v.id] ?? true;
                 const isStoreDefault = defaultInput === v.id;
                 return (
-                  <div key={v.id} className={`space-y-2 bg-white border border-slate-200 rounded-xl p-2.5 ${!isVisible ? 'opacity-60' : ''}`}>
+                  <div key={v.id} className={`space-y-2 rounded-2xl border border-slate-200 p-3 ${isVisible ? 'bg-white' : 'bg-slate-50'}`}>
                     <div className="flex items-center gap-2">
-                      <span className="flex-1 min-w-0 truncate text-[11px] font-bold text-slate-800">{v.variantName || v.name}</span>
+                      <span className="min-w-0 flex-1 break-words font-extrabold text-[#261b41]">{v.variantName || v.name}</span>
                       <input
                         type="number"
-                        min={0}
+                        inputMode="decimal"
+                        step="any"
                         disabled={isLocked || variantSaving}
                         value={typed}
                         onChange={(e) => setVariantInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
                         placeholder={toPersianDigits(effectiveCeiling)}
-                        className="w-20 shrink-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
+                        className="min-h-11 w-20 shrink-0 rounded-xl border border-slate-200 bg-white px-2 text-center font-bold tabular-nums text-slate-800 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
                         aria-label={`درصد سود تنوع ${v.variantName || v.name}`}
                       />
-                      <span className="shrink-0 text-[10px] font-bold text-slate-400">٪</span>
+                      <span aria-hidden="true" className="shrink-0 text-xs font-bold text-slate-600">٪</span>
                     </div>
                     {!isCentralStore && !isMockMode() && (variantSettingsReady ? (
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-slate-100 pt-1.5 text-[10px] text-slate-600">
-                        <label className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-100 pt-1.5 text-xs text-slate-700">
                           <button
                             type="button"
                             role="switch"
@@ -471,13 +448,14 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                             aria-label={`نمایش تنوع ${v.variantName || v.name} در فروشگاه`}
                             disabled={variantSaving}
                             onClick={() => setVisibilityInputs((prev) => ({ ...prev, [v.id]: !(prev[v.id] ?? true) }))}
-                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${isVisible ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                            className="flex min-h-11 items-center gap-2 rounded-xl px-2 font-bold hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
                           >
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isVisible ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-1 rtl:-translate-x-1'}`} />
+                            <span dir="ltr" aria-hidden="true" className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 ${isVisible ? 'bg-brand-deep' : 'bg-slate-400'}`}>
+                              <span className={`size-5 rounded-full bg-white shadow motion-safe:transition-transform ${isVisible ? 'translate-x-5' : ''}`} />
+                            </span>
+                            در فروشگاه من
                           </button>
-                          <span className="font-bold">در فروشگاه من</span>
-                        </label>
-                        <label className="flex items-center gap-1.5">
+                        <label className="flex min-h-11 items-center gap-2 rounded-xl px-2">
                           <input
                             type="radio"
                             name="store-default-variant"
@@ -485,21 +463,21 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                             disabled={variantSaving || !isVisible}
                             onChange={() => setDefaultInput(v.id)}
                             aria-label={`پیش‌فرض فروشگاه: ${v.variantName || v.name}`}
+                            className="size-4 shrink-0 accent-brand-deep focus-visible:ring-2 focus-visible:ring-brand"
                           />
                           <span className="font-bold">پیش‌فرض فروشگاه</span>
                         </label>
-                        {isStoreDefault && <span className="text-slate-400">پیش‌فرض فروشگاه</span>}
                       </div>
                     ) : (
-                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-400">در حال بارگذاری تنظیمات تنوع…</p>
+                      <p className="border-t border-slate-100 pt-1.5 text-xs text-slate-600">در حال بارگذاری تنظیمات تنوع…</p>
                     ))}
                     {baseV != null && finalV != null ? (
-                      <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
-                        <span className="whitespace-nowrap">پایه: <span className="font-mono font-bold text-slate-700">{formatPrice(baseV)} ت</span></span>
-                        <span className="whitespace-nowrap">نهایی: <span className="font-mono font-bold text-slate-700">{formatPrice(finalV)} ت</span></span>
+                      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-slate-100 pt-2 text-xs text-slate-600">
+                        <span>قیمت پایه <strong className="tabular-nums text-slate-800">{formatPrice(baseV)} تومان</strong></span>
+                        <span>قیمت فروش <strong className="tabular-nums text-slate-800">{formatPrice(finalV)} تومان</strong></span>
                       </div>
                     ) : (
-                      <p className="border-t border-slate-100 pt-1.5 text-[10px] text-slate-500">
+                      <p className="border-t border-slate-100 pt-2 text-xs leading-5 text-slate-600">
                         {finalV != null ? `قیمت فعلی فروشگاه: ${formatPrice(finalV)} تومان. پیش‌نمایش سود پس از دریافت مبنای مجاز نمایش داده می‌شود.` : 'قیمت تنوع هنوز اعلام نشده است.'}
                       </p>
                     )}
@@ -507,65 +485,53 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
                 );
               })}
               {allVariantsHidden && (
-                <p role="alert" className="rounded-xl bg-amber-50 border border-amber-200 p-2.5 text-[11px] leading-5 text-amber-800">
+                <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
                   همه‌ی تنوع‌های این کالا در فروشگاهت خاموش شدند؛ کالا در فروشگاهت نمایش داده نمی‌شود.
                 </p>
               )}
               {!isCentralStore && !isMockMode() && defaultInput && (
-                <button type="button" disabled={variantSaving} onClick={() => setDefaultInput(null)} className="text-[10px] font-bold text-slate-500 underline underline-offset-2">حذف پیش‌فرض فروشگاه (بازگشت به پیش‌فرض کالا)</button>
+                <button type="button" disabled={variantSaving} onClick={() => setDefaultInput(null)} className={secondaryAction}>بازگشت به تنوع پیش‌فرض کالا</button>
               )}
-              <button
-                type="button"
-                disabled={isLocked || variantSaving}
-                onClick={handleSaveVariantMargins}
-                className="w-full py-2 bg-slate-700 hover:bg-slate-800 text-white font-bold text-xs rounded-xl disabled:opacity-50"
-              >
-                {variantSaving ? 'در حال ذخیره…' : 'ذخیره تنظیمات تنوع‌ها'}
-              </button>
             </div>
           )}
 
           {/* Section 3.2: Percent-only profit input (single-variant / plain products only) */}
           {showPlainPricing && (
-          <div>
-
-            <div className={`relative flex items-center rounded-xl px-3 py-2 border transition-all ${
-              !previewValid
-                ? 'bg-rose-50/50 border-rose-300 ring-1 ring-rose-200'
-                : 'bg-slate-50 border-slate-200 focus-within:bg-white focus-within:border-blue-500'
-            }`}>
+          <div className="space-y-1.5">
+            <label htmlFor="seller-product-margin" className="block font-bold text-slate-800">درصد سود این کالا</label>
+            <div className={`flex min-h-11 items-center gap-2 rounded-xl border px-3 focus-within:ring-2 focus-within:ring-brand ${
+              previewValid ? 'border-slate-200 bg-slate-50' : 'border-rose-300 bg-rose-50'}`}>
               <input
+                id="seller-product-margin"
+                aria-describedby={previewValid ? 'seller-product-margin-range' : 'seller-product-margin-error'}
+                aria-invalid={!previewValid}
                 type="number"
+                inputMode="decimal"
+                step="any"
                 min={minAllowed}
                 disabled={isLocked}
                 value={profitVal}
                 onChange={(e) => setProfitVal(e.target.value)}
-                placeholder={`خودکار: حداکثر مجاز (${toPersianDigits(maxAllowed)}٪)`}
-                className="w-full bg-transparent text-xs font-bold text-emerald-600 font-mono focus:outline-hidden"
+                placeholder={toPersianDigits(maxAllowed)}
+                className="min-h-11 min-w-0 flex-1 bg-transparent font-bold tabular-nums text-slate-800 focus:outline-hidden"
               />
-              <span className="text-[10px] text-slate-400 font-bold mr-1 shrink-0">
-                درصد سود این کالا
-              </span>
+              <span aria-hidden="true" className="shrink-0 font-bold text-slate-600">٪</span>
             </div>
 
-            <p className="mt-1 text-[10px] leading-5 text-slate-500">
-              بازه مجاز سود در پلتفرم: {rangeText}
+            <p id="seller-product-margin-range" className="text-sm leading-6 text-slate-600">
+              بازه مجاز سود {rangeText} است.
             </p>
             {profitVal === '' && (
-              <p className="mt-1 text-[10px] leading-5 text-slate-500">
-                این کالا درصد جداگانه ندارد؛ حداکثر سود مجاز به‌صورت خودکار اعمال می‌شود. برای سود دلخواه، درصد را همین‌جا بنویس و ذخیره کن.
+              <p className="text-sm leading-6 text-slate-600">
+                اگر این فیلد را خالی بگذاری، حداکثر سود مجاز به‌صورت خودکار اعمال می‌شود.
               </p>
             )}
             {/* Requirement 1: Real-time validation warning */}
             {!isProfitValid && profitVal !== '' && (
-              <div className="flex items-center gap-1 text-[10px] text-rose-600 mt-1">
-                <AlertTriangle className="w-3 h-3 shrink-0"  strokeWidth={1.5}/>
-                <span>
-                  {!isNaN(numVal) && numVal > maxAllowed
-                    ? `حداکثر درصد سود مجاز ${toPersianDigits(maxAllowed)}٪ است.`
-                    : `سود منفی مجاز نیست؛ حداقل درصد سود مصوب پلتفرم ${toPersianDigits(minAllowed)}٪ است.`}
-                </span>
-              </div>
+              <p id="seller-product-margin-error" className="flex items-start gap-2 text-sm leading-6 text-rose-800">
+                <AlertTriangle aria-hidden="true" className="mt-1 size-4 shrink-0" strokeWidth={1.75} />
+                درصد سود باید {rangeText} باشد.
+              </p>
             )}
           </div>
 
@@ -573,162 +539,134 @@ const SellerProductPricingModalContent: React.FC<ModalContentProps> = ({ product
 
           {/* Section 3.3.b: Niche Bulk Checkbox (plain products only) */}
           {showPlainPricing && (<>
-          <div className="p-2.5 bg-blue-50/50 border border-blue-100 rounded-xl flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-blue-600 shrink-0"  strokeWidth={1.5}/>
-              <div>
-                <span className="text-[11px] font-bold text-slate-800 block">
+          <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-xl border border-brand-border bg-brand-bg p-3 focus-within:ring-2 focus-within:ring-brand">
+            <span className="flex min-w-0 items-start gap-2">
+              <Layers aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-brand-deep" strokeWidth={1.75} />
+              <span>
+                <span className="block font-bold text-slate-800">
                   اعمال روی کالاهای سادهٔ نیچ «{productNiche.title}»
                 </span>
-                <span className="text-[9px] text-slate-500">
-                  شامل {toPersianDigits(nicheProducts.length)} کالا در این نیچ (نیازمند تایید دومرحله‌ای)
+                <span className="block text-xs leading-6 text-slate-600">
+                  {toPersianDigits(nicheProducts.length)} کالا برای بازبینی در مرحله بعد
                 </span>
-              </div>
-            </div>
+              </span>
+            </span>
             <input
               type="checkbox"
               disabled={isLocked}
               checked={applyToNiche}
               onChange={(e) => setApplyToNiche(e.target.checked)}
-              className="w-4 h-4 accent-blue-600 cursor-pointer"
+              className="size-4 shrink-0 accent-brand-deep"
             />
-          </div>
+          </label>
 
           </>)}
 
           {variantCount > 0 && variantSummary ? (
-            <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1">
+            <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
               {variantSettingsReady && (
-                <p className="text-[10px] text-emerald-800 font-bold">تنوع‌های فعال در فروشگاهت: {toPersianDigits(visibleVariantCount)} از {toPersianDigits(variantCount)}{defaultSaved ? ` · پیش‌فرض: ${pricingVariants.find((v) => v.id === defaultSaved)?.variantName || pricingVariants.find((v) => v.id === defaultSaved)?.name || ''}` : ''}</p>
+                <p className="text-xs leading-6 text-emerald-900">تنوع‌های فعال در فروشگاهت: {toPersianDigits(visibleVariantCount)} از {toPersianDigits(variantCount)}{defaultSaved ? ` · پیش‌فرض: ${pricingVariants.find((v) => v.id === defaultSaved)?.variantName || pricingVariants.find((v) => v.id === defaultSaved)?.name || ''}` : ''}</p>
               )}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-emerald-800 font-bold">{variantSummary.hasCosts ? 'قیمت نهایی تنوع‌ها (رند ۱۰۰ ت):' : 'قیمت فعلی تنوع‌ها در فروشگاه:'}</span>
-                <span className="text-base font-black text-emerald-800 font-mono">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <span className="font-bold text-emerald-900">{variantSummary.hasCosts ? 'قیمت فروش تنوع‌ها' : 'قیمت فعلی تنوع‌ها در فروشگاه'}</span>
+                <span className="text-base font-extrabold tabular-nums text-emerald-900">
                   {variantSummary.minFinal === variantSummary.maxFinal
                     ? `${formatPrice(variantSummary.minFinal)} تومان`
                     : `از ${formatPrice(variantSummary.minFinal)} تومان`}
                 </span>
               </div>
-              {variantSummary.hasCosts && <div className="flex items-center justify-between text-[10px] text-emerald-700 pt-1 border-t border-emerald-200/60">
-                <span>سود شما در هر فروش: <strong className="font-mono">+{formatPrice(variantSummary.minProfit)} ت{variantSummary.maxProfit !== variantSummary.minProfit ? ' به بالا' : ''}</strong></span>
-                <span>حاشیه سود: {variantSummary.minPct === variantSummary.maxPct ? `٪${toPersianDigits(variantSummary.minPct)}` : `٪${toPersianDigits(variantSummary.minPct)} تا ٪${toPersianDigits(variantSummary.maxPct)}`}</span>
+              {variantSummary.hasCosts && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-emerald-200 pt-2 text-xs leading-5 text-emerald-900">
+                <span>سود تو از هر فروش <strong className="tabular-nums">{formatPrice(variantSummary.minProfit)} تومان{variantSummary.maxProfit !== variantSummary.minProfit ? ' به بالا' : ''}</strong></span>
+                <span>حاشیه سود {variantSummary.minPct === variantSummary.maxPct ? `${toPersianDigits(variantSummary.minPct)}٪` : `${toPersianDigits(variantSummary.minPct)}٪ تا ${toPersianDigits(variantSummary.maxPct)}٪`}</span>
               </div>}
             </div>
           ) : isVariantProduct ? (
-            <p className="text-xs text-slate-500">قیمت تنوع‌ها هنوز اعلام نشده است.</p>
+            <p className="text-sm text-slate-600">قیمت تنوع‌ها هنوز اعلام نشده است.</p>
           ) : !showPlainPricing ? null : baseUnknown ? (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
               {previewValid ? (
                 <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-slate-700 font-bold">{profitVal === '' ? 'سود خودکار (حداکثر مجاز):' : 'سود انتخابی شما:'}</span>
-                    <span className="text-base font-black text-slate-800 font-mono">`٪${toPersianDigits(fallbackPct)}`</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-slate-700">{profitVal === '' ? 'سود خودکار (حداکثر مجاز)' : 'سود انتخابی تو'}</span>
+                    <span className="text-base font-extrabold tabular-nums text-slate-800">{toPersianDigits(fallbackPct)}٪</span>
                   </div>
-                  <p className="text-[10px] leading-5 text-slate-600">قیمت نهایی را فعلاً نمی‌شود نشان داد، چون قیمت خرید کالا هنوز اعلام نشده است. وقتی اعلام شود، همین سودی که این‌جا می‌گذاری خودکار روی آن حساب می‌شود.</p>
+                  <p className="text-sm leading-6 text-slate-600">بعد از اعلام قیمت خرید، سودی که اینجا تعیین می‌کنی روی آن اعمال می‌شود.</p>
                 </>
               ) : (
-                <p className="text-[10px] leading-5 text-slate-600">مقدار سود معتبر وارد کنید تا ذخیره شود.</p>
+                <p className="text-sm leading-6 text-slate-600">برای ذخیره، درصد سود را در بازه مجاز وارد کن.</p>
               )}
             </div>
           ) : (
-          <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-emerald-800 font-bold">قیمت نهایی مصرف‌کننده (رند ۱۰۰ ت):</span>
-              <span className="text-base font-black text-emerald-800 font-mono">{formatPrice(finalPriceP)} تومان</span>
+          <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold text-emerald-900">قیمت فروش به مشتری</span>
+              <span className="text-base font-extrabold tabular-nums text-emerald-900">{formatPrice(finalPriceP)} تومان</span>
             </div>
-            <div className="flex items-center justify-between text-[10px] text-emerald-700 pt-1 border-t border-emerald-200/60">
-              <span>سود خالص شما در هر فروش: <strong className="font-mono">+{formatPrice(netProfitToman)} ت</strong></span>
-              <span>حاشیه سود: ٪{toPersianDigits(effectiveMarginPercent)}</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-200 pt-2 text-xs leading-5 text-emerald-900">
+              <span>سود تو از هر فروش <strong className="tabular-nums">{formatPrice(netProfitToman)} تومان</strong></span>
+              <span>حاشیه سود {toPersianDigits(effectiveMarginPercent)}٪</span>
             </div>
           </div>
 
           )}
-          {!showPlainPricing ? (
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl"
-            >
-              بستن
+          <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+            <button type="button" onClick={onClose} disabled={variantSaving} className={secondaryAction}>
+              {showPlainPricing ? 'انصراف' : 'بستن'}
             </button>
-          ) : (
-          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={onClose}
-              className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl"
-            >
-              انصراف
-            </button>
-            <button
-              type="submit"
-              disabled={!previewValid || isLocked}
-              className="py-2.5 bg-[#007dfa] hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-xs disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              {applyToNiche ? 'مرحله بعد: بازبینی و تایید' : 'ذخیره و اعمال در ویترین'}
-            </button>
+            {showPlainPricing && <button type="submit" disabled={!previewValid || isLocked} className={primaryAction}>
+              {applyToNiche ? 'بازبینی و تأیید' : 'ذخیره و اعمال در ویترین'}
+            </button>}
+            {variantCount > 0 && <button type="submit" disabled={isLocked || variantSaving} className={primaryAction}>
+              {variantSaving ? 'در حال ذخیره…' : 'ذخیره تنظیمات تنوع‌ها'}
+            </button>}
           </div>
-          )}
         </form>
 
         {/* Requirement 3: Two-Step Confirmation Modal for Bulk Niche Pricing */}
         {showPlainPricing && showNicheConfirmModal && (
-          <div className="fixed inset-0 z-60 flex items-center justify-center p-3 bg-slate-900/70 backdrop-blur-xs select-none">
-            <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-amber-200 space-y-3 text-xs max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain">
-              <div className="flex items-center gap-2 text-amber-600 border-b border-slate-100 pb-2">
-                <AlertTriangle className="w-5 h-5 shrink-0"  strokeWidth={1.5}/>
-                <h4 className="font-bold text-slate-900">این سود روی کالاهای ساده این نیچ اعمال شود؟</h4>
-              </div>
-
-              <div className="space-y-2 text-slate-600 text-[11px] leading-relaxed">
+          <SupplierDialog titleId="seller-niche-profit-title" onDismiss={() => setShowNicheConfirmModal(false)}>
+              <SupplierDialogHeading id="seller-niche-profit-title" title="بازبینی سود گروهی" onClose={() => setShowNicheConfirmModal(false)} />
+              <div className="space-y-3 text-sm leading-6 text-slate-600">
                 <p>
-                  شما در حال اعمال نرخ سود{' '}
-                  <strong className="text-blue-700 font-bold">
-                    `${toPersianDigits(numVal)}٪`
-                  </strong>{' '}
-                  روی کالاهای ساده در نیچ تخصصی <strong className="text-slate-900">«{productNiche.title}»</strong> هستید.
+                  نرخ سود <strong className="text-brand-deep">{toPersianDigits(numVal)}٪</strong> روی کالاهای سادهٔ موضوع <strong className="text-slate-900">«{productNiche.title}»</strong> اعمال می‌شود.
                 </p>
 
-                <div className="p-2.5 bg-amber-50/70 border border-amber-200/80 rounded-xl space-y-1">
-                  <span className="font-bold text-amber-900 block text-[10px]">
-                    کالاهای تحت تأثیر ({toPersianDigits(nicheProducts.length)} محصول):
-                  </span>
-                  <div className="max-h-28 overflow-y-auto no-scrollbar space-y-1 pt-1">
+                <div className="space-y-2 rounded-xl border border-brand-border bg-brand-bg p-3">
+                  <p className="font-bold text-[#261b41]">کالاهای این موضوع ({toPersianDigits(nicheProducts.length)} کالا)</p>
+                  <ul className="max-h-36 divide-y divide-brand-border overflow-y-auto">
                     {nicheProducts.map((p) => (
-                      <div key={p.id} className="flex justify-between text-[10px] border-b border-amber-200/40 pb-0.5">
-                        <span className="truncate max-w-[190px]">{p.title}</span>
-                        <span className="text-slate-500 font-mono shrink-0">مبنا: {formatPrice(resolveBaseCostR(p, platformSettings))} ت</span>
-                      </div>
+                      <li key={p.id} className="flex flex-wrap justify-between gap-x-2 py-1.5 text-xs leading-5">
+                        <span className="min-w-0 break-words">{p.title}</span>
+                        <span className="tabular-nums text-slate-600">قیمت پایه {formatPrice(resolveBaseCostR(p, platformSettings))} تومان</span>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 </div>
 
-                <p className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-[10px] leading-5 text-slate-600">
-                  <strong>دقت کن:</strong> این نرخ برای کالاهای ساده‌ای است که سود جداگانه ندارند؛ سودهای جداگانه سر جایشان می‌مانند و هر وقت خواستی می‌توانی سود هر کالا را جداگانه عوض کنی.
+                <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+                  این نرخ فقط برای کالاهای ساده‌ای اعمال می‌شود که سود جداگانه ندارند.
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
+              <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3 text-sm">
                 <button
                   type="button"
                   onClick={() => setShowNicheConfirmModal(false)}
-                  className="py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl"
+                  className={secondaryAction}
                 >
                   انصراف و بازگشت
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmNicheBulkApply}
-                  className="py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs"
+                  className={primaryAction}
                 >
                   تأیید نهایی و اعمال گروهی
                 </button>
               </div>
-            </div>
-          </div>
+          </SupplierDialog>
         )}
-      </motion.div>
-    </div>
+    </SupplierDialog>
   );
 };
 

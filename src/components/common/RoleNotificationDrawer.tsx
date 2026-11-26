@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { SupplierDialog } from '../supplier/SupplierDialog';
 import type { NotificationsResponse, OutboxNotification, RoleNotificationsApi } from '../../services/notificationsApi';
 import { Bell, Check, CheckCheck, Package, Sparkles, Truck, Wallet, X } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -93,6 +94,7 @@ interface Props {
   accent?: Accent;
   api: RoleNotificationsApi;
   onUnreadCountChange?: (count: number) => void;
+  panelDialogId?: string;
   // Optional section rendered above the outbox list (the admin
   // drawer uses it for the overview alert counts, which stay one
   // tap away from the bell). Rendered only when provided.
@@ -114,6 +116,7 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
   accent = 'brand',
   api,
   onUnreadCountChange,
+  panelDialogId,
   extraContent,
   initialNotifications,
   initialTab,
@@ -183,22 +186,15 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
     onUnreadCountChange?.(countUnreadOutboxNotifications(next));
   };
 
-  return (
-    <div className="fixed inset-0 z-[100] overflow-hidden bg-slate-900/60 backdrop-blur-xs flex justify-center" dir="rtl">
-      <motion.div
-        initial={{ y: '100%' }}
-        animate={{ y: 0 }}
-        exit={{ y: '100%' }}
-        transition={{ type: 'spring', damping: 28, stiffness: 240 }}
-        className="w-full max-w-[504px] bg-white h-full shadow-2xl flex flex-col justify-between"
-      >
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+  const content = (
+    <>
+        <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 ${panelDialogId ? 'pb-3' : 'p-4'}`}>
           <div className="flex items-center gap-2">
             <div className={`w-8 h-8 rounded-xl ${accentClasses.iconWrap} flex items-center justify-center`}>
               <Bell className="w-4 h-4" strokeWidth={1.5} />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-900">{title}</h3>
+              <h3 id={panelDialogId} className={`font-bold text-slate-900 ${panelDialogId ? 'text-base' : 'text-xs'}`}>{title}</h3>
               <span className="text-[10px] text-slate-400 block">
                 {unreadCount > 0 ? `${toPersianDigits(unreadCount)} اعلان جدید خوانده‌نشده` : 'تمام اعلان‌ها خوانده شده است'}
               </span>
@@ -209,7 +205,7 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
             {unreadCount > 0 && (
               <button
                 onClick={() => void handleMarkAllRead()}
-                className="text-[10px] text-brand-deep font-bold hover:underline flex items-center gap-1"
+                className={`flex items-center gap-1 font-bold text-brand-deep hover:underline ${panelDialogId ? 'min-h-11 rounded-lg px-2 text-xs focus-visible:outline-2 focus-visible:outline-brand' : 'text-[10px]'}`}
               >
                 <CheckCheck className="w-3.5 h-3.5" strokeWidth={1.5} />
                 <span>خواندن همه</span>
@@ -217,7 +213,7 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
             )}
             <button
               onClick={onClose}
-              className="p-1 rounded-lg text-slate-400 hover:bg-slate-100"
+              className={`rounded-lg hover:bg-slate-100 ${panelDialogId ? 'grid size-11 place-items-center border border-slate-200 text-slate-700 focus-visible:outline-2 focus-visible:outline-brand' : 'p-1 text-slate-400'}`}
               aria-label="بستن اعلان‌ها"
             >
               <X className="w-4 h-4" strokeWidth={1.5} />
@@ -225,19 +221,21 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
           </div>
         </div>
 
-        <div className="px-4 pt-3 flex items-center gap-2 border-b border-slate-100" role="tablist" aria-label="دسته‌بندی اعلان‌ها">
+        <div className={`flex flex-wrap items-center gap-2 border-b border-slate-100 ${panelDialogId ? 'py-2' : 'px-4 pt-3'}`}
+          role={panelDialogId ? 'group' : 'tablist'} aria-label="دسته‌بندی اعلان‌ها">
           {(['all', 'unread', 'read'] as NotificationTab[]).map((t) => {
             const active = tab === t;
             return (
               <button
                 key={t}
                 type="button"
-                role="tab"
-                aria-selected={active}
+                role={panelDialogId ? undefined : 'tab'}
+                aria-pressed={panelDialogId ? active : undefined}
+                aria-selected={panelDialogId ? undefined : active}
                 onClick={() => setTab(t)}
-                className={`pb-2 text-[11px] font-bold border-b-2 transition-colors ${
-                  active ? 'text-brand-deep border-brand-deep' : 'text-slate-400 border-transparent hover:text-slate-600'
-                }`}
+                className={panelDialogId
+                  ? `min-h-11 rounded-lg px-2.5 text-xs font-bold focus-visible:outline-2 focus-visible:outline-brand ${active ? 'bg-brand-soft text-brand-deep' : 'text-slate-700 hover:bg-slate-100'}`
+                  : `border-b-2 pb-2 text-[11px] font-bold transition-colors ${active ? 'border-brand-deep text-brand-deep' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
               >
                 {`${NOTIFICATION_TAB_LABELS[t]} ${toPersianDigits(tabCounts[t])}`}
               </button>
@@ -245,13 +243,13 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
           })}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
+        <div className={`space-y-2.5 ${panelDialogId ? 'pt-3' : 'flex-1 overflow-y-auto p-3.5'}`}>
           {extraContent}
           {loading ? (
-            <p className="text-xs text-slate-400 text-center py-8">در حال دریافت اعلان‌ها…</p>
+            <p role="status" className="py-8 text-center text-xs text-slate-600">در حال دریافت اعلان‌ها…</p>
           ) : loadError ? (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-center space-y-2">
-              <p className="text-xs font-bold text-rose-700">{loadError}</p>
+              <p role="alert" className="text-xs font-bold text-rose-700">{loadError}</p>
               <button
                 type="button"
                 onClick={() => {
@@ -309,7 +307,7 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
                         type="button"
                         aria-label={`خوانده شد: ${item.title}`}
                         onClick={(e) => { e.stopPropagation(); handleMarkOneRead(item); }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[28px] rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                        className={`inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-brand ${panelDialogId ? 'min-h-11' : 'min-h-[28px]'}`}
                       >
                         <Check className="w-3.5 h-3.5" strokeWidth={2} />
                         <span>خوانده شد</span>
@@ -322,14 +320,24 @@ export const RoleNotificationDrawer: React.FC<Props> = ({
           )}
         </div>
 
-        <div className="p-3 border-t border-slate-100 bg-slate-50">
+        {!panelDialogId && <div className="p-3 border-t border-slate-100 bg-slate-50">
           <button
             onClick={onClose}
             className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors"
           >
             بستن اعلان‌ها
           </button>
-        </div>
+        </div>}
+    </>
+  );
+
+  if (panelDialogId) return <SupplierDialog titleId={panelDialogId} onDismiss={onClose}>{content}</SupplierDialog>;
+  return (
+    <div className="fixed inset-0 z-[100] overflow-hidden bg-slate-900/60 backdrop-blur-xs flex justify-center" dir="rtl">
+      <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 28, stiffness: 240 }}
+        className="w-full max-w-[504px] bg-white h-full shadow-2xl flex flex-col justify-between">
+        {content}
       </motion.div>
     </div>
   );

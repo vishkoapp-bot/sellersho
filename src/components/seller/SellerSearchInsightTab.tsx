@@ -1,30 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Check, ChevronDown, Plus, Search } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { apiRequest } from '../../services/apiClient';
-import { Search, Plus, Check, RotateCcw } from 'lucide-react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
 
-// Live parity (SellerDashboardView-MERGED.js, component _n, ~bytes 282100-288000;
-// API index-MERGED.js: GET /seller/search-insight?store_id=<storeId>).
-// Live's response shape is {topSearches, unmetInStore, unmetCatalog} — NOT
-// the candidate's {searches, zeroResultSearches, terms[]} shape, so this tab
-// reads the live shape directly. Live has NO time ranges or filters here:
-// three fixed sections. Unmet-in-store rows offer a quick-add into the
-// showcase (activeProductIds, defaulting to the first 8 products when the
-// store has no explicit showcase yet).
 interface InsightTerm {
   term: string;
   searches: number;
   zeroResultSearches: number;
 }
 
-interface CatalogMatch {
-  productId: string;
-  title: string;
-  imageUrl?: string;
-}
-
 interface UnmetTerm extends InsightTerm {
-  catalogMatches: CatalogMatch[];
+  catalogMatches: { productId: string; title: string; imageUrl?: string }[];
 }
 
 interface LiveSearchInsight {
@@ -33,172 +21,103 @@ interface LiveSearchInsight {
   unmetCatalog: InsightTerm[];
 }
 
-export const SellerSearchInsightTab: React.FC = () => {
-  const { currentStore, products, updateStoreActiveProducts, toPersianDigits } = useStore();
-  const [data, setData] = useState<LiveSearchInsight | null>(null);
-  const [failed, setFailed] = useState(false);
+function SearchCounts({ term }: { term: InsightTerm }) {
+  const { toPersianDigits } = useStore();
+  return <span className="text-xs leading-6 text-slate-600">{toPersianDigits(term.searches)} جست‌وجو · {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>;
+}
+
+function SearchDetails({ title, terms, empty }: { title: string; terms: InsightTerm[]; empty: string }) {
+  return (
+    <details className="group rounded-2xl border border-slate-200 bg-white px-4 py-1">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-bold text-slate-900 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+        {title}<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-slate-500 group-open:rotate-180" />
+      </summary>
+      {terms.length ? (
+        <ul className="divide-y divide-slate-100 border-t border-slate-100 pb-2">
+          {terms.map(term => (
+            <li key={term.term} className="flex flex-wrap items-center justify-between gap-x-3 py-2">
+              <bdi className="min-w-0 break-words text-sm font-bold text-slate-800">{term.term}</bdi>
+              <SearchCounts term={term} />
+            </li>
+          ))}
+        </ul>
+      ) : <p className="pb-3 text-sm text-slate-600">{empty}</p>}
+    </details>
+  );
+}
+
+export function SellerSearchInsightTab() {
+  const { currentStore, products, updateStoreActiveProducts } = useStore();
+  const [data, setData] = useState<LiveSearchInsight>();
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [added, setAdded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    let cancelled = false;
-    const storeId = currentStore?.id;
-    if (!storeId) { setFailed(true); return; }
-    apiRequest<LiveSearchInsight>(`/seller/search-insight?store_id=${encodeURIComponent(storeId)}`, { method: 'GET', auth: true })
-      .then((res) => { if (!cancelled) setData(res); })
-      .catch(() => { if (!cancelled) setFailed(true); });
-    return () => { cancelled = true; };
-  }, [currentStore?.id]);
+    const request = new AbortController();
+    const id = currentStore?.id;
+    setData(undefined);
+    setError('');
+    if (!id) {
+      setError('ابتدا یک فروشگاه انتخاب کن.');
+      return;
+    }
+    apiRequest<LiveSearchInsight>(`/seller/search-insight?store_id=${encodeURIComponent(id)}`, { auth: true, signal: request.signal })
+      .then(result => { if (!request.signal.aborted) setData(result); })
+      .catch(() => { if (!request.signal.aborted) setError('گزارش جست‌وجوی مشتریان دریافت نشد.'); });
+    return () => request.abort();
+  }, [currentStore?.id, attempt]);
 
-  const showcaseIds = (currentStore?.activeProductIds?.length ? currentStore.activeProductIds : products.slice(0, 8).map((p) => p.id));
-  const isInShowcase = (productId: string) => showcaseIds.includes(productId) || added.has(productId);
-  const handleQuickAdd = (productId: string) => {
-    if (isInShowcase(productId)) return;
-    const next = Array.from(new Set([...showcaseIds, ...Array.from(added), productId]));
-    updateStoreActiveProducts(next);
-    setAdded((prev) => new Set(prev).add(productId));
-  };
-
-  if (failed) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-        <p className="text-xs font-bold text-slate-700 mb-1">بارگذاری اینسایت جستجو انجام نشد</p>
-        <p className="text-[11px] text-slate-400 mb-4">اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</p>
-        <button type="button" onClick={() => window.location.reload()} className="inline-flex items-center gap-1.5 rounded-xl bg-brand-deep px-4 py-2 text-xs font-bold text-white hover:bg-brand">
-          <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-          تلاش دوباره
-        </button>
-      </div>
-    );
-  }
-  if (!data) {
-    return (
-      <div className="space-y-3 pb-6 animate-pulse" aria-label="در حال بارگذاری اینسایت جستجو">
-        <div className="bg-white rounded-2xl border border-slate-100 h-32" />
-        <div className="bg-white rounded-2xl border border-slate-100 h-32" />
-      </div>
-    );
-  }
-
-  const topSearches = data.topSearches ?? [];
-  const unmetInStore = data.unmetInStore ?? [];
-  const unmetCatalog = data.unmetCatalog ?? [];
-  const hasAny = topSearches.length > 0 || unmetInStore.length > 0 || unmetCatalog.length > 0;
-  if (!hasAny) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-brand-soft border border-brand-border flex items-center justify-center mx-auto mb-4">
-          <Search className="w-7 h-7 text-brand" strokeWidth={1.5} />
-        </div>
-        <p className="text-sm font-extrabold text-slate-800 mb-1.5">هنوز داده‌ای جمع نشده است</p>
-        <p className="text-[11px] leading-6 text-slate-400 max-w-[280px] mx-auto">هنوز داده‌ای جمع نشده است؛ ثبت جستجوها از امروز شروع شده و این بخش با جستجوی مشتری‌ها پر می‌شود.</p>
-      </div>
-    );
-  }
-
+  const showcaseIds = currentStore.activeProductIds?.length ? currentStore.activeProductIds : products.slice(0, 8).map(product => product.id);
+  const topSearches = data?.topSearches ?? [];
+  const unmetInStore = data?.unmetInStore ?? [];
+  const unmetCatalog = data?.unmetCatalog ?? [];
+  const hasData = topSearches.length > 0 || unmetInStore.length > 0 || unmetCatalog.length > 0;
   return (
-    <div className="space-y-3 pb-6">
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-3">جستجوهای پرتکرار فروشگاهت</h3>
-        {topSearches.length === 0 ? (
-          <p className="text-[11px] text-slate-400 text-center py-4">هنوز جستجوی پرتکراری ثبت نشده است.</p>
-        ) : (
-          <div className="overflow-x-auto -mx-4 px-4">
-            <table className="w-full min-w-[420px] text-[11px]">
-              <thead>
-                <tr className="text-slate-400 text-right border-b border-slate-100">
-                  <th className="py-2 pl-2 font-bold">عبارت</th>
-                  <th className="py-2 pl-2 font-bold">تعداد جستجو</th>
-                  <th className="py-2 font-bold">بی‌نتیجه</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {topSearches.map((term) => (
-                  <tr key={term.term}>
-                    <td className="py-2.5 pl-2 font-bold text-slate-800">{term.term}</td>
-                    <td className="py-2.5 pl-2 text-slate-600">{toPersianDigits(term.searches)}</td>
-                    <td className="py-2.5 text-slate-600">{toPersianDigits(term.zeroResultSearches)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-1">تقاضایی که فروشگاهت جواب نداده</h3>
-        <p className="text-[10px] text-slate-400 mb-3">مشتری‌ها این‌ها را در فروشگاهت جستجو کرده‌اند و چیزی پیدا نکرده‌اند. اگر محصولی در کاتالوگ هست، می‌توانی همان‌جا به فروشگاهت اضافه‌اش کنی.</p>
-        {unmetInStore.length === 0 ? (
-          <p className="text-[11px] text-slate-400 text-center py-4">تقاضای برآورده‌نشده‌ای ثبت نشده است.</p>
-        ) : (
-          <div className="space-y-3">
-            {unmetInStore.map((term) => (
-              <div key={term.term} className="rounded-xl border border-slate-100 p-3">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-[11px] font-bold text-slate-800">{term.term}</span>
-                  <span className="text-[10px] text-slate-400 shrink-0">{toPersianDigits(term.searches)} جستجو • {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>
-                </div>
-                {(term.catalogMatches ?? []).length === 0 ? (
-                  <p className="text-[10px] text-slate-400">در کل کاتالوگ هم محصولی برای این عبارت نیست.</p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {(term.catalogMatches ?? []).map((match) => {
-                      const inStore = isInShowcase(match.productId);
-                      return (
-                        <div key={match.productId} className="flex items-center gap-2 rounded-xl bg-slate-50 p-2">
-                          {match.imageUrl ? (
-                            <img src={match.imageUrl} alt={match.title} className="w-10 h-10 rounded-lg object-contain bg-white border border-slate-100 p-0.5 shrink-0" />
-                          ) : (
-                            <div className="w-10 h-10 rounded-lg bg-white border border-slate-100 flex items-center justify-center shrink-0">
-                              <Search className="w-4 h-4 text-slate-300" strokeWidth={1.5} />
-                            </div>
-                          )}
-                          <span className="flex-1 min-w-0 text-[11px] font-bold text-slate-700 truncate">{match.title}</span>
-                          <button
-                            type="button"
-                            disabled={inStore}
-                            onClick={() => handleQuickAdd(match.productId)}
-                            className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[10px] font-bold ${inStore ? 'bg-emerald-50 text-emerald-600 cursor-default' : 'bg-brand-deep text-white hover:bg-brand'}`}
-                          >
-                            {inStore ? (
-                              <>
-                                <Check className="w-3 h-3" strokeWidth={1.5} />
-                                در فروشگاهت هست
-                              </>
-                            ) : (
-                              <>
-                                <Plus className="w-3 h-3" strokeWidth={1.5} />
-                                افزودن به فروشگاه
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      );
-                    })}
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="جست‌وجوی مشتریان" description="ببین مشتری‌ها چه کالاهایی می‌خواهند و موارد مرتبط را به ویترین اضافه کن." icon={<Search />} />
+      <SupplierResourceState loading={!data && !error} error={error} retry={() => setAttempt(value => value + 1)} />
+      {data && (hasData ? <>
+        <section aria-labelledby="seller-unmet-searches" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+          <h3 id="seller-unmet-searches" className="text-base font-extrabold text-slate-900">جست‌وجوهای بی‌نتیجه در فروشگاه</h3>
+          {unmetInStore.length ? (
+            <ul className="space-y-2">
+              {unmetInStore.map(term => (
+                <li key={term.term} className="rounded-xl border border-slate-200 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3">
+                    <bdi className="min-w-0 break-words text-sm font-bold text-slate-900">{term.term}</bdi>
+                    <SearchCounts term={term} />
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="bg-white rounded-2xl border border-slate-100 p-4">
-        <h3 className="text-xs font-extrabold text-slate-800 mb-1">در فروشگاه مرکزی هم پیدا نشده</h3>
-        <p className="text-[10px] text-slate-400 mb-3">این عبارت‌ها در فروشگاه مرکزی هم بی‌نتیجه مانده‌اند؛ فقط برای اطلاع توست.</p>
-        {unmetCatalog.length === 0 ? (
-          <p className="text-[11px] text-slate-400 text-center py-4">موردی ثبت نشده است.</p>
-        ) : (
-          <ul className="divide-y divide-slate-50">
-            {unmetCatalog.map((term) => (
-              <li key={term.term} className="py-2 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold text-slate-700">{term.term}</span>
-                <span className="text-[10px] text-slate-400">{toPersianDigits(term.searches)} جستجو • {toPersianDigits(term.zeroResultSearches)} بی‌نتیجه</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                  {(term.catalogMatches ?? []).length ? (
+                    <ul className="mt-2 grid gap-2 xl:grid-cols-2">
+                      {term.catalogMatches.map(match => {
+                        const inStore = showcaseIds.includes(match.productId) || added.has(match.productId);
+                        return <li key={match.productId} className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2">
+                          {match.imageUrl ? <img src={match.imageUrl} alt="" width={40} height={40} loading="lazy" className="size-10 shrink-0 rounded-lg bg-white object-contain" />
+                            : <Search aria-hidden="true" className="size-5 shrink-0 text-slate-500" />}
+                          <span className="min-w-0 flex-1 break-words text-sm font-bold text-slate-800">{match.title}</span>
+                          {inStore ? <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800"><Check aria-hidden="true" className="size-4" /> در ویترین</span>
+                            : <button type="button" aria-label={`افزودن ${match.title} به ویترین`}
+                              onClick={() => {
+                                const next = [...new Set([...showcaseIds, ...added, match.productId])];
+                                void updateStoreActiveProducts(next);
+                                setAdded(current => new Set([...current, match.productId]));
+                              }}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg bg-brand-deep px-3 text-xs font-bold text-white hover:bg-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                              <Plus aria-hidden="true" className="size-4" /> افزودن به ویترین
+                            </button>}
+                        </li>;
+                      })}
+                    </ul>
+                  ) : <p className="mt-1 text-xs leading-6 text-slate-600">کالای مرتبطی در کاتالوگ سلرشو پیدا نشد.</p>}
+                </li>
+              ))}
+            </ul>
+          ) : <p className="text-sm text-slate-600">جست‌وجوی بی‌نتیجه‌ای برای فروشگاه ثبت نشده است.</p>}
+        </section>
+        <SearchDetails title="عبارت‌های پرتکرار" terms={topSearches} empty="هنوز عبارت پرتکراری ثبت نشده است." />
+        <SearchDetails title="جست‌وجوهای بی‌نتیجه در فروشگاه مرکزی" terms={unmetCatalog} empty="موردی ثبت نشده است." />
+      </> : <SupplierEmptyState icon={<Search />} title="هنوز داده‌ای برای نمایش نیست." description="با اولین جست‌وجوهای مشتریان، گزارش این صفحه به‌روز می‌شود." />)}
     </div>
   );
-};
+}

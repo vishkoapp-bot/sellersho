@@ -60,7 +60,15 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
 const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه مرکزی', ownerType: 'central' as const };
-const seller = { id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper' as const, activeProductIds: products.map(product => product.id), templateId: 'tpl-electronic-1' } as Store & { activeProductIds: string[] };
+const seller = {
+  id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper',
+  activeProductIds: products.map(product => product.id), templateId: 'tpl-electronic-1',
+  signedContractVersion: routeParams.has('renew-contract') ? 1 : 2,
+  activePlanId: routeParams.has('multi-store') ? 'vip' : undefined,
+} as Store & { activeProductIds: string[] };
+const secondStore = routeParams.has('multi-store')
+  ? { ...seller, id: 'fixture-second-store', slug: 'second-store', name: 'فروشگاه دوم' }
+  : null;
 const drp33 = routeParams.get('drp33');
 const drp3132 = routeParams.get('drp3132');
 const variantProduct: ProductDto = {
@@ -197,8 +205,16 @@ HTMLElement.prototype.scrollIntoView = function (options) {
 };
 
 storeApi.getAllStores = async () => [central] as Awaited<ReturnType<typeof storeApi.getAllStores>>;
-storeApi.getOwnedStores = async () => hasSeller ? [drp3132 === null ? seller : { ...seller }] : [];
-storeApi.getStoreBySlug = async slug => [central, seller].find(store => store.slug === slug) as Awaited<ReturnType<typeof storeApi.getStoreBySlug>>;
+storeApi.getOwnedStores = async () => hasSeller
+  ? [drp3132 === null ? seller : { ...seller }, ...(secondStore ? [secondStore] : [])]
+  : [];
+storeApi.getStoreBySlug = async slug => [central, seller, secondStore].find(store => store?.slug === slug) as Awaited<ReturnType<typeof storeApi.getStoreBySlug>>;
+if (routeParams.has('renew-contract')) {
+  storeApi.saveStoreSettings = async (_slug, config) => {
+    seller.signedContractVersion = Number(config.signedContractVersion);
+    return seller;
+  };
+}
 storeApi.registerStore = async () => {
   fixture.registrations += 1;
   if (fixture.rejectRegistration) throw new ApiError(401, '{"error":"Unauthorized"}', null);

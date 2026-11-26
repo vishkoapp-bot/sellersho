@@ -24,6 +24,24 @@ test('wallet explicitly labels the local pending value if the breakdown read fai
   assert.doesNotMatch(text ?? '', /تفکیک موجودی کیف پول/);
 }));
 
+test('wallet opens pending orders by keyboard and restores focus when Escape closes the dialog', () => withPage('', async page => {
+  const summary = await page.evaluateHandle(() => Array.from(document.querySelectorAll('summary'))
+    .find(el => el.textContent?.trim() === 'جزئیات موجودی'));
+  assert.ok(summary.asElement(), 'the balance has a keyboard-accessible disclosure');
+  await summary.asElement()!.focus();
+  await page.keyboard.press('Enter');
+  const opener = await page.evaluateHandle(() => Array.from(document.querySelectorAll('details[open] button'))
+    .find(el => el.textContent?.includes('سود سفارش‌های در راه (برآورد محلی)')));
+  assert.ok(opener.asElement(), 'the pending-order breakdown has a keyboard-accessible control');
+  await opener.asElement()!.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('dialog[open]', { timeout: 2500 });
+  assert.match(await page.$eval('dialog[open]', dialog => dialog.textContent ?? ''), /سفارش‌هایی که سودشان هنوز آزاد نشده/);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('dialog[open]', { hidden: true, timeout: 2500 });
+  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /^سود سفارش‌های در راه \(برآورد محلی\)/);
+}));
+
 test('wallet hides the withdrawal form at 52,800 without a POST or native validation', () => withPage('', async page => {
   await page.waitForFunction(copy => document.body.textContent?.includes(copy), {}, unavailable);
   assert.match(await page.$eval('body', el => el.textContent ?? ''), /موجودی قابل برداشت شما ۵۲٬۸۰۰ تومان است\. حداقل مبلغ برداشت زودهنگام ۱٬۰۰۰٬۰۰۰ تومان است؛ برداشت زودهنگام فعلاً ممکن نیست\./);

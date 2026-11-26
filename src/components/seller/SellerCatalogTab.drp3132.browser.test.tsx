@@ -54,7 +54,7 @@ const withCatalog = (scenario: Scenario, run: (page: Page) => Promise<void>) =>
 const clickNiche = (page: Page, title: string) => clickText(page, title);
 const chipSelected = (page: Page, title: string) => page.evaluate(value =>
   [...document.querySelectorAll('button')].some(button =>
-    button.textContent?.trim() === value && button.className.includes('bg-blue-600')),
+    button.textContent?.trim() === value && button.getAttribute('aria-pressed') === 'true'),
   title);
 const waitForSettings = (page: Page, count: number) => page.waitForFunction((title, expected) => {
   const fixture = (window as FixtureWindow).batch8Fixture;
@@ -212,7 +212,7 @@ test('DRP-32 absent product is absent from both showcase searches', () =>
   withCatalog('picker', async page => {
     await waitShowcaseRow(page, headphone, false);
     await fillInput(page, nicheInput, 'هدفون');
-    await waitText(page, 'در نیچ‌هایی که انتخاب کردی، کالایی با این جستجو نیست.');
+    await waitText(page, 'کالایی پیدا نشد');
     await openExtras(page);
     await waitShowcaseRow(page, headphone, false);
     await searchExtras(page, 'هدفون');

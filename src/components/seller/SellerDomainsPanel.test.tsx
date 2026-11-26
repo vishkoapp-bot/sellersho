@@ -1,16 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDomainRows } from './SellerDomainsPanel';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { normalizeDomainRows, SellerDomainsPanel } from './SellerDomainsPanel';
 
 // Batch 1 (C6, H1): the domains panel fed the /seller/domains response
 // straight into setDomains and then called domains.filter(...) on
 // render. Any non-array payload threw on first mount and blanked the
 // whole app. The guard must normalise every shape to an array.
-// (The panel itself cannot be rendered in this harness — no jsdom —
-// so the exported normaliser is covered directly; the error boundary
-// is the second line of defence for any remaining mount throw.)
+// The normalizer covers API shapes independently of the registration view.
 
 const row = { domain: 'shop.example.com', storeId: 's-1', verificationToken: 'tok', status: 'active', approved: true };
+
+test('domain registration starts collapsed and supports keyboard form submission', () => {
+  const markup = renderToStaticMarkup(createElement(SellerDomainsPanel, { slug: 'demo', storeId: 's-1' }));
+  assert.match(markup, /<details(?![^>]*\bopen\b)[^>]*>\s*<summary\b/);
+  assert.match(markup, /<form\b[^>]*>.*<label\b[^>]*>.*<input\b[^>]*>.*<button type="submit"/s);
+});
 
 test('normalizeDomainRows passes a bare array through', () => {
   assert.deepEqual(normalizeDomainRows([row]), [row]);

@@ -1,24 +1,15 @@
-import { HelpExplainer } from '../common/HelpExplainer';
 import React, { useState } from 'react';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { validateStoreSlug } from '../../utils/validators';
 import { storeApi } from '../../services/storeApi';
 import { SellerDomainsPanel } from './SellerDomainsPanel';
 import { isMockMode } from '../../services/apiClient';
-import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, Server, ChevronDown } from 'lucide-react';
+import { Globe, Check, Save, Plus, Clock, CheckCircle2, XCircle, Copy, Loader2, Server, ChevronDown, Store } from 'lucide-react';
 
-// Live parity (SellerDashboardView-MERGED.js, component Ml, ~bytes 33800-48000):
-// informal second-person copy verbatim; tagline/shortDescription save at once
-// while name/slug changes go to admin approval; custom domains are a
-// collapsed "advanced" section whose requests go to platform-admin review
-// (POST /stores/:slug/change-requests kind=custom_domain, then a local
-// pending request) — live has NO automatic DNS verification flow.
-// The "contract" card live renders inside this tab is covered in the
-// candidate by the separate «قرارداد من» tab, so it is not duplicated here.
-// Live's Store carries addonSectionTitle; the candidate Store type does not
-// yet, so the field is read/written through a narrow cast (types owned
-// elsewhere) while the server save carries it for real.
+// Name and slug changes require approval. Storefront descriptions save directly.
+// The live domain panel uses the DNS API, and the mock flow simulates review locally.
 // G2 (Batch 4b): map a save failure to Persian copy. A 400 validation
 // failure (e.g. an over-long addon-section title) must never surface
 // the backend's raw English text; anything else keeps the generic
@@ -168,102 +159,125 @@ export const SellerStoreSetupTab: React.FC = () => {
   };
 
   return (
-    <form onSubmit={handleSave} className="space-y-3.5 pb-24">
-      {!isMockMode() && <SellerDomainsPanel slug={currentStore.slug} storeId={currentStore.id} />}
-      <HelpExplainer text="این‌جا اسم، آدرس و توضیح فروشگاهت را عوض می‌کنی. شعار و توضیح همان لحظه ذخیره می‌شوند؛ عوض‌کردن اسم و آدرس اول باید به تأیید مدیر پلتفرم برسد." />
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <h3 className="text-xs font-bold text-slate-800">اسم و آدرس فروشگاهت</h3>
+    <div className="space-y-4">
+      <SupplierSectionHeading title="مشخصات فروشگاه" description="نام، آدرس و توضیحی را تنظیم کن که مشتری در فروشگاه می‌بیند." icon={<Store />} />
+      <form onSubmit={handleSave} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <h3 className="text-base font-extrabold text-[#261b41]">اطلاعات ویترین</h3>
 
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[13px] font-bold text-slate-700">نام فروشگاهت</label>
-            {pendingNameRequest && (
-              <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                <Clock className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
-                <span>در انتظار تأیید مدیر: «{pendingNameRequest.requestedName}»</span>
-              </span>
-            )}
-          </div>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
-            required
-          />
-          <span className="text-[11px] text-slate-400 mt-1 block">
-            اگر اسم را عوض کنی، اول مدیر پلتفرم تأیید می‌کند و بعد اسم جدید روی فروشگاهت می‌نشیند.
-          </span>
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[13px] font-bold text-slate-700">آدرس فروشگاهت (فقط انگلیسی)</label>
-            {pendingSlugRequest && (
-              <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                <Clock className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
-                <span>در انتظار تأیید مدیر: «/{pendingSlugRequest.requestedSlug}»</span>
-              </span>
-            )}
-          </div>
-          <div className="flex items-center rounded-xl bg-slate-50 border border-slate-200 overflow-hidden px-2.5">
-            <span className="text-[10px] text-slate-400 font-mono" dir="ltr">sellershow.ir/store/</span>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div>
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-1">
+              <label htmlFor="seller-store-name" className="text-sm font-bold text-slate-700">نام فروشگاهت</label>
+              {pendingNameRequest && (
+                <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
+                  <span>در انتظار تأیید مدیر: «{pendingNameRequest.requestedName}»</span>
+                </span>
+              )}
+            </div>
             <input
+              id="seller-store-name"
+              aria-describedby="seller-store-name-hint"
               type="text"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              className="w-full text-[13px] p-3 bg-transparent font-mono text-left focus:outline-hidden"
-              dir="ltr"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
               required
             />
+            <span id="seller-store-name-hint" className="mt-1 block text-xs leading-5 text-slate-600">
+              نام جدید پس از تأیید مدیر در فروشگاه نمایش داده می‌شود.
+            </span>
           </div>
-          <span className="text-[11px] text-slate-400 mt-1 block">
-            مشتری‌ها با این آدرس وارد فروشگاهت می‌شوند. عوض‌کردنش نیاز به تأیید مدیر دارد، چون لینک‌های قبلی‌ات از کار می‌افتند.
-          </span>
+
+          <div>
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-1">
+              <label htmlFor="seller-store-slug" className="text-sm font-bold text-slate-700">آدرس فروشگاهت (فقط انگلیسی)</label>
+              {pendingSlugRequest && (
+                <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
+                  <span>در انتظار تأیید مدیر: «/{pendingSlugRequest.requestedSlug}»</span>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 ps-2.5 focus-within:border-brand" dir="ltr">
+              <span className="font-mono text-xs text-slate-600">sellershow.ir/store/</span>
+              <input
+                id="seller-store-slug"
+                aria-describedby="seller-store-slug-hint"
+                type="text"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                className="min-w-0 flex-1 bg-transparent py-3 pe-3 font-mono text-sm focus:outline-hidden"
+                dir="ltr"
+                required
+              />
+            </div>
+            <span id="seller-store-slug-hint" className="mt-1 block text-xs leading-5 text-slate-600">
+              تغییر آدرس به تأیید مدیر نیاز دارد. بعد از تغییر، لینک قبلی از کار می‌افتد.
+            </span>
+          </div>
+
+          <div>
+            <label htmlFor="seller-store-tagline" className="mb-1 block text-sm font-bold text-slate-700">شعار فروشگاهت</label>
+            <input
+              id="seller-store-tagline"
+              aria-describedby="seller-store-tagline-hint"
+              type="text"
+              value={tagline}
+              onChange={(e) => setTagline(e.target.value)}
+              placeholder="مثال: مرجع تخصصی لوازم جانبی و دیجیتال"
+              className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
+            />
+            <span id="seller-store-tagline-hint" className="mt-1 block text-xs leading-5 text-slate-600">
+              یک جمله کوتاه که زیر اسم فروشگاهت به مشتری نشان داده می‌شود.
+            </span>
+          </div>
+
+          <div>
+            <label htmlFor="seller-store-description" className="mb-1 block text-sm font-bold text-slate-700">
+              درباره فروشگاهت (کوتاه)
+            </label>
+            <textarea
+              id="seller-store-description"
+              rows={2}
+              value={shortDescription}
+              onChange={(e) => setShortDescription(e.target.value)}
+              placeholder="یک یا دو جمله بنویس: چه چیزی می‌فروشی و چرا از تو بخرند…"
+              className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden leading-relaxed"
+            />
+          </div>
         </div>
 
-        <div>
-          <label className="text-[13px] font-bold text-slate-700 block mb-1">شعار فروشگاهت</label>
-          <input
-            type="text"
-            value={tagline}
-            onChange={(e) => setTagline(e.target.value)}
-            placeholder="مثال: مرجع تخصصی لوازم جانبی و دیجیتال"
-            className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
-          />
-          <span className="text-[11px] text-slate-400 mt-1 block">
-            یک جمله کوتاه که زیر اسم فروشگاهت به مشتری نشان داده می‌شود.
-          </span>
-        </div>
+        <details className="group rounded-xl border border-slate-200 px-3">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">
+            عنوان بخش «محصولات مکمل»
+            <ChevronDown aria-hidden="true" className="size-4 text-brand-deep group-open:rotate-180" />
+          </summary>
+          <div className="max-w-xl space-y-1 pb-3">
+            <label htmlFor="seller-store-addon-title" className="sr-only">عنوان بخش «محصولات مکمل»</label>
+            <input
+              id="seller-store-addon-title"
+              aria-describedby="seller-store-addon-title-hint"
+              type="text"
+              value={addonSectionTitle}
+              maxLength={200}
+              onChange={(e) => setAddonSectionTitle(e.target.value)}
+              placeholder="محصولات مکمل"
+              className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
+            />
+            <span id="seller-store-addon-title-hint" className="block text-xs leading-5 text-slate-600">
+              عنوانی که بالای مکمل‌ها در صفحه کالا نمایش داده می‌شود؛ خالی بگذاری همان «محصولات مکمل» نشان داده می‌شود.
+            </span>
+          </div>
+        </details>
 
-        <div>
-          <label className="text-[13px] font-bold text-slate-700 block mb-1">
-            درباره فروشگاهت (کوتاه)
-          </label>
-          <textarea
-            rows={2}
-            value={shortDescription}
-            onChange={(e) => setShortDescription(e.target.value)}
-            placeholder="یک یا دو جمله بنویس: چه چیزی می‌فروشی و چرا از تو بخرند…"
-            className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden leading-relaxed"
-          />
-        </div>
+        <button type="submit" className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand sm:w-auto ${saved ? 'bg-emerald-700' : 'bg-brand-deep hover:bg-brand-deep/90'}`}>
+          {saved ? <Check aria-hidden="true" className="size-4" /> : <Save aria-hidden="true" className="size-4" />}
+          {saved ? 'ذخیره شد' : 'ذخیره تغییرات'}
+        </button>
+      </form>
 
-        <div>
-          <label className="text-[13px] font-bold text-slate-700 block mb-1">عنوان بخش «محصولات مکمل»</label>
-          <input
-            type="text"
-            value={addonSectionTitle}
-            maxLength={200}
-            onChange={(e) => setAddonSectionTitle(e.target.value)}
-            placeholder="محصولات مکمل"
-            className="w-full text-[13px] p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
-          />
-          <span className="text-[11px] text-slate-400 mt-1 block">
-            عنوانی که بالای مکمل‌ها در صفحه کالا نمایش داده می‌شود؛ خالی بگذاری همان «محصولات مکمل» نشان داده می‌شود.
-          </span>
-        </div>
-      </div>
+      {!isMockMode() && <SellerDomainsPanel key={currentStore.id} slug={currentStore.slug} storeId={currentStore.id} />}
 
       <div hidden={!isMockMode()} className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
         <button
@@ -379,39 +393,19 @@ export const SellerStoreSetupTab: React.FC = () => {
         )}
       </div>
 
-      <div className="fixed bottom-0 inset-x-0 z-30 px-3.5 pb-3 pointer-events-none">
-        <div className="max-w-[504px] mx-auto pointer-events-auto">
-          <button
-            type="submit"
-            className={`w-full min-h-[52px] py-3 font-extrabold text-sm rounded-2xl shadow-lg flex items-center justify-center gap-1.5 transition-all ${saved ? 'bg-emerald-600 text-white' : 'bg-brand-deep text-white'}`}
-          >
-            {saved ? (
-              <>
-                <Check className="w-5 h-5" strokeWidth={1.5} />
-                <span>ذخیره شد ✓</span>
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" strokeWidth={1.5} />
-                <span>ذخیره تغییرات</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
       {showDomainModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-slate-100 space-y-3">
+          <form onSubmit={handleDomainConnect} role="dialog" aria-modal="true" aria-labelledby="seller-domains-modal-title" className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-slate-100 space-y-3">
             <div className="flex items-center gap-2 text-brand-deep">
               <Server className="w-4 h-4" strokeWidth={1.5} />
-              <h4 className="text-xs font-bold text-slate-900">وصل کردن دامنه شخصی</h4>
+              <h4 id="seller-domains-modal-title" className="text-xs font-bold text-slate-900">وصل کردن دامنه شخصی</h4>
             </div>
             <p className="text-[10px] text-slate-500 leading-relaxed">
               ابتدا نیم‌سرورهای <strong className="font-mono text-brand-deep">ns1.drup.ir</strong> و <strong className="font-mono text-brand-deep">ns2.drup.ir</strong> را روی دامنه خود تنظیم کنید؛ سپس نام دامنه را وارد نمایید تا درخواست اتصال برای بررسی و تأیید به مدیر پلتفرم ارسال شود.
             </p>
             <input
               type="text"
+              aria-label="نام دامنه"
               placeholder="مثال: my-store.ir"
               value={newDomain}
               onChange={(e) => setNewDomain(e.target.value)}
@@ -429,8 +423,7 @@ export const SellerStoreSetupTab: React.FC = () => {
 
             <div className="flex gap-2 pt-1">
               <button
-                type="button"
-                onClick={handleDomainConnect}
+                type="submit"
                 disabled={isSubmittingDomain || storeDomains.length >= allowedCustomDomains}
                 className="flex-1 py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl disabled:opacity-50 flex items-center justify-center gap-1.5"
               >
@@ -452,9 +445,9 @@ export const SellerStoreSetupTab: React.FC = () => {
                 انصراف
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
-    </form>
+    </div>
   );
 };

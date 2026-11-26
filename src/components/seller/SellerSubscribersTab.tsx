@@ -3,6 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { apiRequest, getApiBase, tokenStore } from '../../services/apiClient';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import { Users, Download, Trash2, Loader2, ChevronRight, ChevronLeft } from 'lucide-react';
 
 // Live parity (SellerDashboardView-MERGED.js, subscribers tab yn, offsets
@@ -187,29 +188,22 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
   };
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="w-9 h-9 rounded-2xl bg-brand-soft text-brand-deep flex items-center justify-center">
-              <Users className="w-4.5 h-4.5" strokeWidth={1.5} />
-            </span>
-            <div>
-              <h3 className="text-xs font-bold text-slate-800">مشترک‌های فروشگاهت</h3>
-              <span className="text-[10px] text-slate-400 block mt-0.5">شماره موبایل‌هایی که مشتری‌ها داده‌اند تا از موجودی و تخفیف‌های فروشگاهت باخبر شوند</span>
-            </div>
-          </div>
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="مشترکان فروشگاه" description="مشتری‌هایی را ببین که برای خبر گرفتن از موجودی و تخفیف‌ها شماره موبایلشان را ثبت کرده‌اند." icon={<Users />}
+        action={
           <button
             type="button"
             onClick={handleExport}
             disabled={exporting || subscribers.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2.5 min-h-[44px] rounded-xl bg-brand-deep text-white text-[11px] font-bold disabled:opacity-50 shrink-0"
+            className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
           >
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
             <span>دانلود فهرست</span>
           </button>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        } />
+
+      <div className="overflow-hidden rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-4 text-xs sm:p-5">
           <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
             {counts ? toPersianDigits(counts.active ?? 0) : '…'} مشترک فعال
           </span>
@@ -218,22 +212,19 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
               {toPersianDigits(counts.unsubscribed ?? 0)} لغو عضویت‌کرده
             </span>
           )}
-          <span className="text-slate-400 min-w-0">{totalIsMinimum ? `در مجموع حداقل ${toPersianDigits(total)} شماره` : `در مجموع ${toPersianDigits(total)} شماره`}</span>
+          <span className="min-w-0 text-slate-600">{totalIsMinimum ? `در مجموع حداقل ${toPersianDigits(total)} شماره` : `در مجموع ${toPersianDigits(total)} شماره`}</span>
         </div>
-      </div>
-
-      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center py-10 text-slate-400">
+          <div role="status" aria-label="در حال دریافت مشترکان" className="flex items-center justify-center py-10 text-slate-500">
             <Loader2 className="w-6 h-6 animate-spin" />
           </div>
         ) : failed ? (
           <div className="p-6 text-center space-y-2">
-            <p className="text-xs font-bold text-slate-600">بارگذاری فهرست مشترکان ناموفق بود.</p>
+            <p role="alert" className="text-sm font-bold text-slate-700">بارگذاری فهرست مشترکان انجام نشد.</p>
             <button
               type="button"
               onClick={() => void loadPage(page)}
-              className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-bold"
+              className="min-h-11 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand"
             >
               تلاش دوباره
             </button>
@@ -241,8 +232,8 @@ export const SellerSubscribersTab: React.FC<{ onOpenStorefront?: () => void }> =
         ) : subscribers.length === 0 ? (
           <div className="p-8 text-center space-y-2.5">
             <Users className="w-8 h-8 mx-auto text-slate-300" strokeWidth={1.5} />
-            <p className="text-xs font-bold text-slate-600">هنوز کسی مشترک نشده است</p>
-            <p className="text-[11px] text-slate-400 leading-relaxed">وقتی مشتری‌ها در فروشگاهت شماره موبایل‌شان را برای خبرشدن از تخفیف‌ها ثبت کنند، شماره‌شان این‌جا می‌آید. لینک فروشگاهت را برای مشتری‌ها بفرست تا مشترک شوند.</p>
+            <p className="text-sm font-bold text-slate-800">هنوز کسی مشترک نشده است</p>
+            <p className="text-sm leading-6 text-slate-600">لینک فروشگاهت را برای مشتری‌ها بفرست تا بتوانند مشترک شوند.</p>
             {onOpenStorefront && (
               <button
                 type="button"

@@ -32,3 +32,17 @@ test('seller order preview shows live titles and uses the fallback for a deleted
     assert.match(await page.$eval('body', body => body.innerText), /حفظ حریم خصوصی/);
     assert.deepEqual(errors, []);
   }));
+
+test('a follow-up link selects the matching order filter and the keyboard can return to all orders', () =>
+  visit('/?panel=seller&tab=orders&work=follow-up&seller&fixture-orders', 390, async page => {
+    const group = '[role="group"][aria-label="وضعیت سفارش"]';
+    await page.waitForSelector(group, { timeout: 2500 });
+    const filters = await page.$$(`${group} button`);
+    assert.equal(filters.length, 2);
+    assert.equal(await filters[1].evaluate(button => button.getAttribute('aria-pressed')), 'true');
+    await filters[0].focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await filters[0].evaluate(button => button.getAttribute('aria-pressed')), 'true');
+    assert.equal(await filters[1].evaluate(button => button.getAttribute('aria-pressed')), 'false');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 390));
+  }));

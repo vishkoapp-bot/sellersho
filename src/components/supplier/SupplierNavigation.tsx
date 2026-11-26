@@ -1,6 +1,5 @@
-import type { MouseEvent } from 'react';
 import {
-  AlertTriangle, BarChart3, Boxes, ChevronDown, CircleHelp, FileText,
+  AlertTriangle, BarChart3, Boxes, CircleHelp, FileText,
   LayoutDashboard, Megaphone, Package, PackagePlus, Receipt, RotateCcw,
   ShoppingBag, TrendingUp, Truck, User, Users, Warehouse,
 } from 'lucide-react';
@@ -48,54 +47,4 @@ export function getSupplierNavigation(permissions: readonly string[]) {
       (item.id === 'support' ? permissions.length > 0 : item.permissions.some(permission => permissions.includes(permission))),
     ),
   })).filter(group => group.items.length);
-}
-
-export function SupplierNavigation({ groups, current, href, onNavigate, label }: {
-  groups: ReturnType<typeof getSupplierNavigation>;
-  current?: string;
-  href: (section: SupplierSection) => string;
-  onNavigate: (section: SupplierSection) => void;
-  label: string;
-}) {
-  function renderItem({ id, label, icon: Icon }: SupplierNavItem) {
-    const active = id === current;
-    return (
-      <li key={id}>
-        <a href={href(id)} data-section={id} aria-current={active ? 'page' : undefined}
-          onClick={(event: MouseEvent<HTMLAnchorElement>) => {
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-            event.preventDefault();
-            onNavigate(id);
-          }}
-          className={`flex min-h-11 items-center gap-2.5 rounded-xl px-3 py-1.5 text-sm leading-6 outline-offset-2 focus-visible:outline-2 focus-visible:outline-brand ${active ? 'bg-brand-soft font-extrabold text-brand-deep' : 'font-medium text-slate-700 hover:bg-slate-100'}`}>
-          <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
-          <span className="min-w-0 flex-1">{label}</span>
-          {active && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-brand-deep" />}
-        </a>
-      </li>
-    );
-  }
-
-  return (
-    <nav aria-label={label}>
-      <ul className="space-y-1.5">
-        {groups.map(({ id, label, items, icon: Icon }) => {
-          if (items.length === 1) return renderItem(items[0]);
-          const isCurrent = items.some(item => item.id === current);
-          return (
-            <li key={id}>
-              <details key={String(isCurrent)} open={isCurrent} className="group rounded-xl">
-                <summary className={`flex min-h-11 cursor-pointer list-none items-center gap-2.5 rounded-xl px-3 py-1.5 text-sm font-bold outline-offset-2 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden ${isCurrent ? 'text-brand-deep' : 'text-slate-800'}`}>
-                  <Icon aria-hidden="true" className="size-[18px] shrink-0" strokeWidth={1.75} />
-                  <span className="min-w-0 flex-1">{label}</span>
-                  <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-slate-500 group-open:rotate-180" />
-                </summary>
-                <ul className="ms-5 mt-1 space-y-0.5 border-s border-slate-200 ps-2">{items.map(renderItem)}</ul>
-              </details>
-            </li>
-          );
-        })}
-      </ul>
-    </nav>
-  );
 }

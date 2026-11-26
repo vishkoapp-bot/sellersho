@@ -60,7 +60,7 @@
    columns in prices and tables align instead of jittering. */
 .font-mono { font-variant-numeric: tabular-nums; }
 
-body:has([data-supplier-panel]) [data-toast-stack] {
+body:has([data-panel-workspace]) [data-toast-stack] {
   top: auto;
   bottom: max(1rem, env(safe-area-inset-bottom));
 }

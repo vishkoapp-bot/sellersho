@@ -45,7 +45,7 @@ for (const [role, logout] of [
       const page = await context.newPage();
       await page.goto(url);
       await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-      await page.evaluate(async (role) => { await (window as any).authHarness.auth.loginUser(role, 'synthetic'); }, role);
+      await page.evaluate(async (role) => { await (window as any).authHarness.auth.loginWithOTP(role, 'synthetic'); }, role);
       await page.waitForFunction(() => !!(window as any).authHarness.state().user);
       await page.evaluate((logout) => (window as any).authHarness.auth[logout](), logout);
       await page.waitForFunction(() => !(window as any).authHarness.state().user, { timeout: 1500 });
@@ -68,12 +68,12 @@ test('logout removes the session from another open tab', async () => {
     const first = await context.newPage();
     await first.goto(url);
     await first.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await first.evaluate(async () => { await (window as any).authHarness.auth.loginUser('admin', 'synthetic'); });
+    await first.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('admin', 'synthetic'); });
     const second = await context.newPage();
     // Seed the fixture's mock claims independently while preserving shared storage.
     await second.goto(url);
     await second.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await second.evaluate(async () => { await (window as any).authHarness.auth.loginUser('admin', 'synthetic'); });
+    await second.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('admin', 'synthetic'); });
     await second.waitForFunction(() => !!(window as any).authHarness.state().user);
     assert.equal(await first.evaluate(() => (window as any).authHarness.state().user?.id), 'admin');
     await first.evaluate(() => (window as any).authHarness.auth.logoutUser());
@@ -88,13 +88,13 @@ test('signing into a different account in one tab replaces the previous administ
     const first = await context.newPage();
     await first.goto(url);
     await first.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await first.evaluate(() => (window as any).authHarness.auth.loginUser('admin', 'synthetic'));
+    await first.evaluate(() => (window as any).authHarness.auth.loginWithOTP('admin', 'synthetic'));
     await first.waitForFunction(() => (window as any).authHarness.state().admin?.role === 'admin');
 
     const second = await context.newPage();
     await second.goto(url);
     await second.waitForFunction(() => (window as any).authHarness.state().admin?.role === 'admin');
-    await second.evaluate(() => (window as any).authHarness.auth.loginUser('customer', 'synthetic'));
+    await second.evaluate(() => (window as any).authHarness.auth.loginWithOTP('customer', 'synthetic'));
     await first.waitForFunction(() => {
       const state = (window as any).authHarness.state();
       return state.ready && state.user?.id === 'customer' && state.admin === null;
@@ -109,7 +109,7 @@ test('refresh replaces an administrative role with the active lower-privilege me
     const page = await context.newPage();
     await page.goto(url);
     await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await page.evaluate(() => (window as any).authHarness.auth.loginUser('admin', 'synthetic'));
+    await page.evaluate(() => (window as any).authHarness.auth.loginWithOTP('admin', 'synthetic'));
     await page.waitForFunction(() => (window as any).authHarness.state().ready && (window as any).authHarness.state().admin?.role === 'admin');
     await page.evaluate(() => {
       const harness = (window as any).authHarness;
@@ -134,7 +134,7 @@ for (const failure of [false, true]) {
         const page = await context.newPage();
         await page.goto(url);
         await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-        await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('customer', 'synthetic'); });
+        await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('customer', 'synthetic'); });
         await page.waitForFunction(() => (window as any).authHarness.state().ready);
         await page.evaluate(() => {
           const h = (window as any).authHarness; h.deferMe();
@@ -144,7 +144,7 @@ for (const failure of [false, true]) {
         await page.evaluate(async (replacement) => {
           const h = (window as any).authHarness;
           if (replacement === 'logout') h.auth.logoutUser();
-          else await h.auth.loginUser('seller', 'synthetic');
+          else await h.auth.loginWithOTP('seller', 'synthetic');
         }, replacement);
         await page.evaluate(async (failure) => { const h = (window as any).authHarness; h.finishMe(0, failure); await h.refreshDone; }, failure);
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -168,7 +168,7 @@ test('a pending initial restore cannot clear an explicit newer login', async () 
     });
     await page.goto(url + '?deferRestore');
     await page.waitForFunction(() => (window as any).authHarness?.pendingMe() === 1);
-    await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('seller','synthetic'); });
+    await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('seller','synthetic'); });
     await page.evaluate(() => (window as any).authHarness.finishMe(0, true));
     await page.waitForFunction(() => (window as any).authHarness.state().ready);
     assert.equal(await page.evaluate(() => (window as any).authHarness.state().user?.id), 'seller');
@@ -181,7 +181,7 @@ test('out-of-order refreshes apply only the newest profile', async () => {
   try {
     const page = await context.newPage(); await page.goto(url);
     await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('customer','synthetic'); });
+    await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('customer','synthetic'); });
     await page.waitForFunction(() => (window as any).authHarness.state().ready);
     await page.evaluate(() => {
       const h = (window as any).authHarness;
@@ -205,7 +205,7 @@ test('a refresh completed after provider unmount cannot persist credentials', as
   try {
     const page = await context.newPage(); await page.goto(url);
     await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('customer','synthetic'); });
+    await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('customer','synthetic'); });
     await page.waitForFunction(() => (window as any).authHarness.state().ready);
     await page.evaluate(() => { const h = (window as any).authHarness; h.deferMe(); h.done = h.auth.refreshToken(); });
     await page.waitForFunction(() => (window as any).authHarness.pendingMe() === 1);
@@ -223,7 +223,7 @@ test('a current restore receiving an actual 401 clears identity and opens the re
   try {
     const page = await context.newPage(); await page.goto(url);
     await page.waitForFunction(() => !!(window as any).authHarness?.auth && (window as any).authHarness.state().ready);
-    await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('customer','synthetic'); });
+    await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('customer','synthetic'); });
     await page.waitForFunction(() => !!(window as any).authHarness.state().user);
     await page.goto(url + '?failRestore');
     await page.waitForFunction(() => !!(window as any).authHarness?.auth && (window as any).authHarness.state().ready, { timeout: 1500 });
@@ -240,7 +240,7 @@ test('logout invalidates a pending panel authentication result before credential
     await page.waitForFunction(() => !!(window as any).authHarness?.auth);
     await page.evaluate(() => {
       const h = (window as any).authHarness;
-      h.deferLogin(); h.loginDone = h.auth.loginUser('admin','synthetic').catch((error: Error) => error.name);
+      h.deferLogin(); h.loginDone = h.auth.loginWithOTP('admin','synthetic').catch((error: Error) => error.name);
     });
     await page.waitForFunction(() => (window as any).authHarness.pendingLogin() === 1);
     await page.evaluate(async () => {
@@ -256,7 +256,7 @@ test('an old protected 401 cannot invalidate an in-flight newer login', async ()
   try {
     const page = await context.newPage(); await page.goto(url);
     await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-    await page.evaluate(async () => { await (window as any).authHarness.auth.loginUser('customer','synthetic'); });
+    await page.evaluate(async () => { await (window as any).authHarness.auth.loginWithOTP('customer','synthetic'); });
     await page.waitForFunction(() => (window as any).authHarness.state().ready);
     await page.setRequestInterception(true);
     let release: (request: any) => void;
@@ -267,7 +267,7 @@ test('an old protected 401 cannot invalidate an in-flight newer login', async ()
     });
     await page.evaluate(() => { const h = (window as any).authHarness; h.old401 = h.privilegedRequest('/test-auth?delayed401').catch(() => undefined); });
     const request = await intercepted;
-    await page.evaluate(() => { const h = (window as any).authHarness; h.deferLogin(); h.newLogin = h.auth.loginUser('seller','synthetic'); });
+    await page.evaluate(() => { const h = (window as any).authHarness; h.deferLogin(); h.newLogin = h.auth.loginWithOTP('seller','synthetic'); });
     await page.waitForFunction(() => (window as any).authHarness.pendingLogin() === 1);
     await request.respond({ status: 401, contentType: 'application/json', body: '{"error":"Synthetic obsolete request"}' });
     await page.evaluate(async () => { const h = (window as any).authHarness; await h.old401; h.finishLogin(0); await h.newLogin; });
@@ -282,7 +282,7 @@ for (const failure of [false, true]) {
     try {
       const page = await context.newPage(); await page.goto(url);
       await page.waitForFunction(() => !!(window as any).authHarness?.auth);
-      await page.evaluate(async () => { const h = (window as any).authHarness; h.deferProfiles(); await h.auth.loginUser('supplier','synthetic'); });
+      await page.evaluate(async () => { const h = (window as any).authHarness; h.deferProfiles(); await h.auth.loginWithOTP('supplier','synthetic'); });
       await page.waitForFunction(() => (window as any).authHarness.pendingProfiles() > 0);
       await page.evaluate((failure) => { const h = (window as any).authHarness; h.auth.logoutUser(); h.finishProfiles(failure); }, failure);
       await new Promise(resolve => setTimeout(resolve, 50));

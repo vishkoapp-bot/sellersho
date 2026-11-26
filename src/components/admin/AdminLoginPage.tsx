@@ -29,8 +29,6 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
 
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginMode, setLoginMode] = useState<'otp' | 'password'>('otp');
   const [step, setStep] = useState<'mobile' | 'otp'>('mobile');
   const [countdown, setCountdown] = useState(120);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -86,29 +84,6 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
     return response;
   }
 
-  const handlePasswordLogin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (isSubmitting) return;
-    if (!password.trim()) {
-      setLoginError('رمز عبور را وارد کنید.');
-      return;
-    }
-    setLoginError('');
-    setIsSubmitting(true);
-    try {
-      const result = await authenticate(async () => withAdminMembership(
-        await authApi.passwordLogin(normalizeIranianMobile(mobile), password),
-      ));
-      const [role] = adminRolesForCapabilities(result.user.capabilities);
-      if (result.isCurrent()) success(`ورود با نقش «${adminRoleLabels[role]}» انجام شد.`);
-    } catch (cause) {
-      if (cause instanceof AuthRequestSupersededError) return;
-      setLoginError(cause instanceof Error ? cause.message : 'رمز عبور یا شمارهٔ موبایل درست نیست.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const handleVerifyOtp = async (event: React.FormEvent) => {
     event.preventDefault();
     if (isSubmitting) return;
@@ -144,7 +119,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
               <span>پنل مدیریت سلرشو</span>
               <span className="text-[10px] font-mono bg-brand/20 text-brand border border-brand/30 px-2 py-0.5 rounded-full">/admin</span>
             </span>
-            <span className="text-[11px] text-slate-400 block">ورود امن کارکنان با پیامک یا رمز عبور</span>
+            <span className="text-[11px] text-slate-400 block">ورود کارکنان با کد پیامکی</span>
           </div>
         </div>
 
@@ -175,22 +150,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToCustomer
           </div>
 
 
-          <div className="flex gap-2 rounded-xl bg-slate-950 p-1">
-            <button type="button" aria-pressed={loginMode === 'password'} disabled={isSubmitting} onClick={() => { setLoginError(''); setLoginMode('password'); }} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'password' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با رمز عبور</button>
-            <button type="button" aria-pressed={loginMode === 'otp'} disabled={isSubmitting} onClick={() => { setLoginError(''); setLoginMode('otp'); setStep('mobile'); }} className={`flex-1 rounded-lg min-h-[44px] flex items-center justify-center text-xs font-bold ${loginMode === 'otp' ? 'bg-brand-deep text-white' : 'text-slate-400'}`}>ورود با کد پیامکی</button>
-          </div>
           {loginError && <p role="alert" className="rounded-xl bg-rose-950 p-3 text-sm leading-6 text-rose-200">{loginError}</p>}
-          {loginMode === 'password' ? (
-            <form onSubmit={handlePasswordLogin} className="space-y-3.5">
-              <label className="block text-xs font-bold text-slate-300">شماره موبایل
-                <input type="tel" value={mobile} onChange={(e) => setMobile(e.target.value)} className="mt-1.5 w-full min-h-[48px] bg-slate-950/80 border border-slate-800 rounded-2xl p-3 text-sm font-bold text-white" dir="ltr" required autoComplete="username" />
-              </label>
-              <label className="block text-xs font-bold text-slate-300">رمز عبور
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1.5 w-full min-h-[48px] bg-slate-950/80 border border-slate-800 rounded-2xl p-3 text-sm font-mono text-white" dir="ltr" required autoComplete="current-password" />
-              </label>
-              <button type="submit" disabled={isSubmitting} className="w-full min-h-[48px] bg-brand-deep hover:bg-brand disabled:opacity-50 text-white font-extrabold text-xs rounded-2xl">{isSubmitting ? 'در حال ورود…' : 'ورود به پنل مدیریت'}</button>
-            </form>
-          ) : step === 'mobile' ? (
+          {step === 'mobile' ? (
             <form onSubmit={handleSendOtp} className="space-y-3.5">
               <p className="text-[11px] font-bold text-slate-400">قدم ۱ از ۲: شماره موبایلت را بنویس</p>
               <label className="block text-xs font-bold text-slate-300">شماره موبایل

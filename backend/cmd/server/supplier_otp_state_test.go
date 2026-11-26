@@ -16,7 +16,6 @@ import (
 	"github.com/drup/platform/internal/testredis"
 
 	_ "github.com/lib/pq"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/phone"
@@ -24,8 +23,7 @@ import (
 )
 
 // GAP 19b, OTP path: the supplier pending/rejected login states must
-// surface on /auth/otp/verify too -- the path suppliers actually use
-// (the password route is super-admin-only). State is revealed ONLY
+// surface on /auth/otp/verify. State is revealed ONLY
 // after the code verifies; a wrong code gets the ordinary OTP
 // failure with no state leak. Codes are seeded directly into the
 // disposable Redis -- the same key GenerateAndStoreOTP writes -- so
@@ -332,28 +330,6 @@ func TestVerifyOTPPreservesCustomerRevocation(t *testing.T) {
 	if membershipStatus != "revoked" || source != "admin_grant" {
 		t.Fatalf("customer membership = %q (%q), want revoked admin_grant", membershipStatus, source)
 	}
-}
-
-func TestPasswordLoginReturnsActiveCapabilities(t *testing.T) {
-	f := supplierOTPSetup(t)
-	userID := f.seedUser(t, "000007", "09127000007", "seller", true)
-	hash, err := bcrypt.GenerateFromPassword([]byte("fixture-password"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Exec(`UPDATE users SET username='fixture-login', password_hash=$1 WHERE id=$2`, string(hash), userID); err != nil {
-		t.Fatal(err)
-	}
-	for _, capability := range []string{"finance_specialist", "support_specialist"} {
-		if err := f.capabilityRepo.Grant(f.ctx, userID, capability, "admin_grant", "", nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.jwtService.SetCapabilityReader(f.capabilityRepo)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password/login", strings.NewReader(`{"username":"fixture-login","password":"fixture-password"}`))
-	res := httptest.NewRecorder()
-	handlePasswordLogin(res, req, req.Context(), f.userRepo, f.jwtService, f.supplierRepo)
-	assertFixtureSession(t, f.jwtService, res.Code, res.Body.String(), "finance_specialist", []string{"finance_specialist", "support_specialist"})
 }
 
 func assertFixtureSession(t *testing.T, jwtService *auth.JWTService, status int, body string, role string, capabilities []string) {

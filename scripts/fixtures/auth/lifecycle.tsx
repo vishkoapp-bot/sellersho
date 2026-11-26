@@ -15,7 +15,7 @@ const logins: { resolve: (value: any) => void; value: any }[] = [];
 harness.deferLogin = () => { holdLogin = true; };
 harness.pendingLogin = () => logins.length;
 harness.finishLogin = (index: number) => logins[index].resolve(logins[index].value);
-authApi.passwordLogin = async (identity) => {
+authApi.verifyOTP = async (identity) => {
   const [role, capability = role] = identity.split(':');
   claims = { userId: identity, mobile: 'test-' + identity, fullName: 'Same Name', role, capabilities: [capability] };
   const value = { success: true, token: 'fixture-' + identity, user: { ...claims, id: identity } };

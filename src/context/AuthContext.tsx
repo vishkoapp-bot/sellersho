@@ -131,7 +131,6 @@ export interface AuthContextType {
   warehouseSession: WarehouseSession | null;
   setWarehouseSession: React.Dispatch<React.SetStateAction<WarehouseSession | null>>;
   logoutWarehouse: () => void;
-  loginUser: (username: string, password: string) => Promise<AuthUser>;
   loginWithOTP: (mobile: string, otp: string, storeSlug?: string) => Promise<AuthUser>;
   logoutUser: () => void;
   registerUser: (userData: { mobile: string; fullName: string; role?: string }) => Promise<void>;
@@ -409,11 +408,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const loginUser = async (username: string, password: string): Promise<AuthUser> => {
-    const result = await authenticate(() => authApi.passwordLogin(username, password));
-    return { ...result.user, username };
-  };
-
   const loginWithOTP = async (mobile: string, otp: string, storeSlug?: string): Promise<AuthUser> => {
     const result = await authenticate(() => authApi.verifyOTP(mobile, otp, undefined, storeSlug));
     return result.user;
@@ -507,7 +501,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     warehouseSession: verifiedSession(warehouseSession, !!currentWarehouseRole && warehouseSession?.role === currentWarehouseRole && warehouseSession?.staffId === currentUser?.id),
     setWarehouseSession: guardedSessionSetter(setWarehouseSession),
     logoutWarehouse,
-    loginUser,
     loginWithOTP,
     logoutUser,
     registerUser,

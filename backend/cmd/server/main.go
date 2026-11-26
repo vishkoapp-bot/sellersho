@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/drup/platform/internal/accesspolicy"
 	"github.com/drup/platform/internal/adguard"
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/config"
@@ -350,25 +347,6 @@ func run(signalCtx context.Context) (result error) {
 		handleVerifyOTP(w, r, r.Context(), otpService, userRepo, jwtService, supplierRepo, capabilityRepo, storeRepo)
 	})
 
-	// Password login is intentionally limited to the backend allowlisted super-admin account.
-	mux.HandleFunc("/api/v1/auth/password/login", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeMethodNotAllowed(w)
-			return
-		}
-		var req struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil || json.Unmarshal(body, &req) != nil || !accesspolicy.IsSuperAdminMobile(req.Username) {
-			http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		handlePasswordLogin(w, r, r.Context(), userRepo, jwtService, supplierRepo)
-	})
-
 	mux.HandleFunc("/api/v1/auth/supplier/register", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w)
@@ -527,7 +505,9 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/seller/tickets", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerTickets(w, r, storeRepo) }))
 	mux.HandleFunc("/api/v1/seller/tickets/context", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleSellerTicketContext(w, r, storeRepo) }))
 	mux.HandleFunc("/api/v1/supplier/tickets", RequireRoles(jwtService, "supplier")(func(w http.ResponseWriter, r *http.Request) { handleSupplierTickets(w, r, storeRepo, supplierRepo) }))
-	mux.HandleFunc("/api/v1/supplier/tickets/context", RequireRoles(jwtService, "supplier")(func(w http.ResponseWriter, r *http.Request) { handleSupplierTicketContext(w, r, storeRepo, supplierRepo) }))
+	mux.HandleFunc("/api/v1/supplier/tickets/context", RequireRoles(jwtService, "supplier")(func(w http.ResponseWriter, r *http.Request) {
+		handleSupplierTicketContext(w, r, storeRepo, supplierRepo)
+	}))
 	// Existing identities may inspect their own stores while completing seller
 	// onboarding; seller capability is granted only after store creation.
 	mux.HandleFunc("/api/v1/stores/mine", RequireRoles(jwtService, "customer", "seller", "supplier", "admin")(func(w http.ResponseWriter, r *http.Request) {

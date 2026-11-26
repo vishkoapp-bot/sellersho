@@ -13,7 +13,7 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await server?.close(); });
 const login = async (page: Page, i: number) => {
-  await page.evaluate(async i => { await (window as any).orderHarness.auth.loginUser(String(i), 'synthetic'); }, i);
+  await page.evaluate(async i => { await (window as any).orderHarness.auth.loginWithOTP(`09${String(i).padStart(9, '0')}`, '1234'); }, i);
   await page.waitForFunction(i => (window as any).orderHarness.state().user === `account-${i}`, {}, i);
 };
 const state = (page: Page) => page.evaluate(() => (window as any).orderHarness.state());
@@ -187,7 +187,7 @@ test('post-login navigation still reaches the target after the private subtree r
     const page = await context.newPage(); await page.goto(url); await page.waitForFunction(() => !!(window as any).orderHarness?.auth);
     await page.evaluate(async () => {
       const h = (window as any).orderHarness; const navigate = h.store.setActiveView;
-      await h.auth.loginUser('10', 'synthetic'); navigate('seller_dashboard');
+      await h.auth.loginWithOTP('09000000010', '1234'); navigate('seller_dashboard');
     });
     await page.waitForFunction(() => (window as any).orderHarness.state().user === 'account-10');
     assert.equal((await state(page)).view, 'seller_dashboard');

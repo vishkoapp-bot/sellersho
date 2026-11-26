@@ -13,7 +13,6 @@ import (
 	"github.com/drup/platform/internal/testdb"
 
 	_ "github.com/lib/pq"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
@@ -321,7 +320,6 @@ CREATE TABLE warranty_property_requests (
 type supplierGapsFixture struct {
 	db           *sql.DB
 	ctx          context.Context
-	userRepo     *repository.UserRepository
 	supplierRepo *repository.SupplierRepository
 	adminRepo    *repository.AdminRepository
 	jwtService   *auth.JWTService
@@ -354,113 +352,9 @@ func supplierGapsSetup(t *testing.T) *supplierGapsFixture {
 	return &supplierGapsFixture{
 		db:           db,
 		ctx:          ctx,
-		userRepo:     repository.NewUserRepository(db),
 		supplierRepo: repository.NewSupplierRepository(db),
 		adminRepo:    repository.NewAdminRepository(db),
 		jwtService:   auth.NewJWTService("supplier-gaps-test-secret"),
-	}
-}
-
-func (f *supplierGapsFixture) seedSupplierUser(t *testing.T, idSuffix, username, password string, isActive bool, approvalStatus string) {
-	t.Helper()
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	userID := "22222222-2222-2222-2222-222222" + idSuffix
-	if _, err := f.db.ExecContext(f.ctx, `
-		INSERT INTO users (id, mobile, full_name, role, is_active, username, password_hash)
-		VALUES ($1, $2, $3, 'supplier', $4, $5, $6)`,
-		userID, "0913"+idSuffix+"4444", "Owner "+username, isActive, username, string(hash)); err != nil {
-		t.Fatalf("seed user: %v", err)
-	}
-	var rejectionReason interface{}
-	if approvalStatus == "rejected" {
-		rejectionReason = "مدارک ناقص است"
-	}
-	if _, err := f.db.ExecContext(f.ctx, `
-		INSERT INTO suppliers (id, owner_user_id, name, warehouse_city, approval_status, rejection_reason)
-		VALUES ($1, $2, $3, 'قم', $4, $5)`,
-		"sup-"+idSuffix, userID, "شرکت "+username, approvalStatus, rejectionReason); err != nil {
-		t.Fatalf("seed supplier: %v", err)
-	}
-}
-
-func (f *supplierGapsFixture) login(username, password string) (int, string) {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
-		strings.NewReader(`{"username":"`+username+`","password":"`+password+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handlePasswordLogin(rec, req, f.ctx, f.userRepo, f.jwtService, f.supplierRepo)
-	return rec.Code, rec.Body.String()
-}
-
-// GAP 19b: the password-login state machine. State is revealed ONLY
-// after the password verifies; a wrong password always gets the
-// generic failure with no state leak.
-func TestPasswordLoginSupplierStates(t *testing.T) {
-	f := supplierGapsSetup(t)
-	f.seedSupplierUser(t, "000001", "pendingsup", "secret123", false, "pending_approval")
-	f.seedSupplierUser(t, "000002", "rejectedsup", "secret123", false, "rejected")
-	f.seedSupplierUser(t, "000003", "blockedapproved", "secret123", false, "approved")
-	f.seedSupplierUser(t, "000004", "activesup", "secret123", true, "approved")
-
-	// Pending + correct password → 403 with the pending code + message.
-	code, body := f.login("pendingsup", "secret123")
-	if code != http.StatusForbidden {
-		t.Fatalf("pending login status = %d, body %s", code, body)
-	}
-	var pending map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &pending); err != nil {
-		t.Fatalf("pending body not JSON: %v (%s)", err, body)
-	}
-	if pending["code"] != "supplier_pending_approval" ||
-		pending["error"] != "حساب تأمین‌کننده شما در انتظار تأیید مدیریت است" ||
-		pending["supplierName"] != "شرکت pendingsup" ||
-		pending["warehouseCity"] != "قم" {
-		t.Fatalf("pending body = %v", pending)
-	}
-
-	// Pending + WRONG password → generic 401, NO state leak.
-	code, body = f.login("pendingsup", "wrong-password")
-	if code != http.StatusUnauthorized {
-		t.Fatalf("wrong-password status = %d, body %s", code, body)
-	}
-	if strings.Contains(body, "supplier_pending_approval") || strings.Contains(body, "در انتظار تأیید") {
-		t.Fatalf("wrong password leaked account state: %s", body)
-	}
-
-	// Rejected + correct password → 403 with code + recorded reason.
-	code, body = f.login("rejectedsup", "secret123")
-	if code != http.StatusForbidden {
-		t.Fatalf("rejected login status = %d, body %s", code, body)
-	}
-	var rejected map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &rejected); err != nil {
-		t.Fatalf("rejected body not JSON: %v (%s)", err, body)
-	}
-	if rejected["code"] != "supplier_rejected" ||
-		rejected["error"] != "درخواست تأمین‌کننده شما رد شده است" ||
-		rejected["rejectionReason"] != "مدارک ناقص است" {
-		t.Fatalf("rejected body = %v", rejected)
-	}
-
-	// Approved but blocked → the existing disabled behaviour.
-	code, body = f.login("blockedapproved", "secret123")
-	if code != http.StatusForbidden || !strings.Contains(body, "Account is disabled") {
-		t.Fatalf("blocked-approved = %d %s, want 403 Account is disabled", code, body)
-	}
-
-	// Approved + active → success with a token.
-	code, body = f.login("activesup", "secret123")
-	if code != http.StatusOK || !strings.Contains(body, `"token"`) {
-		t.Fatalf("active login = %d %s, want 200 with token", code, body)
-	}
-
-	// Unknown user → generic 401.
-	code, _ = f.login("nosuchuser", "secret123")
-	if code != http.StatusUnauthorized {
-		t.Fatalf("unknown user status = %d, want 401", code)
 	}
 }
 

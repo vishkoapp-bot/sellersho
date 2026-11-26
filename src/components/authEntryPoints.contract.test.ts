@@ -24,7 +24,7 @@ for (const path of entries) {
       }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
           node.expression.expression.getText(source) === 'authApi' &&
-          ['passwordLogin', 'verifyOTP', 'registerSupplier'].includes(node.expression.name.text)) {
+          node.expression.name.text === 'verifyOTP') {
         let parent: ts.Node | undefined = node.parent;
         let guarded = false;
         while (parent) {

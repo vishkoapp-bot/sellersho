@@ -29,12 +29,6 @@ export interface UserClaims {
   capabilities?: string[];
 }
 
-export interface PasswordLoginResponse {
-  success: boolean;
-  token: string;
-  user: UserSummary;
-}
-
 export const authApi = {
   sendOTP: async (mobile: string): Promise<OTPSendResponse> => {
     const response = await apiRequest<OTPSendResponse>('/auth/otp/send', {
@@ -56,26 +50,14 @@ export const authApi = {
     });
   },
 
-  passwordLogin: async (
-    username: string,
-    password: string
-  ): Promise<PasswordLoginResponse> => {
-    return apiRequest<PasswordLoginResponse>('/auth/password/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-  },
-
   registerSupplier: async (payload: {
     company_name: string;
     contact_person: string;
-    username: string;
-    password: string;
     phone: string;
     email: string;
     warehouse_city: string;
-  }): Promise<{ success: boolean; token: string; user: UserSummary; supplier: any }> => {
-    return apiRequest<{ success: boolean; token: string; user: UserSummary; supplier: any }>('/auth/supplier/register', {
+  }): Promise<{ success: boolean; supplierId: string }> => {
+    return apiRequest<{ success: boolean; supplierId: string }>('/auth/supplier/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

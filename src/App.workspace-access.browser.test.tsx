@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Page } from 'puppeteer';
-import { batch8Browser, clickText, fillInput, waitText } from '../scripts/fixtures/catalog/batch8-browser';
+import { batch8Browser, fillInput, waitText } from '../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
 const panels = [
@@ -98,13 +98,28 @@ test('admin OTP for a customer shows the access message and does not install the
     assert.equal(await page.evaluate(() => localStorage.getItem('seler_sho_jwt_token')), null);
   }));
 
-test('admin password login resolves management membership supplied for an account whose base role is customer', () =>
+test('admin OTP login resolves management membership supplied for an account whose base role is customer', () =>
   visit(scenario('/admin?section=orders', 'customer', ['finance_specialist'], true), 390, async page => {
-    await clickText(page, 'ورود با رمز عبور');
+    assert.equal(await page.$('input[type="password"]'), null);
     await fillInput(page, 'input[type="tel"]', '09120000000');
-    await fillInput(page, 'input[type="password"]', 'synthetic-password');
+    await page.click('button[type="submit"]');
+    await fillInput(page, '#admin-otp', '1234');
     await page.click('button[type="submit"]');
     await page.waitForSelector('#admin-main');
     assert.equal(await page.$eval('#admin-page-title', title => title.textContent), 'تراز و دفتر کل');
     assert.equal(await page.$$('aside [data-section="orders"]').then(links => links.length), 0);
+  }));
+
+test('supplier sign-in on mobile lists no suppliers and opens the panel only after SMS verification', () =>
+  visit(scenario('/supplier', 'customer', ['supplier'], true), 390, async page => {
+    await page.waitForSelector('#supplier-sign-in-mobile');
+    assert.equal(await page.$('form select, form input[type="password"], form input[type="checkbox"]'), null);
+    assert.equal(await page.$('nav[aria-label="پنل‌های مجاز"]'), null);
+    await fillInput(page, '#supplier-sign-in-mobile', '09120000000');
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('#supplier-sign-in-otp[autocomplete="one-time-code"]');
+    assert.equal(await page.$('[data-panel-workspace]'), null);
+    await fillInput(page, '#supplier-sign-in-otp', '1234');
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('[data-panel-workspace="supplier"]', { visible: true });
   }));

@@ -26,6 +26,31 @@ func panelSourceFixture(t *testing.T, db *sql.DB, supplier string) string {
 	return id
 }
 
+func TestSupplierRegistrationDoesNotIssueSession(t *testing.T) {
+	db := setupTestPostgresDB(t)
+	defer db.Close()
+	handlers := NewSupplierHandlers(repository.NewSupplierRepository(db), nil, false, repository.NewCapabilityRepository(db))
+	mobile := fmt.Sprintf("09%09d", time.Now().UnixNano()%1e9)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/supplier/register",
+		strings.NewReader(fmt.Sprintf(`{"company_name":"OTP signup fixture","phone":%q}`, mobile)))
+	rec := httptest.NewRecorder()
+	handlers.HandleRegister(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signup returned %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := result["supplierId"].(string); !ok || id == "" || result["success"] != true || len(result) != 2 {
+		t.Fatalf("signup should return only confirmation and supplier ID: %v", result)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("signup should not set a session cookie")
+	}
+}
+
 func TestSupplierPanelScopeAndPersistence(t *testing.T) {
 	db := setupTestPostgresDB(t)
 	defer db.Close()

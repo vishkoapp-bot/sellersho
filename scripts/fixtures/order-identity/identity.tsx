@@ -25,16 +25,22 @@ const h: any = {};
 // 1,000 separate canary identities, repeated display names, ten stores.
 // This is a browser isolation fixture; capacity/load gates run separately.
 const identities = Array.from({ length: 1000 }, (_, i) => ({ id: `account-${i}`, mobile: `09${String(i).padStart(9, '0')}`, fullName: 'Same Name', role: 'customer', capabilities: ['customer'] }));
+identities[700] = { ...identities[700], mobile: '09121112233', role: 'seller', capabilities: ['customer', 'seller'] };
 const identity = () => identities[Number(tokenStore.getToken()?.replace('fixture-', '') || 0)];
 const dto = (i: number) => ({ id: `order-${i}`, orderNumber: `CANARY-${i}`, customerFullName: i === 20 ? 'Different recipient' : 'Same Name', customerPhone: i === 20 ? '09999999999' : identities[i].mobile, customerAddress: `PRIVATE-ADDRESS-${i}`, customerCity: 'City', customerProvince: 'Province', customerPostalCode: `POST-${i}`, items: [], status: 'processing', storeId: `store-${i % 10}`, trackingCode: `TRACK-${i}`, payableAmount: 100, totalAmount: 100 });
-authApi.passwordLogin = async (name) => ({ success: true, token: `fixture-${name}`, user: identities[Number(name)] });
 authApi.getMe = async () => ({ ...identity(), userId: identity().id });
 storeApi.getAllStores = async () => Array.from({ length: 10 }, (_, i) => ({ id: `store-${i}`, name: `Store ${i}`, slug: `store-${i}` }) as any);
 storeApi.getOwnedStores = async () => [{ id: 'store-0', name: 'Store 0', slug: 'store-0' }] as any;
 authApi.sendOTP = async () => ({ success: true, mobile: '09121112233', expiresIn: 120, message: 'Synthetic OTP' });
-authApi.verifyOTP = async () => new Promise(resolve => {
-  h.finishOtp = () => resolve({ success: true, token: 'fixture-700', user: { ...identities[700], role: 'seller', capabilities: ['customer', 'seller'] } });
-});
+authApi.verifyOTP = async (mobile) => {
+  if (mobile === '09121112233') {
+    return new Promise(resolve => {
+      h.finishOtp = () => resolve({ success: true, token: 'fixture-700', user: identities[700] });
+    });
+  }
+  const index = Number(mobile.slice(2));
+  return { success: true, token: `fixture-${index}`, user: identities[index] };
+};
 // Explicitly synthetic fallback for unrelated mounted providers. No real API.
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => String(input).includes('/api/') ? new Response('{}', { headers: { 'Content-Type': 'application/json' } }) : nativeFetch(input, init);

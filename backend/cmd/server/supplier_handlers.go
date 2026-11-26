@@ -17,6 +17,7 @@ import (
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
+	"github.com/google/uuid"
 )
 
 type SupplierHandlers struct {
@@ -24,11 +25,10 @@ type SupplierHandlers struct {
 	capabilityRepo                *repository.CapabilityRepository
 	pricingRepo                   *repository.PricingRepository
 	tapinRepo                     *repository.TapinRepository
-	jwtService                    *auth.JWTService
 	networkVolumeIncentiveEnabled bool
 }
 
-func NewSupplierHandlers(supplierRepo *repository.SupplierRepository, jwtService *auth.JWTService, networkVolumeIncentiveEnabled bool, capabilityRepos ...*repository.CapabilityRepository) *SupplierHandlers {
+func NewSupplierHandlers(supplierRepo *repository.SupplierRepository, _ *auth.JWTService, networkVolumeIncentiveEnabled bool, capabilityRepos ...*repository.CapabilityRepository) *SupplierHandlers {
 	var capabilityRepo *repository.CapabilityRepository
 	if len(capabilityRepos) > 0 {
 		capabilityRepo = capabilityRepos[0]
@@ -36,7 +36,6 @@ func NewSupplierHandlers(supplierRepo *repository.SupplierRepository, jwtService
 	return &SupplierHandlers{
 		supplierRepo:                  supplierRepo,
 		capabilityRepo:                capabilityRepo,
-		jwtService:                    jwtService,
 		networkVolumeIncentiveEnabled: networkVolumeIncentiveEnabled,
 	}
 }
@@ -64,8 +63,6 @@ func (h *SupplierHandlers) HandleRegister(w http.ResponseWriter, r *http.Request
 	var req struct {
 		CompanyName   string `json:"company_name"`
 		ContactPerson string `json:"contact_person"`
-		Username      string `json:"username"`
-		Password      string `json:"password"`
 		Phone         string `json:"phone"`
 		Email         string `json:"email"`
 		WarehouseCity string `json:"warehouse_city"`
@@ -74,8 +71,8 @@ func (h *SupplierHandlers) HandleRegister(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Username == "" || req.Password == "" {
-		http.Error(w, `{"error":"Username and password required"}`, http.StatusBadRequest)
+	if strings.TrimSpace(req.CompanyName) == "" {
+		http.Error(w, `{"error":"نام شرکت یا برند الزامی است."}`, http.StatusBadRequest)
 		return
 	}
 	// B2 (round 2): the phone is the supplier's login identity (OTP
@@ -87,7 +84,7 @@ func (h *SupplierHandlers) HandleRegister(w http.ResponseWriter, r *http.Request
 	}
 
 	user, supplier, err := h.supplierRepo.RegisterSupplier(
-		r.Context(), req.CompanyName, req.ContactPerson, req.Username, req.Password, req.Phone, req.Email, req.WarehouseCity,
+		r.Context(), strings.TrimSpace(req.CompanyName), req.ContactPerson, uuid.NewString(), "", req.Phone, req.Email, req.WarehouseCity,
 	)
 	if err != nil {
 		if errors.Is(err, repository.ErrInvalidSupplierPhone) {
@@ -98,32 +95,16 @@ func (h *SupplierHandlers) HandleRegister(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	capabilities := []string{"supplier"}
 	if h.capabilityRepo != nil {
 		if err := h.capabilityRepo.Grant(r.Context(), user.ID, "supplier", "supplier_registration", supplier.ID, nil); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
-		var capabilityErr error
-		capabilities, capabilityErr = h.capabilityRepo.ListActive(r.Context(), user.ID)
-		if capabilityErr != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, capabilityErr.Error()), http.StatusInternalServerError)
-			return
-		}
-	}
-	selectedRole := "supplier"
-	token, tokenErr := h.jwtService.GenerateTokenWithCapabilities(user.ID, user.Mobile, user.FullName, selectedRole, capabilities, 7*24*time.Hour)
-	if tokenErr != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, tokenErr.Error()), http.StatusInternalServerError)
-		return
 	}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":      true,
-		"token":        token,
-		"user":         user,
-		"supplier":     supplier,
-		"capabilities": capabilities,
+		"success":    true,
+		"supplierId": supplier.ID,
 	})
 }
 

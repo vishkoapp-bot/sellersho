@@ -49,7 +49,7 @@ if (hasSeller) {
   if (!matrixCaps) capabilities.push('seller');
 }
 if (hasSupplier) {
-  localStorage.setItem('seler_sho_jwt_token', 'fixture-supplier-token');
+  if (!routeParams.has('access-fixture-otp')) localStorage.setItem('seler_sho_jwt_token', 'fixture-supplier-token');
   if (!matrixCaps) capabilities.push('supplier');
   localStorage.setItem('sellersho:supplier-propose-draft:v1', JSON.stringify({
     version: 1,
@@ -236,7 +236,6 @@ authApi.verifyOTP = async () => {
   fixture.verifications += 1;
   return { token: 'fixture-token', user } as Awaited<ReturnType<typeof authApi.verifyOTP>>;
 };
-if (matrixRole !== null) authApi.passwordLogin = async () => ({ success: true, token: 'fixture-token', user });
 authApi.getMe = async () => {
   if (holdInitialProfile) {
     holdInitialProfile = false;

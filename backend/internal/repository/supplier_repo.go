@@ -391,9 +391,13 @@ func (r *SupplierRepository) RegisterSupplier(ctx context.Context, companyName, 
 		return nil, nil, ErrInvalidSupplierPhone
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to hash password: %w", err)
+	var hashedPassword []byte
+	if password != "" {
+		var err error
+		hashedPassword, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to hash password: %w", err)
+		}
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)

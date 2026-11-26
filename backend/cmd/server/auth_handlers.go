@@ -16,7 +16,6 @@ import (
 	"github.com/drup/platform/internal/domain"
 	"github.com/drup/platform/internal/phone"
 	"github.com/drup/platform/internal/repository"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type contextKey string
@@ -253,8 +252,7 @@ func handleVerifyOTP(
 	if existingUser != nil && !existingUser.IsActive {
 		// GAP 19b (OTP path): the code has verified by this point, so
 		// account ownership is proven and a supplier owner may be told
-		// WHY the account cannot log in -- the exact same state bodies
-		// the password path returns (see handlePasswordLogin). Any
+		// why the account cannot log in. Any
 		// other inactive account (approved-but-blocked supplier, plain
 		// customer, lookup failure) keeps the generic disabled failure
 		// below, byte for byte.
@@ -388,111 +386,10 @@ func writeAuthenticatedSession(w http.ResponseWriter, jwtService *auth.JWTServic
 	})
 }
 
-// GAP 19b: supplier account states on the password-login path. The
+// Supplier account states after OTP verification. The
 // codes are part of the login contract; the frontend renders a
 // dedicated pending/rejected screen from them.
 const (
 	supplierPendingApprovalCode = "supplier_pending_approval"
 	supplierRejectedCode        = "supplier_rejected"
 )
-
-func handlePasswordLogin(
-	w http.ResponseWriter,
-	r *http.Request,
-	ctx context.Context,
-	userRepo *repository.UserRepository,
-	jwtService *auth.JWTService,
-	supplierRepo *repository.SupplierRepository,
-) {
-	w.Header().Set("Content-Type", "application/json")
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Username) == "" || req.Password == "" {
-		http.Error(w, `{"error":"Invalid login payload"}`, http.StatusBadRequest)
-		return
-	}
-
-	user, passwordHash, _, lockedUntil, err := userRepo.FindByUsername(ctx, strings.TrimSpace(req.Username))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if user == nil || passwordHash == "" {
-		http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
-		return
-	}
-	if lockedUntil != nil && lockedUntil.After(time.Now()) {
-		http.Error(w, `{"error":"Account temporarily locked"}`, http.StatusTooManyRequests)
-		return
-	}
-	// The password is verified BEFORE any account state is examined:
-	// a wrong password always gets the generic failure, so nothing
-	// about pending/rejected/blocked leaks to anyone who has not
-	// proven ownership of the account.
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
-		_ = userRepo.RecordLoginFailure(ctx, user.ID, 30*time.Second)
-		http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
-		return
-	}
-	if err := userRepo.ResetLoginFailures(ctx, user.ID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if !user.IsActive {
-		// Ownership is proven at this point, so a supplier owner may
-		// be told WHY the account cannot log in: still waiting for
-		// admin approval, rejected (with the recorded reason), or
-		// approved but blocked. Any other inactive account keeps the
-		// pre-existing generic failure, byte for byte.
-		if supplierRepo != nil && user.Role == "supplier" {
-			if sup, serr := supplierRepo.GetSupplierByUserID(ctx, user.ID); serr == nil && sup != nil {
-				switch sup.ApprovalStatus {
-				case "pending_approval":
-					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"error":         "حساب تأمین‌کننده شما در انتظار تأیید مدیریت است",
-						"code":          supplierPendingApprovalCode,
-						"supplierName":  sup.Name,
-						"warehouseCity": sup.WarehouseCity,
-					})
-					return
-				case "rejected":
-					body := map[string]interface{}{
-						"error":         "درخواست تأمین‌کننده شما رد شده است",
-						"code":          supplierRejectedCode,
-						"supplierName":  sup.Name,
-						"warehouseCity": sup.WarehouseCity,
-					}
-					if sup.RejectionReason != nil && *sup.RejectionReason != "" {
-						body["rejectionReason"] = *sup.RejectionReason
-					}
-					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(body)
-					return
-				case "approved":
-					// Approved but blocked: the platform's existing
-					// disabled-account response.
-					http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
-					return
-				}
-			}
-		}
-		http.Error(w, `{"error":"Invalid username or password"}`, http.StatusUnauthorized)
-		return
-	}
-
-	claims := &auth.UserClaims{UserID: user.ID}
-	blocked, err := jwtService.RefreshAuthState(ctx, claims)
-	if err != nil {
-		http.Error(w, `{"error":"Authorization state unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-	if blocked {
-		http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
-		return
-	}
-	writeAuthenticatedSession(w, jwtService, user, sessionRole(user.Role, claims.Capabilities), claims.Capabilities)
-}

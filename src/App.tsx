@@ -1,5 +1,4 @@
-import React, { useEffect, useRef } from 'react';
-import { PanelsPreview } from './components/PanelsPreview';
+import React, { lazy, Suspense, useEffect, useRef } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { ProductProvider } from './context/ProductContext';
 import { CartProvider } from './context/CartContext';
@@ -40,16 +39,22 @@ import { SupplierLandingView } from './components/views/SupplierLandingView';
 import { DropshipperLandingView } from './components/views/DropshipperLandingView';
 
 // Phase 2, 3, 4, 5, 6 & 7 Components
-import { SellerDashboardView } from './components/seller/SellerDashboardView';
 import { SellerStorefrontView } from './components/storefront/SellerStorefrontView';
 import { NotFoundView } from './components/NotFoundView';
 import { StoreUnsubscribeView } from './components/storefront/StoreUnsubscribeView';
 import { SeoManager } from './seo/SeoManager';
-import { SupplierDashboardView } from './components/supplier/SupplierDashboardView';
-import { WarehouseDashboardView } from './components/warehouse/WarehouseDashboardView';
-import { AdminDashboardView } from './components/admin/AdminDashboardView';
 import { AuthModal } from './components/auth/AuthModal';
 import { isMockMode } from './services/apiClient';
+
+const PanelsPreview = lazy(() => import('./components/PanelsPreview').then(module => ({ default: module.PanelsPreview })));
+const SellerDashboardView = lazy(() => import('./components/seller/SellerDashboardView').then(module => ({ default: module.SellerDashboardView })));
+const SupplierDashboardView = lazy(() => import('./components/supplier/SupplierDashboardView').then(module => ({ default: module.SupplierDashboardView })));
+const WarehouseDashboardView = lazy(() => import('./components/warehouse/WarehouseDashboardView').then(module => ({ default: module.WarehouseDashboardView })));
+const AdminDashboardView = lazy(() => import('./components/admin/AdminDashboardView').then(module => ({ default: module.AdminDashboardView })));
+
+function PanelLoading() {
+  return <div className="central-route-loading" role="status">در حال بارگذاری پنل…</div>;
+}
 
 const workspaceLabels: Record<AuthenticatedPanel, string> = {
   customer: 'فروشگاه',
@@ -59,11 +64,11 @@ const workspaceLabels: Record<AuthenticatedPanel, string> = {
   admin_panel: 'مدیریت',
 };
 
-function CustomerAccountSignIn({ onBack }: { onBack: () => void }) {
+function CustomerAccountSignIn({ onBack, central }: { onBack: () => void; central: boolean }) {
   const signedIn = useRef(false);
   return (
-    <main dir="rtl" className="min-h-dvh bg-[#f7f7fa]">
-      <AuthModal isOpen disableAutoNavigate roleTitle="ورود به حساب کاربری"
+    <main dir="rtl" className={central ? "min-h-dvh bg-[#f8f6ef]" : "min-h-dvh bg-[#f7f7fa]"}>
+      <AuthModal isOpen central={central} disableAutoNavigate roleTitle="ورود به حساب کاربری"
         onSuccess={() => { signedIn.current = true; }}
         onClose={() => { if (!signedIn.current) onBack(); }} />
     </main>
@@ -150,7 +155,7 @@ export const AppContent: React.FC = () => {
   }
   if ((activeView === 'customer_profile' || activeView === 'customer_orders' || activeView === 'customer_wishlist') &&
     !currentUser && !isMockMode()) {
-    return <CustomerAccountSignIn onBack={() => {
+    return <CustomerAccountSignIn central={!routeStoreSlug} onBack={() => {
       if (routeStoreSlug) {
         setActiveView('seller_storefront', { storeSlug: routeStoreSlug });
       } else {
@@ -161,10 +166,12 @@ export const AppContent: React.FC = () => {
   if (activeView === 'dashboard') {
     if (currentUser) return <div role="status">در حال انتقال به پنل مجاز…</div>;
     return (
-      <SellerDashboardView
-        onBackToCustomerSite={() => setActiveView('customer')}
-        onOpenStorefront={() => setActiveView('seller_storefront')}
-      />
+      <Suspense fallback={<PanelLoading />}>
+        <SellerDashboardView
+          onBackToCustomerSite={() => setActiveView('customer')}
+          onOpenStorefront={() => setActiveView('seller_storefront')}
+        />
+      </Suspense>
     );
   }
   const workspaceSwitcher = currentUser && authorizedPanels.length > 1 && (
@@ -216,7 +223,9 @@ export const AppContent: React.FC = () => {
     return (
       <>
         {workspaceSwitcher}
-        <AdminDashboardView onBackToCustomerSite={() => setActiveView('customer')} />
+        <Suspense fallback={<PanelLoading />}>
+          <AdminDashboardView onBackToCustomerSite={() => setActiveView('customer')} />
+        </Suspense>
       </>
     );
   }
@@ -241,10 +250,12 @@ export const AppContent: React.FC = () => {
 
         {/* View Switching based on active role & subpages */}
         {activeView === 'seller_dashboard' ? (
-          <SellerDashboardView
-            onBackToCustomerSite={() => setActiveView('customer')}
-            onOpenStorefront={() => setActiveView('seller_storefront')}
-          />
+          <Suspense fallback={<PanelLoading />}>
+            <SellerDashboardView
+              onBackToCustomerSite={() => setActiveView('customer')}
+              onOpenStorefront={() => setActiveView('seller_storefront')}
+            />
+          </Suspense>
         ) : activeView === 'seller_storefront' ? (
           storefrontUnsubscribeSlug ? (
             <StoreUnsubscribeView slug={storefrontUnsubscribeSlug} onBack={() => setActiveView('seller_storefront', { storeSlug: storefrontUnsubscribeSlug })} />
@@ -268,13 +279,17 @@ export const AppContent: React.FC = () => {
         ) : activeView === 'not_found' ? (
           <NotFoundView onBack={() => setActiveView('customer')} />
         ) : activeView === 'supplier_dashboard' ? (
-          <SupplierDashboardView
-            onBackToCustomerSite={() => setActiveView('customer')}
-          />
+          <Suspense fallback={<PanelLoading />}>
+            <SupplierDashboardView
+              onBackToCustomerSite={() => setActiveView('customer')}
+            />
+          </Suspense>
         ) : activeView === 'warehouse_panel' ? (
-          <WarehouseDashboardView
-            onBackToCustomerSite={() => setActiveView('customer')}
-          />
+          <Suspense fallback={<PanelLoading />}>
+            <WarehouseDashboardView
+              onBackToCustomerSite={() => setActiveView('customer')}
+            />
+          </Suspense>
         ) : activeView === 'product_detail' ? (
           routeProductPending ? (
             <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری کالا…</div>
@@ -419,7 +434,7 @@ export const AppContent: React.FC = () => {
 
 export const App: React.FC = () => {
   if (typeof window !== 'undefined' && window.location.pathname.replace(/\/+$/, '') === '/panels') {
-    return <PanelsPreview />;
+    return <Suspense fallback={<PanelLoading />}><PanelsPreview /></Suspense>;
   }
 
   return (

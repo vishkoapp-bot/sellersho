@@ -500,12 +500,12 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     const productIsInCart = cart.some(line => line.product.id === product.id);
     const purchaseShortcut = () => {
       purchaseRef.current?.focus({ preventScroll: true });
-      purchaseRef.current?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+      purchaseRef.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
     };
 
     return (
       <main id="main-content" tabIndex={-1} className="central-pdp" dir="rtl">
-        <div className="central-pdp-shell">
+        <div className="central-wrap central-pdp-shell">
           <header className="central-pdp-toolbar">
             <button type="button" onClick={onBack} className="central-pdp-back">
               <ArrowRight size={18} aria-hidden="true" />

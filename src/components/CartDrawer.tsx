@@ -140,7 +140,7 @@ export const CartDrawer: React.FC = () => {
     formatPrice,
     currentStore,
     routeStoreSlug,
-    storefrontSlug,
+    activeView,
     toPersianDigits
   } = useStore();
 
@@ -221,12 +221,15 @@ export const CartDrawer: React.FC = () => {
   const directPayable = directPricing ? directPricing.goodsPayable : 0;
   const directDiscount = directPricing ? directPricing.merchandiseDiscount : 0;
   const displayStoreName = isDirectBuy ? directLine?.storeName : (cart[0]?.storeName ?? currentStore?.name);
-  const centralCheckout = !routeStoreSlug && !storefrontSlug && currentStore?.ownerType !== 'dropshipper';
+  const centralCheckout = !routeStoreSlug && activeView !== 'seller_storefront' && currentStore?.ownerType !== 'dropshipper';
   const checkoutStyle = {
-    '--checkout-accent': centralCheckout ? '#164638' : 'var(--color-brand-deep)',
-    '--checkout-soft': centralCheckout ? '#eef3eb' : 'var(--color-brand-soft)',
-    '--checkout-ink': centralCheckout ? '#172d26' : '#1e293b',
-    '--checkout-bg': centralCheckout ? '#f8f6ef' : '#f8fafc',
+    '--checkout-accent': centralCheckout ? 'var(--shop-forest, #164638)' : 'var(--color-brand-deep)',
+    '--checkout-soft': centralCheckout ? 'var(--shop-soft, #edf2e9)' : 'var(--color-brand-soft)',
+    '--checkout-ink': centralCheckout ? 'var(--shop-ink, #172d26)' : '#1e293b',
+    '--checkout-bg': centralCheckout ? 'var(--shop-bg, #f8f6ef)' : '#f8fafc',
+    '--checkout-line': centralCheckout ? 'var(--shop-line, #dde2d7)' : 'var(--color-slate-200)',
+    '--checkout-muted': centralCheckout ? 'var(--shop-muted, #4f6359)' : 'var(--color-slate-600)',
+    '--checkout-radius': centralCheckout ? 'var(--shop-radius, 16px)' : '1rem',
   } as React.CSSProperties;
   useEffect(() => {
     if (!isCartOpen || isAuthOpen) return;
@@ -390,23 +393,23 @@ export const CartDrawer: React.FC = () => {
   // into shippingSlot, like live — they are not part of tt().
   const pricingBreakdown = (
     <>
-      <div className="flex justify-between text-slate-600 gap-3">
+      <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[var(--checkout-muted)] tabular-nums">
         <span>قیمت کالاها:</span>
         <span>{formatPrice(isDirectBuy ? directOriginal : cartTotal)} تومان</span>
       </div>
       {(isDirectBuy ? directAddonTotal : cartAddonsTotal) > 0 && (
-        <div className="flex justify-between text-slate-500">
+        <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[var(--checkout-muted)] tabular-nums">
           <span>محصولات مکمل:</span>
           <span>{formatPrice(isDirectBuy ? directAddonTotal : cartAddonsTotal)} تومان</span>
         </div>
       )}
       {(isDirectBuy ? directDiscount : cartDiscount) > 0 && (
-        <div className="flex justify-between text-rose-600 font-bold">
+        <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 font-bold tabular-nums text-rose-800">
           <span>تخفیف ویژه:</span>
           <span><bdi>−{formatPrice(isDirectBuy ? directDiscount : cartDiscount)}</bdi> تومان</span>
         </div>
       )}
-      <div className="flex justify-between text-slate-500">
+      <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[var(--checkout-muted)] tabular-nums">
         <span>هزینه ارسال سفارش:</span>
         <span className="font-bold">
           {effectiveStep === 'cart' ? 'با وارد کردن نشانی' :
@@ -416,7 +419,7 @@ export const CartDrawer: React.FC = () => {
             !isQuoteRefreshing && shippingQuoteState === 'error' ? 'محاسبه نشد' : 'در حال محاسبه…'}
         </span>
       </div>
-      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 border-t border-slate-200 pt-3 text-sm font-black text-[var(--checkout-ink)]">
+      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 border-t border-[var(--checkout-line)] pt-3 text-sm font-black tabular-nums text-[var(--checkout-ink)]">
         <span>{hasShippingQuote ? 'مبلغ قابل پرداخت' : isQuoteStale ? 'جمع با هزینهٔ ارسال قبلی' : 'جمع کالاها'}</span>
         <span className="whitespace-nowrap text-[var(--checkout-accent)]">{formatPrice(effectiveStep === 'checkout' ? finalPayable : goodsPayable)} تومان</span>
       </div>
@@ -755,7 +758,7 @@ export const CartDrawer: React.FC = () => {
   const stepIndex = steps.findIndex((step) => step.id === effectiveStep);
   const title = effectiveStep === 'cart' ? 'سبد خرید شما' : effectiveStep === 'checkout' ? 'تکمیل سفارش' : 'رسید سفارش';
   const priceText = formatPrice(effectiveStep === 'checkout' ? finalPayable : goodsPayable);
-  const primaryButton = 'min-h-12 w-full rounded-xl bg-[var(--checkout-accent)] px-4 text-sm font-extrabold text-white transition-colors hover:brightness-90 disabled:cursor-not-allowed disabled:opacity-55';
+  const primaryButton = 'min-h-12 min-w-0 w-full rounded-xl bg-[var(--checkout-accent)] px-3 text-sm font-extrabold text-white transition-colors hover:brightness-90 disabled:cursor-not-allowed disabled:opacity-55';
 
   return (
     <div dir="rtl" className="fixed inset-0 z-50 flex justify-center overflow-hidden bg-slate-950/55 lg:p-7">
@@ -766,43 +769,45 @@ export const CartDrawer: React.FC = () => {
         inert={isAuthOpen || undefined}
         onKeyDown={handleDialogKeys}
         style={checkoutStyle}
+        data-checkout-scope={centralCheckout ? 'central' : 'storefront'}
         initial={reducedMotion ? false : { y: 24, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: reducedMotion ? 0 : 0.18 }}
         className="flex h-dvh w-full min-w-0 max-w-[640px] flex-col overflow-hidden bg-[var(--checkout-bg)] text-[var(--checkout-ink)] shadow-2xl lg:my-auto lg:h-auto lg:max-h-[calc(100dvh-3.5rem)] lg:max-w-5xl lg:rounded-3xl"
       >
-        <header className="shrink-0 border-b border-slate-200/80 bg-white px-4 pt-3 sm:px-6">
+        <header className="shrink-0 border-b border-[var(--checkout-line)] bg-white px-4 pt-3.5 sm:px-6 sm:pt-5">
           <div className="flex items-center justify-between gap-3 pb-3">
             <div className="flex min-w-0 items-center gap-3">
               <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--checkout-soft)] text-[var(--checkout-accent)]">
                 <ShoppingBag className="size-5" aria-hidden="true" />
               </span>
               <div className="min-w-0">
-                <h3 id="cart-drawer-title" tabIndex={-1} ref={titleRef} className="text-base font-black leading-7 focus:outline-none sm:text-lg">{title}</h3>
+                <h3 id="cart-drawer-title" tabIndex={-1} ref={titleRef} className="text-lg font-black leading-7 text-balance focus:outline-none sm:text-2xl">{title}</h3>
                 {displayStoreName && effectiveStep !== 'success' && (
-                  <p className="truncate text-xs text-slate-600">{displayStoreName}</p>
+                  <p className="truncate text-sm text-[var(--checkout-muted)]">{displayStoreName}</p>
                 )}
               </div>
             </div>
-            <button type="button" onClick={handleClose} aria-label="بستن سبد خرید" className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-100">
+            <button type="button" onClick={handleClose} aria-label="بستن سبد خرید" className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--checkout-line)] bg-white text-[var(--checkout-ink)] hover:bg-[var(--checkout-soft)]">
               <X className="size-5" aria-hidden="true" />
             </button>
           </div>
           {(displayItems.length > 0 || effectiveStep === 'success') && (
-            <ol aria-label="مراحل سفارش" className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-100 py-2.5 text-xs sm:gap-x-7 sm:text-sm">
+            <ol aria-label="مراحل سفارش" className={`grid gap-1.5 border-t border-[var(--checkout-line)] py-2.5 text-xs sm:gap-3 sm:text-sm ${steps.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
               {steps.map((step, index) => (
-                <li key={step.id} aria-current={index === stepIndex ? 'step' : undefined} className={`flex items-center gap-1.5 font-semibold ${index === stepIndex ? 'text-[var(--checkout-accent)]' : 'text-slate-600'}`}>
-                  <span aria-hidden="true" className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] ${index === stepIndex ? 'bg-[var(--checkout-accent)] text-white' : 'bg-[var(--checkout-soft)] text-[var(--checkout-accent)]'}`}>
+                <li key={step.id} aria-current={index === stepIndex ? 'step' : undefined}
+                  className={`flex min-w-0 items-center gap-1.5 rounded-xl px-1.5 py-2 font-semibold sm:gap-2 sm:px-3 ${index === stepIndex ? 'bg-[var(--checkout-soft)] text-[var(--checkout-accent)]' : 'text-[var(--checkout-muted)]'}`}>
+                  <span aria-hidden="true" className={`grid size-5 shrink-0 place-items-center rounded-full text-[11px] tabular-nums sm:size-6 ${index <= stepIndex ? 'bg-[var(--checkout-accent)] text-white' : 'border border-[var(--checkout-line)] text-[var(--checkout-muted)]'}`}>
                     {index < stepIndex ? <Check className="size-3" /> : toPersianDigits(index + 1)}
                   </span>
-                  <span>{step.label}</span>
+                  <span className="min-w-0 leading-5">{step.label}</span>
                 </li>
               ))}
             </ol>
           )}
         </header>
 
-        <div ref={bodyRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
+        <div ref={bodyRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 [scrollbar-gutter:stable] sm:p-6">
           {checkoutAttempt && effectiveStep !== 'success' && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
               <p role="status">{checkoutAttempt.state === 'completed' ? 'سفارش قبلی ثبت شده است. برای خرید دوباره، «شروع خرید تازه» را بزنید.' : 'سفارش قبلی را بازیابی کنید تا از ثبت تکراری جلوگیری شود.'}</p>
@@ -833,7 +838,7 @@ export const CartDrawer: React.FC = () => {
           {effectiveStep === 'checkout' && (
             <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(270px,340px)] lg:gap-6">
               <form id="checkout-details" onSubmit={(event) => { event.preventDefault(); void handleCheckoutSubmit(); }}>
-                <fieldset disabled={orderBusy} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+                <fieldset disabled={orderBusy} className="min-w-0 rounded-[var(--checkout-radius)] border border-[var(--checkout-line)] bg-white p-4 sm:p-5">
                   {directLine && (
                     <div className="mb-5 flex items-start gap-3 rounded-xl bg-[var(--checkout-soft)] p-3 text-sm">
                       <Package className="mt-0.5 size-4 shrink-0 text-[var(--checkout-accent)]" aria-hidden="true" />
@@ -859,13 +864,13 @@ export const CartDrawer: React.FC = () => {
         </div>
 
         {effectiveStep !== 'success' && displayItems.length > 0 && (
-          <footer className="shrink-0 border-t border-slate-200/80 bg-white px-4 pt-3 pb-[max(.75rem,env(safe-area-inset-bottom))] sm:px-6">
+          <footer className="shrink-0 border-t border-[var(--checkout-line)] bg-white px-4 pt-3 pb-[max(.75rem,env(safe-area-inset-bottom))] sm:px-6">
             {effectiveStep === 'cart' ? (
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_250px] sm:items-end sm:gap-5">
                 <details className="group">
                   <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-sm [&::-webkit-details-marker]:hidden">
                     <span className="flex items-center gap-1 text-slate-700">جمع کالاها <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden="true" /></span>
-                    <strong className="text-[var(--checkout-accent)]">{priceText} تومان</strong>
+                    <strong className="font-extrabold tabular-nums text-[var(--checkout-accent)]">{priceText} تومان</strong>
                   </summary>
                   <div className="space-y-2 border-t border-slate-100 py-3 text-xs">{pricingBreakdown}</div>
                 </details>
@@ -878,7 +883,7 @@ export const CartDrawer: React.FC = () => {
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] sm:items-center sm:gap-5">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 text-sm sm:justify-start">
                   <span className="text-slate-700">{hasShippingQuote ? 'مبلغ قابل پرداخت' : isQuoteStale ? 'جمع با ارسال قبلی' : 'جمع کالاها'}</span>
-                  <strong className="whitespace-nowrap text-[var(--checkout-accent)]">{priceText} تومان</strong>
+                  <strong className="whitespace-nowrap text-base font-extrabold tabular-nums text-[var(--checkout-accent)]">{priceText} تومان</strong>
                   {!canConfirmOrder && (
                     <p id="checkout-submit-help" className="w-full text-xs leading-5 text-slate-600" aria-live="polite">
                       {mismatch && !mismatch.acknowledged ? 'هزینهٔ جدید را در بخش ارسال بررسی و تأیید کنید.' :
@@ -889,7 +894,7 @@ export const CartDrawer: React.FC = () => {
                   )}
                 </div>
                 <div className="flex items-stretch gap-2">
-                  <button type="button" disabled={orderBusy} onClick={() => { if (isDirectBuy) handleClose(); else setCheckoutStep('cart'); }} className="flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl border border-slate-300 px-3 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-55">
+                  <button type="button" disabled={orderBusy} onClick={() => { if (isDirectBuy) handleClose(); else setCheckoutStep('cart'); }} className="flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl border border-[var(--checkout-line)] px-2.5 text-xs font-bold text-[var(--checkout-ink)] hover:bg-[var(--checkout-soft)] disabled:opacity-55">
                     <ArrowRight className="size-4" aria-hidden="true" />
                     {isDirectBuy ? 'بازگشت به کالا' : 'بازگشت به سبد'}
                   </button>
@@ -908,7 +913,7 @@ export const CartDrawer: React.FC = () => {
           </footer>
         )}
 
-        <AuthModal
+        <AuthModal central={centralCheckout}
           isOpen={isAuthOpen}
           onClose={() => setIsAuthOpen(false)}
           onSuccess={(user) => {

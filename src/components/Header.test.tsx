@@ -102,5 +102,13 @@ test('control: a resolving suggestion fetch opens the dropdown while the input s
     await page.waitForFunction(() => (window as any).headerHarness.dropdownOpen(), { timeout: 5000 });
     const text = await page.evaluate(() => (window as any).headerHarness.dropdownText());
     assert.match(text, /تیشرت زنانه/);
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-suggestion]')), true);
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement?.matches('.central-suggestion-all')), true);
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement?.matches('#central-search')), true);
+    assert.equal(await page.evaluate(() => (window as any).headerHarness.dropdownOpen()), false);
   } finally { await context.close(); }
 });

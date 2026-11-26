@@ -1,9 +1,11 @@
+@import "./centralCards.css";
+
 .central-pdp {
-  --pdp-ink: #172d26;
-  --pdp-muted: #53665e;
-  --pdp-forest: #164638;
-  --pdp-line: #dddcd0;
-  --pdp-paper: #f8f6ef;
+  --pdp-ink: var(--shop-ink, #172d26);
+  --pdp-muted: var(--shop-muted, #4f6359);
+  --pdp-forest: var(--shop-forest, #164638);
+  --pdp-line: var(--shop-line, #dde2d7);
+  --pdp-paper: var(--shop-bg, #f8f6ef);
   flex: 1;
   background: var(--pdp-paper);
   color: var(--pdp-ink);
@@ -12,9 +14,7 @@
 }
 
 .central-pdp-shell {
-  width: min(100%, 84rem);
-  margin-inline: auto;
-  padding: .75rem clamp(1rem, 4vw, 3rem) 2rem;
+  padding-block: clamp(.75rem, 2.5vw, 1.75rem) 2rem;
 }
 
 .central-pdp-toolbar,
@@ -121,7 +121,7 @@
 .central-pdp-gallery-card {
   padding: clamp(.55rem, 1vw, 1rem);
   border: 1px solid var(--pdp-line);
-  border-radius: 1.25rem;
+  border-radius: var(--shop-radius-lg, 24px);
   background: #f1eee2;
 }
 
@@ -150,12 +150,12 @@
 .central-pdp-details {
   background: #fff;
   border: 1px solid var(--pdp-line);
-  border-radius: 1.25rem;
+  border-radius: var(--shop-radius-lg, 24px);
 }
 
 .central-pdp-purchase {
   grid-area: purchase;
-  scroll-margin-top: var(--storefront-header-height, 1rem);
+  scroll-margin-top: var(--shop-header-height, 1rem);
   min-width: 0;
   display: grid;
   gap: 1.15rem;
@@ -407,18 +407,38 @@
 .central-pdp-mobile-buy {
   position: fixed;
   z-index: 35;
-  bottom: calc(var(--storefront-bottom-nav-height, 64px) + env(safe-area-inset-bottom));
+  bottom: var(--storefront-bottom-nav-height, calc(64px + env(safe-area-inset-bottom)));
   inset-inline: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: .6rem;
-  padding: .6rem 1rem;
+  padding: .6rem var(--shop-gutter, 1rem);
   border-top: 1px solid var(--pdp-line);
   background: var(--pdp-paper);
   box-shadow: 0 -.25rem 1.5rem #172d2612;
   font-size: .875rem;
 }
+
+.central-pdp :is(.central-pdp-price, .central-pdp-subtotal, .central-pdp-stepper, .central-pdp-mobile-buy) {
+  font-variant-numeric: tabular-nums;
+}
+
+.central-pdp-details [aria-pressed="true"] {
+  background: var(--shop-soft, #edf2e9);
+  border-radius: 10px 10px 0 0;
+}
+
+.central-pdp-details dl {
+  margin-block-start: .75rem;
+  background: var(--shop-soft, #edf2e9);
+}
+
+.central-pdp-details dt {
+  color: var(--pdp-muted);
+}
+
+.central-pdp-details dd { overflow-wrap: anywhere; }
 
 .central-pdp-mobile-buy small,
 .central-pdp-mobile-buy strong {

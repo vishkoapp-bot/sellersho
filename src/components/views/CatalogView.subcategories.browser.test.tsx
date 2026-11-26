@@ -71,3 +71,30 @@ test('a failed search can be retried without losing the query or showing a false
     assert.equal(await page.$(error), null);
     assert.equal(new URL(page.url()).searchParams.get('q'), 'retry');
   }));
+
+test('narrow catalog keeps two aligned cards and restores keyboard focus when filters close', () =>
+  visit('/?category=digital', 320, async page => {
+    const cards = '.central-catalog-grid [data-testid="product-item"]';
+    const trigger = 'button[aria-controls="catalog-filters"]';
+    const mobileClose = 'button[aria-label="بستن فیلترها"]';
+    await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
+    await page.evaluate(() => (window as any).batch8Fixture.finish());
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, cards);
+    const geometry = await page.$$eval(cards, items => items.map(item => {
+      const card = item.getBoundingClientRect();
+      const action = item.querySelector('.product-card-action')?.getBoundingClientRect();
+      return { top: card.top, width: card.width, actionWidth: action?.width ?? 0 };
+    }));
+    assert.equal(geometry[0].top, geometry[1].top);
+    assert.equal(geometry[0].width, geometry[1].width);
+    assert.ok(geometry.every(item => item.actionWidth >= 44));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+
+    await page.focus(trigger);
+    await page.keyboard.press('Enter');
+    await page.waitForSelector(mobileClose, { visible: true });
+    await page.focus(mobileClose);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#catalog-filters', { hidden: true });
+    assert.equal(await page.evaluate(selector => document.activeElement === document.querySelector(selector), trigger), true);
+  }));

@@ -26,6 +26,7 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
   const searchRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const suggestionsId = useId();
   const menuId = useId();
   const pending = useRef<AbortController | null>(null);
@@ -58,6 +59,8 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
     setDraft(searchQuery);
     suppressed.current = searchQuery.trim();
     setSuggestionsOpen(false);
+    setResults(null);
+    setIsCatMenuOpen(false);
   }, [searchQuery, activeView, searchStoreSlug]);
 
   useEffect(() => {
@@ -92,6 +95,17 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
     return () => document.removeEventListener('pointerdown', closeOutside);
   }, [suggestionsOpen, isCatMenuOpen]);
 
+  useEffect(() => {
+    const header = headerRef.current;
+    const shell = header?.closest<HTMLElement>('.central-site');
+    if (!header || !shell || typeof ResizeObserver === 'undefined') return;
+    const update = () => shell.style.setProperty('--shop-header-height', sticky ? `${Math.ceil(header.getBoundingClientRect().height)}px` : '0px');
+    const observer = new ResizeObserver(update);
+    update();
+    observer.observe(header);
+    return () => { observer.disconnect(); shell.style.removeProperty('--shop-header-height'); };
+  }, [sticky]);
+
   const submitSearch = (term = liveDraft.current.trim()) => {
     stopSearch(term);
     openCatalogCategory('all', term);
@@ -99,7 +113,7 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
   };
 
   return (
-    <header className={`central-header ${sticky ? 'central-header--sticky' : ''}`}>
+    <header ref={headerRef} className={`central-header ${sticky ? 'central-header--sticky' : ''}`}>
       {mainId && <a className="central-skip" href={`#${mainId}`}>رفتن به محتوای اصلی</a>}
       <div className="central-wrap central-header-main">
         <a className="central-wordmark" href="/" onClick={event => followStoreLink(event, () => setActiveView('customer'))}>
@@ -110,11 +124,19 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
         <div className="central-search relative" ref={searchRef}
           onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setSuggestionsOpen(false); }}
           onKeyDown={event => {
-            if (event.key === 'Escape' && suggestionsOpen) { setSuggestionsOpen(false); searchInputRef.current?.focus(); }
-            if (event.key === 'ArrowDown' && displayedResults?.length && event.target === searchInputRef.current) {
+            if (event.key === 'Escape' && (suggestionsOpen || draft.trim().length >= 2)) {
               event.preventDefault();
-              searchRef.current?.querySelector<HTMLAnchorElement>('a[data-suggestion]')?.focus();
+              stopSearch(liveDraft.current.trim());
+              searchInputRef.current?.focus({ preventScroll: true });
+              return;
             }
+            if (!displayedResults || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+            const targets = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-suggestion], .central-suggestion-all'));
+            const index = targets.indexOf(event.target as HTMLElement);
+            if (index < 0 && event.target !== searchInputRef.current) return;
+            event.preventDefault();
+            const next = event.key === 'ArrowDown' ? targets[index + 1] : targets[index < 0 ? targets.length - 1 : index - 1];
+            (next ?? searchInputRef.current)?.focus();
           }}>
           <form role="search" aria-label="جست‌وجوی کالا" onSubmit={event => { event.preventDefault(); submitSearch(); }}>
             <Search className="central-search-icon" size={20} aria-hidden="true" />
@@ -122,14 +144,14 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
               value={draft} ref={searchInputRef} aria-controls={displayedResults ? suggestionsId : undefined}
               placeholder="نام کالا یا برند را جست‌وجو کنید…"
               onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); submitSearch(); } }}
-              onFocus={() => { if (results?.term === liveDraft.current.trim()) setSuggestionsOpen(true); }}
+              onFocus={() => { if (results?.term === liveDraft.current.trim() && suppressed.current !== results.term) setSuggestionsOpen(true); }}
               onChange={event => { liveDraft.current = event.target.value; suppressed.current = null; setDraft(event.target.value); setSuggestionsOpen(false); }} />
             {draft && <button type="button" className="central-icon" aria-label="پاک کردن جست‌وجو"
               onClick={() => { stopSearch(''); setDraft(''); setResults(null); searchInputRef.current?.focus(); }}>
               <X size={18} aria-hidden="true" />
             </button>}
             <button type="submit" className="central-search-submit" aria-label="جست‌وجو">
-              <span>جست‌وجو</span><ArrowLeft size={18} aria-hidden="true" />
+              <span>جست‌وجو</span><ArrowLeft className="central-submit-arrow" size={18} aria-hidden="true" /><Search className="central-submit-mobile" size={18} aria-hidden="true" />
             </button>
           </form>
           {displayedResults && (
@@ -215,7 +237,7 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
         </div>
       </nav>
 
-      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} onSuccess={() => {
+      <AuthModal central isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} onSuccess={() => {
         setIsAuthOpen(false);
         setActiveView('customer_profile');
       }} roleTitle="ورود به حساب کاربری خریدار" />

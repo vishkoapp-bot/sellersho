@@ -76,3 +76,25 @@ test('an address edit disables checkout before the debounced shipping quote refr
     await page.waitForSelector(`${submit}:not(:disabled)`);
   });
 });
+
+test('the central checkout keeps its own palette and fits the actions after a storefront visit', async () => {
+  await visit('/store/batch-eight-store', 320, async page => {
+    const drawer = '[role="dialog"][aria-labelledby="cart-drawer-title"]';
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state?.().storeSlug === 'batch-eight-store');
+    await page.evaluate(() => (window as any).batch8Fixture.openWorkspace('customer'));
+    await page.waitForFunction(() => {
+      const state = (window as any).batch8Fixture?.state?.();
+      return state?.view === 'customer' && state.storeSlug === 'central' && state.productCount === 24;
+    });
+    await page.evaluate(() => (window as any).batch8Fixture.openCheckout(15000));
+    await page.waitForSelector(drawer + ' [form="checkout-details"]');
+    assert.equal(await page.$eval(drawer, node => node.getAttribute('data-checkout-scope')), 'central');
+    const footer = await page.$eval(drawer + ' > footer', node => ({
+      width: node.clientWidth,
+      contentWidth: node.scrollWidth,
+      buttons: [...node.querySelectorAll('button')].map(button => button.getBoundingClientRect().height),
+    }));
+    assert.equal(footer.width, footer.contentWidth);
+    assert.ok(footer.buttons.every(height => height >= 44));
+  });
+});

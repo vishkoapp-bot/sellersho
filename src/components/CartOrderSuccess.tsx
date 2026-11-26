@@ -37,9 +37,9 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-6">
+      <section className="rounded-[var(--checkout-radius,1rem)] border border-[var(--checkout-line,#dde2d7)] bg-[var(--checkout-soft,#edf2e9)] p-4 sm:p-6">
         <div className="flex items-center gap-3">
-          <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-[var(--checkout-soft,_#ecfdf5)] text-[var(--checkout-accent,_#047857)]">
+          <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-white text-[var(--checkout-accent,_#047857)]">
             <CheckCircle2 className="size-6" aria-hidden="true" />
           </div>
           <div>
@@ -50,7 +50,7 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
             </div>}
           </div>
         </div>
-        <p className="mt-4 text-sm leading-7 text-slate-700">
+        <p className="mt-4 text-sm leading-7 text-[var(--checkout-muted,#4f6359)]">
           {recovered
             ? 'رسید زیر برای سفارش قبلی شماست. برای ثبت سفارش دیگری، بعد از بررسی این رسید خرید تازه‌ای شروع کنید.'
             : order.status === 'pending'
@@ -64,7 +64,7 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
         </button>
       </section>
 
-      <section aria-labelledby="checkout-receipt-details" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6">
+      <section aria-labelledby="checkout-receipt-details" className="space-y-3 rounded-[var(--checkout-radius,1rem)] border border-[var(--checkout-line,#dde2d7)] bg-white p-4 tabular-nums sm:p-6">
         <h4 id="checkout-receipt-details" className="text-base font-black">جزئیات رسید</h4>
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <span className="text-slate-600">شماره سفارش</span>
@@ -114,11 +114,11 @@ export const CartOrderSuccess: React.FC<CartOrderSuccessProps> = ({ order, onClo
           <span className="text-slate-600">روش پرداخت:</span>
           <span className="font-bold text-slate-800">پرداخت پس از ثبت سفارش</span>
         </div>
-        <div className="flex justify-between items-center text-sm">
-          <span className="text-slate-600">مبلغ قابل پرداخت:</span>
-          <span className="font-bold text-slate-800">{formatPrice(order.payableAmount)} تومان</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--checkout-soft,#edf2e9)] px-3 py-2.5 text-sm text-[var(--checkout-ink,#172d26)]">
+          <span className="font-bold">مبلغ قابل پرداخت:</span>
+          <strong className="text-base font-extrabold">{formatPrice(order.payableAmount)} تومان</strong>
         </div>
-        <div className="flex justify-between items-center text-xs border-t border-slate-200 pt-2">
+        <div className="flex justify-between items-center text-xs border-t border-[var(--checkout-line,#dde2d7)] pt-2">
           <span className="text-slate-600">فروشگاه:</span>
           <span className="font-bold text-slate-700">{order.storeName || '—'}</span>
         </div>

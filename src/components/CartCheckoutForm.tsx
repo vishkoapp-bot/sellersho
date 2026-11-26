@@ -101,11 +101,11 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
   const isPhoneValid = !customerInfo.phone || isValidIranianMobile(customerInfo.phone);
   const isPostalValid = !customerInfo.postalCode || isValidIranianPostalCode(customerInfo.postalCode);
 
-  const fieldClass = 'block min-h-12 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-base text-[var(--checkout-ink)] placeholder:text-slate-500 focus:border-[var(--checkout-accent)] focus:bg-white focus:outline-2 focus:outline-[var(--checkout-accent)] aria-invalid:border-rose-600';
-  const labelClass = 'mb-1.5 block text-sm font-bold text-slate-700';
+  const fieldClass = 'block min-h-12 w-full rounded-xl border border-[var(--checkout-line)] bg-[var(--checkout-bg)] px-3 py-2.5 text-base text-[var(--checkout-ink)] placeholder:text-[var(--checkout-muted)] focus:border-[var(--checkout-accent)] focus:bg-white focus:outline-2 focus:outline-offset-1 focus:outline-[var(--checkout-accent)] aria-invalid:border-rose-600';
+  const labelClass = 'mb-1.5 block text-sm font-bold text-[var(--checkout-ink)]';
 
   return (
-    <div className="space-y-5 text-[var(--checkout-ink)]">
+    <div className="space-y-6 text-[var(--checkout-ink)]">
       <section aria-labelledby="checkout-delivery-title" className="space-y-3">
         <h4 id="checkout-delivery-title" className="flex items-center gap-2 text-base font-black">
           <UserRound className="size-4 text-[var(--checkout-accent)]" aria-hidden="true" />
@@ -147,7 +147,7 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
         </div>
       </section>
 
-      <section aria-labelledby="checkout-address-title" className="space-y-3 border-t border-slate-200 pt-5">
+      <section aria-labelledby="checkout-address-title" className="space-y-3 border-t border-[var(--checkout-line)] pt-5">
         <h4 id="checkout-address-title" className="flex items-center gap-2 text-base font-black">
           <MapPin className="size-4 text-[var(--checkout-accent)]" aria-hidden="true" />
           نشانی تحویل
@@ -211,12 +211,12 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
         </div>
       </section>
 
-      <section aria-labelledby="checkout-payment-title" className="rounded-xl bg-[var(--checkout-soft)] p-3">
+      <section aria-labelledby="checkout-payment-title" className="rounded-xl border border-[var(--checkout-line)] bg-[var(--checkout-soft)] p-3.5">
         <h4 id="checkout-payment-title" className="flex items-center gap-2 text-sm font-black text-[var(--checkout-accent)]">
           <ReceiptText className="size-4" aria-hidden="true" />
           پرداخت پس از ثبت سفارش
         </h4>
-        <p className="mt-1.5 text-xs leading-6 text-slate-700">با زدن «ثبت سفارش» مبلغی کسر نمی‌شود. وضعیت و نحوهٔ پرداخت را از «سفارش‌های من» پیگیری کنید.</p>
+        <p className="mt-1.5 text-sm leading-7 text-[var(--checkout-muted)]">با زدن «ثبت سفارش» مبلغی کسر نمی‌شود. وضعیت و نحوهٔ پرداخت را از «سفارش‌های من» پیگیری کنید.</p>
       </section>
     </div>
   );

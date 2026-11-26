@@ -14,7 +14,7 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean; 
   return (
       <div className={central ? "central-pdp-details" : "pt-1"}>
         {central && <h2 className="text-xl font-extrabold">دربارهٔ کالا</h2>}
-        <div className={`flex border-b ${fashion ? 'border-[#e5e0d8]' : 'border-slate-200'} text-xs lg:text-sm font-bold mb-2`}>
+        <div className={`flex border-b ${fashion ? 'border-[#e5e0d8]' : 'border-slate-200'} text-xs lg:text-sm font-bold mb-2`} role="group" aria-label="اطلاعات کالا">
           <button
             type="button"
             aria-pressed={tab === 'specs'}
@@ -59,28 +59,28 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean; 
               <p className="text-sm text-[#53665e]">هنوز توضیح یا مشخصات فنی برای این کالا ثبت نشده است.</p>
             )}
             {Object.entries(product.specs || {}).length > 0 || productWeightLabel(product) ? (
-              <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-2.5 divide-y divide-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 divide-y divide-slate-200'}>
+              <dl className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-2.5 divide-y divide-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 divide-y divide-slate-200'}>
                 {/* P0: weight/dims are the first specs rows (they follow
                     the selected variant, unlike product.specs). */}
                 {product.weightGrams != null && product.weightGrams > 0 && (
-                  <div className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
-                    <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>وزن</span>
-                    <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'}>{toPersianDigitsFmt(product.weightGrams.toLocaleString('en-US')).replace(/,/g, '٬')} گرم</span>
+                  <div className="py-1.5 lg:py-2.5 flex justify-between gap-3 text-[11px] lg:text-sm">
+                    <dt className={fashion ? 'text-[#737373]' : 'text-slate-400'}>وزن</dt>
+                    <dd className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'}>{toPersianDigitsFmt(product.weightGrams.toLocaleString('en-US')).replace(/,/g, '٬')} گرم</dd>
                   </div>
                 )}
                 {product.lengthMm != null && product.widthMm != null && product.heightMm != null && (
-                  <div className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
-                    <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>ابعاد</span>
-                    <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'} dir="ltr">{toPersianDigitsFmt(`${product.lengthMm / 10}×${product.widthMm / 10}×${product.heightMm / 10}`)} <span dir="rtl">سانتی‌متر</span></span>
+                  <div className="py-1.5 lg:py-2.5 flex justify-between gap-3 text-[11px] lg:text-sm">
+                    <dt className={fashion ? 'text-[#737373]' : 'text-slate-400'}>ابعاد</dt>
+                    <dd className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'} dir="ltr">{toPersianDigitsFmt(`${product.lengthMm / 10}×${product.widthMm / 10}×${product.heightMm / 10}`)} <span dir="rtl">سانتی‌متر</span></dd>
                   </div>
                 )}
                 {Object.entries(product.specs || {}).map(([k, v]) => (
-                  <div key={k} className="py-1.5 lg:py-2.5 flex justify-between text-[11px] lg:text-sm">
-                    <span className={fashion ? 'text-[#737373]' : 'text-slate-400'}>{k}</span>
-                    <span className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'}>{v}</span>
+                  <div key={k} className="py-1.5 lg:py-2.5 flex justify-between gap-3 text-[11px] lg:text-sm">
+                    <dt className={fashion ? 'text-[#737373]' : 'text-slate-400'}>{k}</dt>
+                    <dd className={fashion ? 'font-bold text-[#1c1c1a]' : 'font-bold text-slate-800'}>{v}</dd>
                   </div>
                 ))}
-              </div>
+              </dl>
             ) : null}
           </div>
         ) : (
@@ -107,7 +107,7 @@ const ReviewsTab: React.FC<{ productId: string; fashion?: boolean }> = ({ produc
   if (state.loading) {
     return (
       <div className={fashion ? 'p-2.5 bg-white border border-[#e5e0d8] rounded-none text-xs lg:text-sm space-y-1' : 'p-2.5 bg-slate-50 rounded-xl text-xs lg:text-sm space-y-1'}>
-        <p className={`${fashion ? 'text-[#737373]' : 'text-slate-500'} text-[11px]`}>در حال بارگذاری نظرات…</p>
+        <p className={`${fashion ? 'text-[#737373]' : 'text-slate-500'} text-sm`} role="status">در حال بارگذاری نظرات…</p>
       </div>
     );
   }
@@ -115,7 +115,7 @@ const ReviewsTab: React.FC<{ productId: string; fashion?: boolean }> = ({ produc
   if (state.error) {
     return (
       <div className="py-2 space-y-2">
-        <p className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>بارگذاری نظرات ناموفق بود.</p>
+        <p className={`text-[11px] ${fashion ? 'text-[#737373]' : 'text-slate-600'}`} role="alert">بارگذاری نظرات ناموفق بود.</p>
         <button type="button" onClick={() => setRetry((r) => r + 1)} className={fashion ? 'text-[11px] font-bold px-3 py-1.5 rounded-none border border-[#e5e0d8] text-[#1c1c1a] hover:bg-[#f2f2f2]' : 'text-[11px] font-bold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50'}>تلاش مجدد</button>
       </div>
     );

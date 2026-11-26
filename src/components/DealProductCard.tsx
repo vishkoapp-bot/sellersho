@@ -1,11 +1,12 @@
-import React, { useRef, useState } from "react";
+import React from "react";
 import { Product } from "../types";
 import { buildProductUrl } from '../utils/routing';
 import { followStoreLink } from '../utils/followStoreLink';
 import { activeStoreSlugOf, useStore } from "../context/StoreContext";
 import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from "../context/ToastContext";
-import { Package, Plus } from "lucide-react";
+import { Package, Plus, SlidersHorizontal } from "lucide-react";
+import { FallbackImage } from './common/FallbackImage';
 import { cardPriceOf, cardPriceRangeOf } from "../utils/cardPrice";
 
 import { activeProductVariants, cartQuantityAllowed, resolvePurchase } from '../utils/productPurchase';
@@ -33,8 +34,10 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
   const available = product.variants?.length
     ? activeProductVariants(product).some((variant) => !!resolvePurchase(product, variant.id))
     : !!resolvePurchase(product);
+  const displayChoice = product.productType === 'variable' || Boolean(product.variants?.length && !resolvePurchase(product));
+  const ActionIcon = displayChoice ? SlidersHorizontal : Plus;
   const handleQuickAdd = () => {
-    if (product.productType === 'variable' || (product.variants?.length && !resolvePurchase(product))) {
+    if (displayChoice) {
       openProductDetail(product);
       return false;
     }
@@ -44,43 +47,21 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
     return true;
   };
   const { success } = useToast();
-  const [imageFailed, setImageFailed] = useState(false);
-  const retried = useRef(false);
-  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const img = e.currentTarget;
-    if (retried.current) {
-      setImageFailed(true);
-      return;
-    }
-    retried.current = true;
-    window.setTimeout(() => {
-      img.src = img.src + (img.src.includes("?") ? "&" : "?") + "retry=1";
-    }, 300);
-  };
   return (
     <div
       data-testid="product-item"
-      className="central-deal-card relative w-full h-[172px] lg:h-auto lg:min-h-[200px] shrink-0 self-center bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-all duration-200 flex cursor-pointer select-none group"
+      className="central-deal-card relative w-full min-h-[172px] lg:min-h-[200px] shrink-0 self-center bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-shadow duration-200 flex cursor-pointer select-none group"
     >
-      <div className="relative w-[112px] lg:w-[160px] xl:w-[180px] shrink-0 bg-[#f8fafc] overflow-hidden flex items-center justify-center">
-        {product.image && !imageFailed ? (
-          <img
-            src={product.image}
-            alt={product.title}
-            className="absolute inset-0 w-full h-full object-contain group-hover:scale-105 transition-transform duration-300"
-            loading="lazy"
-            decoding="async"
-            onError={handleImageError}
-          />
-        ) : (
-          <Package className="w-10 h-10 text-slate-300"  strokeWidth={1.5}/>
-        )}
+      <div className="product-card-media relative w-[min(112px,32%)] lg:w-[160px] xl:w-[180px] shrink-0 bg-[#f8fafc] overflow-hidden flex items-center justify-center">
+        <FallbackImage srcs={[product.image, ...(product.images ?? [])]} alt="" width={240} height={240}
+          className="absolute inset-0 w-full h-full object-contain motion-safe:group-hover:scale-105 transition-transform duration-300"
+          loading="lazy" decoding="async" fallback={<Package className="size-10 text-slate-400" strokeWidth={1.5} aria-hidden="true" />} />
       </div>
-      <div className="p-3 flex flex-col justify-between flex-1 min-w-0 gap-2">
+      <div className="product-card-body p-3 flex flex-col justify-between flex-1 min-w-0 gap-2">
         <div>
           <p
             data-testid="product-name"
-            className="text-[13px] lg:text-sm font-semibold text-[#252a3c] leading-[1.6] line-clamp-2"
+            className="product-card-name text-[13px] lg:text-sm font-semibold text-[#252a3c] leading-[1.6] line-clamp-2"
             title={product.title}
           >
             <a className="product-title-link" href={buildProductUrl(product, activeStoreSlugOf({ currentStore, routeStoreSlug }) ?? undefined)}
@@ -96,10 +77,10 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
         </div>
         <div>
           {displayPrice.discountPercent > 0 && (
-            <div className="flex items-center gap-1.5 pb-1.5">
+            <div className="product-card-offer flex items-center gap-1.5 pb-1.5">
               <span
                 data-testid="discount-badge"
-                className="bg-[#fb2c2c] text-white text-[11px] font-bold px-2 py-0.5 rounded-full inline-block leading-none"
+                className="product-card-discount bg-[#fb2c2c] text-white text-[11px] font-bold px-2 py-0.5 rounded-full inline-block leading-none"
               >
                 {toPersianDigits(displayPrice.discountPercent)}٪
               </span>
@@ -111,9 +92,10 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
               </span>
             </div>
           )}
-          <div className="flex items-center justify-between">
-            <div className="flex items-baseline gap-1">
-              <span className="text-[15px] lg:text-base font-bold text-[#252a3c]">
+          {(!available || !published) && <p className="product-card-status hidden">{!published ? 'عرضه نمی‌شود' : 'ناموجود'}</p>}
+          <div className="product-card-sale flex items-center justify-between">
+            <div className="product-card-amount flex items-baseline gap-1">
+              <span className="product-card-price text-[15px] lg:text-base font-bold text-[#252a3c]">
                 {formatPrice(displayPrice.price)}
               </span>
               <span className="text-[10px] text-slate-500 font-light">تومان</span>
@@ -126,11 +108,11 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
                 if (handleQuickAdd()) success("«" + product.title + "» به سبد خرید اضافه شد.");
               }}
               disabled={!available || !published}
-              aria-label={!published ? "در این فروشگاه عرضه نمی‌شود" : available ? "افزودن به سبد خرید" : "ناموجود"}
-              className="relative z-[3] w-11 h-11 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
+              aria-label={!published ? 'در این فروشگاه عرضه نمی‌شود' : !available ? 'ناموجود' : displayChoice ? `انتخاب مدل ${product.title}` : `افزودن ${product.title} به سبد خرید`}
+              className="product-card-action relative z-[3] w-11 h-11 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
             >
               <span aria-hidden="true" className="absolute -inset-[2px]" />
-              <Plus className="w-4 h-4 stroke-[2.5]"  strokeWidth={1.5}/>
+              <ActionIcon className="size-5" strokeWidth={1.75} aria-hidden="true" />
             </button>
           </div>
           {/* P1(a): price range, secondary line under the price row. */}

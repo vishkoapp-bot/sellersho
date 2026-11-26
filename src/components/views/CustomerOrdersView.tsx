@@ -274,7 +274,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
         body:has([data-customer-order-print]), body *:has([data-customer-order-print]) { display: block !important; min-height: 0 !important; }
         [data-customer-order-print] { border: 0 !important; box-shadow: none !important; }
       }`}</style>
-      <nav aria-label="سفارش و مرجوعی" className="mb-4 flex gap-2 rounded-xl bg-[var(--account-soft)] p-1.5 sm:mb-6 sm:w-fit">
+      <nav aria-label="سفارش و مرجوعی" className="mb-4 flex gap-2 rounded-xl border border-[var(--account-line)] bg-[var(--account-soft)] p-1.5 sm:mb-6 sm:w-fit">
         {[{ returns: false, label: 'سفارش‌ها', icon: Package }, { returns: true, label: 'مرجوعی‌های من', icon: RotateCcw }].map(({ returns, label, icon: Icon }) => (
           <button key={label} type="button" aria-pressed={returns === showReturns} onClick={() => showSection(returns)}
             className={`flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold sm:flex-none sm:px-5 ${returns === showReturns ? 'bg-white text-[var(--account-accent)] shadow-xs' : 'text-slate-700 hover:bg-white/70'}`}>
@@ -293,13 +293,13 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
             </div>
           )}
           {storeReturns.length === 0 && !loading && !returnsLoading && !returnsError && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
+            <div className="rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-5 sm:p-7">
               <p className="font-bold">درخواستی برای مرجوعی ثبت نکرده‌اید.</p>
               <p className="mt-1 text-sm leading-7 text-slate-600">برای کالای قابل مرجوعی، سفارش تحویل‌شده را باز کنید.</p>
               <button type="button" onClick={() => { setFilter('delivered'); showSection(false); }} className="mt-2 min-h-11 text-sm font-bold text-[var(--account-accent)] hover:underline">مشاهدهٔ سفارش‌های تحویل‌شده</button>
             </div>
           )}
-          {storeReturns.length > 0 && <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          {storeReturns.length > 0 && <ul className="divide-y divide-slate-100 overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white">
             {storeReturns.map((record) => (
               <li key={record.id} className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
                 <div className="min-w-0">
@@ -326,9 +326,9 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
         )}
         <div className={`grid gap-3 ${central ? 'lg:grid-cols-2 lg:gap-4' : ''}`}>
         {loading && filtered.length === 0 ? (
-          <p role="status" className="col-span-full rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-700">در حال دریافت سفارش‌ها…</p>
+          <p role="status" className="col-span-full rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-5 text-sm text-slate-700">در حال دریافت سفارش‌ها…</p>
         ) : filtered.length === 0 ? (
-          <div className="col-span-full rounded-2xl border border-slate-200 bg-white p-6 text-center sm:p-9">
+          <div className="col-span-full rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-6 text-center sm:p-9">
             <Package className="mx-auto mb-3 size-8 text-[var(--account-accent)]" aria-hidden="true" />
             <h2 className="font-extrabold">{filter === 'all' ? 'هنوز سفارشی در این فروشگاه ندارید' : 'سفارشی در این وضعیت یافت نشد'}</h2>
             {filter === 'all' && openCatalogCategory ? (
@@ -339,16 +339,16 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
           </div>
         ) : (
           filtered.map((ord) => (
-            <article key={ord.id} className="min-w-0 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm sm:p-5">
-              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
+            <article key={ord.id} className="min-w-0 space-y-3 rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-4 text-sm sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--account-line)] pb-3">
                 <div>
                   <h2 className="font-extrabold text-slate-900">سفارش <bdi className="select-text">{ord.orderNumber}</bdi></h2>
-                  <time className="mt-1 block text-xs text-slate-600">{accountDate(ord.createdAt)}</time>
+                  <time className="mt-1 block text-xs text-[var(--account-muted)]" dateTime={ord.createdAt}>{accountDate(ord.createdAt)}</time>
                 </div>
                 {getBadge(ord.status)}
               </div>
 
-              <div className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
+              <div className="space-y-2 rounded-xl bg-[var(--account-bg)] p-3 text-sm">
                 {ord.items.map((item, idx) => (
                   <div key={idx} className="flex justify-between items-center">
                     <span className="text-slate-700 min-w-0 break-words">{item.product.title}</span>
@@ -361,14 +361,14 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 <p className="text-[10px] text-slate-500">مهلت تست: {toPersianDigits(returnDaysLeft(ord) as number)} روز باقی مانده است؛ تا پایان آن امکان درخواست مرجوعی فعال است.</p>
               )}
 
-              <div className="flex items-center justify-between text-[11px] pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-sm tabular-nums">
                 <div>
-                  <span className="text-slate-400 text-[10px] block">مبلغ فاکتور:</span>
-                  <strong className="text-slate-900">{formatPrice(ord.payableAmount)} تومان</strong>
+                  <span className="block text-xs text-[var(--account-muted)]">مبلغ فاکتور:</span>
+                  <strong className="text-base font-extrabold text-[var(--account-ink)]">{formatPrice(ord.payableAmount)} تومان</strong>
                 </div>
                 {ord.trackingCode && (
                   <div className="flex items-center gap-1 text-[var(--account-accent)]">
-                    <bdi className="select-text font-bold">{ord.trackingCode}</bdi>
+                    <bdi className="max-w-full break-all select-text font-bold">{ord.trackingCode}</bdi>
                     <button type="button" aria-label="کپی کد رهگیری" onClick={() => void copyTracking(ord.trackingCode)}
                       className="grid size-11 place-items-center rounded-lg hover:bg-[var(--account-soft)]">
                       <Copy className="size-4" aria-hidden="true" />
@@ -449,7 +449,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:flex sm:flex-wrap">
+              <div className="grid grid-cols-2 gap-2 border-t border-[var(--account-line)] pt-3 sm:flex sm:flex-wrap">
                 <button
                   onClick={() => { setTrackingOrder(ord); setIsTrackingModalOpen(true); }}
                   className="min-h-11 px-3 bg-[var(--account-soft)] hover:brightness-95 text-[var(--account-accent)] font-bold text-[11px] rounded-xl flex items-center justify-center gap-1"
@@ -505,7 +505,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
 
       {returnModalOrder && (
         <dialog ref={returnModalRef} aria-labelledby="customer-return-title" onCancel={(event) => { event.preventDefault(); if (!returnBusy) setReturnModalOrder(null); }}
-          className="fixed inset-0 m-auto max-h-[calc(100dvh-1.5rem)] w-[calc(100%-1.5rem)] max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-2xl backdrop:bg-slate-950/60 sm:p-6">
+          className="fixed inset-0 m-auto max-h-[calc(100dvh-1.5rem)] w-[calc(100%-1.5rem)] max-w-xl overflow-y-auto rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-4 text-sm shadow-2xl backdrop:bg-slate-950/60 sm:p-6">
           <div className="space-y-4">
             <h3 id="customer-return-title" className="font-extrabold text-slate-900">ثبت مرجوعی برای سفارش <bdi>{returnModalOrder.orderNumber}</bdi></h3>
             <p className="text-slate-600">کالاهای مرجوعی و تعداد هر کدام را انتخاب کنید.</p>

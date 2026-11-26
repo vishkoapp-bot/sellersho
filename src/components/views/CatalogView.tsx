@@ -9,14 +9,15 @@ import { catalogApi, type FacetAttribute, type FacetBrand } from '../../services
 import { isMockMode } from '../../services/apiClient';
 import type { Category } from '../../types';
 import { remainingCatalogCount } from '../../utils/catalogRemaining';
+import { followStoreLink } from '../../utils/followStoreLink';
 import { normalizePersianText, pathForView } from '../../utils/routing';
 import { ProductCard } from '../ProductCard';
 import { PriceRangeSlider, PRICE_RANGE_ERROR_MESSAGE } from '../PriceRangeSlider';
 
-const pageWidth = 'mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-8';
-const control = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#d5e0d7] bg-white px-3 text-sm font-bold text-[#164638] hover:bg-[#edf4ee] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#164638]';
-const primary = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#164638] px-4 text-sm font-bold text-white hover:bg-[#215849] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#164638]';
-const grid = 'grid grid-cols-2 gap-3 max-[359px]:grid-cols-1 sm:grid-cols-3 xl:grid-cols-4';
+const pageWidth = 'central-wrap';
+const control = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[var(--shop-line,#d5e0d7)] bg-white px-3 text-sm font-bold text-[var(--shop-forest,#164638)] hover:bg-[var(--shop-soft,#edf4ee)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--shop-forest,#164638)]';
+const primary = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[var(--shop-forest,#164638)] px-4 text-sm font-bold text-white hover:bg-[#215849] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--shop-forest,#164638)]';
+const grid = 'central-catalog-grid grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4';
 const categoryFilter = { minPrice: null, maxPrice: null, brands: [], attributes: {} };
 
 const sortOptions = [
@@ -211,7 +212,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <li key={category.id}>
         <div className="flex items-stretch gap-1">
           <button type="button" aria-pressed={selected} onClick={() => chooseCategory(category.slug)}
-            className={`min-h-11 min-w-0 flex-1 rounded-lg px-2 text-start text-sm transition-colors focus-visible:outline-[#164638] ${selected ? 'bg-[#e5efe6] font-bold text-[#164638]' : 'text-[#40574d] hover:bg-[#f2f5ef]'}`}>
+            className={`min-h-11 min-w-0 flex-1 rounded-lg px-2 text-start text-sm transition-colors focus-visible:outline-[var(--shop-forest,#164638)] ${selected ? 'bg-[var(--shop-soft,#e5efe6)] font-bold text-[var(--shop-forest,#164638)]' : 'text-[var(--shop-muted,#40574d)] hover:bg-[#f2f5ef]'}`}>
             {category.title}
           </button>
           {children.length > 0 && depth < 2 && (
@@ -222,7 +223,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           )}
         </div>
         {isExpanded && children.length > 0 && depth < 2 && (
-          <ul className="ms-2 mt-1 space-y-1 border-s border-[#d5e0d7] ps-2">
+          <ul className="ms-2 mt-1 space-y-1 border-s border-[var(--shop-line,#d5e0d7)] ps-2">
             {children.map(child => renderCategory(child, depth + 1))}
           </ul>
         )}
@@ -236,36 +237,36 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const subcategories = hierarchy.byParent.get(hierarchy.selected?.id ?? null) ?? [];
   const parentCategories = hierarchy.path.slice(0, -1);
   return (
-    <main id="main-content" tabIndex={-1} dir="rtl" className="flex-1 bg-[#f8f6ef] pb-12 text-[#172d26]">
-      <header className="border-b border-[#dce5d9] bg-[#edf2e9]">
-        <div className={`${pageWidth} py-4 sm:py-7`}>
-          <nav aria-label="مسیر صفحه" className="mb-2 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#40574d]">
-            <a href="/" onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onBack(); } }}
-              className="inline-flex min-h-11 items-center rounded-md px-1 hover:underline focus-visible:outline-[#164638]">
+    <main id="main-content" tabIndex={-1} dir="rtl" className="central-catalog flex-1 bg-[var(--shop-bg,#f8f6ef)] pb-12 text-[var(--shop-ink,#172d26)]">
+      <header className="central-list-heading">
+        <div className={`${pageWidth} central-list-heading-inner`}>
+          <nav aria-label="مسیر صفحه" className="mb-2 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[var(--shop-muted,#40574d)]">
+            <a href="/" onClick={event => followStoreLink(event, onBack)}
+              className="inline-flex min-h-11 items-center rounded-md px-1 hover:underline focus-visible:outline-[var(--shop-forest,#164638)]">
               <ArrowRight size={16} className="me-1.5" aria-hidden /> خانه
             </a>
             {hierarchy.selected && (
               <>
                 <ChevronLeft size={13} aria-hidden />
-                <button type="button" onClick={() => chooseCategory('all')} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[#164638]">همهٔ کالاها</button>
+                <button type="button" onClick={() => chooseCategory('all')} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[var(--shop-forest,#164638)]">همهٔ کالاها</button>
               </>
             )}
             {parentCategories.map(category => (
               <React.Fragment key={category.id}>
                 <ChevronLeft size={13} aria-hidden />
-                <button type="button" onClick={() => chooseCategory(category.slug)} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[#164638]">{category.title}</button>
+                <button type="button" onClick={() => chooseCategory(category.slug)} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[var(--shop-forest,#164638)]">{category.title}</button>
               </React.Fragment>
             ))}
           </nav>
           <h1 className="wrap-anywhere text-2xl leading-snug font-black sm:text-4xl">{title}</h1>
-          <p className="mt-1.5 min-h-5 text-sm font-medium text-[#506357]" role="status">
-            {showSkeleton ? 'در حال بارگذاری کاتالوگ…' : catalogError ? 'به‌روزرسانی نتایج انجام نشد' : `${toPersianDigits(total)} کالا`}
+          <p className="mt-1.5 min-h-5 text-sm font-medium text-[var(--shop-muted,#506357)]" role="status">
+            {catalogLoading ? 'در حال بارگذاری کاتالوگ…' : catalogError ? 'به‌روزرسانی نتایج انجام نشد' : `${toPersianDigits(total)} کالا`}
           </p>
           {!!subcategories.length && (
-            <nav aria-label={hierarchy.selected ? 'زیردسته‌ها' : 'دسته‌ها'} className="mt-3 -mb-1 flex gap-2 overflow-x-auto py-1">
+            <nav aria-label={hierarchy.selected ? 'زیردسته‌ها' : 'دسته‌ها'} className="central-catalog-rail mt-3 -mb-1 flex gap-2 overflow-x-auto py-1">
               {subcategories.slice(0, 8).map(category => (
                 <a key={category.id} href={pathForView('catalog', { searchQuery, categorySlug: category.slug })}
-                  onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); chooseCategory(category.slug); } }}
+                  onClick={event => followStoreLink(event, () => chooseCategory(category.slug))}
                   className={`${control} shrink-0 whitespace-nowrap`}>{category.title}<ChevronLeft size={14} aria-hidden /></a>
               ))}
               {subcategories.length > 8 && <button type="button" onClick={() => setActiveView('categories_tree')} className={`${control} shrink-0`}>همهٔ دسته‌بندی‌ها</button>}
@@ -274,18 +275,18 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </div>
       </header>
 
-      <div className={`${pageWidth} pt-4 lg:grid lg:grid-cols-[250px_minmax(0,1fr)] lg:gap-x-6 lg:pt-7`}>
-        <div className="mb-3 flex flex-wrap items-center gap-2 lg:col-start-2 lg:row-start-1">
+      <div className={`${pageWidth} pt-4 lg:grid lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-x-6 lg:pt-7`}>
+        <div className="central-catalog-bar mb-3 flex flex-wrap items-center gap-2 lg:col-start-2 lg:row-start-1">
           <button ref={filterButton} type="button" aria-expanded={filtersOpen} aria-controls="catalog-filters"
             onClick={() => setFiltersOpen(open => !open)} className={`${control} lg:hidden`}>
             <SlidersHorizontal size={17} aria-hidden /> فیلترها
-            {filterCount > 0 && <span className="rounded-full bg-[#efc771] px-2 py-0.5 text-xs text-[#172d26]">{toPersianDigits(filterCount)}</span>}
+            {filterCount > 0 && <span className="rounded-full bg-[var(--shop-gold,#efc771)] px-2 py-0.5 text-xs text-[var(--shop-ink,#172d26)]">{toPersianDigits(filterCount)}</span>}
           </button>
           <label className={`${control} min-w-0 flex-1 justify-start gap-1 lg:flex-none`}>
             <ArrowUpDown size={16} aria-hidden />
             <span className="sr-only">مرتب‌سازی کالاها</span>
             <select value={sort} onChange={event => setCatalogFilter({ sort: event.target.value as typeof sort })}
-              className="min-h-11 min-w-0 flex-1 bg-transparent py-1 ps-1 pe-2 text-sm focus-visible:outline-[#164638]">
+              className="min-h-11 min-w-0 flex-1 bg-transparent py-1 ps-1 pe-2 text-sm focus-visible:outline-[var(--shop-forest,#164638)]">
               {sortOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
             </select>
           </label>
@@ -297,24 +298,25 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </div>
 
         <aside id="catalog-filters" aria-label="فیلترهای کاتالوگ"
-          className={`${filtersOpen ? 'block' : 'hidden'} mb-4 min-w-0 self-start rounded-2xl border border-[#dce5d9] bg-white p-3.5 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:mb-0 lg:block`}>
-          <div className="mb-2 flex items-center justify-between border-b border-[#e1e8de] pb-2">
+          onKeyDown={event => { if (event.key === 'Escape' && filtersOpen) closeFilters(); }}
+          className={`${filtersOpen ? 'block' : 'hidden'} central-catalog-filters mb-4 min-w-0 self-start rounded-2xl border border-[var(--shop-line,#dce5d9)] bg-white p-3.5 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:mb-0 lg:block`}>
+          <div className="central-catalog-filter-heading mb-2 flex items-center justify-between border-b border-[var(--shop-line,#e1e8de)] pb-2">
             <h2 className="flex items-center gap-2 text-base font-black"><SlidersHorizontal size={17} aria-hidden /> فیلترها</h2>
             <button type="button" aria-label="بستن فیلترها" className={`${control} lg:hidden`} onClick={closeFilters}><X size={18} aria-hidden /></button>
           </div>
-          <fieldset className="space-y-1 border-b border-[#e1e8de] pb-3">
+          <fieldset className="space-y-1 border-b border-[var(--shop-line,#e1e8de)] pb-3">
             <legend className="py-2 text-sm font-extrabold">وضعیت کالا</legend>
-            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
-              <input type="checkbox" checked={inStockOnly} onChange={event => setCatalogFilter({ inStockOnly: event.target.checked })} className="size-4 accent-[#164638]" />
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[var(--shop-soft,#edf4ee)]">
+              <input type="checkbox" checked={inStockOnly} onChange={event => setCatalogFilter({ inStockOnly: event.target.checked })} className="size-4 accent-[var(--shop-forest,#164638)]" />
               فقط کالاهای موجود
             </label>
-            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
-              <input type="checkbox" checked={onlyOriginal} onChange={event => setCatalogFilter({ onlyOriginal: event.target.checked })} className="size-4 accent-[#164638]" />
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[var(--shop-soft,#edf4ee)]">
+              <input type="checkbox" checked={onlyOriginal} onChange={event => setCatalogFilter({ onlyOriginal: event.target.checked })} className="size-4 accent-[var(--shop-forest,#164638)]" />
               فقط کالاهای اصل
             </label>
           </fieldset>
           {currentBounds && currentBounds.maxPrice > currentBounds.minPrice && (
-            <div className="border-b border-[#e1e8de] py-3 [&_input[type=text]]:min-h-11">
+            <div className="border-b border-[var(--shop-line,#e1e8de)] py-3 [&_input[type=text]]:min-h-11">
               <h3 className="mb-2 text-sm font-extrabold">محدودهٔ قیمت</h3>
               <PriceRangeSlider
                 key={selectedCategory}
@@ -332,11 +334,11 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             </div>
           )}
           {availableBrands.length > 0 && (
-            <fieldset className="border-b border-[#e1e8de] pb-2">
+            <fieldset className="border-b border-[var(--shop-line,#e1e8de)] pb-2">
               <legend className="py-2 text-sm font-extrabold">برند</legend>
               {availableBrands.map(brand => (
-                <label key={brand} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
-                  <input type="checkbox" checked={brands.includes(brand)} className="size-4 accent-[#164638]" onChange={() => {
+                <label key={brand} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[var(--shop-soft,#edf4ee)]">
+                  <input type="checkbox" checked={brands.includes(brand)} className="size-4 accent-[var(--shop-forest,#164638)]" onChange={() => {
                     if (brands.includes(brand)) removeBrand(brand);
                     else setCatalogFilter({ brands: [...brands, brand] });
                   }} />
@@ -346,12 +348,12 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             </fieldset>
           )}
           {availableAttrs.map(attr => (
-            <fieldset key={attr.id} className="border-b border-[#e1e8de] pb-2">
+            <fieldset key={attr.id} className="border-b border-[var(--shop-line,#e1e8de)] pb-2">
               <legend className="py-2 text-sm font-extrabold">{attr.title}</legend>
               {attr.values.map(value => (
-                <label key={value.id} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
+                <label key={value.id} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[var(--shop-soft,#edf4ee)]">
                   <input type="checkbox" checked={attributes[attr.id]?.includes(value.id) ?? false}
-                    className="size-4 accent-[#164638]" onChange={() => toggleAttribute(attr.id, value.id)} />
+                    className="size-4 accent-[var(--shop-forest,#164638)]" onChange={() => toggleAttribute(attr.id, value.id)} />
                   {value.titleFa || value.titleEn}
                 </label>
               ))}
@@ -361,7 +363,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             <h3 className="mb-2 text-sm font-extrabold">دسته‌بندی کالاها</h3>
             <ul className="space-y-1">
               <li><button type="button" aria-pressed={selectedCategory === 'all'} onClick={() => chooseCategory('all')}
-                className={`flex min-h-11 w-full items-center gap-1.5 rounded-lg px-2 text-start text-sm focus-visible:outline-[#164638] ${selectedCategory === 'all' ? 'bg-[#e5efe6] font-bold text-[#164638]' : 'text-[#40574d] hover:bg-[#f2f5ef]'}`}>
+                className={`flex min-h-11 w-full items-center gap-1.5 rounded-lg px-2 text-start text-sm focus-visible:outline-[var(--shop-forest,#164638)] ${selectedCategory === 'all' ? 'bg-[var(--shop-soft,#e5efe6)] font-bold text-[var(--shop-forest,#164638)]' : 'text-[var(--shop-muted,#40574d)] hover:bg-[#f2f5ef]'}`}>
                 {selectedCategory === 'all' && <Check size={15} aria-hidden />} همه
               </button></li>
               {(hierarchy.byParent.get(null) ?? []).map(category => renderCategory(category))}
@@ -397,18 +399,18 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           )}
           {showSkeleton ? (
             <div aria-hidden className={grid}>
-              {Array.from({ length: 8 }, (_, index) => <div key={index} className="aspect-[3/4] rounded-2xl border border-[#dce5d9] bg-[#e9eee3] motion-safe:animate-pulse" />)}
+              {Array.from({ length: 8 }, (_, index) => <div key={index} className="aspect-[3/4] rounded-2xl border border-[var(--shop-line,#dce5d9)] bg-[#e9eee3] motion-safe:animate-pulse" />)}
             </div>
           ) : visible.length === 0 && !catalogError && !catalogPriceRangeError ? (
-            <div className="rounded-2xl border border-[#dce5d9] bg-white px-4 py-12 text-center sm:py-20">
-              <div className="mx-auto mb-3 grid size-14 place-items-center rounded-2xl bg-[#edf4ee] text-[#164638]"><PackageX size={26} aria-hidden /></div>
+            <div className="rounded-2xl border border-[var(--shop-line,#dce5d9)] bg-white px-4 py-12 text-center sm:py-20">
+              <div className="mx-auto mb-3 grid size-14 place-items-center rounded-2xl bg-[var(--shop-soft,#edf4ee)] text-[var(--shop-forest,#164638)]"><PackageX size={26} aria-hidden /></div>
               <h2 className="text-lg font-black">کالایی یافت نشد</h2>
-              <p className="mt-1 text-sm leading-7 text-[#506357]">{searchQuery ? 'عبارت دیگری جستجو کنید یا همهٔ کالاها را ببینید.' : filterCount ? 'فیلترها را تغییر دهید تا کالاهای بیشتری ببینید.' : 'برای پیدا کردن کالا، دستهٔ دیگری را انتخاب کنید.'}</p>
+              <p className="mt-1 text-sm leading-7 text-[var(--shop-muted,#506357)]">{searchQuery ? 'عبارت دیگری جستجو کنید یا همهٔ کالاها را ببینید.' : filterCount ? 'فیلترها را تغییر دهید تا کالاهای بیشتری ببینید.' : 'برای پیدا کردن کالا، دستهٔ دیگری را انتخاب کنید.'}</p>
               <button type="button" onClick={resetFilters} className={`${primary} mt-4`}>مشاهده همه محصولات <ArrowLeft size={16} aria-hidden /></button>
             </div>
           ) : visible.length > 0 && (
             <>
-              <div className={`${grid} [&_.cv-card]:rounded-2xl [&_.cv-card]:border-[#e1e7dc] [&_.cv-card:hover]:border-[#a9beaf] [&_.cv-card>div:first-child]:bg-[#f1f4ed] [&_.cv-card>div:nth-child(2)]:p-3 [&_[data-testid=product-name]]:font-semibold [&_.cv-card_button:not(:disabled)]:bg-[#164638]`}>
+              <div className={grid}>
                 {visible.map(product => <ProductCard key={product.id} product={product} />)}
               </div>
               {liveMode && hasMoreCatalog && remaining > 0 && !catalogError && !catalogPriceRangeError && (
@@ -431,7 +433,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 const FilterChip: React.FC<{ label: string; onRemove: () => void }> = ({ label, onRemove }) => (
   <li>
     <button type="button" aria-label={`حذف فیلتر ${label}`} onClick={onRemove}
-      className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#ccdccc] bg-[#e9f0e7] px-3 font-bold text-[#164638] hover:bg-white focus-visible:outline-2 focus-visible:outline-[#164638]">
+      className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#ccdccc] bg-[#e9f0e7] px-3 font-bold text-[var(--shop-forest,#164638)] hover:bg-white focus-visible:outline-2 focus-visible:outline-[var(--shop-forest,#164638)]">
       {label} <X size={14} aria-hidden />
     </button>
   </li>

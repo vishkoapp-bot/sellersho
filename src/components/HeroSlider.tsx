@@ -12,7 +12,7 @@ export function CentralHomeIntro() {
       <div className="central-intro-copy">
         <p className="central-intro-label">فروشگاه آنلاین سلرشو</p>
         <h1 id="central-home-title">برای هر روز،<br /> انتخابی بهتر</h1>
-        <p>از کالاهای دیجیتال تا پوشاک و لوازم خانه. کالاها را پیدا کنید، جزئیات را ببینید و آنلاین سفارش دهید.</p>
+        <p>از کالاهای دیجیتال تا پوشاک و لوازم خانه. کالاها را بر اساس نیازتان مرور کنید و با دیدن جزئیات و قیمت، سفارش دهید.</p>
         <div className="central-intro-actions">
           <a className="central-button" href={pathForView('catalog')}
             onClick={event => followStoreLink(event, () => openCatalogCategory('all'))}>مشاهده همه کالاها<ArrowLeft size={19} aria-hidden="true" /></a>
@@ -21,7 +21,7 @@ export function CentralHomeIntro() {
         </div>
       </div>
       <div className="central-intro-media">
-        <img src="/storefront/central-hero.webp" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
+        <img src="/storefront/central-hero.webp" srcSet="/storefront/central-hero-small.webp 640w, /storefront/central-hero.webp 1200w" sizes="(max-width: 700px) 96vw, (max-width: 1352px) 56vw, 716px" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
       </div>
     </section>
   );

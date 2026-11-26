@@ -9,6 +9,7 @@ import { cardPriceOf, cardPriceVariantOf } from '../../utils/cardPrice';
 import { resolvePurchase, cartQuantityAllowed, type PurchaseResolution } from '../../utils/productPurchase';
 import { ArrowLeft, Heart, ShoppingCart, Trash2, PackageOpen } from 'lucide-react';
 import { buildProductUrl } from '../../utils/routing';
+import { FallbackImage } from '../common/FallbackImage';
 import { CustomerAccountLayout } from './CustomerProfileView';
 
 // Resolves the wishlist quick-add the same way the card prices it:
@@ -115,12 +116,12 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
       extra={entryIds.length > 0 && <span className="rounded-full bg-[var(--account-soft)] px-3 py-1.5 text-sm font-bold text-[var(--account-accent)]">{toPersianDigits(entryIds.length)} کالای ذخیره‌شده</span>}>
       <div className="space-y-4">
         {entryIds.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-10 text-center sm:py-14">
+          <div className="rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white px-6 py-10 text-center sm:py-14">
             <div className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-[var(--account-soft)] text-[var(--account-accent)]">
               <Heart className="size-7" aria-hidden="true" />
             </div>
             <h2 className="text-base font-extrabold">هنوز کالایی ذخیره نکرده‌اید</h2>
-            <p className="mt-1 text-sm leading-7 text-slate-600">برای ذخیرهٔ کالا، روی علامت قلب آن بزنید.</p>
+            <p className="mt-1 text-sm leading-7 text-[var(--account-muted)]">برای ذخیرهٔ کالا، روی علامت قلب آن بزنید.</p>
             <button type="button" onClick={() => openCatalogCategory('all')}
               className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-[var(--account-accent)] px-4 text-sm font-bold text-white hover:brightness-90">
               مشاهده محصولات <ArrowLeft className="size-4" aria-hidden="true" />
@@ -128,7 +129,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
           </div>
         ) : (
           <>
-            {pendingIds.length > 0 && <p role="status" className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">در حال دریافت کالاهای ذخیره‌شده…</p>}
+            {pendingIds.length > 0 && <p role="status" className="rounded-xl border border-[var(--account-line)] bg-white p-4 text-sm text-slate-600">در حال دریافت کالاهای ذخیره‌شده…</p>}
             {failedIds.length > 0 && (
               <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                 دریافت {toPersianDigits(failedIds.length)} کالا انجام نشد.
@@ -140,21 +141,20 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                 {savedProducts.map((product) => {
                   const purchase = resolveWishlistQuickAdd(product);
                   return (
-                    <li key={product.id} className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-2.5 sm:p-3">
+                    <li key={product.id} className="flex min-w-0 flex-col overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-2.5 sm:p-3">
                       <a href={buildProductUrl(product, scopedStoreSlug ?? undefined)} onClick={(event) => {
                         if (event.button || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
                         event.preventDefault();
                         openProductDetail(product);
-                      }} className="group flex-1">
-                        <div className="grid aspect-square place-items-center overflow-hidden rounded-xl bg-slate-50">
-                          {product.image ? (
-                            <img src={product.image} alt="" loading="lazy" decoding="async"
-                              className="size-full object-contain p-1 mix-blend-multiply transition-transform group-hover:scale-105 motion-reduce:transform-none" />
-                          ) : <PackageOpen className="size-8 text-slate-500" aria-hidden="true" />}
+                      }} className="group flex-1 rounded-lg focus-visible:outline-offset-[-2px]">
+                        <div className="grid aspect-square place-items-center overflow-hidden rounded-xl bg-[var(--account-bg)]">
+                          <FallbackImage srcs={[product.image]} alt="" width={240} height={240} loading="lazy" decoding="async"
+                            className="size-full object-contain p-1 motion-safe:transition-transform motion-safe:group-hover:scale-105"
+                            fallback={<PackageOpen className="size-8 text-[var(--account-muted)]" aria-hidden="true" />} />
                         </div>
-                        <h2 className="mt-2 line-clamp-2 min-h-10 break-words text-xs font-extrabold leading-5 sm:text-sm">{product.title}</h2>
+                        <h2 className="mt-2 line-clamp-2 min-h-12 break-words text-sm font-bold leading-6">{product.title}</h2>
                       </a>
-                      <p className="mt-1 text-sm font-extrabold text-[var(--account-accent)]">
+                      <p className="mt-1 text-base font-extrabold tabular-nums text-[var(--account-accent)]">
                         {purchase ? <>{formatPrice(cardPriceOf(product).price)} <span className="text-xs font-normal">تومان</span></> : 'ناموجود'}
                       </p>
                       <div className="mt-2 flex items-stretch gap-1.5 border-t border-slate-100 pt-2">
@@ -182,7 +182,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
               </ul>
             )}
             {unavailableIds.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--account-line)] bg-white p-4 text-sm text-slate-700">
                 {toPersianDigits(unavailableIds.length)} کالا دیگر در این فروشگاه عرضه نمی‌شود.
                 <button type="button" onClick={() => unavailableIds.forEach((id) => toggleWishlist(id, entryStore))}
                   className="min-h-11 font-bold text-[var(--account-accent)] underline">حذف کالاهای عرضه‌نشده</button>

@@ -17,20 +17,25 @@ type AccountLayoutProps = React.PropsWithChildren<{
 export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({ title, onBack, extra, central, children }) => {
   const Container = central ? 'main' : 'div';
   const tone = {
-    '--account-accent': central ? '#164638' : 'var(--color-brand-deep)',
-    '--account-soft': central ? '#edf2e9' : 'var(--color-brand-soft)',
+    '--account-accent': central ? 'var(--shop-forest, #164638)' : 'var(--color-brand-deep)',
+    '--account-soft': central ? 'var(--shop-soft, #edf2e9)' : 'var(--color-brand-soft)',
+    '--account-bg': central ? 'var(--shop-bg, #f8f6ef)' : 'var(--color-slate-50)',
+    '--account-ink': central ? 'var(--shop-ink, #172d26)' : 'var(--color-slate-900)',
+    '--account-line': central ? 'var(--shop-line, #dde2d7)' : 'var(--color-slate-200)',
+    '--account-muted': central ? 'var(--shop-muted, #4f6359)' : 'var(--color-slate-600)',
+    '--account-radius': central ? 'var(--shop-radius, 16px)' : '1rem',
   } as React.CSSProperties;
   return (
     <Container id={central ? 'main-content' : undefined} tabIndex={central ? -1 : undefined} style={tone}
-      className={`flex-1 ${central ? 'bg-[#f8f6ef] text-[#172d26]' : 'bg-slate-50 text-slate-900'}`}>
-      <div className="mx-auto w-full max-w-6xl px-4 pb-12 pt-5 sm:px-6 sm:pt-9 lg:px-8">
-        <header className="mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7">
+      className="flex-1 bg-[var(--account-bg)] text-[var(--account-ink)]">
+      <div className={central ? 'central-wrap pb-12 pt-5 sm:pt-8' : 'mx-auto w-full max-w-6xl px-4 pb-12 pt-5 sm:px-6 sm:pt-9 lg:px-8'}>
+        <header className={`mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7 ${central ? 'rounded-[var(--shop-radius-lg,24px)] border border-[var(--account-line)] bg-[var(--account-soft)] p-3.5 sm:p-6' : ''}`}>
           <div className="flex min-w-0 items-center gap-3">
             <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه"
-              className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-[var(--account-accent)] hover:bg-[var(--account-soft)]">
+              className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--account-line)] bg-white text-[var(--account-accent)] hover:bg-[var(--account-soft)]">
               <ArrowRight className="size-5" aria-hidden="true" />
             </button>
-            <h1 className="text-xl font-black sm:text-3xl">{title}</h1>
+            <h1 className="min-w-0 break-words text-xl font-black sm:text-3xl">{title}</h1>
           </div>
           {extra}
         </header>
@@ -47,15 +52,15 @@ type AccountRowProps = React.PropsWithChildren<{
 }>;
 const AccountRow: React.FC<AccountRowProps> = ({ title, icon: Icon, onOpen, children }) => (
   <button type="button" onClick={onOpen}
-    className="flex w-full items-center gap-3 px-4 py-3.5 text-start hover:bg-[var(--account-soft)] sm:px-5">
+    className="flex w-full items-center gap-3 px-4 py-3.5 text-start hover:bg-[var(--account-soft)] focus-visible:outline-offset-[-3px] sm:px-5 sm:py-4">
     <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--account-soft)] text-[var(--account-accent)]">
       <Icon className="size-5" aria-hidden />
     </span>
     <span className="min-w-0 flex-1">
       <span className="block text-sm font-bold">{title}</span>
-      <span className="mt-0.5 block text-xs leading-6 text-slate-600">{children}</span>
+      <span className="mt-0.5 block text-xs leading-6 text-[var(--account-muted)]">{children}</span>
     </span>
-    <ChevronLeft className="size-4 shrink-0 text-slate-600" aria-hidden="true" />
+    <ChevronLeft className="size-4 shrink-0 text-[var(--account-muted)]" aria-hidden="true" />
   </button>
 );
 
@@ -114,14 +119,14 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
       </button>}>
       <div className={`grid items-start gap-4 ${central ? 'lg:grid-cols-[minmax(260px,1fr)_minmax(0,1.8fr)] lg:gap-6' : ''}`}>
         <div className="space-y-4">
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-6" aria-label="مشخصات حساب">
+          <section className="rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-4 sm:p-6" aria-label="مشخصات حساب">
             <div className="flex flex-wrap items-center gap-3">
               <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-[var(--account-soft)] text-[var(--account-accent)]">
                 <User className="size-6" aria-hidden="true" />
               </span>
               <div className="min-w-0">
                 {customerUser.fullName && <h2 className="break-words text-base font-extrabold">{customerUser.fullName}</h2>}
-                <bdi dir="ltr" className="inline-block select-text text-sm font-semibold">{toPersianDigits(customerUser.mobile)}</bdi>
+                <bdi dir="ltr" className="inline-block select-text text-sm font-semibold tabular-nums text-[var(--account-muted)]">{toPersianDigits(customerUser.mobile)}</bdi>
               </div>
             </div>
             <p className="mt-4 flex items-center gap-2 text-xs font-semibold text-[var(--account-accent)]">
@@ -140,7 +145,7 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
           </div>}
         </div>
 
-        <nav aria-label="امکانات حساب" className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <nav aria-label="امکانات حساب" className="divide-y divide-[var(--account-line)] overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white">
           <AccountRow title="سفارش‌های من" icon={Package} onOpen={() => setActiveView('customer_orders')}>
             {orderCount === 0 ? 'وضعیت خریدهای این فروشگاه' : `${toPersianDigits(orderCount)} سفارش در این فروشگاه`}
           </AccountRow>

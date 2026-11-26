@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../../context/ToastContext';
 import { isValidIranianMobile, normalizeIranianMobile } from '../../utils/validators';
@@ -17,6 +17,7 @@ interface Props {
   onSuccess?: (user: { id: string; mobile: string; fullName: string; role: string; capabilities?: string[] }) => void;
   disableAutoNavigate?: boolean;
   roleTitle?: string;
+  central?: boolean;
 }
 
 export const AuthModal: React.FC<Props> = ({
@@ -25,10 +26,13 @@ export const AuthModal: React.FC<Props> = ({
   onSuccess,
   roleTitle = 'ورود سریع به حساب کاربری',
   disableAutoNavigate = false,
+  central = false,
 }) => {
   const { success, error, info } = useToast();
   const { loginWithOTP } = useAuth();
   const { currentStore, setActiveView, setCurrentStore } = useStore();
+  const titleId = useId();
+  const fieldId = useId();
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
@@ -36,18 +40,13 @@ export const AuthModal: React.FC<Props> = ({
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
-      document.body.style.paddingRight = `${scrollbarWidth}px`;
-    } else {
-      document.body.style.overflow = '';
-      document.body.style.paddingRight = '';
-    }
-    return () => {
-      document.body.style.overflow = '';
-      document.body.style.paddingRight = '';
-    };
+    if (!isOpen) return;
+    const { style } = document.body;
+    const { overflow, paddingRight } = style;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    style.overflow = 'hidden';
+    style.paddingRight = `${scrollbarWidth}px`;
+    return () => { style.overflow = overflow; style.paddingRight = paddingRight; };
   }, [isOpen]);
 
   useEffect(() => {
@@ -185,7 +184,24 @@ export const AuthModal: React.FC<Props> = ({
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white rounded-2xl max-w-[380px] w-full max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-4 shadow-2xl border border-slate-100 space-y-3"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className={`auth-dialog bg-white w-full max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain shadow-2xl ${central ? 'central-auth-dialog max-w-[410px]' : 'max-w-[380px] rounded-2xl p-4 border border-slate-100 space-y-3'}`}
+        onKeyDown={event => {
+          if (event.key === 'Escape') { event.stopPropagation(); onClose(); return; }
+          if (event.key !== 'Tab') return;
+          const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)'));
+          const first = controls[0];
+          const last = controls.at(-1);
+          if (event.shiftKey && event.target === first && last) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && event.target === last && first) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -194,8 +210,8 @@ export const AuthModal: React.FC<Props> = ({
               {step === 'phone' ? <Phone className="w-4 h-4"  strokeWidth={1.5}/> : <KeyRound className="w-4 h-4"  strokeWidth={1.5}/>}
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-900">{roleTitle}</h3>
-              <span className="text-[10px] text-slate-400 block">ارسال پیامک کد اعتبارسنجی</span>
+              <h3 id={titleId} className="auth-dialog-heading text-xs font-bold text-slate-900">{roleTitle}</h3>
+              <span className="auth-dialog-caption text-[10px] text-slate-400 block">{step === 'phone' ? 'ورود با کد پیامکی' : 'کد پیامک‌شده را وارد کنید.'}</span>
             </div>
           </div>
           <button onClick={onClose} aria-label="بستن" className="w-11 h-11 rounded-lg text-slate-400 hover:bg-slate-100 flex items-center justify-center">
@@ -206,8 +222,11 @@ export const AuthModal: React.FC<Props> = ({
         {step === 'phone' ? (
           <form onSubmit={handleSendOtp} className="space-y-3">
             <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">شماره موبایل</label>
+              <label htmlFor={fieldId} className="text-[11px] font-bold text-slate-700 block mb-1">شماره موبایل</label>
               <input
+                id={fieldId}
+                name="mobile"
+                autoComplete="tel-national"
                 type="tel"
                 placeholder="۰۹۱۲۳۴۵۶۷۸۹"
                 value={mobile}
@@ -231,17 +250,21 @@ export const AuthModal: React.FC<Props> = ({
           <form onSubmit={handleVerifyOtp} className="space-y-3">
             <div>
               <div className="flex justify-between items-center mb-1 text-[11px]">
-                <label className="font-bold text-slate-700">کد ۴ رقمی</label>
+                <label htmlFor={fieldId} className="font-bold text-slate-700">کد ۴ رقمی</label>
                 <button
                   type="button"
-                  onClick={() => setStep('phone')}
-                  className="text-brand-deep text-xs font-bold hover:underline py-1 px-1 -my-1"
+                  onClick={() => { setOtp(''); setStep('phone'); }}
+                  className="min-h-11 text-brand-deep text-xs font-bold hover:underline px-1"
                 >
                   ویرایش شماره
                 </button>
               </div>
               <input
                 type="text"
+                id={fieldId}
+                name="one-time-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
                 maxLength={4}
                 placeholder="• • • •"
                 value={otp}
@@ -258,7 +281,7 @@ export const AuthModal: React.FC<Props> = ({
               ) : (
                 <div className="flex items-center justify-between mt-1.5">
                   <span className="text-[10px] text-rose-500 font-bold">کد منقضی شد.</span>
-                  <button type="button" onClick={handleResendOtp} disabled={isLoading} className="text-[11px] text-brand-deep font-bold hover:underline disabled:opacity-50">
+                  <button type="button" onClick={handleResendOtp} disabled={isLoading} className="min-h-11 text-[11px] text-brand-deep font-bold hover:underline disabled:opacity-50">
                     ارسال مجدد کد
                   </button>
                 </div>

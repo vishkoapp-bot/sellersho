@@ -241,7 +241,7 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
         setIsAuthOpen(false);
         setActiveView('customer_profile');
       }} roleTitle="ورود به حساب کاربری خریدار" />
-      <NotificationDrawer isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
+      <NotificationDrawer central isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
     </header>
   );
 };

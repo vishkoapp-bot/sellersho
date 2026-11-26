@@ -38,15 +38,16 @@ export const SellerStep2: React.FC<SellerStep2Props> = ({ formData, setFormData 
               <button
                 type="button"
                 key={cat.id}
+                aria-pressed={active}
                 onClick={() => toggleCategory(cat.id)}
-                className={`p-2.5 rounded-xl border flex items-center justify-between transition-colors ${
+                className={`flex min-h-11 items-center justify-between gap-2 rounded-xl border p-2.5 text-start transition-colors ${
                   active
-                    ? 'bg-blue-50 border-blue-500 text-blue-700 font-bold'
+                    ? 'border-[var(--shop-forest,#164638)] bg-[var(--shop-soft,#edf2e9)] font-bold text-[var(--shop-forest,#164638)]'
                     : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
               >
                 <span>{cat.title}</span>
-                {active && <Check className="w-3.5 h-3.5 text-blue-600"  strokeWidth={1.5}/>}
+                {active && <Check className="w-3.5 h-3.5 shrink-0 text-[var(--shop-forest,#164638)]"  strokeWidth={1.5}/>}
               </button>
             );
           })}

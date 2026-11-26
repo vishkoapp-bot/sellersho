@@ -1,53 +1,154 @@
 import { markedUpPrice } from '../../utils/money';
 import React, { useState } from 'react';
-import { ArrowRight, ArrowLeft, Building2, CheckCircle2, ChevronDown, HelpCircle, Package, Sparkles, TrendingUp } from 'lucide-react';
+import { ArrowRight, ArrowLeft, Building2, CheckCircle2, Package, ChevronDown } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
-import { roundTo100 } from '../../utils/pricingEngine';
 import { useToast } from '../../context/ToastContext';
 import { authApi } from '../../services/authApi';
 
-interface Props { onBack: () => void; }
-const steps = [['۱','ثبت‌نام و پیشنهاد محصولات','محصولات خود را با قیمت عمده و مشخصات کامل پیشنهاد دهید.'],['۲','تأیید مدیر و انتشار','تیم ما محصولات را بررسی و در کاتالوگ مرکزی منتشر می‌کند.'],['۳','سفارش‌ها و تسویه','دراپ‌شیپرها می‌فروشند، شما ارسال می‌کنید و تسویه انجام می‌شود.']];
-const faqs = [['چطور قیمت‌گذاری پلکانی تعریف کنم؟','در پنل تأمین‌کننده برای هر محصول، بازه تعداد و قیمت مربوط به آن را اضافه کنید.'],['زمان تسویه چقدر است؟','تسویه طبق چرخه مالی پلتفرم و پس از تأیید تحویل سفارش انجام می‌شود.'],['آیا می‌توانم مستقیم ارسال کنم؟','بله، گزینه ارسال مستقیم از انبار تأمین‌کننده در پنل قابل فعال‌سازی است.']];
+const steps = [
+  ['ثبت‌نام و پیشنهاد محصولات', 'محصولات خود را با قیمت عمده و مشخصات کامل پیشنهاد دهید.'],
+  ['بررسی و انتشار', 'تیم ما محصولات را بررسی می‌کند و موارد تأییدشده در کاتالوگ مرکزی منتشر می‌شوند.'],
+  ['ارسال و تسویه', 'دراپ‌شیپرها می‌فروشند و پس از ارسال و تأیید تحویل، تسویه انجام می‌شود.'],
+];
+const benefits = ['عرضهٔ کالا در شبکهٔ فروشندگان', 'قیمت‌گذاری شفاف و کنترل موجودی', 'ارسال مستقیم یا از انبار مرکزی', 'گزارش فروش، موجودی و تسویه'];
+const faqs = [
+  ['چطور قیمت‌گذاری پلکانی تعریف کنم؟', 'در پنل تأمین‌کننده برای هر محصول، بازهٔ تعداد و قیمت مربوط به آن را اضافه کنید.'],
+  ['زمان تسویه چقدر است؟', 'تسویه طبق چرخهٔ مالی پلتفرم و پس از تأیید تحویل سفارش انجام می‌شود.'],
+  ['آیا می‌توانم مستقیم ارسال کنم؟', 'بله، گزینهٔ ارسال مستقیم از انبار تأمین‌کننده در پنل قابل فعال‌سازی است.'],
+];
+const fields = [
+  { key: 'companyName', label: 'نام شرکت یا برند', type: 'text', autoComplete: 'organization', required: true },
+  { key: 'managerName', label: 'نام مدیر (اختیاری)', type: 'text', autoComplete: 'name' },
+  { key: 'phone', label: 'شمارهٔ موبایل', type: 'tel', autoComplete: 'tel-national', required: true },
+  { key: 'email', label: 'ایمیل (اختیاری)', type: 'email', autoComplete: 'email' },
+  { key: 'warehouseCity', label: 'شهر انبار', type: 'text', autoComplete: 'off' },
+] as const;
+const panel = 'rounded-[var(--shop-radius-lg)] border border-[var(--shop-line)] bg-white p-4 sm:p-6';
 
-export const SupplierLandingView: React.FC<Props> = ({ onBack }) => {
+export const SupplierLandingView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const { platformSettings, formatPrice, toPersianDigits, setActiveView } = useStore();
   const { success, error } = useToast();
-  const [faq, setFaq] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState({ companyName:'', managerName:'', phone:'', email:'', warehouseCity:'تهران' });
-  const pct = platformSettings.platformPct ?? 0;
-  const C = 1200000, B = markedUpPrice(C, pct), fee = B - C, D = 200000, P = B + D;
-  const update = (key: keyof typeof form, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+  const [form, setForm] = useState({ companyName: '', managerName: '', phone: '', email: '', warehouseCity: 'تهران' });
+  const wholesalePrice = 1200000;
+  const basePrice = markedUpPrice(wholesalePrice, platformSettings.platformPct ?? 0);
+  const sellerProfit = 200000;
+  const example = [
+    ['قیمت عمدهٔ شما', wholesalePrice],
+    ['قیمت پایه در فروشگاه‌ها', basePrice],
+    ['سود فروشنده', sellerProfit],
+    ['قیمت نهایی مشتری', basePrice + sellerProfit],
+  ] as const;
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!form.companyName.trim()) return error('نام شرکت یا برند الزامی است.');
-    // B2 (round 2): the phone is the supplier's login identity (OTP re-login) — required and format-validated (09xxxxxxxxx). Never register without a real mobile.
-    if (!/^09\d{9}$/.test(form.phone.replace(/[\s-]/g, ''))) return error('شماره تماس معتبر وارد کنید (۱۱ رقم، با ۰۹ شروع شود).');
+    if (!/^09\d{9}$/.test(form.phone.replace(/[\s-]/g, ''))) return error('شمارهٔ موبایل معتبر وارد کنید (۱۱ رقم، با ۰۹ شروع شود).');
     setLoading(true);
     try {
       const result = await authApi.registerSupplier({
-        company_name: form.companyName, contact_person: form.managerName || form.companyName,
-        phone: form.phone, email: form.email, warehouse_city: form.warehouseCity,
+        company_name: form.companyName,
+        contact_person: form.managerName || form.companyName,
+        phone: form.phone,
+        email: form.email,
+        warehouse_city: form.warehouseCity,
       });
       if (!result.success || !result.supplierId) throw new Error('پاسخ ثبت‌نام معتبر نیست.');
       success('ثبت‌نام انجام شد. با شمارهٔ ثبت‌شده و کد پیامکی وارد شوید.');
       setActiveView('supplier_dashboard');
-    } catch (e: any) {
-      error(e?.message || 'ثبت‌نام انجام نشد.');
-    } finally { setLoading(false); }
+    } catch (cause) {
+      error(cause instanceof Error ? cause.message : 'ثبت‌نام انجام نشد.');
+    } finally {
+      setLoading(false);
+    }
   };
-  const scrollToForm = () => document.getElementById('supplier-form')?.scrollIntoView({ behavior:'smooth' });
-  return <div dir="rtl" className="flex-1 min-h-screen bg-slate-50 text-slate-800 pb-20">
-    <header className="sticky top-0 z-20 flex items-center justify-between border-b bg-white/95 px-3 py-2.5 backdrop-blur"><button onClick={onBack} className="rounded-xl p-2 hover:bg-slate-100" title="بازگشت"><ArrowRight className="h-5 w-5"  strokeWidth={1.5}/></button><div><h1 className="text-xs font-black">همکاری با تأمین‌کنندگان</h1><span className="text-[10px] text-slate-400">رشد فروش بدون هزینه بازاریابی</span></div><button onClick={scrollToForm} className="rounded-xl bg-blue-600 px-3 py-2 text-[10px] font-bold text-white">ثبت‌نام</button></header>
-    <main className="space-y-4 p-3.5">
-      <section className="rounded-3xl bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950 p-5 text-white shadow-xl"><Sparkles className="mb-3 h-5 w-5 text-blue-300"  strokeWidth={1.5}/><h2 className="text-lg font-black leading-relaxed">شریک تأمین ما شوید — محصولات خود را به هزاران دراپ‌شیپر برسانید</h2><p className="mt-2 text-xs leading-7 text-slate-300">محصولات شما در اختیار شبکه‌ای از فروشندگان آنلاین قرار می‌گیرد؛ شما روی تأمین و کیفیت تمرکز کنید.</p><button onClick={scrollToForm} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-500 py-3 text-xs font-black">شروع همکاری <ArrowLeft className="h-4 w-4"  strokeWidth={1.5}/></button></section>
-      <section className="rounded-2xl border bg-white p-4 shadow-sm"><h3 className="mb-3 flex items-center gap-2 text-sm font-black"><Package className="h-5 w-5 text-blue-600"  strokeWidth={1.5}/>چطور کار می‌کند؟</h3><div className="space-y-2">{steps.map(([n,title,text]) => <div key={n} className="flex gap-3 rounded-xl bg-slate-50 p-3"><b className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs text-white">{n}</b><div><b className="text-xs">{title}</b><p className="mt-1 text-[11px] leading-6 text-slate-500">{text}</p></div></div>)}</div></section>
-      <section className="rounded-2xl border bg-white p-4 shadow-sm"><h3 className="mb-3 text-sm font-black">مزایای همکاری</h3><div className="grid grid-cols-2 gap-2">{['دسترسی به هزاران دراپ‌شیپر بدون هزینه بازاریابی','قیمت‌گذاری شفاف و کنترل موجودی','ارسال مستقیم یا از انبار مرکزی','پنل گزارش فروش، موجودی و تسویه'].map((text) => <div key={text} className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-[11px] font-bold leading-6"><CheckCircle2 className="mb-1 h-4 w-4 text-blue-600"  strokeWidth={1.5}/>{text}</div>)}</div></section>
 
-      <section className="rounded-2xl border bg-white p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-black"><TrendingUp className="h-5 w-5 text-emerald-600"  strokeWidth={1.5}/>نمونهٔ یک فروش</h3>{[['قیمت عمده شما',C],['قیمت پایه فروش در فروشگاه‌ها',B],['سود فروشنده',D],['قیمت نهایی مشتری',P]].map(([label,value]) => <div key={label} className="flex justify-between border-b py-2 text-xs"><span>{label}</span><b>{formatPrice(Number(value))} تومان</b></div>)}<p className="mt-3 text-xs text-emerald-700">سهم شما از فروش: {formatPrice(C)} تومان؛ این ارقام صرفاً مثال هستند.</p></section>
-      <section id="supplier-form" className="scroll-mt-20 rounded-2xl border border-blue-200 bg-white p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-black"><Building2 className="h-5 w-5"  strokeWidth={1.5}/>ثبت‌نام تأمین‌کننده</h3><form onSubmit={submit} className="space-y-3">{([['companyName','نام شرکت یا برند'],['managerName','نام مدیر'],['phone','شماره تماس'],['email','ایمیل'],['warehouseCity','شهر انبار']] as const).map(([key,label]) => <label key={key} className="block text-xs font-bold">{label}<input required={['companyName','phone'].includes(key)} type={key === 'email' ? 'email' : key === 'phone' ? 'tel' : 'text'} value={form[key]} onChange={(e) => update(key,e.target.value)} className="mt-1 w-full rounded-xl border bg-slate-50 p-3 focus:border-blue-500" /></label>)}<details className="rounded-xl bg-slate-50 p-3 text-xs"><summary className="cursor-pointer font-bold">مطالعه قرارداد تأمین‌کننده</summary><p className="mt-3 whitespace-pre-wrap leading-7">{platformSettings.contracts.supplierContractText}</p></details><label className="flex gap-2 text-xs"><input type="checkbox" required />قرارداد تأمین‌کننده را مطالعه کرده‌ام و می‌پذیرم.</label><button disabled={loading} className="w-full rounded-xl bg-blue-600 py-3 text-xs font-black text-white disabled:opacity-50">{loading ? 'در حال ثبت...' : 'ثبت‌نام و ادامه به ورود'}</button></form></section>
-      <section className="rounded-2xl border bg-white p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-black"><HelpCircle className="h-5 w-5"  strokeWidth={1.5}/>پرسش‌های متداول</h3>{faqs.map(([question,answer],index) => <div key={question} className="border-b last:border-0"><button aria-expanded={faq === index} onClick={() => setFaq(faq === index ? null : index)} className="flex w-full items-center justify-between gap-2 py-3 text-right text-xs font-bold">{question}<ChevronDown className="h-4 w-4 shrink-0"  strokeWidth={1.5}/></button>{faq === index && <p className="pb-3 text-xs leading-6 text-slate-500">{answer}</p>}</div>)}</section>
+  return (
+    <main id="main-content" dir="rtl" tabIndex={-1} className="central-wrap flex-1 space-y-6 py-6 lg:space-y-8 lg:py-10">
+      <button type="button" onClick={onBack} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-2 text-sm font-bold text-[var(--shop-forest)] hover:bg-[var(--shop-soft)]">
+        <ArrowRight size={17} aria-hidden="true" /> بازگشت به فروشگاه
+      </button>
+      <section className="grid items-center gap-6 rounded-[var(--shop-radius-lg)] bg-[var(--shop-forest)] p-6 text-white sm:p-9 md:grid-cols-[1fr_auto] lg:p-12" aria-labelledby="supplier-heading">
+        <div>
+          <h1 id="supplier-heading" className="text-3xl leading-tight font-black sm:text-5xl">همکاری با تأمین‌کنندگان</h1>
+          <p className="mt-4 max-w-lg text-sm leading-7 text-[#e2ebe4] sm:text-base">محصولاتتان را به کاتالوگ سلرشو اضافه کنید و موجودی، سفارش‌ها و تسویه را از پنل تأمین‌کننده مدیریت کنید.</p>
+          <a href="#supplier-form" className="mt-5 inline-flex min-h-12 items-center gap-2 rounded-xl bg-[var(--shop-gold)] px-5 text-sm font-extrabold text-[var(--shop-ink)] hover:bg-[#f8d88e]">
+            ثبت‌نام تأمین‌کننده <ArrowLeft size={18} aria-hidden="true" />
+          </a>
+        </div>
+        <div className="hidden size-28 place-items-center rounded-3xl border border-white/25 bg-white/10 text-[var(--shop-gold)] md:grid" aria-hidden="true"><Building2 size={52} strokeWidth={1.4} /></div>
+      </section>
+
+      <section className={panel}>
+        <h2 className="mb-4 text-lg font-black">مراحل همکاری</h2>
+        <ol className="grid gap-3 md:grid-cols-3">
+          {steps.map(([title, copy], index) => (
+            <li key={title} className="flex gap-3 rounded-[var(--shop-radius)] bg-[var(--shop-soft)] p-4">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white text-sm font-black text-[var(--shop-forest)]" aria-hidden="true">{toPersianDigits(index + 1)}</span>
+              <div><h3 className="text-sm font-bold">{title}</h3><p className="mt-1 text-sm leading-6 text-[var(--shop-muted)]">{copy}</p></div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+        <div className="space-y-5">
+          <section className={panel}>
+            <h2 className="mb-4 text-lg font-black">امکانات تأمین‌کنندگان</h2>
+            <ul className="grid gap-3">
+              {benefits.map(benefit => <li key={benefit} className="flex items-center gap-2 text-sm leading-6"><CheckCircle2 size={17} className="shrink-0 text-[var(--shop-forest)]" aria-hidden="true" />{benefit}</li>)}
+            </ul>
+          </section>
+          <section className={panel}>
+            <h2 className="flex items-center gap-2 text-lg font-black"><Package size={20} className="text-[var(--shop-forest)]" aria-hidden="true" /> نمونهٔ محاسبهٔ یک فروش</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--shop-muted)]">این ارقام نمونه‌اند.</p>
+            <dl className="mt-4 divide-y divide-[var(--shop-line)] text-sm">
+              {example.map(([label, value]) => <div key={label} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-2.5"><dt>{label}</dt><dd className="font-bold tabular-nums">{formatPrice(value)} تومان</dd></div>)}
+            </dl>
+          </section>
+        </div>
+        <section id="supplier-form" tabIndex={-1} className={panel} aria-labelledby="supplier-form-title">
+          <h2 id="supplier-form-title" className="text-xl font-black">ثبت‌نام تأمین‌کننده</h2>
+          <p className="mt-2 text-sm leading-7 text-[var(--shop-muted)]">برای ورود به پنل، کد تأیید به همین شمارهٔ موبایل ارسال می‌شود.</p>
+          <form onSubmit={submit} className="mt-5 space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {fields.map(field => (
+                <label key={field.key} className="grid gap-1.5 text-sm font-bold">
+                  {field.label}
+                  <input name={field.key} autoComplete={field.autoComplete} type={field.type} required={'required' in field}
+                    dir={field.type === 'text' ? 'rtl' : 'ltr'} value={form[field.key]}
+                    onChange={event => setForm(current => ({ ...current, [field.key]: event.target.value }))}
+                    className="min-h-12 w-full rounded-xl border border-[var(--shop-line)] bg-[var(--shop-bg)] px-3 text-base font-medium focus:bg-white" />
+                </label>
+              ))}
+            </div>
+            <details className="rounded-xl border border-[var(--shop-line)] bg-[var(--shop-soft)] px-3">
+              <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 text-sm font-bold">مطالعهٔ قرارداد تأمین‌کننده <ChevronDown size={16} aria-hidden="true" /></summary>
+              <p className="pb-4 text-sm leading-7 whitespace-pre-wrap text-[var(--shop-muted)]">{platformSettings.contracts.supplierContractText}</p>
+            </details>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm leading-6">
+              <input type="checkbox" required className="size-4 shrink-0 accent-[var(--shop-forest)]" /> قرارداد تأمین‌کننده را مطالعه کرده‌ام و می‌پذیرم.
+            </label>
+            <button type="submit" disabled={loading} className="central-button w-full disabled:cursor-not-allowed disabled:opacity-60">
+              {loading ? 'در حال ثبت…' : 'ثبت‌نام و ادامه به ورود'}
+            </button>
+          </form>
+        </section>
+      </div>
+
+      <section className={panel}>
+        <h2 className="mb-2 text-lg font-black">پرسش‌های متداول</h2>
+        <div className="divide-y divide-[var(--shop-line)]">
+          {faqs.map(([question, answer]) => (
+            <details key={question} className="group">
+              <summary className="flex min-h-12 cursor-pointer items-center justify-between gap-3 py-2 text-sm font-bold">
+                {question}<ChevronDown size={17} className="shrink-0 group-open:rotate-180" aria-hidden="true" />
+              </summary>
+              <p className="pb-4 text-sm leading-7 text-[var(--shop-muted)]">{answer}</p>
+            </details>
+          ))}
+        </div>
+      </section>
     </main>
-  </div>;
+  );
 };

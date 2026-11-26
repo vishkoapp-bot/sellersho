@@ -47,6 +47,10 @@ const TAB_LABELS: Record<string, string> = {
 
 export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const { staticPageKey, openStaticPage, routeStoreSlug } = useStore();
+  const central = !routeStoreSlug;
+  const card = central
+    ? 'rounded-[var(--shop-radius)] border border-[var(--shop-line)] bg-white'
+    : 'rounded-2xl border border-slate-200/90 bg-white shadow-2xs';
   const [pages, setPages] = useState<CmsPage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
@@ -95,7 +99,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   const activePage = pages?.find((p) => p.key === activeTab) || null;
 
   const renderParagraphs = (content: string) => (
-    <div className="bg-white rounded-2xl border border-slate-200/90 p-4 space-y-2 text-xs text-slate-700 shadow-2xs leading-relaxed">
+    <div className={`${card} space-y-3 p-4 text-sm leading-7 sm:p-6`}>
       {activePage && <h2 className="text-sm font-bold text-slate-900">{activePage.title}</h2>}
       {content.split(/\n\s*\n/).map((para, idx) => (
         <p key={idx}>{para}</p>
@@ -114,12 +118,12 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
     return (
       <div className="space-y-2">
         {items.map((f, idx) => (
-          <div key={idx} className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-2xs">
-            <button type="button" aria-expanded={openFaq === idx} onClick={() => setOpenFaq(openFaq === idx ? null : idx)} className="min-h-11 w-full flex items-center justify-between gap-3 text-right font-bold text-xs text-slate-800">
+          <div key={idx} className={`${card} px-3 sm:px-5`}>
+            <button type="button" aria-expanded={openFaq === idx} onClick={() => setOpenFaq(openFaq === idx ? null : idx)} className="min-h-11 w-full flex items-center justify-between gap-3 py-2 text-start text-sm font-bold">
               <span>{f.q}</span>
               <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${openFaq === idx ? 'rotate-180' : ''}`}  strokeWidth={1.5}/>
             </button>
-            {openFaq === idx && <p className="text-[11px] text-slate-600 mt-2 pt-2 border-t border-slate-100">{f.a}</p>}
+            {openFaq === idx && <p className="border-t border-[var(--shop-line,#e2e8f0)] py-3 text-sm leading-7 text-[var(--shop-muted,#475569)]">{f.a}</p>}
           </div>
         ))}
       </div>
@@ -130,7 +134,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
     <main id="main-content" tabIndex={-1} className={routeStoreSlug ? "flex-1 flex flex-col bg-[#f8fafc] pb-20 lg:pb-8" : "central-info-page central-wrap"}>
       <header className="central-info-heading flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-slate-100 text-slate-700">
+          <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--shop-soft,#f1f5f9)] text-[var(--shop-forest,#334155)]">
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
           <h1 className="text-xl font-black text-slate-900">راهنمای خرید</h1>
@@ -166,15 +170,15 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
 
       <div className="central-info-content p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto">
         {loadError && (
-          <div className="bg-white rounded-2xl border border-slate-200/90 p-4 space-y-3 text-xs text-slate-700 shadow-2xs text-center">
+          <div className={`${card} space-y-3 p-5 text-center text-sm`}>
             <p role="alert">{loadError}</p>
-            <button onClick={load} className="py-2 px-4 bg-slate-900 text-white font-bold rounded-xl">
+            <button onClick={load} type="button" className={central ? 'central-button' : 'min-h-11 rounded-xl bg-slate-900 px-4 font-bold text-white'}>
               تلاش مجدد
             </button>
           </div>
         )}
         {!loadError && !pages && (
-          <div role="status" className="bg-white rounded-2xl border border-slate-200/90 p-4 text-xs text-slate-500 shadow-2xs text-center">
+          <div role="status" className={`${card} p-5 text-center text-sm text-[var(--shop-muted,#64748b)]`}>
             در حال بارگذاری…
           </div>
         )}

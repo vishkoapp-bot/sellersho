@@ -425,6 +425,22 @@ function fixtureOrder(shippingCost: number, items?: FixtureOrderItems): Order {
   };
 }
 
+if (routeParams.has('tracking-orders')) {
+  const previousFetch = window.fetch.bind(window);
+  window.fetch = async (input, options) => {
+    const path = new URL(String(input), window.location.href).pathname;
+    if (path === '/api/v1/orders') {
+      const base = { ...fixtureOrder(0), customerFullName: 'خریدار آزمایشی', customerProvince: 'تهران', customerCity: 'تهران' };
+      return Response.json([
+        { ...base, id: 'seller-tracking', storeId: seller.id, storeName: seller.name, trackingCode: 'OTHER-900', status: 'shipped' },
+        { ...base, id: 'central-tracking', trackingCode: 'DEMO-125', status: 'pending' },
+      ]);
+    }
+    if (path === '/api/v1/orders/central-tracking/shipping') return Response.json({ carrier: 'شرکت حمل نمونه' });
+    return previousFetch(input, options);
+  };
+}
+
 if (routeParams.has('fixture-orders')) {
   const fetchCatalogFixture = window.fetch.bind(window);
   window.fetch = async (input, options) => {

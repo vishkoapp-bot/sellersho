@@ -5,9 +5,9 @@ import { batch8Browser, clickText, fillInput, waitText } from '../../scripts/fix
 const visit = batch8Browser();
 for (const failure of [false, true]) {
   test(`seller wizard resumes after login and ${failure ? 'localizes a 401' : 'registers once'}`, async () => {
-    await visit('/?admin&holdInitialProfile', 390, async page => {
-      await clickText(page, 'راه‌اندازی دراپ‌شیپینگ');
-      await clickText(page, 'شروع');
+    await visit('/?holdInitialProfile', 390, async page => {
+      await page.locator('footer a[href="/become-seller"]').click();
+      await clickText(page, 'ساخت فروشگاه');
       await waitText(page, 'برای افتتاح فروشگاه ابتدا وارد حساب کاربری شوید');
       assert.equal(await page.$('input[placeholder="my-store"]'), null);
       assert.equal(await page.evaluate(() => (window as any).batch8Fixture.registrations), 0);
@@ -38,7 +38,7 @@ for (const failure of [false, true]) {
         }));
         assert.fail(JSON.stringify(result));
       }
-      assert.equal(new URL(page.url()).pathname, '/');
+      assert.equal(new URL(page.url()).pathname, '/become-seller');
       assert.equal(await page.evaluate(() => (window as any).batch8Fixture.state().view), 'dropshipper_landing');
       await fillInput(page, 'input[placeholder^="مثلاً"]', 'فروشگاه نمونه');
       await fillInput(page, 'input[placeholder="my-store"]', 'batch-eight-store');

@@ -1,240 +1,211 @@
-import React, { useEffect, useState } from 'react';
-import { useStore } from '../context/StoreContext';
-import { useToast } from '../context/ToastContext';
-import { TrackingTimeline } from './TrackingTimeline';
-import { maskName, maskAddress, ViewerRole } from '../utils/privacyMasker';
-import { X, Truck, Clock, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
-import { motion } from 'motion/react';
-import { orderApi, OrderShippingInfo } from '../services/orderApi';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { AlertCircle, CheckCircle2, PackageSearch, Search, Truck, X } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { followStoreLink } from '../utils/followStoreLink';
+import { pathForView } from '../utils/routing';
+import { activeStoreSlugOf, useStore } from '../context/StoreContext';
+import { useOrders } from '../context/OrderContext';
+import { maskName, type ViewerRole } from '../utils/privacyMasker';
+import { orderApi, type OrderShippingInfo } from '../services/orderApi';
 import { ReturnWindowBadge } from './ReturnWindowBadge';
+import { TrackingTimeline } from './TrackingTimeline';
 
 interface OrderTrackingModalProps {
   viewerRole?: ViewerRole;
+  central?: boolean;
 }
 
-export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({ viewerRole }) => {
-  const { 
-    isTrackingModalOpen, 
-    setIsTrackingModalOpen, 
-    orders, 
-    trackingOrder, 
-    setTrackingOrder, 
-    confirmOrderDelivery,
-    disputeOrderDelivery,
-    busyOrderId,
-    customerUser,
-    activeView,
-    formatPrice 
+export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({ viewerRole, central = false }) => {
+  const {
+    isTrackingModalOpen, setIsTrackingModalOpen, orders, trackingOrder, setTrackingOrder,
+    confirmOrderDelivery, disputeOrderDelivery, busyOrderId, activeView, currentStore, routeStoreSlug, setActiveView,
+    formatPrice, toPersianDigits,
   } = useStore();
-
-  const { error: toastError, success: toastSuccess } = useToast();
+  const { fetchMyOrders } = useOrders();
+  const { isAuthenticated } = useAuth();
+  const loadOrdersRef = useRef(fetchMyOrders);
+  loadOrdersRef.current = fetchMyOrders;
+  const dialog = useRef<HTMLDialogElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const helpId = useId();
+  const inputId = useId();
   const [inputCode, setInputCode] = useState('');
-  const [shippingInfo, setShippingInfo] = useState<OrderShippingInfo | null>(null);
-  // Team 08 (D64): shipping info display only (Team 03 backend
-  // GET /orders/<id>/shipping). Order creation is untouched. On any
-  // failure the section simply stays hidden; nothing is fabricated.
-  const trackingOrderId = (trackingOrder || (orders.length > 0 ? orders[0] : null))?.id;
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const [shipment, setShipment] = useState<{ orderId: string; info: OrderShippingInfo } | null>(null);
+  const storeOrders = orders.filter(order => order.storeId === currentStore.id);
+  const current = searchError ? null : trackingOrder?.storeId === currentStore.id ? trackingOrder : (storeOrders[0] ?? null);
+  const currentOrderId = current?.id;
+  const shippingInfo = shipment && shipment.orderId === currentOrderId ? shipment.info : null;
+  const effectiveRole = viewerRole ?? (activeView === 'seller_dashboard' ? 'seller' : 'customer');
+  const isMaskedForViewer = effectiveRole === 'seller' || effectiveRole === 'public';
+
   useEffect(() => {
-    if (!isTrackingModalOpen || !trackingOrderId) return;
-    let cancelled = false;
-    setShippingInfo(null);
-    orderApi.getOrderShipping(trackingOrderId)
-      .then((info) => { if (!cancelled) setShippingInfo(info); })
-      .catch(() => { /* shipping section stays hidden */ });
-    return () => { cancelled = true; };
-  }, [isTrackingModalOpen, trackingOrderId]);
+    if (!isTrackingModalOpen) return;
+    setInputCode('');
+    setSearchError(false);
+    setFeedback(null);
+    const panel = dialog.current;
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panel?.showModal();
+    return () => { if (panel?.open) panel.close(); };
+  }, [isTrackingModalOpen, currentStore.id]);
+
+  useEffect(() => {
+    if (!isTrackingModalOpen || !isAuthenticated) {
+      setOrdersLoading(false);
+      return;
+    }
+    let active = true;
+    setOrdersLoading(true);
+    void loadOrdersRef.current().finally(() => { if (active) setOrdersLoading(false); });
+    return () => { active = false; };
+  }, [isTrackingModalOpen, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isTrackingModalOpen || !currentOrderId) return;
+    let active = true;
+    setShipment(null);
+    orderApi.getOrderShipping(currentOrderId).then(info => {
+      if (active && info) setShipment({ orderId: currentOrderId, info });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [isTrackingModalOpen, currentOrderId]);
 
   if (!isTrackingModalOpen) return null;
 
-  const current = trackingOrder || (orders.length > 0 ? orders[0] : null);
-
-  // Determine effective viewer role
-  const effectiveRole: ViewerRole = viewerRole || (
-    activeView === 'seller_dashboard'
-      ? 'seller'
-      : customerUser && current && customerUser.fullName === current.customerInfo.fullName
-      ? 'customer'
-      : 'customer'
-  );
-
-  const isMaskedForViewer = effectiveRole === 'seller' || effectiveRole === 'public';
-  const displayedRecipient = current
-    ? (isMaskedForViewer ? `${maskName(current.customerInfo.fullName)} (${current.customerInfo.city})` : `${current.customerInfo.fullName} (${current.customerInfo.province}، ${current.customerInfo.city})`)
-    : '';
-
-  const handleSearch = () => {
-    if (!inputCode) return;
-    const found = orders.find(
-      (o) => o.trackingCode.toLowerCase() === inputCode.trim().toLowerCase()
-    );
-    if (found) {
-      setTrackingOrder(found);
-      toastSuccess(`اطلاعات مرسوله ${found.trackingCode} فراخوانی شد.`);
-    } else {
-      toastError('سفارشی با این کد رهگیری یافت نشد. لطفاً کد را مجدداً بررسی کنید.');
-    }
+  const close = () => {
+    if (dialog.current?.open) dialog.current.close();
+    returnFocus.current?.focus({ preventScroll: true });
+    setIsTrackingModalOpen(false);
   };
+  const search = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = inputCode.trim().toLowerCase();
+    if (!normalized || ordersLoading) return;
+    const found = storeOrders.find(order => order.trackingCode?.toLowerCase() === normalized);
+    setSearchError(!found);
+    setFeedback(null);
+    if (found) setTrackingOrder(found);
+  };
+  const recipient = current
+    ? [isMaskedForViewer ? maskName(current.customerInfo.fullName) : current.customerInfo.fullName,
+       isMaskedForViewer ? '' : current.customerInfo.province, current.customerInfo.city].filter(Boolean).join('، ')
+    : '';
+  const canReportDelivery = effectiveRole === 'customer' && (current?.status === 'shipped' || current?.status === 'delivered_unconfirmed');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 md:p-6 bg-slate-900/60 backdrop-blur-sm">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[90vh]"
-      >
-        <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Truck className="w-5 h-5 text-blue-400"  strokeWidth={1.5}/>
-            <h3 className="font-extrabold text-sm">پیگیری لحظه‌ای مرسوله</h3>
+    <dialog
+      ref={dialog}
+      dir="rtl"
+      className={`tracking-dialog ${central ? 'central-portal' : ''}`}
+      aria-labelledby={titleId}
+      onCancel={event => { event.preventDefault(); close(); }}
+      onClick={event => { if (event.target === event.currentTarget) close(); }}
+    >
+      <div className="tracking-panel">
+        <header className="tracking-header">
+          <span className="tracking-icon"><Truck size={23} aria-hidden="true" /></span>
+          <div>
+            <h2 id={titleId}>پیگیری مرسوله</h2>
+            <p>وضعیت ارسال و تحویل سفارش</p>
           </div>
-          <button
-            onClick={() => setIsTrackingModalOpen(false)}
-            className="p-1.5 rounded-full hover:bg-white/20 text-white transition-colors"
-          >
-            <X className="w-5 h-5"  strokeWidth={1.5}/>
+          <button type="button" className="tracking-close" aria-label="بستن پنجرهٔ رهگیری" onClick={close}>
+            <X size={19} aria-hidden="true" />
           </button>
-        </div>
+        </header>
 
-        <div className="p-5 overflow-y-auto no-scrollbar space-y-4">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="کد پیگیری را وارد کنید (مثلاً TRK-123456)"
-              value={inputCode}
-              onChange={(e) => setInputCode(e.target.value)}
-              className="flex-1 text-xs p-3 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-blue-500 font-mono"
-              dir="ltr"
-            />
-            <button
-              onClick={handleSearch}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-xl text-xs font-bold transition-colors"
-            >
-              رهگیری
-            </button>
-          </div>
+        <div className="tracking-content">
+          <form className="tracking-search" onSubmit={search}>
+            <label htmlFor={inputId}>کد رهگیری</label>
+            <div className="tracking-search-row">
+              <input id={inputId} name="tracking-code" type="text" dir="ltr" autoComplete="off" spellCheck={false}
+                enterKeyHint="search" placeholder="TRK-123456" value={inputCode}
+                aria-describedby={helpId} aria-invalid={searchError || undefined}
+                onChange={event => { setInputCode(event.target.value); setSearchError(false); }} />
+              <button type="submit" className="tracking-submit" disabled={!inputCode.trim() || ordersLoading}>
+                <Search size={17} aria-hidden="true" /> رهگیری
+              </button>
+            </div>
+            <p id={helpId}>کد درج‌شده در رسید سفارش این فروشگاه را وارد کنید.</p>
+          </form>
 
-          {current ? (
-            <div className="space-y-4 pt-2">
-              <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-100 space-y-2 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">کد رهگیری:</span>
-                  <span className="font-mono font-bold text-blue-700">{current.trackingCode}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">فروشگاه:</span>
-                  <span className="font-bold text-slate-800">{current.storeName}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">گیرنده مرسوله:</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-slate-800">{displayedRecipient}</span>
-                    {isMaskedForViewer && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-blue-50 text-blue-700 border border-blue-200" title="نام خریدار جهت حفظ حریم خصوصی ماسک شده است">
-                        حریم خصوصی
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">روش پرداخت:</span>
-                  <span className="font-bold text-slate-800">
-                    'پرداخت نقدی شتاب'
-                  </span>
-                </div>
-                <div className="flex justify-between border-t border-slate-200 pt-2 font-bold">
-                  <span className="text-slate-500">مبلغ کل سفارش:</span>
-                  <span className="text-slate-900">{formatPrice(current.payableAmount)} تومان</span>
-                </div>
-              </div>
+          {searchError ? (
+            <div className="tracking-notice tracking-notice--error" role="alert">
+              <AlertCircle size={19} aria-hidden="true" />
+              <p>سفارشی با این کد پیدا نشد. کد روی رسید را بررسی کنید.</p>
+            </div>
+          ) : current ? (
+            <>
+              <section className="tracking-card" aria-label="خلاصه سفارش">
+                <dl className="tracking-facts">
+                  <Fact label="کد رهگیری"><bdi>{current.trackingCode || 'هنوز صادر نشده'}</bdi></Fact>
+                  <Fact label="فروشگاه">{current.storeName}</Fact>
+                  <Fact label="گیرنده">{recipient}</Fact>
+                  <Fact label="مبلغ سفارش">{formatPrice(current.payableAmount)} تومان</Fact>
+                </dl>
+              </section>
 
               <TrackingTimeline status={current.status} />
 
               {shippingInfo && (
-                <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-100 space-y-2 text-xs">
-                  <h4 className="font-bold text-slate-800">اطلاعات ارسال</h4>
-                  {shippingInfo.carrier ? <div className="flex justify-between"><span className="text-slate-400">شرکت حمل:</span><span className="font-bold text-slate-800">{shippingInfo.carrier}</span></div> : null}
-                  {shippingInfo.trackingNumber ? <div className="flex justify-between"><span className="text-slate-400">شماره مرسوله:</span><span className="font-mono font-bold text-slate-800" dir="ltr">{shippingInfo.trackingNumber}</span></div> : null}
-                  {shippingInfo.boxSize ? <div className="flex justify-between"><span className="text-slate-400">اندازه بسته:</span><span className="font-bold text-slate-800">{shippingInfo.boxSize}</span></div> : null}
-                  {shippingInfo.weightGrams !== null && shippingInfo.weightGrams !== undefined ? <div className="flex justify-between"><span className="text-slate-400">وزن:</span><span className="font-bold text-slate-800">{shippingInfo.weightGrams} گرم</span></div> : null}
-                  {shippingInfo.packedAt ? <div className="flex justify-between"><span className="text-slate-400">زمان بسته‌بندی:</span><span className="font-bold text-slate-800">{shippingInfo.packedAt}</span></div> : null}
-                  {shippingInfo.shippedAt ? <div className="flex justify-between"><span className="text-slate-400">زمان ارسال:</span><span className="font-bold text-slate-800">{shippingInfo.shippedAt}</span></div> : null}
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">مهلت مرجوعی:</span>
-                    <ReturnWindowBadge returnWindowEndsAt={shippingInfo.returnWindowEndsAt} />
-                  </div>
-                </div>
+                <section className="tracking-card" aria-label="مشخصات ارسال">
+                  <h3>مشخصات ارسال</h3>
+                  <dl className="tracking-facts">
+                    {shippingInfo.carrier && <Fact label="شرکت حمل">{shippingInfo.carrier}</Fact>}
+                    {shippingInfo.trackingNumber && <Fact label="شماره مرسوله"><bdi>{shippingInfo.trackingNumber}</bdi></Fact>}
+                    {shippingInfo.boxSize && <Fact label="اندازه بسته">{shippingInfo.boxSize}</Fact>}
+                    {shippingInfo.weightGrams != null && <Fact label="وزن">{toPersianDigits(shippingInfo.weightGrams)} گرم</Fact>}
+                    {shippingInfo.packedAt && <Fact label="زمان بسته‌بندی">{shippingInfo.packedAt}</Fact>}
+                    {shippingInfo.shippedAt && <Fact label="زمان ارسال">{shippingInfo.shippedAt}</Fact>}
+                    <Fact label="مهلت مرجوعی"><ReturnWindowBadge returnWindowEndsAt={shippingInfo.returnWindowEndsAt} /></Fact>
+                  </dl>
+                </section>
               )}
 
-              {/* Requirement 4: Delivery Confirmation & Dispute Triggers */}
-              {(current.status === 'shipped' || current.status === 'delivered_unconfirmed') && (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
-                  <div className="text-center">
-                    <span className="text-xs font-bold text-slate-800 block">وضعیت دریافت مرسوله توسط شما:</span>
-                    <span className="text-[10px] text-slate-500">
-                      لطفاً وضعیت دریافت بسته را اعلام فرمایید.
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      disabled={busyOrderId === current.id}
-                      onClick={async () => {
-                        try {
-                          await confirmOrderDelivery(current.id);
-                          toastSuccess('تحویل مرسوله تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ سود فروشنده پس از پایان مهلت آزاد می‌شود.');
-                        } catch (e: any) { toastError(e?.message || 'تأیید تحویل انجام نشد.'); }
-                      }}
-                      className="py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs flex items-center justify-center gap-1 transition-all disabled:opacity-50"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                      <span>کالا را دریافت کردم</span>
+              {feedback && <p className={`tracking-notice ${feedback.error ? 'tracking-notice--error' : ''}`}
+                role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
+              {canReportDelivery && (
+                <section className="tracking-card">
+                  <h3>آیا بسته را دریافت کرده‌اید؟</h3>
+                  <div className="tracking-actions">
+                    <button type="button" className="tracking-submit" disabled={busyOrderId === current.id} onClick={async () => {
+                      try {
+                        await confirmOrderDelivery(current.id);
+                        setFeedback({ error: false, text: 'دریافت مرسوله ثبت شد.' });
+                      } catch (error) { setFeedback({ error: true, text: error instanceof Error ? error.message : 'تأیید تحویل انجام نشد.' }); }
+                    }}>
+                      <CheckCircle2 size={17} aria-hidden="true" /> دریافت کردم
                     </button>
-                    <button
-                      type="button"
-                      disabled={busyOrderId === current.id}
-                      onClick={async () => {
-                        try {
-                          const res = await disputeOrderDelivery(current.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
-                          toastSuccess(res?.id ? `گزارش عدم دریافت کالا ثبت شد (شماره پیگیری: ${res.id}). سفارش تا بررسی پشتیبانی، تأیید خودکار نمی‌شود.` : 'گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.');
-                        } catch (e: any) { toastError(e?.message || 'ثبت گزارش عدم دریافت انجام نشد.'); }
-                      }}
-                      className="py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 flex items-center justify-center gap-1 transition-all disabled:opacity-50"
-                    >
-                      <AlertCircle className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                      <span>هنوز دریافت نکرده‌ام</span>
-                    </button>
+                    <button type="button" className="tracking-secondary" disabled={busyOrderId === current.id} onClick={async () => {
+                      try {
+                        await disputeOrderDelivery(current.id, 'خریدار اعلام کرد بسته پستی هنوز به دست ایشان نرسیده است.');
+                        setFeedback({ error: false, text: 'گزارش عدم دریافت ثبت شد و در صف پیگیری پشتیبانی قرار گرفت.' });
+                      } catch (error) { setFeedback({ error: true, text: error instanceof Error ? error.message : 'ثبت گزارش عدم دریافت انجام نشد.' }); }
+                    }}>هنوز دریافت نکرده‌ام</button>
                   </div>
-                </div>
+                </section>
               )}
-
-              {current.status === 'delivery_disputed' && (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5 text-xs text-amber-900">
-                  <div className="flex items-center gap-1.5 font-bold">
-                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0"  strokeWidth={1.5}/>
-                    <span>سفارش در وضعیت بررسی عدم تحویل مرسوله</span>
-                  </div>
-                  <p className="text-[10px] text-amber-700 leading-relaxed">
-                    شما اعلام کرده‌اید که کالا به دستتان نرسیده است. این سفارش تا زمان پاسخ اداره پست و استعلام تیم پشتیبانی معلق شده و مبلغ در حساب دراپ‌شیپر قفل مانده است.
-                  </p>
-                </div>
-              )}
-
-              {current.status === 'delivered_confirmed' && (
-                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-center text-[11px] text-emerald-800 font-bold space-y-0.5">
-                  <div>تحویل مرسوله توسط خریدار تأیید شده است {current.confirmedAt ? `(${current.confirmedAt})` : ''}</div>
-                  <span className="text-[9px] text-emerald-600 font-normal block">مبلغ سفارش در کیف پول سلر آزاد و دوره مهلت تست ۷ روزه آغاز شد.</span>
-                </div>
-              )}
-            </div>
+            </>
+          ) : ordersLoading ? (
+            <p className="tracking-empty" role="status">در حال بارگذاری سفارش‌ها…</p>
           ) : (
-            <div className="text-center py-8 text-slate-400 space-y-1">
-              <Clock className="w-8 h-8 mx-auto text-slate-300"  strokeWidth={1.5}/>
-              <p className="text-xs">هنوز سفارشی در این مرورگر ثبت نشده است.</p>
-              <p className="text-[11px]">با ثبت اولین سفارش، وضعیت آن را به شکل زنده در اینجا ببینید.</p>
+            <div className="tracking-empty">
+              <span className="tracking-icon"><PackageSearch size={23} aria-hidden="true" /></span>
+              <strong>سفارشی برای نمایش در دسترس نیست</strong>
+              <p>سفارش‌های قبلی را در حساب خریدتان ببینید.</p>
+              <a className="tracking-secondary" href={pathForView('customer_orders', { storeSlug: activeStoreSlugOf({ routeStoreSlug, currentStore }) ?? undefined })}
+                onClick={event => followStoreLink(event, () => { close(); setActiveView('customer_orders'); })}>سفارش‌های من</a>
             </div>
           )}
         </div>
-      </motion.div>
-    </div>
+      </div>
+    </dialog>
   );
 };
+
+function Fact({ label, children }: React.PropsWithChildren<{ label: string }>) {
+  return <div><dt>{label}</dt><dd>{children}</dd></div>;
+}

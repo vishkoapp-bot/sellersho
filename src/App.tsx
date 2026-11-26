@@ -396,13 +396,13 @@ export const AppContent: React.FC = () => {
           )
         ) : activeView === 'supplier_landing' ? (
           <>
-            <Header sticky={false} />
+            <Header sticky={false} mainId="main-content" />
             <SupplierLandingView onBack={() => setActiveView('customer')} />
             <Footer />
           </>
         ) : activeView === 'dropshipper_landing' ? (
           <>
-            <Header sticky={false} />
+            <Header sticky={false} mainId="main-content" />
             <DropshipperLandingView onBack={() => setActiveView('customer')} />
             <Footer />
           </>
@@ -425,7 +425,7 @@ export const AppContent: React.FC = () => {
         <ProductDetailModal />
         <CartDrawer />
         <SellerOnboardingModal />
-        <OrderTrackingModal />
+        <OrderTrackingModal central={isCentralSite} />
         {showStorefrontNav ? <StorefrontBottomNav /> : isCentralSite ? <BottomNav /> : null}
       </div>
     </div>

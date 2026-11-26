@@ -59,6 +59,7 @@ export const SellerOnboardingModal: React.FC = () => {
     return (
       <AuthModal
         isOpen
+        central
         roleTitle="برای افتتاح فروشگاه ابتدا وارد حساب کاربری شوید"
         disableAutoNavigate
         onClose={() => {
@@ -150,52 +151,57 @@ export const SellerOnboardingModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#172d26]/55 backdrop-blur-[2px]">
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[90vh]"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="seller-onboarding-title"
+        className="bg-white text-[var(--shop-ink,#172d26)] rounded-[var(--shop-radius-lg,24px)] max-w-xl w-full min-w-0 overflow-hidden shadow-2xl border border-[var(--shop-line,#dde2d7)] flex flex-col max-h-[calc(100dvh-2rem)]"
       >
         {/* Header */}
-        <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-800 text-white p-5 flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--shop-line,#dde2d7)] bg-[var(--shop-soft,#edf2e9)] p-4 sm:p-5">
           <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-white/15 flex items-center justify-center">
+            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--shop-forest,#164638)] text-white">
               <Store className="w-5 h-5"  strokeWidth={1.5}/>
             </div>
             <div>
-              <h3 className="font-extrabold text-base">افتتاح فروشگاه اختصاصی (دراپ‌شیپر)</h3>
-              <p className="text-xs text-white/80">مرحله {toPersianDigits(step)} از ۴</p>
+              <h3 id="seller-onboarding-title" className="font-extrabold text-base">افتتاح فروشگاه اختصاصی (دراپ‌شیپر)</h3>
+              <p className="mt-1 text-sm text-[var(--shop-muted,#4f6359)]">مرحله {toPersianDigits(step)} از ۴</p>
             </div>
           </div>
           <button
+            type="button"
+            aria-label="بستن افتتاح فروشگاه"
             onClick={() => setIsSellerModalOpen(false)}
-            className="p-1.5 rounded-full hover:bg-white/20 text-white transition-colors"
+            className="grid size-11 shrink-0 place-items-center rounded-xl text-[var(--shop-forest,#164638)] hover:bg-white"
           >
             <X className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
         </div>
 
         {/* Content Body */}
-        <div className="p-6 overflow-y-auto no-scrollbar space-y-4">
+        <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
           {step === 1 && <SellerStep1 formData={formData} setFormData={setFormData} />}
           {step === 2 && <SellerStep2 formData={formData} setFormData={setFormData} />}
           {step === 3 && (
             <div className="space-y-3 select-none">
-              <div className="flex items-center gap-2 text-indigo-700">
+              <div className="flex items-center gap-2 text-[var(--shop-forest,#164638)]">
                 <ShieldCheck className="w-5 h-5"  strokeWidth={1.5}/>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <h4 className="font-bold text-xs flex items-center gap-1">مطالعه و امضای دیجیتال قرارداد همکاری تجاری<HelpExplainer text="طبق الزامات تجارت الکترونیکی، افتتاح فروشگاه و بهره‌برداری از موجودی انبار مرکزی مستلزم تأیید و امضای الکترونیکی قرارداد زیر است:" /></h4>
-                  <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded font-mono font-bold">
+                  <span className="shrink-0 rounded-md bg-[var(--shop-soft,#edf2e9)] px-2 py-0.5 text-xs font-bold text-[var(--shop-forest,#164638)]">
                     نسخه {toPersianDigits(platformSettings.contracts?.sellerContractVersion || 2)}.۰
                   </span>
                 </div>
               </div>
 
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl max-h-40 overflow-y-auto text-[11px] text-slate-700 leading-relaxed font-mono whitespace-pre-line no-scrollbar">
+              <div className="max-h-40 overflow-y-auto rounded-xl border border-[var(--shop-line,#dde2d7)] bg-[var(--shop-bg,#f8f6ef)] p-3 text-sm leading-7 whitespace-pre-line">
                 {platformSettings.contracts.sellerContractText}
               </div>
 
-              <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl flex items-center justify-between text-[10px] text-blue-900">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--shop-line,#dde2d7)] bg-[var(--shop-soft,#edf2e9)] px-3 py-2.5 text-xs text-[var(--shop-forest,#164638)]">
                 <span>مهر زمانی امضا: {new Date().toLocaleDateString('fa-IR')}</span>
                 <span className="font-mono">کد رهگیری امضا: SIG-DRP-{signatureCode}</span>
               </div>
@@ -205,7 +211,7 @@ export const SellerOnboardingModal: React.FC = () => {
                   type="checkbox"
                   checked={contractAccepted}
                   onChange={(e) => setContractAccepted(e.target.checked)}
-                  className="w-4 h-4 accent-indigo-600 rounded mt-0.5 cursor-pointer"
+                  className="w-4 h-4 accent-[var(--shop-forest,#164638)] rounded mt-0.5 cursor-pointer"
                 />
                 <span className="text-[11px] text-slate-800 leading-relaxed font-bold">
                   متن کامل قرارداد همکاری تجاری دراپ‌شیپینگ را مطالعه نموده و کلیه تعهدات حقوقی و مالی آن را می‌پذیرم.
@@ -217,11 +223,12 @@ export const SellerOnboardingModal: React.FC = () => {
         </div>
 
         {/* Footer Buttons */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--shop-line,#dde2d7)] bg-[var(--shop-bg,#f8f6ef)] p-4">
           {step > 1 && step < 4 ? (
             <button
+              type="button"
               onClick={() => setStep((prev) => (prev - 1) as any)}
-              className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-slate-900 px-3 py-2 rounded-xl transition-colors"
+              className="central-button central-button--outline"
             >
               <ArrowRight className="w-4 h-4"  strokeWidth={1.5}/>
               <span>مرحله قبلی</span>
@@ -230,16 +237,18 @@ export const SellerOnboardingModal: React.FC = () => {
 
           {step < 4 ? (
             <button
+              type="button"
               onClick={handleNext}
-              className="flex items-center gap-1 text-xs md:text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl shadow-md shadow-blue-500/20 transition-all"
+              className="central-button ms-auto"
             >
               <span>{step === 3 ? 'امضای دیجیتال و افتتاح فروشگاه' : 'مرحله بعدی'}</span>
               <ArrowLeft className="w-4 h-4"  strokeWidth={1.5}/>
             </button>
           ) : (
             <button
+              type="button"
               onClick={handleFinish}
-              className="w-full text-center text-xs md:text-sm font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl shadow-md shadow-emerald-500/20 transition-all"
+              className="central-button w-full"
             >
               ورود به فروشگاه من و شروع فروش
             </button>

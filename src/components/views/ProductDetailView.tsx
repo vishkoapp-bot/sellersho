@@ -476,6 +476,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         </div>
       )}
       <BuyNowAddressModal
+        central={central}
         fashion={fashion}
         open={buyNowModalOpen}
         item={{ title: product.title, qty, totalPrice: buyNowUnit * qty, ...(selectedVariant ? { variantLabel: selectedVariant.name } : {}) }}

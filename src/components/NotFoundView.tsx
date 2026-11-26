@@ -3,34 +3,7 @@ import { Header } from './Header';
 import { SearchX, Home, ArrowRight } from 'lucide-react';
 import { Footer } from './Footer';
 
-// FIX 16: live has TWO 404 components, and the candidate conflated them.
-// Generic 404 (bundle Eb, used for unknown pages and product misses):
-// white bg, w-20 circle bg-brand/10 with a SearchX icon (magnifier + x,
-// w-10 text-brand), text-5xl black numerals, both buttons (primary
-// "بازگشت به خانه" + text link "بازگشت به صفحه قبل").
-// Store-path 404 (bundle ek, used for ANY /store/* miss, suspended or
-// nonexistent): bg #FAF9F7, stone-200/70 circle with a stone-400
-// SearchX, stone-900 numerals, the store body text, and ONLY the back
-// link -- no primary button. Fix 15 used the generic view for suspended
-// slugs; the browser proved live's suspended page has only the link.
-// Trust strip: live shows it ONCE, inside the site footer (Z5 renders
-// its own trust row). The candidate rendered TrustFeatures light cards
-// PLUS the footer trust row on 404 pages -- the duplication the
-// re-check flagged. TrustFeatures is removed here; Footer keeps its
-// own trust row, exactly like live.
-// Store identity rule: the STORE variant renders WITHOUT the
-// central Header/Footer. Callers frame it with the store's own
-// chrome when there is one (a scoped PDP's mismatched product, a
-// storefront branch), and a suspended/nonexistent store has no
-// chrome of its own to show - painting the platform's header and
-// footer around it would brand another business's dead end as the
-// platform's page. Its only exit stays the back link below (history
-// back, else the caller's onBack). The generic variant keeps the
-// central chrome, byte-identical.
-// Icon identities: Wb (live's icon) is SearchX (magnifier + x, the
-// re-check's description); ld (home button icon) is Home; ns (back
-// link icon) is ArrowRight (RTL "back" direction). All are the only
-// lucide glyphs matching the bundle's usage + the browser description.
+// Missing seller storefronts keep their own neutral view without platform chrome.
 export const NotFoundView: React.FC<{
   title?: string;
   message?: string;
@@ -47,23 +20,23 @@ export const NotFoundView: React.FC<{
   const isStore = variant === 'store';
   return (
     <div className="flex-1 flex flex-col bg-white min-h-screen">
-      {!isStore && <Header />}
-      <main className={`flex-1 flex flex-col items-center justify-center px-6 py-16 text-center select-none ${isStore ? 'bg-[#FAF9F7]' : 'bg-white'}`}>
-        <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-5 ${isStore ? 'bg-stone-200/70' : 'bg-brand/10'}`}>
-          <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-brand'}`} strokeWidth={1.5} />
+      {!isStore && <Header mainId="main-content" />}
+      <main id={isStore ? undefined : 'main-content'} tabIndex={-1} className={`flex-1 flex flex-col items-center justify-center px-6 py-16 text-center ${isStore ? 'bg-[#FAF9F7]' : 'bg-[var(--shop-bg,#f8f6ef)] text-[var(--shop-ink,#172d26)]'}`}>
+        <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-5 ${isStore ? 'bg-stone-200/70' : 'bg-[var(--shop-soft,#edf2e9)]'}`}>
+          <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-[var(--shop-forest,#164638)]'}`} strokeWidth={1.5} />
         </div>
-        <h1 className={`text-5xl font-black tracking-tight ${isStore ? 'text-stone-900' : 'text-slate-900'}`}>۴۰۴</h1>
-        <h2 className={`mt-2 text-sm font-bold ${isStore ? 'text-stone-800' : 'text-slate-800'}`}>
+        <h1 className={`text-5xl font-black tracking-tight ${isStore ? 'text-stone-900' : 'text-[var(--shop-ink,#172d26)]'}`}>۴۰۴</h1>
+        <h2 className={`mt-2 text-lg font-bold ${isStore ? 'text-stone-800' : 'text-[var(--shop-ink,#172d26)]'}`}>
           {isStore ? 'صفحه مورد نظر یافت نشد' : (title || 'صفحه مورد نظر یافت نشد')}
         </h2>
-        <p className={`mt-2 text-xs leading-relaxed max-w-[260px] ${isStore ? 'text-stone-500' : 'text-slate-500'}`}>
+        <p className={`mt-2 max-w-sm text-sm leading-7 ${isStore ? 'text-stone-500' : 'text-[var(--shop-muted,#4f6359)]'}`}>
           {isStore ? 'به نظر می‌رسد نشانی فروشگاه اشتباه است یا این فروشگاه دیگر فعال نیست.' : (message || 'به نظر می‌رسد آدرسی که وارد کرده‌اید اشتباه است یا این صفحه حذف شده است.')}
         </p>
         {!isStore && (
           <button
             type="button"
             onClick={onBack}
-            className="mt-6 w-full max-w-[240px] py-3 bg-brand hover:bg-brand-deep text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2 transition-colors"
+            className="central-button mt-6 w-full max-w-60"
           >
             <Home className="w-4 h-4" strokeWidth={1.5} />
             <span>بازگشت به خانه</span>
@@ -72,7 +45,7 @@ export const NotFoundView: React.FC<{
         <button
           type="button"
           onClick={goBack}
-          className={`flex items-center gap-1 transition-colors ${isStore ? 'mt-6 text-xs font-bold text-stone-500 hover:text-stone-800' : 'mt-3 text-xs font-bold text-slate-500 hover:text-brand'}`}
+          className={`flex items-center gap-1 transition-colors ${isStore ? 'mt-6 text-xs font-bold text-stone-500 hover:text-stone-800' : 'mt-3 min-h-11 rounded-xl px-3 text-sm font-bold text-[var(--shop-forest,#164638)] hover:bg-[var(--shop-soft,#edf2e9)]'}`}
         >
           <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
           <span>بازگشت به صفحه قبل</span>

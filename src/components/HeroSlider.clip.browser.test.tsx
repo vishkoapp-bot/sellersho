@@ -4,6 +4,21 @@ import { batch8Browser } from '../../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
 
+test('the desktop banner fills the width of the homepage and its own frame', async () => {
+  await visit('/', 1920, async page => {
+    await page.waitForSelector('.central-hero-banner', { visible: true });
+    const layout = await page.$eval('.central-hero', hero => {
+      const frame = hero.querySelector('.central-hero-media')!.getBoundingClientRect();
+      const image = hero.querySelector('.central-hero-banner')!;
+      const section = hero.getBoundingClientRect();
+      return { left: frame.left, right: frame.right, sectionLeft: section.left, sectionRight: section.right, fit: getComputedStyle(image).objectFit };
+    });
+    assert.equal(layout.left, layout.sectionLeft);
+    assert.equal(layout.right, layout.sectionRight);
+    assert.equal(layout.fit, 'cover');
+  });
+});
+
 test('the mobile homepage starts with the managed banner and accessible shopping actions', async () => {
   await visit('/', 320, async page => {
     await page.waitForSelector('.central-hero-banner', { visible: true });

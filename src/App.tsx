@@ -10,7 +10,7 @@ import { ToastProvider } from './context/ToastContext';
 import { RoleSwitcherBar } from './components/RoleSwitcherBar';
 import { Header } from './components/Header';
 import { CategoriesBar } from './components/CategoriesBar';
-import { CentralHomeIntro, HeroSlider } from './components/HeroSlider';
+import { HeroSlider } from './components/HeroSlider';
 import { GitDeployProbe } from './components/GitDeployProbe';
 import { SpecialDealsSlider } from './components/SpecialDealsSlider';
 import { HomeFeedSections } from './components/HomeFeedSections';
@@ -411,11 +411,10 @@ export const AppContent: React.FC = () => {
             <Header mainId="main-content" />
             <GitDeployProbe />
             <main id="main-content" tabIndex={-1} className="central-wrap central-home">
-              <CentralHomeIntro />
+              <HeroSlider />
               <CategoriesBar />
               <SpecialDealsSlider />
               <HomeFeedSections />
-              <HeroSlider />
             </main>
             <Footer />
           </>

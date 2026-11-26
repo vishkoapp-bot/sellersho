@@ -13,6 +13,7 @@ test('mobile admin shortcuts, grouped menu and browser history open the same thr
   visit('/admin?admin', 320, async page => {
     await page.waitForSelector('#admin-main', { visible: true });
     assert.equal(await title(page), 'پیشخوان مدیریت');
+    assert.equal(await page.$('.super-admin-theme'), null);
     assert.equal(await page.evaluate(() => document.activeElement?.id), '');
     assert.deepEqual(await page.$$eval('main nav[aria-label="مسیرهای اصلی مدیریت"] a', links => links.map(link => link.getAttribute('href'))),
       ['/admin?section=catalog', '/admin?section=suppliers', '/admin?section=orders']);
@@ -43,6 +44,22 @@ test('mobile admin shortcuts, grouped menu and browser history open the same thr
     await page.waitForSelector('aside a[data-section="orders"][aria-current="page"]');
     await page.setViewport({ width: 1440, height: 850 });
     assert.ok(await page.$eval('#admin-main', main => main.getBoundingClientRect().width > 850));
+  }));
+
+test('super admin uses the storefront palette on mobile, including its menu and notifications', () =>
+  visit('/admin?admin=super', 390, async page => {
+    await page.waitForSelector('#admin-main');
+    assert.equal(await page.$eval('[data-panel-workspace="admin"]', panel => getComputedStyle(panel).backgroundColor), 'rgb(248, 246, 239)');
+    assert.equal(await page.$eval(menuButton, button => getComputedStyle(button).backgroundColor), 'rgb(237, 242, 233)');
+    await page.click(menuButton);
+    await page.waitForSelector(menu, { visible: true });
+    assert.equal(await page.$eval(`${menu} [aria-current="page"]`, link => getComputedStyle(link).color), 'rgb(14, 57, 44)');
+    await page.keyboard.press('Escape');
+    await page.click('header button[aria-label^="اعلان‌ها"]');
+    const currentFilter = 'dialog[open][aria-labelledby="admin-notifications-title"] button[aria-pressed="true"]';
+    await page.waitForSelector(currentFilter, { visible: true });
+    assert.equal(await page.$eval(currentFilter, button => getComputedStyle(button).backgroundColor), 'rgb(237, 242, 233)');
+    assert.equal(await mobileOverflow(page), false);
   }));
 
 test('staff with a finance role see their permitted default instead of a restricted direct link', { timeout: 120000 }, () =>

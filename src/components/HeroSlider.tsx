@@ -5,28 +5,6 @@ import { bannersApi, cleanBannerTitle, isUsableBanner, type ApiBanner } from '..
 import { pathForView } from '../utils/routing';
 import { followStoreLink } from '../utils/followStoreLink';
 
-export function CentralHomeIntro() {
-  const { openCatalogCategory, setActiveView } = useStore();
-  return (
-    <section className="central-intro" aria-labelledby="central-home-title">
-      <div className="central-intro-copy">
-        <p className="central-intro-label">فروشگاه آنلاین سلرشو</p>
-        <h1 id="central-home-title">برای هر روز،<br /> انتخابی بهتر</h1>
-        <p>از کالاهای دیجیتال تا پوشاک و لوازم خانه. کالاها را بر اساس نیازتان مرور کنید و با دیدن جزئیات و قیمت، سفارش دهید.</p>
-        <div className="central-intro-actions">
-          <a className="central-button" href={pathForView('catalog')}
-            onClick={event => followStoreLink(event, () => openCatalogCategory('all'))}>مشاهده همه کالاها<ArrowLeft size={19} aria-hidden="true" /></a>
-          <a className="central-button central-button--outline" href={pathForView('categories_tree')}
-            onClick={event => followStoreLink(event, () => setActiveView('categories_tree'))}><LayoutGrid size={17} aria-hidden="true" /> دسته‌بندی‌ها</a>
-        </div>
-      </div>
-      <div className="central-intro-media">
-        <img src="/storefront/central-hero.webp" srcSet="/storefront/central-hero-small.webp 640w, /storefront/central-hero.webp 1200w" sizes="(max-width: 700px) 96vw, (max-width: 1352px) 56vw, 716px" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
-      </div>
-    </section>
-  );
-}
-
 export function campaignAddress(banner: ApiBanner) {
   const link = banner.linkUrl?.trim();
   if (link?.startsWith('#')) return link.length > 1 ? link : null;
@@ -36,27 +14,70 @@ export function campaignAddress(banner: ApiBanner) {
 }
 
 export const HeroSlider: React.FC<{ position?: 'hero' | 'secondary' }> = ({ position = 'hero' }) => {
-  const { openCatalogCategory, toPersianDigits, categories } = useStore();
+  const { openCatalogCategory, setActiveView, toPersianDigits, categories } = useStore();
   const [banners, setBanners] = useState<ApiBanner[]>([]);
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     bannersApi.getBanners(position)
-      .then(list => { if (!cancelled) setBanners(list.filter(isUsableBanner)); })
+      .then(list => {
+        if (cancelled) return;
+        setBanners(list.filter(position === 'hero' ? banner => !!banner.imageUrl?.trim() : isUsableBanner));
+        setIndex(0);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [position]);
 
   const banner = banners[index];
-  if (!banner) return null;
-  const title = cleanBannerTitle(banner.title);
-  const address = campaignAddress(banner);
-  const categorySlug = categories.find(category => category.title === title)?.slug ?? 'all';
+  const title = cleanBannerTitle(banner?.title);
+  const address = banner ? campaignAddress(banner) : null;
+  const categorySlug = categories.find(category => title && category.title === title)?.slug ?? 'all';
+  const hasCampaignAction = Boolean(address || categorySlug !== 'all');
   const show = (delta: number) => setIndex(current => (current + delta + banners.length) % banners.length);
+  const controls = banners.length > 1 && (
+    <div className="central-campaign-controls">
+      <button type="button" onClick={() => show(-1)} aria-label="پیشنهاد قبلی"><ChevronRight size={20} aria-hidden="true" /></button>
+      <span aria-live="polite">{toPersianDigits(index + 1)} از {toPersianDigits(banners.length)}</span>
+      <button type="button" onClick={() => show(1)} aria-label="پیشنهاد بعدی"><ChevronLeft size={20} aria-hidden="true" /></button>
+    </div>
+  );
+
+  if (position === 'hero') return (
+    <section className="central-hero" aria-labelledby="central-home-title">
+      <h1 id="central-home-title" className="sr-only">فروشگاه آنلاین سلرشو</h1>
+      <div className="central-hero-media">
+        <img className="central-hero-fallback" src="/storefront/central-hero.webp"
+          srcSet="/storefront/central-hero-small.webp 640w, /storefront/central-hero.webp 1200w"
+          sizes="(min-width: 1352px) 1280px, 94vw" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
+        {banner && <img key={banner.id} className="central-hero-banner" src={banner.imageUrl.trim()}
+          alt={[title, banner.subtitle?.trim()].filter(Boolean).join('، ') || 'بنر فروشگاه سلرشو'}
+          fetchPriority="high" decoding="async" onError={() => {
+            setBanners(current => current.filter(item => item.id !== banner.id));
+            setIndex(current => Math.min(current, Math.max(0, banners.length - 2)));
+          }} />}
+      </div>
+      <div className="central-hero-bar">
+        <div className="central-hero-actions">
+          {hasCampaignAction && <a className="central-button" href={address || pathForView('catalog', { categorySlug })}
+            onClick={address ? undefined : event => followStoreLink(event, () => openCatalogCategory(categorySlug))}>
+            مشاهده پیشنهاد <ArrowLeft size={19} aria-hidden="true" />
+          </a>}
+          <a className={hasCampaignAction ? 'central-button central-button--outline' : 'central-button'} href={pathForView('catalog')}
+            onClick={event => followStoreLink(event, () => openCatalogCategory('all'))}>مشاهده همه کالاها<ArrowLeft size={19} aria-hidden="true" /></a>
+          <a className="central-button central-button--outline" href={pathForView('categories_tree')}
+            onClick={event => followStoreLink(event, () => setActiveView('categories_tree'))}><LayoutGrid size={17} aria-hidden="true" /> دسته‌بندی‌ها</a>
+        </div>
+        {controls}
+      </div>
+    </section>
+  );
+
+  if (!banner) return null;
 
   return (
-    <section className="central-campaign" aria-label="پیشنهادهای فروشگاه" data-testid={position === 'secondary' ? 'slider-banner' : undefined}>
+    <section className="central-campaign" aria-label="پیشنهادهای فروشگاه" data-testid="slider-banner">
       <div className="central-campaign-copy">
         {title && <h2>{title}</h2>}
         {banner.subtitle && <p>{banner.subtitle}</p>}
@@ -64,11 +85,7 @@ export const HeroSlider: React.FC<{ position?: 'hero' | 'secondary' }> = ({ posi
           onClick={address ? undefined : event => followStoreLink(event, () => openCatalogCategory(categorySlug))}>
           مشاهده پیشنهاد <ArrowLeft size={18} aria-hidden="true" />
         </a>
-        {banners.length > 1 && <div className="central-campaign-controls">
-          <button type="button" onClick={() => show(-1)} aria-label="پیشنهاد قبلی"><ChevronRight size={20} aria-hidden="true" /></button>
-          <span aria-live="polite">{toPersianDigits(index + 1)} از {toPersianDigits(banners.length)}</span>
-          <button type="button" onClick={() => show(1)} aria-label="پیشنهاد بعدی"><ChevronLeft size={20} aria-hidden="true" /></button>
-        </div>}
+        {controls}
       </div>
       {banner.imageUrl && <img className="central-campaign-image" src={banner.imageUrl} alt={title ? '' : 'بنر پیشنهاد فروشگاه'} width="760" height="320" loading="lazy" decoding="async" />}
     </section>

@@ -250,7 +250,7 @@ export const FinanceAdjustmentsTab: React.FC = () => {
         <button
           type="submit"
           disabled={submitting || listsLoading || !!listsError}
-          className="w-full py-2 bg-[#007dfa] hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-xs transition-colors disabled:opacity-50"
+          className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors disabled:opacity-50"
         >
           {submitting ? 'در حال ثبت…' : applied ? 'سند معکوس در دفتر مالی ثبت گردید' : 'ثبت سند حسابداری معکوس'}
         </button>

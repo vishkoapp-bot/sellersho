@@ -255,7 +255,7 @@ function SampleCampaignSettings() {
             setSavedBudget(true);
             setTimeout(() => setSavedBudget(false), 2000);
           }}
-          className="w-full py-2 bg-[#007dfa] hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-xs transition-colors"
+          className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors"
         >
           {savedBudget ? 'بودجه کمپین ثبت و قفل شد' : 'ثبت سقف بودجه کمپین شگفت‌انگیز'}
         </button>

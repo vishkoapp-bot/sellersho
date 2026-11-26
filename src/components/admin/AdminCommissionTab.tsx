@@ -190,7 +190,7 @@ export const AdminCommissionTab: React.FC = () => {
                 <span className="text-[10px] font-bold text-slate-600">روند {toPersianDigits(commissionDays)} روز اخیر</span>
                 <span className="text-[9px] text-slate-400">بنفش: ثبت‌شده · سبز: آزادشده</span>
               </div>
-              <Sparkline data={(commission.trend || []).map((t) => t.commission ?? 0)} color="#5d44f8" height={52} ariaLabel="روند سهم پلتفرم" />
+              <Sparkline data={(commission.trend || []).map((t) => t.commission ?? 0)} color="var(--color-brand)" height={52} ariaLabel="روند سهم پلتفرم" />
             </div>
             {commission.note && (
               <p className="text-[9px] text-slate-400 leading-relaxed">{commission.note}</p>

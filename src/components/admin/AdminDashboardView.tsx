@@ -173,7 +173,7 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
   });
 
   return (
-    <>
+    <div className={role === 'super_admin' ? 'contents central-portal super-admin-theme' : 'contents'}>
       <PanelWorkspace id="admin" label="مدیریت" name={adminSession.fullName || 'پنل مدیریت'}
         title={title} current={activeTab} groups={groups} href={adminSectionHref} onNavigate={navigate}
         onBackToSite={onBackToCustomerSite} onLogout={logoutAdmin}
@@ -204,6 +204,6 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
             ))}
           </section>
         ) : undefined} />
-    </>
+    </div>
   );
 }

@@ -34,7 +34,7 @@ test('desktop categories menu expands through keyboard and follows actual catego
   await visit('/', 1440, async page => {
     await waitText(page, 'دسته‌بندی کالاها');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 1440);
-    assert.ok(await page.$eval('.central-intro', section => section.getBoundingClientRect().height < 500));
+    assert.ok(await page.$eval('.central-hero', section => section.getBoundingClientRect().height < 500));
     const selector = '.central-menu-trigger';
     await page.focus(selector);
     await page.keyboard.press('Enter');

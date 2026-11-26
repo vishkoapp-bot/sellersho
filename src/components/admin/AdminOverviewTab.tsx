@@ -109,8 +109,8 @@ const TrendLineChart: React.FC<{ values: number[] }> = ({ values }) => {
   if (values.length < 2) return null;
   return (
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" style={{ height: 64 }} className="w-full" role="img" aria-hidden="true">
-      <path d={area} fill="#5d44f8" fillOpacity={0.12} />
-      <path d={line} fill="none" stroke="#5d44f8" strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <path d={area} fill="var(--color-brand)" fillOpacity={0.12} />
+      <path d={line} fill="none" stroke="var(--color-brand)" strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 };
@@ -134,7 +134,7 @@ const TrendBarChart: React.FC<{ values: number[] }> = ({ values }) => {
   return (
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" style={{ height: 64 }} className="w-full" role="img" aria-hidden="true">
       {bars.map((b, i) => (
-        <rect key={i} x={b.x.toFixed(2)} y={b.y.toFixed(2)} width={b.w.toFixed(2)} height={b.h.toFixed(2)} rx={0.8} fill={values[i] > 0 ? '#5d44f8' : '#e2e8f0'} fillOpacity={values[i] > 0 ? 0.85 : 1} />
+        <rect key={i} x={b.x.toFixed(2)} y={b.y.toFixed(2)} width={b.w.toFixed(2)} height={b.h.toFixed(2)} rx={0.8} fill={values[i] > 0 ? 'var(--color-brand)' : 'var(--color-slate-200)'} fillOpacity={values[i] > 0 ? 0.85 : 1} />
       ))}
     </svg>
   );

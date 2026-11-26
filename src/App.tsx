@@ -48,6 +48,8 @@ import { SeoManager } from './seo/SeoManager';
 import { SupplierDashboardView } from './components/supplier/SupplierDashboardView';
 import { WarehouseDashboardView } from './components/warehouse/WarehouseDashboardView';
 import { AdminDashboardView } from './components/admin/AdminDashboardView';
+import { AuthModal } from './components/auth/AuthModal';
+import { isMockMode } from './services/apiClient';
 
 const workspaceLabels: Record<AuthenticatedPanel, string> = {
   customer: 'فروشگاه',
@@ -56,6 +58,17 @@ const workspaceLabels: Record<AuthenticatedPanel, string> = {
   warehouse_panel: 'انبار',
   admin_panel: 'مدیریت',
 };
+
+function CustomerAccountSignIn({ onBack }: { onBack: () => void }) {
+  const signedIn = useRef(false);
+  return (
+    <main dir="rtl" className="min-h-dvh bg-[#f7f7fa]">
+      <AuthModal isOpen disableAutoNavigate roleTitle="ورود به حساب کاربری"
+        onSuccess={() => { signedIn.current = true; }}
+        onClose={() => { if (!signedIn.current) onBack(); }} />
+    </main>
+  );
+}
 
 export const AppContent: React.FC = () => {
   const { currentUser, isSessionReady, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
@@ -163,6 +176,16 @@ export const AppContent: React.FC = () => {
 
   // OTP login revalidates the session while an open wizard still owns its draft.
   if (!isSessionReady && (activeView === 'dashboard' || !isOnboardingActive)) return <div role="status">در حال بررسی نشست…</div>;
+  if ((activeView === 'customer_profile' || activeView === 'customer_orders') &&
+    !currentUser && !isMockMode()) {
+    return <CustomerAccountSignIn onBack={() => {
+      if (currentStore?.ownerType === 'dropshipper' && currentStore.slug) {
+        setActiveView('seller_storefront', { storeSlug: currentStore.slug });
+      } else {
+        setActiveView('customer');
+      }
+    }} />;
+  }
   if (activeView === 'dashboard') {
     if (currentUser) return <div role="status">در حال انتقال به پنل مجاز…</div>;
     return (

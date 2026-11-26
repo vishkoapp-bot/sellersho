@@ -128,6 +128,7 @@ export type ParsedRoute =
   | { view: 'admin_panel' }
   | { view: 'catalog'; query?: string; category?: string }
   | { view: 'customer' }
+  | { view: 'customer_profile' | 'customer_orders'; storeSlug?: string }
   | { view: 'supplier_dashboard' }
   | { view: 'warehouse_panel' }
   | { view: 'dashboard' }
@@ -164,6 +165,11 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
   if (path === '/seller') return { view: 'seller_dashboard', sellerTab: 'overview' };
   if (path === '/supplier') return { view: 'supplier_dashboard' };
   if (path === '/warehouse') return { view: 'warehouse_panel' };
+  const account = /^(?:\/store\/([^/]+))?\/account(\/orders)?$/.exec(path);
+  if (account) {
+    const slug = account[1] && decodeURIComponent(account[1]);
+    return { view: account[2] ? 'customer_orders' : 'customer_profile', storeSlug: isStoreScopeSlug(slug) ? slug : undefined };
+  }
 
   // Seller dashboard tab URLs (live Wf): ?panel=seller&tab=<tab>.
   if (params.get('panel') === 'seller') {
@@ -260,6 +266,11 @@ export function pathForView(
       return '/admin';
     case 'seller_storefront':
       return options.storeSlug ? `/store/${encodeURIComponent(options.storeSlug)}` : '/';
+    case 'customer_profile':
+    case 'customer_orders': {
+      const prefix = isStoreScopeSlug(options.storeSlug) ? `/store/${encodeURIComponent(options.storeSlug)}` : '';
+      return `${prefix}/account${view === 'customer_orders' ? '/orders' : ''}`;
+    }
     case 'product_detail': {
       const productPath = options.productUrl || '/';
       // A store-scoped product view keeps its store prefix, so a

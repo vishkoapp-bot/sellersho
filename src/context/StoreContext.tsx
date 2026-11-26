@@ -234,6 +234,9 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     }
     if (parsed.view === 'seller_storefront') return { view: parsed.view as ActiveView, slug: parsed.slug, unsubscribe: parsed.unsubscribe, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'product_detail') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc, storeSlug: parsed.storeSlug ?? null };
+    if (parsed.view === 'customer_profile' || parsed.view === 'customer_orders') {
+      return { view: parsed.view, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: parsed.storeSlug ?? null };
+    }
     if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'seller_dashboard') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: parsed.sellerTab, productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'dashboard' || parsed.view === 'catalog') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
@@ -266,7 +269,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   // (history state as fallback) on popstate, cleared by any
   // navigation that is not a scoped product open.
   const [routeStoreSlug, setRouteStoreSlug] = useState<string | null>(
-    initialRouteState.view === 'product_detail' ? initialRouteState.storeSlug : null,
+    initialRouteState.storeSlug,
   );
   const resolvedStorefrontSlugRef = useRef<string | null>(null);
 
@@ -316,6 +319,10 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
 
   const setActiveView = (view: ActiveView, navigation: Partial<NavigationState> = {}) => {
     setActiveViewState(view);
+    const accountPage = view === 'customer_profile' || view === 'customer_orders';
+    const accountStore = accountPage
+      ? navigation.storeSlug ?? routeStoreSlug ?? (currentStore?.ownerType === 'dropshipper' ? currentStore.slug : undefined)
+      : undefined;
     if (view === 'seller_storefront') {
       const slug = navigation.storeSlug || storefrontSlug || currentStore?.slug || null;
       setStorefrontSlug(slug);
@@ -342,6 +349,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // the scope the opener set untouched.
       if (navigation.storeSlug !== undefined) setRouteStoreSlug(navigation.storeSlug);
       else if (navigation.productId) setRouteStoreSlug(null);
+    } else if (accountPage) {
+      setRouteStoreSlug(accountStore ?? null);
     } else {
       setRouteStoreSlug(null);
     }
@@ -373,6 +382,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         path = navigation.productId
           ? buildProductUrl(product ?? { id: navigation.productId }, scopeSlug ?? undefined)
           : '/';
+      } else if (accountPage) {
+        path = pathForView(view, { storeSlug: accountStore });
       } else if (view === 'static_page') {
         path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey });
       } else if (view === 'seller_dashboard') {
@@ -420,7 +431,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // The URL wins; the state is only the fallback. Restore the
       // scope for product entries, clear it for everything else.
       setRouteStoreSlug(
-        parsed.view === 'product_detail'
+        parsed.view === 'product_detail' || parsed.view === 'customer_profile' || parsed.view === 'customer_orders'
           ? (parsed.storeSlug ?? (event.state as NavigationState | null)?.storeSlug ?? null)
           : null,
       );
@@ -451,7 +462,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         setActiveViewState('seller_dashboard');
         return;
       }
-      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'admin_panel' || parsed.view === 'catalog') {
+      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'admin_panel' || parsed.view === 'catalog' ||
+        parsed.view === 'customer_profile' || parsed.view === 'customer_orders') {
         setActiveViewState(parsed.view);
         return;
       }
@@ -716,7 +728,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
   // slug (loaded list first, public endpoint as fallback) with the
   // same merged shape the storefront resolver installs.
   useEffect(() => {
-    if (activeView !== 'product_detail' || !routeStoreSlug) {
+    if (!routeStoreSlug || (activeView !== 'product_detail' && activeView !== 'customer_profile' && activeView !== 'customer_orders')) {
       routeStoreResolveRef.current = null;
       setRouteStoreInvalid(false);
       return;

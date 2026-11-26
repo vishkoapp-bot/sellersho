@@ -258,7 +258,7 @@ export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </React.Fragment>
             ))}
           </nav>
-          <h1 className="wrap-anywhere text-2xl leading-snug font-black sm:text-4xl">{title}</h1>
+          <h1 className="central-page-title">{title}</h1>
           <p className="mt-1.5 min-h-5 text-sm font-medium text-[var(--shop-muted,#506357)]" role="status">
             {catalogLoading ? 'در حال بارگذاری کاتالوگ…' : catalogError ? 'به‌روزرسانی نتایج انجام نشد' : `${toPersianDigits(total)} کالا`}
           </p>

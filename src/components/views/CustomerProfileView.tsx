@@ -29,13 +29,13 @@ export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({ title, onB
     <Container id={central ? 'main-content' : undefined} tabIndex={central ? -1 : undefined} style={tone}
       className="flex-1 bg-[var(--account-bg)] text-[var(--account-ink)]">
       <div className={central ? 'central-wrap pb-12 pt-5 sm:pt-8' : 'mx-auto w-full max-w-6xl px-4 pb-12 pt-5 sm:px-6 sm:pt-9 lg:px-8'}>
-        <header className={`mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7 ${central ? 'rounded-[var(--shop-radius-lg,24px)] border border-[var(--account-line)] bg-[var(--account-soft)] p-3.5 sm:p-6' : ''}`}>
+        <header className={`mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7 ${central ? 'border-b border-[var(--account-line)] pb-4 sm:pb-5' : ''}`}>
           <div className="flex min-w-0 items-center gap-3">
             <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه"
               className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--account-line)] bg-white text-[var(--account-accent)] hover:bg-[var(--account-soft)]">
               <ArrowRight className="size-5" aria-hidden="true" />
             </button>
-            <h1 className="min-w-0 break-words text-xl font-black sm:text-3xl">{title}</h1>
+            <h1 className={central ? 'central-page-title' : 'min-w-0 break-words text-xl font-black sm:text-3xl'}>{title}</h1>
           </div>
           {extra}
         </header>
@@ -73,7 +73,7 @@ export const CustomerReturnsMenuRow: React.FC<{
     <span className="block">{unavailable ? 'پیگیری وضعیت مرجوعی' : returnsCount === null
       ? 'در حال دریافت…'
       : returnsCount === 0 ? 'هنوز مرجوعی‌ای ثبت نکرده‌اید' : `${toPersianDigits(returnsCount)} مرجوعی ثبت شده`}</span>
-    <span className="block">۷ روز مهلت تست و عودت کالا پس از تحویل</span>
+    <span className="block">مهلت مرجوعی را در جزئیات سفارش ببینید.</span>
   </AccountRow>
 );
 

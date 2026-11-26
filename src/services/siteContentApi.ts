@@ -14,7 +14,7 @@ export const FALLBACK_TRUST_FEATURES: TrustFeature[] = [
   { icon: 'CreditCard', title: 'پرداخت پس از ثبت سفارش', description: 'درگاه آنلاین به‌زودی فعال می‌شود؛ پس از ثبت سفارش، نحوه پرداخت به شما اعلام می‌شود', color: 'violet' },
   { icon: 'Truck', title: 'ارسال به سراسر کشور', description: 'از انبار مرکزی یا مستقیم از تأمین‌کننده، با بسته‌بندی ایمن', color: 'violet' },
   { icon: 'ShieldCheck', title: 'کنترل کیفیت پیش از ارسال', description: 'کالاها پیش از ارسال بازرسی و کنترل کیفیت می‌شوند', color: 'emerald' },
-  { icon: 'RotateCcw', title: 'ضمانت تست ۷ روزه', description: 'امکان عودت و تعویض در صورت مغایرت', color: 'amber' },
+  { icon: 'RotateCcw', title: 'مهلت تست و مرجوعی', description: 'شرایط مرجوعی را در راهنمای خرید ببینید.', color: 'amber' },
 ];
 
 export const siteContentApi = {

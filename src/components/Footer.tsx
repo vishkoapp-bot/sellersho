@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Mail, Phone, ShoppingBag } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { apiRequest, ApiError } from '../services/apiClient';
@@ -13,6 +13,8 @@ export const Footer: React.FC = () => {
   const [newsDone, setNewsDone] = useState(false);
   const [newsError, setNewsError] = useState('');
   const [newsSubmitting, setNewsSubmitting] = useState(false);
+  const [invalidMobile, setInvalidMobile] = useState(false);
+  const mobileInput = useRef<HTMLInputElement>(null);
   const [returnWindowDays, setReturnWindowDays] = useState<number | null>(null);
   const [content, setContent] = useState<Record<string, unknown>>({});
 
@@ -39,7 +41,9 @@ export const Footer: React.FC = () => {
     if (newsSubmitting) return;
     const mobile = normalizePersianText(newsMobile.trim());
     if (!/^09[0-9]{9}$/.test(mobile)) {
+      setInvalidMobile(true);
       setNewsError('شمارهٔ موبایل را با ۰۹ و در ۱۱ رقم وارد کنید.');
+      mobileInput.current?.focus();
       return;
     }
     setNewsError('');
@@ -102,15 +106,16 @@ export const Footer: React.FC = () => {
           {newsDone ? <p role="status">عضویت شما ثبت شد.</p> : (
             <form onSubmit={subscribe}>
               <label><span>شماره موبایل</span>
-                <input name="mobile" autoComplete="tel-national" type="tel" inputMode="tel" dir="ltr" value={newsMobile}
-                  onChange={event => { setNewsMobile(event.target.value); setNewsError(''); }} required placeholder="09123456789" />
+                <input name="mobile" autoComplete="tel-national" type="tel" inputMode="tel" dir="ltr" value={newsMobile} ref={mobileInput}
+                  aria-invalid={invalidMobile || undefined} aria-describedby={invalidMobile ? 'central-newsletter-error' : undefined}
+                  onChange={event => { setNewsMobile(event.target.value); setNewsError(''); setInvalidMobile(false); }} required placeholder="09123456789" />
               </label>
               <label><span>ایمیل (اختیاری)</span>
-                <input name="email" autoComplete="email" type="email" dir="ltr" value={newsEmail}
+                <input name="email" autoComplete="email" type="email" dir="ltr" spellCheck={false} value={newsEmail}
                   onChange={event => setNewsEmail(event.target.value)} placeholder="name@example.com" />
               </label>
               <button type="submit" disabled={newsSubmitting}>{newsSubmitting ? 'در حال ثبت…' : 'عضویت در خبرنامه'}</button>
-              {newsError && <p role="alert">{newsError}</p>}
+              {newsError && <p id="central-newsletter-error" role="alert">{newsError}</p>}
             </form>
           )}
         </div>

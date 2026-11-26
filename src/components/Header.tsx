@@ -6,7 +6,6 @@ import { catalogApi, type ProductDto } from '../services/catalogApi';
 import { cardPriceOf } from '../utils/cardPrice';
 import { followStoreLink } from '../utils/followStoreLink';
 import { buildProductUrl, pathForView } from '../utils/routing';
-import { AuthModal } from './auth/AuthModal';
 import { NotificationDrawer } from './common/NotificationDrawer';
 
 export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky = true, mainId }) => {
@@ -19,7 +18,6 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
   const [draft, setDraft] = useState(searchQuery);
   const [results, setResults] = useState<{ term: string; items: ProductDto[] } | null>(null);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isCatMenuOpen, setIsCatMenuOpen] = useState(false);
   const [selectedRoot, setSelectedRoot] = useState('');
@@ -142,7 +140,7 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
             <Search className="central-search-icon" size={20} aria-hidden="true" />
             <input type="text" id="central-search" name="q" aria-label="نام کالا یا برند" autoComplete="off" enterKeyHint="search"
               value={draft} ref={searchInputRef} aria-controls={displayedResults ? suggestionsId : undefined}
-              placeholder="نام کالا یا برند را جست‌وجو کنید…"
+              placeholder="نام کالا یا برند…"
               onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); submitSearch(); } }}
               onFocus={() => { if (results?.term === liveDraft.current.trim() && suppressed.current !== results.term) setSuggestionsOpen(true); }}
               onChange={event => { liveDraft.current = event.target.value; suppressed.current = null; setDraft(event.target.value); setSuggestionsOpen(false); }} />
@@ -186,7 +184,8 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
             <Bell size={20} aria-hidden="true" />{unreadNotificationCount > 0 && <span className="central-count central-count--dot" />}
           </button>}
           <a href="/account" className="central-icon central-desktop-action" aria-label="حساب کاربری" title="حساب کاربری"
-            onClick={event => followStoreLink(event, () => customerUser.isLoggedIn ? setActiveView('customer_profile') : setIsAuthOpen(true))}>
+            aria-current={activeView === 'customer_profile' ? 'page' : undefined}
+            onClick={event => followStoreLink(event, () => setActiveView('customer_profile'))}>
             <User size={21} aria-hidden="true" />
           </a>
           <button type="button" className="central-icon central-desktop-action relative" onClick={() => setIsCartOpen(true)}
@@ -200,7 +199,9 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
 
       <nav className="central-header-nav" aria-label="ناوبری فروشگاه">
         <div className="central-wrap">
-          <div ref={menuRef} className="central-menu" onKeyDown={event => {
+          <div ref={menuRef} className="central-menu"
+            onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setIsCatMenuOpen(false); }}
+            onKeyDown={event => {
             if (event.key === 'Escape') {
               setIsCatMenuOpen(false);
               menuRef.current?.querySelector('button')?.focus();
@@ -226,21 +227,17 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
                       onClick={event => followStoreLink(event, () => { setIsCatMenuOpen(false); openCatalogCategory(category.slug); })}>{category.title}</a>
                   ))}
                 </>}
-                <a href={pathForView('categories_tree')} onClick={event => followStoreLink(event, () => { setIsCatMenuOpen(false); setActiveView('categories_tree'); })}>مشاهده درخت دسته‌ها</a>
+                <a href={pathForView('categories_tree')} onClick={event => followStoreLink(event, () => { setIsCatMenuOpen(false); setActiveView('categories_tree'); })}>همهٔ دسته‌بندی‌ها</a>
               </div>
             </div>
           </div>
           <a href={pathForView('catalog')} onClick={event => followStoreLink(event, () => openCatalogCategory('all'))} aria-current={activeView === 'catalog' ? 'page' : undefined}>همه کالاها</a>
-          <a href="/account/orders" onClick={event => followStoreLink(event, () => setActiveView('customer_orders'))}><Package size={16} aria-hidden="true" /> سفارش‌های من</a>
-          <a href={pathForView('customer_wishlist')} onClick={event => followStoreLink(event, () => setActiveView('customer_wishlist'))}><Heart size={16} aria-hidden="true" /> علاقه‌مندی‌ها</a>
+          <a href="/account/orders" aria-current={activeView === 'customer_orders' ? 'page' : undefined} onClick={event => followStoreLink(event, () => setActiveView('customer_orders'))}><Package size={16} aria-hidden="true" /> سفارش‌های من</a>
+          <a href={pathForView('customer_wishlist')} aria-current={activeView === 'customer_wishlist' ? 'page' : undefined} onClick={event => followStoreLink(event, () => setActiveView('customer_wishlist'))}><Heart size={16} aria-hidden="true" /> علاقه‌مندی‌ها</a>
           <button type="button" className="central-track" onClick={() => setIsTrackingModalOpen(true)}><Truck size={18} aria-hidden="true" /> پیگیری سفارش</button>
         </div>
       </nav>
 
-      <AuthModal central isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} onSuccess={() => {
-        setIsAuthOpen(false);
-        setActiveView('customer_profile');
-      }} roleTitle="ورود به حساب کاربری خریدار" />
       <NotificationDrawer central isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
     </header>
   );

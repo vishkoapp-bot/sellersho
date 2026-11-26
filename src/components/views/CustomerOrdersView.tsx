@@ -259,7 +259,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
       return <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200"><CheckCircle2 className="w-3 h-3 text-emerald-600"  strokeWidth={1.5}/>تحویل قطعی شد</span>;
     }
     if (status === 'delivered_unconfirmed') {
-      return <span className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-indigo-200"><CheckCircle2 className="w-3 h-3 text-indigo-600"  strokeWidth={1.5}/>رسیده به مقصد</span>;
+      return <span className="inline-flex items-center gap-1 rounded-full border border-[var(--account-line)] bg-[var(--account-soft)] px-2 py-1 text-xs font-bold text-[var(--account-accent)]"><CheckCircle2 className="size-3" strokeWidth={1.5} aria-hidden="true" />رسیده به مقصد</span>;
     }
     if (status === 'shipped') {
       return <span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-blue-200"><Truck className="w-3 h-3"  strokeWidth={1.5}/>ارسال پستی</span>;
@@ -391,7 +391,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                       onClick={async () => {
                         try {
                           await confirmOrderDelivery(ord.id);
-                          success('تحویل مرسوله تأیید شد. از امروز ۷ روز برای ثبت درخواست مرجوعی فرصت دارید.');
+                          success('تحویل مرسوله تأیید شد. مهلت مرجوعی را در جزئیات سفارش ببینید.');
                         } catch (e: any) { toastError(e?.message || 'تأیید تحویل انجام نشد.'); }
                       }}
                       className="min-h-11 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
@@ -577,7 +577,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 disabled={returnBusy || (returnPrepaid && quoteState !== 'ready')}
                 className="min-h-11 flex-1 rounded-xl bg-[var(--account-accent)] px-4 font-bold text-white disabled:opacity-50"
               >
-                {returnBusy ? 'در حال ثبت...' : 'ثبت درخواست مرجوعی'}
+                {returnBusy ? 'در حال ثبت…' : 'ثبت درخواست مرجوعی'}
               </button>
               <button
                 onClick={() => setReturnModalOrder(null)}

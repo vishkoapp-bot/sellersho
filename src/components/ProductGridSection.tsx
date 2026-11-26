@@ -3,7 +3,6 @@ import { ArrowLeft, PackageOpen } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { pathForView } from '../utils/routing';
 import { ProductCard } from './ProductCard';
-import { HelpExplainer } from './common/HelpExplainer';
 import { followStoreLink } from '../utils/followStoreLink';
 
 export const ProductGridSection: React.FC = () => {
@@ -14,7 +13,7 @@ export const ProductGridSection: React.FC = () => {
   return (
     <section id="products-section" className="central-product-section" aria-labelledby="central-products-title">
       <div className="central-section-title">
-        <h2 id="central-products-title">منتخب کالاها <HelpExplainer text="کالاها پیش از ارسال کنترل کیفیت می‌شوند؛ ارسال به سراسر کشور" /></h2>
+        <h2 id="central-products-title">منتخب کالاها</h2>
         <a href={pathForView('catalog')} onClick={catalogLink}>همه کالاها <ArrowLeft size={17} aria-hidden="true" /></a>
       </div>
       {catalogLoading && !preview.length ? (

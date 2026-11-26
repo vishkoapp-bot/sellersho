@@ -6,6 +6,32 @@ const visit = batch8Browser();
 const customer = 'access-fixture-role=customer&access-fixture-caps=customer';
 const overlay = 'dialog.central-portal[open]';
 
+test('help pages have a route-specific title and a shareable active link', () =>
+  visit('/terms', 390, async page => {
+    const current = '.central-info-tabs a[aria-current="page"]';
+    await page.waitForSelector(current, { visible: true });
+    assert.equal(await page.$eval(current, link => link.getAttribute('href')), '/terms');
+    assert.equal(await page.$eval('#main-content h1', title => title.textContent?.trim()), 'terms');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+  }));
+
+test('checkout names its next step and keeps the delivery form within a narrow viewport', () =>
+  visit(`/product/batch8-product-0?${customer}`, 320, async page => {
+    await clickText(page, 'افزودن به سبد');
+    await clickText(page, 'مشاهدهٔ سبد خرید');
+    const cart = '[data-checkout-scope="central"]';
+    await page.waitForSelector(cart, { visible: true });
+    await clickText(page, 'ادامه به نشانی و ارسال', `${cart} button`);
+    await page.waitForSelector('#cart-checkout-full-name', { visible: true });
+    const layout = await page.$eval(cart, element => {
+      const box = element.getBoundingClientRect();
+      return { width: box.width, contentWidth: element.scrollWidth, step: element.querySelector('[aria-current="step"]')?.textContent?.trim() };
+    });
+    assert.equal(layout.width, 320);
+    assert.equal(layout.contentWidth, 320);
+    assert.match(layout.step ?? '', /نشانی و ثبت/);
+  }));
+
 test('central notifications on narrow screens match the storefront and return focus on Escape', () =>
   visit(`/?${customer}`, 320, async page => {
     const bell = 'header button[title="اعلان‌ها"]';

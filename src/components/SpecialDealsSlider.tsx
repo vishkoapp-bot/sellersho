@@ -5,6 +5,8 @@ import { Product } from '../types';
 import { DealProductCard } from './DealProductCard';
 import { ProductCarousel } from "./ProductCarousel";
 import { ArrowLeft, Tag } from 'lucide-react';
+import { followStoreLink } from '../utils/followStoreLink';
+import { pathForView } from '../utils/routing';
 
 interface SpecialDealsSliderProps {
   // Optional pre-scoped list. A dropshipper storefront passes its
@@ -27,6 +29,26 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
 
   const dealProducts = getCentralDeals(products, currentStore);
   if (dealProducts.length === 0) return null;
+
+  if (!productsProp && !storeBrand) {
+    return (
+      <section id="Campaign_Home" data-testid="personalized-carousel-banner" className="central-deals" aria-labelledby="central-deals-title">
+        <div className="central-section-title">
+          <h2 id="central-deals-title">کالاهای تخفیف‌دار</h2>
+        </div>
+        <ProductCarousel products={dealProducts} />
+      </section>
+    );
+  }
+
+  const browseDeals = (className: string) => (
+    <a href={pathForView('catalog')} onClick={event => followStoreLink(event, () => openCatalogCategory('all'))} className={className}>
+      <span className="mb-2 grid size-10 place-items-center rounded-full bg-white text-brand-deep" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
+        <ArrowLeft className="size-5" aria-hidden="true" />
+      </span>
+      <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
+    </a>
+  );
 
   return (
     <section id="Campaign_Home" data-testid="personalized-carousel-banner" className="relative mx-3.5 lg:mx-8 xl:mx-10 2xl:mx-12 my-4 rounded-2xl overflow-hidden shadow-xs">
@@ -67,15 +89,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
           <div className="flex-1 min-w-0">
             <DealProductCard product={dealProducts[0]} />
           </div>
-          <div
-            onClick={() => openCatalogCategory("all")}
-            className="w-[110px] h-[120px] self-center shrink-0 bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
-          >
-            <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
-              <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
-            </div>
-            <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
-          </div>
+          {browseDeals('w-[110px] h-[120px] self-center shrink-0 bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-colors border border-white/20')}
         </div>
       ) : dealProducts.length <= 3 ? (
         <>
@@ -86,15 +100,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
             <ProductCarousel
               products={dealProducts.slice(1)}
               endTile={
-                <div
-                  onClick={() => openCatalogCategory("all")}
-                  className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
-                >
-                  <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
-                    <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
-                  </div>
-                  <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
-                </div>
+                browseDeals('h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-colors border border-white/20')
               }
             />
           </div>
@@ -104,15 +110,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
           <ProductCarousel
             products={dealProducts}
             endTile={
-              <div
-                onClick={() => openCatalogCategory("all")}
-                className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
-              >
-                <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
-                  <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
-                </div>
-                <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
-              </div>
+              browseDeals('h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-colors border border-white/20')
             }
           />
         </div>

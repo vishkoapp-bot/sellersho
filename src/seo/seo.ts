@@ -51,7 +51,7 @@ export function setDocumentHead(head: Partial<SeoHead> = {}): void {
   upsertMeta('meta[name="twitter:description"]', description);
 }
 
-export const PLATFORM_THEME_COLOR = '#5d44f8';
+export const PLATFORM_THEME_COLOR = '#f8f6ef';
 export const PLATFORM_ICON_HREF = '/icon-192.png';
 
 // Runtime store identity: while a store scope is active, the live

@@ -6,17 +6,15 @@ import { catalogApi } from '../../services/catalogApi';
 import { ApiError } from '../../services/apiClient';
 import type { Product } from '../../types';
 import { cardPriceOf, cardPriceVariantOf } from '../../utils/cardPrice';
-import { resolvePurchase, cartQuantityAllowed, type PurchaseResolution } from '../../utils/productPurchase';
+import { resolvePurchase, cartQuantityAllowed, requiresProductVariant, type PurchaseResolution } from '../../utils/productPurchase';
 import { ArrowLeft, Heart, ShoppingCart, Trash2, PackageOpen } from 'lucide-react';
 import { buildProductUrl } from '../../utils/routing';
+import { followStoreLink } from '../../utils/followStoreLink';
 import { FallbackImage } from '../common/FallbackImage';
 import { CustomerAccountLayout } from './CustomerProfileView';
 
-// Resolves the wishlist quick-add the same way the card prices it:
-// the card-price variant when there is one, else the no-variant
-// purchase fallback (which picks the cheapest purchasable variant
-// for simple products). Returns undefined when nothing is purchasable.
 export const resolveWishlistQuickAdd = (product: Product): PurchaseResolution | undefined => {
+  if (requiresProductVariant(product)) return undefined;
   const priced = cardPriceVariantOf(product);
   return priced.variant
     ? resolvePurchase(product, priced.variant.id)
@@ -140,13 +138,15 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
               <ul className={`grid grid-cols-2 gap-2.5 sm:gap-4 ${scopedStoreSlug ? 'md:grid-cols-3 lg:grid-cols-4' : 'md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'}`}>
                 {savedProducts.map((product) => {
                   const purchase = resolveWishlistQuickAdd(product);
+                  const needsModel = requiresProductVariant(product);
+                  const model = needsModel ? cardPriceVariantOf(product).variant : null;
+                  const canChooseModel = model && Boolean(resolvePurchase(product, model.id));
+                  const productUrl = buildProductUrl(product, scopedStoreSlug ?? undefined);
+                  const openProduct = (event: React.MouseEvent<HTMLAnchorElement>) =>
+                    followStoreLink(event, () => openProductDetail(product));
                   return (
                     <li key={product.id} className="flex min-w-0 flex-col overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white p-2.5 sm:p-3">
-                      <a href={buildProductUrl(product, scopedStoreSlug ?? undefined)} onClick={(event) => {
-                        if (event.button || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-                        event.preventDefault();
-                        openProductDetail(product);
-                      }} className="group flex-1 rounded-lg focus-visible:outline-offset-[-2px]">
+                      <a href={productUrl} onClick={openProduct} className="group flex-1 rounded-lg focus-visible:outline-offset-[-2px]">
                         <div className="grid aspect-square place-items-center overflow-hidden rounded-xl bg-[var(--account-bg)]">
                           <FallbackImage srcs={[product.image]} alt="" width={240} height={240} loading="lazy" decoding="async"
                             className="size-full object-contain p-1 motion-safe:transition-transform motion-safe:group-hover:scale-105"
@@ -155,7 +155,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                         <h2 className="mt-2 line-clamp-2 min-h-12 break-words text-sm font-bold leading-6">{product.title}</h2>
                       </a>
                       <p className="mt-1 text-base font-extrabold tabular-nums text-[var(--account-accent)]">
-                        {purchase ? <>{formatPrice(cardPriceOf(product).price)} <span className="text-xs font-normal">تومان</span></> : 'ناموجود'}
+                        {purchase || canChooseModel ? <>{canChooseModel && <span className="text-xs font-normal">از </span>}{formatPrice(cardPriceOf(product).price)} <span className="text-xs font-normal">تومان</span></> : 'ناموجود'}
                       </p>
                       <div className="mt-2 flex items-stretch gap-1.5 border-t border-slate-100 pt-2">
                         {purchase && (
@@ -171,6 +171,10 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
                             <ShoppingCart className="size-3.5 shrink-0" aria-hidden="true" /> افزودن
                           </button>
                         )}
+                        {canChooseModel && <a href={productUrl} onClick={openProduct} aria-label={`انتخاب مدل ${product.title}`}
+                          className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-[var(--account-soft)] px-1.5 text-center text-xs font-bold text-[var(--account-accent)] hover:brightness-95">
+                          انتخاب مدل
+                        </a>}
                         <button type="button" onClick={() => remove(product.id)} aria-label={`حذف ${product.title} از علاقه‌مندی‌ها`}
                           className="grid size-11 shrink-0 place-items-center rounded-lg border border-slate-200 text-slate-600 hover:bg-rose-50 hover:text-rose-800">
                           <Trash2 className="size-4" aria-hidden="true" />

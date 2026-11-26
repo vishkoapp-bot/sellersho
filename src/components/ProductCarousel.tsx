@@ -41,7 +41,7 @@ export const ProductCarousel: React.FC<{ products: CarouselProduct[]; endTile?: 
       ro?.disconnect();
       window.removeEventListener('resize', updateArrows);
     };
-  }, [updateArrows, products.length]);
+  }, [updateArrows, products.length, endTile != null]);
 
   // FIX 29: live Zc scroll paging — step by 3 hidden cards (lb=3), with
   // end handling when the target is the last child. The previous version
@@ -54,8 +54,9 @@ export const ProductCarousel: React.FC<{ products: CarouselProduct[]; endTile?: 
     const trackRect = track.getBoundingClientRect();
     const children = Array.from(track.children) as HTMLElement[];
     if (children.length === 0) return;
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
     if (dir === "next") {
-      const hidden = children.filter((c) => c.getBoundingClientRect().right < trackRect.left + 1);
+      const hidden = children.filter((c) => c.getBoundingClientRect().left < trackRect.left - 1);
       if (hidden.length === 0) return;
       const target = hidden[Math.min(3 - 1, hidden.length - 1)];
       if (target === children[children.length - 1]) {
@@ -66,16 +67,16 @@ export const ProductCarousel: React.FC<{ products: CarouselProduct[]; endTile?: 
         const index = step > 0
           ? Math.min(children.length - 1, Math.max(0, Math.round(maxScroll / step)))
           : children.length - 1;
-        children[index].scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+        children[index].scrollIntoView({ behavior, block: "nearest", inline: "start" });
       } else {
-        target.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+        target.scrollIntoView({ behavior, block: "nearest", inline: "nearest" });
       }
     } else {
-      const hidden = children.filter((c) => c.getBoundingClientRect().left > trackRect.right - 1);
+      const hidden = children.filter((c) => c.getBoundingClientRect().right > trackRect.right + 1);
       if (hidden.length === 0) return;
       const target = hidden[Math.max(0, hidden.length - 3)];
       target.scrollIntoView({
-        behavior: "smooth",
+        behavior,
         block: "nearest",
         inline: target === children[0] ? "start" : "nearest",
       });
@@ -84,11 +85,11 @@ export const ProductCarousel: React.FC<{ products: CarouselProduct[]; endTile?: 
   if (products.length === 0) return null;
 
   return (
-    <div className="relative">
+    <div className="central-carousel relative">
       <div
         ref={trackRef}
         onScroll={updateArrows}
-        className="flex items-stretch gap-2.5 lg:gap-4 xl:gap-7 overflow-x-auto no-scrollbar pb-1 pt-0.5 snap-x snap-mandatory"
+        className="central-carousel-track flex items-stretch gap-2.5 lg:gap-4 xl:gap-7 overflow-x-auto no-scrollbar pb-1 pt-0.5 snap-x snap-mandatory"
       >
         {products.map((product) => (
           <div key={product.id} className="carousel-card shrink-0 snap-start">
@@ -101,21 +102,21 @@ export const ProductCarousel: React.FC<{ products: CarouselProduct[]; endTile?: 
       </div>
       <button
         type="button"
-        aria-label="قبلی"
+        aria-label="کالاهای قبلی"
         onClick={() => scroll('prev')}
         disabled={!canPrev}
         className="hidden lg:flex absolute right-2 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white border border-slate-200 shadow-md items-center justify-center text-slate-700 hover:shadow-lg transition-shadow disabled:opacity-40 disabled:cursor-default disabled:hover:shadow-md"
       >
-        <ChevronRight className="w-5 h-5"  strokeWidth={1.5}/>
+        <ChevronRight className="size-5" strokeWidth={1.5} aria-hidden="true" />
       </button>
       <button
         type="button"
-        aria-label="بعدی"
+        aria-label="کالاهای بعدی"
         onClick={() => scroll('next')}
         disabled={!canNext}
         className="hidden lg:flex absolute left-2 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white border border-slate-200 shadow-md items-center justify-center text-slate-700 hover:shadow-lg transition-shadow disabled:opacity-40 disabled:hover:shadow-md"
       >
-        <ChevronLeft className="w-5 h-5"  strokeWidth={1.5}/>
+        <ChevronLeft className="size-5" strokeWidth={1.5} aria-hidden="true" />
       </button>
     </div>
   );

@@ -175,7 +175,7 @@ export const AppContent: React.FC = () => {
     );
   }
   const workspaceSwitcher = currentUser && authorizedPanels.length > 1 && (
-    <nav dir="rtl" aria-label="پنل‌های مجاز" className="flex flex-wrap items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5">
+    <nav dir="rtl" aria-label="پنل‌های مجاز" className="workspace-switcher flex flex-wrap items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5">
       {authorizedPanels.map(panel => (
         <button key={panel} type="button" aria-pressed={activeView === panel}
           onClick={() => setActiveView(panel)}
@@ -232,7 +232,7 @@ export const AppContent: React.FC = () => {
 
   const isCentralSite = !routeStoreSlug && [
     'customer', 'catalog', 'categories_tree', 'product_detail', 'customer_profile',
-    'customer_orders', 'customer_wishlist', 'static_page', 'supplier_landing', 'dropshipper_landing',
+    'customer_orders', 'customer_wishlist', 'static_page', 'supplier_landing', 'dropshipper_landing', 'not_found',
   ].includes(activeView);
   const showStorefrontNav = activeView === 'seller_storefront' ||
     (!!routeStoreSlug && activeView !== 'product_detail');
@@ -292,9 +292,22 @@ export const AppContent: React.FC = () => {
           </Suspense>
         ) : activeView === 'product_detail' ? (
           routeProductPending ? (
-            <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری کالا…</div>
+            routeStoreSlug ? (
+              <div role="status" className="flex-1 flex items-center justify-center p-6 text-sm text-slate-600">در حال بارگذاری کالا…</div>
+            ) : (
+              <>
+                <Header sticky={false} mainId="main-content" />
+                <main id="main-content" tabIndex={-1} className="central-wrap central-product-loading">
+                  <p role="status">در حال بارگذاری کالا…</p>
+                </main>
+                <Footer />
+              </>
+            )
           ) : routeProductInvalid || !currentProductDetail ? (
-            <NotFoundView onBack={() => setActiveView('customer')} />
+            <NotFoundView variant={routeStoreSlug ? 'store' : 'generic'} onBack={() => {
+              if (routeStoreSlug) setActiveView('seller_storefront', { storeSlug: routeStoreSlug });
+              else setActiveView('customer');
+            }} />
           ) : routeStoreSlug ? (
             <>
               <SellerStorefrontHeader

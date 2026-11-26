@@ -2,6 +2,7 @@ import React from 'react';
 import { Header } from './Header';
 import { SearchX, Home, ArrowRight } from 'lucide-react';
 import { Footer } from './Footer';
+import { followStoreLink } from '../utils/followStoreLink';
 
 // Missing seller storefronts keep their own neutral view without platform chrome.
 export const NotFoundView: React.FC<{
@@ -23,7 +24,7 @@ export const NotFoundView: React.FC<{
       {!isStore && <Header mainId="main-content" />}
       <main id={isStore ? undefined : 'main-content'} tabIndex={-1} className={`flex-1 flex flex-col items-center justify-center px-6 py-16 text-center ${isStore ? 'bg-[#FAF9F7]' : 'bg-[var(--shop-bg,#f8f6ef)] text-[var(--shop-ink,#172d26)]'}`}>
         <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-5 ${isStore ? 'bg-stone-200/70' : 'bg-[var(--shop-soft,#edf2e9)]'}`}>
-          <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-[var(--shop-forest,#164638)]'}`} strokeWidth={1.5} />
+          <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-[var(--shop-forest,#164638)]'}`} strokeWidth={1.5} aria-hidden="true" />
         </div>
         <h1 className={`text-5xl font-black tracking-tight ${isStore ? 'text-stone-900' : 'text-[var(--shop-ink,#172d26)]'}`}>۴۰۴</h1>
         <h2 className={`mt-2 text-lg font-bold ${isStore ? 'text-stone-800' : 'text-[var(--shop-ink,#172d26)]'}`}>
@@ -33,14 +34,14 @@ export const NotFoundView: React.FC<{
           {isStore ? 'به نظر می‌رسد نشانی فروشگاه اشتباه است یا این فروشگاه دیگر فعال نیست.' : (message || 'به نظر می‌رسد آدرسی که وارد کرده‌اید اشتباه است یا این صفحه حذف شده است.')}
         </p>
         {!isStore && (
-          <button
-            type="button"
-            onClick={onBack}
+          <a
+            href="/"
+            onClick={event => followStoreLink(event, onBack)}
             className="central-button mt-6 w-full max-w-60"
           >
-            <Home className="w-4 h-4" strokeWidth={1.5} />
+            <Home className="w-4 h-4" strokeWidth={1.5} aria-hidden="true" />
             <span>بازگشت به خانه</span>
-          </button>
+          </a>
         )}
         <button
           type="button"

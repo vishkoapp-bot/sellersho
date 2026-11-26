@@ -92,7 +92,7 @@
 
 .central-pdp-title {
   color: var(--pdp-ink);
-  font-size: clamp(1.3rem, 1.02rem + 1.15vw, 2.25rem);
+  font-size: var(--shop-page-title, 1.5rem);
   font-weight: 850;
   line-height: 1.5;
   overflow-wrap: anywhere;

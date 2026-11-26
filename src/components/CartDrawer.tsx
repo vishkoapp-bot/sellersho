@@ -773,7 +773,7 @@ export const CartDrawer: React.FC = () => {
         initial={reducedMotion ? false : { y: 24, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: reducedMotion ? 0 : 0.18 }}
-        className="flex h-dvh w-full min-w-0 max-w-[640px] flex-col overflow-hidden bg-[var(--checkout-bg)] text-[var(--checkout-ink)] shadow-2xl lg:my-auto lg:h-auto lg:max-h-[calc(100dvh-3.5rem)] lg:max-w-5xl lg:rounded-3xl"
+        className={`flex h-dvh w-full min-w-0 max-w-[640px] flex-col overflow-hidden bg-[var(--checkout-bg)] text-[var(--checkout-ink)] shadow-2xl lg:my-auto lg:h-auto lg:max-h-[calc(100dvh-3.5rem)] lg:max-w-5xl lg:rounded-3xl ${centralCheckout ? 'central-portal' : ''}`}
       >
         <header className="shrink-0 border-b border-[var(--checkout-line)] bg-white px-4 pt-3.5 sm:px-6 sm:pt-5">
           <div className="flex items-center justify-between gap-3 pb-3">
@@ -782,7 +782,7 @@ export const CartDrawer: React.FC = () => {
                 <ShoppingBag className="size-5" aria-hidden="true" />
               </span>
               <div className="min-w-0">
-                <h3 id="cart-drawer-title" tabIndex={-1} ref={titleRef} className="text-lg font-black leading-7 text-balance focus:outline-none sm:text-2xl">{title}</h3>
+                <h2 id="cart-drawer-title" tabIndex={-1} ref={titleRef} className="text-lg font-black leading-7 text-balance focus:outline-none sm:text-2xl">{title}</h2>
                 {displayStoreName && effectiveStep !== 'success' && (
                   <p className="truncate text-sm text-[var(--checkout-muted)]">{displayStoreName}</p>
                 )}
@@ -875,7 +875,7 @@ export const CartDrawer: React.FC = () => {
                   <div className="space-y-2 border-t border-slate-100 py-3 text-xs">{pricingBreakdown}</div>
                 </details>
                 <button type="button" onClick={handleProceedToCheckout} className={`${primaryButton} flex items-center justify-center gap-2`}>
-                  ادامهٔ خرید
+                  ادامه به نشانی و ارسال
                   <ArrowLeft className="size-4" aria-hidden="true" />
                 </button>
               </div>

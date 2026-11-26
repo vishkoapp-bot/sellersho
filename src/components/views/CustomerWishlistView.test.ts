@@ -29,13 +29,9 @@ const product: Product = {
   },
 };
 
-test('wishlist quick-add uses the purchasable variant at the displayed card price', () => {
-  const cardPrice = cardPriceOf(product).price;
-  assert.equal(cardPrice, 150000);
-  const purchase = resolveWishlistQuickAdd(product);
-  assert.ok(purchase);
-  assert.equal(purchase.variant?.id, 'v-ok');
-  assert.equal(purchase.product.price, cardPrice);
+test('wishlist shows the available model price while requiring the shopper to choose', () => {
+  assert.equal(cardPriceOf(product).price, 150000);
+  assert.equal(resolveWishlistQuickAdd(product), undefined);
 });
 
 test('the sold-out effective default fails purchase resolution', () => {
@@ -48,7 +44,7 @@ test('wishlist quick-add fails when both variants are sold out', () => {
   assert.equal(resolveWishlistQuickAdd(soldOut), undefined);
 });
 
-test('wishlist quick-add prefers a purchasable store default over a cheaper variant', () => {
+test('a stored default remains a displayed price and does not bypass model choice', () => {
   const storeProduct = {
     ...product,
     storeDefaultVariantId: 'v-ok',
@@ -58,10 +54,8 @@ test('wishlist quick-add prefers a purchasable store default over a cheaper vari
       'v-other': { price: 120000, originalPrice: 120000, discountPercent: 0 },
     },
   };
-  const purchase = resolveWishlistQuickAdd(storeProduct);
-  assert.ok(purchase);
-  assert.equal(purchase.variant?.id, 'v-ok');
-  assert.equal(purchase.product.price, 150000);
+  assert.equal(cardPriceOf(storeProduct).price, 150000);
+  assert.equal(resolveWishlistQuickAdd(storeProduct), undefined);
 });
 
 test('wishlist quick-add resolves a simple product without variants only when in stock', () => {
@@ -80,8 +74,8 @@ test('wishlist quick-add fails for a variable product without priced variants', 
   assert.equal(resolveWishlistQuickAdd(unpriced), undefined);
 });
 
-test('wishlist quick-add uses the selected variant minimum quantity', () => {
-  const withMinimum = { ...product, variants: [cheapVariant, { ...availableVariant, minCartQty: 2 }] };
+test('wishlist quick-add keeps the minimum quantity of a simple SKU', () => {
+  const withMinimum = { ...product, productType: 'simple' as const, variants: [{ ...availableVariant, minCartQty: 2 }] };
   assert.equal(resolveWishlistQuickAdd(withMinimum)?.minQty, 2);
 });
 
@@ -135,12 +129,19 @@ test('wishlist resolves saved IDs beyond the loaded catalog and asks scoped shop
         window.fetch = async (input) => {
           (window as any).wishlistRequests.push(String(input));
           return Response.json({ id: 'saved-item', title: 'کالای ذخیره‌شده خارج از صفحهٔ فعلی', category: 'home',
-            stock: 3, price: scoped ? 240000 : 180000, originalPrice: scoped ? 240000 : 180000 });
+            stock: 3, price: scoped ? 240000 : 180000, originalPrice: scoped ? 240000 : 180000,
+            ...(!scoped ? { productType: 'variable', variants: [
+              { id: 'v', name: 'آبی', attributes: {}, stock: 3 },
+            ], variantPrices: { v: { price: 180000, originalPrice: 180000, discountPercent: 0 } } } : {}) });
         };
       }, scoped);
       await page.addScriptTag({ content: bundle.outputFiles[0].text });
       await page.waitForSelector('#root li a');
       assert.match(await page.$eval('#root li', node => node.textContent || ''), scoped ? /240000/ : /180000/);
+      if (!scoped) {
+        assert.equal(await page.$eval('a[aria-label^="انتخاب مدل"]', element => element.getAttribute('href')), '/product/saved-item');
+        assert.equal(await page.$('button[aria-label^="افزودن"]'), null);
+      }
       assert.deepEqual(await page.evaluate(() => (window as any).wishlistRequests), [
         `/api/v1/products/saved-item${scoped ? '?storeSlug=sample-shop' : ''}`,
       ]);

@@ -42,12 +42,12 @@ it('returns row shows the count badge from getMyReturns with the return-window n
   const html = renderRow(2);
   assert.match(html, /مرجوعی‌های من/);
   assert.match(html, /۲ مرجوعی ثبت شده/);
-  assert.match(html, /۷ روز مهلت تست و عودت کالا پس از تحویل/);
+  assert.match(html, /مهلت مرجوعی را در جزئیات سفارش ببینید/);
 });
 
 it('returns row shows the honest empty state when there are no returns, and a loading state while fetching', () => {
   assert.match(renderRow(0), /هنوز مرجوعی‌ای ثبت نکرده‌اید/);
-  assert.match(renderRow(0), /۷ روز مهلت تست و عودت کالا پس از تحویل/);
+  assert.match(renderRow(0), /مهلت مرجوعی را در جزئیات سفارش ببینید/);
   assert.match(renderRow(null), /در حال دریافت…/);
   assert.doesNotMatch(renderRow(null), /مرجوعی ثبت شده/);
 });

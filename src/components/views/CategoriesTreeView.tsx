@@ -97,7 +97,7 @@ export const CategoriesTreeView: React.FC<{ onBack: () => void }> = ({ onBack })
           <button type="button" onClick={onBack} className={`${action} mb-2 px-0`}><ArrowRight size={17} aria-hidden /> خانه</button>
           <div className="grid items-end gap-4 sm:grid-cols-[1fr_minmax(250px,360px)]">
             <div>
-              <h1 className="text-2xl leading-snug font-black sm:text-4xl">{storeSlug ? `دسته‌بندی‌های ${currentStore.name}` : 'دسته‌بندی کالاها'}</h1>
+              <h1 className="central-page-title">{storeSlug ? `دسته‌بندی‌های ${currentStore.name}` : 'دسته‌بندی کالاها'}</h1>
               {!storeSlug && (
                 <a href={pathForView('catalog')} onClick={event => followStoreLink(event, () => openCatalogCategory('all'))} className={`${action} mt-1 px-0`}>مشاهدهٔ همهٔ کالاها <ChevronLeft size={16} aria-hidden /></a>
               )}
@@ -106,8 +106,8 @@ export const CategoriesTreeView: React.FC<{ onBack: () => void }> = ({ onBack })
               <div className="flex min-h-12 items-center gap-2 rounded-xl border border-[var(--shop-line,#ccd9cd)] bg-white ps-3 focus-within:outline-2 focus-within:outline-[var(--shop-forest,#164638)]">
                 <Search size={18} className="shrink-0 text-[var(--shop-muted,#506357)]" aria-hidden />
                 <label className="sr-only" htmlFor="category-search">جستجو در دسته‌بندی‌ها</label>
-                <input id="category-search" type="search" ref={searchInput} value={search} onChange={event => updateSearch(event.target.value)}
-                  placeholder="نام دسته را جستجو کنید" className="min-h-12 min-w-0 flex-1 bg-transparent pe-3 text-sm outline-hidden [&::-webkit-search-cancel-button]:hidden" />
+                <input id="category-search" name="category-search" type="search" autoComplete="off" ref={searchInput} value={search} onChange={event => updateSearch(event.target.value)}
+                  placeholder="نام دسته…" className="min-h-12 min-w-0 flex-1 bg-transparent pe-3 text-base outline-hidden [&::-webkit-search-cancel-button]:hidden" />
                 {search && <button type="button" aria-label="پاک کردن جستجوی دسته‌ها" className={`${action} px-0 aspect-square`}
                   onClick={() => { updateSearch(''); searchInput.current?.focus(); }}><X size={16} aria-hidden /></button>}
               </div>

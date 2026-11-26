@@ -3,6 +3,8 @@ import { useStore } from '../../context/StoreContext';
 import { StaticPageKey } from '../../context/storeContextTypes';
 import { ArrowRight, ShieldCheck, HelpCircle, FileText, Lock, Info, ChevronDown } from 'lucide-react';
 import { apiRequest } from '../../services/apiClient';
+import { followStoreLink } from '../../utils/followStoreLink';
+import { pathForView } from '../../utils/routing';
 
 // FIX 14: static pages read the SAME public CMS source live uses
 // (GET /api/v1/static-pages) instead of hardcoded texts. The old
@@ -55,7 +57,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
-  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const tabRefs = useRef<Record<string, HTMLElement | null>>({});
   const lastScrolledTab = useRef<string | null>(null);
   // FIX 15: live syncs the active tab when the route's staticPageKey
   // changes (bundle z3) and scrolls the active tab into view; the
@@ -73,7 +75,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
       const row = el.parentElement.getBoundingClientRect();
       if (tab.left >= row.left && tab.right <= row.right) return;
     }
-    el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    el.scrollIntoView({ behavior: 'instant', inline: 'center', block: 'nearest' });
   }, [activeTab, pages]);
 
   const load = () => {
@@ -100,7 +102,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
 
   const renderParagraphs = (content: string) => (
     <div className={`${card} space-y-3 p-4 text-sm leading-7 sm:p-6`}>
-      {activePage && <h2 className="text-sm font-bold text-slate-900">{activePage.title}</h2>}
+      {!central && activePage && <h2 className="text-sm font-bold text-slate-900">{activePage.title}</h2>}
       {content.split(/\n\s*\n/).map((para, idx) => (
         <p key={idx}>{para}</p>
       ))}
@@ -111,17 +113,18 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
     let items: FaqItem[] = [];
     try {
       const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) items = parsed;
+      if (Array.isArray(parsed)) items = parsed.filter(item => typeof item?.q === 'string' && typeof item?.a === 'string');
     } catch {
       items = [];
     }
+    if (!items.length) return <p className={`${card} p-4 text-sm`}>پرسش متداولی برای نمایش ثبت نشده است.</p>;
     return (
       <div className="space-y-2">
         {items.map((f, idx) => (
           <div key={idx} className={`${card} px-3 sm:px-5`}>
             <button type="button" aria-expanded={openFaq === idx} onClick={() => setOpenFaq(openFaq === idx ? null : idx)} className="min-h-11 w-full flex items-center justify-between gap-3 py-2 text-start text-sm font-bold">
               <span>{f.q}</span>
-              <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${openFaq === idx ? 'rotate-180' : ''}`}  strokeWidth={1.5}/>
+              <ChevronDown className={`size-4 shrink-0 text-[var(--shop-muted,#475569)] ${openFaq === idx ? 'rotate-180' : ''}`} strokeWidth={1.5} aria-hidden="true" />
             </button>
             {openFaq === idx && <p className="border-t border-[var(--shop-line,#e2e8f0)] py-3 text-sm leading-7 text-[var(--shop-muted,#475569)]">{f.a}</p>}
           </div>
@@ -135,37 +138,46 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
       <header className="central-info-heading flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--shop-soft,#f1f5f9)] text-[var(--shop-forest,#334155)]">
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
+            <ArrowRight className="size-5" strokeWidth={1.5} aria-hidden="true" />
           </button>
-          <h1 className="text-xl font-black text-slate-900">راهنمای خرید</h1>
+          <h1 className={central ? 'central-page-title' : 'text-xl font-black text-slate-900'}>
+            {central ? activePage?.title || TAB_LABELS[activeTab] || 'راهنمای خرید' : 'راهنمای خرید'}
+          </h1>
         </div>
       </header>
 
       {/* Tabs (labels from CMS titles, CMS order) */}
-      {pages && (
-        <div className="central-info-tabs flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-1 overflow-x-auto text-xs">
+      {!!pages?.length && (
+        <nav aria-label="راهنمای خرید" className="central-info-tabs flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-1 overflow-x-auto text-xs">
           {pages.map((p) => {
             const Icon = TAB_ICONS[p.key] || Info;
+            const isCurrent = activeTab === p.key;
+            const knownPage = Object.prototype.hasOwnProperty.call(TAB_LABELS, p.key);
+            const className = `min-h-11 py-1 px-2 sm:px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${isCurrent ? 'bg-[var(--shop-forest,var(--color-brand))] text-white' : 'text-[var(--shop-muted,#475569)] hover:bg-[var(--shop-soft,#f1f5f9)]'}`;
+            const label = <><Icon className="size-3.5" strokeWidth={1.5} aria-hidden="true" /><span>{TAB_LABELS[p.key] || p.title}</span></>;
+            if (central && knownPage) {
+              const key = p.key as StaticPageKey;
+              return <a key={key} ref={el => { tabRefs.current[key] = el; }} href={pathForView('static_page', { staticPageKey: key })}
+                onClick={event => followStoreLink(event, () => openStaticPage(key))} aria-current={isCurrent ? 'page' : undefined}
+                className={className}>{label}</a>;
+            }
             return (
               <button
                 key={p.key}
                 ref={(el) => { tabRefs.current[p.key] = el; }}
                 type="button"
-                aria-pressed={activeTab === p.key}
+                aria-pressed={isCurrent}
                 onClick={() => {
-                  if (Object.prototype.hasOwnProperty.call(TAB_LABELS, p.key)) openStaticPage(p.key as StaticPageKey);
+                  if (knownPage) openStaticPage(p.key as StaticPageKey);
                   else { setActiveTab(p.key); setOpenFaq(null); }
                 }}
-                className={`min-h-11 py-1 px-2 sm:px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${
-                  activeTab === p.key ? 'bg-brand text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
-                }`}
+                className={className}
               >
-                <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" strokeWidth={1.5} />
-                <span>{TAB_LABELS[p.key] || p.title}</span>
+                {label}
               </button>
             );
           })}
-        </div>
+        </nav>
       )}
 
       <div className="central-info-content p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto">
@@ -182,6 +194,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
             در حال بارگذاری…
           </div>
         )}
+        {!loadError && pages?.length === 0 && <p className={`${card} p-5 text-sm`}>هنوز راهنمایی برای نمایش ثبت نشده است.</p>}
         {!loadError && pages && activePage && activePage.key === 'faq' && renderFaq(activePage.content)}
         {!loadError && pages && activePage && activePage.key !== 'faq' && renderParagraphs(activePage.content)}
       </div>

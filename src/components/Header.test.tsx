@@ -1,28 +1,11 @@
-import { before, after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { createServer, type ViteDevServer } from 'vite';
-import puppeteer, { type Browser, type Page } from 'puppeteer';
-import { fillInput } from '../../scripts/fixtures/catalog/batch8-browser';
+import type { Page } from 'puppeteer';
+import { batch8Browser, fillInput } from '../../scripts/fixtures/catalog/batch8-browser';
 
-let server: ViteDevServer;
-let browser: Browser;
-let url: string;
-before(async () => {
-  server = await createServer({ configFile: false, logLevel: 'error', cacheDir: 'releases/.vite-header-test',
-    esbuild: { jsx: 'automatic' }, define: { 'import.meta.env.VITE_USE_MOCK': '"false"' },
-    optimizeDeps: { entries: ['scripts/fixtures/header/index.html'] }, server: { host: '127.0.0.1', port: 0 } });
-  await server.listen();
-  url = `http://127.0.0.1:${(server.httpServer!.address() as any).port}/scripts/fixtures/header/index.html`;
-  const executablePath = process.env.CHROME_PATH || ['C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);
-  browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'], ...(executablePath ? { executablePath } : {}) });
-});
-after(async () => { await browser?.close(); await server?.close(); });
+const visit = batch8Browser({ entryPoint: 'scripts/fixtures/header/provider.tsx' });
 
 async function ready(page: Page) {
-  await page.setViewport({ width: 1280, height: 800 });
-  await page.goto(url);
   await page.waitForFunction(() => {
     const h = (window as any).headerHarness;
     return h?.state && !h.state().loading && h.state().products === 2;
@@ -38,9 +21,8 @@ async function ready(page: Page) {
 // started, and the control half proves a resolving fetch DOES open
 // the dropdown (the test is not vacuously passing).
 test('Enter before the 320ms debounce fires starts no suggestion fetch and never opens the dropdown', async () => {
-  const context = await browser.createBrowserContext();
-  try {
-    const page = await context.newPage(); await ready(page);
+  await visit('/', 1280, async page => {
+    await ready(page);
     // The term is set AND Enter is pressed in ONE evaluate: the input
     // event and the keydown run in the same JS task, so Enter is
     // processed before the 320ms timer can fire. (Separate CDP
@@ -65,13 +47,12 @@ test('Enter before the 320ms debounce fires starts no suggestion fetch and never
     assert.equal(result.suggestCalls.length, 0, 'the debounce timer must be cleared before it fires');
     assert.equal(result.dropdownOpen, false);
     assert.equal(result.view, 'catalog', 'Enter still navigates to the catalog');
-  } finally { await context.close(); }
+  });
 });
 
 test('Enter after the suggestion fetch starts aborts it in flight and never opens the dropdown', async () => {
-  const context = await browser.createBrowserContext();
-  try {
-    const page = await context.newPage(); await ready(page);
+  await visit('/', 1280, async page => {
+    await ready(page);
     await fillInput(page, 'header input[type="text"]', 'تیشرت');
     await page.waitForFunction(() => (window as any).headerHarness.suggestCalls().length === 1, { timeout: 5000 });
     const before = await page.evaluate(() => (window as any).headerHarness.suggestCalls()[0]);
@@ -87,13 +68,12 @@ test('Enter after the suggestion fetch starts aborts it in flight and never open
     assert.equal(result.call.settled, false, 'the aborted fetch must never resolve into the dropdown');
     assert.equal(result.dropdownOpen, false);
     assert.equal(result.view, 'catalog');
-  } finally { await context.close(); }
+  });
 });
 
 test('control: a resolving suggestion fetch opens the dropdown while the input still has focus', async () => {
-  const context = await browser.createBrowserContext();
-  try {
-    const page = await context.newPage(); await ready(page);
+  await visit('/', 1280, async page => {
+    await ready(page);
     await fillInput(page, 'header input[type="text"]', 'تیشرت');
     await page.waitForFunction(() => (window as any).headerHarness.suggestCalls().length === 1, { timeout: 5000 });
     await page.evaluate(() => (window as any).headerHarness.resolveSuggestion([
@@ -110,5 +90,5 @@ test('control: a resolving suggestion fetch opens the dropdown while the input s
     await page.keyboard.press('Escape');
     assert.equal(await page.evaluate(() => document.activeElement?.matches('#central-search')), true);
     assert.equal(await page.evaluate(() => (window as any).headerHarness.dropdownOpen()), false);
-  } finally { await context.close(); }
+  });
 });

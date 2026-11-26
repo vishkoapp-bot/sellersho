@@ -148,7 +148,7 @@ func TestSupplierSettlementRejectsAccountHolderOverSchemaLimit(t *testing.T) {
 	r = r.WithContext(context.WithValue(r.Context(), supplierIDKey, "supplier-fixture"))
 	w := httptest.NewRecorder()
 	h.HandleRequestSettlement(w, r)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "100") {
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "۱۰۰") {
 		t.Fatalf("expected account-holder validation before DB call: %d %s", w.Code, w.Body)
 	}
 }

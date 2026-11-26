@@ -70,6 +70,7 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
   const requestedItem = findAdminSection(requested);
   const permittedItem = role && requestedItem?.roles.includes(role) ? requestedItem : undefined;
   const activeTab = permittedItem?.id ?? (role ? adminDefaultSection[role] : undefined);
+  const previousTab = useRef(activeTab);
 
   useEffect(() => {
     const restore = () => setRequested(requestedAdminSection());
@@ -78,9 +79,11 @@ export function AdminDashboardView({ onBackToCustomerSite }: { onBackToCustomerS
   }, []);
 
   useEffect(() => {
-    if (!activeTab) return;
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    mainRef.current?.focus({ preventScroll: true });
+    if (activeTab && previousTab.current && activeTab !== previousTab.current) {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      mainRef.current?.focus({ preventScroll: true });
+    }
+    previousTab.current = activeTab;
   }, [activeTab]);
 
   useEffect(() => {

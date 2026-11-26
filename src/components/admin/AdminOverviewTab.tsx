@@ -373,19 +373,15 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           </h2>
           {hasAnyError && <span title={`خطا در دریافت: ${failedKeys.join('، ')}`} className="rounded-lg bg-amber-50 px-2 py-1 text-xs font-bold text-amber-900">خطا در دریافت برخی داده‌ها</span>}
         </div>
-        <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-          <div className="min-w-0 rounded-xl bg-slate-50 p-3">
-            <dt>سفارش‌های امروز</dt>
-            <dd className="mt-1 font-extrabold text-slate-900">{showFigure ? toPersianDigits(todayOrders) : '—'}</dd>
-          </div>
-          <div className="min-w-0 rounded-xl bg-slate-50 p-3">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 rounded-xl bg-slate-50 px-3 py-2 text-sm leading-6">
+          <dl className="flex flex-wrap gap-x-2 text-slate-700">
             <dt>عملیات خودکار سرور</dt>
-            <dd className={`mt-1 font-bold ${jobsHaveError ? 'text-rose-800' : 'text-slate-900'}`}>{jobsStatus()} <ErrorBadge errorKey="jobs" /></dd>
-            {jobs !== null && jobs.length > 0 && (
-              <button type="button" onClick={() => onNavigateTab('jobs-queue')} className="inline-flex min-h-11 items-center text-xs font-bold text-brand-deep underline underline-offset-4">دیدن جزئیات</button>
-            )}
-          </div>
-        </dl>
+            <dd className={`font-bold ${jobsHaveError ? 'text-rose-800' : 'text-slate-900'}`}>{jobsStatus()} <ErrorBadge errorKey="jobs" /></dd>
+          </dl>
+          {jobs !== null && jobs.length > 0 && (
+            <button type="button" onClick={() => onNavigateTab('jobs-queue')} className="inline-flex min-h-11 items-center text-xs font-bold text-brand-deep underline underline-offset-4">دیدن جزئیات</button>
+          )}
+        </div>
       </section>
 
       {/* Four figure cards */}

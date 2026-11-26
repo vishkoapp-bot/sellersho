@@ -13,6 +13,7 @@ test('mobile admin shortcuts, grouped menu and browser history open the same thr
   visit('/admin?admin', 320, async page => {
     await page.waitForSelector('#admin-main', { visible: true });
     assert.equal(await title(page), 'پیشخوان مدیریت');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), '');
     assert.deepEqual(await page.$$eval('main nav[aria-label="مسیرهای اصلی مدیریت"] a', links => links.map(link => link.getAttribute('href'))),
       ['/admin?section=catalog', '/admin?section=suppliers', '/admin?section=orders']);
     await page.click('main nav a[href="/admin?section=catalog"]');

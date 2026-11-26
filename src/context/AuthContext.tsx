@@ -44,10 +44,16 @@ export const panelsForCapabilities = (capabilities: string[] = []): Authenticate
   if (capabilities.includes('customer')) panels.push('customer');
   if (capabilities.includes('seller')) panels.push('seller_dashboard');
   if (capabilities.includes('supplier')) panels.push('supplier_dashboard');
-  if (capabilities.includes('warehouse_staff') || capabilities.includes('logistics_specialist')) panels.push('warehouse_panel');
+  if (warehouseRoleFromCapabilities(capabilities)) panels.push('warehouse_panel');
   if (capabilities.some((capability) => ['admin', 'super_admin', 'finance', 'finance_specialist', 'support_specialist'].includes(capability))) panels.push('admin_panel');
   return panels;
 };
+
+export function warehouseRoleFromCapabilities(capabilities: readonly string[] = []) {
+  if (capabilities.includes('warehouse_staff')) return 'warehouse_staff';
+  if (capabilities.includes('logistics_specialist')) return 'logistics_specialist';
+  return undefined;
+}
 
 export interface AuthUser {
   id: string;
@@ -256,8 +262,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (currentUser.capabilities?.includes('seller') && !sellerSession) {
       storeApi.getOwnedStores().then((stores) => { if (!canApply()) return; setSellerSession({ token: authToken, mobile: currentUser.mobile, fullName: currentUser.fullName, status: stores.length ? 'active' : 'onboarding', storeId: stores[0]?.id, loginAt: new Date().toISOString() }); }).catch((error: Error) => { if (canApply()) setPanelSessionError(error.message || 'بارگذاری فروشگاه ناموفق بود.'); });
     }
-    if (currentUser.capabilities?.some((capability) => ['warehouse_staff', 'logistics_specialist'].includes(capability)) && !warehouseSession) {
-      setWarehouseSession({ token: authToken, staffId: currentUser.id, staffName: currentUser.fullName, warehouseId: 'WH-TEH-CENTRAL', warehouseName: 'انبار مرکزی', role: currentUser.role === 'logistics_specialist' ? 'logistics_specialist' : 'warehouse_staff', loginAt: new Date().toISOString() });
+    const warehouseRole = warehouseRoleFromCapabilities(currentUser.capabilities);
+    if (warehouseRole && (warehouseSession?.token !== authToken || warehouseSession.staffId !== currentUser.id || warehouseSession.role !== warehouseRole)) {
+      setWarehouseSession({ token: authToken, staffId: currentUser.id, staffName: currentUser.fullName, role: warehouseRole, loginAt: new Date().toISOString() });
+    } else if (!warehouseRole && warehouseSession && !isMockMode()) {
+      setWarehouseSession(null);
     }
     if (currentUser.capabilities?.some((capability) => ['admin', 'super_admin', 'finance', 'finance_specialist', 'support_specialist'].includes(capability)) && !adminSession) {
       // Live parity: preserve the real role (plain 'admin' stays 'admin');

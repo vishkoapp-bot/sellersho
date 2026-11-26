@@ -1,29 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { ArrowLeft, Building2, ChevronDown, FileText, RefreshCw, Search, Star } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
-import { useToast } from '../../context/ToastContext';
 import { apiRequest } from '../../services/apiClient';
 import { formatPrice } from '../../utils/formatters';
-import { Building2, Star, Truck, FileText, Eye, X } from 'lucide-react';
-
-// Team 06 live-parity (D54/D15): this tab used to render mockSuppliers with
-// local-only state. It now loads real suppliers from
-// GET /api/v1/admin/suppliers/list and drives approve/reject and the
-// direct-shipping decision through real admin endpoints. No supplier row
-// is fabricated locally: the "add supplier" form that created local-only
-// rows was removed, because no admin create-supplier endpoint is
-// confirmed in the live build (suppliers are created by registration).
-// The exact live approve/reject route is unverified (U06); the routes
-// used here are the reconstruction choice under /admin/suppliers/.
-//
-// Item 6 (2026-11-13): cards are clickable and open a detail modal
-// backed by GET /api/v1/admin/suppliers/:id (single-supplier detail
-// endpoint). The card's stored totalProducts / rating / deliveryScore
-// are STORED columns of unverified freshness — they are rendered as
-// stored figures, never as live-computed ones; the live-computed
-// counts (products / active / variants / proposals / orders) come
-// from the detail endpoint and are shown inside the modal. The old
-// card label «تعداد تنوع در کاتالوگ» was WRONG (totalProducts is a
-// product count, not a variant count) and is fixed to «تعداد کالا».
+import { SupplierDialog, SupplierDialogHeading } from '../supplier/SupplierDialog';
 
 export interface AdminSupplierRow {
   id: string;
@@ -130,12 +110,6 @@ export interface SupplierDetail {
   gaps: string[];
 }
 
-interface ShippingMethodRow {
-  supplierId: string;
-  method: string;
-  status: string;
-}
-
 type StatusFilter = 'all' | 'pending_approval' | 'approved' | 'rejected' | 'suspended';
 
 const statusLabel = (status?: string): string => {
@@ -183,197 +157,94 @@ export const auditHistoryReason = (details: string): string | null => {
 const datePart = (iso: string | null | undefined, toPersianDigits: (v: string | number) => string): string =>
   iso ? toPersianDigits(iso.slice(0, 10)) : '—';
 
-export interface AdminSupplierCardViewProps {
-  supplier: AdminSupplierRow;
-  hasDirectShip: boolean;
-  busyId: string | null;
-  toPersianDigits: (v: string | number) => string;
-  onOpenDetail: (supplier: AdminSupplierRow) => void;
-  onContract: (supplier: AdminSupplierRow) => void;
-  onApprove: (id: string) => void;
-  onReject: (supplier: AdminSupplierRow) => void;
-  onSuspend: (supplier: AdminSupplierRow) => void;
-  onReactivate: (id: string) => void;
-  onToggleDirectShip: (id: string) => void;
+const statusFilters: StatusFilter[] = ['all', 'pending_approval', 'approved', 'rejected', 'suspended'];
+
+const buttonClass = 'inline-flex min-h-11 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50';
+const plainButton = buttonClass + ' justify-center border border-slate-200 bg-white hover:bg-brand-bg';
+const secondaryButton = plainButton + ' text-slate-700';
+const primaryButton = buttonClass + ' justify-center bg-brand-deep text-white hover:bg-brand';
+const dangerButton = buttonClass + ' justify-center bg-rose-700 text-white hover:bg-rose-800';
+const inputClass = 'min-h-11 min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-brand';
+const surfaceClass = 'rounded-2xl border border-slate-200 bg-white';
+
+const statusTones = new Map([
+  ['pending_approval', 'bg-amber-100 text-amber-900'],
+  ['approved', 'bg-emerald-50 text-emerald-800'],
+  ['rejected', 'bg-rose-50 text-rose-800'],
+]);
+
+function SupplierStatus({ status }: { status?: string }) {
+  const tone = statusTones.get(status ?? '') ?? 'bg-slate-100 text-slate-700';
+  return <span className={tone + ' inline-flex w-fit rounded-lg px-2 py-1 text-xs font-bold'}>{statusLabel(status)}</span>;
 }
 
-// Presentational card (no providers): the container passes the store
-// helpers and the action callbacks. The whole card opens the detail
-// modal; every action button stops propagation so it does not.
-export const AdminSupplierCardView: React.FC<AdminSupplierCardViewProps> = ({
-  supplier,
-  hasDirectShip,
-  busyId,
-  toPersianDigits,
-  onOpenDetail,
-  onContract,
-  onApprove,
-  onReject,
-  onSuspend,
-  onReactivate,
-  onToggleDirectShip,
-}) => {
-  const isPending = supplier.approvalStatus === 'pending_approval';
-  const isApproved = supplier.approvalStatus === 'approved';
-  const isSuspended = supplier.approvalStatus === 'suspended';
-  const markup = formatMarkup(supplier.defaultMarkupType, supplier.defaultMarkupValue, toPersianDigits);
-  const stop = (e: React.MouseEvent) => e.stopPropagation();
+export interface AdminSupplierCardViewProps {
+  supplier: AdminSupplierRow;
+  toPersianDigits: (v: string | number) => string;
+  onOpenDetail: (supplier: AdminSupplierRow) => void;
+}
+
+export function AdminSupplierCardView({ supplier, toPersianDigits, onOpenDetail }: AdminSupplierCardViewProps) {
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-label={`مشاهده جزئیات ${supplier.name}`}
-      onClick={() => onOpenDetail(supplier)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpenDetail(supplier);
-        }
-      }}
-      className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2.5 cursor-pointer hover:border-blue-300"
-    >
-      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-        <div className="flex items-center gap-2">
-          {supplier.logoUrl ? (
-            <img
-              src={supplier.logoUrl}
-              alt={supplier.name}
-              className="w-8 h-8 rounded-full object-contain border border-slate-100 p-0.5"
-            />
-          ) : (
-            <Building2 className="w-8 h-8 text-slate-300" strokeWidth={1.5} />
-          )}
-          <div>
-            <h4 className="text-xs font-bold text-slate-900">{supplier.name}</h4>
-            <span className="text-[10px] text-slate-400">{supplier.warehouseCity}</span>
+    <article className={surfaceClass + ' flex min-w-0 flex-col justify-between gap-4 p-4'}>
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="grid size-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-brand-soft text-brand-deep">
+          {supplier.logoUrl ? <img src={supplier.logoUrl} alt="" className="size-full object-contain" /> : <Building2 aria-hidden="true" className="size-5" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="break-words text-base font-extrabold leading-6 text-slate-900">{supplier.name}</h3>
+          {supplier.warehouseCity && <p className="break-words text-sm text-slate-600">{supplier.warehouseCity}</p>}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <SupplierStatus status={supplier.approvalStatus} />
+            {supplier.badge && <span className="break-words rounded-lg bg-brand-bg px-2 py-1 text-xs font-bold text-brand-deep">{supplier.badge}</span>}
           </div>
         </div>
-
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-bold text-slate-600">{statusLabel(supplier.approvalStatus)}</span>
-          <div className="flex items-center gap-1 text-xs text-amber-500 font-bold">
-            <Star className="w-3.5 h-3.5 fill-current" strokeWidth={1.5} />
-            <span>{toPersianDigits(supplier.rating)}</span>
-          </div>
-          <button
-            type="button"
-            onClick={(e) => {
-              stop(e);
-              onOpenDetail(supplier);
-            }}
-            aria-label={`مشاهده جزئیات ${supplier.name}`}
-            title="مشاهده جزئیات"
-            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg"
-          >
-            <Eye className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </button>
-        </div>
       </div>
 
-      {supplier.badge && (
-        <span className="inline-block text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-2 py-0.5">
-          {supplier.badge}
-        </span>
-      )}
-      {supplier.description && (
-        <p className="text-[10px] text-slate-500 leading-relaxed">{supplier.description}</p>
-      )}
-
-      <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-600">
-        <div>تعداد کالا در کاتالوگ: <strong className="text-slate-800">{toPersianDigits(supplier.totalProducts)} قلم</strong></div>
-        <div>امتیاز تحویل بموقع: <strong className="text-emerald-600">٪{toPersianDigits(supplier.deliveryScore)}</strong></div>
-        <div>نسخه قرارداد امضاشده: <strong className="text-slate-800">{supplier.signedContractVersion != null ? toPersianDigits(supplier.signedContractVersion) : '—'}</strong></div>
-        <div>شهر انبار تأییدشده: <strong className="text-slate-800">{supplier.warehouseCityConfirmed ? 'بله' : 'خیر'}</strong></div>
-        {markup && (
-          <div>سود پیش‌فرض توافق: <strong className="text-slate-800">{markup}</strong></div>
-        )}
-        <div>اتصال تاپین: <strong className="text-slate-800">{supplier.tapinConnected ? 'متصل' : 'متصل نیست'}</strong></div>
-        {supplier.approvedBy && (
-          <div>تأییدکننده: <strong className="text-slate-800">{supplier.approvedBy}</strong></div>
-        )}
-        {supplier.createdAt && (
-          <div>تاریخ ثبت: <strong className="text-slate-800">{datePart(supplier.createdAt, toPersianDigits)}</strong></div>
-        )}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+        <span>تعداد کالا در کاتالوگ <strong className="text-slate-900">{toPersianDigits(supplier.totalProducts)}</strong></span>
+        <span className="inline-flex items-center gap-1"><Star aria-hidden="true" className="size-3.5 text-amber-700" /> امتیاز <strong className="text-slate-900">{toPersianDigits(supplier.rating)}</strong></span>
       </div>
 
-      {supplier.rejectionReason && (
-        <div className="text-[10px] text-rose-700 bg-rose-50 border border-rose-100 rounded-xl p-2">
-          دلیل رد: {supplier.rejectionReason}
-        </div>
-      )}
-
-      {isSuspended && supplier.suspensionReason && (
-        <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2">
-          دلیل تعلیق: {supplier.suspensionReason}
-        </div>
-      )}
-
-      <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Truck className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.5} />
-          <span className="text-[10px] text-slate-600">مجوز استثنای ارسال مستقیم:</span>
-        </div>
-
-        <div className="flex items-center gap-1.5" onClick={stop}>
-          <button
-            onClick={() => onContract(supplier)}
-            className="px-2 py-1 text-[10px] font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1"
-          >
-            <FileText className="w-3 h-3" strokeWidth={1.5} />
-            <span>قرارداد</span>
-          </button>
-          {isPending && (
-            <>
-              <button
-                onClick={() => onApprove(supplier.id)}
-                disabled={busyId === supplier.id}
-                className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-              >
-                تأیید
-              </button>
-              <button
-                onClick={() => onReject(supplier)}
-                disabled={busyId === supplier.id}
-                className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-rose-100 text-rose-700 disabled:opacity-50"
-              >
-                رد
-              </button>
-            </>
-          )}
-          {isApproved && (
-            <button
-              onClick={() => onSuspend(supplier)}
-              disabled={busyId === supplier.id}
-              className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-amber-100 text-amber-700 disabled:opacity-50"
-            >
-              تعلیق
-            </button>
-          )}
-          {isSuspended && (
-            <button
-              onClick={() => onReactivate(supplier.id)}
-              disabled={busyId === supplier.id}
-              className="px-2.5 py-1 text-[10px] font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-            >
-              فعال‌سازی مجدد
-            </button>
-          )}
-          <button
-            onClick={() => onToggleDirectShip(supplier.id)}
-            disabled={busyId === supplier.id}
-            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors disabled:opacity-50 ${
-              hasDirectShip
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {hasDirectShip ? 'فعال (با مجوز)' : 'غیرفعال (ارسال انبار)'}
-          </button>
-        </div>
-      </div>
-    </div>
+      <button
+        type="button" aria-haspopup="dialog" aria-label={'مشاهده جزئیات ' + supplier.name}
+        onClick={() => onOpenDetail(supplier)}
+        className={buttonClass + ' w-full justify-between border border-brand-border bg-brand-bg text-brand-deep hover:bg-brand-soft'}
+      >
+        {supplier.approvalStatus === 'pending_approval' ? 'بررسی درخواست' : 'مشاهده پرونده'}
+        <ArrowLeft aria-hidden="true" className="size-4" />
+      </button>
+    </article>
   );
-};
+}
+
+function Facts({ entries }: { entries: ReadonlyArray<readonly [string, React.ReactNode]> }) {
+  return (
+    <dl className="divide-y divide-slate-100 text-sm">
+      {entries.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-2 gap-2 py-2">
+          <dt className="min-w-0 break-words text-slate-600">{label}</dt>
+          <dd className="min-w-0 break-words text-end font-semibold text-slate-900">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-xl border border-slate-200">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm font-bold hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+        {title}<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-slate-600 group-open:rotate-180" />
+      </summary>
+      <div className="space-y-2 border-t border-slate-100 px-3 py-2 text-sm text-slate-700">{children}</div>
+    </details>
+  );
+}
+
+function ErrorMessage({ message }: { message: string }) {
+  return <p role="alert" className="break-words rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm leading-6 text-rose-800">{message}</p>;
+}
 
 export interface AdminSupplierDetailViewProps {
   supplier: AdminSupplierRow;
@@ -382,6 +253,8 @@ export interface AdminSupplierDetailViewProps {
   detailError: string | null;
   hasDirectShip: boolean;
   busyId: string | null;
+  actionError?: string | null;
+  actionMessage?: string | null;
   toPersianDigits: (v: string | number) => string;
   onClose: () => void;
   onRetryDetail: () => void;
@@ -393,642 +266,534 @@ export interface AdminSupplierDetailViewProps {
   onToggleDirectShip: (id: string) => void;
 }
 
-// Presentational detail modal (no providers). Hosts the same actions
-// the card offers — approve / reject / suspend / reactivate /
-// direct-ship toggle / contract — by calling the container's existing
-// functions unchanged; the container reloads list + detail afterwards.
-export const AdminSupplierDetailView: React.FC<AdminSupplierDetailViewProps> = ({
-  supplier,
-  detail,
-  detailLoading,
-  detailError,
-  hasDirectShip,
-  busyId,
-  toPersianDigits,
-  onClose,
-  onRetryDetail,
-  onContract,
-  onApprove,
-  onReject,
-  onSuspend,
-  onReactivate,
-  onToggleDirectShip,
-}) => {
-  const isPending = supplier.approvalStatus === 'pending_approval';
-  const isApproved = supplier.approvalStatus === 'approved';
-  const isSuspended = supplier.approvalStatus === 'suspended';
-  const owner = detail?.supplier.owner ?? null;
-  const counts = detail?.counts ?? null;
-  const directShipCount = counts
-    ? Object.values(counts.orders.directShipmentsByStatus).reduce((a, b) => a + b, 0)
-    : 0;
-  const sectionTitle = 'text-[11px] font-extrabold text-slate-800 border-b border-slate-100 pb-1';
+export function AdminSupplierDetailView({
+  supplier, detail, detailLoading, detailError, hasDirectShip, busyId, actionError, actionMessage,
+  toPersianDigits, onClose, onRetryDetail, onContract, onApprove, onReject, onSuspend, onReactivate, onToggleDirectShip,
+}: AdminSupplierDetailViewProps) {
+  const id = useId();
+  const busy = busyId === supplier.id;
+  const owner = detail?.supplier.owner;
+  const counts = detail?.counts;
+  const directShipCount = Object.values(counts?.orders.directShipmentsByStatus ?? {}).reduce((a, b) => a + b, 0);
+  const markup = formatMarkup(supplier.defaultMarkupType, supplier.defaultMarkupValue, toPersianDigits);
+  const status = supplier.approvalStatus;
+  const decisionReason = status === 'rejected' ? supplier.rejectionReason : status === 'suspended' ? supplier.suspensionReason : null;
+
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`جزئیات تأمین‌کننده ${supplier.name}`}
-        className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-4 border border-slate-200 shadow-2xl space-y-3 text-xs"
-      >
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-          <div>
-            <h4 className="font-extrabold text-slate-900 text-sm">{supplier.name}</h4>
-            <span className="text-[10px] text-slate-400">
-              {statusLabel(supplier.approvalStatus)} · {supplier.warehouseCity}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="بستن جزئیات"
-            className="px-2 py-1 bg-slate-100 rounded-lg font-bold text-slate-600"
-          >
-            <X className="w-4 h-4" strokeWidth={1.5} />
-          </button>
+    <SupplierDialog titleId={id} onDismiss={onClose} wide>
+      <SupplierDialogHeading id={id} title={supplier.name} detail={supplier.warehouseCity} onClose={onClose} busy={busy} />
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SupplierStatus status={status} />
+          {supplier.createdAt && <p className="text-sm text-slate-600">ثبت‌شده در <bdi>{datePart(supplier.createdAt, toPersianDigits)}</bdi></p>}
         </div>
-
-        {detailLoading && (
-          <p className="text-[11px] text-slate-500">در حال دریافت جزئیات تأمین‌کننده…</p>
-        )}
-        {!detailLoading && detailError && (
-          <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-100 rounded-xl p-2 space-y-2">
-            <p>{detailError}</p>
-            <button onClick={onRetryDetail} className="px-2.5 py-1 bg-rose-600 text-white font-bold rounded-lg">
-              تلاش دوباره
-            </button>
+        {decisionReason && <p className="break-words rounded-xl bg-slate-100 p-3 text-sm text-slate-700">{status === 'rejected' ? 'دلیل رد' : 'دلیل تعلیق'} — {decisionReason}</p>}
+        {supplier.description && <p className="break-words text-sm leading-6 text-slate-700">{supplier.description}</p>}
+        {actionMessage && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{actionMessage}</p>}
+        {actionError && <ErrorMessage message={actionError} />}
+        {detailLoading && !detail && <p role="status" className="text-sm text-slate-600">در حال دریافت جزئیات تأمین‌کننده…</p>}
+        {detailError && (
+          <div className="space-y-2">
+            <ErrorMessage message={detailError} />
+            <button type="button" onClick={onRetryDetail} className={secondaryButton}>تلاش دوباره</button>
           </div>
         )}
-        {!detailLoading && !detailError && detail && (
+
+        {detail && !detailError && (
           <>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(counts?.products ?? 0)}</div>
-                <div className="text-[10px] text-slate-500">کالا (محاسبه‌شده)</div>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(counts?.activeProducts ?? 0)}</div>
-                <div className="text-[10px] text-slate-500">کالای فعال</div>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(counts?.variants ?? 0)}</div>
-                <div className="text-[10px] text-slate-500">تنوع کالا</div>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(counts?.proposals.pending ?? 0)}</div>
-                <div className="text-[10px] text-slate-500">پیشنهاد در انتظار</div>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(counts?.orders.paid ?? 0)}</div>
-                <div className="text-[10px] text-slate-500">سفارش پرداخت‌شده</div>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-2">
-                <div className="text-sm font-black text-slate-800">{toPersianDigits(directShipCount)}</div>
-                <div className="text-[10px] text-slate-500">ارسال مستقیم</div>
-              </div>
-            </div>
-            <p className="text-[10px] text-slate-400 leading-relaxed">
-              امتیاز، امتیاز تحویل و تعداد کالای روی کارت، مقادیر ثبت‌شده در پرونده‌اند، نه محاسبهٔ زنده؛ شمارش‌های بالا از داده‌های واقعی محاسبه شده‌اند.
-            </p>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>مالک و تماس</h5>
+            <section className="rounded-xl border border-slate-200 px-3 pt-3">
+              <h3 className="text-sm font-extrabold text-slate-900">مالک و تماس</h3>
               {owner ? (
-                <div className="space-y-1 text-slate-600">
-                  <div className="flex justify-between"><span>نام:</span><strong className="text-slate-900">{owner.fullName}</strong></div>
-                  <div className="flex justify-between"><span>موبایل:</span><strong className="text-slate-900" dir="ltr">{owner.mobile}</strong></div>
-                  <div className="flex justify-between"><span>ایمیل:</span><strong className="text-slate-900" dir="ltr">{owner.email || '—'}</strong></div>
-                  <div className="flex justify-between"><span>حساب کاربری:</span><strong className="text-slate-900">{owner.isActive ? 'فعال' : 'غیرفعال'}</strong></div>
+                <Facts entries={[
+                  ['نام', owner.fullName],
+                  ['موبایل', <bdi dir="ltr">{owner.mobile || '—'}</bdi>],
+                  ['ایمیل', <bdi dir="ltr">{owner.email || '—'}</bdi>],
+                  ['حساب کاربری', owner.isActive ? 'فعال' : 'غیرفعال'],
+                ]} />
+              ) : <p className="py-2 text-sm text-slate-600">مالکی برای این رکورد ثبت نشده است (رکورد مرکزی پلتفرم).</p>}
+            </section>
+
+            <section className="space-y-3 rounded-xl border border-brand-border bg-brand-bg p-3">
+              <h3 className="text-sm font-extrabold text-brand-deep">عملیات مدیریتی</h3>
+              {status === 'pending_approval' && (
+                <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+                  <button type="button" disabled={busy} onClick={() => onApprove(supplier.id)} className={primaryButton}>تأیید تأمین‌کننده</button>
+                  <button type="button" aria-haspopup="dialog" disabled={busy} onClick={() => onReject(supplier)} className={plainButton + ' text-rose-800'}>رد درخواست</button>
                 </div>
-              ) : (
-                <p className="text-[11px] text-slate-500">مالکی برای این رکورد ثبت نشده است (رکورد مرکزی پلتفرم).</p>
               )}
-              {supplier.approvedBy && (
-                <div className="flex justify-between text-slate-600"><span>تأییدکننده:</span><strong className="text-slate-900">{supplier.approvedBy}</strong></div>
+              {status === 'approved' && (
+                <button type="button" aria-haspopup="dialog" disabled={busy} onClick={() => onSuspend(supplier)} className={plainButton + ' w-full text-amber-900 sm:w-auto'}>تعلیق تأمین‌کننده</button>
               )}
-              {supplier.approvedAt && (
-                <div className="flex justify-between text-slate-600"><span>تاریخ تأیید:</span><strong className="text-slate-900">{datePart(supplier.approvedAt, toPersianDigits)}</strong></div>
+              {status === 'suspended' && (
+                <button type="button" disabled={busy} onClick={() => onReactivate(supplier.id)} className={primaryButton + ' w-full sm:w-auto'}>فعال‌سازی مجدد</button>
               )}
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>انبارها</h5>
-              {detail.warehouses.length === 0 ? (
-                <p className="text-[11px] text-slate-500">انباری ثبت نشده است.</p>
-              ) : (
-                detail.warehouses.map((w) => (
-                  <div key={w.id} className="flex justify-between text-slate-600">
-                    <span>{w.name}</span>
-                    <strong className="text-slate-900">{w.cityName}، {w.provinceName}{w.isActive ? '' : ' (غیرفعال)'}</strong>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>اعضای تیم</h5>
-              {detail.members.length === 0 ? (
-                <p className="text-[11px] text-slate-500">عضو دیگری ثبت نشده است.</p>
-              ) : (
-                detail.members.map((m) => (
-                  <div key={m.id} className="flex justify-between text-slate-600">
-                    <span>{m.fullName} ({m.roleKey})</span>
-                    <strong className="text-slate-900" dir="ltr">{m.mobile}{m.isActive ? '' : ' — غیرفعال'}</strong>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>تاپین و ارسال</h5>
-              <div className="flex justify-between text-slate-600"><span>فروشگاه تاپین:</span><strong className="text-slate-900" dir="ltr">{detail.tapin.shopId || '—'}</strong></div>
-              <div className="flex justify-between text-slate-600"><span>اتصال تاپین:</span><strong className="text-slate-900">{detail.tapin.connected ? 'متصل' : 'متصل نیست'}</strong></div>
-              <div className="flex justify-between text-slate-600"><span>ارسال مستقیم:</span><strong className="text-slate-900">{hasDirectShip ? 'فعال (با مجوز)' : 'غیرفعال (ارسال انبار)'}</strong></div>
-              {detail.shippingMethods.length === 0 ? (
-                <p className="text-[11px] text-slate-500">روش ارسالی ثبت نشده است.</p>
-              ) : (
-                detail.shippingMethods.map((m) => (
-                  <div key={`${m.supplierId}-${m.method}`} className="flex justify-between text-slate-600">
-                    <span>روش {m.method}</span>
-                    <strong className="text-slate-900">{m.status === 'enabled' ? 'فعال' : 'غیرفعال'}</strong>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>مالی (تومان)</h5>
-              {detail.finance.balance ? (
-                <div className="space-y-1 text-slate-600">
-                  <div className="flex justify-between"><span>درآمد:</span><strong className="text-slate-900">{formatPrice(detail.finance.balance.earned)} تومان</strong></div>
-                  <div className="flex justify-between"><span>رزرو شده:</span><strong className="text-slate-900">{formatPrice(detail.finance.balance.reserved)} تومان</strong></div>
-                  <div className="flex justify-between"><span>پرداخت‌شده:</span><strong className="text-slate-900">{formatPrice(detail.finance.balance.paid)} تومان</strong></div>
-                  <div className="flex justify-between"><span>قابل برداشت:</span><strong className="text-emerald-700">{formatPrice(detail.finance.balance.available)} تومان</strong></div>
-                </div>
-              ) : (
-                <p className="text-[11px] text-slate-500">موجودی در دسترس نیست.</p>
-              )}
-              {detail.finance.settlements.length === 0 ? (
-                <p className="text-[11px] text-slate-500">تسویه‌ای ثبت نشده است.</p>
-              ) : (
-                detail.finance.settlements.map((s) => (
-                  <div key={s.id} className="flex justify-between text-slate-600">
-                    <span>{s.status} · {datePart(s.created_at, toPersianDigits)}</span>
-                    <strong className="text-slate-900">{formatPrice(s.amount)} تومان</strong>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>قرارداد</h5>
-              <div className="flex justify-between text-slate-600"><span>نسخهٔ امضاشده:</span><strong className="text-slate-900">{supplier.signedContractVersion != null ? toPersianDigits(supplier.signedContractVersion) : '—'}</strong></div>
-              <div className="flex justify-between text-slate-600"><span>نسخهٔ جاری پلتفرم:</span><strong className="text-slate-900">{supplier.platformContractVersion != null ? toPersianDigits(supplier.platformContractVersion) : 'نامشخص'}</strong></div>
-            </div>
-
-            <div className="space-y-1.5">
-              <h5 className={sectionTitle}>تاریخچهٔ مدیریتی</h5>
-              {detail.history.length === 0 ? (
-                <p className="text-[11px] text-slate-500">رویداد مدیریتی ثبت‌شده‌ای برای این تأمین‌کننده وجود ندارد.</p>
-              ) : (
-                detail.history.map((hrow) => (
-                  <div key={hrow.id} className="text-slate-600 space-y-0.5">
-                    <div className="flex justify-between">
-                      <span>{hrow.action} · {hrow.operator}</span>
-                      <strong className="text-slate-900">{datePart(hrow.timestamp, toPersianDigits)}</strong>
-                    </div>
-                    {auditHistoryReason(hrow.details) && (
-                      <p className="text-[10px] text-slate-500">دلیل: {auditHistoryReason(hrow.details)}</p>
-                    )}
-                  </div>
-                ))
-              )}
-              {detail.gaps.filter((g) => g.includes('تأیید/رد')).map((g) => (
-                <p key={g} className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2 leading-relaxed">
-                  {g}
-                </p>
-              ))}
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
-              <button
-                onClick={() => onContract(supplier)}
-                className="px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1"
-              >
-                <FileText className="w-3 h-3" strokeWidth={1.5} />
-                <span>قرارداد</span>
-              </button>
-              {isPending && (
-                <>
-                  <button
-                    onClick={() => onApprove(supplier.id)}
-                    disabled={busyId === supplier.id}
-                    className="px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-                  >
-                    تأیید
-                  </button>
-                  <button
-                    onClick={() => onReject(supplier)}
-                    disabled={busyId === supplier.id}
-                    className="px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-rose-100 text-rose-700 disabled:opacity-50"
-                  >
-                    رد
-                  </button>
-                </>
-              )}
-              {isApproved && (
-                <button
-                  onClick={() => onSuspend(supplier)}
-                  disabled={busyId === supplier.id}
-                  className="px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-amber-100 text-amber-700 disabled:opacity-50"
-                >
-                  تعلیق
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button type="button" aria-haspopup="dialog" disabled={busy} onClick={() => onContract(supplier)} className={secondaryButton}>
+                  <FileText aria-hidden="true" className="size-4" /> خلاصه قرارداد
                 </button>
-              )}
-              {isSuspended && (
-                <button
-                  onClick={() => onReactivate(supplier.id)}
-                  disabled={busyId === supplier.id}
-                  className="px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-                >
-                  فعال‌سازی مجدد
+                <button type="button" disabled={busy} onClick={() => onToggleDirectShip(supplier.id)} className={secondaryButton}>
+                  {hasDirectShip ? 'لغو مجوز ارسال مستقیم' : 'فعال‌کردن ارسال مستقیم'}
                 </button>
-              )}
-              <button
-                onClick={() => onToggleDirectShip(supplier.id)}
-                disabled={busyId === supplier.id}
-                className={`px-2.5 py-1.5 text-[10px] font-bold rounded-lg transition-colors disabled:opacity-50 ${
-                  hasDirectShip ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {hasDirectShip ? 'ارسال مستقیم: فعال' : 'ارسال مستقیم: غیرفعال'}
-              </button>
+              </div>
+              <p className="text-xs leading-5 text-slate-700">مجوز ارسال مستقیم {hasDirectShip ? 'فعال است.' : 'غیرفعال است و ارسال از انبار انجام می‌شود.'}</p>
+            </section>
+
+            <div className="space-y-2">
+              <DetailSection title="کالا و سفارش">
+                <Facts entries={[
+                  ['کالا (محاسبه‌شده)', toPersianDigits(counts?.products ?? 0)],
+                  ['کالای فعال', toPersianDigits(counts?.activeProducts ?? 0)],
+                  ['تنوع کالا', toPersianDigits(counts?.variants ?? 0)],
+                  ['پیشنهاد در انتظار', toPersianDigits(counts?.proposals.pending ?? 0)],
+                  ['سفارش پرداخت‌شده', toPersianDigits(counts?.orders.paid ?? 0)],
+                  ['ارسال مستقیم', toPersianDigits(directShipCount)],
+                  ['امتیاز تحویل به‌موقع', '٪' + toPersianDigits(supplier.deliveryScore)],
+                ]} />
+                <p className="text-xs leading-5 text-slate-600">امتیاز، امتیاز تحویل و تعداد کالا در فهرست، مقادیر ثبت‌شده در پرونده‌اند. شمارش‌های این بخش از داده‌های عملیاتی محاسبه شده‌اند.</p>
+              </DetailSection>
+
+              <DetailSection title="انبارها و تیم">
+                <Facts entries={[['شهر انبار تأییدشده', supplier.warehouseCityConfirmed ? 'بله' : 'خیر']]} />
+                {detail.warehouses.length ? (
+                  <ul className="space-y-2">
+                    {detail.warehouses.map(w => (
+                      <li key={w.id} className="break-words border-b border-slate-100 pb-2">
+                        <strong>{w.name}</strong><p>{w.cityName}، {w.provinceName}{w.isActive ? '' : ' (غیرفعال)'}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p>انباری ثبت نشده است.</p>}
+                {detail.members.length ? (
+                  <ul className="space-y-2">
+                    {detail.members.map(m => (
+                      <li key={m.id} className="break-words border-b border-slate-100 pb-2">
+                        <strong>{m.fullName}</strong> <bdi>({m.roleKey})</bdi>
+                        <p><bdi dir="ltr">{m.mobile}</bdi>{m.isActive ? '' : ' · غیرفعال'}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p>عضو دیگری ثبت نشده است.</p>}
+              </DetailSection>
+
+              <DetailSection title="تاپین و ارسال">
+                <Facts entries={[
+                  ['فروشگاه تاپین', <bdi dir="ltr">{detail.tapin.shopId || '—'}</bdi>],
+                  ['اتصال تاپین', detail.tapin.connected ? 'متصل' : 'متصل نیست'],
+                  ['ارسال مستقیم', hasDirectShip ? 'فعال (با مجوز)' : 'غیرفعال (ارسال انبار)'],
+                  ...detail.shippingMethods.map(m => ['روش ' + m.method, m.status === 'enabled' ? 'فعال' : 'غیرفعال'] as const),
+                ]} />
+                {detail.shippingMethods.length === 0 && <p>روش ارسالی ثبت نشده است.</p>}
+              </DetailSection>
+
+              <DetailSection title="مالی (تومان)">
+                {detail.finance.balance ? (
+                  <Facts entries={[
+                    ['درآمد', formatPrice(detail.finance.balance.earned) + ' تومان'],
+                    ['رزرو شده', formatPrice(detail.finance.balance.reserved) + ' تومان'],
+                    ['پرداخت‌شده', formatPrice(detail.finance.balance.paid) + ' تومان'],
+                    ['قابل برداشت', formatPrice(detail.finance.balance.available) + ' تومان'],
+                  ]} />
+                ) : <p>موجودی در دسترس نیست.</p>}
+                {detail.finance.settlements.length ? (
+                  <ul className="divide-y divide-slate-100">
+                    {detail.finance.settlements.map(s => (
+                      <li key={s.id} className="break-words py-2">
+                        <bdi>{s.status}</bdi> · <bdi>{datePart(s.created_at, toPersianDigits)}</bdi> · <strong>{formatPrice(s.amount)} تومان</strong>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p>تسویه‌ای ثبت نشده است.</p>}
+              </DetailSection>
+
+              <DetailSection title="قرارداد و سابقه بررسی">
+                <Facts entries={[
+                  ['نسخهٔ امضاشده', supplier.signedContractVersion != null ? toPersianDigits(supplier.signedContractVersion) : '—'],
+                  ['نسخهٔ جاری پلتفرم', supplier.platformContractVersion != null ? toPersianDigits(supplier.platformContractVersion) : 'نامشخص'],
+                  ...(markup ? [['سود پیش‌فرض توافق', markup] as const] : []),
+                  ...(supplier.approvedBy ? [['تأییدکننده', <bdi>{supplier.approvedBy}</bdi>] as const] : []),
+                  ...(supplier.approvedAt ? [['تاریخ تأیید', <bdi>{datePart(supplier.approvedAt, toPersianDigits)}</bdi>] as const] : []),
+                ]} />
+                {detail.history.length ? (
+                  <ul className="divide-y divide-slate-100">
+                    {detail.history.map(row => {
+                      const reason = auditHistoryReason(row.details);
+                      return (
+                        <li key={row.id} className="break-words py-2">
+                          <bdi>{row.action}</bdi> · <bdi>{row.operator}</bdi> · <bdi>{datePart(row.timestamp, toPersianDigits)}</bdi>
+                          {reason && <p>دلیل — {reason}</p>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : <p>رویداد مدیریتی ثبت‌شده‌ای برای این تأمین‌کننده وجود ندارد.</p>}
+                {detail.gaps.filter(gap => gap.includes('تأیید/رد')).map(gap => (
+                  <p key={gap} className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">{gap}</p>
+                ))}
+              </DetailSection>
             </div>
           </>
         )}
       </div>
-    </div>
+    </SupplierDialog>
   );
-};
+}
 
-export const AdminSuppliersTab: React.FC = () => {
+type ReasonAction = 'reject' | 'suspend';
+
+const reviewActions = {
+  approve: { status: 'approved', success: 'تأمین‌کننده تأیید شد.', error: 'تأیید تأمین‌کننده ناموفق بود.' },
+  reject: { status: 'rejected', success: 'درخواست تأمین‌کننده رد شد.', error: 'رد تأمین‌کننده ناموفق بود.' },
+  suspend: { status: 'suspended', success: 'تأمین‌کننده تعلیق شد.', error: 'تعلیق تأمین‌کننده ناموفق بود.' },
+  reactivate: { status: 'approved', success: 'تأمین‌کننده دوباره فعال شد.', error: 'فعال‌سازی مجدد تأمین‌کننده ناموفق بود.' },
+} as const;
+
+function SupplierReasonDialog({ action, supplier, busy, error, onConfirm, onClose }: {
+  action: ReasonAction;
+  supplier: AdminSupplierRow;
+  busy: boolean;
+  error: string | null;
+  onConfirm: (reason: string) => void;
+  onClose: () => void;
+}) {
+  const id = useId();
+  const [reason, setReason] = useState('');
+  const suspend = action === 'suspend';
+  return (
+    <SupplierDialog titleId={id} descriptionId={suspend ? id + '-description' : undefined} onDismiss={onClose}>
+      <SupplierDialogHeading id={id} title={suspend ? 'تعلیق تأمین‌کننده' : 'رد درخواست تأمین‌کننده'} detail={supplier.name} onClose={onClose} busy={busy} />
+      <form className="space-y-3" onSubmit={event => { event.preventDefault(); onConfirm(reason); }}>
+        {suspend && <p id={id + '-description'} className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">تعلیق، دسترسی تأمین‌کننده و تیمش به پنل را می‌بندد. فروش کالاها، سفارش‌های مستقیمِ در جریان و درخواست تسویهٔ جدید متوقف می‌شوند. سفارش‌های انباری طبق روال ادامه دارند.</p>}
+        <label className="block text-sm font-bold text-slate-800" htmlFor={id + '-reason'}>{suspend ? 'دلیل تعلیق (اختیاری)' : 'دلیل رد (اختیاری)'}</label>
+        <textarea id={id + '-reason'} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} rows={3} className={inputClass + ' block w-full resize-y'} />
+        {error && <ErrorMessage message={error} />}
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={onClose} disabled={busy} className={secondaryButton}>انصراف</button>
+          <button type="submit" disabled={busy} className={dangerButton}>{busy ? 'در حال ثبت…' : suspend ? 'تأیید تعلیق' : 'تأیید رد'}</button>
+        </div>
+      </form>
+    </SupplierDialog>
+  );
+}
+
+function SupplierContractDialog({ supplier, toPersianDigits, onClose }: {
+  supplier: AdminSupplierRow;
+  toPersianDigits: AdminSupplierCardViewProps['toPersianDigits'];
+  onClose: () => void;
+}) {
+  const id = useId();
+  return (
+    <SupplierDialog titleId={id} onDismiss={onClose}>
+      <SupplierDialogHeading id={id} title="خلاصه قرارداد تجاری" detail={supplier.name} onClose={onClose} />
+      <Facts entries={[
+        ['مدل همکاری', 'امانی در انبار مرکزی (Consignment)'],
+        ['دوره تسویه حساب', 'پس از انقضای ۷ روز مهلت تست خریدار'],
+        ['وضعیت تأیید', statusLabel(supplier.approvalStatus)],
+        ['نسخه قرارداد امضاشده', supplier.signedContractVersion != null ? toPersianDigits(supplier.signedContractVersion) : '—'],
+        ['اتصال تاپین', supplier.tapinConnected ? 'متصل' : 'متصل نیست'],
+        ['امتیاز SLA تحویل', '٪' + toPersianDigits(supplier.deliveryScore)],
+      ]} />
+      {supplier.rejectionReason && <p className="mt-3 break-words rounded-xl bg-rose-50 p-3 text-sm text-rose-800">دلیل رد — {supplier.rejectionReason}</p>}
+    </SupplierDialog>
+  );
+}
+
+interface SupplierPage {
+  suppliers: AdminSupplierRow[];
+  hasMore: boolean;
+  nextCursor: string;
+}
+
+interface SupplierListState {
+  filter: StatusFilter;
+  items: AdminSupplierRow[];
+  nextCursor: string;
+  pending: 'first' | 'more' | null;
+  error: string | null;
+}
+
+function normalizeSearch(value: string) {
+  return value.normalize('NFKD').toLowerCase().replace(/\p{M}/gu, '').replace(/[يى]/g, 'ی')
+    .replace(/ك/g, 'ک').replace(/[\s\u200c\u200d]+/g, ' ').trim();
+}
+
+const matchesStatus = (supplier: AdminSupplierRow, filter: StatusFilter) => filter === 'all' || supplier.approvalStatus === filter;
+const messageFrom = (cause: unknown, fallback: string) => cause instanceof Error && cause.message ? cause.message : fallback;
+
+export function AdminSuppliersTab() {
   const { toPersianDigits } = useStore();
-  const { success, error } = useToast();
-  const [suppliersList, setSuppliersList] = useState<AdminSupplierRow[]>([]);
-  const [directShip, setDirectShip] = useState<{ [key: string]: boolean }>({});
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const listTitle = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRequest = useRef<{ controller: AbortController; filter: StatusFilter; cursor: string } | null>(null);
+  const detailRequest = useRef<AbortController | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [selectedContractSupplier, setSelectedContractSupplier] = useState<AdminSupplierRow | null>(null);
-  const [rejectSupplier, setRejectSupplier] = useState<AdminSupplierRow | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
-  const [suspendSupplier, setSuspendSupplier] = useState<AdminSupplierRow | null>(null);
-  const [suspendReason, setSuspendReason] = useState('');
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [list, setList] = useState<SupplierListState>({ filter: 'all', items: [], nextCursor: '', pending: 'first', error: null });
   const [detailSupplier, setDetailSupplier] = useState<AdminSupplierRow | null>(null);
   const [detail, setDetail] = useState<SupplierDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [reasonAction, setReasonAction] = useState<ReasonAction | null>(null);
+  const [contractOpen, setContractOpen] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  const loadSuppliers = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
+  const loadSuppliers = useCallback(async (filter: StatusFilter, cursor = '') => {
+    listRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const request = { controller, filter, cursor };
+    listRequest.current = request;
+    setList(current => ({
+      filter,
+      items: current.filter === filter ? current.items : [],
+      nextCursor: cursor,
+      pending: cursor ? 'more' : 'first',
+      error: null,
+    }));
+    const params = new URLSearchParams();
+    if (filter !== 'all') params.set('status', filter);
+    if (cursor) params.set('cursor', cursor);
+    const query = params.toString();
     try {
-      // /records (not /list) so the contract modal also has rejection
-      // reason and Tapin connection state, which /list omits.
-      // PERF-02 Step 9: /records now pages (envelope with `suppliers`).
-      const records = await apiRequest<any>('/admin/suppliers/records', { method: 'GET', auth: true });
-      const suppliers = Array.isArray(records) ? records : (records?.suppliers ?? []);
-      setSuppliersList(Array.isArray(suppliers) ? suppliers : []);
-      try {
-        const methods = await apiRequest<ShippingMethodRow[]>('/admin/suppliers/shipping-methods', { method: 'GET', auth: true });
-        const toggles: { [key: string]: boolean } = {};
-        (Array.isArray(methods) ? methods : []).forEach((m) => {
-          if (m.method === 'direct') toggles[m.supplierId] = m.status === 'enabled';
-        });
-        setDirectShip(toggles);
-      } catch {
-        // Shipping-method rows are supplementary; the supplier list is the
-        // primary data and must still render if this call fails.
-        setDirectShip({});
+      const result = await apiRequest<SupplierPage | AdminSupplierRow[]>(
+        '/admin/suppliers/records' + (query ? '?' + query : ''),
+        { auth: true, signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      const page = Array.isArray(result) ? null : result;
+      const rows = Array.isArray(result) ? result : page?.suppliers;
+      setList(current => {
+        const items = new Map((cursor ? current.items : []).map(supplier => [supplier.id, supplier]));
+        if (Array.isArray(rows)) {
+          rows.filter(supplier => matchesStatus(supplier, filter)).forEach(supplier => items.set(supplier.id, supplier));
+        }
+        return {
+          filter,
+          items: [...items.values()],
+          nextCursor: page?.hasMore && page.nextCursor && page.nextCursor !== cursor ? page.nextCursor : '',
+          pending: null,
+          error: null,
+        };
+      });
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        setList(current => ({ ...current, pending: null, error: messageFrom(cause, 'خطا در دریافت فهرست تأمین‌کنندگان') }));
       }
-    } catch (err: any) {
-      setLoadError(err?.message || 'خطا در دریافت فهرست تأمین‌کنندگان');
-      setSuppliersList([]);
     } finally {
-      setLoading(false);
+      if (listRequest.current === request) listRequest.current = null;
     }
   }, []);
 
   useEffect(() => {
-    loadSuppliers();
-  }, [loadSuppliers]);
+    void loadSuppliers(statusFilter);
+    return () => listRequest.current?.controller.abort();
+  }, [loadSuppliers, statusFilter]);
 
-  const loadDetail = useCallback(async (id: string) => {
+  const loadDetail = useCallback(async (supplierId: string) => {
+    detailRequest.current?.abort();
+    const controller = new AbortController();
+    detailRequest.current = controller;
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const d = await apiRequest<SupplierDetail>(`/admin/suppliers/${encodeURIComponent(id)}`, { method: 'GET', auth: true });
-      setDetail(d);
-    } catch (err: any) {
-      setDetailError(err?.message || 'خطا در دریافت جزئیات تأمین‌کننده');
-      setDetail(null);
+      const result = await apiRequest<SupplierDetail>('/admin/suppliers/' + encodeURIComponent(supplierId), { auth: true, signal: controller.signal });
+      if (!controller.signal.aborted) setDetail(result);
+    } catch (cause) {
+      if (!controller.signal.aborted) setDetailError(messageFrom(cause, 'خطا در دریافت جزئیات تأمین‌کننده'));
     } finally {
-      setDetailLoading(false);
+      if (!controller.signal.aborted) setDetailLoading(false);
     }
   }, []);
 
-  const openDetail = useCallback(
-    (supplier: AdminSupplierRow) => {
-      setDetailSupplier(supplier);
-      setDetail(null);
-      void loadDetail(supplier.id);
-    },
-    [loadDetail],
-  );
+  useEffect(() => () => detailRequest.current?.abort(), []);
 
-  const closeDetail = useCallback(() => {
+  const openDetail = (supplier: AdminSupplierRow) => {
+    setDetailSupplier(supplier);
+    setDetail(null);
+    setActionError(null);
+    setActionMessage(null);
+    void loadDetail(supplier.id);
+  };
+
+  const closeDetail = () => {
+    if (busyId) return;
+    detailRequest.current?.abort();
     setDetailSupplier(null);
     setDetail(null);
-    setDetailError(null);
-  }, []);
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) searchRef.current?.focus({ preventScroll: true });
+    });
+  };
 
-  // After any action, reload the list AND the open detail (when one is
-  // open) so the modal never shows a stale status.
-  const refreshAfterAction = useCallback(async () => {
-    await loadSuppliers();
-    if (detailSupplier) await loadDetail(detailSupplier.id);
-  }, [loadSuppliers, loadDetail, detailSupplier]);
+  const closeReason = () => {
+    if (busyId) return;
+    setReasonAction(null);
+    setActionError(null);
+  };
 
-  const approveSupplier = async (id: string) => {
-    setBusyId(id);
+  const runAction = async (action: {
+    supplierId: string;
+    endpoint: string;
+    body: Record<string, string>;
+    patch: Partial<AdminSupplierRow>;
+    success: string;
+    error: string;
+  }) => {
+    if (busyId) return;
+    const { supplierId, patch } = action;
+    setBusyId(supplierId);
+    setActionError(null);
+    setActionMessage(null);
     try {
-      await apiRequest(`/admin/suppliers/${encodeURIComponent(id)}/approve`, { method: 'POST', auth: true, body: JSON.stringify({}) });
-      success('تأمین‌کننده تأیید شد.');
-      await refreshAfterAction();
-    } catch (err: any) {
-      error(err?.message || 'تأیید تأمین‌کننده ناموفق بود.');
+      await apiRequest(action.endpoint, { method: 'POST', auth: true, body: JSON.stringify(action.body) });
+      // Keep already loaded pages and the current search position after a decision.
+      setList(current => ({
+        ...current,
+        items: current.items
+          .map(supplier => supplier.id === supplierId ? { ...supplier, ...patch } : supplier)
+          .filter(supplier => matchesStatus(supplier, current.filter)),
+      }));
+      setDetailSupplier(current => current?.id === supplierId ? { ...current, ...patch } : current);
+      setDetail(current => current?.supplier.id === supplierId ? {
+        ...current,
+        supplier: { ...current.supplier, ...patch },
+        shippingMethods: current.shippingMethods.map(method => method.method === 'direct' && patch.supportsDirectShipping !== undefined
+          ? { ...method, status: patch.supportsDirectShipping ? 'enabled' : 'disabled' }
+          : method),
+      } : current);
+      setReasonAction(null);
+      setActionMessage(action.success);
+      const pendingList = listRequest.current;
+      if (pendingList && !pendingList.controller.signal.aborted) {
+        // A response started before the decision can contain the old status.
+        void loadSuppliers(pendingList.filter, pendingList.cursor);
+      }
+      await loadDetail(supplierId);
+    } catch (cause) {
+      setActionError(messageFrom(cause, action.error));
     } finally {
       setBusyId(null);
     }
   };
 
-  const rejectSupplierConfirm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!rejectSupplier) return;
-    setBusyId(rejectSupplier.id);
-    try {
-      await apiRequest(`/admin/suppliers/${encodeURIComponent(rejectSupplier.id)}/reject`, {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({ reason: rejectReason }),
-      });
-      success('تأمین‌کننده رد شد.');
-      setRejectSupplier(null);
-      setRejectReason('');
-      await refreshAfterAction();
-    } catch (err: any) {
-      error(err?.message || 'رد تأمین‌کننده ناموفق بود.');
-    } finally {
-      setBusyId(null);
-    }
+  const review = (supplierId: string, action: keyof typeof reviewActions, reason = '') => {
+    const labels = reviewActions[action];
+    const patch: Partial<AdminSupplierRow> = { approvalStatus: labels.status };
+    if (action === 'reject') patch.rejectionReason = reason.trim();
+    if (action === 'suspend') patch.suspensionReason = reason.trim();
+    return runAction({
+      supplierId,
+      endpoint: '/admin/suppliers/' + encodeURIComponent(supplierId) + '/' + action,
+      body: action === 'reject' || action === 'suspend' ? { reason } : {},
+      patch,
+      success: labels.success,
+      error: labels.error,
+    });
   };
 
-  const suspendSupplierConfirm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!suspendSupplier) return;
-    setBusyId(suspendSupplier.id);
-    try {
-      await apiRequest(`/admin/suppliers/${encodeURIComponent(suspendSupplier.id)}/suspend`, {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({ reason: suspendReason }),
-      });
-      success('تأمین‌کننده تعلیق شد.');
-      setSuspendSupplier(null);
-      setSuspendReason('');
-      await refreshAfterAction();
-    } catch (err: any) {
-      error(err?.message || 'تعلیق تأمین‌کننده ناموفق بود.');
-    } finally {
-      setBusyId(null);
-    }
-  };
+  const selectedSupplier = detail?.supplier ?? detailSupplier;
+  const directMethod = detail?.shippingMethods.find(method => method.method === 'direct');
+  const hasDirectShip = directMethod ? directMethod.status === 'enabled' : detailSupplier?.supportsDirectShipping ?? false;
+  const toggleDirectShip = (supplierId: string) => runAction({
+    supplierId,
+    endpoint: '/admin/suppliers/shipping-methods',
+    body: { supplierId, method: 'direct', status: hasDirectShip ? 'disabled' : 'enabled' },
+    patch: { supportsDirectShipping: !hasDirectShip },
+    success: 'وضعیت مجوز ارسال مستقیم به‌روزرسانی شد.',
+    error: 'به‌روزرسانی مجوز ارسال مستقیم ناموفق بود.',
+  });
 
-  const reactivateSupplier = async (id: string) => {
-    setBusyId(id);
-    try {
-      await apiRequest(`/admin/suppliers/${encodeURIComponent(id)}/reactivate`, { method: 'POST', auth: true, body: JSON.stringify({}) });
-      success('تأمین‌کننده دوباره فعال شد.');
-      await refreshAfterAction();
-    } catch (err: any) {
-      error(err?.message || 'فعال‌سازی مجدد تأمین‌کننده ناموفق بود.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const toggleDirectShip = async (id: string) => {
-    const nextEnabled = !directShip[id];
-    setBusyId(id);
-    try {
-      await apiRequest('/admin/suppliers/shipping-methods', {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({ supplierId: id, method: 'direct', status: nextEnabled ? 'enabled' : 'disabled' }),
-      });
-      setDirectShip((prev) => ({ ...prev, [id]: nextEnabled }));
-      success('وضعیت مجوز ارسال مستقیم تأمین‌کننده به‌روزرسانی شد.');
-      if (detailSupplier) await loadDetail(detailSupplier.id);
-    } catch (err: any) {
-      error(err?.message || 'به‌روزرسانی مجوز ارسال مستقیم ناموفق بود.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const pendingCount = suppliersList.filter((s) => s.approvalStatus === 'pending_approval').length;
-
-  const visibleSuppliers = statusFilter === 'all'
-    ? suppliersList
-    : suppliersList.filter((s) => s.approvalStatus === statusFilter);
+  const searchTerm = normalizeSearch(search);
+  const visibleSuppliers = list.filter === statusFilter
+    ? list.items.filter(supplier => !searchTerm || [supplier.name, supplier.warehouseCity, supplier.id].some(value => normalizeSearch(value || '').includes(searchTerm)))
+    : [];
+  const pending = list.filter === statusFilter ? list.pending : 'first';
+  const canLoadMore = list.filter === statusFilter && Boolean(list.nextCursor);
 
   return (
-    <div className="space-y-3.5 pb-6">
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-800">
-            تأمین‌کنندگان رسمی ({toPersianDigits(visibleSuppliers.length)} برند همکار)
-          </h3>
-          <button
-            onClick={loadSuppliers}
-            className="px-2.5 py-1 text-[10px] font-bold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700"
-          >
-            به‌روزرسانی فهرست
+    <section aria-labelledby={listTitle} dir="rtl" className="space-y-4 pb-6">
+      <div className={surfaceClass + ' space-y-4 p-4 sm:p-5'}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id={listTitle} className="text-base font-extrabold text-slate-900">فهرست تأمین‌کنندگان</h2>
+          <button type="button" onClick={() => void loadSuppliers(statusFilter)} disabled={pending !== null} className={secondaryButton}>
+            <RefreshCw aria-hidden="true" className="size-4" /> به‌روزرسانی
           </button>
         </div>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          پیش‌فرض پلتفرم ارسال از انبار مرکزی است. مجوز ارسال مستقیم فقط با تأیید مدیر برای تأمین‌کنندگان واجد شرایط فعال می‌شود (بخش ۱ و ۹ پروپوزال).
-        </p>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          تفاوت «مسدودکردن کاربر» و «تعلیق تأمین‌کننده»: مسدودکردن در سطح شخص است — فقط ورود همان کاربر بسته می‌شود و کالاهای تأمین‌کننده همچنان فروخته می‌شوند. تعلیق در سطح کسب‌وکار است — پنل تأمین‌کننده و تیمش بسته می‌شود و کالاهایش از فروش می‌ایستند تا فعال‌سازی مجدد.
-        </p>
-        <div className="flex gap-1.5 pt-1">
-          {([
-            ['all', 'همه'],
-            ['pending_approval', 'در انتظار تأیید'],
-            ['approved', 'تأییدشده'],
-            ['rejected', 'ردشده'],
-            ['suspended', 'تعلیق‌شده'],
-          ] as [StatusFilter, string][]).map(([value, label]) => (
+
+        <label className="block space-y-1">
+          <span className="block text-sm font-bold text-slate-800">جست‌وجوی تأمین‌کننده</span>
+          <span className="relative block">
+            <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-3.5 size-4 text-slate-500" />
+            <input ref={searchRef} type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="نام، شهر انبار یا شناسه" className={inputClass + ' w-full ps-9'} />
+          </span>
+        </label>
+
+        <div role="group" aria-label="وضعیت تأمین‌کننده" className="flex flex-wrap gap-2">
+          {statusFilters.map(value => (
             <button
-              key={value}
-              onClick={() => setStatusFilter(value)}
-              className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors ${
-                statusFilter === value ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
+              key={value} type="button" onClick={() => setStatusFilter(value)} aria-pressed={statusFilter === value}
+              className={buttonClass + (statusFilter === value ? ' bg-brand-deep text-white hover:bg-brand' : ' bg-slate-100 text-slate-700 hover:bg-brand-bg')}
             >
-              {label}{value === 'pending_approval' && pendingCount > 0 ? ` (${toPersianDigits(pendingCount)})` : ''}
+              {value === 'all' ? 'همه' : statusLabel(value)}
             </button>
           ))}
         </div>
       </div>
 
-      {loading && (
-        <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 text-[11px] text-slate-500">
-          در حال دریافت فهرست تأمین‌کنندگان…
+      {pending === 'first' && <p role="status" className={surfaceClass + ' p-4 text-sm text-slate-700'}>در حال دریافت فهرست تأمین‌کنندگان…</p>}
+      {list.filter === statusFilter && list.error && (
+        <div className="space-y-2">
+          <ErrorMessage message={list.error} />
+          {!canLoadMore && <button type="button" onClick={() => void loadSuppliers(statusFilter)} className={secondaryButton}>تلاش دوباره</button>}
         </div>
       )}
-
-      {!loading && loadError && (
-        <div className="bg-white rounded-2xl p-3.5 border border-rose-200 text-[11px] text-rose-700">
-          {loadError}
-        </div>
+      {pending === null && !list.error && visibleSuppliers.length === 0 && (
+        <p role="status" className={surfaceClass + ' p-4 text-sm leading-6 text-slate-700'}>
+          {searchTerm
+            ? canLoadMore ? 'در موارد بارگیری‌شده نتیجه‌ای یافت نشد. برای ادامهٔ جست‌وجو موارد بیشتری نمایش دهید.' : 'تأمین‌کننده‌ای مطابق جست‌وجو یافت نشد.'
+            : statusFilter === 'all' ? 'تأمین‌کننده‌ای ثبت نشده است.' : 'تأمین‌کننده‌ای با این وضعیت یافت نشد.'}
+        </p>
       )}
 
-      {!loading && !loadError && visibleSuppliers.length === 0 && (
-        <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 text-[11px] text-slate-500">
-          تأمین‌کننده‌ای با این وضعیت یافت نشد.
-        </div>
+      {visibleSuppliers.length > 0 && (
+        <>
+          <p role="status" className="text-sm text-slate-600">{toPersianDigits(visibleSuppliers.length)} تأمین‌کننده نمایش داده شده</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {visibleSuppliers.map(supplier => (
+              <AdminSupplierCardView key={supplier.id} supplier={supplier} toPersianDigits={toPersianDigits} onOpenDetail={openDetail} />
+            ))}
+          </div>
+        </>
       )}
 
-      <div className="space-y-2.5">
-        {visibleSuppliers.map((supplier) => (
-          <AdminSupplierCardView
-            key={supplier.id}
-            supplier={supplier}
-            hasDirectShip={!!directShip[supplier.id]}
-            busyId={busyId}
-            toPersianDigits={toPersianDigits}
-            onOpenDetail={openDetail}
-            onContract={setSelectedContractSupplier}
-            onApprove={approveSupplier}
-            onReject={setRejectSupplier}
-            onSuspend={setSuspendSupplier}
-            onReactivate={reactivateSupplier}
-            onToggleDirectShip={toggleDirectShip}
-          />
-        ))}
-      </div>
+      {canLoadMore && (
+        <button type="button" onClick={() => void loadSuppliers(statusFilter, list.nextCursor)} disabled={pending !== null} className={secondaryButton + ' w-full sm:w-auto'}>
+          {pending === 'more' ? 'در حال دریافت…' : 'نمایش تأمین‌کنندگان بیشتر'}
+        </button>
+      )}
 
-      {detailSupplier && (
+      {selectedSupplier && (
         <AdminSupplierDetailView
-          supplier={detail?.supplier ?? detailSupplier}
-          detail={detail}
-          detailLoading={detailLoading}
-          detailError={detailError}
-          hasDirectShip={!!directShip[detailSupplier.id]}
-          busyId={busyId}
-          toPersianDigits={toPersianDigits}
-          onClose={closeDetail}
-          onRetryDetail={() => void loadDetail(detailSupplier.id)}
-          onContract={setSelectedContractSupplier}
-          onApprove={approveSupplier}
-          onReject={setRejectSupplier}
-          onSuspend={setSuspendSupplier}
-          onReactivate={reactivateSupplier}
-          onToggleDirectShip={toggleDirectShip}
+          supplier={selectedSupplier} detail={detail} detailLoading={detailLoading} detailError={detailError}
+          hasDirectShip={hasDirectShip} busyId={busyId} actionError={reasonAction ? null : actionError} actionMessage={actionMessage}
+          toPersianDigits={toPersianDigits} onClose={closeDetail} onRetryDetail={() => void loadDetail(selectedSupplier.id)}
+          onContract={() => setContractOpen(true)} onApprove={id => void review(id, 'approve')}
+          onReject={() => { setActionError(null); setReasonAction('reject'); }}
+          onSuspend={() => { setActionError(null); setReasonAction('suspend'); }}
+          onReactivate={id => void review(id, 'reactivate')} onToggleDirectShip={id => void toggleDirectShip(id)}
         />
       )}
 
-      {rejectSupplier && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <form onSubmit={rejectSupplierConfirm} className="bg-white rounded-2xl max-w-sm w-full p-4 border border-slate-200 shadow-2xl space-y-3 text-xs">
-            <h4 className="font-extrabold text-slate-900 text-sm">رد تأمین‌کننده: {rejectSupplier.name}</h4>
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1">دلیل رد (اختیاری)</label>
-              <input
-                value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="دلیل رد درخواست"
-                className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-200"
-              />
-            </div>
-            <div className="flex gap-2 pt-1">
-              <button type="submit" disabled={busyId === rejectSupplier.id} className="flex-1 py-2 bg-rose-600 text-white font-bold rounded-xl disabled:opacity-50">
-                تأیید رد
-              </button>
-              <button type="button" onClick={() => { setRejectSupplier(null); setRejectReason(''); }} className="px-3 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl">
-                انصراف
-              </button>
-            </div>
-          </form>
-        </div>
+      {selectedSupplier && reasonAction && (
+        <SupplierReasonDialog
+          action={reasonAction} supplier={selectedSupplier} busy={busyId !== null} error={actionError}
+          onConfirm={reason => void review(selectedSupplier.id, reasonAction, reason)} onClose={closeReason}
+        />
       )}
 
-      {suspendSupplier && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <form onSubmit={suspendSupplierConfirm} className="bg-white rounded-2xl max-w-sm w-full p-4 border border-slate-200 shadow-2xl space-y-3 text-xs">
-            <h4 className="font-extrabold text-slate-900 text-sm">تعلیق تأمین‌کننده: {suspendSupplier.name}</h4>
-            <p className="text-[11px] text-slate-600 leading-relaxed">
-              با تعلیق، پنل تأمین‌کننده و تیمش بسته می‌شود، کالاهایش از فروش می‌ایستند، سفارش‌های مستقیمِ در جریان متوقف می‌مانند و درخواست تسویهٔ جدید ممکن نیست؛ سفارش‌های انباری طبق روال ادامه پیدا می‌کنند. موجودی و تسویه‌های در انتظار بررسی دست‌نخورده می‌مانند.
-            </p>
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1">دلیل تعلیق (اختیاری)</label>
-              <input
-                value={suspendReason}
-                onChange={(e) => setSuspendReason(e.target.value)}
-                placeholder="دلیل تعلیق کسب‌وکار"
-                className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-200"
-              />
-            </div>
-            <div className="flex gap-2 pt-1">
-              <button type="submit" disabled={busyId === suspendSupplier.id} className="flex-1 py-2 bg-amber-600 text-white font-bold rounded-xl disabled:opacity-50">
-                تأیید تعلیق
-              </button>
-              <button type="button" onClick={() => { setSuspendSupplier(null); setSuspendReason(''); }} className="px-3 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl">
-                انصراف
-              </button>
-            </div>
-          </form>
-        </div>
+      {selectedSupplier && contractOpen && (
+        <SupplierContractDialog supplier={selectedSupplier} toPersianDigits={toPersianDigits} onClose={() => setContractOpen(false)} />
       )}
-
-      {selectedContractSupplier && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-4 border border-slate-200 shadow-2xl space-y-3 text-xs">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <h4 className="font-extrabold text-slate-900">خلاصه قرارداد تجاری: {selectedContractSupplier.name}</h4>
-              <button onClick={() => setSelectedContractSupplier(null)} className="px-2 py-1 bg-slate-100 rounded-lg font-bold">
-                بستن
-              </button>
-            </div>
-            <div className="space-y-1.5 text-slate-600">
-              <div className="flex justify-between"><span>مدل همکاری:</span><strong className="text-slate-900">امانی در انبار مرکزی (Consignment)</strong></div>
-              <div className="flex justify-between"><span>دوره تسویه حساب:</span><strong className="text-emerald-700">پس از انقضای ۷ روز مهلت تست خریدار</strong></div>
-              <div className="flex justify-between"><span>وضعیت تأیید:</span><strong className="text-slate-900">{statusLabel(selectedContractSupplier.approvalStatus)}</strong></div>
-              <div className="flex justify-between"><span>نسخه قرارداد امضاشده:</span><strong className="text-slate-900">{selectedContractSupplier.signedContractVersion != null ? toPersianDigits(selectedContractSupplier.signedContractVersion) : '—'}</strong></div>
-              <div className="flex justify-between"><span>اتصال تاپین:</span><strong className="text-slate-900">{selectedContractSupplier.tapinConnected ? 'متصل' : 'متصل نیست'}</strong></div>
-              <div className="flex justify-between"><span>امتیاز SLA تحویل:</span><strong className="text-blue-600">٪{toPersianDigits(selectedContractSupplier.deliveryScore)}</strong></div>
-              {selectedContractSupplier.rejectionReason && (
-                <p className="p-2.5 bg-rose-50 rounded-xl border border-rose-100 text-[11px] leading-relaxed">
-                  دلیل رد: {selectedContractSupplier.rejectionReason}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </section>
   );
-};
+}

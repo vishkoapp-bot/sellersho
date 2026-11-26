@@ -379,10 +379,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         path = pathForView(view, { sellerTab: navigation.sellerTab || sellerDashboardTab });
       } else if (view === 'dashboard') {
         path = '/dashboard';
-      } else if (view === 'supplier_dashboard') {
+      } else if (view === 'supplier_dashboard' || view === 'warehouse_panel' || view === 'admin_panel') {
         path = pathForView(view);
-      } else if (view === 'admin_panel') {
-        path = '/admin';
       } else if (view === 'catalog') {
         path = pathForView('catalog', { searchQuery: navigation.searchQuery, categorySlug: navigation.categorySlug });
       } else if (view === 'not_found') {
@@ -453,7 +451,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         setActiveViewState('seller_dashboard');
         return;
       }
-      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'catalog') {
+      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'admin_panel' || parsed.view === 'catalog') {
         setActiveViewState(parsed.view);
         return;
       }

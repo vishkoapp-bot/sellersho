@@ -25,7 +25,11 @@ const params = new URLSearchParams(window.location.search);
 history.replaceState(null, '', params.get('route') || '/');
 const routeParams = new URLSearchParams(window.location.search);
 const hasWarehouse = routeParams.has('warehouse');
-const role = routeParams.has('admin') ? 'admin' : hasWarehouse ? 'warehouse_staff' : 'customer';
+const hasAdmin = routeParams.has('admin');
+const staleWarehouseRole = routeParams.has('stale-warehouse-role');
+const adminAccess = routeParams.get('admin');
+const adminRole = adminAccess === 'finance' ? 'finance_specialist' : adminAccess === 'super' ? 'super_admin' : 'admin';
+const role = hasAdmin ? adminRole : hasWarehouse || routeParams.has('warehouse-otp') || staleWarehouseRole ? 'warehouse_staff' : 'customer';
 const hasSeller = routeParams.has('seller');
 const hasSupplier = routeParams.has('supplier');
 const fixtureImages = [
@@ -33,7 +37,8 @@ const fixtureImages = [
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOIdfkBAAKbAZrQLohoAAAAAElFTkSuQmCC',
 ];
 
-const capabilities: string[] = [role];
+const capabilities: string[] = staleWarehouseRole ? ['customer', 'seller', 'supplier'] : [role];
+if (hasAdmin || staleWarehouseRole) localStorage.setItem('seler_sho_jwt_token', 'fixture-existing-token');
 if (hasWarehouse) localStorage.setItem('seler_sho_jwt_token', 'fixture-warehouse-token');
 if (hasSeller) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-seller-token');
@@ -479,6 +484,40 @@ if (hasWarehouse) {
       pathname === '/api/v1/warehouse/returns' ||
       pathname === '/api/v1/warehouse/inbounds') return Response.json([]);
     return originalFetch(input, options);
+  };
+}
+
+if (hasAdmin) {
+  const originalFetch = window.fetch.bind(window);
+  const adminReads: string[] = [];
+  Object.assign(fixture, { adminReads });
+  window.fetch = async (input, options) => {
+    const { pathname, searchParams: query } = new URL(String(input), window.location.href);
+    if (!pathname.startsWith('/api/v1/admin/')) return originalFetch(input, options);
+    adminReads.push(pathname);
+    if (pathname === '/api/v1/admin/notifications') return Response.json({ notifications: [], unreadCount: 0 });
+    if (pathname === '/api/v1/admin/overview/leaders') return Response.json({ data: { suppliers: [], stores: [] } });
+    if (pathname === '/api/v1/admin/jobs') return Response.json({ jobs: [] });
+    if (pathname === '/api/v1/admin/overview/trends' || pathname === '/api/v1/admin/overview/alerts') return Response.json({ data: [] });
+    if (pathname === '/api/v1/admin/orders') {
+      if (!routeParams.has('fixture-admin-orders')) return Response.json({ items: [], hasMore: false });
+      if (new Headers(options?.headers).get('Authorization') !== 'Bearer fixture-existing-token') {
+        return Response.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+      const order = {
+        id: '123', orderNumber: 'ORD-123', storeName: 'فروشگاه آزمایشی', province: 'تهران', city: 'تهران',
+        status: 'packed', fulfillmentMethod: 'mixed', createdAt: '2026-11-10T12:00:00Z', trackingCode: 'TRK-123',
+        trackingNumber: '59999999', supplierShipments: [{ id: 'leg-a', status: 'shipped', carrier: 'پست', trackingNumber: '712345' }],
+      };
+      if (query.get('search')) {
+        const matches = query.get('search') === '۷۱۲۳۴۵' && query.get('status') === 'preparing';
+        return Response.json({ items: matches ? [{ ...order, id: '712', orderNumber: 'ORD-712' }] : [] });
+      }
+      return Response.json(query.get('cursor') === 'next-page'
+        ? { items: [{ ...order, id: '456', orderNumber: 'ORD-456' }] }
+        : { items: [order], nextCursor: 'next-page' });
+    }
+    return Response.json({});
   };
 }
 

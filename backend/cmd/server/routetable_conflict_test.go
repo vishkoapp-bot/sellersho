@@ -64,6 +64,7 @@ func TestRouteTableNoConflicts(t *testing.T) {
 	}
 
 	const pendingPayment = "/api/v1/admin/orders/pending-payment"
+	const adminOrderList = "/api/v1/admin/orders"
 	const adminOrders = "/api/v1/admin/orders/"
 	const adminSpncx = "/api/v1/admin/spncx/"
 	const reconciliation = "/api/v1/admin/inventory/reconciliation"
@@ -73,6 +74,7 @@ func TestRouteTableNoConflicts(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ method, path, wantPattern string }{
+		{http.MethodGet, adminOrderList, adminOrderList},
 		{http.MethodGet, pendingPayment, pendingPayment},
 		{http.MethodPost, adminOrders + "fixture/retry-capture", adminOrders},
 		{http.MethodPost, adminSpncx + "backfill", adminSpncx},

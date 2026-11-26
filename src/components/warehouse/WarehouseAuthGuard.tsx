@@ -1,265 +1,138 @@
-﻿import React, { useState, useEffect } from 'react';
-import { useStore } from '../../context/StoreContext';
-import { AuthRequestSupersededError, useAuth } from '../../context/AuthContext';
-import { useToast } from '../../context/ToastContext';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { ArrowRight, Warehouse } from 'lucide-react';
+import { AuthRequestSupersededError, useAuth, warehouseRoleFromCapabilities } from '../../context/AuthContext';
+import { isMockMode } from '../../services/apiClient';
 import { authApi } from '../../services/authApi';
 import { isValidIranianMobile, normalizeIranianMobile } from '../../utils/validators';
-import { Warehouse, KeyRound, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { toLatinDigits } from '../ProvinceCityPicker';
 
-interface WarehouseAuthGuardProps {
+const noWarehouseAccess = 'این شماره مجوز ورود به پنل انبار را ندارد.';
+const inputClass = 'min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-brand disabled:bg-slate-50';
+const submitClass = 'min-h-12 w-full rounded-xl bg-brand-deep px-4 text-sm font-extrabold text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50';
+const digits = new Intl.NumberFormat('fa-IR', { minimumIntegerDigits: 2, useGrouping: false });
+
+export function WarehouseAuthGuard({ onBackToCustomerSite, children }: {
   onBackToCustomerSite: () => void;
-  children: React.ReactNode;
-}
-
-const OFFICIAL_WAREHOUSES = [
-  {
-    warehouseId: 'WH-TEH-CENTRAL',
-    warehouseName: 'انبار مکانیزه مرکزی تهران (مجتمع غرب)',
-    staffName: 'علی کارگر (سرپرست شیفت A)',
-    code: 'WMS-1010',
-    role: 'supervisor' as const,
-  },
-  {
-    warehouseId: 'WH-TEH-DOCK',
-    warehouseName: 'انبار بارانداز و ترخیص شورش',
-    staffName: 'مهدی صادقی (متصدی بارانداز و QC)',
-    code: 'WMS-2020',
-    role: 'qc_inspector' as const,
-  },
-  {
-    warehouseId: 'WH-MHD-HUB',
-    warehouseName: 'هاب توزیع منطقه‌ای مشهد',
-    staffName: 'علیرضا حسینی (اپراتور چیدمان و Pick)',
-    code: 'WMS-3030',
-    role: 'warehouse_staff' as const,
-  },
-];
-
-export const WarehouseAuthGuard: React.FC<WarehouseAuthGuardProps> = ({
-  onBackToCustomerSite,
-  children,
-}) => {
-  const { warehouseSession, setWarehouseSession, toPersianDigits } = useStore();
-  const { authenticate } = useAuth();
-  const { success, error } = useToast();
-
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState(OFFICIAL_WAREHOUSES[0].warehouseId);
+  children: ReactNode;
+}) {
+  const { warehouseSession, currentUser, authToken, isSessionReady, authenticate } = useAuth();
+  const role = warehouseRoleFromCapabilities(currentUser?.capabilities);
   const [mobile, setMobile] = useState('');
+  const [verifiedMobile, setVerifiedMobile] = useState('');
   const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'mobile' | 'otp'>('mobile');
-  const [countdown, setCountdown] = useState(120);
-  const [isResending, setIsResending] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (step !== 'otp' || countdown <= 0) return;
-    const timer = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
-    return () => clearInterval(timer);
-  }, [step, countdown]);
+    if (!verifiedMobile || countdown <= 0) return;
+    const timer = window.setTimeout(() => setCountdown(value => value - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [verifiedMobile, countdown]);
 
-  if (warehouseSession && warehouseSession.token) {
+  if (warehouseSession?.token && (isMockMode() ||
+    (isSessionReady && role && warehouseSession.staffId === currentUser?.id && warehouseSession.token === authToken))) {
     return <>{children}</>;
   }
+  if (!isSessionReady || (role && authToken)) {
+    return <p role="status" className="p-6 text-center text-sm text-slate-700">در حال بررسی دسترسی انبار…</p>;
+  }
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isValidIranianMobile(mobile)) {
-      error('شماره موبایل معتبر ۱۱ رقمی ایران وارد نمایید.');
+  async function sendCode() {
+    if (busy) return;
+    const clean = normalizeIranianMobile(toLatinDigits(mobile));
+    if (!isValidIranianMobile(clean)) {
+      setError('شمارهٔ موبایل معتبر وارد کنید.');
       return;
     }
-    const clean = normalizeIranianMobile(mobile);
-    setIsSubmitting(true);
+    setBusy(true);
+    setError('');
     try {
-      const res = await authApi.sendOTP(clean);
-      setStep('otp');
-      setCountdown(res.expiresIn || 120);
-      success('کد یکبارمصرف ارسال شد.');
-    } catch (err: any) {
-      error(err.message || 'خطا در ارسال کد تایید');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // FIX 69 (G3): expiry-gated resend, same send-OTP path as the seller
-  // guard's handleResendOtp (authApi.sendOTP) — no new OTP endpoint.
-  const handleResendOtp = async () => {
-    const clean = normalizeIranianMobile(mobile);
-    setIsResending(true);
-    try {
-      const res = await authApi.sendOTP(clean);
+      const response = await authApi.sendOTP(clean);
+      setVerifiedMobile(clean);
       setOtp('');
-      setCountdown(res.expiresIn || 120);
-      success('کد تایید جدید مجدداً ارسال شد.');
-    } catch (err: any) {
-      error(err.message || 'خطا در ارسال مجدد کد');
+      setCountdown(response.expiresIn || 120);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'ارسال کد انجام نشد. دوباره تلاش کنید.');
     } finally {
-      setIsResending(false);
+      setBusy(false);
     }
-  };
+  }
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (otp.trim().length < 4) {
-      error('کد ۴ رقمی را کامل وارد کنید.');
+  async function verifyCode(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !verifiedMobile) return;
+    if (countdown <= 0) {
+      setError('اعتبار کد تمام شده است. کد تازه بگیرید.');
       return;
     }
-    if (countdown === 0) {
-      error('کد تایید منقضی شده است. لطفاً «ارسال مجدد کد» را بزنید.');
+    if (!/^\d{4}$/.test(otp)) {
+      setError('کد چهاررقمی را کامل وارد کنید.');
       return;
     }
-    const clean = normalizeIranianMobile(mobile);
-    const target = OFFICIAL_WAREHOUSES.find((w) => w.warehouseId === selectedWarehouseId) || OFFICIAL_WAREHOUSES[0];
-    setIsSubmitting(true);
-    let requestIsCurrent = () => true;
+    setBusy(true);
+    setError('');
     try {
-      const requestedRole = target.role === 'warehouse_staff' ? 'warehouse_staff' : undefined;
-      const res = await authenticate(() => authApi.verifyOTP(clean, otp.trim(), requestedRole));
-      requestIsCurrent = res.isCurrent;
-      if (!requestIsCurrent()) return;
-      if (!(res.user.capabilities || []).some((capability) => ['warehouse_staff', 'logistics_specialist', 'admin'].includes(capability)) && !['warehouse_staff', 'logistics_specialist', 'admin'].includes(res.user.role)) {
-        error('این شماره حساب مجاز پرسنل انبار ندارد.');
-        return;
-      }
-      setWarehouseSession({
-        token: res.token,
-        staffId: res.user.id,
-        staffName: res.user.fullName || target.staffName,
-        warehouseId: target.warehouseId,
-        warehouseName: target.warehouseName,
-        role: res.user.role === 'logistics_specialist' ? 'logistics_specialist' : target.role,
-        loginAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      await authenticate(async () => {
+        const response = await authApi.verifyOTP(verifiedMobile, otp);
+        if (!warehouseRoleFromCapabilities(response.user.capabilities)) throw new Error(noWarehouseAccess);
+        return response;
       });
-      success(`ورود با موفقیت انجام شد: ${res.user.fullName || target.staffName}`);
-    } catch (err: any) {
-      if (err instanceof AuthRequestSupersededError || !requestIsCurrent()) return;
-      error(err.message || 'کد تایید نامعتبر یا منقضی شده است.');
+    } catch (cause) {
+      if (cause instanceof AuthRequestSupersededError) return;
+      setError(cause instanceof Error ? cause.message : 'تأیید کد انجام نشد. دوباره تلاش کنید.');
     } finally {
-      setIsSubmitting(false);
+      setBusy(false);
     }
-  };
+  }
 
   return (
-    <div className="flex-1 flex flex-col bg-[#f8fafc] select-none min-h-[82vh]" dir="rtl">
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3.5 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onBackToCustomerSite}
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-          >
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-          </button>
-          <div>
-            <h1 className="text-xs font-bold text-slate-800">ورود به سامانه مدیریت انبار (WMS) با OTP</h1>
-            <span className="text-[10px] text-slate-400 block">احراز هویت پرسنل لجستیک و انبارداری با شماره همراه</span>
+    <div dir="rtl" className="flex min-h-dvh flex-1 items-start justify-center bg-[#f7f7fa] px-3 py-6 text-slate-900 sm:items-center sm:p-8">
+      <div className="w-full max-w-md space-y-4">
+        <button type="button" onClick={onBackToCustomerSite}
+          className="inline-flex min-h-11 items-center gap-2 rounded-xl px-2 text-sm font-bold text-slate-700 hover:bg-brand-soft focus-visible:outline-2 focus-visible:outline-brand">
+          <ArrowRight className="size-4" aria-hidden="true" /> سایت اصلی
+        </button>
+        <section aria-labelledby="warehouse-sign-in-title" className="space-y-5 rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+          <div className="flex items-center gap-3">
+            <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand-deep"><Warehouse className="size-5" aria-hidden="true" /></span>
+            <h1 id="warehouse-sign-in-title" className="text-base font-extrabold">ورود به سامانه مدیریت انبار</h1>
           </div>
-        </div>
-      </header>
-
-      <div className="p-4 flex-1 flex flex-col justify-center space-y-4 max-w-md mx-auto w-full">
-        <div className="bg-white rounded-3xl p-5 border border-slate-200/90 shadow-sm space-y-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-amber-600 text-white flex items-center justify-center shadow-sm">
-              <Warehouse className="w-5 h-5"  strokeWidth={1.5}/>
-            </div>
-            <div>
-              <h2 className="text-sm font-extrabold text-slate-900">احراز هویت پیامکی پرسنل انبار</h2>
-              <p className="text-[11px] text-slate-500">شماره موبایل ثبت‌شده در پرونده پرسنلی</p>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-bold text-slate-700 block mb-1.5">ایستگاه کاری و سالن انبار:</label>
-            <select
-              value={selectedWarehouseId}
-              onChange={(e) => setSelectedWarehouseId(e.target.value)}
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden"
-            >
-              {OFFICIAL_WAREHOUSES.map((w) => (
-                <option key={w.warehouseId} value={w.warehouseId}>
-                  {w.warehouseName} — {w.staffName}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {step === 'mobile' ? (
-            <form onSubmit={handleSendOtp} className="space-y-3.5">
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1.5">شماره موبایل پرسنلی:</label>
-                <input
-                  type="tel"
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  placeholder="۰۹xxxxxxxxx"
-                  className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 font-mono font-bold focus:bg-white focus:outline-hidden"
-                  dir="ltr"
-                  required
-                  disabled={isSubmitting}
-                />
+          {currentUser && !verifiedMobile && (
+            <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">حساب فعلی مجوز پنل انبار را ندارد. می‌توانید با شمارهٔ دیگری وارد شوید.</p>
+          )}
+          {verifiedMobile ? (
+            <form onSubmit={verifyCode} className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-slate-700">کد برای <bdi>{verifiedMobile}</bdi> ارسال شد.</p>
+                <button type="button" disabled={busy} onClick={() => { setVerifiedMobile(''); setOtp(''); setError(''); }}
+                  className="min-h-11 rounded-lg px-2 text-sm font-bold text-brand-deep underline underline-offset-4">ویرایش شماره</button>
               </div>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-extrabold text-xs rounded-2xl shadow-xs transition-all flex items-center justify-center gap-2"
-              >
-                {isSubmitting ? 'در حال ارسال...' : 'دریافت کد تایید'}
-              </button>
+              <label htmlFor="warehouse-otp" className="block text-sm font-bold">کد چهاررقمی</label>
+              <input id="warehouse-otp" type="text" inputMode="numeric" autoComplete="one-time-code" value={otp} autoFocus
+                onChange={event => setOtp(toLatinDigits(event.target.value).replace(/\D/g, '').slice(0, 4))}
+                className={inputClass} dir="ltr" required disabled={busy} />
+              {countdown > 0 ? (
+                <p className="text-xs text-slate-600">اعتبار کد <bdi>{digits.format(Math.floor(countdown / 60))}:{digits.format(countdown % 60)}</bdi></p>
+              ) : (
+                <button type="button" onClick={() => void sendCode()} disabled={busy}
+                  className="min-h-11 rounded-lg px-2 text-sm font-bold text-brand-deep underline underline-offset-4">ارسال دوبارهٔ کد</button>
+              )}
+              {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+              <button type="submit" disabled={busy || countdown <= 0} className={submitClass}>{busy ? 'در حال بررسی…' : 'تأیید و ورود به پنل انبار'}</button>
             </form>
           ) : (
-            <form onSubmit={handleVerifyOtp} className="space-y-3.5">
-              <div>
-                <div className="flex justify-between items-center mb-1 text-xs">
-                  <label className="font-bold text-slate-700">کد ۴ رقمی تایید:</label>
-                  <button type="button" onClick={() => setStep('mobile')} className="text-amber-700 text-[10px] hover:underline">ویرایش شماره</button>
-                </div>
-                <input
-                  type="text"
-                  maxLength={4}
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
-                  placeholder="• • • •"
-                  className="w-full text-center text-base tracking-widest font-mono font-bold p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden"
-                  dir="ltr"
-                  required
-                  disabled={isSubmitting}
-                />
-                {countdown > 0 ? (
-                  <span className="text-[10px] text-slate-400 block text-left mt-1 font-mono">
-                    اعتبار: {toPersianDigits(Math.floor(countdown / 60))}:{toPersianDigits(String(countdown % 60).padStart(2, '0'))}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleResendOtp}
-                    disabled={isResending}
-                    className="text-amber-700 text-[11px] font-bold hover:underline disabled:opacity-50 mt-1"
-                  >
-                    {isResending ? 'در حال ارسال...' : 'ارسال مجدد کد'}
-                  </button>
-                )}
-              </div>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold text-xs rounded-2xl shadow-xs transition-all flex items-center justify-center gap-2"
-              >
-                {isSubmitting ? 'در حال بررسی...' : 'تأیید و ورود به پنل انبار'}
-              </button>
+            <form onSubmit={event => { event.preventDefault(); void sendCode(); }} className="space-y-3">
+              <label htmlFor="warehouse-mobile" className="block text-sm font-bold">شمارهٔ موبایل ثبت‌شده برای انبار</label>
+              <input type="tel" id="warehouse-mobile" autoComplete="tel-national" inputMode="tel" value={mobile}
+                onChange={event => setMobile(event.target.value)} placeholder="09xxxxxxxxx"
+                className={inputClass} dir="ltr" required disabled={busy} />
+              {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+              <button type="submit" disabled={busy} className={submitClass}>{busy ? 'در حال ارسال…' : 'دریافت کد تأیید'}</button>
             </form>
           )}
-
-          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-2xl text-[11px] text-amber-800 space-y-1">
-            <div className="flex items-center gap-1.5 font-bold">
-              <ShieldCheck className="w-3.5 h-3.5 text-amber-600"  strokeWidth={1.5}/>
-              <span>احراز هویت امن با OTP</span>
-            </div>
-            <p className="text-[10px] text-amber-700/90 leading-relaxed">
-              تمامی ورودها به انبارداری منحصراً با شماره موبایل ثبت‌شده پرسنل انجام می‌پذیرد.
-            </p>
-          </div>
-        </div>
+        </section>
       </div>
     </div>
   );
-};
+}

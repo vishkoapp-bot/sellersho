@@ -2249,6 +2249,9 @@ func run(signalCtx context.Context) (result error) {
 	// Fix69 (W-ROUTES) R4: POST /api/v1/admin/payouts/<id>/confirm-manual-transfer
 	// (live: AdminDashboardView-MERGED.js confirmManualTransfer).
 	mux.HandleFunc("/api/v1/admin/payouts/", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) { wr69AdminPayouts(w, r, db.DB, finRepo) }))
+	mux.HandleFunc("/api/v1/admin/orders", RequireRoles(jwtService, "admin")(func(w http.ResponseWriter, r *http.Request) {
+		handleAdminOrderTracking(w, r, orderRepo)
+	}))
 	mux.HandleFunc("/api/v1/admin/orders/pending-payment", RequireRoles(jwtService, financeRoles...)(func(w http.ResponseWriter, r *http.Request) {
 		handleAdminPendingPayments(w, r, db.DB)
 	}))

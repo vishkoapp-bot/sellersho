@@ -599,9 +599,7 @@ export interface WarehouseSession {
   token: string;
   staffId: string;
   staffName: string;
-  warehouseId: string;
-  warehouseName: string;
-  role: 'warehouse_staff' | 'logistics_specialist' | 'qc_inspector' | 'supervisor';
+  role: 'warehouse_staff' | 'logistics_specialist' | 'supervisor';
   loginAt: string;
 }
 

@@ -7,45 +7,55 @@ import { adminApi } from '../../services/adminApi';
 import { mapAdminProposal, AdminProposal } from '../../services/adminProposal';
 import { useAuth } from '../../context/AuthContext';
 import { useProducts } from '../../context/ProductContext';
-import { ConfirmDialog } from '../common/ConfirmDialog';
-import { Package, Check, X, ShieldCheck, Tag, Search, Filter, Eye, AlertTriangle } from 'lucide-react';
+import type { Product, ProposedProduct } from '../../types';
+import { SupplierDialog, SupplierDialogHeading } from '../supplier/SupplierDialog';
+import { ArrowLeft, Eye, Package, RefreshCw, Search } from 'lucide-react';
+
+type ProposalFilter = ProposedProduct['status'] | 'all';
+type QueueProposal = ProposedProduct & Partial<Pick<AdminProposal, 'variants'>>;
+const proposalStatus = {
+  pending: { label: 'در انتظار بررسی', className: 'bg-amber-50 text-amber-900' },
+  approved: { label: 'تأییدشده', className: 'bg-emerald-50 text-emerald-800' },
+  rejected: { label: 'ردشده', className: 'bg-rose-50 text-rose-800' },
+};
+const secondaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50';
+const primaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-deep px-3 py-2 text-sm font-bold text-white hover:bg-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand';
+const filterControl = 'min-h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-base text-slate-800 focus-visible:outline-2 focus-visible:outline-brand sm:text-sm';
 
 export const AdminCatalogTab: React.FC = () => {
   const {
     products,
     proposedProducts: localProposals,
-    approveAndMergeProduct,
     rejectProposedProduct,
     toggleProductOriginality,
     formatPrice,
     toPersianDigits,
     setActiveView,
   } = useStore();
-  const { success, warning, error } = useToast();
+  const { success, error } = useToast();
   const {authToken} = useAuth();
   const {fetchProducts} = useProducts();
   const [serverProposals,setServerProposals] = useState<AdminProposal[]>([]);
   const [loading,setLoading] = useState(false);
   const [loadError,setLoadError] = useState('');
-  const [reviewing,setReviewing] = useState(false);
   // D2 (Batch 4a): dedupe semantics — skip-first, abort-only-background.
   // inFlightRef holds the one in-flight proposals fetch (kind + controller).
   // A background (focus/interval) refresh skips while any fetch is in
   // flight, so it can never re-trigger the spinner over a settled state.
   // A user-initiated refresh aborts a stale *background* fetch only — it
-  // never aborts the initial load or another user refresh. The in-flight
-  // guard is primary; abort is only the supersede path. A generation id
+  // never aborts the initial load or another user refresh. A refresh after
+  // a saved decision replaces older reads so they cannot restore stale status. A generation id
   // keeps a superseded request from clearing the new request's loading.
   const inFlightRef = useRef<{ kind: 'background' | 'foreground'; controller: AbortController; id: number } | null>(null);
   const requestSeqRef = useRef(0);
   const lastFetchAtRef = useRef(0);
   const [hasLoaded,setHasLoaded] = useState(false);
-  const refreshProposals = async (opts?: { background?: boolean }) => {
+  const refreshProposals = async (opts?: { background?: boolean; afterDecision?: boolean }) => {
     if (isMockMode() || !authToken) return;
     const inFlight = inFlightRef.current;
     if (inFlight) {
       if (opts?.background) return;
-      if (inFlight.kind !== 'background') return;
+      if (inFlight.kind !== 'background' && !opts?.afterDecision) return;
       inFlight.controller.abort();
       inFlightRef.current = null;
     }
@@ -59,7 +69,11 @@ export const AdminCatalogTab: React.FC = () => {
     try {
       const rows = await apiRequest<Record<string,any>[]>('/admin/products/proposals',{method:'GET',auth:true,signal: controller.signal});
       if (inFlightRef.current?.id !== id) return;
-      setServerProposals(rows.map(mapAdminProposal));
+      setServerProposals(rows.map(row => ({
+        ...mapAdminProposal(row),
+        createdAt: row.created_at ?? row.createdAt,
+        reviewedAt: row.reviewed_at ?? row.reviewedAt,
+      })));
       setHasLoaded(true);
     }
     catch(e) {
@@ -70,22 +84,16 @@ export const AdminCatalogTab: React.FC = () => {
     }
     finally { if (inFlightRef.current?.id === id) { inFlightRef.current = null; setLoading(false); } }
   };
-  const [approvedIds, setApprovedIds] = useState<{ [key: string]: boolean }>({});
-  const [rejectingItem, setRejectingItem] = useState<any | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
-  const [inspectingItem, setInspectingItem] = useState<any | null>(null);
-  const [pendingOriginality, setPendingOriginality] = useState<any | null>(null);
-  // Proposals saved/published from the field-review modal this session
-  // (proposal id -> timestamp). Combined with the queue status below, this
-  // marks products the admin has just published, so the catalog list can
-  // highlight them as freshly approved.
-  const [modalReviewedIds, setModalReviewedIds] = useState<{ [key: string]: number }>({});
+  const [inspectingItem, setInspectingItem] = useState<ProposedProduct | null>(null);
+  const [pendingOriginality, setPendingOriginality] = useState<Product | null>(null);
+  const [publishedIds, setPublishedIds] = useState<Set<string>>(() => new Set());
   const [catalogSearch, setCatalogSearch] = useState('');
   const [catalogLimit, setCatalogLimit] = useState(10);
+  const queueHeading = useRef<HTMLHeadingElement>(null);
   // Pause the 30 s auto-refresh while a review modal / confirm dialog is open,
   // so the list never reorders under the reviewer.
   const modalOpenRef = useRef(false);
-  useEffect(() => { modalOpenRef.current = !!inspectingItem || !!rejectingItem; }, [inspectingItem, rejectingItem]);
+  useEffect(() => { modalOpenRef.current = !!inspectingItem || !!pendingOriginality; }, [inspectingItem, pendingOriginality]);
   useEffect(()=>{
     void refreshProposals();
     // D2: the 30 s interval is the refresh cadence; window-focus only
@@ -96,77 +104,56 @@ export const AdminCatalogTab: React.FC = () => {
     const timer=window.setInterval(onFocus,30000);
     return ()=>{window.removeEventListener('focus',onFocus);window.clearInterval(timer);};
   },[authToken]);
-  const proposedProducts = isMockMode() ? localProposals : serverProposals;
+  const proposedProducts: QueueProposal[] = isMockMode() ? localProposals : serverProposals;
 
   // Requirement 16: Multi-Filter Search Bar
   const [searchQuery, setSearchQuery] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved'>('pending');
+  const [statusFilter, setStatusFilter] = useState<ProposalFilter>('pending');
 
   const supplierOptions = Array.from(new Map(proposedProducts.map(p => [p.supplierId, p.supplierName])).entries());
   const filtersActive = searchQuery.trim() !== '' || supplierFilter !== 'all' || statusFilter !== 'pending';
   const clearFilters = () => { setSearchQuery(''); setSupplierFilter('all'); setStatusFilter('pending'); };
 
-  const pendingApprovals = proposedProducts.filter((p) => {
-    if (statusFilter === 'pending' && p.status !== 'pending') return false;
-    if (statusFilter === 'approved' && p.status !== 'approved') return false;
+  const searchTerm = searchQuery.trim().toLowerCase();
+  const matchingProposals = proposedProducts.filter((p) => {
+    if (statusFilter !== 'all' && p.status !== statusFilter) return false;
     if (supplierFilter !== 'all' && p.supplierId !== supplierFilter) return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const variantIds = ((p as AdminProposal).variants || []).map((v: any) => String(v.id ?? v.sku ?? '')).join(' ');
-      return p.title.toLowerCase().includes(q) || (p.barcode || '').includes(q) || p.supplierName.toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || variantIds.toLowerCase().includes(q);
-    }
-    return true;
+    if (!searchTerm) return true;
+    const variantIds = (p.variants ?? []).map(v => String(v.id ?? v.sku ?? '')).join(' ');
+    return [p.title, p.barcode, p.supplierName, p.category, variantIds].some(value => value?.toLowerCase().includes(searchTerm));
   });
 
-  const review = async (item: any, approved: boolean, reason?: string) => {
-    if (reviewing) return;
-    setReviewing(true);
-    try {
-      if (isMockMode()) { if (approved) await approveAndMergeProduct(item); else rejectProposedProduct(item, reason || 'Rejected'); }
-      else {
-        await adminApi.reviewApproval(item.id, {status: approved ? 'approved' : 'rejected', ...(!approved ? {rejectionReason: reason} : {})});
-        await refreshProposals(); if (approved) await fetchProducts().catch(()=>{});
-      }
-      if (approved) setApprovedIds(p=>({...p,[item.id]:true}));
-      setInspectingItem(null);setRejectingItem(null);setRejectReason('');
-      success(approved ? 'کالا تأیید شد.' : 'کالا رد شد.');
-    } catch(e) { error(e instanceof Error ? e.message : 'ثبت نتیجه ناموفق بود.'); }
-    finally {setReviewing(false);}
-  };
-  const handleOpenReview = (item: any) => { setInspectingItem(item); };
-  const handleConfirmReject = () => {
-    if (!rejectReason.trim()) { error('دلیل رد کالا را بنویسید تا تأمین‌کننده بداند چه چیزی را اصلاح کند.'); return; }
-    if (rejectingItem) void review(rejectingItem, false, rejectReason.trim());
-  };
   // A queue proposal and its catalog product have different ids; match on
   // the proposal's productId when the server sent one, else on exact title.
-  const findCatalogProduct = (item: any) => products.find((p) => (item.productId && p.id === item.productId) || p.title === item.title);
-  const viewCatalogProduct = (item: any) => {
+  const findCatalogProduct = (item: ProposedProduct) => products.find(p => (item.productId && p.id === item.productId) || p.title === item.title);
+  const viewCatalogProduct = (item: ProposedProduct) => {
     const product = findCatalogProduct(item);
     if (!product) { error('این کالا هنوز در فهرست کاتالوگ دیده نمی‌شود؛ «به‌روزرسانی صف بازبینی» را بزنید و دوباره تلاش کنید.'); return; }
     setActiveView('product_detail', { productId: product.id });
   };
-  // Freshly approved = approved from this tab session (whole-product
-  // approve, or a modal publish whose queue status has flipped to
-  // approved), or approved within the last 24 h when the server reports
-  // reviewedAt. No createdAt exists on products, so recency comes from
-  // the proposal, never from an invented date.
-  const isFreshlyApprovedProduct = (product: any) => proposedProducts.some((q: any) => {
+  const isFreshlyApprovedProduct = (product: Product) => proposedProducts.some(q => {
     const matches = (q.productId && q.productId === product.id) || q.title === product.title;
     if (!matches) return false;
-    if (approvedIds[q.id]) return true;
-    if (modalReviewedIds[q.id] && q.status === 'approved') return true;
+    if (publishedIds.has(q.id)) return true;
     if (q.status === 'approved' && q.reviewedAt) {
       const t = new Date(q.reviewedAt).getTime();
       return !Number.isNaN(t) && Date.now() - t < 24 * 3600 * 1000;
     }
     return false;
   });
-  const handleModalUpdated = () => {
-    if (inspectingItem) setModalReviewedIds((p) => ({ ...p, [inspectingItem.id]: Date.now() }));
-    void refreshProposals();
+  const handleModalUpdated = (status?: ProposedProduct['status']) => {
+    if (inspectingItem && status) {
+      const { id } = inspectingItem;
+      setServerProposals(rows => rows.map(row => row.id === id ? { ...row, status } : row));
+      if (status === 'approved') setPublishedIds(ids => new Set(ids).add(id));
+    }
+    void refreshProposals({ afterDecision: true });
     void fetchProducts().catch(() => {});
+  };
+  const rejectProposal = async (item: ProposedProduct, reason: string) => {
+    if (isMockMode()) rejectProposedProduct(item, reason);
+    else await adminApi.reviewApproval(item.id, { status: 'rejected', rejectionReason: reason });
   };
   // Catalog list keeps the server's order (newest first: the API returns
   // the just-approved product first) and is only filtered by search.
@@ -179,255 +166,175 @@ export const AdminCatalogTab: React.FC = () => {
   const visibleCatalog = filteredCatalog.slice(0, catalogLimit);
 
   return (
-    <div className="space-y-3.5 pb-6" aria-busy={loading || reviewing}>
-      <button type="button" onClick={()=>void refreshProposals()} disabled={loading} className="min-h-11 rounded-xl border px-3 py-2 text-xs font-bold disabled:opacity-40">به‌روزرسانی صف بازبینی</button>
-      {loading && !hasLoaded && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs leading-7">در حال دریافت درخواست‌ها…</p>}
-      {loading && hasLoaded && <p role="status" className="rounded-xl bg-slate-50 p-3 text-xs leading-7">در حال به‌روزرسانی…</p>}
-      {loadError && <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-7 text-rose-800"><p className="font-bold">بارگذاری صف بازبینی ناموفق بود.</p><p>{loadError}</p><button type="button" onClick={() => void refreshProposals()} className="min-h-11 rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white">تلاش مجدد</button></div>}
-      {!loading && !loadError && pendingApprovals.length===0 && <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-center"><p className="text-xs leading-7 text-slate-500">درخواستی با این فیلترها وجود ندارد.</p>{filtersActive && <button type="button" onClick={clearFilters} className="min-h-11 rounded-lg border px-4 py-2 text-xs font-bold">پاک کردن فیلترها</button>}</div>}
-
-      {/* Requirement 16: Multi-Filter Search Bar */}
-      <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-            <Filter className="w-4 h-4 text-blue-600"  strokeWidth={1.5}/>
-            <span>جستجو و فیلتر پیشرفته صف تأیید کالا</span>
-          </h3>
-          <span className="text-xs text-slate-400">
-            {toPersianDigits(pendingApprovals.length)} مورد
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-          <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
-            <Search className="w-3.5 h-3.5 text-slate-400 ml-1.5"  strokeWidth={1.5}/>
-            <input
-              type="text"
-              placeholder="جستجوی نام، بارکد، دسته یا تأمین‌کننده..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-transparent text-sm text-slate-800 placeholder-slate-400 focus:outline-hidden"
-            />
+    <div className="space-y-4">
+      <section aria-labelledby="admin-catalog-queue" className="space-y-4 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 id="admin-catalog-queue" ref={queueHeading} tabIndex={-1} className="text-base font-extrabold leading-7 text-slate-900 focus-visible:outline-brand">صف بازبینی کالا</h2>
+            <p className="text-sm leading-6 text-slate-600">مشخصات، تصاویر، بارکد و گارانتی کالا را پیش از انتشار بررسی کنید.</p>
           </div>
-
-          <select
-            value={supplierFilter}
-            onChange={(e) => setSupplierFilter(e.target.value)}
-            className="min-h-11 p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs"
-            aria-label="فیلتر تأمین‌کننده"
-          >
-            <option value="all">همه تأمین‌کنندگان</option>
-            {supplierOptions.map(([supplierId, supplierName]) => <option key={supplierId} value={supplierId}>{supplierName}</option>)}
-          </select>
-
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="min-h-11 p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs"
-            aria-label="فیلتر وضعیت"
-          >
-            <option value="all">همه وضعیت‌ها</option>
-            <option value="pending">در انتظار بررسی</option>
-            <option value="approved">تأییدشده</option>
-          </select>
+          <button type="button" onClick={() => void refreshProposals()} disabled={loading} className={secondaryButton}>
+            <RefreshCw aria-hidden="true" className="size-4 shrink-0" /> به‌روزرسانی صف بازبینی
+          </button>
         </div>
-      </div>
 
-      {/* Pending Approval Queue */}
-      <div className="bg-white rounded-2xl p-3.5 border border-blue-200 shadow-2xs space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-blue-600">
-            <Package className="w-4 h-4"  strokeWidth={1.5}/>
-            <h3 className="text-sm font-bold text-slate-800">صف کالاهای پیشنهادی تأمین‌کنندگان</h3>
+        <div className="grid min-w-0 grid-cols-2 gap-2.5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          <label className="col-span-2 min-w-0 space-y-1 text-xs font-bold text-slate-700 lg:col-span-1">
+            <span>جستجو</span>
+            <span className="relative block">
+              <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-3.5 size-4 text-slate-500" />
+              <input type="search" aria-label="جستجوی صف بازبینی" placeholder="نام کالا، بارکد یا تأمین‌کننده" value={searchQuery}
+                onChange={event => setSearchQuery(event.target.value)} className={filterControl + ' ps-9'} />
+            </span>
+          </label>
+          <label className="min-w-0 space-y-1 text-xs font-bold text-slate-700">
+            <span>وضعیت</span>
+            <select value={statusFilter} onChange={event => setStatusFilter(event.target.value as ProposalFilter)}
+              className={filterControl} aria-label="فیلتر وضعیت">
+              <option value="all">همه وضعیت‌ها</option>
+              {Object.entries(proposalStatus).map(([status, details]) => <option key={status} value={status}>{details.label}</option>)}
+            </select>
+          </label>
+          <label className="min-w-0 space-y-1 text-xs font-bold text-slate-700">
+            <span>تأمین‌کننده</span>
+            <select value={supplierFilter} onChange={event => setSupplierFilter(event.target.value)}
+              className={filterControl} aria-label="فیلتر تأمین‌کننده">
+              <option value="all">همه تأمین‌کنندگان</option>
+              {supplierOptions.map(([supplierId, supplierName]) => <option key={supplierId} value={supplierId}>{supplierName}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-slate-200 pt-2">
+          <p role="status" className="text-sm leading-6 text-slate-600">
+            {loading ? hasLoaded ? 'در حال به‌روزرسانی…' : 'در حال دریافت درخواست‌ها…' : (!loadError || hasLoaded) && <>{toPersianDigits(matchingProposals.length)} پیشنهاد</>}
+          </p>
+          {filtersActive && <button type="button" onClick={clearFilters}
+            className="min-h-11 rounded-xl px-2 text-sm font-bold text-brand-deep hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand">پاک کردن فیلترها</button>}
+        </div>
+        {loadError && (
+          <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm leading-7 text-rose-900">
+            <p className="font-bold">بارگذاری صف بازبینی ناموفق بود.</p>
+            <p>{loadError}</p>
+            <button type="button" onClick={() => void refreshProposals()} className={secondaryButton}>تلاش مجدد</button>
           </div>
-          <span className="text-[10px] bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
-            معیار بازبینی: تطبیق بارکد و کیفیت
-          </span>
-        </div>
-        <p className="text-xs text-slate-500 leading-relaxed">
-          بارکد کارخانه به تنهایی اثبات یکسان‌بودن مشخصات نیست؛ مدیر پلتفرم تطبیق مشخصات، گارانتی و کیفیت محتوا را بررسی و تأیید می‌کند (بخش ۴ پروپوزال).
-        </p>
+        )}
+        {!loading && !loadError && matchingProposals.length === 0 &&
+          <p className="rounded-xl bg-slate-50 p-4 text-center text-sm leading-7 text-slate-600">درخواستی با این فیلترها وجود ندارد.</p>}
 
-        <div className="space-y-2 pt-1">
-          {pendingApprovals.map((item) => {
-            const isApproved = approvedIds[item.id] || item.status === 'approved';
-            const submitted = item.submittedAt || item.createdAt;
-            const submittedLabel = submitted ? (() => { try { return new Date(submitted).toLocaleDateString('fa-IR'); } catch { return String(submitted); } })() : '';
+        <div className="space-y-2.5">
+          {matchingProposals.map(item => {
+            const status = proposalStatus[item.status] ?? proposalStatus.pending;
+            const submittedAt = item.submittedAt ?? item.createdAt;
+            const variants = item.variants?.length ?? 0;
+            const reviewLabel = item.status === 'approved' ? 'مشاهده بازبینی' : 'بازبینی';
             return (
-              <div
-                key={item.id}
-                role="button"
-                tabIndex={0}
-                aria-label={`بازبینی ${item.title}`}
-                onClick={() => setInspectingItem(item)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setInspectingItem(item); } }}
-                className="p-3 bg-slate-50 hover:bg-blue-50/50 cursor-pointer rounded-xl border border-slate-200/80 space-y-2 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-start gap-2 min-w-0">
-                    {item.imageUrl ? <img src={item.imageUrl} alt={`تصویر ${item.title}`} className="w-12 h-12 shrink-0 rounded-lg object-cover border" /> : <Eye className="w-4 h-4 shrink-0 mt-1 text-blue-600"  strokeWidth={1.5}/>}
-                    <h4 className="text-sm font-bold text-slate-800 leading-7">{item.title}</h4>
+              <article key={item.id} className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:flex sm:items-start sm:justify-between sm:gap-4 sm:space-y-0">
+                <div className="flex min-w-0 items-start gap-3">
+                  {item.imageUrl
+                    ? <img src={item.imageUrl} alt="" loading="lazy" className="size-12 shrink-0 rounded-xl border border-slate-200 bg-white object-cover" />
+                    : <span className="grid size-12 shrink-0 place-items-center rounded-xl border border-brand-border bg-brand-bg text-brand-deep"><Package aria-hidden="true" className="size-5" /></span>}
+                  <div className="min-w-0 space-y-1">
+                    <h3 className="font-extrabold leading-6 [overflow-wrap:anywhere]">{item.title}</h3>
+                    <p className="text-sm leading-6 text-slate-600 [overflow-wrap:anywhere]">{item.supplierName}{item.category && <> · {item.category}</>}</p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs leading-6 text-slate-600">
+                      {item.barcode && <span>بارکد <bdi className="[overflow-wrap:anywhere]" dir="ltr">{item.barcode}</bdi></span>}
+                      {variants > 0 && <span>{toPersianDigits(variants)} تنوع</span>}
+                      {submittedAt && <time dateTime={submittedAt}>{new Date(submittedAt).toLocaleDateString('fa-IR')}</time>}
+                      <span>قیمت عمده <strong className="text-slate-800">{formatPrice(item.proposedCost)} تومان</strong></span>
+                    </div>
                   </div>
-                  <span className="shrink-0 text-[10px] font-mono bg-white px-2 py-0.5 rounded border border-slate-200" dir="ltr">
-                    {item.barcode}
-                  </span>
                 </div>
-
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-                  <span>تأمین‌کننده: {item.supplierName}</span>
-                  {item.category && <span>دسته: {item.category}</span>}
-                  {((item as AdminProposal).variants?.length ?? 0) > 0 && <span>{toPersianDigits((item as AdminProposal).variants.length)} تنوع</span>}
-                  {submittedLabel && <span>ثبت: {submittedLabel}</span>}
-                  <span>قیمت عمده پیشنهادی: <strong className="text-slate-800">{formatPrice(item.proposedCost)} تومان</strong></span>
+                <div className="flex flex-col items-stretch gap-2 sm:shrink-0 sm:items-end">
+                  <span className={'self-start rounded-full px-2.5 py-1 text-xs font-bold sm:self-auto ' + status.className}>{status.label}</span>
+                  <button type="button" aria-label={reviewLabel + ' ' + item.title} onClick={() => setInspectingItem(item)}
+                    className={item.status === 'pending' ? primaryButton : secondaryButton}>
+                    {reviewLabel} <ArrowLeft aria-hidden="true" className="size-4 shrink-0" />
+                  </button>
+                  {item.status === 'approved' && <button type="button" onClick={() => viewCatalogProduct(item)} className={secondaryButton}>مشاهده در کاتالوگ</button>}
                 </div>
-
-                {isApproved ? (
-                  <div className="space-y-2 p-2 bg-emerald-50 text-emerald-700 rounded-lg" onClick={(e) => e.stopPropagation()}>
-                    <p className="text-xs font-bold text-center">
-                      کالا به کاتالوگ مرکزی اضافه و برای تمام ویترین‌ها فعال شد.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => viewCatalogProduct(item)}
-                      className="w-full min-h-11 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-1"
-                    >
-                      <Eye className="w-4 h-4" strokeWidth={1.5}/>
-                      <span>مشاهده در کاتالوگ</span>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      disabled={reviewing} onClick={() => handleOpenReview(item)}
-                      className="min-h-11 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-1 disabled:opacity-40"
-                    >
-                      <Check className="w-4 h-4"  strokeWidth={1.5}/>
-                      <span>بازبینی فیلدها</span>
-                    </button>
-                    <button
-                      disabled={reviewing} onClick={() => { setRejectReason(''); setRejectingItem(item); }}
-                      className="min-h-11 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-lg flex items-center justify-center gap-1 disabled:opacity-40"
-                    >
-                      <X className="w-4 h-4"  strokeWidth={1.5}/>
-                      <span>رد کالا</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              </article>
             );
           })}
         </div>
-      </div>
+      </section>
 
-      {/* Active Catalog Overview with Originality Badges (Requirement 23) */}
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <h4 className="text-sm font-bold text-slate-800">کاتالوگ فعال و اصالت کالاها (الزام حقوقی بج غیر اصل)</h4>
-          <span className="shrink-0 text-xs text-slate-400">نمایش {toPersianDigits(visibleCatalog.length)} از {toPersianDigits(filteredCatalog.length)} محصول</span>
+      <section aria-labelledby="admin-active-catalog" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="admin-active-catalog" className="text-base font-extrabold text-slate-900">کاتالوگ فعال</h2>
+          <span className="text-xs text-slate-600">نمایش {toPersianDigits(visibleCatalog.length)} از {toPersianDigits(filteredCatalog.length)} کالا</span>
         </div>
-        <p className="text-xs text-slate-500">
-          برای کالاهای غیر اصل و های‌کپی، وضعیت را تعیین کنید تا بج «غیر اصل» در تمام ویترین‌ها درج شود. فهرست به‌ترتیب تازه‌ترین‌ها نمایش داده می‌شود؛ کالایی که همین حالا تأیید کرده‌اید با برچسب «تازه تأیید شده» مشخص است.
-        </p>
-        <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
-          <Search className="w-3.5 h-3.5 text-slate-400 ml-1.5" strokeWidth={1.5}/>
-          <input
-            type="text"
-            placeholder="جستجوی کالا در کاتالوگ (نام، دسته، تأمین‌کننده)..."
-            value={catalogSearch}
-            onChange={(e) => { setCatalogSearch(e.target.value); setCatalogLimit(10); }}
-            aria-label="جستجوی کاتالوگ فعال"
-            className="w-full bg-transparent text-sm text-slate-800 placeholder-slate-400 focus:outline-hidden"
-          />
+        <p className="text-sm leading-6 text-slate-600">وضعیت اصالت کالا در همهٔ ویترین‌ها نمایش داده می‌شود.</p>
+        <div className="relative">
+          <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-3.5 size-4 text-slate-500" />
+          <input type="search" aria-label="جستجوی کاتالوگ فعال" placeholder="نام کالا، دسته یا تأمین‌کننده" value={catalogSearch}
+            onChange={event => { setCatalogSearch(event.target.value); setCatalogLimit(10); }} className={filterControl + ' ps-9'} />
         </div>
 
-        <div className="space-y-1.5 pt-1">
-          {visibleCatalog.length === 0 && <p className="p-3 text-center text-xs text-slate-400">موردی با این جستجو در کاتالوگ نیست.</p>}
-          {visibleCatalog.map((p) => {
-            const isOrig = p.isOriginal !== false;
-            const fresh = isFreshlyApprovedProduct(p);
+        <div className="space-y-2">
+          {visibleCatalog.length === 0 && <p className="rounded-xl bg-slate-50 p-4 text-center text-sm text-slate-600">موردی با این جستجو در کاتالوگ نیست.</p>}
+          {visibleCatalog.map(product => {
+            const original = product.isOriginal !== false;
+            const fresh = isFreshlyApprovedProduct(product);
             return (
-              <div key={p.id} className={`p-2 border rounded-xl flex items-center justify-between text-xs ${fresh ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-100'}`}>
-                <div className="flex items-center gap-2 min-w-0">
-                  <img src={p.image} alt={p.title} className="w-7 h-7 rounded-lg object-cover border" />
-                  <span className="font-bold text-slate-800 truncate max-w-[180px]">{p.title}</span>
-                  {fresh && <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white">تازه تأیید شده</span>}
+              <article key={product.id} className={'flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border p-3 ' + (fresh ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-200 bg-slate-50/70')}>
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                  <img src={product.image} alt="" loading="lazy" className="size-10 shrink-0 rounded-lg border border-slate-200 bg-white object-cover" />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold leading-6 [overflow-wrap:anywhere]">{product.title}</h3>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <span className={'rounded-full px-2 py-0.5 text-xs font-bold ' + (original ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-100 text-amber-900')}>
+                        {original ? 'اصل' : 'غیر اصل (های‌کپی)'}
+                      </span>
+                      {fresh && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-xs font-bold text-white">تازه تأیید شده</span>}
+                    </div>
+                  </div>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    isOrig ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-100 text-amber-800 font-black'
-                  }`}>
-                    {isOrig ? 'اصل' : 'غیر اصل (های‌کپی)'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveView('product_detail', { productId: p.id })}
-                    aria-label={`مشاهده ${p.title} در کاتالوگ`}
-                    title="مشاهده در کاتالوگ"
-                    className="min-h-9 min-w-9 p-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg"
-                  >
-                    <Eye className="w-4 h-4" strokeWidth={1.5}/>
+                <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+                  <button type="button" onClick={() => setActiveView('product_detail', { productId: product.id })}
+                    aria-label={'مشاهده ' + product.title + ' در کاتالوگ'} className={secondaryButton}>
+                    <Eye aria-hidden="true" className="size-4 shrink-0" /> مشاهده
                   </button>
-                  <button
-                    onClick={() => setPendingOriginality(p)}
-                    className="min-h-9 px-2 py-1.5 bg-white border border-slate-200 text-slate-700 text-xs rounded-lg"
-                  >
-                    تغییر
-                  </button>
+                  <button type="button" onClick={() => setPendingOriginality(product)} className={secondaryButton}>تغییر اصالت</button>
                 </div>
-              </div>
+              </article>
             );
           })}
         </div>
         {filteredCatalog.length > visibleCatalog.length && (
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={() => setCatalogLimit((n) => n + 10)} className="flex-1 min-h-11 rounded-xl border px-3 py-2 text-xs font-bold">نمایش {toPersianDigits(Math.min(10, filteredCatalog.length - visibleCatalog.length))} مورد بیشتر</button>
-            <button type="button" onClick={() => setCatalogLimit(filteredCatalog.length)} className="flex-1 min-h-11 rounded-xl border px-3 py-2 text-xs font-bold">نمایش همه ({toPersianDigits(filteredCatalog.length)})</button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setCatalogLimit(limit => limit + 10)} className={secondaryButton}>نمایش {toPersianDigits(Math.min(10, filteredCatalog.length - visibleCatalog.length))} مورد بیشتر</button>
+            <button type="button" onClick={() => setCatalogLimit(filteredCatalog.length)} className={secondaryButton}>نمایش همه ({toPersianDigits(filteredCatalog.length)})</button>
           </div>
         )}
-        {filteredCatalog.length > 10 && visibleCatalog.length === filteredCatalog.length && (
-          <button type="button" onClick={() => setCatalogLimit(10)} className="w-full min-h-11 rounded-xl border px-3 py-2 text-xs font-bold">نمایش کمتر</button>
-        )}
-      </div>
+        {filteredCatalog.length > 10 && visibleCatalog.length === filteredCatalog.length &&
+          <button type="button" onClick={() => setCatalogLimit(10)} className={secondaryButton}>نمایش کمتر</button>}
+      </section>
 
-      {/* Requirement 16: Proposed Product Details Modal */}
-      {inspectingItem && <ProductFieldReview id={inspectingItem.id} onClose={()=>setInspectingItem(null)} onUpdated={handleModalUpdated} />}
-
-      <ConfirmDialog
-        isOpen={!!rejectingItem}
-        title="رد کالا و عودت به تأمین‌کننده"
-        message={`کالای «${rejectingItem?.title}» رد و برای اصلاح به تأمین‌کننده بازگردانده می‌شود؛ دلیل رد در اعلان داخل پنل تأمین‌کننده و فهرست پیشنهادهای او نمایش داده می‌شود.`}
-        confirmText="تأیید رد کالا"
-        isDanger={true}
-        onConfirm={handleConfirmReject}
-        onCancel={() => { setRejectingItem(null); setRejectReason(''); }}
-      >
-        <label className="block text-xs font-bold text-slate-700">دلیل رد — الزامی؛ همین متن در اعلان داخل پنل تأمین‌کننده و فهرست پیشنهادها نمایش داده می‌شود
-          <textarea
-            value={rejectReason}
-            onChange={(e) => setRejectReason(e.target.value)}
-            placeholder="مثلاً: تصویر اصلی کیفیت کافی ندارد؛ وزن کالا ثبت نشده است."
-            rows={3}
-            className="mt-1 w-full rounded-xl border border-slate-300 p-3 text-sm leading-7 font-normal focus:border-rose-400 outline-none"
-          />
-        </label>
-      </ConfirmDialog>
-
-      <ConfirmDialog
-        isOpen={!!pendingOriginality}
-        title="تغییر وضعیت اصالت کالا"
-        message={pendingOriginality ? `وضعیت اصالت «${pendingOriginality.title}» به «${pendingOriginality.isOriginal !== false ? 'غیر اصل (های‌کپی)' : 'اصل'}» تغییر کند؟ این بج در تمام ویترین‌ها نمایش داده می‌شود.` : ''}
-        confirmText="تأیید تغییر"
-        onConfirm={() => {
-          if (!pendingOriginality) return;
-          const p = pendingOriginality;
-          const isOrig = p.isOriginal !== false;
-          toggleProductOriginality(p.id, !isOrig);
-          success(`وضعیت کالای ${p.title} تغییر کرد.`);
-          setPendingOriginality(null);
+      {inspectingItem && <ProductFieldReview id={inspectingItem.id} initialTitle={inspectingItem.title}
+        onClose={status => {
+          setInspectingItem(null);
+          if ((status && statusFilter !== 'all' && status !== statusFilter) || !matchingProposals.some(item => item.id === inspectingItem.id)) {
+            requestAnimationFrame(() => queueHeading.current?.focus({ preventScroll: true }));
+          }
         }}
-        onCancel={() => setPendingOriginality(null)}
-      />
+        onUpdated={handleModalUpdated}
+        onRejectProduct={inspectingItem.status === 'pending' ? reason => rejectProposal(inspectingItem, reason) : undefined} />}
+
+      {pendingOriginality && (
+        <SupplierDialog titleId="admin-originality-title" onDismiss={() => setPendingOriginality(null)}>
+          <SupplierDialogHeading id="admin-originality-title" title="تغییر وضعیت اصالت کالا" onClose={() => setPendingOriginality(null)} />
+          <p className="text-sm leading-7 text-slate-700">وضعیت اصالت «{pendingOriginality.title}» به «{pendingOriginality.isOriginal !== false ? 'غیر اصل (های‌کپی)' : 'اصل'}» تغییر کند؟ این وضعیت در همهٔ ویترین‌ها نمایش داده می‌شود.</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button type="button" onClick={() => {
+              toggleProductOriginality(pendingOriginality.id, pendingOriginality.isOriginal === false);
+              success('وضعیت اصالت کالا تغییر کرد.');
+              setPendingOriginality(null);
+            }} className={primaryButton}>تأیید تغییر</button>
+            <button type="button" onClick={() => setPendingOriginality(null)} className={secondaryButton}>انصراف</button>
+          </div>
+        </SupplierDialog>
+      )}
     </div>
   );
 };

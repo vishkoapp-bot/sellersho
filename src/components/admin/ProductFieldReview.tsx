@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { apiRequest } from '../../services/apiClient';
 import { useToast } from '../../context/ToastContext';
+import type { ProposedProduct } from '../../types';
 import { formatPrice, toPersianDigits } from '../../utils/formatters';
 import { pointerValue, schemaReviewCaption, selectionReviewChoices, skuReviewLabel, cartLimitCorrectionValue } from '../../utils/productReview';
 import { SupplierProductStructuralCorrection } from '../supplier/SupplierProductStructuralCorrection';
@@ -42,6 +43,45 @@ export const decisionMeta: Record<string, { label: string; cls: string }> = {
     approved: { label: 'تأیید شده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
     rejected: { label: 'رد شده', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
 };
+const reviewButton = 'inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold leading-5 text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50';
+const reviewPrimary = 'inline-flex min-h-11 items-center justify-center rounded-xl bg-brand-deep px-3 py-2 text-sm font-bold leading-5 text-white hover:bg-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50';
+
+function FieldDecisionControl({ field, caption, disabled, readOnly, onDecision, onReason }: {
+    field: ReviewField;
+    caption: string;
+    disabled?: boolean;
+    readOnly?: boolean;
+    onDecision: (fieldKey: string, decision: string) => void;
+    onReason: (fieldKey: string, reason: string) => void;
+}) {
+    const reasonHelp = useId();
+    const missingReason = field.decision === 'rejected' && !field.reason?.trim();
+    if (readOnly) return field.reason ? <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">{field.reason}</p> : null;
+    return <div className="space-y-2">
+        <div role="group" aria-label={'نتیجه ' + caption} className="grid grid-cols-3 gap-1.5">
+            {[
+                { value: 'pending', text: 'در انتظار', action: 'در انتظار بررسی', active: 'border-amber-300 bg-amber-50 text-amber-900' },
+                { value: 'approved', text: 'تأیید', action: 'تأیید', active: 'border-emerald-300 bg-emerald-50 text-emerald-800' },
+                { value: 'rejected', text: 'درخواست اصلاح', action: 'رد و درخواست اصلاح', active: 'border-rose-300 bg-rose-50 text-rose-800' },
+            ].map(option => <button key={option.value} type="button" disabled={disabled}
+                aria-label={option.action + ' ' + caption} aria-pressed={field.decision === option.value}
+                onClick={() => onDecision(field.field_key, option.value)}
+                className={'min-h-11 rounded-lg border px-1.5 py-1.5 text-xs font-bold leading-5 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50 ' + (field.decision === option.value ? option.active : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
+                {option.text}
+            </button>)}
+        </div>
+        {field.decision === 'rejected' && <>
+            <label className="block text-sm font-bold text-slate-800">دلیل رد
+                <textarea aria-label={'دلیل رد ' + caption} value={field.reason || ''} disabled={disabled} required maxLength={2000}
+                    aria-invalid={missingReason} aria-describedby={missingReason ? reasonHelp : undefined}
+                    onChange={event => onReason(field.field_key, event.target.value)} rows={2}
+                    placeholder="اصلاح موردنیاز را برای تأمین‌کننده بنویسید"
+                    className={'mt-1 block w-full rounded-lg border bg-white p-2.5 text-base font-normal leading-6 focus-visible:outline-2 focus-visible:outline-brand sm:text-sm ' + (missingReason ? 'border-rose-400' : 'border-slate-300')} />
+            </label>
+            {missingReason && <p id={reasonHelp} role="alert" className="text-xs font-bold text-rose-700">دلیل رد الزامی است.</p>}
+        </>}
+    </div>;
+}
 /** Publish gate: every field — including image fields — must be approved. */
 export const allFieldsApproved = (fields: ReviewField[]): boolean => fields.length > 0 && fields.every(f => f.decision === 'approved');
 function useReviewReferences(proposal: any) {
@@ -133,53 +173,51 @@ export function imageFieldUrl(field: ReviewField, refs: any): string | null {
     const value = displayReference(field, refs) ?? field.value;
     return typeof value === 'string' && /^(https?:\/\/|\/static\/)/.test(value) ? value : null;
 }
-export function ImageGallery({ fields, refs, title, disabled, onDecision, onReason }: { fields: ReviewField[]; refs: any; title: string; disabled?: boolean; onDecision: (fieldKey: string, decision: string) => void; onReason: (fieldKey: string, reason: string) => void }) {
-    const urls = fields.map(f => ({ key: f.field_key, url: imageFieldUrl(f, refs), caption: fieldCaption(f, refs) })).filter((u): u is { key: string; url: string; caption: string } => u.url !== null);
-    const [selected, setSelected] = useState(0);
+export function ImageGallery({ fields, refs, title, disabled, readOnly, onDecision, onReason }: {
+    fields: ReviewField[];
+    refs: any;
+    title: string;
+    disabled?: boolean;
+    readOnly?: boolean;
+    onDecision: (fieldKey: string, decision: string) => void;
+    onReason: (fieldKey: string, reason: string) => void;
+}) {
+    const images = fields.flatMap(field => {
+        const url = imageFieldUrl(field, refs);
+        return url ? [{ field, url, caption: fieldCaption(field, refs) }] : [];
+    });
+    const [selectedKey, setSelectedKey] = useState<string>();
     const [broken, setBroken] = useState<Record<string, boolean>>({});
-    if (!urls.length)
-        return <p className="text-sm text-slate-500">تصویری برای این کالا ثبت نشده است.</p>;
-    const current = urls[Math.min(selected, urls.length - 1)];
-    const fileName = (u: string) => { try {
-        return decodeURIComponent(u.split('?')[0].split('/').pop() || u);
-    }
-    catch { return u; } };
-    const currentField = fields.find(f => f.field_key === current.key);
-    const currentMeta = decisionMeta[currentField?.decision ?? 'pending'] || decisionMeta.pending;
-    const missingReason = currentField?.decision === 'rejected' && !currentField.reason?.trim();
-    return <div className="space-y-3">
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
-            {broken[current.key] ? <p className="p-6 text-center text-sm leading-7 text-slate-500">تصویر بارگذاری نشد. <a href={current.url} target="_blank" rel="noreferrer" className="font-bold text-blue-700 underline">باز کردن اصل تصویر</a></p>
-                : <img src={current.url} alt={`تصویر ${Math.min(selected, urls.length - 1) + 1} از ${urls.length} — ${title}`} onError={() => setBroken(p => ({ ...p, [current.key]: true }))} className="mx-auto max-h-80 w-full rounded-lg object-contain"/>}
-        </div>
-        <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
-            <span>{current.caption} — تصویر {toPersianDigits(Math.min(selected, urls.length - 1) + 1)} از {toPersianDigits(urls.length)}</span>
-            <a href={current.url} target="_blank" rel="noreferrer" className="shrink-0 font-bold text-blue-700 underline">باز کردن در اندازه کامل</a>
-        </div>
-        <p className="break-all text-[11px] text-slate-400" dir="ltr">{fileName(current.url)}</p>
-        {currentField && <div className="space-y-2 rounded-xl border border-slate-200 p-3">
-            <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-bold">نتیجهٔ بازبینی این تصویر</span>
-                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold ${currentMeta.cls}`}>{currentMeta.label}</span>
-            </div>
-            <label className="block text-sm">نتیجهٔ بازبینی
-                <select aria-label={`نتیجه ${fieldCaption(currentField, refs)}`} disabled={disabled} value={currentField.decision} onChange={e => onDecision(currentField.field_key, e.target.value)} className="mt-1 block w-full min-h-11 rounded-lg border p-2 text-sm sm:w-auto sm:min-w-56">
-                    <option value="pending">در انتظار بررسی</option>
-                    <option value="approved">تأیید</option>
-                    <option value="rejected">رد و درخواست اصلاح</option>
-                </select>
-            </label>
-            {currentField.decision === 'rejected' && <>
-                <textarea aria-label={`دلیل رد ${fieldCaption(currentField, refs)}`} value={currentField.reason || ''} disabled={disabled} onChange={e => onReason(currentField.field_key, e.target.value)} placeholder="دلیل رد و توضیح اصلاح موردنیاز — الزامی" className={`w-full rounded-lg border p-2 text-sm ${missingReason ? 'border-rose-400 bg-white' : ''}`}/>
-                {missingReason && <p role="alert" className="text-xs font-bold text-rose-700">دلیل رد الزامی است؛ بدون دلیل نمی‌توان ذخیره کرد.</p>}
-            </>}
+    if (!images.length) return null;
+    const selected = Math.max(0, images.findIndex(image => image.field.field_key === selectedKey));
+    const current = images[selected];
+    const currentMeta = decisionMeta[current.field.decision] || decisionMeta.pending;
+    return <div className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+        {images.length > 1 && <div className="flex gap-2 overflow-x-auto p-1" role="group" aria-label="تصاویر کالا">
+            {images.map(({ field, url, caption }, index) => {
+                const meta = decisionMeta[field.decision] || decisionMeta.pending;
+                return <button key={field.field_key} type="button" aria-pressed={index === selected}
+                    aria-label={'تصویر ' + (index + 1) + ': ' + caption + ' — ' + meta.label}
+                    onClick={() => setSelectedKey(field.field_key)}
+                    className={'relative size-14 shrink-0 overflow-hidden rounded-lg border-2 focus-visible:outline-2 focus-visible:outline-brand ' + (index === selected ? 'border-brand' : 'border-slate-200')}>
+                    {broken[field.field_key] ? <span className="text-[10px] text-slate-600">بارگذاری نشد</span>
+                        : <img src={url} alt="" loading="lazy" onError={() => setBroken(items => ({ ...items, [field.field_key]: true }))} className="size-full object-cover" />}
+                    {field.decision !== 'pending' && <span aria-hidden="true" title={meta.label} className={'absolute end-1 top-1 size-3 rounded-full border-2 border-white ' + (field.decision === 'approved' ? 'bg-emerald-500' : 'bg-rose-500')} />}
+                </button>;
+            })}
         </div>}
-        {urls.length > 1 && <div className="flex flex-wrap gap-2" role="listbox" aria-label="تصاویر کالا">
-            {urls.map((u, i) => { const uf = fields.find(f => f.field_key === u.key); const uMeta = decisionMeta[uf?.decision ?? 'pending'] || decisionMeta.pending; return <button key={u.key} type="button" role="option" aria-selected={i === Math.min(selected, urls.length - 1)} aria-label={`تصویر ${i + 1}: ${u.caption} — ${uMeta.label}`} onClick={() => setSelected(i)} className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border-2 ${i === Math.min(selected, urls.length - 1) ? 'border-blue-600' : 'border-slate-200'} ${broken[u.key] ? 'bg-slate-100 text-[10px] text-slate-400' : ''}`}>
-                {broken[u.key] ? 'بارگذاری نشد' : <img src={u.url} alt="" loading="lazy" onError={() => setBroken(p => ({ ...p, [u.key]: true }))} className="h-full w-full object-cover"/>}
-                {uf && uf.decision !== 'pending' && <span aria-hidden="true" title={uMeta.label} className={`absolute left-1 top-1 h-3 w-3 rounded-full border-2 border-white ${uf.decision === 'approved' ? 'bg-emerald-500' : 'bg-rose-500'}`} />}
-            </button>; })}
-        </div>}
+        <div className="rounded-xl bg-slate-50 p-2">
+            {broken[current.field.field_key] ? <p className="p-4 text-center text-sm leading-6 text-slate-600">تصویر بارگذاری نشد.</p>
+                : <img src={current.url} alt={'تصویر ' + (selected + 1) + ' از ' + images.length + ' — ' + title}
+                    onError={() => setBroken(items => ({ ...items, [current.field.field_key]: true }))}
+                    className="mx-auto max-h-64 w-full rounded-lg object-contain sm:max-h-80" />}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-1 text-sm">
+            <p className="font-bold">{current.caption} <span className="font-normal text-slate-600">({toPersianDigits(selected + 1)} از {toPersianDigits(images.length)})</span></p>
+            <span className={'rounded-full border px-2 py-0.5 text-xs font-bold ' + currentMeta.cls}>{currentMeta.label}</span>
+        </div>
+        <a href={current.url} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-xl px-2 text-sm font-bold text-brand-deep underline hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand">باز کردن تصویر کامل</a>
+        <FieldDecisionControl field={current.field} caption={current.caption} disabled={disabled} readOnly={readOnly} onDecision={onDecision} onReason={onReason} />
     </div>;
 }
 export function ReviewAttributeValue({ attribute }: { attribute: any }) {
@@ -213,159 +251,267 @@ export function FieldValue({ field, refs = {} }: { field: ReviewField; refs?: an
     }
     return <ExpandableText text={typeof value === 'number' ? value.toLocaleString('fa-IR') : shown(value)} />;
 }
-export function ProductFieldReview({ id, onClose, onUpdated }: {
+type FieldReviewResponse = {
+    proposal: any;
+    fields: ReviewField[];
+};
+
+export function ProductFieldReview({ id, initialTitle, onClose, onUpdated, onRejectProduct }: {
     id: string;
-    onClose: () => void;
-    onUpdated: () => void;
+    initialTitle?: string;
+    onClose: (status?: ProposedProduct['status']) => void;
+    onUpdated: (status?: ProposedProduct['status']) => void;
+    onRejectProduct?: (reason: string) => Promise<void>;
 }) {
-    const { error, success } = useToast();
+    const { success } = useToast();
+    const dialogRef = useRef<HTMLDialogElement>(null);
+    const titleId = useId();
     const [fields, setFields] = useState<ReviewField[]>([]);
-    const [baseline,setBaseline]=useState<ReviewField[]>([]);
-    const [showApproved,setShowApproved]=useState(false);
-    const dirty=fields.filter(f=>{const old=baseline.find(v=>v.field_key===f.field_key);return !old||old.decision!==f.decision||(old.reason||'')!==(f.reason||'')});
-    const [title, setTitle] = useState('');
-    const [proposal, setProposal] = useState<any>(null);
+    const [baseline, setBaseline] = useState<ReviewField[]>([]);
+    const [showApproved, setShowApproved] = useState(false);
+    const [proposal, setProposal] = useState<FieldReviewResponse['proposal']>(null);
     const refs = useReviewReferences(proposal);
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
     const [loadError, setLoadError] = useState('');
-    const load = async () => { setLoading(true); setLoadError(''); try {
-        const d = await apiRequest<any>(`/admin/product-field-reviews/${encodeURIComponent(id)}`, { auth: true });
-        setFields(d.fields);
-        setBaseline(d.fields);
-        setProposal(d.proposal);
-        setTitle(d.proposal.title);
-    }
-    catch (e) {
-        setLoadError(e instanceof Error ? e.message : 'بارگذاری ناموفق بود');
-    }
-    finally {
-        setLoading(false);
-    } };
-    useEffect(() => { void load(); }, [id]);
+    const [actionError, setActionError] = useState('');
+    const [notice, setNotice] = useState('');
+    const [action, setAction] = useState<'save' | 'publish' | 'reject'>();
+    const [rejecting, setRejecting] = useState(false);
+    const [rejectReason, setRejectReason] = useState('');
+    const endpoint = '/admin/product-field-reviews/' + encodeURIComponent(id);
+    const title = proposal?.title || initialTitle;
+    const readOnly = proposal?.status === 'approved';
+    const canRejectProduct = onRejectProduct && !readOnly && proposal?.status !== 'rejected';
+
+    useLayoutEffect(() => {
+        const dialog = dialogRef.current;
+        const opener = document.activeElement;
+        dialog?.showModal();
+        return () => {
+            dialog?.close();
+            if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+        };
+    }, []);
+    const load = async (signal?: AbortSignal) => {
+        setLoading(true);
+        setLoadError('');
+        try {
+            const data = await apiRequest<FieldReviewResponse>(endpoint, { auth: true, signal });
+            setFields(data.fields);
+            setBaseline(data.fields);
+            setProposal(data.proposal);
+        } catch (e) {
+            if (!signal?.aborted) setLoadError(e instanceof Error ? e.message : 'بارگذاری ناموفق بود');
+        } finally {
+            if (!signal?.aborted) setLoading(false);
+        }
+    };
     useEffect(() => {
-        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-    }, [onClose]);
-    const approvedCount = fields.filter(f => f.decision === 'approved').length;
-    const pendingCount = fields.filter(f => f.decision === 'pending').length;
-    const rejectedCount = fields.filter(f => f.decision === 'rejected').length;
-    const remaining = fields.length - approvedCount;
-    const rejectedWithoutReason = fields.some(f => f.decision === 'rejected' && !f.reason?.trim());
-    const save = async (publish = false) => { if (saving || loading)
-        return; if (rejectedWithoutReason) {
-        error('برای هر مورد ردشده دلیل بنویسید.');
-        return;
-    } setSaving(true); try {
-        if(dirty.length){
-        const d = await apiRequest<any>(`/admin/product-field-reviews/${encodeURIComponent(id)}`, { method: 'PUT', auth: true, body: JSON.stringify({ fields:dirty }) });
-        setFields(d.fields);setBaseline(d.fields);
+        const controller = new AbortController();
+        void load(controller.signal);
+        return () => controller.abort();
+    }, [id]);
+
+    const savedFields = new Map(baseline.map(field => [field.field_key, field]));
+    const dirty = fields.filter(field => {
+        const old = savedFields.get(field.field_key);
+        return !old || field.decision !== old.decision || (field.reason || '') !== (old.reason || '');
+    });
+    const approvedCount = fields.filter(field => field.decision === 'approved').length;
+    const rejectedCount = fields.filter(field => field.decision === 'rejected').length;
+    const pendingCount = fields.length - approvedCount - rejectedCount;
+    const publishReady = allFieldsApproved(fields);
+    const rejectedWithoutReason = fields.some(field => field.decision === 'rejected' && !field.reason?.trim());
+    const unavailable = !!action || loading || readOnly || !!loadError;
+    const save = async (publish = false) => {
+        if (unavailable || rejectedWithoutReason || (publish ? !publishReady : !dirty.length)) return;
+        setAction(publish ? 'publish' : 'save');
+        setActionError('');
+        setNotice('');
+        try {
+            let status = proposal?.status;
+            if (dirty.length) {
+                const data = await apiRequest<FieldReviewResponse>(endpoint, { method: 'PUT', auth: true, body: JSON.stringify({ fields: dirty }) });
+                setFields(data.fields);
+                setBaseline(data.fields);
+                setProposal(data.proposal);
+                status = data.proposal.status;
+            }
+            if (publish) {
+                await apiRequest('/admin/approvals/' + encodeURIComponent(id) + '/review', { method: 'POST', auth: true, body: JSON.stringify({ status: 'approved' }) });
+                onUpdated('approved');
+                onClose('approved');
+                success('کالا تأیید و منتشر شد.');
+            } else {
+                setNotice(rejectedCount ? 'موارد نیازمند اصلاح برای تأمین‌کننده ارسال شد.' : 'تصمیم‌ها ذخیره شد.');
+                onUpdated(status);
+            }
+        } catch (e) {
+            setActionError(e instanceof Error ? e.message : 'ثبت تصمیم ناموفق بود.');
+        } finally {
+            setAction(undefined);
         }
-        if (publish) {
-            await apiRequest(`/admin/approvals/${encodeURIComponent(id)}/review`, { method: 'POST', auth: true, body: JSON.stringify({ status: 'approved' }) });
-            success('محصول پس از بازبینی همهٔ فیلدها منتشر شد.');
-            onUpdated();
-            onClose();
+    };
+    const reject = async () => {
+        if (action || !onRejectProduct || !rejectReason.trim()) return;
+        setAction('reject');
+        setActionError('');
+        try {
+            await onRejectProduct(rejectReason.trim());
+            onUpdated('rejected');
+            onClose('rejected');
+            success('کالا رد شد و دلیل آن به تأمین‌کننده ارسال شد.');
+        } catch (e) {
+            setActionError(e instanceof Error ? e.message : 'رد کالا ناموفق بود.');
+        } finally {
+            setAction(undefined);
         }
-        else {
-            success(fields.some(f => f.decision === 'rejected') ? 'دلایل برای اصلاح به تأمین‌کننده ارسال شد.' : 'تصمیم‌ها ذخیره شد.');
-            onUpdated();
-        }
-    }
-    catch (e) {
-        error(e instanceof Error ? e.message : 'ذخیره ناموفق بود');
-    }
-    finally {
-        setSaving(false);
-    } };
-    const visibleFields = fields.filter(f=>showApproved||f.decision!=='approved');
-    const visibleImageFields = visibleFields.filter(f => isImageReviewField(f.field_key));
-    const contextRows: [string, string][] = proposal ? [
-        ['تأمین‌کننده', proposal.supplierName || proposal.supplierId || ''],
-        ['تاریخ ثبت', proposal.createdAt || proposal.submittedAt ? (() => { try { return new Date(proposal.createdAt || proposal.submittedAt).toLocaleDateString('fa-IR'); } catch { return String(proposal.createdAt || proposal.submittedAt); } })() : ''],
-        ['بارکد', proposal.barcode || ''],
-        ['دسته‌بندی', refs.categories?.find((c: any) => c.slug === proposal.categorySlug)?.title || proposal.categorySlug || proposal.category || ''],
-        ['گارانتی', proposal.warranty || ''],
-        ['نوع محصول', proposal.productType ? (valueLabels[proposal.productType] ?? proposal.productType) : ''],
-    ].filter(([, v]) => v) as [string, string][] : [];
-    const setFieldDecision = (fieldKey: string, decision: string) => setFields(p => p.map(v => v.field_key === fieldKey ? { ...v, decision } : v));
-    const setFieldReason = (fieldKey: string, reason: string) => setFields(p => p.map(v => v.field_key === fieldKey ? { ...v, reason } : v));
-    const renderFieldCard = (f: ReviewField) => {
-        const caption = fieldCaption(f, refs);
-        const meta = decisionMeta[f.decision] || decisionMeta.pending;
-        const isDirty = dirty.some(d => d.field_key === f.field_key);
-        const missingReason = f.decision === 'rejected' && !f.reason?.trim();
-        return <article data-field-key={f.field_key} key={f.field_key} className={`rounded-xl border p-3 space-y-3 sm:p-4 ${f.decision === 'rejected' ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`}>
-            <div className="flex items-start justify-between gap-2">
-                <h4 className="font-bold text-sm leading-7">{caption}</h4>
-                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold ${meta.cls}`}>{meta.label}</span>
+    };
+    const dismiss = () => {
+        if (action) return;
+        if (rejecting) {
+            setRejecting(false);
+            setActionError('');
+        } else onClose();
+    };
+
+    const visibleFields = fields.filter(field => showApproved || readOnly || field.decision !== 'approved'
+        || savedFields.get(field.field_key)?.decision !== 'approved');
+    const groups = FIELD_SECTION_ORDER.map(section => ({
+        ...section,
+        fields: visibleFields.filter(field => fieldSection(field.field_key).id === section.id),
+    })).filter(section => section.fields.length);
+    const submittedAt = proposal?.submittedAt || proposal?.createdAt || proposal?.created_at;
+    const contextRows = [
+        ['تأمین‌کننده', proposal?.supplierName || proposal?.supplierId],
+        ['تاریخ ثبت', submittedAt && new Date(submittedAt).toLocaleDateString('fa-IR')],
+        ['بارکد', proposal?.barcode],
+        ['دسته‌بندی', refs.categories?.find((category: any) => category.slug === proposal?.categorySlug)?.title || proposal?.categorySlug || proposal?.category],
+        ['گارانتی', proposal?.warranty],
+        ['نوع محصول', proposal?.productType && (valueLabels[proposal.productType] ?? proposal.productType)],
+    ].filter(([, value]) => value);
+    const setFieldDecision = (fieldKey: string, decision: string) => {
+        setNotice('');
+        setActionError('');
+        setFields(items => items.map(field => field.field_key === fieldKey ? { ...field, decision, reason: decision === 'rejected' ? field.reason : '' } : field));
+    };
+    const setFieldReason = (fieldKey: string, reason: string) => {
+        setNotice('');
+        setFields(items => items.map(field => field.field_key === fieldKey ? { ...field, reason } : field));
+    };
+    const renderFieldCard = (field: ReviewField) => {
+        const caption = fieldCaption(field, refs);
+        const meta = decisionMeta[field.decision] || decisionMeta.pending;
+        return <article key={field.field_key} data-field-key={field.field_key} className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-bold leading-6 [overflow-wrap:anywhere]">{caption}</h4>
+                <span className={'rounded-full border px-2 py-0.5 text-xs font-bold ' + meta.cls}>{meta.label}</span>
             </div>
-            {isDirty && <p className="text-[11px] font-bold text-blue-700">تغییر کرده — هنوز ذخیره نشده</p>}
-            <FieldValue field={f} refs={refs}/>
-            <label className="block text-sm">نتیجهٔ بازبینی
-                <select aria-label={`نتیجه ${caption}`} disabled={saving || proposal?.status === 'approved'} value={f.decision} onChange={e => setFields(p => p.map((v, j) => v.field_key === f.field_key ? { ...v, decision: e.target.value } : v))} className="mt-1 block w-full min-h-11 rounded-lg border p-2 text-sm sm:w-auto sm:min-w-56">
-                    <option value="pending">در انتظار بررسی</option>
-                    <option value="approved">تأیید</option>
-                    <option value="rejected">رد و درخواست اصلاح</option>
-                </select>
-            </label>
-            {f.decision === 'rejected' && <>
-                <textarea aria-label={`دلیل رد ${caption}`} value={f.reason || ''} disabled={saving} onChange={e => setFields(p => p.map((v, j) => v.field_key === f.field_key ? { ...v, reason: e.target.value } : v))} placeholder="دلیل رد و توضیح اصلاح موردنیاز — الزامی" className={`w-full rounded-lg border p-2 text-sm ${missingReason ? 'border-rose-400 bg-white' : ''}`}/>
-                {missingReason && <p role="alert" className="text-xs font-bold text-rose-700">دلیل رد الزامی است؛ بدون دلیل نمی‌توان ذخیره کرد.</p>}
-            </>}
+            <FieldValue field={field} refs={refs} />
+            <FieldDecisionControl field={field} caption={caption} disabled={!!action} readOnly={readOnly}
+                onDecision={setFieldDecision} onReason={setFieldReason} />
         </article>;
     };
-    return <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-3" dir="rtl"><section role="dialog" aria-modal="true" aria-label="بازبینی فیلدی محصول" className="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden"><header className="border-b p-4 sm:p-5 space-y-2">
-        <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-                <h3 className="font-bold text-base sm:text-lg leading-8">بازبینی: {title || '…'}</h3>
-                {proposal?.status === 'approved' && <p className="mt-1 text-xs font-bold text-emerald-700">این کالا قبلاً تأیید و منتشر شده است؛ تصمیم‌ها فقط خواندنی‌اند.</p>}
+    const errorMessage = actionError && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-sm leading-6 text-rose-900">{actionError}</p>;
+    const progress = { save: 'در حال ذخیرهٔ تصمیم‌ها…', publish: 'در حال انتشار کالا…', reject: 'در حال رد کالا…' };
+
+    return <dialog ref={dialogRef} aria-labelledby={titleId} dir="rtl"
+        onCancel={event => { event.preventDefault(); event.stopPropagation(); dismiss(); }}
+        className="m-auto h-dvh max-h-dvh w-full max-w-none overflow-hidden bg-white p-0 text-slate-900 backdrop:bg-slate-950/55 open:flex open:flex-col sm:h-[min(54rem,calc(100dvh-2rem))] sm:w-[calc(100%_-_2rem)] sm:max-w-4xl sm:rounded-2xl sm:border sm:border-slate-200 sm:shadow-2xl">
+        <header className="shrink-0 border-b border-slate-200 p-3 sm:p-4">
+            <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                    <h2 id={titleId} className="text-base font-extrabold leading-7 sm:text-lg">{rejecting ? 'رد کالا و بازگشت به تأمین‌کننده' : 'بازبینی کالا'}</h2>
+                    {title && <p title={title} className="line-clamp-2 text-sm font-medium leading-6 text-slate-700 [overflow-wrap:anywhere]">{title}</p>}
+                </div>
+                <button type="button" disabled={!!action} onClick={dismiss} className={reviewButton}
+                    aria-label={rejecting ? 'بازگشت به بازبینی' : 'بستن پنجره بازبینی'}>{rejecting ? 'بازگشت' : 'بستن'}</button>
             </div>
-            <button type="button" onClick={onClose} aria-label="بستن پنجره بازبینی" className="shrink-0 min-h-11 rounded-lg border px-3 py-2 text-sm">بستن</button>
-        </div>
-        {contextRows.length > 0 && <dl className="grid grid-cols-1 gap-x-4 gap-y-1 rounded-xl bg-slate-50 p-3 text-xs leading-7 sm:grid-cols-2">
-            {contextRows.map(([k, v]) => <div key={k} className="flex gap-1.5"><dt className="shrink-0 font-bold text-slate-500">{k}:</dt><dd className="min-w-0 break-words font-bold text-slate-800">{v}</dd></div>)}
-        </dl>}
-    </header><div className="overflow-auto p-4 space-y-4 sm:p-5">
- {loading && <p role="status" className="rounded-xl bg-slate-50 p-3 text-sm leading-7">در حال دریافت فیلدهای بازبینی…</p>}
- {saving && <p role="status" className="rounded-xl bg-blue-50 p-3 text-sm leading-7 text-blue-800">در حال ذخیرهٔ تصمیم‌ها…</p>}
- {proposal && !refs.refsReady && !refs.refsError && <p role="status" className="text-xs text-slate-400">در حال دریافت نام دسته‌ها و مرجع‌ها…</p>}
- {proposal && refs.refsError && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-7 text-amber-800">مرجع‌ها (دسته، موضوع، ویژگی) بارگذاری نشد؛ برخی نام‌ها ممکن است به‌صورت خام نمایش داده شوند.</p>}
- {proposal?.productType && <div className="rounded-xl bg-slate-50 p-3 text-sm leading-7"><strong>خلاصهٔ محاسبه‌شده از تنوع‌ها</strong><p>مجموع موجودی: {toPersianDigits(proposal.stock ?? 0)} — قیمت مبنا: {proposal.supplierBaseCost != null ? `${formatPrice(Number(proposal.supplierBaseCost))} تومان` : 'ثبت نشده'}</p><p>قیمت و موجودی را در ردیف هر تنوع بررسی کنید؛ جمع‌ها خودکار به‌روز می‌شوند.</p>{proposal.variants?.map((v: any, i: number) => <p key={i}>تنوع {i + 1}: {skuReviewLabel(proposal, v)}</p>)}</div>}
- {!loading && !loadError && fields.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2">
-    <p role="status" className="text-sm leading-7"><strong>{toPersianDigits(approvedCount)}</strong> تأییدشده • <strong>{toPersianDigits(pendingCount)}</strong> در انتظار بررسی • <strong>{toPersianDigits(rejectedCount)}</strong> ردشده • مجموع {toPersianDigits(fields.length)}</p>
-    <button type="button" className="min-h-11 rounded-lg border px-3 py-2 text-xs font-bold" onClick={()=>setShowApproved(v=>!v)}>{showApproved ? 'نمایش فقط موارد نیازمند بررسی' : `مشاهده موارد تأییدشده (${toPersianDigits(approvedCount)})`}</button>
- </div>}
- {loadError ? <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm leading-7 text-rose-800"><p className="font-bold">بارگذاری بازبینی ناموفق بود.</p><p>{loadError}</p><button type="button" onClick={() => void load()} className="min-h-11 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">تلاش مجدد</button></div> : <>
-    {visibleImageFields.length > 0 && <section aria-label="تصاویر"><h3 className="sticky top-0 z-10 -mx-1 bg-white/95 py-2 text-sm font-bold text-slate-800">تصاویر <span className="font-normal text-slate-400">({toPersianDigits(visibleImageFields.length)} تصویر)</span></h3><ImageGallery fields={visibleImageFields} refs={refs} title={title} disabled={saving || proposal?.status === 'approved'} onDecision={setFieldDecision} onReason={setFieldReason} />{visibleImageFields.filter(f => !imageFieldUrl(f, refs)).map(f => <div key={f.field_key} className="mt-3"><p className="mb-2 text-xs leading-7 text-slate-500">تصویر «{fieldCaption(f, refs)}» قابل نمایش نیست؛ با این حال برای انتشار باید برای آن تصمیم بگیرید.</p>{renderFieldCard(f)}</div>)}</section>}
-    {FIELD_SECTION_ORDER.filter(s => s.id !== 'images').map(section => {
-        const sectionFields = visibleFields.filter(f => fieldSection(f.field_key).id === section.id);
-        if (!sectionFields.length) return null;
-        const secApproved = sectionFields.filter(f => f.decision === 'approved').length;
-        const secRejected = sectionFields.filter(f => f.decision === 'rejected').length;
-        return <section key={section.id} aria-label={section.title}>
-            <h3 className="sticky top-0 z-10 -mx-1 bg-white/95 py-2 text-sm font-bold text-slate-800">{section.title} <span className="font-normal text-slate-400">({toPersianDigits(sectionFields.length)} مورد{sectionFields.length - secApproved - secRejected > 0 ? `، ${toPersianDigits(sectionFields.length - secApproved - secRejected)} در انتظار` : ''}{secRejected > 0 ? `، ${toPersianDigits(secRejected)} ردشده` : ''})</span></h3>
-            <div className="space-y-3">{sectionFields.map(renderFieldCard)}</div>
-        </section>;
-    })}
-    {!loading && fields.length > 0 && visibleFields.length === 0 && <p className="rounded-xl bg-emerald-50 p-4 text-sm leading-7 text-emerald-800">همهٔ موارد تأیید شده‌اند. برای دیدن آن‌ها «مشاهده موارد تأییدشده» را بزنید.</p>}
- </>}
- </div><footer className="border-t bg-white p-3 sm:p-4">
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-xs leading-7 text-slate-500">
-            <p><strong className="text-slate-800">{toPersianDigits(approvedCount)} از {toPersianDigits(fields.length)}</strong> مورد تأیید شده</p>
-            {remaining > 0 && !loadError && <p>برای انتشار، {toPersianDigits(remaining)} مورد دیگر باید تأیید شود.</p>}
-            {remaining === 0 && fields.length > 0 && !loadError && <p className="font-bold text-emerald-700">همهٔ موارد تأیید شده‌اند — آمادهٔ انتشار است.</p>}
-            {!dirty.length && !loadError && fields.length > 0 && <p>تغییری برای ذخیره نیست.</p>}
-            {dirty.length > 0 && <p>{toPersianDigits(dirty.length)} تغییر ذخیره‌نشده دارید.</p>}
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-            <button disabled={saving || loading || !dirty.length || proposal?.status === 'approved' || !!loadError || !fields.length} onClick={() => void save()} className="min-h-11 rounded-lg bg-slate-800 px-4 py-3 text-sm font-bold text-white disabled:opacity-40">ذخیره / ارسال موارد ردشده</button>
-            <button disabled={saving || loading || proposal?.status === 'approved' || !!loadError || !fields.length || !allFieldsApproved(fields)} onClick={() => void save(true)} className="min-h-11 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-40">تأیید نهایی و انتشار</button>
-        </div>
-    </div>
- </footer></section></div>;
+        </header>
+
+        {rejecting ? <>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+                <p className="text-sm leading-7 text-slate-700">دلیل رد در اعلان و فهرست پیشنهادهای تأمین‌کننده نمایش داده می‌شود.</p>
+                <label className="block text-sm font-bold">دلیل رد کالا
+                    <textarea autoFocus aria-label="دلیل رد کالا" disabled={!!action} required value={rejectReason} rows={4}
+                        onChange={event => setRejectReason(event.target.value)} placeholder="مواردی که باید اصلاح شوند را بنویسید"
+                        className="mt-1 block w-full rounded-xl border border-slate-300 p-3 text-base font-normal leading-7 focus-visible:outline-2 focus-visible:outline-brand sm:text-sm" />
+                </label>
+            </div>
+            <footer className="shrink-0 space-y-2 border-t border-slate-200 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                {errorMessage}
+                {action && <p role="status" className="text-xs font-bold text-slate-700">{progress[action]}</p>}
+                <div className="flex flex-wrap gap-2">
+                    <button type="button" disabled={!!action || !rejectReason.trim()} onClick={() => void reject()}
+                        className="min-h-11 flex-1 rounded-xl bg-rose-700 px-4 py-2 text-sm font-bold text-white hover:bg-rose-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-700 disabled:opacity-50 sm:flex-none">تأیید رد کالا</button>
+                    <button type="button" disabled={!!action} onClick={dismiss} className={reviewButton}>انصراف</button>
+                </div>
+            </footer>
+        </> : <>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-slate-50 p-3 sm:p-4">
+                {loading && <p role="status" className="rounded-xl bg-white p-3 text-sm leading-7">در حال دریافت فیلدهای بازبینی…</p>}
+                {loadError && <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm leading-7 text-rose-900">
+                    <p className="font-bold">بارگذاری بازبینی ناموفق بود.</p>
+                    <p>{loadError}</p>
+                    <button type="button" onClick={() => void load()} className={reviewButton}>تلاش مجدد</button>
+                </div>}
+                {readOnly && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold leading-6 text-emerald-800">این کالا تأیید و منتشر شده است.</p>}
+                {proposal?.rejection_reason && proposal.status === 'rejected' && <p className="rounded-xl bg-rose-50 p-3 text-sm leading-6 text-rose-900">دلیل رد کالا {proposal.rejection_reason}</p>}
+                {contextRows.length > 0 && <dl className="grid gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 sm:grid-cols-2">
+                    {contextRows.map(([label, value]) => <div key={label} className="flex min-w-0 items-start gap-2">
+                        <dt className="shrink-0 text-slate-600">{label}</dt>
+                        <dd className="min-w-0 font-semibold [overflow-wrap:anywhere]" dir="auto">{value}</dd>
+                    </div>)}
+                </dl>}
+                {proposal && !refs.refsReady && !refs.refsError && <p role="status" className="text-xs text-slate-600">در حال دریافت نام دسته‌ها و مرجع‌ها…</p>}
+                {proposal && refs.refsError && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-6 text-amber-900">نام بعضی دسته‌ها و ویژگی‌ها بارگذاری نشد.</p>}
+                {proposal?.productType && <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6">
+                    <p className="font-bold">قیمت و موجودی</p>
+                    <p>مجموع موجودی {toPersianDigits(proposal.stock ?? 0)} · قیمت مبنا {proposal.supplierBaseCost != null ? formatPrice(Number(proposal.supplierBaseCost)) + ' تومان' : 'ثبت نشده'}</p>
+                    {proposal.variants?.map((variant: any, index: number) => <p key={variant.id ?? index} className="[overflow-wrap:anywhere]">تنوع {toPersianDigits(index + 1)} · {skuReviewLabel(proposal, variant)}</p>)}
+                </div>}
+                {(!loading && !loadError && fields.length > 0 || canRejectProduct) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        {fields.length > 0 && <p className="text-sm leading-6 text-slate-700">{toPersianDigits(pendingCount)} در انتظار · {toPersianDigits(rejectedCount)} نیازمند اصلاح</p>}
+                        {!readOnly && baseline.some(field => field.decision === 'approved') && <button type="button" aria-pressed={showApproved}
+                            onClick={() => setShowApproved(previous => !previous)} className={reviewButton}>
+                            {showApproved ? 'پنهان کردن تأییدشده‌ها' : 'نمایش تأییدشده‌ها'}
+                        </button>}
+                        {canRejectProduct && <button type="button" disabled={!!action} onClick={() => { setActionError(''); setRejecting(true); }}
+                            className="min-h-11 rounded-xl px-3 text-sm font-bold text-rose-800 hover:bg-rose-50 focus-visible:outline-2 focus-visible:outline-rose-700 disabled:opacity-50">رد کل کالا</button>}
+                    </div>
+                )}
+                {!loading && !loadError && groups.map(group => (
+                    <section key={group.id} aria-label={group.title} className="space-y-2">
+                        <h3 className="sticky top-0 z-10 bg-slate-50 py-2 text-sm font-extrabold">{group.title} <span className="font-normal text-slate-600">({toPersianDigits(group.fields.length)})</span></h3>
+                        {group.id === 'images' ? <>
+                            <ImageGallery fields={group.fields} refs={refs} title={title || ''} disabled={!!action} readOnly={readOnly}
+                                onDecision={setFieldDecision} onReason={setFieldReason} />
+                            {group.fields.filter(field => !imageFieldUrl(field, refs)).map(renderFieldCard)}
+                        </> : group.fields.map(renderFieldCard)}
+                    </section>
+                ))}
+                {!loading && !loadError && !fields.length && <p className="rounded-xl bg-white p-3 text-sm text-slate-700">فیلدی برای بازبینی ثبت نشده است.</p>}
+                {!loading && publishReady && !visibleFields.length && <p className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">همهٔ موارد تأیید شده‌اند.</p>}
+            </div>
+            {!readOnly && !loading && !loadError && fields.length > 0 && <footer className="shrink-0 space-y-2 border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4">
+                {errorMessage}
+                {action && <p role="status" className="text-xs font-bold text-slate-700">{progress[action]}</p>}
+                {notice && <p role="status" className="text-sm font-bold text-emerald-800">{notice}</p>}
+                <div className="flex flex-wrap items-center justify-between gap-x-2 text-xs leading-5 text-slate-700">
+                    <p><strong>{toPersianDigits(approvedCount)} از {toPersianDigits(fields.length)}</strong> مورد تأیید شده</p>
+                    {dirty.length > 0 && <p>{toPersianDigits(dirty.length)} تغییر ذخیره‌نشده</p>}
+                    {rejectedWithoutReason && <p className="font-bold text-rose-800">برای موارد ردشده دلیل بنویسید.</p>}
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+                    <button type="button" disabled={unavailable || !dirty.length || rejectedWithoutReason}
+                        onClick={() => void save()} className={reviewButton}>{rejectedCount ? 'ارسال برای اصلاح' : 'ذخیره تصمیم‌ها'}</button>
+                    <button type="button" disabled={unavailable || !publishReady}
+                        onClick={() => void save(true)} className={reviewPrimary}>تأیید نهایی و انتشار</button>
+                </div>
+            </footer>}
+        </>}
+    </dialog>;
 }
 export function SupplierGranularFeedback({ proposal, fields: initial, onClose, onResubmitted }: {
     proposal: any;

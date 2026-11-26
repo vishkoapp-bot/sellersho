@@ -71,6 +71,7 @@ export const AppContent: React.FC = () => {
   } = useStore();
 
   const isProtectedView = ['seller_dashboard', 'supplier_dashboard', 'warehouse_panel', 'admin_panel'].includes(activeView);
+  const isWarehouseView = activeView === 'warehouse_panel';
   const isOnboardingActive = isSellerModalOpen && !isProtectedView;
   const routedIdentity = useRef<string | null>(null);
   useEffect(() => {
@@ -83,6 +84,9 @@ export const AppContent: React.FC = () => {
     const activeViewAuthorized = authorizedViews.includes(activeView as any);
     if (identityChanged || (isProtectedView && !activeViewAuthorized)) {
       routedIdentity.current = identity;
+      // The warehouse entry form explains a missing assignment and lets the
+      // operator use another number. Its guard still controls the workspace.
+      if (activeView === 'warehouse_panel') return;
       if (activeView === 'dashboard' || (identityChanged && activeViewAuthorized)) return;
       setActiveView(identityChanged ? requiredView : (authorizedViews[0] || requiredView));
     }
@@ -164,7 +168,7 @@ export const AppContent: React.FC = () => {
       />
     );
   }
-  if (currentUser && !isOnboardingActive) {
+  if (currentUser && !isOnboardingActive && !isWarehouseView) {
     const panel = panelForRole(currentUser.role);
     const ready = panel === 'customer' ||
       (panel === 'supplier_dashboard' && supplierSession) ||
@@ -178,7 +182,7 @@ export const AppContent: React.FC = () => {
     }
   }
   const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
-  if (currentUser && isProtectedView && !authorizedPanels.includes(activeView as any)) {
+  if (currentUser && isProtectedView && !isWarehouseView && !authorizedPanels.includes(activeView as any)) {
     return <div role="status">در حال انتقال به پنل مجاز…</div>;
   }
 

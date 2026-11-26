@@ -8,7 +8,7 @@ export function PanelWorkspace<Section extends string>({
   onOpenNotifications, unreadCount, formatCount, mainRef, headerActions, sidebarActions,
   mobileActions, modal, logoutLabel = 'خروج از حساب', children,
 }: {
-  id: 'seller' | 'supplier' | 'warehouse';
+  id: 'seller' | 'supplier' | 'warehouse' | 'admin';
   label: string;
   name: string;
   title: string;

@@ -234,9 +234,8 @@ func normalizeSearchTermForMatch(term string) string {
 // query still searches normally.
 const minSearchLogTermRunes = 2
 
-// normalizePersianDigits converts Persian and Arabic-Indic digits to
-// Latin digits. Used only for parsing spn- numbers (D46), never to
-// rewrite slugs or search terms.
+// normalizePersianDigits converts Persian and Arabic-Indic digits to Latin
+// digits in typed identifiers such as spn- numbers and order references.
 func normalizePersianDigits(s string) string {
 	var b strings.Builder
 	for _, r := range s {

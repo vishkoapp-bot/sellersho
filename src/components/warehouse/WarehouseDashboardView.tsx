@@ -45,7 +45,7 @@ export function WarehouseDashboardView({ onBackToCustomerSite }: { onBackToCusto
   const { warehouseSession, logoutWarehouse, toPersianDigits } = useStore();
   const [location, setLocation] = useState(readWarehouseLocation);
   const mainRef = useRef<HTMLElement>(null);
-  const scope = warehouseSession ? `${warehouseSession.staffId}:${warehouseSession.warehouseId}` : undefined;
+  const scope = warehouseSession ? `${warehouseSession.staffId}:${warehouseSession.role}` : undefined;
   const { section } = location;
   const activeTitle = warehouseSections.find(item => item.id === section)?.label ?? 'پیشخوان انبار';
   const handoff = scope && location.scope === scope ? location.handoff : undefined;

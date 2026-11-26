@@ -11,17 +11,6 @@ import {
 import type { AdminSupplierRow, SupplierDetail } from './AdminSuppliersTab';
 import { toPersianDigits } from '../../utils/formatters';
 
-// First coverage for the tab. Harness is tsx --test +
-// renderToStaticMarkup (no jsdom); the container's useStore/useToast
-// hooks throw outside providers, so rendering tests target the
-// presentational card + detail modal with fixture data, and decision
-// tests target the exported pure helpers. What they cannot cover —
-// the container wiring (card click fetching the detail, actions
-// reloading list + detail) — needs a DOM + act(), which this harness
-// cannot run. The click affordance itself IS asserted: the card root
-// carries role="button" + a «مشاهده جزئیات» aria-label, and the Eye
-// button carries the same label.
-
 const noop = () => {};
 const noopSupplier = (_s: AdminSupplierRow) => {};
 const noopId = (_id: string) => {};
@@ -75,16 +64,8 @@ const cardHtml = (r: AdminSupplierRow = row()) =>
   renderToStaticMarkup(
     <AdminSupplierCardView
       supplier={r}
-      hasDirectShip
-      busyId={null}
       toPersianDigits={toPersianDigits}
       onOpenDetail={noopSupplier}
-      onContract={noopSupplier}
-      onApprove={noopId}
-      onReject={noopSupplier}
-      onSuspend={noopSupplier}
-      onReactivate={noopId}
-      onToggleDirectShip={noopId}
     />,
   );
 
@@ -109,37 +90,43 @@ const detailHtml = (d: SupplierDetail = detail()) =>
     />,
   );
 
-it('card: fixed product-count label (no "تنوع"), enriched fields render', () => {
+it('card: labels the stored count as products and shows the status', () => {
   const html = cardHtml();
   assert.ok(html.includes('تعداد کالا در کاتالوگ'), 'card must label totalProducts as a product count');
   assert.ok(!html.includes('تعداد تنوع'), 'card must not call totalProducts a variant count');
-  assert.ok(html.includes('تأمین‌کنندهٔ لوازم خانگی'), 'description renders');
+  assert.ok(html.includes('تأییدشده'), 'status renders');
   assert.ok(html.includes('برگزیده'), 'badge renders');
-  assert.ok(html.includes('سود پیش‌فرض توافق'), 'markup renders');
-  assert.ok(html.includes('٪۲۰'), 'percent markup renders with Persian digits');
-  assert.ok(html.includes('اتصال تاپین'), 'tapin chip renders');
-  assert.ok(html.includes('متصل'), 'tapin connected renders');
-  assert.ok(html.includes('تأییدکننده'), 'approvedBy renders');
-  assert.ok(html.includes('تاریخ ثبت'), 'createdAt renders');
 });
 
-it('card: whole card is clickable and has an Eye detail button', () => {
+it('card: exposes one native detail button', () => {
   const html = cardHtml();
-  assert.ok(html.includes('role="button"'), 'card root must be a button role');
-  assert.ok(html.includes('cursor-pointer'), 'card root must look clickable');
-  assert.ok(html.includes('aria-label="مشاهده جزئیات تأمین‌کننده الف"'), 'card must expose a detail aria-label');
-  assert.ok(html.includes('title="مشاهده جزئیات"'), 'Eye button must be present');
+  assert.equal((html.match(/<button\b/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /role="button"/);
+  assert.match(html, /<button[^>]+aria-haspopup="dialog"[^>]+aria-label="مشاهده جزئیات تأمین‌کننده الف"/);
 });
 
-it('card: pending supplier shows approve/reject, approved shows suspend', () => {
-  assert.ok(cardHtml(row({ approvalStatus: 'pending_approval' })).includes('تأیید'), 'pending card shows approve');
-  assert.ok(cardHtml(row({ approvalStatus: 'pending_approval' })).includes('رد'), 'pending card shows reject');
-  assert.ok(cardHtml(row({ approvalStatus: 'approved' })).includes('تعلیق'), 'approved card shows suspend');
-  assert.ok(cardHtml(row({ approvalStatus: 'suspended' })).includes('فعال‌سازی مجدد'), 'suspended card shows reactivate');
+it('detail: exposes only the review actions available for the supplier status', () => {
+  const actions: Record<string, string[]> = {
+    pending_approval: ['تأیید تأمین‌کننده', 'رد درخواست'],
+    approved: ['تعلیق تأمین‌کننده'],
+    suspended: ['فعال‌سازی مجدد'],
+    rejected: [],
+  };
+  const allActions = Object.values(actions).flat();
+  for (const [approvalStatus, available] of Object.entries(actions)) {
+    const html = detailHtml(detail({ supplier: row({ approvalStatus }) }));
+    for (const label of allActions) {
+      assert.equal(html.includes(`>${label}</button>`), available.includes(label), `${approvalStatus} ${label}`);
+    }
+  }
 });
 
 it('detail modal: owner, computed counts, warehouses, finance in Toman', () => {
   const html = detailHtml();
+  assert.ok(html.includes('تأمین‌کنندهٔ لوازم خانگی'), 'description renders');
+  assert.ok(html.includes('سود پیش‌فرض توافق'), 'markup renders');
+  assert.ok(html.includes('٪۲۰'), 'percent markup renders with Persian digits');
+  assert.ok(html.includes('تأییدکننده'), 'approvedBy renders');
   assert.ok(html.includes('مالک الف'), 'owner name renders');
   assert.ok(html.includes('09120000001'), 'owner mobile renders');
   assert.ok(html.includes('تنوع کالا'), 'variants tile renders');

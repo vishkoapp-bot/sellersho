@@ -32,7 +32,7 @@ const PreviewSessions: React.FC = () => {
     if (!isMockMode()) return;
     setAdminSession({ token: 'preview-admin', username: 'preview-admin', fullName: 'مدیر پیش‌نمایش', role: 'super_admin', roleLabel: 'مدیر ارشد پلتفرم', loginAt: 'preview' });
     setSellerSession({ token: 'preview-seller', mobile: '09120000000', fullName: 'فروشنده نمایشی', status: 'active', storeId: 'store-bibi', loginAt: 'preview' });
-    setWarehouseSession({ token: 'preview-warehouse', staffId: 'preview-staff', staffName: 'سرپرست شیفت نمایشی', warehouseId: 'WH-TEH-CENTRAL', warehouseName: 'انبار مرکزی تهران (پیش‌نمایش)', role: 'supervisor', loginAt: 'preview' });
+    setWarehouseSession({ token: 'preview-warehouse', staffId: 'preview-staff', staffName: 'سرپرست شیفت نمایشی', role: 'supervisor', loginAt: 'preview' });
     const previewStore = mockStores.find((store) => store.id === 'store-bibi') || mockStores[0];
     setCurrentStore({ ...previewStore, activePlanId: 'vip', signedContractVersion: 2 });
   }, [setAdminSession, setSellerSession, setWarehouseSession, setCurrentStore]);

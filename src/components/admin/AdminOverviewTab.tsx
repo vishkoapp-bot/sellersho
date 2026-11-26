@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AdminFullReportModal } from './AdminFullReportModal';
 import { apiRequest, isMockMode } from '../../services/apiClient';
-import { ShieldCheck, TrendingUp, DollarSign, Store, Building2, Activity, FileSpreadsheet, AlertTriangle, CheckCircle2, ChevronLeft, ShoppingBag } from 'lucide-react';
+import { ShieldCheck, TrendingUp, DollarSign, Store, Building2, Activity, FileSpreadsheet, AlertTriangle, CheckCircle2, ChevronLeft, ShoppingBag, PackageCheck, Truck } from 'lucide-react';
+import { adminSectionHref } from './AdminNavigation';
 
 interface Props {
   onNavigateTab: (tab: string) => void;
@@ -82,6 +83,12 @@ const SEVERITY_STYLES: Record<string, { bar: string; chip: string; text: string 
   medium: { bar: 'bg-amber-500', chip: 'bg-amber-50 border-amber-200', text: 'text-amber-900' },
   low: { bar: 'bg-sky-500', chip: 'bg-sky-50 border-sky-200', text: 'text-sky-900' },
 };
+
+const everydayTasks = [
+  { section: 'catalog', label: 'بررسی کالاها', hint: 'مشاهدهٔ پیشنهادها و ثبت نتیجهٔ بررسی', Icon: PackageCheck },
+  { section: 'suppliers', label: 'مدیریت تأمین‌کنندگان', hint: 'بررسی درخواست‌ها و وضعیت همکاری', Icon: Building2 },
+  { section: 'orders', label: 'رهگیری سفارش‌ها', hint: 'یافتن سفارش و دیدن وضعیت ارسال آن', Icon: Truck },
+] as const;
 
 // Live line/bar charts (Wn / Dn in the live bundle, viewBox "0 0 100 32").
 // The chart geometry below reproduces their math; the surrounding labels
@@ -300,72 +307,42 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
 
   return (
     <div className="space-y-4 pb-6">
-      {/* Live intro banner text (verbatim). The live Ce banner also carries a
-          help popover (helpTitle/helpText); no shared Ce component exists in
-          the candidate, so only the text is reproduced here — see report. */}
-      <p className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4 text-[11px] text-slate-600 leading-6">
-        این صفحه اولین جایی است که هر روز نگاه می‌کنی: امروز چقدر فروخته‌ای، چقدر سود کرده‌ای و چه کارهایی منتظر تصمیم توست. از بالا به پایین بخوان؛ اول کارهای فوری، بعد عددهای امروز.
-      </p>
-
-      {/* Header card + server-jobs strip */}
-      <div className="bg-gradient-to-l from-slate-950 via-slate-900 to-brand-deep rounded-2xl p-4 text-white shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-brand-deep/30 border border-brand/40 flex items-center justify-center text-brand">
-              <ShieldCheck className="w-5 h-5" strokeWidth={1.5} />
-            </div>
-            <div>
-              <h2 className="text-xs font-bold flex items-center gap-1.5">
-                <span>نمای کلی سلرشو</span>
-                {hasAnyError ? (
-                  <span title={`خطا در دریافت: ${failedKeys.join('، ')}`} className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">خطا در دریافت برخی داده‌ها</span>
-                ) : showFigure ? (
-                  <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold">سایت در حال کار است</span>
-                ) : (
-                  <span className="text-[9px] bg-white/10 text-slate-300 border border-white/20 px-1.5 py-0.5 rounded-full font-bold">در حال بررسی…</span>
-                )}
-              </h2>
-              <span className="text-[11px] text-slate-300 block mt-1 leading-5">فروش، سود و کارهای منتظر تو — همه در یک نگاه</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-white/10 text-[11px] text-slate-300">
-          <div>
-            سفارش‌های امروز: <strong className="text-white">{toPersianDigits(todayOrders)} عدد</strong>
-          </div>
-          <div className="flex items-center gap-1">
-            <span>کارهای خودکار سرور:</span>
-            <strong className={jobsHaveError ? 'text-rose-400' : 'text-emerald-400'}>
-              {jobsStatus()} <ErrorBadge errorKey="jobs" />
-            </strong>
-            {jobs !== null && jobs.length > 0 && (
-              <button onClick={() => onNavigateTab('jobs-queue')} className="min-h-[40px] px-2 flex items-center text-brand underline underline-offset-2 text-[10px] font-bold">
-                دیدن جزئیات
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
+      <nav aria-label="مسیرهای اصلی مدیریت" className="grid gap-3 sm:grid-cols-3">
+        {everydayTasks.map(({ section, label, hint, Icon }) => (
+          <a key={section} href={adminSectionHref(section)} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            onNavigateTab(section);
+          }} className="flex min-w-0 items-center gap-2.5 rounded-2xl border border-slate-200 bg-white p-3 text-start hover:border-brand-border hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand sm:flex-wrap sm:p-4">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand-deep"><Icon className="size-5" aria-hidden="true" /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-extrabold leading-6 text-slate-900">{label}</span>
+              <span className="block text-xs leading-5 text-slate-600">{hint}</span>
+            </span>
+            <ChevronLeft className="size-4 shrink-0 text-brand-deep" aria-hidden="true" />
+          </a>
+        ))}
+      </nav>
       {/* Waiting tasks */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
             <AlertTriangle className="w-4 h-4 text-amber-500" strokeWidth={1.5} />
-            <span title="هر ردیف یک صفِ کاری است؛ رویش بزنی، درست می‌روی به همان بخشی که باید کار را انجام دهی. ردیف قرمز فوری‌تر از زرد است.">کارهایی که منتظر توست</span>
+            <span >کارهای نیازمند رسیدگی</span>
             <ErrorBadge errorKey="alerts" />
           </h3>
           {sortedAlerts.length > 0 && (
             <span className="text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-full px-2 py-0.5">{toPersianDigits(sortedAlerts.length)} مورد</span>
           )}
         </div>
-        {alerts === null ? (
-          <p className="text-[11px] text-slate-400 py-2 text-center">— در حال دریافت…</p>
+        {errors.alerts ? (
+          <p role="alert" className="py-2 text-sm text-rose-800">هشدارهای مدیریت دریافت نشدند.</p>
+        ) : alerts === null ? (
+          <p role="status" className="py-2 text-sm text-slate-600">در حال دریافت هشدارها…</p>
         ) : sortedAlerts.length === 0 ? (
           <div className="flex items-center gap-2 py-2 text-emerald-700">
             <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />
-            <p className="text-[11px] font-bold leading-6">همه‌چیز آرام است — هیچ کار فوری‌ای منتظر تو نیست.</p>
+            <p className="text-[11px] font-bold leading-6">کار فوری برای رسیدگی وجود ندارد.</p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -388,6 +365,28 @@ export const AdminOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
           </div>
         )}
       </div>
+
+      <section aria-label="خلاصهٔ عملکرد" className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 text-base font-extrabold text-slate-900">
+            <ShieldCheck aria-hidden="true" className="size-5 text-brand-deep" /> نمای کلی سلرشو
+          </h2>
+          {hasAnyError && <span title={`خطا در دریافت: ${failedKeys.join('، ')}`} className="rounded-lg bg-amber-50 px-2 py-1 text-xs font-bold text-amber-900">خطا در دریافت برخی داده‌ها</span>}
+        </div>
+        <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+          <div className="min-w-0 rounded-xl bg-slate-50 p-3">
+            <dt>سفارش‌های امروز</dt>
+            <dd className="mt-1 font-extrabold text-slate-900">{showFigure ? toPersianDigits(todayOrders) : '—'}</dd>
+          </div>
+          <div className="min-w-0 rounded-xl bg-slate-50 p-3">
+            <dt>عملیات خودکار سرور</dt>
+            <dd className={`mt-1 font-bold ${jobsHaveError ? 'text-rose-800' : 'text-slate-900'}`}>{jobsStatus()} <ErrorBadge errorKey="jobs" /></dd>
+            {jobs !== null && jobs.length > 0 && (
+              <button type="button" onClick={() => onNavigateTab('jobs-queue')} className="inline-flex min-h-11 items-center text-xs font-bold text-brand-deep underline underline-offset-4">دیدن جزئیات</button>
+            )}
+          </div>
+        </dl>
+      </section>
 
       {/* Four figure cards */}
       <div className="grid grid-cols-2 gap-2.5">

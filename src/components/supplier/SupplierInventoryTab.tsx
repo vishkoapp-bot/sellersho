@@ -347,6 +347,7 @@ export interface SupplierInventoryEditState {
 }
 
 export interface SupplierInventoryViewProps {
+  warehouseTools?: React.ReactNode;
   items: SupplierProductDto[];
   totalCount: number;
   locations: InventoryLocation[];
@@ -398,7 +399,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
     onSaveEdit, onCancelEdit, onOpenEdit, onOpenReturn, returning, returnVariants,
     returnQuantity, returnVariantId, returnMethod, returnReason, returnSaving,
     onReturnVariantChange, onReturnQuantityChange, onReturnMethodChange, onReturnReasonChange,
-    onSubmitReturn, onCancelReturn, returnableOf,
+    onSubmitReturn, onCancelReturn, returnableOf, warehouseTools,
   } = props;
   const [openedLocationDetails, setOpenedLocationDetails] = useState<Record<string, boolean>>({});
   const grouped = locations.reduce<Record<string, InventoryLocation[]>>((groups, location) => {
@@ -408,30 +409,13 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
 
   return (
     <div className="space-y-4 pb-6 sm:space-y-5">
-      <SupplierSectionHeading title="موجودی کالاها" description="موجودی آمادهٔ فروش را ببین یا کالا و تنوع موردنظر را برای اصلاح موجودی پیدا کن." icon={<Boxes />} />
-      <details className="rounded-2xl border border-slate-100 bg-white px-4 py-3 text-[11px] leading-relaxed text-slate-600">
-        <summary className="cursor-pointer font-bold text-slate-700">راهنمای موجودی</summary>
-        <p className="pt-2">اینجا برای هر کالا می‌بینی چند تا از آن کجاست: آماده فروش، کنار گذاشته برای سفارش، یا در راه انبار. موجودی را هم از همین‌جا عوض می‌کنی.</p>
-      </details>
-      {shareLoaded && shareData && Number.isFinite(shareData.centralUnits) && Number.isFinite(shareData.supplierUnits) && (
-        <div className="space-y-2 rounded-[22px] border border-[#e6e2f0] bg-white p-4 text-sm leading-6 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-extrabold text-[#261b41]">سهم انبار مرکزی</span>
-            <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">ارسال سریع</span>
-            {shareData.centralStockShare !== null && Number.isFinite(shareData.centralStockShare) ? (
-              <span className="font-extrabold text-slate-900 font-mono">{toPersianDigits(Math.round(shareData.centralStockShare * 100))}٪</span>
-            ) : (
-              <span className="text-slate-400">بدون موجودی قابل فروش</span>
-            )}
-          </div>
-          <p className="text-slate-500">{toPersianDigits(shareData.centralUnits)} واحد در انبار مرکزی • {toPersianDigits(shareData.supplierUnits)} واحد نزد شما</p>
-          <p className="font-bold text-emerald-800 text-[10px]">کالایی که در انبار مرکزی دپو شده باشد، با «ارسال سریع» فروش می‌رود و امتیازت بالاتر می‌رود.</p>
-        </div>
-      )}
-      <div className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+      <SupplierSectionHeading title="موجودی کالاها" description="موجودی آمادهٔ فروش را ببین و به‌روزرسانی کن." icon={<Boxes />} />
+      <div role="search" aria-label="جستجو و فیلتر موجودی" className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+        <label htmlFor="supplier-inventory-search" className="block text-sm font-bold text-[#261b41]">جستجوی موجودی</label>
         <div className="relative">
           <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-3.5 size-4 text-slate-500" />
           <input
+          id="supplier-inventory-search"
           type="search"
           aria-label="جستجوی موجودی"
           value={query}
@@ -454,15 +438,28 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
           ))}
         </div>
         {loading ? (
-          <p className="text-[10px] text-slate-400">در حال دریافت…</p>
+          <p className="text-xs text-slate-600">در حال دریافت…</p>
         ) : (
-          <p className="text-[10px] text-slate-400">نمایش {toPersianDigits(items.length)} از {toPersianDigits(totalCount)} کالا</p>
+          <p role="status" className="text-xs text-slate-600">نمایش {toPersianDigits(items.length)} از {toPersianDigits(totalCount)} کالا</p>
         )}
       </div>
       <SupplierResourceState loading={loading} error={error} retry={retry} />
+      {warehouseTools}
+      {shareLoaded && shareData && Number.isFinite(shareData.centralUnits) && Number.isFinite(shareData.supplierUnits) && (
+        <details className="rounded-2xl border border-brand-border bg-white px-4 text-sm leading-6">
+          <summary className="min-h-11 cursor-pointer rounded-lg py-3 font-bold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">
+            سهم انبار مرکزی <span className="ms-1 font-medium text-slate-600">{shareData.centralStockShare !== null && Number.isFinite(shareData.centralStockShare) ? `${toPersianDigits(Math.round(shareData.centralStockShare * 100))}٪` : '· بدون موجودی قابل فروش'}</span>
+          </summary>
+          <div className="space-y-1 pb-3 text-xs leading-6 text-slate-600">
+            <p>{toPersianDigits(shareData.centralUnits)} واحد در انبار مرکزی · {toPersianDigits(shareData.supplierUnits)} واحد نزد شما</p>
+            <p>کالای موجود در انبار مرکزی با «ارسال سریع» فروخته می‌شود.</p>
+          </div>
+        </details>
+      )}
       {returns.length > 0 && (
-        <section className="rounded-2xl border bg-white p-3 space-y-2">
-          <h3 className="text-xs font-bold">برگرداندن‌هایی که خواسته‌ای</h3>
+        <details className="rounded-2xl border border-brand-border bg-white px-4">
+          <summary className="min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-[#261b41] focus-visible:ring-2 focus-visible:ring-brand">درخواست‌های برگشت <span className="ms-1 font-medium text-slate-600">({toPersianDigits(returns.length)})</span></summary>
+          <div className="space-y-2 pb-3">
           {returns.map(item => {
             const product = productsById[item.productId];
             const title = item.productTitle || product?.title || 'کالا';
@@ -482,7 +479,8 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               </div>
             );
           })}
-        </section>
+          </div>
+        </details>
       )}
       {items.length === 0 && !loading && !error && (
         <SupplierEmptyState icon={<Boxes />} title={query.trim() ? 'کالایی با این اسم پیدا نشد' : statusFilter !== 'all' ? 'کالایی با این وضعیت نیست' : 'هنوز کالای تأییدشده‌ای نداری'}
@@ -500,7 +498,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
         const unreconciled = itemLocations.filter(location => !location.reconciled).reduce((sum, location) => sum + location.quantity, 0);
         const variants = item.schemaVersion === 2 ? variantSellableRows(locations, item.id) : [];
         return (
-          <section key={item.id} id={`inventory-${item.id}`} className="scroll-mt-24 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+          <article key={item.id} id={`inventory-${item.id}`} aria-labelledby={`inventory-title-${item.id}`} className="scroll-mt-24 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
             <div className="flex gap-3">
               {item.imageUrl ? (
                 <img src={item.imageUrl} alt="" width={48} height={48} loading="lazy" className="size-12 shrink-0 rounded-xl border border-[#e6e2f0] object-cover" />
@@ -509,7 +507,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-start gap-2">
-                  <h3 className="min-w-0 break-words text-sm font-extrabold leading-6 text-[#261b41]">{item.title}</h3>
+                  <h3 id={`inventory-title-${item.id}`} className="min-w-0 break-words text-base font-extrabold leading-6 text-[#261b41]">{item.title}</h3>
                   <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STOCK_STATUS_PILL[status]}`}>{STOCK_STATUS_LABEL[status]}</span>
                 </div>
                 <p className="break-all text-xs text-slate-600">کد کالا: {item.id}{item.categorySlug ? ` · ${item.categorySlug}` : ''}</p>
@@ -517,13 +515,25 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
               </div>
               <div className="shrink-0 rounded-xl bg-[#f4effa] px-2.5 py-2 text-center">
                 <p className={`text-xl font-extrabold tabular-nums leading-6 ${status === 'out' ? 'text-rose-600' : status === 'low' ? 'text-amber-600' : 'text-slate-900'}`}>{toPersianDigits(sellable)}</p>
-                <p className="text-[10px] text-slate-400">آماده فروش</p>
+                <p className="text-xs text-slate-600">آماده فروش</p>
               </div>
             </div>
+            <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+              <button type="button" disabled={saving} onClick={() => onOpenEdit(item)}
+                className="min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+                عوض‌کردن موجودی
+              </button>
+              <button type="button" onClick={() => onOpenReturn(item)}
+                className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-brand">
+                برگرداندن کالا
+              </button>
+            </div>
             {item.schemaVersion === 2 && variants.length > 0 && (
-              <ul className="divide-y divide-slate-50 rounded-xl border border-slate-100">
+              <details open={query.trim() ? true : undefined} className="rounded-xl bg-slate-50 px-3">
+                <summary className="min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">موجودی تنوع‌ها ({toPersianDigits(variants.length)})</summary>
+                <ul className="mb-3 divide-y divide-slate-100 rounded-xl border border-slate-100 bg-white">
                 {variants.map(row => (
-                  <li key={row.variantId} className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5 text-[11px]">
+                  <li key={row.variantId} className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5 text-xs">
                     <span className="min-w-0 flex-1 font-bold text-slate-700">{row.label}</span>
                     <span className="text-slate-500">آماده فروش: <b className="text-slate-800">{toPersianDigits(row.sellable)}</b></span>
                     <button
@@ -536,18 +546,19 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                     </button>
                   </li>
                 ))}
-              </ul>
+                </ul>
+              </details>
             )}
             {item.schemaVersion === 2 && variants.length === 0 && (
-              <p className="text-[10px] leading-relaxed text-slate-400">هنوز تنوعی از این کالا در انبار ثبت نشده؛ با «عوض‌کردن موجودی» تنوع را انتخاب کن.</p>
+              <p className="text-xs leading-6 text-slate-600">برای انتخاب تنوع، «عوض‌کردن موجودی» را بزن.</p>
             )}
-            <details className="rounded-xl bg-slate-50 px-3 py-2" onToggle={event => {
+            <details className="rounded-xl bg-slate-50 px-3" onToggle={event => {
               if (event.currentTarget.open && !openedLocationDetails[item.id]) {
                 setOpenedLocationDetails(previous => ({ ...previous, [item.id]: true }));
               }
             }}>
-              <summary className="cursor-pointer text-[11px] font-bold text-slate-600">جزئیات وضعیت انبار</summary>
-              <div className="grid grid-cols-2 gap-2 pt-2 text-xs text-slate-600 sm:grid-cols-3">
+              <summary className="min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">جزئیات وضعیت انبار</summary>
+              <div className="grid grid-cols-2 gap-2 pb-3 text-xs text-slate-600 sm:grid-cols-3">
                 <span className="font-bold text-emerald-700">آماده فروش: <b>{toPersianDigits(sums.sellable || 0)}</b></span>
                 <span>کنار گذاشته برای سفارش: <b>{toPersianDigits(sums.sales_reserved || 0)}</b></span>
                 <span>درخواست برگشت: <b>{toPersianDigits(sums.return_requested || 0)}</b></span>
@@ -556,7 +567,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                 <span>هنوز شمرده نشده: <b>{toPersianDigits(unreconciled)}</b></span>
               </div>
               {itemLocations.map(location => (
-                <div key={location.balanceId || `${location.locationKey}-${location.status}-${location.variantId || 'unallocated'}`} className="pt-1 text-[10px] text-slate-500">
+                <div key={location.balanceId || `${location.locationKey}-${location.status}-${location.variantId || 'unallocated'}`} className="pb-2 text-xs text-slate-600">
                   <p>{supplierInventoryLabel(location)} · {location.locationKey} · {STATUS_LABELS[location.status] || location.status} · {toPersianDigits(location.quantity)} عدد {location.reconciled ? '' : '· انبار هنوز ثبت نکرده'}</p>
                   {location.allocation !== 'unallocated' && location.balanceId
                     ? <InventoryLotUnits balanceId={location.balanceId} enabled={!!openedLocationDetails[item.id]} />
@@ -564,24 +575,7 @@ export const SupplierInventoryView: React.FC<SupplierInventoryViewProps> = (prop
                 </div>
               ))}
             </details>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => onOpenEdit(item)}
-                className="min-h-11 flex-1 rounded-xl bg-brand-soft px-3 py-2 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
-              >
-                عوض‌کردن موجودی
-              </button>
-              <button
-                type="button"
-                onClick={() => onOpenReturn(item)}
-                className="min-h-11 flex-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 focus-visible:ring-2 focus-visible:ring-amber-700"
-              >
-                برگرداندن کالا
-              </button>
-            </div>
-          </section>
+          </article>
         );
       })}
       {editing && (
@@ -856,9 +850,11 @@ const newUuid = (): string => {
   return (
     <div className="space-y-3">
       {retiredPrintedCodes.length > 0 && <RetiredPrintedCodesPanel codes={retiredPrintedCodes} onAcknowledge={() => setRetiredPrintedCodes([])} />}
-      <SupplierVariantWorkspace session={supplierSession} onChanged={retryAll} />
-      <SupplierStorageAging />
       <SupplierInventoryView
+      warehouseTools={<>
+        <SupplierVariantWorkspace session={supplierSession} onChanged={retryAll} />
+        <SupplierStorageAging />
+      </>}
       items={items}
       totalCount={allProducts.length}
       locations={locations}

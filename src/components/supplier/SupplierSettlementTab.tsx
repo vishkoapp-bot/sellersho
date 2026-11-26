@@ -6,7 +6,7 @@ import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { isValidIranianSheba } from '../../utils/validators';
 import { useSupplierResource } from './useSupplierResource';
-import { SupplierEmptyState, SupplierResourceState } from './SupplierResourceState';
+import { SupplierResourceState } from './SupplierResourceState';
 import { AccountStatement } from '../common/AccountStatement';
 
 // Live settlement tab (on): supplier balance, manual bank-transfer
@@ -36,6 +36,8 @@ const statusLabel = (status: string): string => {
     default: return status;
   }
 };
+
+const summaryClass = 'min-h-11 cursor-pointer rounded-md py-2.5 text-sm font-bold focus-visible:ring-2';
 
 export const SupplierSettlementTab: React.FC = () => {
   const { formatPrice, toPersianDigits } = useStore();
@@ -92,16 +94,21 @@ export const SupplierSettlementTab: React.FC = () => {
   };
 
   const b = balance.data;
-  const returnCharges = b?.returnCharges ?? 0;
-  const returnClawbacks = b?.returnClawbacks ?? 0;
-  const adjustments = b?.adjustments ?? 0;
-  const storageFees = b?.storageFees ?? 0;
   const charges = fees.data?.charges ?? [];
+  const breakdown = b ? [
+    { label: 'درآمد قطعی', value: b.earned, detail: 'مبلغ پایهٔ سفارش‌های پرداخت‌شده و تحویل‌شده.' },
+    { label: 'برداشت‌های در انتظار بررسی', value: b.reserved, detail: 'این مبلغ تا مشخص‌شدن نتیجه از موجودی قابل برداشت کم می‌شود.' },
+    { label: 'برداشت‌های تأییدشده و واریزشده', value: b.paid, detail: 'وضعیت انتقال هر درخواست را در سوابق برداشت ببین.' },
+    { label: 'هزینهٔ مرجوعی', value: b.returnCharges, hideZero: true },
+    { label: 'مبلغ پایهٔ کالاهای مرجوعی بازپرداخت‌شده', value: b.returnClawbacks, hideZero: true },
+    { label: 'تعدیل‌های مالی', value: b.adjustments, detail: 'عدد مثبت به موجودی اضافه و عدد منفی از آن کم می‌شود.', hideZero: true },
+    { label: 'هزینهٔ انبارداری', value: b.storageFees, hideZero: true },
+  ].filter(row => !row.hideZero || row.value) : [];
 
   return (
     <div className="space-y-4 pb-6 sm:space-y-5">
-      <SupplierSectionHeading title="تسویه‌حساب" description="موجودی قابل برداشت، درخواست برداشت و سوابق واریز را در همین صفحه ببین." icon={<Wallet />} />
-      <SupplierResourceState loading={balance.loading || history.loading} error={balance.error || history.error} retry={() => { void balance.reload(); void history.reload(); }} />
+      <SupplierSectionHeading title="تسویه‌حساب" description="موجودی‌ات را ببین، برداشت ثبت کن و وضعیت واریز را پیگیری کن." icon={<Wallet />} />
+      <SupplierResourceState loading={balance.loading} error={balance.error} retry={balance.reload} />
       {b && !balance.error && (
         <div className="grid items-start gap-4 xl:grid-cols-2">
           <section className="min-w-0 rounded-[24px] bg-[#2c2050] p-5 text-white shadow-lg shadow-[#2c2050]/15 sm:p-6">
@@ -109,79 +116,29 @@ export const SupplierSettlementTab: React.FC = () => {
             <strong className="mt-2 block break-words text-3xl font-black tabular-nums sm:text-4xl">{formatPrice(b.available)} <span className="text-base font-bold text-[#e8e0fb]">تومان</span></strong>
             <p className="mt-2 text-xs leading-6 text-[#e8e0fb]">درآمد سفارش‌های پرداخت‌شده پس از تحویل قابل برداشت می‌شود.</p>
             <details className="mt-3 border-t border-white/10 pt-2">
-              <summary className="cursor-pointer rounded-md py-2 text-xs font-bold focus-visible:ring-2 focus-visible:ring-white">جزئیات درآمد، برداشت‌ها و کسورات</summary>
-              <div className="space-y-2.5 pt-2">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-[11px] font-bold text-slate-100">درآمد قطعی‌شده از سفارش‌های تحویل‌شده</p>
-                  <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">جمع مبلغ پایه کالاهای تو در سفارش‌هایی که هم پرداخت شده‌اند و هم به دست مشتری رسیده‌اند.</p>
-                </div>
-                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.earned || 0)} تومان</span>
-              </div>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-[11px] font-bold text-slate-100">در انتظار بررسی برداشت</p>
-                  <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">مبلغ درخواست‌های برداشتی که ثبت کرده‌ای و تیم مالی هنوز بررسی نکرده است؛ تا مشخص‌شدن نتیجه، از موجودی قابل برداشتت کم می‌شود.</p>
-                </div>
-                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.reserved || 0)} تومان</span>
-              </div>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-[11px] font-bold text-slate-100">تسویه‌های تأییدشده</p>
-                  <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">شامل تسویه‌های تأییدشده، در حال انتقال و واریزشده است؛ تأیید درخواست به‌تنهایی به معنی واریز قطعی نیست. وضعیت هر درخواست را در سوابق ببین.</p>
-                </div>
-                <span className="shrink-0 text-[11px] font-bold">{formatPrice(b?.paid || 0)} تومان</span>
-              </div>
-              {returnCharges !== 0 && (
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-bold text-amber-200">کسر بابت مرجوعی‌ها</p>
-                    <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">هزینه‌هایی که بابت مرجوعی کالاها از حسابت کسر شده و از موجودی قابل برداشتت کم می‌شود.</p>
+              <summary className={`${summaryClass} focus-visible:ring-white`}>جزئیات موجودی</summary>
+              <dl className="divide-y divide-white/10">
+                {breakdown.map(row => (
+                  <div key={row.label} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
+                    <dt className="text-sm text-[#e8e0fb]">{row.label}</dt>
+                    <dd className="text-sm font-bold tabular-nums">{formatPrice(row.value || 0)} تومان</dd>
+                    {row.detail && <dd className="w-full text-xs leading-5 text-[#e8e0fb]">{row.detail}</dd>}
                   </div>
-                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(returnCharges)} تومان</span>
-                </div>
-              )}
-              {returnClawbacks !== 0 && (
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-bold text-amber-200">برگشت هزینه کالا از مرجوعی‌های بازپرداخت‌شده</p>
-                    <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">مبلغ پایه کالاهایی که مشتری برگردانده و پولش به مشتری بازپرداخت شده است؛ از موجودی قابل برداشتت کم می‌شود.</p>
-                  </div>
-                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(returnClawbacks)} تومان</span>
-                </div>
-              )}
-              {adjustments !== 0 && (
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-bold text-slate-100">اسناد تعدیل مالی</p>
-                    <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">تعدیل‌های ثبت‌شده توسط تیم مالی؛ مبلغ مثبت به موجودی قابل برداشتت اضافه و مبلغ منفی از آن کم می‌شود.</p>
-                  </div>
-                  <span className="shrink-0 text-[11px] font-bold">{formatPrice(adjustments)} تومان</span>
-                </div>
-              )}
-              {storageFees !== 0 && (
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-bold text-amber-200">کسر بابت انبارداری</p>
-                    <p className="mt-0.5 text-xs leading-6 text-[#e8e0fb]">هزینه نگهداری کالاهای ثبت‌شده در انبار مرکزی (کالاهایی که از مسیر ورود کالا به انبار ثبت شده‌اند) پس از پایان روزهای رایگان؛ ریز آن را در بخش «هزینه انبارداری» پایین همین صفحه می‌بینی.</p>
-                  </div>
-                  <span className="shrink-0 text-[11px] font-bold text-amber-300">{formatPrice(storageFees)} تومان</span>
-                </div>
-              )}
-              </div>
+                ))}
+              </dl>
             </details>
           </section>
           <form onSubmit={submit} noValidate className="min-w-0 space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
             <h3 className="text-base font-extrabold text-[#261b41]">درخواست برداشت</h3>
-            {b.available <= 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-700">فعلاً موجودی قابل برداشت نداری. اگر نتیجهٔ درخواست قبلی را ندیدی، همان مبلغ و مشخصات حساب را دوباره وارد کن.</p>}
+            {b.available <= 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-700">موجودی قابل برداشت نداری. برای پیگیری درخواست قبلی، «سوابق برداشت» را ببین. اگر پاسخ ثبت را دریافت نکردی، همان مبلغ و مشخصات را دوباره بفرست.</p>}
             <fieldset disabled={saving} className="min-w-0 space-y-3">
             <label className="block text-sm font-bold text-slate-700">نام صاحب حساب
               <input required maxLength={100} name="holder" value={holder} onChange={event => editField('holder', event.target.value)} aria-invalid={fieldError?.name === 'holder'} aria-describedby={fieldError?.name === 'holder' ? 'supplier-payout-holder-error' : undefined} placeholder="مثلاً: علی رضایی" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
               {fieldError?.name === 'holder' && <span id="supplier-payout-holder-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-sm font-bold text-slate-700">شماره شبا
-              <span className="block mt-1 text-[10px] font-normal text-slate-500 leading-relaxed">شماره ۲۴ رقمی حساب بانکی که با IR شروع می‌شود؛ روی کارت بانکی یا در اپ بانک می‌توانی پیدایش کنی.</span>
-              <input required name="shaba" value={shaba} onChange={event => editField('shaba', event.target.value)} aria-invalid={fieldError?.name === 'shaba'} aria-describedby={fieldError?.name === 'shaba' ? 'supplier-payout-shaba-error' : undefined} placeholder="IR…" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
+              <input required name="shaba" value={shaba} onChange={event => editField('shaba', event.target.value)} aria-invalid={fieldError?.name === 'shaba'} aria-describedby={fieldError?.name === 'shaba' ? 'supplier-payout-shaba-error supplier-payout-shaba-help' : 'supplier-payout-shaba-help'} placeholder="IR…" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus:bg-white focus-visible:ring-2 focus-visible:ring-brand aria-invalid:border-rose-500" />
+              <span id="supplier-payout-shaba-help" className="mt-1 block text-xs font-normal leading-6 text-slate-600"><bdi dir="ltr">IR</bdi> و سپس ۲۴ رقم شمارهٔ شبا را وارد کن.</span>
               {fieldError?.name === 'shaba' && <span id="supplier-payout-shaba-error" role="alert" className="mt-1 block text-xs text-rose-700">{fieldError.message}</span>}
             </label>
             <label className="block text-sm font-bold text-slate-700">مبلغ برداشت (تومان)
@@ -190,40 +147,53 @@ export const SupplierSettlementTab: React.FC = () => {
             </label>
             </fieldset>
             <button disabled={saving || balance.loading} className="min-h-12 w-full rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50">{saving ? 'در حال ثبت…' : 'ثبت درخواست برداشت'}</button>
-            <p className="text-[10px] text-slate-500 leading-relaxed">واریز دستی است و با انتقال بانکی انجام می‌شود: بعد از تأیید درخواستت، تیم مالی پول را واریز می‌کند و شماره پیگیری همین‌جا ثبت می‌شود.</p>
+            <p className="text-xs leading-6 text-slate-600">پس از تأیید، تیم مالی واریز بانکی را انجام می‌دهد و شمارهٔ پیگیری را در سوابق برداشت ثبت می‌کند.</p>
           </form>
         </div>
       )}
+      <section aria-labelledby="supplier-settlement-history" className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <h3 id="supplier-settlement-history" className="text-base font-extrabold text-[#261b41]">سوابق برداشت</h3>
+        <SupplierResourceState loading={history.loading} error={history.error} retry={history.reload} />
+        {!history.loading && !history.error && !history.data?.length && <p className="text-sm text-slate-600">هنوز درخواستی برای برداشت ثبت نشده است.</p>}
+        {!history.loading && !history.error && !!history.data?.length && (
+          <ul className="divide-y divide-slate-100">
+            {history.data.map(item => {
+              const reference = item.transfer_reference || (item as typeof item & { transferReference?: string }).transferReference;
+              return (
+                <li key={item.id} className="space-y-1 py-3 text-sm first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <strong className="tabular-nums text-[#261b41]">{formatPrice(item.amount)} تومان</strong>
+                    <span className="rounded-lg bg-brand-soft px-2 py-1 text-xs font-bold text-brand-deep">{statusLabel(item.status)}</span>
+                  </div>
+                  <time dateTime={item.created_at} className="block text-xs text-slate-600">{new Date(item.created_at).toLocaleDateString('fa-IR')}</time>
+                  {reference && <p className="text-slate-700">شمارهٔ پیگیری <bdi dir="ltr" className="break-all">{reference}</bdi></p>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
       <AccountStatement role="supplier" refresh={statementRefresh} />
-      {!fees.error && charges.length > 0 && (
-        <>
-          <h3 className="text-base font-extrabold text-[#261b41]">هزینه انبارداری</h3>
-          <div className="space-y-2">
-            {charges.map((charge) => (
-              <div key={charge.id} className="rounded-[20px] border border-[#e6e2f0] bg-white p-4 text-sm leading-6 shadow-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-bold text-slate-800">{charge.productTitle || 'کالا'}</span>
-                  <span className="font-extrabold text-slate-900 font-mono">{formatPrice(charge.amountToman)} تومان</span>
-                </div>
-                <p className="text-slate-500">{charge.warehouseName || 'انبار مرکزی'} • {new Date(charge.feeDate).toLocaleDateString('fa-IR')} • {toPersianDigits(charge.qty)} واحد × {formatPrice(charge.feeUnitDayToman)} تومان در روز</p>
-                <p className="text-slate-400 text-[10px]">{charge.goodsClass === 'returned' ? 'کالای مرجوعی' : charge.goodsClass === 'stagnant' ? 'کالای راکد' : 'کالای عادی'}{charge.estimated ? ' • وزن/ابعاد تخمینی' : ''}</p>
-              </div>
-            ))}
-          </div>
-        </>
+      {(fees.loading || fees.error || charges.length > 0) && (
+        <details className="rounded-[22px] border border-[#e6e2f0] bg-white px-4 py-2 shadow-sm sm:px-5">
+          <summary className={`${summaryClass} text-[#261b41] focus-visible:ring-brand`}>هزینهٔ انبارداری</summary>
+          <SupplierResourceState loading={fees.loading} error={fees.error} retry={fees.reload} />
+          {!fees.error && charges.length > 0 && (
+            <ul className="divide-y divide-slate-100 pb-2 text-sm">
+              {charges.map(charge => (
+                <li key={charge.id} className="space-y-1 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-slate-800">{charge.productTitle || 'کالا'}</span>
+                    <span className="font-extrabold tabular-nums text-slate-900">{formatPrice(charge.amountToman)} تومان</span>
+                  </div>
+                  <p className="text-slate-600">{charge.warehouseName || 'انبار مرکزی'} · {new Date(charge.feeDate).toLocaleDateString('fa-IR')} · {toPersianDigits(charge.qty)} واحد × {formatPrice(charge.feeUnitDayToman)} تومان در روز</p>
+                  <p className="text-xs text-slate-600">{charge.goodsClass === 'returned' ? 'کالای مرجوعی' : charge.goodsClass === 'stagnant' ? 'کالای راکد' : 'کالای عادی'}{charge.estimated ? ' · وزن یا ابعاد تخمینی' : ''}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
       )}
-      {!history.error && (history.data || []).length > 0 && <h3 className="text-base font-extrabold text-[#261b41]">سوابق برداشت</h3>}
-      {!history.error && !(history.data || []).length && !history.loading && <SupplierEmptyState icon={<Wallet />} title="هنوز برداشتی نداشته‌ای." description="وقتی موجودی قابل برداشت داشتی، از فرم بالا درخواست برداشت ثبت کن." />}
-      {!history.error && (history.data || []).map((item) => (
-        <section key={item.id} className="rounded-[20px] border border-[#e6e2f0] bg-white p-4 text-sm shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <strong className="tabular-nums text-[#261b41]">{formatPrice(item.amount)} تومان</strong>
-            <span className="rounded-lg bg-brand-soft px-2 py-1 text-xs font-bold text-brand-deep">{statusLabel(item.status)}</span>
-          </div>
-          <p className="mt-1 text-xs text-slate-600">{new Date(item.created_at).toLocaleDateString('fa-IR')}</p>
-          {(item.transfer_reference || (item as any).transferReference) && <p className="text-slate-500">شماره پیگیری: <span dir="ltr">{item.transfer_reference || (item as any).transferReference}</span></p>}
-        </section>
-      ))}
     </div>
   );
 };

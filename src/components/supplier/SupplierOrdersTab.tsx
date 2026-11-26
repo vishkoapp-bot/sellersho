@@ -61,6 +61,16 @@ export const isTerminalOrderStatus = (status: string): boolean =>
 export const isReadyOrder = (status: string): boolean =>
   status === 'pending' || status === 'processing';
 
+const ORDER_FILTERS = [
+  { id: 'all', label: 'همه' },
+  { id: 'ready', label: 'منتظر ارسال' },
+  { id: 'overdue', label: 'گذشته از موعد' },
+  { id: 'shipped', label: 'ارسال شده' },
+  { id: 'delivered', label: 'به دست مشتری رسیده' },
+] as const;
+
+const shippingFieldClass = 'min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand';
+
 export function directOrderChip(status: string) {
   if (status === 'delivered' || status === 'delivered_confirmed') {
     return { text: 'به دست مشتری رسیده', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', Icon: CheckCircle2 };
@@ -116,7 +126,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
   const [ordersHasMore, setOrdersHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'ready' | 'overdue' | 'shipped' | 'delivered'>(initialFilter);
+  const [filterStatus, setFilterStatus] = useState<(typeof ORDER_FILTERS)[number]['id']>(initialFilter);
   const orderRequest = useRef(0);
 
   // Gap 14: view toggle — direct shipments to fulfil vs warehouse-routed
@@ -286,7 +296,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
   const handleConfirmShipping = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedOrder || submittingShipping) return;
+    if (!selectedOrder || submittingShipping || tapinTracking) return;
     if (shipMode === 'tapin') {
       setSubmittingShipping(true);
       try {
@@ -344,18 +354,14 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
       {ordersView === 'warehouse' ? (
         <>
-          <div className="rounded-2xl border border-slate-100 bg-white p-4 text-[11px] leading-relaxed text-slate-600">انبار مرکزی این سفارش‌ها را می‌فرستد. مبلغ‌ها بر اساس قیمت پایهٔ کالاهای تو هستند.</div>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-start justify-between gap-2 px-1">
             <div>
               <h3 className="text-base font-extrabold text-[#261b41]">سفارش‌های انبار مرکزی</h3>
-              <span className="text-[10px] text-slate-400 block mt-0.5">
-                سفارش‌های پرداخت‌شده‌ای که کالای تو را از انبار مرکزی می‌فرستند
-              </span>
+              <p className="mt-1 text-sm leading-6 text-slate-600">انبار مرکزی این سفارش‌ها را می‌فرستد. مبلغ‌ها بر اساس قیمت پایهٔ کالاهای توست.</p>
             </div>
-            <div className="flex items-center gap-1.5 bg-brand-soft px-2.5 py-1 rounded-xl text-brand-deep font-bold text-[11px]">
-              <Warehouse className="w-3.5 h-3.5" strokeWidth={1.5} />
+            {warehouseLoaded && !warehouseLoading && !warehouseError && <div className="rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-bold text-brand-deep">
               <span>{toPersianDigits(warehouseTotal)} سفارش</span>
-            </div>
+            </div>}
           </div>
 
           <SupplierResourceState loading={warehouseLoading} error={warehouseError} retry={() => fetchWarehouseOrders()} />
@@ -366,14 +372,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
               {warehouseOrders.map((ord) => {
                 const chip = warehouseStatusChip(ord.status);
                 return (
-                  <div key={ord.orderId} className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5 space-y-3">
+                  <article key={ord.orderId} className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#eeebf4] pb-3">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono font-extrabold text-xs text-brand-deep" dir="ltr">
-                          {ord.orderNumber}
-                        </span>
-                        <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                          <Calendar className="w-3 h-3" strokeWidth={1.5} />
+                        <h4 className="text-sm font-extrabold text-brand-deep">سفارش <bdi dir="ltr" className="font-mono">{ord.orderNumber}</bdi></h4>
+                        <span className="flex items-center gap-1 text-xs text-slate-600">
+                          <Calendar aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
                           <span>{ord.createdAt}</span>
                         </span>
                       </div>
@@ -400,7 +404,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                       <span>مقصد: {ord.province}، {ord.city}</span>
                     </div>
                     <ContextSupportButton role="supplier" kind="order" referenceId={ord.orderId} />
-                  </div>
+                  </article>
                 );
               })}
             </div>
@@ -415,100 +419,42 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
         </>
       ) : (
         <>
-      {/* Header and Quick Stats */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-base font-extrabold text-[#261b41]">سفارش‌های ارسال مستقیم</h3>
-          <span className="text-[10px] text-slate-400 block mt-0.5">
-            سفارش مشتری‌ها برای کالاهای تو
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5 bg-brand-soft px-2.5 py-1 rounded-xl text-brand-deep font-bold text-[11px]">
-          <Truck className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-          <span>{toPersianDigits(backendOrders.length)} سفارش نمایش داده شده</span>
-        </div>
-      </div>
-
-      {/* Filter Tabs and Search Bar */}
       <div className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+        <label htmlFor="supplier-orders-search" className="block text-sm font-bold text-slate-800">جستجوی سفارش‌ها</label>
         <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute start-3 top-3.5"  strokeWidth={1.5}/>
+          <Search aria-hidden="true" className="w-4 h-4 text-slate-500 absolute start-3 top-3.5" strokeWidth={1.5} />
           <input
+            id="supplier-orders-search"
             type="search"
             aria-label="جستجوی سفارش‌ها"
             maxLength={100}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="جستجوی شماره سفارش، کد رهگیری یا نام خریدار…"
+            placeholder="شماره سفارش، کد رهگیری یا نام خریدار"
             className="min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] ps-9 pe-3 text-sm focus:bg-white focus-visible:ring-2 focus-visible:ring-brand"
           />
         </div>
 
         <div role="group" aria-label="وضعیت سفارش" className="flex items-center gap-1.5 flex-wrap text-xs font-bold">
-          <button
-            type="button"
-            aria-pressed={filterStatus === 'all'}
-            onClick={() => setFilterStatus('all')}
-            className={`min-h-11 rounded-xl px-3 transition-colors focus-visible:ring-2 focus-visible:ring-brand ${
-              filterStatus === 'all'
-                ? 'bg-brand-deep text-white shadow-2xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            همه
-          </button>
-          <button
-            type="button"
-            aria-pressed={filterStatus === 'ready'}
-            onClick={() => setFilterStatus('ready')}
-            className={`min-h-11 rounded-xl px-3 transition-colors focus-visible:ring-2 focus-visible:ring-brand ${
-              filterStatus === 'ready'
-                ? 'bg-amber-600 text-white shadow-2xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            منتظر ارسال
-          </button>
-          <button type="button" aria-pressed={filterStatus === 'overdue'} onClick={() => setFilterStatus('overdue')} className={`min-h-11 rounded-xl px-3 focus-visible:ring-2 focus-visible:ring-brand ${filterStatus === 'overdue' ? 'bg-rose-700 text-white' : 'bg-rose-50 text-rose-800'}`}>
-            عبورکرده از موعد
-          </button>
-          <button
-            type="button"
-            aria-pressed={filterStatus === 'shipped'}
-            onClick={() => setFilterStatus('shipped')}
-            className={`min-h-11 rounded-xl px-3 transition-colors focus-visible:ring-2 focus-visible:ring-brand ${
-              filterStatus === 'shipped'
-                ? 'bg-brand-deep text-white shadow-2xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            ارسال شده
-          </button>
-          <button
-            type="button"
-            aria-pressed={filterStatus === 'delivered'}
-            onClick={() => setFilterStatus('delivered')}
-            className={`min-h-11 rounded-xl px-3 transition-colors focus-visible:ring-2 focus-visible:ring-brand ${
-              filterStatus === 'delivered'
-                ? 'bg-emerald-600 text-white shadow-2xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            به دست مشتری رسیده
-          </button>
+          {ORDER_FILTERS.map(({ id, label }) => (
+            <button key={id} type="button" aria-pressed={filterStatus === id} onClick={() => setFilterStatus(id)}
+              className={`min-h-11 rounded-xl px-3 transition-colors focus-visible:ring-2 focus-visible:ring-brand ${filterStatus === id ? 'bg-brand-deep text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
+              {label}
+            </button>
+          ))}
         </div>
+        {filterStatus === 'overdue' && <p className="text-sm leading-6 text-slate-600">موعد ارسال بعضی سفارش‌های قدیمی بر اساس زمان آماده‌سازی کالا برآورد شده است.</p>}
       </div>
 
-      {/* Orders List */}
-      {filterStatus === 'overdue' && <p className="text-xs leading-6 text-slate-600">موعد ارسال سفارش‌های قدیمی، بر اساس زمان آماده‌سازی کالا برآورد شده است.</p>}
-      {loading && <div role="status" className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت سفارش‌ها…</div>}
+      {loading && <div role="status" className="rounded-2xl bg-white p-4 text-sm text-slate-600">در حال دریافت سفارش‌ها…</div>}
+      {!loading && !loadError && backendOrders.length > 0 && <p role="status" className="px-1 text-sm text-slate-600">{toPersianDigits(backendOrders.length)} سفارش نمایش داده شده است.</p>}
       {loadError && (
         <div role="alert" className="space-y-2 rounded-2xl bg-rose-50 p-4 text-xs text-rose-800">
           <p>{loadError}</p>
           {(loadError.includes('دسترسی') || loadError.includes('Forbidden')) ? (
             <p>دسترسی شما به این بخش برقرار نیست. اگر حسابت به‌تازگی فعال شده، یک بار خارج و دوباره وارد شو؛ اگر مشکل ادامه داشت، با پشتیبانی تماس بگیر.</p>
           ) : (
-            <button type="button" onClick={() => void fetchSupplierOrders()} className="rounded-lg bg-white px-3 py-2 font-bold">تلاش دوباره</button>
+            <button type="button" onClick={() => void fetchSupplierOrders()} className="min-h-11 rounded-lg bg-white px-3 py-2 font-bold focus-visible:ring-2 focus-visible:ring-rose-700">تلاش دوباره</button>
           )}
         </div>
       )}
@@ -525,17 +471,15 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
             const { text: chipText, cls: chipClasses, Icon: ChipIcon } = directOrderChip(ord.status);
 
             return (
-              <div
+              <article
                 key={ord.id}
                 className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5 space-y-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#eeebf4] pb-3">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono font-extrabold text-xs text-brand-deep" dir="ltr">
-                      {ord.orderNumber}
-                    </span>
-                    <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                      <Calendar className="w-3 h-3"  strokeWidth={1.5}/>
+                    <h3 className="text-sm font-extrabold text-brand-deep">سفارش <bdi dir="ltr" className="font-mono">{ord.orderNumber}</bdi></h3>
+                    <span className="flex items-center gap-1 text-xs text-slate-600">
+                      <Calendar aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
                       <span>{ord.createdAt}</span>
                     </span>
                   </div>
@@ -569,28 +513,48 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   </div>
                 )}
 
-                <div className="flex flex-wrap gap-2">
-                  <ContextSupportButton role="supplier" kind="order" referenceId={ord.orderId} />
-                  <ContextSupportButton role="supplier" kind="shipment" referenceType="direct_shipment" referenceId={ord.id} />
-                </div>
+                {isReadyOrder(ord.status) && (
+                  <div className="flex flex-wrap gap-2">
+                    {ord.status === 'pending' && (
+                      <button type="button" disabled={!!acceptingId} onClick={() => void handleAcceptOrder(ord)}
+                        className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-brand-border px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 sm:flex-none">
+                        <CheckCircle2 aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                        {acceptingId === ord.id ? 'در حال ثبت…' : 'قبول سفارش'}
+                      </button>
+                    )}
+                    <button type="button" onClick={() => {
+                      setSelectedOrder(ord);
+                      setTrackingNumber(ord.trackingNumber || '');
+                    }} className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-deep px-3 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 sm:flex-none">
+                      <Send aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                      ثبت اطلاعات ارسال
+                    </button>
+                  </div>
+                )}
 
-                <div className="border-t border-slate-100 pt-2">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 border-t border-slate-100 pt-2">
                   <button
                     type="button"
                     onClick={() => void toggleAddons(ord)}
-                    className="flex items-center gap-1.5 text-[11px] font-bold"
-                    style={{ color: '#5d44f8' }}
+                    aria-expanded={expandedOrderId === ord.id}
+                    className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand"
                   >
-                    <Package className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    <span>محصولات مکمل شما در این سفارش</span>
-                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expandedOrderId === ord.id ? 'rotate-180' : ''}`} strokeWidth={1.5} />
+                    <span>محصولات مکمل</span>
+                    <ChevronDown aria-hidden="true" className={`w-3.5 h-3.5 ${expandedOrderId === ord.id ? 'rotate-180' : ''}`} strokeWidth={1.5} />
                   </button>
+                  <details className="rounded-lg">
+                    <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-2.5 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">پشتیبانی</summary>
+                    <div className="flex flex-wrap gap-2 py-2">
+                      <ContextSupportButton role="supplier" kind="order" referenceId={ord.orderId} />
+                      <ContextSupportButton role="supplier" kind="shipment" referenceType="direct_shipment" referenceId={ord.id} />
+                    </div>
+                  </details>
                   {expandedOrderId === ord.id && (
-                    <div className="mt-2 space-y-1.5">
+                    <div className="mt-2 w-full space-y-1.5">
                       {loadingAddonId === ord.id ? (
-                        <p className="text-[10px] text-slate-400">در حال دریافت…</p>
+                        <p role="status" className="text-sm text-slate-600">در حال دریافت…</p>
                       ) : !addonsByOrder[ord.id] || addonsByOrder[ord.id].addons.length === 0 ? (
-                        <p className="text-[10px] text-slate-400">در این سفارش، محصول مکملی از تو انتخاب نشده است.</p>
+                        <p role="status" className="text-sm text-slate-600">این سفارش محصول مکمل ندارد.</p>
                       ) : (
                         <>
                           {addonsByOrder[ord.id].addons.map((addon, addonIdx) => (
@@ -609,33 +573,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   )}
                 </div>
 
-                {isReadyOrder(ord.status) && (
-                  <div className="space-y-2">
-                    {ord.status === 'pending' && (
-                      <button
-                        type="button"
-                        disabled={!!acceptingId}
-                        onClick={() => void handleAcceptOrder(ord)}
-                        className="min-h-11 w-full py-2 bg-white border border-brand-deep text-brand-deep hover:bg-brand-soft disabled:opacity-50 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                        <span>{acceptingId === ord.id ? 'در حال ثبت…' : 'قبول سفارش'}</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedOrder(ord);
-                        setTrackingNumber(ord.trackingNumber || '');
-                      }}
-                      className="min-h-11 w-full py-2 bg-brand-deep hover:bg-brand-deep text-white font-bold text-xs rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
-                    >
-                      <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-                      <span>ثبت اطلاعات ارسال</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              </article>
             );
           })}
         </div>
@@ -673,55 +611,63 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
             <form onSubmit={handleConfirmShipping} className="space-y-3">
               {tapinConnected ? (
-                <div className="flex gap-2">
+                <div role="group" aria-label="شیوهٔ ثبت ارسال" className="flex gap-2">
                   <button
                     type="button"
+                    disabled={submittingShipping || !!tapinTracking}
+                    aria-pressed={shipMode === 'manual'}
                     onClick={() => setShipMode('manual')}
-                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border ${shipMode === 'manual' ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
+                    className={`min-h-11 flex-1 rounded-xl border px-2 py-2 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand ${shipMode === 'manual' ? 'border-brand-deep bg-brand-deep text-white' : 'border-slate-200 bg-white text-slate-700'}`}
                   >
                     ثبت دستی
                   </button>
                   <button
                     type="button"
+                    disabled={submittingShipping || !!tapinTracking}
+                    aria-pressed={shipMode === 'tapin'}
                     onClick={() => setShipMode('tapin')}
-                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border ${shipMode === 'tapin' ? 'bg-brand-deep text-white border-brand-deep' : 'bg-white text-slate-600 border-slate-200'}`}
+                    className={`min-h-11 flex-1 rounded-xl border px-2 py-2 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand ${shipMode === 'tapin' ? 'border-brand-deep bg-brand-deep text-white' : 'border-slate-200 bg-white text-slate-700'}`}
                   >
                     ثبت ارسال با تاپین
                   </button>
                 </div>
               ) : (
-                <p className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] leading-5 text-slate-500">
-                  برای ثبت خودکار مرسوله و دریافت کد رهگیری از تاپین، از تب «روش‌های ارسال» اتصال تاپین را فعال کن.
+                <p className="text-xs leading-6 text-slate-600">
+                  برای ثبت خودکار مرسوله، تاپین را در «روش‌های ارسال» وصل کن.
                 </p>
               )}
 
               {shipMode === 'tapin' && tapinConnected && (
                 <div className="space-y-3">
                   <div>
-                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                      سرویس تاپین:
+                    <label htmlFor="supplier-shipping-tapin-service" className="mb-1 block text-sm font-bold text-slate-700">
+                      سرویس تاپین
                     </label>
                     <select
+                      id="supplier-shipping-tapin-service"
                       value={tapinService}
+                      disabled={submittingShipping || !!tapinTracking}
                       onChange={(e) => setTapinService(e.target.value as 'post' | 'tipax')}
-                      className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+                      className={shippingFieldClass}
                     >
                       <option value="post" disabled>پست (به‌زودی)</option>
                       <option value="tipax">تیپاکس</option>
                     </select>
-                    <p className="mt-1 text-[10px] leading-5 text-slate-400">
-                      ثبت مرسوله پست تاپین به‌زودی فعال می‌شود؛ در حال حاضر فقط تیپاکس ثبت می‌شود و باید برای فروشگاهت در تاپین فعال شده باشد.
+                    <p className="mt-1 text-xs leading-6 text-slate-600">
+                      تیپاکس باید برای فروشگاهت در تاپین فعال باشد.
                     </p>
                   </div>
 
                   <div>
-                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                      جعبه پستی:
+                    <label htmlFor="supplier-shipping-tapin-box" className="mb-1 block text-sm font-bold text-slate-700">
+                      جعبهٔ مرسوله
                     </label>
                     <select
+                      id="supplier-shipping-tapin-box"
                       value={tapinBoxId}
+                      disabled={submittingShipping || !!tapinTracking}
                       onChange={(e) => setTapinBoxId(e.target.value)}
-                      className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+                      className={shippingFieldClass}
                     >
                       {tapinBoxes.map((b) => (
                         <option key={b.id} value={b.id}>
@@ -733,14 +679,14 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
 
                   {tapinTracking ? (
                     <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-700 space-y-2">
-                      <p>
+                      <p role="status">
                         کد رهگیری تاپین: <span className="font-mono font-bold" dir="ltr">{tapinTracking}</span>
                       </p>
                       <button
                         type="button"
                         onClick={() => void handlePrintTapinLabel()}
                         disabled={printingLabel}
-                        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white disabled:opacity-50"
+                        className="flex min-h-11 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-emerald-800 disabled:opacity-50"
                       >
                         <Printer className="w-3.5 h-3.5" strokeWidth={1.5} />
                         {printingLabel ? 'در حال دریافت…' : 'چاپ برچسب'}
@@ -758,14 +704,15 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
               {shipMode === 'manual' && (
               <>
               <div>
-                <label htmlFor="supplier-shipping-carrier" className="text-[11px] font-bold text-slate-700 block mb-1">
+                <label htmlFor="supplier-shipping-carrier" className="mb-1 block text-sm font-bold text-slate-700">
                   شرکت ارسال
                 </label>
                 <select
                   id="supplier-shipping-carrier"
                   value={carrier}
+                  disabled={submittingShipping}
                   onChange={(e) => setCarrier(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
+                  className={shippingFieldClass}
                 >
                   <option value="پست پیشتاز">پست پیشتاز</option>
                   <option value="تیپاکس">تیپاکس</option>
@@ -775,18 +722,19 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
               </div>
 
               <div>
-                <label htmlFor="supplier-shipping-tracking" className="text-xs font-bold text-slate-700 block mb-1">
+                <label htmlFor="supplier-shipping-tracking" className="mb-1 block text-sm font-bold text-slate-700">
                   کد رهگیری مرسوله
                 </label>
-                <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus-within:border-brand focus-within:bg-white">
-                  <Hash className="w-4 h-4 text-slate-400 shrink-0 ml-2"  strokeWidth={1.5}/>
+                <div className="relative">
+                  <Hash aria-hidden="true" className="absolute end-3 top-3.5 size-4 text-slate-500" strokeWidth={1.5} />
                   <input
                     id="supplier-shipping-tracking"
                     type="text"
                     value={trackingNumber}
+                    disabled={submittingShipping}
                     onChange={(e) => setTrackingNumber(e.target.value)}
                     placeholder="مثال: 9876543210123"
-                    className="w-full bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-hidden"
+                    className={`${shippingFieldClass} ps-9 font-mono`}
                     dir="ltr"
                     required
                   />
@@ -807,7 +755,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   <button
                     type="button"
                     onClick={() => setSelectedOrder(null)}
-                    className="flex-1 py-2.5 bg-brand-deep text-white font-bold rounded-xl"
+                    className="min-h-11 flex-1 rounded-xl bg-brand-deep py-2.5 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     بستن
                   </button>
@@ -817,7 +765,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                 <button
                   type="submit"
                   disabled={submittingShipping}
-                  className="flex-1 py-2.5 bg-brand-deep hover:bg-brand-deep disabled:opacity-50 text-white font-bold rounded-xl transition-all shadow-2xs flex items-center justify-center gap-1.5"
+                  className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-deep py-2.5 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                   <span>{submittingShipping ? 'در حال ثبت…' : shipMode === 'tapin' ? 'ثبت مرسوله در تاپین' : 'ثبت و ارسال اطلاعات'}</span>
@@ -826,7 +774,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   type="button"
                   disabled={submittingShipping}
                   onClick={() => setSelectedOrder(null)}
-                  className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl"
+                  className="min-h-11 rounded-xl bg-slate-100 px-3 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-200 focus-visible:ring-2 focus-visible:ring-brand"
                 >
                   انصراف
                 </button>

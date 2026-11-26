@@ -7,15 +7,15 @@ export function SupplierSectionHeading({ title, description, icon, action }: {
   action?: ReactNode;
 }) {
   return (
-    <section className="flex flex-wrap items-center justify-between gap-4 rounded-[24px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
-      <div className="flex min-w-0 items-start gap-3">
-        <span aria-hidden="true" className="grid size-11 shrink-0 place-items-center rounded-2xl bg-[#eee7fa] text-[#4c347e] [&>svg]:size-5">{icon}</span>
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-0.5 pb-3 pt-1 sm:pb-4">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand-deep [&>svg]:size-[18px]">{icon}</span>
         <div className="min-w-0">
-          <h2 className="text-lg font-extrabold leading-7 text-[#261b41] sm:text-xl">{title}</h2>
-          <p className="mt-1 text-sm leading-6 text-slate-600">{description}</p>
+          <h2 className="text-base font-extrabold leading-7 text-slate-900 sm:text-lg">{title}</h2>
+          {description && <p className="text-sm leading-6 text-slate-600">{description}</p>}
         </div>
       </div>
       {action}
-    </section>
+    </header>
   );
 }

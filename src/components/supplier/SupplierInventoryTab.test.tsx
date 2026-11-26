@@ -195,8 +195,9 @@ it('renders the status filter chips with counts and the showing X of Y line', ()
   assert.match(html, /aria-pressed="true"/);
 });
 
-it('renders per-variant stock rows on the card without opening the edit form', () => {
+it('puts per-variant stock rows in a disclosure with exact-SKU editing', () => {
   const html = renderView();
+  assert.match(html, /<details[^>]*><summary[^>]*>موجودی تنوع‌ها \(۲\)<\/summary>/);
   assert.match(html, /آبی \/ بزرگ · SPNC-A/);
   assert.match(html, /قرمز \/ کوچک · SPNC-B/);
   assert.match(html, /آماده فروش: <b[^>]*>۴<\/b>/);
@@ -289,13 +290,13 @@ it('returns section renders above the list with product titles, dates and card l
     createdAt: '2026-11-13T10:00:00Z',
   } as SupplierReturnRequestDto];
   const html = renderView({ returns });
-  assert.match(html, /برگرداندن‌هایی که خواسته‌ای/);
+  assert.match(html, /<details[^>]*><summary[^>]*>درخواست‌های برگشت/);
   assert.match(html, /تیشرت زنانه/);
   assert.match(html, /۲ عدد · ثبت شده/);
   assert.match(html, /href="#inventory-p1"/);
   assert.match(html, /مشاهده کالا/);
   // The summary sits above the first product card.
-  assert.ok(html.indexOf('برگرداندن‌هایی که خواسته‌ای') < html.indexOf('id="inventory-p1"'));
+  assert.ok(html.indexOf('درخواست‌های برگشت') < html.indexOf('id="inventory-p1"'));
   // Date renders in Persian digits when ICU is available, ISO otherwise.
   assert.match(formatReturnDate('2026-11-13T10:00:00Z'), /۱۴۰۵|2026/);
   assert.equal(formatReturnDate(''), '');

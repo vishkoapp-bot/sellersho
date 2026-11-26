@@ -115,7 +115,7 @@ it('tapin card renders a loading state with no test button and fires no test req
       </ToastProvider>,
     );
     assert.match(html, /اتصال تاپین/);
-    assert.match(html, /در حال بارگذاری…/);
+    assert.match(html, /<p role="status"[^>]*>در حال بارگذاری…<\/p>/);
     // The test button renders only once the saved connection is known
     // (connected === true after the settings load) — never on first paint,
     // and never in a disabled «در حال تست…» state.

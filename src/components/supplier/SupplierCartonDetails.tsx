@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { Printer } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { supplierCartonApi, type SupplierCartonLine } from '../../services/supplierCartonApi';
@@ -8,6 +8,7 @@ import { SupplierResourceState } from './SupplierResourceState';
 import { useSupplierResource } from './useSupplierResource';
 
 const buttonClass = 'inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#dfd8ef] bg-white px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const printButtonClass = 'inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50';
 const unitPageSize = 50;
 const maxPrint = 500;
 
@@ -40,6 +41,7 @@ function receiptNotes(line: SupplierCartonLine, status: string, quantity: (amoun
 
 export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
   const { toPersianDigits } = useStore();
+  const unitListId = useId();
   const load = useCallback(() => supplierCartonApi.details(shipmentId), [shipmentId]);
   const detail = useSupplierResource(load);
   const [printLineId, setPrintLineId] = useState('');
@@ -95,26 +97,27 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
           const status = carton.status;
           const notes = receiptNotes(line, status, format);
           const expanded = !!line.id && line.id === printLineId;
+          const panelId = `${unitListId}-${line.variant_id}`;
           const variantTitle = line.variant_name || line.product_title;
           const reprint = expanded && (job.failure?.conflict || line.units.some(unit => unit.print_count > 0 && selected.includes(unit.code)));
           const availableCodes = expanded ? new Set(line.units.map(unit => unit.code)) : null;
           const staleSelection = !!availableCodes && selected.some(code => !availableCodes.has(code));
           const resetSelection = () => { job.clear(); setSelected([]); setPrintNote(''); };
           return (
-            <div key={line.variant_id} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+            <div key={line.variant_id} className="space-y-3 rounded-xl bg-slate-50 p-3">
               <div className="flex flex-wrap items-baseline justify-between gap-1.5">
                 <div><p className="text-sm font-bold text-slate-900">{line.product_title}</p>{line.variant_name && <p className="mt-0.5 text-xs text-slate-600">{line.variant_name}</p>}</div>
                 {line.spnc && <bdi dir="ltr" className="rounded-lg bg-white px-2 py-1 font-mono text-xs font-bold text-brand-deep">SPNC {line.spnc}</bdi>}
               </div>
-              <dl className="grid grid-cols-3 gap-1.5 text-center">
+              <dl className="grid grid-cols-3 gap-1.5 rounded-lg border border-slate-200 bg-white px-1 text-center">
                 {([
                   ['تعداد اعلام‌شده', line.expected_qty],
                   ['تعداد دریافت‌شده', line.received_qty],
                   ['تعداد چیدمان‌شده', line.putaway_qty],
                 ] as const).map(([label, quantity]) => (
-                  <div key={label} className="rounded-lg bg-white px-1 py-2">
-                    <dt className="text-[11px] leading-5 text-slate-600">{label}</dt>
-                    <dd className="font-extrabold text-[#261b41]">{typeof quantity === 'number' ? format(quantity) : 'نامشخص'}</dd>
+                  <div key={label} className="min-w-0 px-1 py-2">
+                    <dt className="text-xs leading-5 text-slate-600">{label}</dt>
+                    <dd className="text-sm font-extrabold text-[#261b41]">{typeof quantity === 'number' ? format(quantity) : 'نامشخص'}</dd>
                   </div>
                 ))}
               </dl>
@@ -122,7 +125,7 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
                 {notes.map(note => <li key={note}>{note}</li>)}
               </ul>}
               {line.units.length > 0 && line.id ? (
-                <button type="button" disabled={job.busy} className={buttonClass} aria-expanded={expanded} onClick={() => selectLine(line)}>
+                <button type="button" disabled={job.busy} className={buttonClass} aria-expanded={expanded} aria-controls={panelId} onClick={() => selectLine(line)}>
                   <Printer className="size-4" aria-hidden="true" />
                   {expanded ? 'بستن برچسب‌های واحد' : `دیدن برچسب‌های واحد ${variantTitle}`}
                 </button>
@@ -131,43 +134,45 @@ export function SupplierCartonDetails({ shipmentId }: { shipmentId: string }) {
                   {line.source_kind === 'external_replenishment' && !line.received_qty ? 'انبار هنگام ثبت دریافت، کدهای SPNCX این ردیف را صادر می‌کند.' : 'کد SPNCX قابل چاپ برای این ردیف کارتن ثبت نشده است.'}
                 </p>
               )}
-              {expanded && <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
-                <h5 className="text-xs font-bold text-slate-900">کدهای یکتای واحد <bdi dir="ltr">SPNCX</bdi></h5>
-                <p className="text-xs leading-6 text-slate-600">{PRINT_MARK_WARNING}</p>
-                <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-                  {line.units.slice(0, visibleUnits).map(unit => {
-                    const checked = selected.includes(unit.code);
-                    return <label key={unit.code} className="flex min-h-11 items-center gap-2 rounded-lg bg-slate-50 px-2 text-xs">
-                      <input type="checkbox" aria-label={`انتخاب ${unit.code}`} disabled={job.busy || (!checked && selected.length === maxPrint)} checked={checked}
-                        onChange={event => {
-                          const nextChecked = event.target.checked;
-                          job.clear();
-                          setPrintNote('');
-                          setSelected(previous => {
-                            const current = previous.filter(code => code !== unit.code && availableCodes?.has(code));
-                            return nextChecked ? [...current, unit.code] : current;
-                          });
-                        }} />
-                      <bdi dir="ltr" className="break-all font-mono font-bold">{unit.code}</bdi>
-                      {unit.print_count > 0 && <span className="text-slate-600">چاپ‌شده</span>}
-                    </label>;
-                  })}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className={buttonClass} onClick={() => void print(line)} disabled={job.busy || !selected.length || staleSelection}>
-                    {job.busy ? 'در حال ثبت چاپ…' : job.failure?.retryable && !staleSelection ? 'تلاش دوباره برای چاپ' : reprint ? 'چاپ مجدد کدهای انتخاب‌شده' : 'چاپ کدهای انتخاب‌شده'}
-                    {selected.length > 0 && <span>({format(selected.length)})</span>}
-                  </button>
-                  {line.units.length > visibleUnits && <button type="button" className={buttonClass} onClick={() => setVisibleUnits(current => current + unitPageSize)}>کدهای بیشتر</button>}
-                </div>
-                {staleSelection && <div className="flex flex-wrap items-center gap-2">
-                  <p role="status" className="text-xs leading-5 text-slate-700">بعضی کدهای انتخاب‌شده دیگر برای این کارتن قابل چاپ نیستند.</p>
-                  <button type="button" className={buttonClass} onClick={resetSelection}>پاک کردن انتخاب</button>
-                </div>}
-                {selected.length === maxPrint && <p className="text-xs leading-5 text-slate-600">در هر درخواست می‌توانی حداکثر {format(maxPrint)} برچسب چاپ کنی.</p>}
-                {job.failure && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-sm text-rose-800">{job.failure.message}</p>}
-                {printNote && <p role="status" className="text-xs leading-6 text-slate-700">{printNote}</p>}
-              </div>}
+              <div id={panelId} hidden={!expanded} className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                {expanded && <>
+                  <h5 className="text-sm font-bold text-slate-900">کدهای یکتای واحد <bdi dir="ltr">SPNCX</bdi></h5>
+                  <p className="text-xs leading-6 text-slate-600">{PRINT_MARK_WARNING}</p>
+                  <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                    {line.units.slice(0, visibleUnits).map(unit => {
+                      const checked = selected.includes(unit.code);
+                      return <label key={unit.code} className="flex min-h-11 items-center gap-2 rounded-lg bg-slate-50 px-2 text-xs">
+                        <input type="checkbox" aria-label={`انتخاب ${unit.code}`} disabled={job.busy || (!checked && selected.length === maxPrint)} checked={checked} className="size-4 shrink-0 accent-brand-deep focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                          onChange={event => {
+                            const nextChecked = event.target.checked;
+                            job.clear();
+                            setPrintNote('');
+                            setSelected(previous => {
+                              const current = previous.filter(code => code !== unit.code && availableCodes?.has(code));
+                              return nextChecked ? [...current, unit.code] : current;
+                            });
+                          }} />
+                        <bdi dir="ltr" className="break-all font-mono font-bold">{unit.code}</bdi>
+                        {unit.print_count > 0 && <span className="text-slate-600">چاپ‌شده</span>}
+                      </label>;
+                    })}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" className={printButtonClass} onClick={() => void print(line)} disabled={job.busy || !selected.length || staleSelection}>
+                      {job.busy ? 'در حال ثبت چاپ…' : job.failure?.retryable && !staleSelection ? 'تلاش دوباره برای چاپ' : reprint ? 'چاپ مجدد کدهای انتخاب‌شده' : 'چاپ کدهای انتخاب‌شده'}
+                      {selected.length > 0 && <span>({format(selected.length)})</span>}
+                    </button>
+                    {line.units.length > visibleUnits && <button type="button" className={buttonClass} onClick={() => setVisibleUnits(current => current + unitPageSize)}>کدهای بیشتر</button>}
+                  </div>
+                  {staleSelection && <div className="flex flex-wrap items-center gap-2">
+                    <p role="status" className="text-xs leading-5 text-slate-700">بعضی کدهای انتخاب‌شده دیگر برای این کارتن قابل چاپ نیستند.</p>
+                    <button type="button" className={buttonClass} onClick={resetSelection}>پاک کردن انتخاب</button>
+                  </div>}
+                  {selected.length === maxPrint && <p className="text-xs leading-5 text-slate-600">در هر درخواست می‌توانی حداکثر {format(maxPrint)} برچسب چاپ کنی.</p>}
+                  {job.failure && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-sm text-rose-800">{job.failure.message}</p>}
+                  {printNote && <p role="status" className="text-xs leading-6 text-slate-700">{printNote}</p>}
+                </>}
+              </div>
             </div>
           );
         })}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import { supplierApi } from '../../services/supplierApi';
 import { catalogApi, CategoryDto, NicheDto } from '../../services/catalogApi';
 import { suggestCategories, decideAutoApply, tokenize } from '../../services/categorySuggest';
@@ -8,6 +8,7 @@ import { useToast } from '../../context/ToastContext';
 import { useStore } from '../../context/StoreContext';
 import { SupplierCategoryPicker, CategorySelection } from './SupplierCategoryPicker';
 import { SupplierProductDefinitionEditor } from './SupplierProductDefinitionEditor';
+import { SupplierDialog } from './SupplierDialog';
 import type { ProductSchema } from '../../types/productSchema';
 import { buildProductMatrix, serializeProductDraft, DraftProductSKU, selectionKey, ensureCanonicalUuid } from '../../services/productModel';
 import { Plus, Trash2, Loader2, ImagePlus, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -75,7 +76,7 @@ const DRAFT_KEY = 'sellersho:supplier-propose-draft:v1';
 const DRAFT_VERSION = 1;
 
 type WizardStep = 1 | 2 | 3 | 4;
-const STEP_LABELS = ['کالا و دسته', 'ویژگی‌ها', 'قیمت و ارسال', 'تصویر و بازبینی'];
+const STEP_LABELS = ['کالا و دسته', 'ویژگی‌ها و قیمت', 'ارسال و بسته‌بندی', 'تصویر و بازبینی'];
 
 export interface ProposeStepError {
   field: string;
@@ -409,6 +410,23 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     setSelectedNicheIds([id]);
   };
 
+  const formId = useId();
+  const fieldId = (field: string) => `${formId}-${field}`;
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const focusStepHeading = useRef(false);
+  useEffect(() => {
+    if (!focusStepHeading.current) return;
+    focusStepHeading.current = false;
+    stepHeading.current?.focus();
+  }, [step]);
+  const changeStep = (next: WizardStep) => {
+    if (next === step) return;
+    focusStepHeading.current = true;
+    setFieldErrors({});
+    setStep2Error(null);
+    setStep(next);
+  };
+
   // ---- Per-step validation helpers ----
   const refFor = <T extends HTMLElement>(field: string) => (el: T | null) => { fieldRefs.current[field] = el; };
   const clearFieldError = (field: string) => {
@@ -419,15 +437,17 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
       return next;
     });
   };
-  const fieldError = (field: string) => fieldErrors[field] ? <p id={`propose-err-${field}`} role="alert" className="text-[11px] text-rose-700">{fieldErrors[field]}</p> : null;
+  const fieldError = (field: string) => fieldErrors[field] ? <p id={fieldId(`error-${field}`)} role="alert" className="mt-1 text-xs text-rose-700">{fieldErrors[field]}</p> : null;
   const invalidClass = (field: string) => fieldErrors[field] ? ' border-rose-400' : '';
   const invalidProps = (field: string) => fieldErrors[field]
-    ? { 'aria-invalid': true as const, 'aria-describedby': `propose-err-${field}` }
+    ? { 'aria-invalid': true as const, 'aria-describedby': fieldId(`error-${field}`) }
     : { 'aria-invalid': false as const };
   const focusField = (field: string) => {
     setTimeout(() => {
       const el = fieldRefs.current[field];
       if (!el) return;
+      const disclosure = el.closest('details');
+      if (disclosure) disclosure.open = true;
       el.scrollIntoView({ block: 'center' });
       el.focus({ preventScroll: true });
     }, 0);
@@ -504,16 +524,13 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, pickerCategories]);
   const goBack = () => {
-    setFieldErrors({});
-    setStep2Error(null);
-    setStep((s) => (s > 1 ? ((s - 1) as WizardStep) : s));
+    if (step > 1) changeStep((step - 1) as WizardStep);
   };
   const goNext = () => {
     if (step === 1) {
       const errs = validateProposeStep1({ title, brand, noBrand, category, description, selectedNicheIds, nichesReady: visibleNiches.length > 0 });
       if (errs.length > 0) { applyFieldErrors(errs); return; }
-      setFieldErrors({});
-      setStep(2);
+      changeStep(2);
       return;
     }
     if (step === 2) {
@@ -527,21 +544,19 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         blockStep2('پس از تغییر ویژگی‌ها، ترکیب‌ها را به‌روز کنید.');
         return;
       }
-      setStep2Error(null);
-      setStep(3);
+      changeStep(3);
       return;
     }
     if (step === 3) {
       const errs = validateProposeStep3({ weightGrams, lengthCm, widthCm, heightCm, packLengthCm, packWidthCm, packHeightCm });
       if (errs.length > 0) { applyFieldErrors(errs); return; }
-      setFieldErrors({});
-      setStep(4);
+      changeStep(4);
     }
   };
   const clearDraft = () => {
     imageUploadGeneration.current++;
     try { localStorage.removeItem(DRAFT_KEY); } catch { /* storage unavailable */ }
-    setStep(1);
+    changeStep(1);
     setFieldErrors({});
     setStep2Error(null);
     setTitle('');
@@ -826,8 +841,9 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
   };
   const autoHintVisible = autoAppliedSlug !== null && category?.slug === autoAppliedSlug;
 
-  const inputClass = 'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden';
-  const filledVariantCount = variants.filter((v) => v.name.trim() !== '').length;
+  const inputClass = 'w-full min-h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand';
+  const labelClass = 'mb-1.5 block text-sm font-semibold text-slate-700';
+  const focusClass = 'focus-visible:ring-2 focus-visible:ring-brand';
   const filledVariantStock = variants.filter((v) => v.name.trim() !== '').reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
 
   // ---- Step 4 review summary (read-only) ----
@@ -844,7 +860,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
     <div className="flex items-start justify-between gap-2 text-xs">
       <span className="text-slate-500 shrink-0">{label}</span>
       <span className="text-slate-800 flex-1 text-left break-words">{value}</span>
-      <button type="button" onClick={() => { setFieldErrors({}); setStep2Error(null); setStep(editStep); }} className="text-[11px] font-bold text-violet-700 shrink-0">ویرایش</button>
+      {editStep !== step && <button type="button" aria-label={`ویرایش ${label}`} onClick={() => changeStep(editStep)} className={`min-h-9 shrink-0 rounded-lg px-2 font-bold text-brand-deep ${focusClass}`}>ویرایش</button>}
     </div>
   );
 
@@ -866,30 +882,30 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setChallengeBranch('same_variant')} className={`min-h-[44px] px-2 rounded-xl border text-[11px] font-bold ${challengeBranch === 'same_variant' ? 'text-white' : 'bg-slate-50 text-slate-600 border-slate-200'}`} style={challengeBranch === 'same_variant' ? { backgroundColor: '#5d44f8', borderColor: '#5d44f8' } : undefined}>همین تنوع — دقیقاً همین محصول با همین مشخصات، با قیمت پایین‌تر</button>
-            <button type="button" onClick={() => setChallengeBranch('new_variants')} className={`min-h-[44px] px-2 rounded-xl border text-[11px] font-bold ${challengeBranch === 'new_variants' ? 'text-white' : 'bg-slate-50 text-slate-600 border-slate-200'}`} style={challengeBranch === 'new_variants' ? { backgroundColor: '#5d44f8', borderColor: '#5d44f8' } : undefined}>تنوع(های) جدید برای همین کالا</button>
+          <div role="group" aria-label="نوع درخواست بررسی کالا" className="grid gap-2 sm:grid-cols-2">
+            <button type="button" aria-pressed={challengeBranch === 'same_variant'} onClick={() => setChallengeBranch('same_variant')} className={`min-h-11 rounded-xl border px-3 text-sm font-bold ${focusClass} ${challengeBranch === 'same_variant' ? 'border-brand-deep bg-brand-deep text-white' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>همین تنوع با قیمت کمتر</button>
+            <button type="button" aria-pressed={challengeBranch === 'new_variants'} onClick={() => setChallengeBranch('new_variants')} className={`min-h-11 rounded-xl border px-3 text-sm font-bold ${focusClass} ${challengeBranch === 'new_variants' ? 'border-brand-deep bg-brand-deep text-white' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>تنوع تازه برای همین کالا</button>
           </div>
           {challengeBranch === 'same_variant' ? (
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">نام تنوع (دقیقاً مثل تنوع موجود)</label>
-                <input type="text" value={challengeVariantName} onChange={(e) => setChallengeVariantName(e.target.value)} placeholder="مثال: نارنجی" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden" />
+                <label htmlFor={fieldId('challenge-name')} className={labelClass}>نام تنوع موجود</label>
+                <input id={fieldId('challenge-name')} type="text" value={challengeVariantName} onChange={(e) => setChallengeVariantName(e.target.value)} placeholder="مثال: نارنجی" className={inputClass} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">رنگ تنوع (اگر تنوع رنگی است)</label>
-                <input type="text" value={challengeVariantColor} onChange={(e) => setChallengeVariantColor(e.target.value)} placeholder="مثال: نارنجی" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden" />
+                <label htmlFor={fieldId('challenge-color')} className={labelClass}>رنگ تنوع، در صورت وجود</label>
+                <input id={fieldId('challenge-color')} type="text" value={challengeVariantColor} onChange={(e) => setChallengeVariantColor(e.target.value)} placeholder="مثال: نارنجی" className={inputClass} />
               </div>
             </div>
           ) : (
             <div>
-              <label className="text-[10px] text-slate-600 block mb-1">نام تنوع‌های جدید (هر نام در یک خط)</label>
-              <textarea value={challengeNewNames} onChange={(e) => setChallengeNewNames(e.target.value)} placeholder="مثال: طلایی&#10;نقره‌ای" rows={3} className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none resize-none" />
+              <label htmlFor={fieldId('challenge-new-names')} className={labelClass}>نام تنوع‌های جدید، هر نام در یک خط</label>
+              <textarea id={fieldId('challenge-new-names')} value={challengeNewNames} onChange={(e) => setChallengeNewNames(e.target.value)} placeholder="مثال: طلایی&#10;نقره‌ای" rows={3} className={inputClass} />
             </div>
           )}
           <div>
-            <label className="text-[10px] text-slate-600 block mb-1">قیمت پیشنهادی تو (تومان)</label>
-            <input type="text" inputMode="numeric" value={formatSep(challengePrice)} onChange={(e) => setChallengePrice(parseSep(e.target.value))} placeholder="قیمت عمده پیشنهادی" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden" />
+            <label htmlFor={fieldId('challenge-price')} className={labelClass}>قیمت پیشنهادی تو (تومان)</label>
+            <input id={fieldId('challenge-price')} type="text" inputMode="numeric" value={formatSep(challengePrice)} onChange={(e) => setChallengePrice(parseSep(e.target.value))} placeholder="قیمت عمده پیشنهادی" className={inputClass} />
           </div>
           <div className="flex gap-2">
             <button type="button" disabled={challengeSaving} onClick={submitChallenge} className="flex-1 min-h-[44px] rounded-xl text-white text-xs font-bold disabled:opacity-50" style={{ backgroundColor: '#5d44f8' }}>{challengeSaving ? 'در حال ثبت…' : 'ثبت درخواست چالش برای بررسی کارشناس'}</button>
@@ -897,44 +913,32 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           </div>
         </div>
       )}
-    <div className="bg-white rounded-2xl p-3.5 border border-brand-border shadow-sm space-y-3">
-      <h4 className="text-xs font-bold text-slate-800">پیشنهاد کالای جدید</h4>
-      <div>
-        <div className="flex items-center" aria-label="مراحل پیشنهاد کالا">
-          {STEP_LABELS.map((label, i) => {
-            const n = (i + 1) as WizardStep;
-            const done = n < step;
-            const current = n === step;
-            const circle = (
-              <span className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${current ? 'text-white' : done ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500'}`} style={current ? { backgroundColor: '#5d44f8' } : undefined}>
-                {done ? '✓' : toPersianDigits(n)}
-              </span>
-            );
-            return (
-              <React.Fragment key={label}>
-                {i > 0 && <div className={`h-px flex-1 ${i < step ? 'bg-emerald-500' : 'bg-slate-200'}`} />}
-                {done ? (
-                  <button type="button" onClick={() => { setFieldErrors({}); setStep2Error(null); setStep(n); }} aria-label={`بازگشت به مرحلهٔ ${label}`} className="shrink-0 rounded-full">{circle}</button>
-                ) : (
-                  <span className="shrink-0 rounded-full" aria-current={current ? 'step' : undefined}>{circle}</span>
-                )}
-              </React.Fragment>
-            );
+    <div className="space-y-5 rounded-2xl border border-brand-border bg-white p-4 shadow-sm sm:p-5">
+      <div className="space-y-4 border-b border-slate-100 pb-4">
+        <ol aria-label="مراحل پیشنهاد کالا" className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+          {STEP_LABELS.map((label, index) => {
+            const position = (index + 1) as WizardStep;
+            const current = position === step;
+            const itemClass = 'flex min-h-11 w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-start text-xs leading-5';
+            const content = <><span aria-hidden="true" className="font-extrabold tabular-nums">{toPersianDigits(position)}</span><span>{label}</span></>;
+            return <li key={label} aria-current={current ? 'step' : undefined} className="min-w-0">
+              {position < step ? (
+                <button type="button" aria-label={`بازگشت به مرحلهٔ ${label}`} onClick={() => changeStep(position)} className={`${itemClass} font-bold text-brand-deep hover:bg-brand-soft ${focusClass}`}>{content}</button>
+              ) : <span className={`${itemClass} ${current ? 'bg-brand-soft font-extrabold text-brand-deep' : 'bg-slate-50 text-slate-600'}`}>{content}</span>}
+            </li>;
           })}
+        </ol>
+        <div>
+          <p className="text-xs font-medium text-slate-500">مرحلهٔ {toPersianDigits(step)} از ۴</p>
+          <h3 ref={stepHeading} tabIndex={-1} className={`w-fit scroll-mt-24 rounded-sm text-lg font-extrabold text-slate-900 ${focusClass}`}>{STEP_LABELS[step - 1]}</h3>
         </div>
-        <div className="grid grid-cols-4 mt-1">
-          {STEP_LABELS.map((label, i) => (
-            <span key={label} className={`text-[10px] text-center leading-4 ${i + 1 === step ? 'font-bold text-slate-800' : 'text-slate-500'}`}>{label}</span>
-          ))}
-        </div>
-        <p className="text-[11px] text-slate-500 mt-2">مرحلهٔ {toPersianDigits(step)} از ۴ — {STEP_LABELS[step - 1]}</p>
       </div>
 
       {step === 1 && (
         <div className="space-y-3">
           <div>
-            <label className="text-[10px] text-slate-600 block mb-1">نام کالا</label>
-            <input ref={refFor('title')} type="text" placeholder="مثال: ساعت هوشمند اولترا ۴…" value={title} onChange={(e) => { const nextTitle = e.target.value; setTitle(nextTitle); clearFieldError('title'); if (dismissedAutoRef.current && dismissedAutoRef.current.title !== nextTitle) dismissedAutoRef.current = null; }} className={inputClass + invalidClass('title')} {...invalidProps('title')} />
+            <label htmlFor={fieldId('title')} className={labelClass}>نام کالا</label>
+            <input id={fieldId('title')} ref={refFor('title')} type="text" placeholder="مثال: ساعت هوشمند اولترا ۴…" value={title} onChange={(e) => { const nextTitle = e.target.value; setTitle(nextTitle); clearFieldError('title'); if (dismissedAutoRef.current && dismissedAutoRef.current.title !== nextTitle) dismissedAutoRef.current = null; }} className={inputClass + invalidClass('title')} {...invalidProps('title')} />
             {fieldError('title')}
             {suggestions?.verdict === 'chips' && suggestions.top.length > 0 && (
               <div className="mt-1.5">
@@ -949,10 +953,10 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               </div>
             )}
           </div>
-          <div className="space-y-2 pt-1 border-t border-slate-100">
+          <div className="space-y-4 border-t border-slate-100 pt-4">
             <div>
-              <label className="text-[10px] font-bold text-slate-700 block mb-1">دسته‌بندی اصلی کالا:</label>
-              <div ref={refFor('category')} tabIndex={-1} className="outline-none">
+              <p id={fieldId('category-label')} className={labelClass}>دسته‌بندی کالا</p>
+              <div ref={refFor('category')} tabIndex={-1} role="group" aria-labelledby={fieldId('category-label')} {...invalidProps('category')} className={focusClass}>
                 <SupplierCategoryPicker value={category} reloadSignal={categoryReloadSignal} onCategoriesLoaded={setPickerCategories} onSelect={(cat) => { categoryRef.current = cat; autoSlugRef.current = null; setAutoAppliedSlug(null); setCategory(cat); setBrand(''); clearFieldError('category'); clearFieldError('brand'); }} />
               </div>
               {autoHintVisible && category && (
@@ -964,45 +968,39 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               {fieldError('category')}
             </div>
             <div>
-              <label className="text-[10px] font-bold text-slate-700 block mb-1">برند</label>
-              <select ref={refFor('brand')} aria-label="برند محصول" disabled={brandsLoading || noBrand || !category?.isLeaf} value={brand} onChange={(e) => { setBrand(e.target.value); setNoBrand(false); clearFieldError('brand'); }} className={inputClass + invalidClass('brand')} {...invalidProps('brand')}>
+              <label htmlFor={fieldId('brand')} className={labelClass}>برند محصول</label>
+              <select id={fieldId('brand')} ref={refFor('brand')} aria-label="برند محصول" disabled={brandsLoading || noBrand || !category?.isLeaf} value={brand} onChange={(e) => { setBrand(e.target.value); setNoBrand(false); clearFieldError('brand'); }} className={inputClass + invalidClass('brand')} {...invalidProps('brand')}>
                 <option value="">انتخاب برند همین دسته</option>
                 {step1Brands.map((b) => <option key={b.id} value={b.titleFa}>{b.titleFa}{b.titleEn && b.titleEn !== b.titleFa ? ` (${b.titleEn})` : ''}</option>)}
               </select>
               {fieldError('brand')}
-              <label className="flex gap-2 text-xs mt-1.5"><input type="checkbox" checked={noBrand} onChange={(e) => { setNoBrand(e.target.checked); clearFieldError('brand'); }} />بدون برند</label>
+              <label className="mt-1.5 flex min-h-11 w-fit cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={noBrand} onChange={(e) => { setNoBrand(e.target.checked); clearFieldError('brand'); }} />بدون برند</label>
             </div>
-            <div>
-              <label className="text-[10px] font-bold text-slate-700 block mb-1">موضوع کالا (نیچ) — فقط یک موضوع انتخاب کن:</label>
-              <span className="text-[9px] text-slate-400 block mb-1 leading-4">نیچ یعنی موضوع و دسته تخصصی کالا. فروشگاه‌ها کالاها را بر اساس همین موضوع‌ها پیدا و انتخاب می‌کنند.</span>
+            <fieldset>
+              <legend className={labelClass}>موضوع کالا (نیچ)</legend>
+              <p className="mb-2 text-xs leading-5 text-slate-600">یک موضوع انتخاب کن تا فروشگاه‌ها بتوانند کالا را پیدا کنند.</p>
               {showNoMappingNote && (
                 <p className="text-[10px] leading-5 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl px-2.5 py-2 mb-1.5">برای این دسته نیچ تخصصی ثبت نشده است؛ همهٔ موضوع‌ها نمایش داده می‌شوند — یکی را انتخاب کن.</p>
               )}
-              <div ref={refFor('niche')} tabIndex={-1} role="radiogroup" aria-label="موضوع کالا" aria-invalid={fieldErrors.niche ? true : false} className="flex flex-wrap gap-1.5 pt-0.5 outline-none">
+              <div ref={refFor('niche')} tabIndex={-1} {...invalidProps('niche')} className={`flex flex-wrap gap-1.5 ${focusClass}`}>
                 {visibleNiches.map((niche) => {
                   const isSelected = selectedNicheIds.includes(niche.id);
                   return (
-                    <button
-                      key={niche.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={isSelected}
-                      onClick={() => { toggleNiche(niche.id); clearFieldError('niche'); }}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${isSelected ? 'bg-brand-deep text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                    >
-                      <span>{niche.title}</span>
-                    </button>
+                    <label key={niche.id} className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-3 text-xs font-bold focus-within:ring-2 focus-within:ring-brand ${isSelected ? 'bg-brand-deep text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
+                      <input type="radio" name={fieldId('niche')} value={niche.id} checked={isSelected} className="sr-only" onChange={() => { toggleNiche(niche.id); clearFieldError('niche'); }} />
+                      {niche.title}
+                    </label>
                   );
                 })}
               </div>
               {fieldError('niche')}
-            </div>
+            </fieldset>
           </div>
           <div className="pt-2 border-t border-slate-100">
-            <label className="text-[10px] font-bold text-slate-700 block mb-1">توضیحات کامل محصول: ({toPersianDigits(Array.from(description.trim()).length)} از حداقل ۳۰ نویسه)</label>
-            <textarea ref={refFor('description')} value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError('description'); }} placeholder="توضیحات کامل درباره محصول، ویژگی‌ها، کاربردها و مزایای آن…" rows={3} className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none resize-none' + invalidClass('description')} {...invalidProps('description')} />
+            <label htmlFor={fieldId('description')} className={labelClass}>توضیحات کامل محصول</label>
+            <textarea id={fieldId('description')} ref={refFor('description')} value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError('description'); }} placeholder="ویژگی‌ها، کاربردها و مزایای کالا" rows={3} className={inputClass + invalidClass('description')} aria-describedby={fieldId('description-help')} {...invalidProps('description')} />
             {fieldError('description')}
-            <span className="text-[9px] text-slate-400 block mt-1">توضیح حداقل ۳۰ نویسه الزامی است — توضیح نازک در صفحه‌ی محصول اعتماد خریدار را کم می‌کند.</span>
+            <p id={fieldId('description-help')} className="mt-1 text-xs text-slate-600">{toPersianDigits(Array.from(description.trim()).length)} نویسه وارد شده. حداقل ۳۰ نویسه لازم است.</p>
           </div>
           <button type="button" onClick={clearDraft} className="text-[11px] text-rose-700 underline">پاک کردن پیش‌نویس و شروع دوباره</button>
         </div>
@@ -1022,28 +1020,22 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
 
       {step === 3 && (
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
-              <label className="text-[10px] text-slate-600 block mb-1">شرایط گارانتی</label>
-              <select value={warranty} onChange={(e) => { if (e.target.value !== '__request__') setWarranty(e.target.value); else setRequestingWarranty(true); }} className={inputClass}>
+              <label htmlFor={fieldId('warranty')} className={labelClass}>شرایط گارانتی</label>
+              <select id={fieldId('warranty')} value={warranty} onChange={(e) => { if (e.target.value !== '__request__') setWarranty(e.target.value); else setRequestingWarranty(true); }} className={inputClass}>
                 <option value={warranty}>{warranty}</option>
                 {warranties.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
                 <option value="__request__">گارانتی من در لیست نیست</option>
               </select>
             </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
             <div>
-              <label className="text-[10px] text-slate-600 block mb-1">موجودی انبار:</label>
-              <p className="text-xs p-2.5">{toPersianDigits(filledVariantStock)} (مجموع موجودی ردیف‌ها)</p>
+              <label htmlFor={fieldId('prep-days')} className={labelClass}>آماده‌سازی (روز)</label>
+              <input id={fieldId('prep-days')} type="text" inputMode="numeric" value={formatSep(prepDays)} onChange={(e) => setPrepDays(parseSep(e.target.value))} placeholder="۱" className={inputClass} />
             </div>
             <div>
-              <label className="text-[10px] text-slate-600 block mb-1">آماده‌سازی (روز):</label>
-              <input type="text" inputMode="numeric" value={formatSep(prepDays)} onChange={(e) => setPrepDays(parseSep(e.target.value))} placeholder="۱" min="1" max="30" className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-600 block mb-1">روش ارسال:</label>
-              <select value={fulfillment} onChange={(e) => { setFulfillment(e.target.value); setWarehouseId(''); }} className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none">
+              <label htmlFor={fieldId('fulfillment')} className={labelClass}>روش ارسال</label>
+              <select id={fieldId('fulfillment')} value={fulfillment} onChange={(e) => { setFulfillment(e.target.value); setWarehouseId(''); }} className={inputClass}>
                 <option value="warehouse">ارسال از انبار مرکزی</option>
                 <option value="supplier_direct">ارسال مستقیم از من</option>
               </select>
@@ -1051,8 +1043,8 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
           </div>
           {fulfillment === 'supplier_direct' && (
             <div className="space-y-1.5">
-              <label className="text-[10px] text-slate-600 block">مبدأ ارسال (انبار خودت):</label>
-              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none">
+              <label htmlFor={fieldId('origin')} className={labelClass}>مبدأ ارسال</label>
+              <select id={fieldId('origin')} value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} className={inputClass}>
                 {profileCityConfirmed ? (
                   <option value="">شهر انبار پروفایل{profileCity ? ` (${profileCity})` : ''}</option>
                 ) : (
@@ -1070,63 +1062,65 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               )}
             </div>
           )}
-          <div className="space-y-1.5 pt-1 border-t border-slate-100">
-            <label className="text-[10px] font-bold text-slate-700 block">ابعاد و وزن کالا (الزامی):</label>
+          <fieldset className="space-y-2 border-t border-slate-100 pt-3">
+            <legend className="pe-2 text-sm font-extrabold text-slate-800">ابعاد و وزن کالا (الزامی)</legend>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">وزن (گرم) — الزامی</label>
-                <input ref={refFor('weightDims')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(weightGrams)} onChange={(e) => { setWeightGrams(e.target.value); clearFieldError('weightDims'); }} placeholder="۱٬۲۰۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <label htmlFor={fieldId('weight')} className={labelClass}>وزن (گرم)</label>
+                <input id={fieldId('weight')} ref={refFor('weightDims')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(weightGrams)} onChange={(e) => { setWeightGrams(e.target.value); clearFieldError('weightDims'); }} placeholder="۱٬۲۰۰" className={inputClass + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">طول (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(lengthCm)} onChange={(e) => { setLengthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۴۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <label htmlFor={fieldId('length')} className={labelClass}>طول (سانتی‌متر)</label>
+                <input id={fieldId('length')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(lengthCm)} onChange={(e) => { setLengthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۴۰" className={inputClass + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">عرض (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(widthCm)} onChange={(e) => { setWidthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۳۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <label htmlFor={fieldId('width')} className={labelClass}>عرض (سانتی‌متر)</label>
+                <input id={fieldId('width')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(widthCm)} onChange={(e) => { setWidthCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۳۰" className={inputClass + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">ارتفاع (سانتی‌متر) — الزامی</label>
-                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(heightCm)} onChange={(e) => { setHeightCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۲۰" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('weightDims')} {...invalidProps('weightDims')} />
+                <label htmlFor={fieldId('height')} className={labelClass}>ارتفاع (سانتی‌متر)</label>
+                <input id={fieldId('height')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(heightCm)} onChange={(e) => { setHeightCm(e.target.value); clearFieldError('weightDims'); }} placeholder="۲۰" className={inputClass + invalidClass('weightDims')} {...invalidProps('weightDims')} />
               </div>
             </div>
             {fieldError('weightDims')}
-            <p className="text-[10px] text-slate-500 leading-5">وزن و ابعاد کالا برای تأیید پیشنهاد الزامی است؛ انبار هنگام تحویل اندازه واقعی را می‌گیرد و جایگزین می‌کند. هزینه ارسال بر اساس وزن واقعی حساب می‌شود. اگر تنوعی وزن یا ابعاد متفاوتی دارد، همان را در جزئیات همان تنوع بنویس؛ خالی بماند، همین وزن و ابعاد برای آن تنوع حساب می‌شود.</p>
-            <label className="text-[10px] font-bold text-slate-700 block pt-1">ابعاد بسته‌بندی (اختیاری — پیش‌فرض مرسوله):</label>
-            <div className="grid grid-cols-3 gap-2">
+            <p className="text-xs leading-6 text-slate-600">انبار هنگام تحویل اندازه‌ها را بررسی می‌کند. وزن یا ابعاد متفاوت هر تنوع را در جزئیات همان تنوع وارد کن.</p>
+          </fieldset>
+          <details open={Boolean(packLengthCm || packWidthCm || packHeightCm)} className="rounded-xl border border-slate-200 px-3">
+            <summary className={`min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 ${focusClass}`}>ابعاد بسته‌بندی (اختیاری)</summary>
+            <div className="grid gap-2 pb-2 sm:grid-cols-3">
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">طول بسته (سانتی‌متر)</label>
-                <input ref={refFor('packaging')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(packLengthCm)} onChange={(e) => { setPackLengthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۴۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <label htmlFor={fieldId('pack-length')} className={labelClass}>طول بسته (سانتی‌متر)</label>
+                <input id={fieldId('pack-length')} ref={refFor('packaging')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(packLengthCm)} onChange={(e) => { setPackLengthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۴۵" className={inputClass + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">عرض بسته (سانتی‌متر)</label>
-                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(packWidthCm)} onChange={(e) => { setPackWidthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۳۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <label htmlFor={fieldId('pack-width')} className={labelClass}>عرض بسته (سانتی‌متر)</label>
+                <input id={fieldId('pack-width')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(packWidthCm)} onChange={(e) => { setPackWidthCm(e.target.value); clearFieldError('packaging'); }} placeholder="۳۵" className={inputClass + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
               <div>
-                <label className="text-[10px] text-slate-600 block mb-1">ارتفاع بسته (سانتی‌متر)</label>
-                <input type="text" inputMode="numeric" value={formatPositiveIntegerInput(packHeightCm)} onChange={(e) => { setPackHeightCm(e.target.value); clearFieldError('packaging'); }} placeholder="۲۵" min="1" className={'w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-none' + invalidClass('packaging')} {...invalidProps('packaging')} />
+                <label htmlFor={fieldId('pack-height')} className={labelClass}>ارتفاع بسته (سانتی‌متر)</label>
+                <input id={fieldId('pack-height')} type="text" inputMode="numeric" value={formatPositiveIntegerInput(packHeightCm)} onChange={(e) => { setPackHeightCm(e.target.value); clearFieldError('packaging'); }} placeholder="۲۵" className={inputClass + invalidClass('packaging')} {...invalidProps('packaging')} />
               </div>
             </div>
             {fieldError('packaging')}
-            <p className="text-[10px] text-slate-500 leading-5">هزینه پست بر اساس ابعاد بسته حساب می‌شود، نه ابعاد کالا. اگر بسته‌بندی ثابتی داری، همین‌جا پیش‌فرضش را بنویس؛ انبار هنگام بسته‌بندی آن را تأیید یا اصلاح می‌کند. خالی گذاشتنش مانع تأیید نیست.</p>
-          </div>
+            <p className="pb-3 text-xs leading-6 text-slate-600">اگر بسته‌بندی ثابتی داری، اندازه‌اش را برای محاسبه هزینه پست وارد کن.</p>
+          </details>
         </div>
       )}
 
       {step === 4 && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl">
-            <input type="checkbox" id="is-original" checked={isOriginal} onChange={(e) => setIsOriginal(e.target.checked)} className="w-4 h-4 rounded accent-amber-600" />
-            <label htmlFor="is-original" className="text-[10px] text-slate-700 font-bold flex-1 cursor-pointer">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <input type="checkbox" id={fieldId('original')} checked={isOriginal} onChange={(e) => setIsOriginal(e.target.checked)} className="size-4 rounded accent-brand-deep" />
+            <label htmlFor={fieldId('original')} className="flex-1 cursor-pointer text-sm font-bold text-slate-700">
               این محصول اصل و اورجینال است
               <span className="block text-slate-500 font-normal mt-0.5">(در غیر این صورت برچسب &quot;غیر اصل&quot; روی کارت محصول نمایش داده می‌شود)</span>
             </label>
           </div>
-          <div className="space-y-1.5 pt-1 border-t border-slate-100">
-            <label className="text-[10px] font-bold text-slate-700 block mb-1">تصاویر محصول (حداکثر ۸ تصویر):</label>
+          <div className="space-y-2 border-t border-slate-100 pt-4">
+            <h4 className="text-sm font-extrabold text-slate-800">تصاویر محصول</h4>
             {uploading && (
-              <div className="flex items-center justify-center gap-2 p-3 bg-brand-soft rounded-xl border border-brand-border">
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-brand-deep border-t-transparent" />
+              <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-brand-border bg-brand-soft p-3">
+                <div aria-hidden="true" className="h-4 w-4 rounded-full border-2 border-brand-deep border-t-transparent motion-safe:animate-spin" />
                 <span className="text-xs font-bold text-brand-deep">در حال آپلود تصویر در سرور…</span>
               </div>
             )}
@@ -1151,10 +1145,10 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
                     </div>
                   ))}
                   {images.length < 8 && (
-                    <label htmlFor="product-image-input" className={`aspect-square rounded-xl border-2 border-dashed border-brand-border hover:border-brand-deep bg-brand-soft/40 flex flex-col items-center justify-center gap-1 text-brand-deep transition-colors ${uploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}>
+                    <label htmlFor="product-image-input" className={`flex aspect-square flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-brand-border bg-brand-soft/40 text-brand-deep transition-colors hover:border-brand-deep focus-within:ring-2 focus-within:ring-brand ${uploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}>
                       <ImagePlus className="w-5 h-5"  strokeWidth={1.5}/>
-                      <span className="text-[9px] font-bold">افزودن</span>
-                      <input id="product-image-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={onFiles} className="hidden" />
+                      <span className="text-xs font-bold">افزودن</span>
+                      <input id="product-image-input" aria-label="افزودن تصاویر محصول" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={onFiles} className="sr-only" />
                     </label>
                   )}
                 </div>
@@ -1165,22 +1159,23 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               </div>
             ) : (
               <div className="space-y-2">
-                <label htmlFor="product-image-input" className={`flex flex-col items-center justify-center p-3.5 border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-xl bg-slate-50 hover:bg-brand-soft/30 transition-all text-center ${uploading ? 'opacity-50 pointer-events-none cursor-not-allowed' : 'cursor-pointer'}`}>
+                <label htmlFor="product-image-input" className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 p-4 text-center transition-colors hover:border-brand focus-within:ring-2 focus-within:ring-brand ${uploading ? 'opacity-50 pointer-events-none cursor-not-allowed' : 'cursor-pointer'}`}>
                   <div className="flex items-center gap-2 text-brand-deep font-bold text-xs mb-1">
                     <ImagePlus className="w-4 h-4"  strokeWidth={1.5}/>
                     <span>انتخاب تصاویر محصول از دستگاه</span>
                   </div>
-                  <span className="text-[10px] text-slate-400">فرمت‌های مجاز: JPG, PNG, WEBP (حداکثر ۲ مگابایت) • تا ۸ تصویر</span>
-                  <input id="product-image-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={onFiles} className="hidden" />
+                  <span className="text-xs text-slate-600">تا ۸ تصویر JPG، PNG یا WEBP، هرکدام حداکثر ۲ مگابایت</span>
+                  <input id="product-image-input" aria-label="انتخاب تصاویر محصول از دستگاه" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={onFiles} className="sr-only" />
                 </label>
-                <div className="flex items-center gap-1.5">
-                  <input type="text" value={imageLink} onChange={(e) => setImageLink(e.target.value)} placeholder="یا درج لینک تصویر اینترنتی (https://…)" className="w-full text-[11px] p-2 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-mono" dir="ltr" />
-                </div>
+                <details open={Boolean(imageLink)} className="rounded-xl border border-slate-200 px-3">
+                  <summary className={`min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 ${focusClass}`}>استفاده از لینک تصویر</summary>
+                  <input aria-label="نشانی اینترنتی تصویر محصول" type="url" value={imageLink} onChange={(e) => setImageLink(e.target.value)} placeholder="https://…" className={`${inputClass} mb-3 font-mono`} dir="ltr" />
+                </details>
               </div>
             )}
           </div>
-          <div className="space-y-2 pt-2 border-t border-slate-100">
-            <h5 className="text-xs font-bold text-slate-800">بازبینی پیشنهاد</h5>
+          <div className="divide-y divide-slate-100 border-t border-slate-100 pt-4 [&>div]:min-h-10 [&>div]:items-center">
+            <h4 className="pb-2 text-sm font-extrabold text-slate-800">بازبینی پیشنهاد</h4>
             {reviewRow('نام کالا', title.trim() || '—', 1)}
             {reviewRow('دسته‌بندی', category?.pathDisplay ?? '—', 1)}
             {reviewRow('برند', noBrand ? 'بدون برند' : brand.trim() || '—', 1)}
@@ -1204,22 +1199,22 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
         </div>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-3.5 -mb-3.5 mt-3 bg-white border-t border-slate-200 px-3.5 pt-2.5" style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}>
+      <div className="sticky bottom-0 z-10 -mx-4 -mb-4 border-t border-slate-200 bg-white px-4 pt-3 sm:-mx-5 sm:-mb-5 sm:px-5" style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}>
         <div className="flex gap-2">
           {step > 1 && (
-            <button type="button" onClick={goBack} className="min-h-[44px] px-4 rounded-xl bg-slate-100 text-slate-600 text-xs font-bold">بازگشت</button>
+            <button type="button" onClick={goBack} className={`min-h-11 rounded-xl bg-slate-100 px-4 text-sm font-bold text-slate-700 ${focusClass}`}>بازگشت</button>
           )}
           {step < 4 ? (
-            <button type="button" onClick={goNext} disabled={saving || uploading} className="flex-1 min-h-[44px] rounded-xl text-white text-xs font-bold disabled:opacity-50" style={{ backgroundColor: '#5d44f8' }}>ادامه</button>
+            <button type="button" onClick={goNext} disabled={saving || uploading} className={`min-h-11 flex-1 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white disabled:opacity-50 ${focusClass}`}>ادامه</button>
           ) : (
-            <button type="button" onClick={submit} disabled={saving || uploading} className="flex-1 py-2 min-h-[44px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors shadow-2xs disabled:opacity-50">فرستادن برای بررسی مدیر</button>
+            <button type="button" onClick={submit} disabled={saving || uploading} className={`min-h-11 flex-1 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white disabled:opacity-50 ${focusClass}`}>{saving ? 'در حال ارسال…' : 'فرستادن برای بررسی مدیر'}</button>
           )}
         </div>
       </div>
       {requestingWarranty && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4">
-            <h3 className="text-sm font-bold">گارانتی من در لیست نیست</h3>
+        <SupplierDialog titleId={fieldId('warranty-dialog-title')} onDismiss={() => setRequestingWarranty(false)}>
+          <div className="space-y-3">
+            <h3 id={fieldId('warranty-dialog-title')} className="text-base font-bold">گارانتی من در لیست نیست</h3>
             <input aria-label="نام گارانتی جدید" value={warrantyRequestName} onChange={(e) => setWarrantyRequestName(e.target.value)} placeholder="نام گارانتی پیشنهادی" className="w-full rounded-xl border p-2 text-xs" />
             <p className="text-[11px] text-slate-500">توضیحات کامل محصول از فرم پیشنهاد استفاده می‌شود و حداقل ۳۰ کاراکتر لازم است. تصویر محصول نیز باید بارگذاری شده باشد.</p>
             <div className="flex gap-2">
@@ -1227,7 +1222,7 @@ export const SupplierProposeForm: React.FC<ProposeFormProps> = ({ warranties, my
               <button type="button" onClick={() => setRequestingWarranty(false)} className="rounded-xl bg-slate-100 p-2 text-xs">انصراف</button>
             </div>
           </div>
-        </div>
+        </SupplierDialog>
       )}
     </div>
     </>

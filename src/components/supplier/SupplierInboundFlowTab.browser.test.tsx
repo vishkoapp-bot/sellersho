@@ -86,6 +86,7 @@ test('supplier can resume a multi-product carton draft and print only that carto
         await (await element.toElement('button')).click();
       };
       await click('Test model');
+      assert.deepEqual(await page.$$eval('#root fieldset legend', groups => groups.map(group => group.textContent)), ['مبدأ و مقصد', 'محتویات کارتن']);
       await page.waitForSelector('option[value="active"]');
       assert.equal(await page.$('option[value="inactive"]'), null);
       await page.type('input[aria-label="تعداد Test model"]', '5');
@@ -111,9 +112,24 @@ test('supplier can resume a multi-product carton draft and print only that carto
       }
       await page.$eval(quantity, input => (input as HTMLInputElement).select());
       await page.type(quantity, '5');
-      await click('ثبت محموله و گرفتن کد کارتن');
+      await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.body.innerText.includes('CARTON01') && document.body.innerText.includes('ثبت ارسال'));
+      assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'محموله‌ها و برچسب‌ها');
       assert.deepEqual((submitted as { items: unknown }).items, [{ variant_id: 'other-sku', expected_qty: 3 }, { variant_id: 'sku', expected_qty: 5 }]);
+      const more = await page.waitForSelector('article details summary', { visible: true });
+      assert.ok(more);
+      const focusCancel = () => page.evaluate(() => {
+        const button = [...document.querySelectorAll<HTMLButtonElement>('article button')].find(item => item.textContent === 'لغو محموله');
+        if (!button) throw new Error('Could not find the shipment cancellation action');
+        button.focus();
+        return document.activeElement === button;
+      });
+      assert.equal(await focusCancel(), false);
+      await more.focus();
+      await page.keyboard.press('Enter');
+      assert.ok(await focusCancel());
+      await more.focus();
+      await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.body.innerText.includes('تعداد چیدمان‌شده') && document.body.innerText.includes('Other model') && document.body.innerText.includes('کسری ثبت‌شده'));
       await click('دیدن برچسب‌های واحد Test model');
       await page.waitForSelector('input[aria-label="انتخاب SKU001-X0001"]');

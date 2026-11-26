@@ -115,11 +115,16 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
   const [showAddForm, setShowAddForm] = useState(!!openProposal);
   const [productQuery, setProductQuery] = useState('');
   const proposalFormRef = useRef<HTMLElement>(null);
+  const proposalToggleRef = useRef<HTMLButtonElement>(null);
+  const wasProposalOpen = useRef(showAddForm);
   useEffect(() => {
     if (showAddForm) {
       proposalFormRef.current?.focus({ preventScroll: true });
       proposalFormRef.current?.scrollIntoView({ block: 'start' });
+    } else if (wasProposalOpen.current) {
+      proposalToggleRef.current?.focus();
     }
+    wasProposalOpen.current = showAddForm;
   }, [showAddForm]);
   const [subTab, setSubTab] = useState<'active_products' | 'proposed_offers' | 'my_challenges'>(showProposals ? 'proposed_offers' : 'active_products');
   const loadChallenges = useCallback(() => subTab === 'my_challenges' ? supplierApi.getMyExclusivityChallenges() : Promise.resolve(null), [subTab]);
@@ -246,15 +251,14 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
   return (
     <div className="space-y-4 pb-6 sm:space-y-5">
-      <SupplierSectionHeading title="کالاها و تنوع‌ها" description="مدل‌ها و وضعیت کالاها را ببین یا کالای جدیدی برای بررسی پیشنهاد بده." icon={<Package />}
-        action={<button type="button" aria-expanded={showAddForm} onClick={() => setShowAddForm(open => !open)}
-          className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
-          {!showAddForm && <Plus aria-hidden="true" className="size-4" />} {showAddForm ? 'بستن فرم پیشنهاد' : 'پیشنهاد کالای جدید'}
+      <SupplierSectionHeading title={showAddForm ? 'پیشنهاد کالای جدید' : 'کالاها و تنوع‌ها'} description={showAddForm ? 'پس از بازبینی می‌توانی پیشنهاد را برای کارشناس بفرستی.' : 'کالاهای تأییدشده و نتیجه بررسی پیشنهادهایت را ببین.'} icon={<Package />}
+        action={<button ref={proposalToggleRef} type="button" aria-expanded={showAddForm} aria-controls="supplier-proposal-form" onClick={() => setShowAddForm(open => !open)}
+          className={`inline-flex min-h-11 items-center gap-2 rounded-xl px-4 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${showAddForm ? 'border border-brand-border bg-white text-brand-deep hover:bg-brand-soft' : 'bg-brand-deep text-white hover:bg-[#382660]'}`}>
+          {!showAddForm && <Plus aria-hidden="true" className="size-4" />} {showAddForm ? 'بازگشت به کالاها' : 'پیشنهاد کالای جدید'}
         </button>} />
-      <SupplierResourceState loading={productsResource.loading || proposalsResource.loading} error={productsResource.error || proposalsResource.error} retry={() => { void productsResource.reload(); void proposalsResource.reload(); }} />
+      <section id="supplier-proposal-form" ref={proposalFormRef} tabIndex={-1} aria-label="فرم پیشنهاد کالای جدید" hidden={!showAddForm} className="scroll-mt-20">
       {showAddForm && (
-        <section ref={proposalFormRef} tabIndex={-1} aria-label="فرم پیشنهاد کالای جدید" className="scroll-mt-20">
-          <SupplierProposeForm
+        <SupplierProposeForm
             warranties={warranties}
             myWarehouses={myWarehouses}
             profileCity={profileCity}
@@ -262,44 +266,41 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
             sessionToken={supplierSession?.token}
             onSubmitted={async () => { setShowAddForm(false); setSubTab('proposed_offers'); await proposalsResource.reload(); await productsResource.reload(); }}
             onChallengeSubmitted={() => { setShowAddForm(false); if (subTab === 'my_challenges') void challenges.reload(); else setSubTab('my_challenges'); }}
-          />
-        </section>
+        />
       )}
-      <div role="group" aria-label="بخش‌های کالاها" className="grid gap-2 rounded-[20px] border border-[#e6e2f0] bg-white p-2 shadow-sm sm:grid-cols-3">
+      </section>
+      <div hidden={showAddForm} className="space-y-4 sm:space-y-5">
+      <div role="group" aria-label="بخش‌های کالاها" className="flex flex-wrap gap-1.5 rounded-2xl border border-brand-border bg-white p-1.5 shadow-sm">
         {([
           { id: 'active_products', label: `کالاهای تأییدشده (${toPersianDigits(supplierProducts.length)})`, note: inactiveSupplierProductsCount > 0 ? `${toPersianDigits(inactiveSupplierProductsCount)} غیرفعال` : '' },
           { id: 'proposed_offers', label: `پیشنهادهای کالا (${toPersianDigits(proposalCounts.total)})`, note: proposalCounts.pending > 0 ? `${toPersianDigits(proposalCounts.pending)} در انتظار بررسی` : '' },
           { id: 'my_challenges', label: 'درخواست‌های من', note: '' },
         ] as const).map(({ id, label, note }) => (
           <button key={id} type="button" aria-pressed={subTab === id} onClick={() => setSubTab(id)}
-            className={`min-h-11 rounded-xl px-3 py-2 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand ${subTab === id ? 'bg-[#382660] text-white' : 'bg-[#f7f4fc] text-[#382660] hover:bg-brand-soft'}`}>
+            className={`min-h-11 flex-1 rounded-xl px-3 py-2 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand ${subTab === id ? 'bg-brand-soft text-brand-deep' : 'text-slate-700 hover:bg-slate-50'}`}>
             {label}{note && <span className="ms-1.5 text-xs font-medium">· {note}</span>}
           </button>
         ))}
       </div>
-      <details className="rounded-2xl border border-[#e6e2f0] bg-white px-4 py-3 text-sm leading-7 text-slate-700">
-        <summary className="cursor-pointer font-bold text-[#261b41]">قیمت عمده یعنی چه؟</summary>
-        <p className="mt-2">قیمت عمده مبلغی است که برای فروش هر واحد از کالایت دریافت می‌کنی. قیمت فروش به مشتری جدا تعیین می‌شود.</p>
-      </details>
-
       {subTab === 'active_products' && (
-        <div className="space-y-2.5">
-          <SupplierVariantWorkspace session={supplierSession} onChanged={() => {
-            void productsResource.reload();
-            reloadPriceIncreases();
-          }} />
+        <div className="space-y-3">
+          <SupplierResourceState loading={productsResource.loading} error={productsResource.error} retry={productsResource.reload} />
           {supplierProducts.length > 0 && (
-            <div className="rounded-2xl border border-[#e6e2f0] bg-white p-4">
+            <div role="search" aria-label="جستجوی کالاهای تأییدشده" className="rounded-2xl border border-[#e6e2f0] bg-white p-4">
               <label className="block text-sm font-bold text-[#261b41]">جستجوی کالاها
                 <input type="search" value={productQuery} onChange={event => setProductQuery(event.target.value)} placeholder="نام یا برند کالا" className="mt-1 block min-h-11 w-full rounded-xl border border-slate-300 px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand sm:max-w-md" />
               </label>
             </div>
           )}
+          <SupplierVariantWorkspace session={supplierSession} onChanged={() => {
+            void productsResource.reload();
+            reloadPriceIncreases();
+          }} />
           {(nullOriginDirectCount > 0 || bulkResult) && myWarehouses.some(w => w.isActive) && (
-            <div className="rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm space-y-2">
-              <p className="text-[11px] font-bold text-slate-700">مبدأ پیش‌فرض برای کالاهای بدون مبدأ</p>
+            <details open={bulkResult ? true : undefined} className="space-y-2 rounded-2xl border border-[#e6e2f0] bg-white px-4 shadow-sm">
+              <summary className="min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">{nullOriginDirectCount > 0 ? `تعیین مبدأ برای ${toPersianDigits(nullOriginDirectCount)} کالا` : 'نتیجه تعیین مبدأ کالاها'}</summary>
               <p className="text-[10px] leading-5 text-slate-500">{nullOriginDirectCount > 0 ? `${toPersianDigits(nullOriginDirectCount)} کالا مبدأ ندارند و ویرایش موجودی‌شان بسته است؛ یک انبار را انتخاب کن تا برای همه‌شان مبدأ بگیرد.` : 'همه کالاهای ارسال مستقیم مبدأ دارند.'}</p>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 pb-3">
                 <select aria-label="انبار مبدأ کالاها" value={bulkWarehouseId} onChange={(e) => setBulkWarehouseId(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-xs focus-visible:ring-2 focus-visible:ring-brand">
                   <option value="">انتخاب انبار…</option>
                   {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
@@ -323,8 +324,8 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   تعیین مبدأ برای کالاهای بدون مبدأ
                 </button>
               </div>
-              {bulkResult && <p className="text-[10px] text-emerald-700">{bulkResult}</p>}
-            </div>
+              {bulkResult && <p role="status" className="pb-3 text-xs text-emerald-700">{bulkResult}</p>}
+            </details>
           )}
           {!productsResource.loading && !productsResource.error && !showAddForm && supplierProducts.length === 0 && <SupplierEmptyState icon={<Package />} title="هنوز کالای تأییدشده‌ای نداری." description="کالا را پیشنهاد بده و نتیجهٔ بررسی را در بخش «پیشنهادهای کالا» پیگیری کن." />}
           {query && supplierProducts.length > 0 && visibleProducts.length === 0 && (
@@ -334,14 +335,15 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
           {visibleProducts.map((product) => {
             const effectiveCost = product.supplierBaseCost;
             const effectiveStock = product.stock;
-      const effectiveSupplyOption = product.supplyOption || '1day';
-      const productActive = isSupplierProductActive(product);
-      const originWarehouse = myWarehouses.find((w: any) => w.id === product.originSupplierWarehouseId);
-      const originDisplay = resolveSupplierOriginDisplay(product, originWarehouse);
+            const effectiveSupplyOption = product.supplyOption || '1day';
+            const productActive = isSupplierProductActive(product);
+            const originWarehouse = myWarehouses.find((w: any) => w.id === product.originSupplierWarehouseId);
+            const originDisplay = resolveSupplierOriginDisplay(product, originWarehouse);
 
             return (
-              <div
+              <article
                 key={product.id}
+                aria-labelledby={`supplier-product-title-${product.id}`}
                 className={`space-y-3 rounded-[22px] border border-[#e6e2f0] p-4 shadow-sm ${productActive ? 'bg-white' : 'bg-[#f8f6fc]'}`}
               >
                 <div className="flex items-center gap-2.5">
@@ -358,9 +360,9 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-start justify-between gap-1.5">
-                      <h4 className="min-w-0 break-words text-sm font-extrabold text-[#261b41]">
+                      <h3 id={`supplier-product-title-${product.id}`} className="min-w-0 break-words text-base font-extrabold text-[#261b41]">
                         {product.title}
-                      </h4>
+                      </h3>
                       <span className="flex items-center gap-1 shrink-0">
                         {pendingPriceProductIds.has(product.id) && (
                           <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.2 rounded-full border border-amber-200">
@@ -372,10 +374,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                         </span>
                       </span>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 mt-1">
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs leading-5 text-slate-600">
                       <span>قیمت عمده تو: <strong className="text-slate-800">{formatPrice(effectiveCost)} تومان</strong></span>
                       <span>•</span>
-                      <span>موجودی: <strong className="text-brand-deep">{toPersianDigits(effectiveStock)} عدد</strong></span>
+                      <span>موجودی فعلی: <strong className="text-brand-deep">{toPersianDigits(effectiveStock)} عدد</strong></span>
                       <ProductUnitChip unitCount={sumProductUnitCount(unitCountsByProduct[product.id])} stock={effectiveStock} />
                       {product.brand ? (<><span>•</span><span>برند: <strong className="text-slate-800">{product.brand}</strong></span></>) : null}
                       {product.fulfillmentMethod ? (<><span>•</span><span>{product.fulfillmentMethod === 'supplier_direct' ? 'ارسال مستقیم از تو' : 'ارسال از انبار مرکزی'}</span></>) : null}
@@ -386,34 +388,23 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
 
               
               {product.fulfillmentMethod === 'supplier_direct' && (originEditingProduct?.id === product.id ? (
-                <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
-                  <select value={originWarehouseId} onChange={(e) => setOriginWarehouseId(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-xs focus-visible:ring-2 focus-visible:ring-brand">
+                <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
+                  <select autoFocus aria-label="انبار مبدأ این کالا" value={originWarehouseId} onChange={(e) => setOriginWarehouseId(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-xs focus-visible:ring-2 focus-visible:ring-brand">
                     <option value="">— بدون مبدأ (برای ویرایش موجودی اول انبار انتخاب کن) —</option>
                     {myWarehouses.filter((w: any) => w.isActive).map((w: any) => (<option key={w.id} value={w.id}>{w.name} — {w.cityName}</option>))}
                   </select>
                   <button type="button" disabled={saving} onClick={async () => { if (saving) return; setSaving(true); try { await supplierApi.updateProductOrigin(product.id, originWarehouseId); success('مبدأ کالا تغییر کرد.'); setOriginEditingProduct(null); setStockOriginBlockedId(null); await productsResource.reload(); } catch (cause: unknown) { error(cause instanceof Error ? cause.message : 'تغییر مبدأ انجام نشد.'); } finally { setSaving(false); } }} className="px-2.5 py-1.5 bg-brand-deep text-white font-bold text-[10px] rounded-lg">ذخیره مبدأ</button>
                   <button type="button" onClick={() => setOriginEditingProduct(null)} className="px-2 py-1.5 bg-slate-100 text-slate-600 font-bold text-[10px] rounded-lg">انصراف</button>
                 </div>
-              ) : (
-                <div className="mt-1">
-                  <button type="button" onClick={() => { setOriginEditingProduct(product); setOriginWarehouseId(product.originSupplierWarehouseId || ''); }} className="text-[10px] text-brand-deep font-bold hover:underline">تغییر مبدأ ارسال</button>
-                </div>
-              ))}
-              {(product.reviewsCount ?? 0) > 0 && (
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mt-1">
-                  <Star className="w-3 h-3 text-amber-400 fill-amber-400" strokeWidth={1.5} />
-                  <span><strong className="text-slate-800">{toPersianDigits(product.rating ?? 0)}</strong> از ۵ ({toPersianDigits(product.reviewsCount ?? 0)} نظر خریداران)</span>
-                  <button type="button" onClick={() => setReviewsProduct(product)} className="text-brand-deep font-bold hover:underline">مشاهده نظرات</button>
-                </div>
-              )}
-              {editingProduct?.id === product.id ? (
-                <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+              ) : null)}
+              {editingProduct?.id === product.id && (
+                <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
                   <input
-                    type="text" inputMode="numeric"
+                    autoFocus aria-label="قیمت عمده جدید (تومان)" type="text" inputMode="numeric"
                     value={editedCostC}
                     onChange={(e) => setEditedCostC(e.target.value)}
                     placeholder="قیمت عمده جدید (تومان)"
-                    className="flex-1 text-xs p-1.5 rounded-lg bg-slate-50 border border-slate-200 font-bold font-mono"
+                    className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-300 px-3 text-sm font-bold focus-visible:ring-2 focus-visible:ring-brand"
                   />
                   <button
                     type="button"
@@ -431,44 +422,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   >
                     انصراف
                   </button>
-                </div>
-              ) : (
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
-                  <span>{product.supplierWarranty}</span>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {onPrepareShipment && (
-                      <button type="button" onClick={() => onPrepareShipment(product.id)} className="rounded-md bg-brand-soft px-2 py-1 font-bold text-brand-deep">
-                        افزودن به محموله
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setGalleryProduct(product)}
-                      className="text-brand-deep hover:text-brand-deep font-bold flex items-center gap-1 bg-brand-soft px-2 py-0.5 rounded-md"
-                    >
-                      <ImageIcon className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>گالری تصاویر</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { invalidateUnitCounts(product.id); setVariantsProduct(product); }}
-                      className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
-                    >
-                      <Layers className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>مدل‌های کالا</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingProduct(product);
-                        setEditedCostC(effectiveCost.toString());
-                      }}
-                      className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"
-                    >
-                      <Edit3 className="w-3 h-3"  strokeWidth={1.5}/>
-                      <span>عوض‌کردن قیمت عمده</span>
-                    </button>
-                  </div>
+                  <p className="w-full text-xs text-slate-600">قیمت عمده مبلغی است که برای فروش هر واحد دریافت می‌کنی.</p>
                 </div>
               )}
 
@@ -485,7 +439,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     </div>
                   )}
                   <input
-                    aria-label="موجودی کل قابل فروش" type="text" inputMode="numeric"
+                    autoFocus aria-label="موجودی کل قابل فروش" type="text" inputMode="numeric"
                     value={editedStock}
                     onChange={(e) => setEditedStock(e.target.value)}
                     placeholder="موجودی کل قابل فروش"
@@ -547,11 +501,10 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                     انصراف
                   </button>
                 </div>
-              ) : (
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-600">
-                    موجودی فعلی: <strong className="text-brand-deep">{toPersianDigits(effectiveStock)} عدد</strong>
-                  </span>
+              ) : null)}
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                {canManageStock && editingStockProduct?.id !== product.id && (
                   <button
                     type="button"
                     onClick={() => {
@@ -561,14 +514,35 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                       setStockVariantId('');
                       setEditedStock(product.schemaVersion === 2 ? '' : effectiveStock.toString());
                     }}
-                    className="text-green-600 hover:text-green-800 font-bold flex items-center gap-1 bg-green-50 px-2 py-0.5 rounded-md text-[10px]"
+                    className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     <Package className="w-3 h-3"  strokeWidth={1.5}/>
                     <span>ویرایش موجودی</span>
                   </button>
-                </div>
-              ))}
+                )}
+                <button type="button" onClick={() => { invalidateUnitCounts(product.id); setVariantsProduct(product); }}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-brand-border px-3 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand">
+                  <Layers aria-hidden="true" className="size-4" /> مدل‌های کالا
+                </button>
+              </div>
 
+              <details className="rounded-xl bg-slate-50 px-3">
+                <summary className="min-h-11 cursor-pointer rounded-lg py-3 text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">گزینه‌های کالا</summary>
+                <div className="flex flex-wrap gap-2 pb-3">
+                  {onPrepareShipment && (
+                    <button type="button" onClick={() => onPrepareShipment(product.id)} className="min-h-11 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">افزودن به محموله</button>
+                  )}
+                  <button type="button" onClick={() => setGalleryProduct(product)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand"><ImageIcon aria-hidden="true" className="size-4" /> گالری تصاویر</button>
+                  <button type="button" onClick={() => { setEditingProduct(product); setEditedCostC(effectiveCost.toString()); }} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand"><Edit3 aria-hidden="true" className="size-4" /> عوض‌کردن قیمت عمده</button>
+                  {product.fulfillmentMethod === 'supplier_direct' && (
+                    <button type="button" onClick={() => { setOriginEditingProduct(product); setOriginWarehouseId(product.originSupplierWarehouseId || ''); }} className="min-h-11 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">تغییر مبدأ ارسال</button>
+                  )}
+                  {(product.reviewsCount ?? 0) > 0 && (
+                    <button type="button" onClick={() => setReviewsProduct(product)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand"><Star aria-hidden="true" className="size-4" /> مشاهده نظرات</button>
+                  )}
+                </div>
+                {product.supplierWarranty && <p className="pb-2 text-xs text-slate-600">گارانتی {product.supplierWarranty}</p>}
+                {(product.reviewsCount ?? 0) > 0 && <p className="pb-2 text-xs text-slate-600">امتیاز {toPersianDigits(product.rating ?? 0)} از ۵ بر اساس {toPersianDigits(product.reviewsCount ?? 0)} نظر خریداران</p>}
               {editingSupplyProduct?.id === product.id ? (
                 <div className="pt-2 border-t border-slate-100 space-y-2">
                   <div className="grid grid-cols-3 gap-1.5 text-[10px]">
@@ -585,13 +559,13 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   </div>
                 </div>
               ) : (
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-600">آماده‌سازی سفارش: <strong className="text-brand-deep">{effectiveSupplyOption === '3hour_local' ? '۳ ساعته' : effectiveSupplyOption === '3day' ? '۳ روزه' : '۱ روزه'}</strong></span>
-                  <button type="button" onClick={() => { setEditingSupplyProduct(product); setEditedSupplyOption(effectiveSupplyOption as '3hour_local' | '1day' | '3day'); }} className="text-brand-deep hover:text-brand-deep font-bold text-[10px] bg-brand-soft px-2 py-1 rounded-md">عوض‌کردن</button>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 py-2">
+                  <span className="text-xs text-slate-600">آماده‌سازی سفارش: <strong className="text-brand-deep">{effectiveSupplyOption === '3hour_local' ? '۳ ساعته' : effectiveSupplyOption === '3day' ? '۳ روزه' : '۱ روزه'}</strong></span>
+                  <button type="button" onClick={() => { setEditingSupplyProduct(product); setEditedSupplyOption(effectiveSupplyOption as '3hour_local' | '1day' | '3day'); }} className="min-h-11 rounded-lg bg-white px-3 text-xs font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">ویرایش آماده‌سازی</button>
                 </div>
               )}
-
-            </div>
+              </details>
+            </article>
             );
           })}
         </div>
@@ -600,6 +574,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
       {/* Sub-Tab 2: Proposed Product Offers Sent to Admin */}
       {subTab === 'proposed_offers' && (
         <div className="space-y-2.5">
+          <SupplierResourceState loading={proposalsResource.loading} error={proposalsResource.error} retry={proposalsResource.reload} />
           {rejectedProposals.length > 0 && (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 flex items-center justify-between gap-2 text-xs">
               <p className="text-rose-800 font-bold leading-5">{toPersianDigits(rejectedProposals.length)} پیشنهاد رد شده — علت را بخوانید، ویرایش کنید و دوباره بفرستید.</p>
@@ -648,12 +623,9 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
                   </div>
                 )}
                 {(prop.status === 'rejected' || prop.status === 'pending') && (
-                  <div className="space-y-1.5">
-                    <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="w-full py-1.5 min-h-[40px] text-[11px] font-bold rounded-xl border border-violet-200 text-violet-700 hover:bg-violet-50 transition">دیدن نظر مدیر درباره هر بخش</button>
-                    {prop.status === 'rejected' && (
-                      <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="w-full py-1.5 min-h-[40px] text-[11px] font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition">ویرایش و ارسال مجدد</button>
-                    )}
-                  </div>
+                  <button type="button" onClick={() => setFeedbackProposalId(String(prop.id))} className="min-h-11 rounded-xl border border-brand-border bg-brand-soft px-4 text-sm font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand">
+                    {prop.status === 'rejected' ? 'بازخورد و ارسال مجدد' : 'دیدن نظر مدیر درباره هر بخش'}
+                  </button>
                 )}
               </div>
             ))
@@ -701,6 +673,7 @@ export const SupplierProductsTab: React.FC<{ focusProposalId?: string | null; on
         </div>
       )}
       <SupplierAddonsWidget ownProducts={supplierProducts.map(item => ({ id: item.id, title: item.title }))} />
+      </div>
 
       {galleryProduct && (
         <SupplierGalleryModal productId={galleryProduct.id} productTitle={galleryProduct.title} onClose={() => setGalleryProduct(null)} onChanged={() => productsResource.reload()} />

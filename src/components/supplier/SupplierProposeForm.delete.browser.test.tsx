@@ -122,6 +122,13 @@ test('mobile proposal removes photos by touch, including while another photo upl
       await page.waitForSelector(thumbnails, { timeout: 5000 });
       assert.deepEqual(await photos(), [uploadedImage]);
       assert.equal(await page.$eval('img[alt="تصویر شاخص"]', image => image.getAttribute('src')), uploadedImage);
+
+      await page.click('button[aria-label="بازگشت به مرحلهٔ کالا و دسته"]');
+      await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'کالا و دسته', { timeout: 5000 });
+      const titleLabel = await page.waitForSelector('label::-p-text(نام کالا)', { timeout: 5000 });
+      assert.ok(titleLabel);
+      await titleLabel.click();
+      assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'INPUT');
     } finally { await browser.close(); }
   } finally {
     finishUpload();

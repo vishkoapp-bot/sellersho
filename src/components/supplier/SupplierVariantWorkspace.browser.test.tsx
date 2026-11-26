@@ -86,7 +86,9 @@ test('mobile supplier recovers an interrupted batch, printed labels and the orig
     await page.goto('http://127.0.0.1:' + address.port);
     await click('موجودی و قیمت عمده تنوع‌ها');
     await waitText('کالای نمونه');
+    assert.ok(!(await page.$eval('body', element => element.innerText)).includes('فایل الگو'));
     await click('ورود از Excel یا CSV');
+    await waitText('فایل الگو');
     await page.$eval('input[type="file"]', input => {
       const files = new DataTransfer();
       files.items.add(new File(['variant_id;stock;base_cost;reason\r\nsku-a;4;900;counted'], 'count.csv'));

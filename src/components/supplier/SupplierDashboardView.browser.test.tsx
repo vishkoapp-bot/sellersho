@@ -26,7 +26,10 @@ test('supplier sections, navigation history and daily workflows work on mobile a
         contents: `
           import { useState } from 'react';
           export const useStore = () => {
-            const [supplierSession, setSupplierSession] = useState({ supplierId: 'supplier', token: 'fixture', permissions: ['supplier.manage'], signedContractVersion: 1 });
+            const [supplierSession, setSupplierSession] = useState(() => ({
+              supplierId: 'supplier', token: 'fixture', signedContractVersion: 1,
+              permissions: new URLSearchParams(location.search).has('finance-only') ? ['finance.manage'] : ['supplier.manage'],
+            }));
             const [contracts, updateContracts] = useState(() => new URLSearchParams(location.search).has('contract-check')
               ? { supplierContractVersion: 2, supplierContractText: 'متن قرارداد قبلی' } : undefined);
             return { supplierSession, setSupplierSession, platformSettings: { contracts }, updateContracts, formatPrice: String, toPersianDigits: String };
@@ -173,6 +176,25 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       page.on('pageerror', cause => pageErrors.push(String(cause)));
       await page.setViewport({ width: 360, height: 800, isMobile: true, hasTouch: true });
       const base = `http://127.0.0.1:${address.port}/supplier`;
+      const menuButton = 'header button[aria-label="باز کردن منوی پنل"]';
+      const mobileMenu = 'dialog[open]:has(#supplier-menu-title)';
+      const openSection = async (id: string, mobile = true) => {
+        if (mobile) {
+          await page.click(menuButton);
+          await page.waitForSelector(mobileMenu, { visible: true });
+        }
+        const selector = `${mobile ? mobileMenu : 'aside'} a[data-section="${id}"]`;
+        const item = await page.waitForSelector(selector);
+        assert.ok(item);
+        const openGroup = await item.evaluateHandle(link => {
+          const group = link.closest('details');
+          return group && !group.open ? group.querySelector('summary') : null;
+        });
+        const summary = openGroup.asElement();
+        if (summary) await (await summary.toElement('summary')).click();
+        await item.click();
+        if (mobile) await page.waitForSelector(mobileMenu, { hidden: true });
+      };
       checkpoint = 'accepting the current contract';
       await page.goto(`${base}?contract-check=stale`);
       const contractCheckbox = await page.waitForSelector('label input[type="checkbox"]', { visible: true });
@@ -200,22 +222,31 @@ test('supplier sections, navigation history and daily workflows work on mobile a
         return counts.some(row => row.includes('سفارش‌های منتظر ارسال') && row.includes('۲'))
           && counts.some(row => row.includes('محموله‌های باز') && row.includes('۱'));
       });
-      const labels = await page.$$eval('#supplier-section optgroup', groups => groups.map(group => (group as HTMLOptGroupElement).label));
-      assert.ok(labels.includes('کالا و انبار') && labels.includes('مالی'));
+      await page.focus(menuButton);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector(mobileMenu, { visible: true });
+      const labels = await page.$$eval(`${mobileMenu} summary`, groups => groups.map(group => group.textContent?.trim()));
+      assert.ok(labels.includes('کالا و انبار') && labels.includes('سفارش و مرجوعی'));
+      assert.ok(await page.$(`${mobileMenu} a[aria-current="page"][data-section="overview"]`));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(mobileMenu, { hidden: true });
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'باز کردن منوی پنل');
+      assert.equal(await page.$eval('main details summary', summary => summary.closest('details')?.open), false);
       const click = async (label: string) => {
-        const button = await page.waitForFunction(text => [...document.querySelectorAll<HTMLButtonElement>('main button')].find(item => item.offsetWidth && item.innerText.includes(text)), {}, label);
-        const element = button.asElement();
+        const target = await page.waitForFunction(text => [...document.querySelectorAll<HTMLElement>('main button, main a, main summary')].find(item => item.offsetWidth && item.innerText.includes(text)), {}, label);
+        const element = target.asElement();
         assert.ok(element);
-        await (await element.toElement('button')).click();
+        const tag = await element.evaluate(target => (target as Element).localName as 'a' | 'button' | 'summary');
+        await (await element.toElement(tag)).click();
       };
       await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('در انتظار تأیید روش ارسال'), { timeout: 3000 });
-      assert.ok(!(await page.$eval('main', main => main.textContent))?.includes('همه‌چیز آماده است'));
-      await page.tap('header button[aria-label="اعلان‌ها"]');
+      assert.ok(!(await page.$eval('main', main => main.textContent))?.includes('راه‌اندازی حساب کامل است'));
+      await page.tap('header button[aria-label^="اعلان‌ها"]');
       await page.waitForSelector('dialog[open] #supplier-notifications-title', { visible: true });
       await page.keyboard.press('Escape');
       await page.waitForSelector('dialog[open]', { hidden: true });
       checkpoint = 'opening order filters and testing history';
-      await click('رسیدگی به سفارش‌های دیرکرده');
+      await click('سفارش‌های دیرکرده');
       await page.waitForSelector('time[datetime="2025-01-01T00:00:00Z"]');
       assert.equal(new URL(page.url()).searchParams.get('view'), 'overdue');
       assert.equal(workFilters.at(-1), 'overdue');
@@ -228,9 +259,10 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.reload();
       await page.waitForFunction(() => document.querySelector('main [aria-label="وضعیت سفارش"] button[aria-pressed="true"]')?.textContent?.includes('منتظر ارسال'));
       await page.goBack();
-      await page.waitForFunction(() => (document.querySelector('#supplier-section') as HTMLSelectElement)?.value === 'overview');
+      await page.waitForSelector('aside a[data-section="overview"][aria-current="page"]');
       await page.goForward();
-      await page.waitForFunction(() => (document.querySelector('#supplier-section') as HTMLSelectElement)?.value === 'orders');
+      await page.waitForSelector('aside a[data-section="orders"][aria-current="page"]');
+      await page.waitForFunction(() => document.activeElement?.id === 'supplier-main');
       await click('ثبت اطلاعات ارسال');
       await page.waitForSelector('dialog[open] #supplier-shipping-tracking', { visible: true });
       await page.keyboard.press('Escape');
@@ -251,10 +283,10 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       assert.deepEqual(warehousePages, ['1', '2']);
       checkpoint = 'opening the carton workflow from the work queue';
       directStatus = 'enabled';
-      await page.select('#supplier-section', 'overview');
-      await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('همه‌چیز آماده است'));
+      await openSection('overview');
+      await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('راه‌اندازی حساب کامل است'));
       assert.ok(!(await page.$eval('main', main => main.textContent))?.includes('اولین بار را به انبار بفرست'));
-      await click('پیگیری محموله‌ها');
+      await click('محموله‌های باز');
       await page.waitForFunction(() => document.querySelector('main [aria-current="step"]')?.textContent?.includes('ارسال و برچسب‌ها'));
       assert.equal(new URL(page.url()).searchParams.get('view'), 'open');
       await click('آماده‌سازی محموله');
@@ -278,6 +310,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await click('بستن جزئیات');
       await page.waitForSelector(detail, { hidden: true });
       checkpoint = 'opening the carton support dialog';
+      await click('گزینه‌های بیشتر');
       await click('پشتیبانی ارسال');
       await page.waitForFunction(() => document.querySelector('dialog[open]')?.textContent?.includes('DRAFT'));
       assert.deepEqual(cartonSupportReads, [{ kind: 'shipment', referenceType: 'carton', referenceId: 'a' }]);
@@ -298,12 +331,15 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.waitForFunction(() => document.querySelector('main')?.textContent?.includes('محموله‌ای با این کد یا وضعیت پیدا نشد.'));
       assert.deepEqual(shipmentUpdates, [{ shipment_id: 'a', action: 'cancel' }]);
       await click('ارسال و برچسب‌ها');
-      await page.waitForFunction(() => document.querySelector('main article')?.textContent?.includes('لغو شده'));
+      await page.waitForFunction(() => [...document.querySelectorAll<HTMLElement>('main article')]
+        .some(article => article.offsetWidth > 0 && article.querySelector('h4 bdi')?.textContent === 'DRAFT' && article.textContent?.includes('لغو شده')));
       checkpoint = 'testing product filters, images and reviews';
-      await page.select('#supplier-section', 'products');
+      await page.waitForFunction(() => document.querySelector('[data-toast-stack]')?.textContent?.includes('محموله لغو شد'));
+      await openSection('products');
       await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('کفش سفید'));
       await page.type('input[placeholder="نام یا برند کالا"]', 'كيف');
       await page.waitForFunction(() => { const content = document.querySelector('main')?.innerText ?? ''; return content.includes('کیف دستی') && !content.includes('کفش سفید'); });
+      await click('گزینه‌های کالا');
       await click('گالری تصاویر');
       const deletePhoto = await page.waitForSelector('dialog[open] button[aria-label="حذف تصویر 1"]', { visible: true, timeout: 3500 });
       assert.ok(deletePhoto);
@@ -325,7 +361,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       await page.keyboard.press('Escape');
       await page.waitForSelector('dialog[open]', { hidden: true });
       checkpoint = 'testing demand insight and opening a proposal';
-      await page.select('#supplier-section', 'demand-insight');
+      await openSection('demand-insight');
       await click('۷ روز اخیر');
       await page.waitForSelector('main [role="alert"]');
       assert.ok((await page.$eval('main [aria-label="بازهٔ زمانی تقاضا"] button[aria-pressed="true"]', button => button.textContent))?.includes('۷ روز اخیر'));
@@ -334,7 +370,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       assert.equal(new URL(page.url()).searchParams.get('view'), 'propose');
       await page.waitForSelector('section[aria-label="فرم پیشنهاد کالای جدید"]', { visible: true });
       checkpoint = 'validating a withdrawal and the account statement';
-      await page.select('#supplier-section', 'settlement');
+      await openSection('settlement');
       await click('ثبت درخواست برداشت');
       assert.equal(await page.$eval('input[name="holder"]', input => input.getAttribute('aria-invalid')), 'true');
       assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'holder');
@@ -370,34 +406,42 @@ test('supplier sections, navigation history and daily workflows work on mobile a
       assert.equal(payoutAttempts[1].key, payoutAttempts[0].key);
       checkpoint = 'retrying the supplier profile';
       failNextProfileRead = true;
-      await page.select('#supplier-section', 'profile');
+      await openSection('profile');
       await page.waitForSelector('main [role="alert"]');
       assert.equal(await page.$('main input'), null);
       await click('تلاش دوباره');
       await page.waitForFunction(() => [...document.querySelectorAll<HTMLInputElement>('main input')].some(input => input.value === 'تهران'));
 
       checkpoint = 'testing the inventory dialog';
-      await page.select('#supplier-section', 'inventory');
+      await openSection('inventory');
       await click('عوض‌کردن موجودی');
       await page.waitForSelector('dialog[open] form', { visible: true, timeout: 3000 });
       await page.keyboard.press('Escape');
       await page.waitForSelector('dialog[open]', { hidden: true });
       assert.ok(await page.evaluate(() => document.activeElement?.textContent?.includes('عوض‌کردن موجودی')));
 
-      const sections = await page.$$eval('#supplier-section option', options => options.map(option => ({ id: (option as HTMLOptionElement).value, label: option.textContent })));
+      const sections = await page.$$eval('aside a[data-section]', links => links.map(link => ({ id: (link as HTMLElement).dataset.section!, label: link.textContent?.trim() })));
       assert.equal(sections.length, 17);
-      for (const viewport of [{ width: 360, height: 800, isMobile: true, hasTouch: true }, { width: 1440, height: 900 }]) {
+      for (const viewport of [{ width: 320, height: 800, isMobile: true, hasTouch: true }, { width: 1440, height: 900 }]) {
         await page.setViewport(viewport);
         for (const { id, label } of sections) {
           checkpoint = `checking ${id} at ${viewport.width}px`;
-          if (viewport.isMobile) await page.select('#supplier-section', id);
-          else await page.click(`aside a[data-section="${id}"]`);
+          await openSection(id, Boolean(viewport.isMobile));
           await page.waitForFunction(expected => document.querySelector('header h1')?.textContent === expected, { timeout: 4000 }, label)
             .catch(cause => { throw new Error(`Unable to open ${id} at ${viewport.width}px (${pageErrors.join(', ')})`, { cause }); });
           await page.waitForNetworkIdle({ idleTime: 60 });
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${id} overflows at ${viewport.width}px`);
         }
       }
+      checkpoint = 'checking the navigation of a finance-only account';
+      await page.setViewport({ width: 360, height: 800, isMobile: true, hasTouch: true });
+      await page.goto(`${base}?finance-only=1&section=orders`);
+      await page.waitForFunction(() => document.querySelector('header h1')?.textContent === 'تسویه‌حساب');
+      assert.ok((await page.$eval('main', element => element.innerText)).includes('این بخش در دسترس حساب تو نیست'));
+      await page.click(menuButton);
+      await page.waitForSelector(mobileMenu, { visible: true });
+      const permitted = await page.$$eval(`${mobileMenu} a[data-section]`, links => links.map(link => (link as HTMLElement).dataset.section));
+      assert.deepEqual(permitted, ['settlement', 'support']);
       assert.deepEqual(pageErrors, []);
     } finally { await browser.close(); }
   } finally {

@@ -5,12 +5,15 @@ import { useStore } from '../../context/StoreContext';
 import { supplierApi } from '../../services/supplierApi';
 import { tokenStore } from '../../services/apiClient';
 import { newUuid } from '../../services/uuid';
-import { ProvinceCityPicker } from '../ProvinceCityPicker';
+import { ProvinceCityPicker, toLatinDigits } from '../ProvinceCityPicker';
 import { SupplierSLACard } from './SupplierSLACard';
 import { ContextSupportButton } from '../support/ContextSupportButton';
 
 import { useToast } from "../../context/ToastContext";import { authApi } from '../../services/authApi';
 import { BarChart3, Banknote, Package, ShoppingBag, TrendingUp, RotateCcw, Warehouse, Truck, User, Info, Plus, Pencil, CheckCircle2, Clock, XCircle, Send, FileText, Loader2 } from 'lucide-react';
+
+const detailSummaryClass = 'min-h-11 cursor-pointer rounded-lg py-2.5 text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand';
+const serviceFieldClass = 'mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand';
 
 // FIX 17: supplier tabs added to reach live's 17-tab structure.
 // Analytics / customer-returns / my-warehouses / shipping-methods /
@@ -140,37 +143,43 @@ export const SupplierAnalyticsTab: React.FC = () => {
   return (
     <div className="space-y-3 pb-6">
       <SupplierSectionHeading title="تحلیل فروش" description="روند فروش، کالاهای پرفروش و نتیجهٔ مرجوعی‌ها را بررسی کن." icon={<BarChart3 />} />
-      <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-2">
-        <p className="text-[11px] leading-6 text-slate-600">اینجا می‌بینی از کالاهای خودت چقدر فروش رفته، چقدرش برگشته و موجودی هر کالا با همین سرعت فروش چند روز دیگر تمام می‌شود. فقط کالاهای خودت را می‌بینی.</p>
-        <p className="text-[11px] font-bold text-slate-700">مبلغ پایه یعنی چه؟</p>
-        <p className="text-[11px] leading-6 text-slate-500">مبلغ پایه همان قیمت عمده توست که مبنای تسویه‌حساب تو با پلتفرم است؛ قیمت فروش به مشتری در این عددها نیست.</p>
-      </div>
       <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && data && !hasSales && (
         <SupplierEmptyState icon={<BarChart3 />} title="هنوز فروشی ثبت نشده است." description="پس از اولین سفارش پرداخت‌شده، آمار فروش و روند مرجوعی‌ها اینجا نمایش داده می‌شود." />
       )}
       {!loading && !loadError && data && hasSales && (<>
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           {cards.map((u) => (
             <div key={u.label} className="bg-white rounded-2xl border border-slate-100 p-3.5">
               <div className="flex items-center gap-1.5 mb-2">
                 <span className="w-7 h-7 rounded-xl bg-brand-soft border border-brand-border flex items-center justify-center shrink-0"><u.icon className="w-3.5 h-3.5 text-brand-deep" strokeWidth={1.5} /></span>
-                <span className="text-[10px] font-bold text-slate-500">{u.label}</span>
+                <span className="text-xs font-bold text-slate-700">{u.label}</span>
               </div>
-              <div className="text-base font-extrabold text-slate-900">{u.value}{u.unit && (<span className="text-[10px] font-normal text-slate-400 mr-1">{u.unit}</span>)}</div>
+              <div className="break-words text-base font-extrabold text-slate-900">{u.value}{u.unit && (<span className="ms-1 text-xs font-normal text-slate-600">{u.unit}</span>)}</div>
             </div>
           ))}
         </div>
         <section className="bg-white rounded-2xl border border-slate-100 p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.5} />روند مبلغ پایه — ۳۰ روز گذشته</h3>
-            <span className="text-[10px] text-slate-400">به تومان</span>
+            <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-800"><TrendingUp aria-hidden="true" className="size-4 text-brand-deep" strokeWidth={1.5} />مبلغ پایه در ۳۰ روز گذشته</h3>
+            <span className="text-xs text-slate-600">تومان</span>
           </div>
           <AnalyticsChart daily={data.daily} formatPrice={formatPrice} toPersianDigits={toPersianDigits} />
-          <p className="text-[10px] text-slate-400 mt-2">هر ستون، مبلغ پایه فروش یک روز است؛ روی هر ستون نگه داری، تعداد و سفارش‌های همان روز را می‌بینی.</p>
+          <details className="mt-2 border-t border-slate-100">
+            <summary className={detailSummaryClass}>فروش روزانه</summary>
+            <ul className="divide-y divide-slate-100 text-sm text-slate-700">
+              {data.daily.map((day: { date: string; revenue: number; orders: number }) => (
+                <li key={day.date} className="flex flex-wrap justify-between gap-x-3 py-2">
+                  <time dateTime={day.date}>{formatFaDay(day.date)}</time>
+                  <span>{formatPrice(day.revenue)} تومان · {toPersianDigits(day.orders)} سفارش</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs leading-6 text-slate-600">مبلغ پایه بر اساس قیمت عمده، یعنی مبنای تسویه‌حساب تو با پلتفرم، محاسبه می‌شود.</p>
+          </details>
         </section>
         <section className="bg-white rounded-2xl border border-slate-100 p-4 space-y-3">
-          <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5"><RotateCcw className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.5} />مرجوعی و نتیجه بررسی کیفیت</h3>
+          <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-800"><RotateCcw aria-hidden="true" className="size-4 text-brand-deep" strokeWidth={1.5} />مرجوعی و نتیجهٔ بررسی کیفیت</h3>
           <div className="grid grid-cols-2 gap-2 text-center">
             <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-2.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 mx-auto mb-1" strokeWidth={1.5} />
@@ -199,8 +208,8 @@ export const SupplierAnalyticsTab: React.FC = () => {
         </section>
         {(data.products || []).length > 0 && (
           <section className="bg-white rounded-2xl border border-slate-100 p-4">
-            <h3 className="text-xs font-extrabold text-slate-800 mb-3">کالاهای تو، یکی‌یکی</h3>
-            <div className="overflow-x-auto">
+            <h3 id="supplier-analytics-products" className="mb-3 text-sm font-extrabold text-slate-800">فروش و موجودی به تفکیک کالا</h3>
+            <div role="region" aria-labelledby="supplier-analytics-products" tabIndex={0} className="overflow-x-auto rounded-md focus-visible:ring-2 focus-visible:ring-brand">
               <table className="w-full text-[11px] min-w-[560px]">
                 <thead><tr className="text-slate-400 border-b border-slate-100">
                   <th className="text-right font-bold py-2 pl-2">کالا</th>
@@ -228,7 +237,7 @@ export const SupplierAnalyticsTab: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            <p className="text-[10px] text-slate-400 mt-2">«روزهای باقی‌مانده» یعنی موجودی فعلی تقسیم بر میانگین فروش روزانه ۳۰ روز اخیر؛ کالای بدون فروش در ۳۰ روز اخیر با «—» مشخص است.</p>
+            <p className="mt-2 text-xs leading-6 text-slate-600">«روزهای باقی‌مانده» برآورد مدت ماندگاری موجودی با سرعت فروش ۳۰ روز اخیر است. برای کالاهایی که در این مدت فروش نداشته‌اند، «—» نمایش داده می‌شود.</p>
           </section>
         )}
       </>)}
@@ -315,7 +324,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
   };
   const submitBack = async (e: React.FormEvent, item: any, maxQty: number) => {
     e.preventDefault();
-    const qty = Number(formQty);
+    const qty = Number(toLatinDigits(formQty));
     if (!Number.isSafeInteger(qty) || qty <= 0 || qty > maxQty || !formReason.trim() || submitting) {
       error(`تعداد را درست وارد کن (حداکثر ${toPersianDigits(maxQty)} عدد) و دلیل درخواست را بنویس.`);
       return;
@@ -353,8 +362,7 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <SupplierSectionHeading title="مرجوعی‌های مشتریان" description="وضعیت مرجوعی‌ها را ببین و کالایی را که انبار تحویل گرفته برای بازگشت درخواست کن." icon={<RotateCcw />} />
-      <p className="rounded-2xl border border-[#e6e2f0] bg-white p-3 text-sm leading-6 text-slate-700">بعد از تحویل کالا به انبار، درخواست بازگشت را ثبت کن. انبار درخواست را بررسی می‌کند و هزینهٔ ارسال به عهدهٔ توست. این هزینه از کیف پول کسر نمی‌شود.</p>
+      <SupplierSectionHeading title="مرجوعی‌های مشتریان" description="وضعیت مرجوعی‌ها را پیگیری کن و پس از رسیدن کالا به انبار، درخواست بازپس‌گیری بده." icon={<RotateCcw />} />
       <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && returns.length === 0 && <SupplierEmptyState icon={<RotateCcw />} title="مرجوعی‌ای برای کالاهای تو ثبت نشده است." description="وقتی مشتری کالایی را مرجوع کند، وضعیت آن را همین‌جا می‌بینی." />}
       {!loadError && returns.map((ret: any, ri: number) => (
@@ -366,10 +374,6 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
             <span className="text-[10px] text-slate-400">{formatFaDate(ret.createdAt)}</span>
             <ContextSupportButton role="supplier" kind="return" referenceId={ret.returnId} className="ms-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand-border px-2.5 text-xs font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand" />
           </div>
-          {ret.reason && (<p className="text-slate-600">دلیل مرجوعی مشتری: {ret.reason}</p>)}
-          {(ret.destinationName || ret.warehouseName) && (<p className="text-slate-600">انبار مقصد: <b>{ret.destinationName || ret.warehouseName}</b>{ret.destinationType === "supplier" ? " (انبار تأمین‌کننده)" : ret.destinationType === "central" ? " (انبار مرکزی)" : ""}{ret.warehouseCity ? ` — ${ret.warehouseCity}` : ""}</p>)}
-          {ret.returnShippingBearer ? (ret.returnShippingBearer === "supplier" ? (<p className="rounded-xl bg-amber-50 p-2 text-amber-800">هزینه مرجوعی به عهده شماست{ret.returnShippingAmount != null ? `: ${formatPrice(ret.returnShippingAmount)} تومان` : ""} — پس از تأیید انبار به کیف پول مشتری واریز می‌شود.</p>) : ret.returnShippingBearer === "mixed" ? (<p className="rounded-xl bg-violet-50 p-2 text-violet-800">بخشی از هزینه مرجوعی به عهده شماست و بخشی به عهده مشتری است{ret.returnShippingAmount != null ? ` (مجموع هزینه مرجوعی: ${formatPrice(ret.returnShippingAmount)} تومان)` : ""}.</p>) : (<p className="rounded-xl bg-slate-50 p-2 text-slate-600">هزینه مرجوعی به عهده مشتری است{ret.returnShippingAmount != null ? ` (${formatPrice(ret.returnShippingAmount)} تومان)` : ""}.</p>)) : (<p className="rounded-xl bg-slate-50 p-2 text-slate-500">هزینه مرجوعی هنوز توسط انبار تعیین نشده است.</p>)}
-          {(chargesByReturn.get(ret.returnId) || []).map((ch: any) => (<p key={ch.id} className="rounded-xl border border-amber-100 bg-white p-2 text-[11px] leading-5 text-slate-600"><span className="font-bold text-slate-700">توضیح تسویه ({ch.bearer === "supplier" ? "به عهده شما" : "به عهده مشتری"}، {formatPrice(ch.amount)} تومان): </span>{ch.reason}</p>))}
           {(ret.items || []).map((item: any) => {
             const back = (item.backRequests || [])[0];
             const heldQty = (item.backRequests || []).reduce((sum: number, b: any) => (b.status === "rejected" || b.status === "cancelled" ? sum : sum + b.quantity), 0);
@@ -398,36 +402,53 @@ export const SupplierCustomerReturnsTab: React.FC = () => {
                       <span className={`rounded-full px-2 py-0.5 text-[10px] ${BACK_STATUS_CLASSES[back.status] || "bg-slate-100 text-slate-600"}`}>{BACK_STATUS_LABELS[back.status] || back.status}</span>
                       <span className="text-slate-500">تعداد درخواستی: {toPersianDigits(back.quantity)}</span>
                     </div>
-                    <ol className="mt-2 space-y-1.5 border-r-2 border-slate-100 pr-3">
-                      {steps.map((s: any, si: number) => (<li key={si} className={`flex items-center gap-2 text-[11px] ${s.done ? "text-slate-700" : "text-slate-400"}`}>{s.icon}<span>{s.label}</span>{s.at && (<span className="text-slate-400">· {formatFaDate(s.at)}</span>)}</li>))}
-                      {back.trackingNumber && (<li className="text-[11px] text-slate-500">کد رهگیری مرسوله برگشتی: <b className="text-slate-700">{back.trackingNumber}</b></li>)}
-                      {back.reviewReason && (<li className="text-[11px] text-slate-500">توضیح انبار: {back.reviewReason}</li>)}
-                    </ol>
+                    {back.trackingNumber && <p className="text-sm text-slate-700">کد رهگیری مرسوله برگشتی <bdi dir="ltr" className="font-bold">{back.trackingNumber}</bdi></p>}
+                    {back.reviewReason && <p className="text-sm text-slate-700">توضیح انبار {back.reviewReason}</p>}
                     <div className="flex gap-2 pt-1">
-                      {back.status === "requested" && (<button type="button" disabled={busyBackId === back.id} onClick={() => cancelBack(back)} className="rounded-xl border px-3 py-2 min-h-[40px] font-bold text-slate-600">{busyBackId === back.id ? "…" : "لغو درخواست"}</button>)}
-                      {back.status === "shipped_back" && (<button type="button" disabled={busyBackId === back.id} onClick={() => completeBack(back)} className="rounded-xl bg-brand-deep px-3 py-2 min-h-[40px] text-white font-bold">{busyBackId === back.id ? "…" : "کالا را تحویل گرفتم"}</button>)}
+                      {back.status === "requested" && (<button type="button" disabled={!!busyBackId} onClick={() => cancelBack(back)} className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">{busyBackId === back.id ? "در حال لغو…" : "لغو درخواست"}</button>)}
+                      {back.status === "shipped_back" && (<button type="button" disabled={!!busyBackId} onClick={() => completeBack(back)} className="min-h-11 rounded-xl bg-brand-deep px-3 py-2 font-bold text-white focus-visible:ring-2 focus-visible:ring-brand">{busyBackId === back.id ? "در حال ثبت…" : "کالا را تحویل گرفتم"}</button>)}
                     </div>
+                    <details>
+                      <summary className={detailSummaryClass}>مراحل بازپس‌گیری</summary>
+                      <ol className="space-y-1.5 border-s-2 border-slate-200 ps-3">
+                        {steps.map(step => <li key={step.label} className="flex flex-wrap items-center gap-x-2 text-sm text-slate-700"><span aria-hidden="true">{step.icon}</span><span>{step.label}</span><span className="text-slate-600">{step.done ? formatFaDate(step.at) : 'در انتظار'}</span></li>)}
+                      </ol>
+                    </details>
                   </div>
                 )}
-                {!back && !item.receivedAt && (<p className="text-[11px] text-slate-400">این کالا هنوز به انبار نرسیده؛ پس از تحویل در انبار می‌توانید درخواست عودت دهید.</p>)}
+                {!back && !item.receivedAt && (<p className="text-sm text-slate-600">پس از رسیدن کالا به انبار می‌توانی درخواست بازپس‌گیری بدهی.</p>)}
                 {openFormId === item.returnItemId ? (
                   <form onSubmit={(e) => submitBack(e, item, maxForForm)} className="space-y-2">
-                    <label className="block">تعداد برای عودت (حداکثر {toPersianDigits(maxForForm)})<input required disabled={submitting} inputMode="numeric" value={formQty} onChange={(e) => setFormQty(e.target.value)} className="mt-1 w-full rounded-xl border p-2 min-h-[40px]" /></label>
-                    <label className="block">دلیل درخواست عودت<input required disabled={submitting} value={formReason} onChange={(e) => setFormReason(e.target.value)} placeholder="مثلاً بررسی و تعیین تکلیف کالای مرجوعی" className="mt-1 w-full rounded-xl border p-2 min-h-[40px]" /></label>
+                    <label className="block">تعداد (حداکثر {toPersianDigits(maxForForm)})<input autoFocus required disabled={submitting} inputMode="numeric" value={formQty} onChange={(e) => setFormQty(e.target.value)} className={serviceFieldClass} /></label>
+                    <label className="block">دلیل بازپس‌گیری<input required disabled={submitting} value={formReason} onChange={(e) => setFormReason(e.target.value)} placeholder="مثلاً بررسی کیفیت کالا" className={serviceFieldClass} /></label>
+                    <p className="text-xs leading-6 text-slate-600">انبار درخواست را بررسی می‌کند. هزینهٔ ارسال کالا به تو بر عهدهٔ خودت است و جدا از کیف پول پرداخت می‌شود.</p>
                     <div className="flex gap-2">
-                      <button disabled={submitting} className="rounded-xl bg-brand-deep px-3 py-2 min-h-[44px] text-white font-bold">{submitting ? "ثبت…" : "ثبت درخواست عودت"}</button>
-                      <button type="button" disabled={submitting} onClick={() => { setOpenFormId(""); setFormQty(""); setFormReason(""); }} className="rounded-xl border px-3 py-2 min-h-[40px] font-bold text-slate-600">انصراف</button>
+                      <button disabled={submitting} className="min-h-11 rounded-xl bg-brand-deep px-3 py-2 font-bold text-white focus-visible:ring-2 focus-visible:ring-brand">{submitting ? "در حال ثبت…" : "ثبت درخواست عودت"}</button>
+                      <button type="button" disabled={submitting} onClick={() => { setOpenFormId(""); setFormQty(""); setFormReason(""); }} className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand">انصراف</button>
                     </div>
                   </form>
                 ) : (
                   <>
-                    {canRequest && (<button type="button" onClick={() => { setOpenFormId(item.returnItemId); setFormQty(String(item.quantity)); setFormReason(""); }} className="rounded-xl bg-brand-soft px-3 py-2 min-h-[40px] font-bold text-brand-deep flex items-center gap-1.5"><RotateCcw className="w-4 h-4" strokeWidth={1.5} />درخواست عودت کالاهای مرجوعی</button>)}
-                    {!canRequest && back && item.receivedAt && (back.status === "rejected" || back.status === "cancelled" || (back.status === "completed" && remaining > 0)) && (<button type="button" onClick={() => { setOpenFormId(item.returnItemId); setFormQty(String(maxForForm)); setFormReason(""); }} className="rounded-xl bg-brand-soft px-3 py-2 min-h-[40px] font-bold text-brand-deep flex items-center gap-1.5"><RotateCcw className="w-4 h-4" strokeWidth={1.5} />درخواست دوباره عودت کالا</button>)}
+                    {(canRequest || (back && item.receivedAt && (back.status === "rejected" || back.status === "cancelled" || (back.status === "completed" && remaining > 0)))) && (
+                      <button type="button" onClick={() => { setOpenFormId(item.returnItemId); setFormQty(String(maxForForm)); setFormReason(""); }} className="flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-deep px-3 py-2 font-bold text-white focus-visible:ring-2 focus-visible:ring-brand">
+                        <RotateCcw aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                        {canRequest ? "درخواست بازپس‌گیری کالا" : "درخواست دوباره بازپس‌گیری"}
+                      </button>
+                    )}
                   </>
                 )}
               </div>
             );
           })}
+          <details className="border-t border-slate-100">
+            <summary className={detailSummaryClass}>دلیل، مقصد و هزینهٔ مرجوعی</summary>
+            <div className="space-y-2 pb-2">
+              {ret.reason && (<p className="text-slate-600">دلیل مرجوعی مشتری: {ret.reason}</p>)}
+              {(ret.destinationName || ret.warehouseName) && (<p className="text-slate-600">انبار مقصد: <b>{ret.destinationName || ret.warehouseName}</b>{ret.destinationType === "supplier" ? " (انبار تأمین‌کننده)" : ret.destinationType === "central" ? " (انبار مرکزی)" : ""}{ret.warehouseCity ? ` — ${ret.warehouseCity}` : ""}</p>)}
+              {ret.returnShippingBearer ? (ret.returnShippingBearer === "supplier" ? (<p className="rounded-xl bg-amber-50 p-2 text-amber-800">هزینه مرجوعی به عهده شماست{ret.returnShippingAmount != null ? `: ${formatPrice(ret.returnShippingAmount)} تومان` : ""} — پس از تأیید انبار به کیف پول مشتری واریز می‌شود.</p>) : ret.returnShippingBearer === "mixed" ? (<p className="rounded-xl bg-violet-50 p-2 text-violet-800">بخشی از هزینه مرجوعی به عهده شماست و بخشی به عهده مشتری است{ret.returnShippingAmount != null ? ` (مجموع هزینه مرجوعی: ${formatPrice(ret.returnShippingAmount)} تومان)` : ""}.</p>) : (<p className="rounded-xl bg-slate-50 p-2 text-slate-600">هزینه مرجوعی به عهده مشتری است{ret.returnShippingAmount != null ? ` (${formatPrice(ret.returnShippingAmount)} تومان)` : ""}.</p>)) : (<p className="rounded-xl bg-slate-50 p-2 text-slate-600">انبار هنوز هزینهٔ مرجوعی را تعیین نکرده است.</p>)}
+              {(chargesByReturn.get(ret.returnId) || []).map((ch: any) => (<p key={ch.id} className="rounded-xl border border-amber-100 bg-white p-2 text-xs leading-6 text-slate-700"><span className="font-bold">توضیح تسویه ({ch.bearer === "supplier" ? "به عهده شما" : "به عهده مشتری"}، {formatPrice(ch.amount)} تومان): </span>{ch.reason}</p>))}
+            </div>
+          </details>
         </section>
       ))}
     </div>
@@ -521,35 +542,40 @@ export const SupplierMyWarehousesTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <SupplierSectionHeading title="انبارهای من" description="انبار یا کارخانه‌ای را که مبدأ ارسال مستقیم کالاهایت است اینجا ثبت کن." icon={<Warehouse />}
+      <SupplierSectionHeading title="انبارهای من" description="مبدأ ارسال مستقیم کالاهایت را ثبت یا ویرایش کن." icon={<Warehouse />}
         action={!formOpen && <button type="button" onClick={openCreate} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><Plus aria-hidden="true" className="size-4" /> ثبت انبار جدید</button>} />
       <SupplierResourceState loading={loading} error={loadError} retry={load} />
       {items.length === 0 && !loading && !loadError && !formOpen && <SupplierEmptyState icon={<Warehouse />} title="هنوز انباری ثبت نکرده‌ای." description="برای تعیین مبدأ ارسال یا انتقال موجودی، از دکمهٔ «ثبت انبار جدید» استفاده کن." />}
       {formOpen && (
         <form onSubmit={submit} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
           <h3 className="text-base font-extrabold text-[#261b41]">{editing ? "ویرایش انبار" : "ثبت انبار جدید"}</h3>
-          <label className="block text-[11px] font-bold text-slate-600">نام انبار *<input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج یا انبار شماره ۲" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
+          <label className="block text-sm font-bold text-slate-700">نام انبار<input autoFocus required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثلاً کارخانه کرج" className={serviceFieldClass} /></label>
           <div className="grid grid-cols-2 gap-2">
-            <div aria-hidden="true" className="block text-xs font-bold text-slate-700">استان *</div>
-            <div aria-hidden="true" className="block text-xs font-bold text-slate-700">شهر *</div>
+            <label htmlFor="supplier-warehouse-province" className="block text-sm font-bold text-slate-700">استان</label>
+            <label htmlFor="supplier-warehouse-city" className="block text-sm font-bold text-slate-700">شهر</label>
             <ProvinceCityPicker
               province={form.provinceName}
               city={form.cityName}
               onProvinceChange={(value, fromList) => setForm((f) => applyWarehouseProvinceChange(f, value, fromList))}
               onCityChange={(value) => setForm((f) => ({ ...f, cityName: value }))}
-              inputClassName="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand"
+              inputClassName={serviceFieldClass}
               provinceId="supplier-warehouse-province"
               cityId="supplier-warehouse-city"
             />
           </div>
-          <label className="block text-[11px] font-bold text-slate-600">نشانی (اختیاری)<input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block text-[11px] font-bold text-slate-600">کد پستی (اختیاری — ۱۰ رقم)<input value={form.postalCode} onChange={(e) => setForm({ ...form, postalCode: e.target.value })} inputMode="numeric" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
-            <label className="block text-[11px] font-bold text-slate-600">تلفن (اختیاری)<input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="tel" dir="ltr" className="mt-1 min-h-11 w-full rounded-xl border border-[#e6e2f0] bg-[#f8f6fc] px-3 text-sm font-normal focus-visible:ring-2 focus-visible:ring-brand" /></label>
-          </div>
+          <details key={editing?.id || 'new'} open={Boolean(editing?.address || editing?.postalCode || editing?.phone)} className="border-y border-slate-100">
+            <summary className={detailSummaryClass}>نشانی و تماس (اختیاری)</summary>
+            <div className="space-y-3 pb-3">
+              <label className="block text-sm font-bold text-slate-700">نشانی<input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={serviceFieldClass} /></label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label className="block text-sm font-bold text-slate-700">کد پستی (۱۰ رقم)<input value={form.postalCode} onChange={(e) => setForm({ ...form, postalCode: toLatinDigits(e.target.value) })} inputMode="numeric" dir="ltr" className={serviceFieldClass} /></label>
+                <label className="block text-sm font-bold text-slate-700">تلفن<input value={form.phone} onChange={(e) => setForm({ ...form, phone: toLatinDigits(e.target.value) })} type="tel" dir="ltr" className={serviceFieldClass} /></label>
+              </div>
+            </div>
+          </details>
           <div className="flex gap-2">
-            <button disabled={saving} className="flex-1 rounded-lg bg-brand-deep px-3 py-2 min-h-[44px] text-xs font-bold text-white">{saving ? "ذخیره…" : "ذخیره انبار"}</button>
-            <button type="button" disabled={saving} onClick={() => { setFormOpen(false); setEditing(null); }} className="flex-1 rounded-lg border px-3 py-2 min-h-[44px] text-xs disabled:opacity-60">انصراف</button>
+            <button disabled={saving} className="min-h-11 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60">{saving ? "در حال ذخیره…" : "ذخیره انبار"}</button>
+            <button type="button" disabled={saving} onClick={() => { setFormOpen(false); setEditing(null); }} className="min-h-11 rounded-xl border border-slate-300 px-4 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60">انصراف</button>
           </div>
         </form>
       )}
@@ -567,7 +593,7 @@ export const SupplierMyWarehousesTab: React.FC = () => {
             <p className="text-sm text-slate-700">{w.provinceName} · {w.cityName}</p>
             {w.address && <p className="break-words text-xs text-slate-600">{w.address}</p>}
             {(w.postalCode || w.phone) && <p className="break-words text-xs text-slate-600" dir="ltr">{[w.postalCode, w.phone].filter(Boolean).join(" · ")}</p>}
-            {!w.isActive && <p className="text-[10px] text-amber-700 bg-amber-50 border-amber-100 rounded-lg px-2 py-1">این انبار را مدیر غیرفعال کرده است؛ کالاهایی که مبدأشان این انبار بود، فعلاً از شهر انبار پروفایلت ارسال می‌شوند.</p>}
+            {!w.isActive && <p className="rounded-lg bg-amber-50 px-2 py-1 text-xs leading-6 text-amber-900">کالاهایی که از این انبار ارسال می‌شدند، فعلاً از شهر ثبت‌شده در پروفایلت ارسال می‌شوند.</p>}
             <div className="flex gap-2 pt-1">
               <button type="button" onClick={() => openEdit(w)} className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-brand-soft px-3 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:ring-2 focus-visible:ring-brand"><Pencil className="w-3.5 h-3.5"  strokeWidth={1.5}/> ویرایش</button>
             </div>
@@ -609,6 +635,7 @@ type TapinTestResult = { kind: "active" | "inactive" | "invalid" | "error"; mess
 export const SupplierTapinCard: React.FC = () => {
   const { success, error } = useToast();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [connected, setConnected] = useState(false);
   const [shopId, setShopId] = useState("");
   const [inputShopId, setInputShopId] = useState("");
@@ -624,13 +651,14 @@ export const SupplierTapinCard: React.FC = () => {
 
   const load = () => {
     setLoading(true);
+    setLoadError('');
     supplierApi.getTapinSettings()
       .then((res) => {
         setConnected(!!res.tapinConnected);
         setShopId(res.tapinShopId || "");
         setInputShopId(res.tapinShopId || "");
       })
-      .catch(() => { /* the card degrades to the not-connected form */ })
+      .catch((cause: unknown) => { setLoadError(cause instanceof Error ? cause.message : 'تنظیمات تاپین دریافت نشد.'); })
       .finally(() => { setLoading(false); });
   };
   useEffect(() => { load(); }, []);
@@ -716,16 +744,16 @@ export const SupplierTapinCard: React.FC = () => {
   };
 
   return (
-    <section className="rounded-2xl border bg-white p-4 space-y-3">
-      <div className="flex items-start justify-between gap-2">
+    <section className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-soft text-brand-deep">
+          <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand-deep">
             <Truck className="h-5 w-5" />
           </span>
           <div>
-            <h3 className="text-xs font-extrabold text-slate-800">اتصال تاپین</h3>
-            <p className="mt-0.5 text-[11px] leading-5 text-slate-500">
-              با اتصال تاپین، هزینه ارسال سفارش‌های مستقیم تو از خود تاپین خوانده می‌شود و ثبت مرسوله و کد رهگیری خودکار انجام می‌شود.
+            <h3 className="text-base font-extrabold text-slate-800">اتصال تاپین</h3>
+            <p className="mt-0.5 text-sm leading-6 text-slate-600">
+              با تاپین، هزینهٔ ارسال مستقیم محاسبه می‌شود و می‌توانی مرسوله ثبت کنی و کد رهگیری بگیری.
             </p>
           </div>
         </div>
@@ -749,87 +777,77 @@ export const SupplierTapinCard: React.FC = () => {
         )}
       </div>
 
-      {loading && <p className="text-[11px] text-slate-500">در حال بارگذاری…</p>}
+      {loading && <p role="status" className="text-sm text-slate-600">در حال بارگذاری…</p>}
+      {!loading && loadError && <SupplierResourceState loading={false} error={loadError} retry={load} />}
 
-      {!loading && !connected && (
-        <>
-          <p className="text-[11px] leading-6 text-slate-600">
-            اول در تاپین حساب بساز؛ بعد از پنل تاپین (یکپارچه‌سازی ← مدیریت توکن — با آی‌پی سرور و رمز پنل) توکن و شناسه فروشگاه را بگیر و اینجا وارد کن.
-          </p>
-          <a
-            href={TAPIN_SIGNUP_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand-deep py-2.5 min-h-[44px] text-xs font-bold text-white transition-colors hover:bg-brand"
-          >
-            <Send className="h-3.5 w-3.5" strokeWidth={1.5} />
-            ثبت‌نام در تاپین
-          </a>
-        </>
-      )}
-
-      {!loading && (
-        <div className="space-y-2.5">
-          <div>
-            <label className="text-[11px] font-bold text-slate-700 block mb-1">شناسه فروشگاه تاپین</label>
-            <input
-              type="text"
-              value={inputShopId}
-              onChange={(e) => setInputShopId(e.target.value)}
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
-              dir="ltr"
-              placeholder="shop id"
-            />
+      {!loading && !loadError && (
+        <form onSubmit={event => { event.preventDefault(); if (!saving) void save(); }} className="space-y-3">
+          {!connected && (
+            <details className="rounded-xl bg-slate-50 px-3">
+              <summary className={detailSummaryClass}>شناسه و توکن تاپین را از کجا بگیرم؟</summary>
+              <p className="pb-2 text-sm leading-6 text-slate-700">در پنل تاپین به «یکپارچه‌سازی» و سپس «مدیریت توکن» برو. برای دریافت توکن به آی‌پی سرور و رمز پنل نیاز داری.</p>
+              <a href={TAPIN_SIGNUP_URL} target="_blank" rel="noopener noreferrer" className="mb-2 inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-bold text-brand-deep underline focus-visible:ring-2 focus-visible:ring-brand">ثبت‌نام در تاپین (زبانهٔ جدید)</a>
+            </details>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor="supplier-tapin-shop" className="block text-sm font-bold text-slate-700">شناسهٔ فروشگاه تاپین</label>
+              <input
+                id="supplier-tapin-shop"
+                type="text"
+                required
+                value={inputShopId}
+                onChange={(e) => setInputShopId(e.target.value)}
+                className={serviceFieldClass}
+                dir="ltr"
+              />
+            </div>
+            <div>
+              <label htmlFor="supplier-tapin-token" className="block text-sm font-bold text-slate-700">توکن تاپین</label>
+              <input
+                id="supplier-tapin-token"
+                type="password"
+                required={!connected}
+                aria-describedby={connected ? 'supplier-tapin-token-help' : undefined}
+                value={inputToken}
+                onChange={(e) => setInputToken(e.target.value)}
+                className={serviceFieldClass}
+                dir="ltr"
+                autoComplete="off"
+              />
+              {connected && <p id="supplier-tapin-token-help" className="mt-1 text-xs leading-6 text-slate-600">برای نگه‌داشتن توکن فعلی، این بخش را خالی بگذار.</p>}
+            </div>
           </div>
-          <div>
-            <label className="text-[11px] font-bold text-slate-700 block mb-1">
-              توکن تاپین {connected && <span className="font-normal text-slate-400">(برای تغییر توکن پر کن؛ خالی یعنی همان قبلی)</span>}
-            </label>
-            <input
-              type="password"
-              value={inputToken}
-              onChange={(e) => setInputToken(e.target.value)}
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 outline-hidden font-bold"
-              dir="ltr"
-              placeholder="••••••••"
-              autoComplete="off"
-            />
-          </div>
-          <p className="flex items-start gap-1.5 text-[10px] leading-5 text-slate-400">
-            <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />
-            مسیر دریافت توکن: پنل تاپین ← یکپارچه‌سازی ← مدیریت توکن (با آی‌پی سرور و رمز پنل). توکن فقط ذخیره می‌شود و هیچ‌جا نمایش داده نمی‌شود.
-          </p>
-          <div className="flex gap-2">
-            <button type="button" disabled={saving} onClick={() => void save()} className="flex-1 rounded-xl bg-brand-deep py-2.5 min-h-[44px] text-xs font-bold text-white disabled:opacity-50">
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" disabled={saving || disconnecting || testing} className="min-h-11 rounded-xl bg-brand-deep px-4 py-2.5 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
               {saving ? "در حال ذخیره…" : "ذخیره اتصال"}
             </button>
             {connected && (
               <>
-                <button type="button" onClick={() => void test()} title={testing ? "برای لغو تست، دوباره بزن" : undefined} className="flex-1 rounded-xl border border-slate-200 py-2.5 min-h-[44px] text-xs font-bold text-slate-700">
+                <button type="button" disabled={saving || disconnecting} onClick={() => void test()} className="min-h-11 rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-bold text-slate-700 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
                   {testing ? (
                     <span className="inline-flex items-center justify-center gap-1.5">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      در حال تست اتصال…
+                      لغو تست اتصال
                     </span>
                   ) : "تست اتصال"}
                 </button>
-                <button type="button" disabled={disconnecting} onClick={() => void disconnect()} className="rounded-xl border border-rose-200 py-2.5 px-3 min-h-[44px] text-xs font-bold text-rose-600 disabled:opacity-50">
-                  {disconnecting ? "…" : "قطع اتصال"}
+                <button type="button" disabled={disconnecting || saving || testing} onClick={() => void disconnect()} className="min-h-11 rounded-xl px-3 py-2.5 text-sm font-bold text-rose-700 focus-visible:ring-2 focus-visible:ring-rose-700 disabled:opacity-50">
+                  {disconnecting ? "در حال قطع اتصال…" : "قطع اتصال"}
                 </button>
               </>
             )}
           </div>
           {connected && lastTestedAt && (
-            <p className="text-[10px] text-slate-400">آخرین تست: {lastTestedAt.toLocaleString('fa-IR')}</p>
+            <p className="text-xs text-slate-600">آخرین تست {lastTestedAt.toLocaleString('fa-IR')}</p>
           )}
-          {connected && (
-            <p className="flex items-start gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 font-bold text-amber-700">
-              <Clock className="h-3.5 w-3.5 shrink-0 mt-0.5" strokeWidth={1.5} />
-              سرویس فعال این اتصال تیپاکس است و برای هر فروشگاه جداگانه، بر اساس شهر فروشگاه فعال می‌شود؛ اگر وضعیت اتصال گفت سرویس فعال نیست، از پشتیبانی تاپین درخواست فعال‌سازی تیپاکس بده. سرویس پست به‌زودی اضافه می‌شود.
+          {connected && !testResult && (
+            <p className="text-xs leading-6 text-slate-600">
+              برای ثبت مرسوله، تیپاکس باید برای فروشگاهت در تاپین فعال باشد.
             </p>
           )}
           {testResult && (
-            <p className={`flex items-start gap-1.5 rounded-xl px-3 py-2 text-[11px] leading-5 font-bold ${
+            <p role="status" className={`flex items-start gap-1.5 rounded-xl px-3 py-2 text-sm leading-6 font-bold ${
               testResult.kind === "active" ? "bg-emerald-50 text-emerald-700" :
               testResult.kind === "inactive" ? "bg-amber-50 text-amber-700" :
               "bg-rose-50 text-rose-600"
@@ -840,7 +858,7 @@ export const SupplierTapinCard: React.FC = () => {
                 : testResult.message}
             </p>
           )}
-        </div>
+        </form>
       )}
     </section>
   );
@@ -878,13 +896,7 @@ export const SupplierShippingMethodsTab: React.FC = () => {
   };
   return (
     <div className="space-y-3 pb-6">
-      <SupplierSectionHeading title="روش‌های ارسال" description="روش‌های فعال فروشگاه را ببین و درخواست فعال‌سازی روش‌های دیگر را ثبت کن." icon={<Truck />} />
-      <div className="flex items-start gap-2.5 rounded-2xl border border-brand-border bg-brand-bg p-3.5">
-        <Info className="h-4 w-4 shrink-0 mt-0.5 text-brand-deep"  strokeWidth={1.5}/>
-        <p className="text-[11px] leading-6 text-slate-600">
-          سفارش‌ها را دو جور می‌شود رساند: <strong>ارسال مستقیم</strong> (خودت از انبارت می‌فرستی) یا <strong>ارسال به انبار مرکزی</strong> (کالا را به انبار پلتفرم می‌دهی؛ کنترل کیفیت، بسته‌بندی و فرستادن با پلتفرم است). یکی یا هر دو روش را می‌توانی داشته باشی. فعال‌کردن هر روش با درخواست تو و تأیید مدیر است.
-        </p>
-      </div>
+      <SupplierSectionHeading title="روش‌های ارسال" description="درخواست فعال‌سازی یک یا هر دو روش را برای بررسی مدیر ثبت کن." icon={<Truck />} />
       <SupplierResourceState loading={loading} error={loadError ?? ''} retry={load} />
       {!loading && !loadError && SHIPPING_METHOD_ORDER.map((method) => {
         const row = methods.find((m: any) => m.method === method);
@@ -895,38 +907,26 @@ export const SupplierShippingMethodsTab: React.FC = () => {
         const StatusIcon = status.icon;
         const pending = pendingMethod === method;
         return (
-          <section key={method} className="rounded-2xl border bg-white p-4 space-y-3">
-            <div className="flex items-start justify-between gap-2">
+          <section key={method} className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="flex items-center gap-2.5">
-                <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-soft text-brand-deep">
+                <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand-deep">
                   <MethodIcon className="h-5 w-5" />
                 </span>
                 <div>
-                  <h3 className="text-xs font-extrabold text-slate-800">{meta.title}</h3>
-                  <p className="mt-0.5 text-[11px] leading-5 text-slate-500">{meta.description}</p>
+                  <h3 className="text-base font-extrabold text-slate-800">{meta.title}</h3>
+                  <p className="mt-0.5 text-sm leading-6 text-slate-600">{meta.description}</p>
                 </div>
               </div>
-              <span className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold ${status.badgeClass}`}>
-                <StatusIcon className="h-3 w-3" />
+              <span className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-bold ${status.badgeClass}`}>
+                <StatusIcon aria-hidden="true" className="size-3" />
                 {status.label}
               </span>
             </div>
-            {row.status === "enabled" && (
-              <p className="flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-700">
-                <CheckCircle2 className="h-3.5 w-3.5 shrink-0"  strokeWidth={1.5}/>
-                این روش فعال است.
-              </p>
-            )}
-            {row.status === "requested" && (
-              <p className="flex items-center gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-700">
-                <Clock className="h-3.5 w-3.5 shrink-0"  strokeWidth={1.5}/>
-                درخواستت ثبت شد؛ مدیر باید تأیید کند.
-              </p>
-            )}
             {row.status === "disabled" && (
-              <button type="button" disabled={pending} onClick={() => void request(method)} className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand-deep py-2.5 min-h-[44px] text-xs font-bold text-white transition-colors hover:bg-brand disabled:opacity-50">
-                <Send className="h-3.5 w-3.5"  strokeWidth={1.5}/>
-                {pending ? "در حال ثبت درخواست…" : "می‌خواهم این روش را فعال کنم"}
+              <button type="button" disabled={!!pendingMethod} aria-label={pending ? "در حال ثبت درخواست…" : `درخواست فعال‌سازی ${meta.title}`} onClick={() => void request(method)} className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-brand-deep px-3 py-2.5 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+                <Send aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                {pending ? "در حال ثبت درخواست…" : "درخواست فعال‌سازی"}
               </button>
             )}
           </section>
@@ -949,28 +949,25 @@ export const SupplierContractTab: React.FC = () => {
   const signed = supplierSession?.signedContractVersion;
   return (
     <div className="space-y-4 pb-6">
-      <SupplierSectionHeading title="قرارداد من" description="متن قرارداد تأمین و توزیع و وضعیت امضای آن را ببین." icon={<FileText />} />
-      <div className="overflow-hidden rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
-        <div className="p-3.5 flex items-center gap-1.5">
-          <FileText className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/>
-          <span className="text-xs font-bold text-slate-800">قرارداد تأمین و توزیع من</span>
+      <SupplierSectionHeading title="قرارداد من" description="نسخهٔ فعلی قرارداد تأمین و توزیع و وضعیت امضای آن." icon={<FileText />} />
+      <section aria-labelledby="supplier-contract-text" className="space-y-3 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 id="supplier-contract-text" className="text-base font-extrabold text-[#261b41]">متن قرارداد</h3>
           {version > 0 && (
-            <span className="text-[10px] bg-brand-soft text-brand-deep px-2 py-0.5 rounded-full font-bold">نسخه فعلی: {toPersianDigits(version)}</span>
+            <span className="rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-bold text-brand-deep">نسخهٔ {toPersianDigits(version)}</span>
           )}
         </div>
-        <div className="p-3.5 pt-0 space-y-3">
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl max-h-64 overflow-y-auto text-[11px] text-slate-700 leading-relaxed whitespace-pre-line">
-            {text ? text : 'متن قرارداد الان از سرور نرسید؛ چند لحظه دیگر دوباره تلاش کن.'}
-          </div>
-          {typeof signed === 'number' && signed > 0 && (
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              {signed >= version
-                ? <>نسخه‌ای که امضا کرده‌ای همین نسخه {toPersianDigits(signed)} است و قراردادت به‌روز است.</>
-                : <>نسخه‌ای که امضا کرده‌ای {toPersianDigits(signed)} است؛ نسخه تازه‌تری منتشر شده و برای ادامه کار باید آن را قبول کنی.</>}
-            </p>
-          )}
+        {typeof signed === 'number' && signed > 0 && (
+          <p className={`rounded-xl p-3 text-sm leading-6 ${signed >= version ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-900'}`}>
+            {signed >= version
+              ? <>قرارداد به‌روز است. نسخهٔ {toPersianDigits(signed)} را امضا کرده‌ای.</>
+              : <>نسخهٔ {toPersianDigits(signed)} را امضا کرده‌ای. برای ادامهٔ کار باید نسخهٔ جدید را تأیید کنی.</>}
+          </p>
+        )}
+        <div className="whitespace-pre-line break-words rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-8 text-slate-800">
+          {text || 'متن قرارداد دریافت نشد. صفحه را دوباره بارگذاری کن.'}
         </div>
-      </div>
+      </section>
     </div>
   );
 };

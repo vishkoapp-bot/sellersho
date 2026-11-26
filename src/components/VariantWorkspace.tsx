@@ -30,6 +30,7 @@ export interface WorkspaceRow extends VariantBaseline {
 type SaveVariant = Parameters<typeof runVariantEdits>[2];
 type FormFields = Parameters<typeof parseVariantEdit>[0];
 const buttonClass = 'min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50';
+const supplierActionClass = 'min-h-11 rounded-xl bg-brand-deep px-3 text-xs font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
 const controlClass = 'min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 focus:border-blue-500 focus:outline-none';
 const labels: Record<VariantField, string> = { stock: 'موجودی', cost: 'قیمت عمده', visible: 'نمایش', margin: 'درصد سود' };
 const outcomeTone = { saved: 'text-emerald-700', pending: 'text-amber-800', error: 'text-rose-700', conflict: 'text-rose-700' };
@@ -91,6 +92,7 @@ export function VariantWorkspace({
   const editor = useRef<HTMLFormElement>(null);
   const panelId = useId();
   const formId = useId();
+  const importId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -234,7 +236,7 @@ export function VariantWorkspace({
       <div className="flex flex-wrap items-center gap-2 p-3.5 sm:p-4">
         <button type="button" aria-controls={panelId} aria-expanded={open} disabled={saving}
           onClick={() => setOpen(value => !value)}
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-right font-extrabold text-slate-900">
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-xl text-right font-extrabold text-slate-900 focus-visible:ring-2 focus-visible:ring-brand">
           <span className="rounded-xl bg-blue-50 p-2 text-blue-700"><Layers size={19} aria-hidden /></span>
           <span className="text-sm sm:text-base">{title}</span>
           <ChevronDown size={17} aria-hidden className={'mr-auto shrink-0 text-slate-500 transition-transform ' + (open ? 'rotate-180' : '')} />
@@ -267,19 +269,27 @@ export function VariantWorkspace({
             <button type="button" className={buttonClass} onClick={() => setRevision(value => value + 1)} disabled={loading || saving}>تازه‌سازی</button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={buttonClass} disabled={loading || !!loadError || saving || !selectedRows.length}
-              onClick={() => showEdit(selectedRows)}>ویرایش {count(selectedRows.length)} تنوع</button>
+            {(role !== 'supplier' || selectedRows.length > 0) && (
+              <button type="button" className={role === 'supplier' ? supplierActionClass : buttonClass} disabled={loading || !!loadError || saving || !selectedRows.length}
+                onClick={() => showEdit(selectedRows)}>ویرایش {count(selectedRows.length)} تنوع</button>
+            )}
             <button type="button" className={buttonClass + ' inline-flex items-center gap-1.5'} disabled={loading || !!loadError || saving}
-              onClick={() => { showEdit([]); setShowImport(true); }}><FileUp size={15} aria-hidden /> ورود از Excel یا CSV</button>
-            <button type="button" className={buttonClass + ' inline-flex items-center gap-1.5'} onClick={downloadTemplate} disabled={saving}>
+              aria-expanded={showImport} aria-controls={importId} onClick={() => {
+                if (role === 'supplier') setShowImport(value => !value);
+                else { showEdit([]); setShowImport(true); }
+              }}><FileUp size={15} aria-hidden /> ورود از Excel یا CSV</button>
+            {role === 'seller' && <button type="button" className={buttonClass + ' inline-flex items-center gap-1.5'} onClick={downloadTemplate} disabled={saving}>
               <Download size={15} aria-hidden /> فایل الگو
-            </button>
+            </button>}
           </div>
           {loadError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{loadError}</p>}
           {loading && <p role="status" className="text-sm text-slate-600">در حال بارگیری تنوع‌ها…</p>}
           {!loading && !loadError && !filtered.length && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">تنوعی با این وضعیت یا عبارت پیدا نشد.</p>}
           {showImport && (
-            <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+            <div id={importId} className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+              {role === 'supplier' && <button type="button" className={buttonClass + ' inline-flex items-center gap-1.5'} onClick={downloadTemplate} disabled={saving}>
+                <Download size={15} aria-hidden /> فایل الگو
+              </button>}
               <p className="text-xs leading-6 text-slate-700">
                 فایل الگو را با Excel باز کنید و با فرمت XLSX یا CSV UTF-8 ذخیره کنید. در فایل Excel فقط برگه اول خوانده می‌شود. سلول خالی بدون تغییر می‌ماند.
                 {' '}{role === 'supplier' ? 'تغییر موجودی به علت نیاز دارد. برای ارث‌بری قیمت کالا، inherit وارد کنید.'
@@ -291,7 +301,10 @@ export function VariantWorkspace({
                   disabled={saving || loading || !!loadError} onChange={event => {
                     const file = event.currentTarget.files?.[0];
                     event.currentTarget.value = '';
-                    if (file) void inspectFile(file);
+                    if (file) {
+                      setTarget([]);
+                      void inspectFile(file);
+                    }
                   }} />
               </label>
             </div>

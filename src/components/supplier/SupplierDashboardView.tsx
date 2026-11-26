@@ -3,31 +3,7 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { SupplierAuthGuard } from './SupplierAuthGuard';
 import { ApiError, apiRequest } from '../../services/apiClient';
-import { 
-  ArrowRight, 
-  LayoutDashboard, 
-  Package, 
-  Warehouse, 
-  PackagePlus, 
-  AlertTriangle, 
-  Megaphone, 
-  Receipt,
-  LogOut,
-  BarChart3,
-  TrendingUp,
-  RotateCcw,
-  Truck,
-  User,
-  FileText,
-  Building2,
-  Boxes,
-  Users,
-  Wallet,
-  Bell,
-  CircleHelp,
-  ChevronLeft,
-  ChevronDown
-} from 'lucide-react';
+import { ArrowUpLeft, Bell, LogOut, Menu } from 'lucide-react';
 
 import { SupplierOverviewTab } from './SupplierOverviewTab';
 import { SupplierProductsTab } from './SupplierProductsTab';
@@ -43,7 +19,8 @@ import { SupplierAnalyticsTab, SupplierCustomerReturnsTab, SupplierMyWarehousesT
 import { SupplierProfileTab } from './SupplierProfileTab';
 import { supplierApi } from '../../services/supplierApi';
 import { SupplierNotificationDrawer } from './SupplierNotificationDrawer';
-import { ShoppingBag } from 'lucide-react';
+import { SupplierDialog, SupplierDialogHeading } from './SupplierDialog';
+import { getSupplierNavigation, SupplierNavigation } from './SupplierNavigation';
 
 interface Props {
   onBackToCustomerSite: () => void;
@@ -63,6 +40,12 @@ function readSupplierLocation() {
 }
 
 function supplierSectionHref(section: string, destination?: SectionDestination) {
+  if (typeof window === 'undefined') {
+    const params = new URLSearchParams();
+    if (section !== 'overview') params.set('section', section);
+    if (destination) params.set('view', destination);
+    return `/supplier${params.size ? `?${params}` : ''}`;
+  }
   const params = new URLSearchParams(window.location.search);
   if (section === 'overview') params.delete('section');
   else params.set('section', section);
@@ -76,6 +59,7 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   const { supplierSession, setSupplierSession, logoutSupplier, platformSettings, updateContracts, toPersianDigits } = useStore();
   const { info, success, error } = useToast();
   const [location, setLocation] = useState(readSupplierLocation);
+  const [menuOpen, setMenuOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
   const navigateTab = useCallback((tab: string, destination?: SectionDestination, focusContent = true) => {
     const href = supplierSectionHref(tab, destination);
@@ -84,12 +68,18 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     }
     setLocation(readSupplierLocation());
     if (focusContent) {
-      mainRef.current?.focus({ preventScroll: true });
-      window.scrollTo({ top: 0, behavior: 'instant' });
+      window.requestAnimationFrame(() => {
+        mainRef.current?.focus({ preventScroll: true });
+        window.scrollTo({ top: 0, behavior: 'instant' });
+      });
     }
   }, []);
   useEffect(() => {
-    const syncLocation = () => setLocation(readSupplierLocation());
+    const syncLocation = () => {
+      setMenuOpen(false);
+      setLocation(readSupplierLocation());
+      window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
+    };
     window.addEventListener('popstate', syncLocation);
     return () => window.removeEventListener('popstate', syncLocation);
   }, []);
@@ -118,7 +108,6 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
   // نامشخص only when warehouseCityConfirmed is explicitly false, otherwise the city.
   // Cast: the flag rides on the session object at runtime (see AuthContext) but is not yet
   // declared on the SupplierSession type; drop the cast once the type field lands.
-  const warehouseCityConfirmed = (supplierSession as typeof supplierSession & { warehouseCityConfirmed?: boolean })?.warehouseCityConfirmed;
   const showContractModal = !!supplierSession && canAcceptContract && latestContractVersion > 0 && signedContractVersion < latestContractVersion;
   const acceptContract = async () => {
     if (!contractChecked || !supplierSession || contractSaving) return;
@@ -146,82 +135,29 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     }
   };
 
-  // FIX 17: live supplier menu (SupplierDashboardView-MERGED.js):
-  // 17 live tabs in this exact order with live labels. The
-  // candidate had 9; 8 are added here. 'pricing' (tiered pricing)
-  // is DELIBERATELY omitted per user decision Q12, so the
-  const menuItems = [
-    { id: 'overview', label: 'نمای کلی', icon: LayoutDashboard },
-    { id: 'analytics', label: 'تحلیل فروش', icon: BarChart3 },
-    { id: 'demand-insight', label: 'تقاضای بازار', icon: TrendingUp },
-    { id: 'orders', label: 'سفارش‌های من', icon: ShoppingBag },
-    { id: 'customer-returns', label: 'مرجوعی‌های مشتریان', icon: RotateCcw },
-    { id: 'products', label: 'کالاها و تنوع‌ها', icon: Package },
-    { id: 'inventory', label: 'موجودی کالاها', icon: Boxes },
-    { id: 'my-warehouses', label: 'انبارهای من', icon: Warehouse },
-    { id: 'inbound', label: 'ثبت کالا و ارسال به انبار', icon: PackagePlus },
-    { id: 'shipping-methods', label: 'روش‌های ارسال', icon: Truck },
-    { id: 'discrepancies', label: 'مغایرت‌های تحویل انبار', icon: AlertTriangle },
-    { id: 'settlement', label: 'تسویه‌حساب', icon: Receipt },
-    { id: 'ads', label: 'تبلیغات', icon: Megaphone },
-    { id: 'team', label: 'همکاران من', icon: Users },
-    { id: 'profile', label: 'پروفایل', icon: User },
-    { id: 'contract', label: 'قرارداد من', icon: FileText },
-    { id: 'support', label: 'پشتیبانی', icon: CircleHelp },
-  ];
-
-  const tabPermissions: Record<string, string> = { team: 'supplier.manage', products: 'products.manage', inventory: 'inventory.manage', inbound: 'inventory.manage', discrepancies: 'inventory.manage', orders: 'orders.manage', ads: 'marketing.manage', settlement: 'finance.manage', overview: 'supplier.manage', analytics: 'supplier.manage', 'demand-insight': 'supplier.manage', 'customer-returns': 'orders.manage', 'my-warehouses': 'inventory.manage', 'shipping-methods': 'orders.manage', profile: 'supplier.manage', contract: 'supplier.manage' };
   const permissions = supplierSession?.permissions || [];
-  const allowedTabs = menuItems.filter((item) => permissions.includes('supplier.manage') || permissions.includes(tabPermissions[item.id]) || (item.id === 'inbound' && permissions.includes('products.manage')) || (item.id === 'support' && permissions.length > 0));
-  const visibleTab = allowedTabs.some((item) => item.id === location.section) ? location.section : allowedTabs[0]?.id;
+  const manager = permissions.includes('supplier.manage');
+  const navigation = getSupplierNavigation(permissions);
+  const allowedTabs = navigation.flatMap(group => group.items);
+  const panelHome = ['overview', 'orders', 'products', 'inventory', 'settlement', 'ads', 'support']
+    .find(section => allowedTabs.some(tab => tab.id === section));
+  const currentTab = allowedTabs.find(item => item.id === location.section)
+    ?? allowedTabs.find(item => item.id === panelHome);
+  const visibleTab = currentTab?.id;
+  const activeTabLabel = currentTab?.label ?? 'پنل تأمین‌کننده';
   const tabDestination = visibleTab === location.section ? location.destination : undefined;
-  const canManageProducts = permissions.includes('supplier.manage') || permissions.includes('products.manage');
-  const canManageShipments = permissions.includes('supplier.manage') || permissions.includes('inventory.manage');
+  const sectionUnavailable = location.section !== 'overview' && location.section !== visibleTab && !!visibleTab;
+  const canManageProducts = manager || permissions.includes('products.manage');
+  const canManageShipments = manager || permissions.includes('inventory.manage');
   const shipmentStage = tabDestination === 'products' || tabDestination === 'prepare' || tabDestination === 'track'
     ? tabDestination : canManageProducts ? 'products' : 'prepare';
   const consumeWorkflowProduct = useCallback(() => setWorkflowProductId(''), []);
   const handleShipmentStage = useCallback((stage: ShipmentStage) => navigateTab('inbound', stage, false), [navigateTab]);
-
-  // Header back button: from inside any tab it first returns to the
-  // panel's own main view (the overview tab; for team accounts without
-  // the overview permission, the first permitted tab -- which is what
-  // the panel opens on). Only on that main view does the button leave
-  // the panel for the customer site.
-  const panelHomeTab = allowedTabs.some((item) => item.id === 'overview') ? 'overview' : allowedTabs[0]?.id;
-  const panelHomeLabel = allowedTabs.find((item) => item.id === panelHomeTab)?.label;
-  const isPanelHome = visibleTab === panelHomeTab;
-  const handleHeaderBack = () => {
-    if (!isPanelHome && panelHomeTab) {
-      navigateTab(panelHomeTab);
-    } else {
-      onBackToCustomerSite();
-    }
+  const logout = () => {
+    logoutSupplier();
+    info('از حساب تأمین‌کننده خارج شدی.');
   };
 
-  // Desktop sidebar grouping (layout only): the same permission-filtered
-  // tabs as the mobile tab bar, partitioned into sidebar groups covering
-  // all tab ids exactly once. A group with no permitted tab disappears
-  // entirely, so gating is inherited unchanged.
-  const menuGroups: { heading: string; ids: string[] }[] = [
-    { heading: 'پیشخوان', ids: ['overview', 'analytics', 'demand-insight'] },
-    { heading: 'سفارش و ارسال', ids: ['orders', 'customer-returns', 'shipping-methods'] },
-    { heading: 'کالا و انبار', ids: ['inbound', 'products', 'inventory', 'my-warehouses', 'discrepancies'] },
-    { heading: 'مالی', ids: ['settlement'] },
-    { heading: 'بازاریابی', ids: ['ads'] },
-    { heading: 'حساب کاربری', ids: ['team', 'profile', 'contract', 'support'] },
-  ];
-  const sidebarGroups = menuGroups
-    .map((group) => ({
-      heading: group.heading,
-      items: group.ids
-        .map((id) => allowedTabs.find((item) => item.id === id))
-        .filter((item): item is (typeof menuItems)[number] => !!item),
-    }))
-    .filter((group) => group.items.length > 0);
-
-  // Active tab label for the desktop header title slot (item: at lg the
-  // header stops repeating the identity and names the current section).
-  const activeTabLabel = allowedTabs.find((item) => item.id === visibleTab)?.label;
   // A rejection that lands while the panel is open shows only after
   // the next drawer open / Products activation (no polling in v1).
   useEffect(() => { if (visibleTab === 'products') refreshUnreadNotifCount(); }, [visibleTab, refreshUnreadNotifCount]);
@@ -230,137 +166,103 @@ export const SupplierDashboardView: React.FC<Props> = ({ onBackToCustomerSite })
     navigateTab('products');
     setFocusProposalId(proposalId);
   }, [navigateTab]);
-  const warehouseStatus = warehouseCityConfirmed === false ? 'انبار تأییدنشده' : supplierSession?.warehouseCity ? 'انبار تأییدشده' : 'بدون انبار ثبت‌شده';
 
   return (
     <SupplierAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
-    <div dir="rtl" className="flex min-h-screen flex-1 flex-col bg-[#f5f5fa] text-slate-900">
+    <div data-supplier-panel dir="rtl" className="flex min-h-screen flex-1 flex-col bg-[#f7f7fa] text-slate-900">
       {showContractModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white rounded-3xl max-w-md w-full p-4 shadow-2xl border border-slate-100 space-y-3 text-xs">
-            <div className="flex items-center gap-2 text-brand-deep font-bold border-b border-slate-100 pb-2">
-              <FileText className="w-5 h-5 text-brand-deep"  strokeWidth={1.5}/>
-              <div>
-                <h3 className="text-xs font-bold text-slate-900">قرارداد همکاری عوض شده است</h3>
-                <span className="text-[10px] text-slate-400 block font-normal">نسخه جدید {toPersianDigits(latestContractVersion)} (به‌جای نسخه {toPersianDigits(signedContractVersion)})</span>
-              </div>
-            </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed">برای ادامه کار، متن تازه قرارداد را بخوان و قبول کن:</p>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl max-h-40 overflow-y-auto text-[11px] text-slate-700 leading-relaxed font-mono whitespace-pre-line no-scrollbar">
-              {platformSettings.contracts?.supplierContractText}
-            </div>
-            <label className="flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-              <input type="checkbox" checked={contractChecked} disabled={contractSaving} onChange={e => setReviewedContractVersion(e.target.checked ? latestContractVersion : null)} className="w-4 h-4 accent-brand-deep rounded mt-0.5" />
-              <span className="text-[11px] text-slate-800 leading-relaxed font-bold">متن تازه قرارداد را خواندم و قبول دارم.</span>
-            </label>
-            <button disabled={!contractChecked || contractSaving} onClick={() => void acceptContract()} className="min-h-11 w-full rounded-xl bg-brand-deep py-2.5 text-xs font-bold text-white shadow-xs transition-all disabled:opacity-50">
+        <SupplierDialog titleId="supplier-contract-title" descriptionId="supplier-contract-description">
+          <h2 id="supplier-contract-title" className="text-lg font-extrabold text-slate-900">قرارداد همکاری به‌روز شده است</h2>
+          <p id="supplier-contract-description" className="mt-2 text-sm leading-7 text-slate-700">
+            برای ادامهٔ کار، نسخهٔ {toPersianDigits(latestContractVersion)} قرارداد را بخوان و تأیید کن.
+          </p>
+          <div role="region" aria-label="متن قرارداد" tabIndex={0} className="my-4 max-h-56 overflow-y-auto overscroll-contain whitespace-pre-line rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-7 text-slate-800 focus-visible:outline-2 focus-visible:outline-brand">
+            {platformSettings.contracts?.supplierContractText}
+          </div>
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 focus-within:outline-2 focus-within:outline-brand">
+            <input type="checkbox" checked={contractChecked} disabled={contractSaving} onChange={event => setReviewedContractVersion(event.target.checked ? latestContractVersion : null)} className="size-4 shrink-0 accent-brand-deep" />
+            متن تازهٔ قرارداد را خواندم و قبول دارم.
+          </label>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <button type="button" disabled={!contractChecked || contractSaving} onClick={() => void acceptContract()} className="min-h-11 flex-1 rounded-xl bg-brand-deep px-4 text-sm font-bold text-white hover:bg-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50">
               {contractSaving ? 'در حال ثبت…' : 'قبول دارم، ادامه بده'}
             </button>
+            <button type="button" disabled={contractSaving} onClick={logout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">خروج از حساب</button>
           </div>
-        </div>
+        </SupplierDialog>
       )}
-      <a href="#supplier-main" className="sr-only focus:not-sr-only focus:absolute focus:z-40 focus:rounded-lg focus:bg-white focus:p-3">رفتن به محتوای پنل</a>
-      <header className="sticky top-0 z-30 border-b border-[#e5e3f0] bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex min-h-16 w-full max-w-[1520px] items-center justify-between gap-3 px-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-3">
-            <button type="button" onClick={handleHeaderBack}
-              aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-              title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-              className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:border-brand-border hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand">
-              <ArrowRight aria-hidden="true" className="size-5" strokeWidth={1.75} />
-            </button>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-slate-600">
-                {supplierSession?.companyName || 'پنل تأمین‌کننده'}
-              </p>
-              <h1 className="truncate text-base font-extrabold sm:text-lg">{activeTabLabel || 'پنل تأمین‌کننده'}</h1>
+      <a href="#supplier-main" className="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-2 focus:z-40 focus:rounded-lg focus:bg-white focus:p-3 focus:text-brand-deep focus:outline-2 focus:outline-brand">رفتن به محتوای پنل</a>
+
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white">
+        <div className="mx-auto flex min-h-16 w-full max-w-[1480px] items-center justify-between gap-2 px-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            {navigation.length > 0 && (
+              <button type="button" onClick={() => setMenuOpen(true)} aria-label="باز کردن منوی پنل" aria-haspopup="dialog" aria-expanded={menuOpen}
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-soft px-2.5 text-xs font-bold text-brand-deep hover:bg-brand-border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand lg:hidden">
+                <Menu aria-hidden="true" className="size-5" strokeWidth={1.8} />
+                منو
+              </button>
+            )}
+            <div className="min-w-0 py-2">
+              <p className="truncate text-xs leading-5 text-slate-600" title={supplierSession?.companyName}>{supplierSession?.companyName || 'پنل تأمین‌کننده'}</p>
+              <h1 id="supplier-page-title" className="break-words text-sm font-extrabold leading-6 sm:text-lg">{activeTabLabel}</h1>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button type="button" onClick={() => setIsNotifOpen(true)} aria-label="اعلان‌ها" title="اعلان‌ها"
-              className="relative grid size-11 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:border-brand-border hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+            <button type="button" onClick={() => setIsNotifOpen(true)} aria-label={unreadNotifCount ? `اعلان‌ها، ${toPersianDigits(unreadNotifCount)} خوانده‌نشده` : 'اعلان‌ها'} aria-haspopup="dialog"
+              className="relative grid size-11 place-items-center rounded-xl text-slate-700 hover:bg-brand-bg focus-visible:outline-2 focus-visible:outline-brand">
               <Bell aria-hidden="true" className="size-5" strokeWidth={1.75} />
               {unreadNotifCount > 0 && (
-                <span className="absolute -start-1 -top-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white ring-2 ring-white">
-                  {toPersianDigits(unreadNotifCount)}
-                </span>
+                <span aria-hidden="true" className="absolute -start-0.5 -top-0.5 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-700 px-1 text-[10px] font-bold text-white ring-2 ring-white">{toPersianDigits(unreadNotifCount)}</span>
               )}
             </button>
-            <button type="button" onClick={() => { logoutSupplier(); info('از حساب تأمین‌کننده خارج شدی.'); }}
-              aria-label="خروج از حساب تأمین‌کننده" title="خروج از حساب تأمین‌کننده"
-              className="flex min-h-11 items-center gap-2 rounded-xl px-2.5 text-xs font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-700 focus-visible:ring-2 focus-visible:ring-rose-600 sm:px-3">
+            <button type="button" onClick={logout} aria-label="خروج از حساب تأمین‌کننده"
+              className="hidden min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-800 focus-visible:outline-2 focus-visible:outline-rose-700 lg:flex">
               <LogOut aria-hidden="true" className="size-4" strokeWidth={1.75} />
-              <span className="hidden sm:inline">خروج</span>
+              خروج
             </button>
           </div>
         </div>
       </header>
 
-      {!!sidebarGroups.length && (
-        <nav aria-label="منوی موبایل تأمین‌کننده" className="px-4 pt-4 sm:px-6 lg:hidden">
-          <label htmlFor="supplier-section" className="mb-1.5 block text-xs font-bold text-slate-700">بخش پنل</label>
-          <div className="relative">
-            <select id="supplier-section" value={visibleTab} onChange={event => navigateTab(event.target.value)}
-              className="min-h-12 w-full appearance-none rounded-2xl border border-[#e5e3f0] bg-white ps-4 pe-10 text-sm font-bold text-slate-900 shadow-sm focus-visible:ring-2 focus-visible:ring-brand">
-              {sidebarGroups.map(group => (
-                <optgroup key={group.heading} label={group.heading}>
-                  {group.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-                </optgroup>
-              ))}
-            </select>
-            <ChevronDown aria-hidden="true" className="pointer-events-none absolute end-4 top-4 size-4 text-brand-deep" />
+      {menuOpen && (
+        <SupplierDialog titleId="supplier-menu-title" onDismiss={() => setMenuOpen(false)}>
+          <SupplierDialogHeading id="supplier-menu-title" title="بخش‌های پنل" onClose={() => setMenuOpen(false)} />
+          <SupplierNavigation groups={navigation} current={visibleTab} href={supplierSectionHref} label="منوی موبایل تأمین‌کننده" onNavigate={section => {
+            setMenuOpen(false);
+            navigateTab(section);
+          }} />
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-2">
+            <button type="button" onClick={onBackToCustomerSite} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand">
+              سایت اصلی <ArrowUpLeft aria-hidden="true" className="size-4" />
+            </button>
+            <button type="button" onClick={logout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-rose-800 hover:bg-rose-50 focus-visible:outline-2 focus-visible:outline-rose-700">خروج از حساب</button>
           </div>
-        </nav>
+        </SupplierDialog>
       )}
 
-      <div className="mx-auto flex w-full max-w-[1520px] flex-1 flex-col gap-4 px-4 pb-8 pt-4 sm:px-6 lg:flex-row lg:gap-6 lg:pt-6">
-        <aside className="hidden w-[250px] shrink-0 self-start overflow-y-auto rounded-[26px] bg-[#211a3d] p-3 text-white shadow-lg shadow-[#262044]/15 lg:sticky lg:top-[88px] lg:block lg:max-h-[calc(100dvh-110px)] xl:w-[270px]">
-          <div className="mb-2 flex min-w-0 items-start gap-3 rounded-2xl border border-white/10 bg-white/8 p-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#dacfff] text-[#352466]">
-              <Building2 aria-hidden="true" className="size-5" strokeWidth={1.75} />
-            </span>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-extrabold" title={supplierSession?.companyName || 'تأمین‌کننده'}>{supplierSession?.companyName || 'تأمین‌کننده'}</p>
-              <p className="mt-1 text-[11px] text-[#d3c9ed]">
-                {warehouseStatus}{warehouseCityConfirmed !== false && supplierSession?.warehouseCity ? ` · ${supplierSession.warehouseCity}` : ''}
-              </p>
-            </div>
-          </div>
+      <div className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-4 px-3 pb-8 pt-4 sm:px-6 lg:flex-row lg:gap-6 lg:pt-6">
+        {navigation.length > 0 && (
+          <aside className="hidden w-[245px] shrink-0 self-start overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-2.5 lg:sticky lg:top-[88px] lg:block lg:max-h-[calc(100dvh-108px)] xl:w-[258px]">
+            <SupplierNavigation groups={navigation} current={visibleTab} href={supplierSectionHref} label="منوی پنل تأمین‌کننده" onNavigate={navigateTab} />
+            <button type="button" onClick={onBackToCustomerSite} className="mt-3 flex min-h-11 w-full items-center justify-between gap-2 rounded-xl border-t border-slate-200 px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand">
+              سایت اصلی <ArrowUpLeft aria-hidden="true" className="size-4" />
+            </button>
+          </aside>
+        )}
 
-          {!!sidebarGroups.length && (
-            <nav aria-label="منوی پنل تأمین‌کننده" className="space-y-3 py-1">
-              {sidebarGroups.map(group => (
-                <section key={group.heading}>
-                  <h2 className="px-3 pb-1 text-[11px] font-semibold text-[#c7b7e5]">{group.heading}</h2>
-                  <div className="space-y-0.5">
-                    {group.items.map(({ id, label, icon: Icon }) => {
-                      const isActive = visibleTab === id;
-                      return (
-                        <a key={id} href={typeof window === 'undefined' ? `/supplier?section=${id}` : supplierSectionHref(id)} data-section={id}
-                          onClick={event => {
-                            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-                            event.preventDefault();
-                            navigateTab(id);
-                          }} aria-current={isActive ? 'page' : undefined}
-                          className={`flex min-h-10 w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-start text-xs font-bold transition-colors focus-visible:ring-2 focus-visible:ring-[#e4d9ff] ${isActive ? 'bg-[#e8dfff] text-[#302056]' : 'text-[#f0eafa] hover:bg-white/12'}`}>
-                          <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
-                          <span className="flex-1 leading-5">{label}</span>
-                          {isActive && <ChevronLeft aria-hidden="true" className="size-4 shrink-0" />}
-                        </a>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </nav>
-          )}
-        </aside>
-
-        {/* Main Tab Content */}
-        <main ref={mainRef} id="supplier-main" aria-label={activeTabLabel} tabIndex={-1} className="flex-1 min-w-0 scroll-mt-20">
+        <main ref={mainRef} id="supplier-main" aria-labelledby="supplier-page-title" tabIndex={-1} className="min-w-0 flex-1 scroll-mt-24 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
           <div className="min-w-0">
-            {allowedTabs.length === 0 && <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">مجوزهای حساب تأمین‌کننده دریافت نشد. لطفاً یک‌بار خارج شوید و دوباره وارد شوید.</div>}
-            {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} />}
+            {!currentTab && (
+              <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-7 text-amber-950">
+                دسترسی‌های حساب دریافت نشد. برای تازه‌کردن دسترسی، دوباره وارد حساب شو.
+                <button type="button" onClick={logout} className="ms-2 min-h-11 rounded-lg px-3 text-sm font-bold underline focus-visible:outline-2 focus-visible:outline-brand">خروج از حساب</button>
+              </div>
+            )}
+            {sectionUnavailable && (
+              <p role="status" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">این بخش در دسترس حساب تو نیست. بخش‌های مجاز در منوی پنل نمایش داده می‌شوند.</p>
+            )}
+            {visibleTab === 'overview' && <SupplierOverviewTab onNavigateTab={navigateTab} sectionHref={supplierSectionHref} />}
             {visibleTab === 'orders' && <SupplierOrdersTab key={tabDestination ?? 'all'} initialFilter={tabDestination === 'ready' || tabDestination === 'overdue' ? tabDestination : 'all'} />}
             {visibleTab === 'products' && <SupplierProductsTab key={tabDestination ?? 'catalog'} openProposal={tabDestination === 'propose'} showProposals={tabDestination === 'proposals'} onPrepareShipment={canManageShipments ? (id) => { setWorkflowProductId(id); navigateTab('inbound', 'prepare'); } : undefined} focusProposalId={focusProposalId} onFocusConsumed={() => setFocusProposalId(null)} />}
             {visibleTab === 'inventory' && <SupplierInventoryTab />}
